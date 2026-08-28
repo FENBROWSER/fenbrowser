@@ -10668,3 +10668,14 @@ Verification:
   returns a context, `toDataURL` produces a PNG data URL, and the
   frame-switched anchor click now reaches the anchor (worker activity starts)
   instead of the page body.
+
+## 2.408 CSS Math Expression Grouping (2026-08-28)
+
+- CSS `calc()` evaluation uses a recursive-descent expression parser with
+  parenthesized grouping, operator precedence, and unary signs.
+- `rem` operands inside CSS math resolve against the active document's captured
+  root font size, matching non-math length parsing.
+
+Verification:
+
+- Focused CSS math and adjacent media/layout contract tests pass (`10/10`).

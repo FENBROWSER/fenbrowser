@@ -586,179 +586,194 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         private static double EvaluateCalcExpression(string expr, double emBase, double percentBase)
         {
-            var tokens = TokenizeCalcExpression(expr);
-            if (tokens.Count == 0) return 0;
-
-            var output = new Stack<double>();
-            var operators = new Stack<char>();
-
-            for (int i = 0; i < tokens.Count; i++)
-            {
-                var token = tokens[i];
-
-                if (IsCalcOperator(token))
-                {
-                    char op = token[0];
-                    while (operators.Count > 0 && ShouldPopOperator(operators.Peek(), op))
-                    {
-                        ApplyOperator(output, operators.Pop());
-                    }
-                    operators.Push(op);
-                }
-                else
-                {
-                    double val = ParseCalcValue(token, emBase, percentBase);
-                    output.Push(val);
-                }
-            }
-
-            while (operators.Count > 0)
-            {
-                ApplyOperator(output, operators.Pop());
-            }
-
-            return output.Count > 0 ? output.Pop() : 0;
+            return new CalcExpressionParser(expr, emBase, percentBase).Parse();
         }
 
-        private static List<string> TokenizeCalcExpression(string expr)
+        private sealed class CalcExpressionParser
         {
-            var tokens = new List<string>();
-            var current = new StringBuilder();
+            private readonly string _expression;
+            private readonly double _emBase;
+            private readonly double _percentBase;
+            private int _position;
 
-            for (int i = 0; i < expr.Length; i++)
+            public CalcExpressionParser(string expression, double emBase, double percentBase)
             {
-                char c = expr[i];
-
-                if (c == ' ' || c == '\t')
-                {
-                    if (current.Length > 0)
-                    {
-                        tokens.Add(current.ToString());
-                        current.Clear();
-                    }
-                    continue;
-                }
-
-                if ((c == '+' || c == '-') && current.Length > 0 && !char.IsDigit(expr[Math.Max(0, i - 1)]))
-                {
-                    if (current.Length > 0)
-                    {
-                        tokens.Add(current.ToString());
-                        current.Clear();
-                    }
-                    tokens.Add(c.ToString());
-                    continue;
-                }
-                else if ((c == '+' || c == '-') && current.Length == 0)
-                {
-                    if (tokens.Count > 0 && !IsCalcOperator(tokens[tokens.Count - 1]))
-                    {
-                        tokens.Add(c.ToString());
-                        continue;
-                    }
-                    current.Append(c);
-                    continue;
-                }
-                else if (c == '*' || c == '/')
-                {
-                    if (current.Length > 0)
-                    {
-                        tokens.Add(current.ToString());
-                        current.Clear();
-                    }
-                    tokens.Add(c.ToString());
-                    continue;
-                }
-
-                current.Append(c);
+                _expression = expression;
+                _emBase = emBase;
+                _percentBase = percentBase;
             }
 
-            if (current.Length > 0)
+            public double Parse()
             {
-                tokens.Add(current.ToString());
+                var value = ParseSum();
+                SkipWhitespace();
+                if (_position != _expression.Length)
+                    throw new FormatException("Unexpected token in calc() expression.");
+                return value;
             }
-            return tokens;
+
+            private double ParseSum()
+            {
+                var value = ParseProduct();
+                while (true)
+                {
+                    SkipWhitespace();
+                    if (Consume('+')) value += ParseProduct();
+                    else if (Consume('-')) value -= ParseProduct();
+                    else return value;
+                }
+            }
+
+            private double ParseProduct()
+            {
+                var value = ParseUnary();
+                while (true)
+                {
+                    SkipWhitespace();
+                    if (Consume('*'))
+                    {
+                        value *= ParseUnary();
+                    }
+                    else if (Consume('/'))
+                    {
+                        var divisor = ParseUnary();
+                        value = divisor != 0 ? value / divisor : 0;
+                    }
+                    else return value;
+                }
+            }
+
+            private double ParseUnary()
+            {
+                SkipWhitespace();
+                if (Consume('+')) return ParseUnary();
+                if (Consume('-')) return -ParseUnary();
+                return ParsePrimary();
+            }
+
+            private double ParsePrimary()
+            {
+                SkipWhitespace();
+                if (_expression.AsSpan(_position).StartsWith("calc(", StringComparison.OrdinalIgnoreCase))
+                {
+                    _position += 4;
+                    return ParseParenthesized();
+                }
+                if (Consume('('))
+                    return ParseParenthesizedBody();
+
+                var start = _position;
+                while (_position < _expression.Length)
+                {
+                    var current = _expression[_position];
+                    if (char.IsWhiteSpace(current) || current is '(' or ')' or '*' or '/')
+                        break;
+                    if ((current == '+' || current == '-') &&
+                        (_position == start || _expression[_position - 1] is not ('e' or 'E')))
+                        break;
+                    _position++;
+                }
+
+                if (start == _position ||
+                    !TryParseCalcValue(_expression[start.._position], _emBase, _percentBase, out var value))
+                    throw new FormatException("Expected a CSS numeric value in calc() expression.");
+
+                return value;
+            }
+
+            private double ParseParenthesized()
+            {
+                if (!Consume('('))
+                    throw new FormatException("Expected an opening parenthesis in calc() expression.");
+                return ParseParenthesizedBody();
+            }
+
+            private double ParseParenthesizedBody()
+            {
+                var groupedValue = ParseSum();
+                SkipWhitespace();
+                if (!Consume(')'))
+                    throw new FormatException("Unclosed parenthesis in calc() expression.");
+                return groupedValue;
+            }
+
+            private bool Consume(char expected)
+            {
+                if (_position >= _expression.Length || _expression[_position] != expected)
+                    return false;
+                _position++;
+                return true;
+            }
+
+            private void SkipWhitespace()
+            {
+                while (_position < _expression.Length && char.IsWhiteSpace(_expression[_position]))
+                    _position++;
+            }
         }
 
         private static double ParseCalcValue(string token, double emBase, double percentBase)
         {
+            return TryParseCalcValue(token, emBase, percentBase, out var value) ? value : 0;
+        }
+
+        private static bool TryParseCalcValue(string token, double emBase, double percentBase, out double value)
+        {
             token = token.Trim().ToLowerInvariant();
+            value = 0;
             double v;
             double vpWidth = CssParser.MediaViewportWidth ?? 1920.0;
             double vpHeight = CssParser.MediaViewportHeight ?? 1080.0;
 
             if (token.EndsWith("px"))
             {
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v;
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) value = v;
+                else return false;
             }
             else if (token.EndsWith("rem"))
             {
-                if (TryDouble(token.Substring(0, token.Length - 3), out v)) return v * 16.0;
+                if (TryDouble(token.Substring(0, token.Length - 3), out v))
+                {
+                    value = v * ActiveDocumentCssState.RootFontSize;
+                    return true;
+                }
             }
             else if (token.EndsWith("em"))
             {
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * emBase;
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) value = v * emBase;
+                else return false;
             }
             else if (token.EndsWith("vw"))
             {
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * vpWidth / 100.0;
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) value = v * vpWidth / 100.0;
+                else return false;
             }
             else if (token.EndsWith("vh"))
             {
-                if (TryDouble(token.Substring(0, token.Length - 2), out v)) return v * vpHeight / 100.0;
+                if (TryDouble(token.Substring(0, token.Length - 2), out v)) value = v * vpHeight / 100.0;
+                else return false;
             }
             else if (token.EndsWith("vmin"))
             {
-                if (TryDouble(token.Substring(0, token.Length - 4), out v)) return v * Math.Min(vpWidth, vpHeight) / 100.0;
+                if (TryDouble(token.Substring(0, token.Length - 4), out v)) value = v * Math.Min(vpWidth, vpHeight) / 100.0;
+                else return false;
             }
             else if (token.EndsWith("vmax"))
             {
-                if (TryDouble(token.Substring(0, token.Length - 4), out v)) return v * Math.Max(vpWidth, vpHeight) / 100.0;
+                if (TryDouble(token.Substring(0, token.Length - 4), out v)) value = v * Math.Max(vpWidth, vpHeight) / 100.0;
+                else return false;
             }
             else if (token.EndsWith("%"))
             {
-                if (TryDouble(token.Substring(0, token.Length - 1), out v)) return v * percentBase / 100.0;
+                if (TryDouble(token.Substring(0, token.Length - 1), out v)) value = v * percentBase / 100.0;
+                else return false;
             }
             else
             {
-                if (TryDouble(token, out v)) return v;
+                if (TryDouble(token, out v)) value = v;
+                else return false;
             }
-            return 0;
-        }
-
-        private static bool IsCalcOperator(string token)
-        {
-            return token == "+" || token == "-" || token == "*" || token == "/";
-        }
-
-        private static bool ShouldPopOperator(char stackTop, char newOp)
-        {
-             int p1 = GetPriority(stackTop);
-             int p2 = GetPriority(newOp);
-             return p1 >= p2;
-        }
-
-        private static int GetPriority(char op)
-        {
-            if (op == '*' || op == '/') return 2;
-            if (op == '+' || op == '-') return 1;
-            return 0;
-        }
-
-        private static void ApplyOperator(Stack<double> output, char op)
-        {
-            if (output.Count < 2) return;
-            double right = output.Pop();
-            double left = output.Pop();
-            double res = 0;
-            switch(op)
-            {
-                case '+': res = left + right; break;
-                case '-': res = left - right; break;
-                case '*': res = left * right; break;
-                case '/': res = right != 0 ? left / right : 0; break;
-            }
-            output.Push(res);
+            return true;
         }
 
         #endregion
