@@ -1708,9 +1708,9 @@ public class BrowserIntegration : IDisposable
     /// <summary>
     /// Navigate from programmatic sources (WebDriver/script/callback paths).
     /// </summary>
-    public Task NavigateProgrammaticAsync(string url) => NavigateInternalAsync(url, isUserInput: false);
+    public Task NavigateProgrammaticAsync(string url, string navigationCorrelationId = null) => NavigateInternalAsync(url, isUserInput: false, navigationCorrelationId: navigationCorrelationId);
 
-    private async Task NavigateInternalAsync(string url, bool isUserInput)
+    private async Task NavigateInternalAsync(string url, bool isUserInput, string navigationCorrelationId = null)
     {
         if (string.IsNullOrWhiteSpace(url)) return;
 
@@ -1830,7 +1830,7 @@ public class BrowserIntegration : IDisposable
             {
                 if (OwnerTab != null)
                 {
-                    FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnNavigationRequested(OwnerTab, url, isUserInput);
+                    FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnNavigationRequested(OwnerTab, url, isUserInput, navigationCorrelationId);
                 }
                 return;
             }

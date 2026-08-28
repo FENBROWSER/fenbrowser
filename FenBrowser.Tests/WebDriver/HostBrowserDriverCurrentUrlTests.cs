@@ -78,7 +78,7 @@ public sealed class HostBrowserDriverCurrentUrlTests
         public void Initialize() { }
         public void OnTabCreated(BrowserTab tab) { }
         public void OnTabActivated(BrowserTab tab) { }
-        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput) { }
+        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput, string navigationCorrelationId = null) { }
         public void OnInputEvent(BrowserTab tab, RendererInputEvent inputEvent) { }
         public void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight, float scrollY = 0) { }
         public void OnTabClosed(BrowserTab tab) { }

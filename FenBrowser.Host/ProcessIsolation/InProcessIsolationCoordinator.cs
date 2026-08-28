@@ -25,7 +25,7 @@ namespace FenBrowser.Host.ProcessIsolation
         {
         }
 
-        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput)
+        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput, string navigationCorrelationId = null)
         {
         }
 

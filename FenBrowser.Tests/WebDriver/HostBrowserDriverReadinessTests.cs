@@ -25,7 +25,7 @@ public sealed class HostBrowserDriverReadinessTests
 
         var driver = new HostBrowserDriver();
         var wait = driver.WaitForDocumentReadinessAsync(
-            WdDocumentReadinessStage.Complete, timeoutMs: 5000);
+            WdDocumentReadinessStage.Complete, timeoutMs: 5000, navigationId: 0);
 
         coordinator.RaiseLifecycle(tabScope.Tab.Id, nameof(NavigationLifecyclePhase.Interactive));
         Assert.False(wait.IsCompleted, "complete-stage wait finished on Interactive");
@@ -43,7 +43,7 @@ public sealed class HostBrowserDriverReadinessTests
 
         var driver = new HostBrowserDriver();
         var wait = driver.WaitForDocumentReadinessAsync(
-            WdDocumentReadinessStage.Interactive, timeoutMs: 5000);
+            WdDocumentReadinessStage.Interactive, timeoutMs: 5000, navigationId: 0);
 
         coordinator.RaiseLifecycle(tabScope.Tab.Id, nameof(NavigationLifecyclePhase.Interactive));
         Assert.Equal(WdReadinessWaitStatus.Reached, await wait);
@@ -58,7 +58,7 @@ public sealed class HostBrowserDriverReadinessTests
 
         var driver = new HostBrowserDriver();
         var wait = driver.WaitForDocumentReadinessAsync(
-            WdDocumentReadinessStage.Complete, timeoutMs: 5000);
+            WdDocumentReadinessStage.Complete, timeoutMs: 5000, navigationId: 0);
 
         coordinator.RaiseLifecycle(tabScope.Tab.Id, nameof(NavigationLifecyclePhase.Failed));
         Assert.Equal(WdReadinessWaitStatus.NavigationAborted, await wait);
@@ -73,7 +73,7 @@ public sealed class HostBrowserDriverReadinessTests
 
         var driver = new HostBrowserDriver();
         var wait = driver.WaitForDocumentReadinessAsync(
-            WdDocumentReadinessStage.Complete, timeoutMs: 2000);
+            WdDocumentReadinessStage.Complete, timeoutMs: 2000, navigationId: 0);
 
         coordinator.RaiseLifecycle(tabScope.Tab.Id + 1, nameof(NavigationLifecyclePhase.Complete));
         await Task.Delay(100);
@@ -92,9 +92,76 @@ public sealed class HostBrowserDriverReadinessTests
 
         var driver = new HostBrowserDriver();
         var wait = driver.WaitForDocumentReadinessAsync(
-            WdDocumentReadinessStage.Complete, timeoutMs: 300);
+            WdDocumentReadinessStage.Complete, timeoutMs: 300, navigationId: 0);
 
         Assert.Equal(WdReadinessWaitStatus.TimedOut, await wait);
+    }
+
+    // Correlation: a tracked navigation carries its correlation id through the
+    // coordinator, and only lifecycle transitions of THAT navigation complete
+    // the wait — a later user/script navigation cannot complete the command.
+    [Fact]
+    public async Task NavigateTracked_CorrelatesRendererLifecycle()
+    {
+        var coordinator = new LifecycleCoordinator();
+        using var scope = UseCoordinator(coordinator);
+        using var tabScope = CreateActiveTab();
+
+        var driver = new HostBrowserDriver();
+        var navigationId = await driver.NavigateTrackedAsync("https://example.test/a");
+
+        Assert.NotEqual(0, navigationId);
+        var navigation = Assert.Single(coordinator.Navigations);
+        Assert.False(string.IsNullOrWhiteSpace(navigation.CorrelationId), "tracked navigation carried no correlation id");
+
+        var wait = driver.WaitForDocumentReadinessAsync(
+            WdDocumentReadinessStage.Complete, timeoutMs: 5000, navigationId);
+
+        // A later navigation (different correlation) reaching complete must not
+        // finish this wait.
+        coordinator.RaiseLifecycle(tabScope.Tab.Id, nameof(NavigationLifecyclePhase.Complete), correlationId: "later-user-navigation");
+        await Task.Delay(100);
+        Assert.False(wait.IsCompleted, "another navigation's Complete completed the wait");
+
+        coordinator.RaiseLifecycle(tabScope.Tab.Id, nameof(NavigationLifecyclePhase.Complete), correlationId: navigation.CorrelationId);
+        Assert.Equal(WdReadinessWaitStatus.Reached, await wait);
+    }
+
+    [Fact]
+    public async Task CorrelatedWait_TimesOutWhenOnlyOtherNavigationsComplete()
+    {
+        var coordinator = new LifecycleCoordinator();
+        using var scope = UseCoordinator(coordinator);
+        using var tabScope = CreateActiveTab();
+
+        var driver = new HostBrowserDriver();
+        var navigationId = await driver.NavigateTrackedAsync("https://example.test/a");
+        var correlationId = Assert.Single(coordinator.Navigations).CorrelationId;
+
+        var wait = driver.WaitForDocumentReadinessAsync(
+            WdDocumentReadinessStage.Complete, timeoutMs: 400, navigationId);
+
+        coordinator.RaiseLifecycle(tabScope.Tab.Id, nameof(NavigationLifecyclePhase.Complete), correlationId: correlationId + "-other");
+        coordinator.RaiseLifecycle(tabScope.Tab.Id, nameof(NavigationLifecyclePhase.Interactive), correlationId: "another-one");
+        Assert.Equal(WdReadinessWaitStatus.TimedOut, await wait);
+    }
+
+    [Fact]
+    public async Task CorrelatedWait_FailureOfOwnNavigationAborts()
+    {
+        var coordinator = new LifecycleCoordinator();
+        using var scope = UseCoordinator(coordinator);
+        using var tabScope = CreateActiveTab();
+
+        var driver = new HostBrowserDriver();
+        var navigationId = await driver.NavigateTrackedAsync("https://example.test/a");
+        var correlationId = Assert.Single(coordinator.Navigations).CorrelationId;
+
+        var wait = driver.WaitForDocumentReadinessAsync(
+            WdDocumentReadinessStage.Complete, timeoutMs: 5000, navigationId);
+
+        coordinator.RaiseLifecycle(tabScope.Tab.Id, nameof(NavigationLifecyclePhase.Failed), correlationId: correlationId);
+        Assert.Equal(WdReadinessWaitStatus.NavigationAborted, await wait);
     }
 
     private static IDisposable UseCoordinator(LifecycleCoordinator coordinator)
@@ -178,17 +245,20 @@ public sealed class HostBrowserDriverReadinessTests
         public void Initialize() { }
         public void OnTabCreated(BrowserTab tab) { }
         public void OnTabActivated(BrowserTab tab) { }
-        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput) { }
+        public List<(int TabId, string Url, string CorrelationId)> Navigations { get; } = new();
+
+        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput, string navigationCorrelationId = null) =>
+            Navigations.Add((tab.Id, url, navigationCorrelationId));
         public void OnInputEvent(BrowserTab tab, RendererInputEvent inputEvent) { }
         public void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight, float scrollY = 0) { }
         public void OnTabClosed(BrowserTab tab) { }
         public void Shutdown() { }
 
-        public void RaiseLifecycle(int tabId, string phase)
+        public void RaiseLifecycle(int tabId, string phase, string correlationId = "")
         {
             var payload = new RendererNavigationLifecyclePayload
             {
-                NavigationCorrelationId = string.Empty,
+                NavigationCorrelationId = correlationId,
                 NavigationId = 1,
                 Phase = phase,
                 EffectiveUrl = "https://example.test/a"

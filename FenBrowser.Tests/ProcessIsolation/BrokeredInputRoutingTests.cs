@@ -822,7 +822,7 @@ public sealed class BrokeredInputRoutingTests
         public void Initialize() { }
         public void OnTabCreated(BrowserTab tab) { }
         public void OnTabActivated(BrowserTab tab) { }
-        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput) =>
+        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput, string navigationCorrelationId = null) =>
             Navigations.Add((tab.Id, url, isUserInput));
         public void OnInputEvent(BrowserTab tab, RendererInputEvent inputEvent) => Inputs.Add(inputEvent);
         public void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight, float scrollY = 0) { }
@@ -832,6 +832,7 @@ public sealed class BrokeredInputRoutingTests
 #pragma warning disable CS0067
         public event System.Action<int, RendererFrameReadyPayload> FrameReceived;
         public event System.Action<int, RendererMetadataChangedPayload> MetadataChanged;
+        public event System.Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
         public event System.Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
         public event System.Action<int, string> RendererCrashed;
 #pragma warning restore CS0067

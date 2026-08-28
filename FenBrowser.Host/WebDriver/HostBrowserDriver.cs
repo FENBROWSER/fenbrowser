@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.Host.ProcessIsolation;
@@ -157,7 +159,206 @@ namespace FenBrowser.Host.WebDriver
 
         // WD-004: pageLoadStrategy eager/normal waits on the engine's explicit
         // navigation lifecycle (Interactive = DOMContentLoaded, Complete = load)
-        // instead of inferring completion from a changed URL.
+        // instead of inferring completion from a changed URL. Tracked navigations
+        // carry a driver-issued identifier so lifecycle events belonging to other
+        // navigations (a later user or script navigation) cannot complete a wait.
+        private long _nextTrackedNavigationId;
+        private readonly ConcurrentDictionary<long, (int TabId, string CorrelationId)> _pendingRendererNavigations = new();
+        private readonly ConcurrentDictionary<long, (long TrackerId, FenBrowser.Core.Engine.NavigationLifecyclePhase InitialPhase)> _pendingLocalNavigations = new();
+
+        public async Task<long> NavigateTrackedAsync(string url)
+        {
+            var tab = _tabs.ActiveTab ?? throw new InvalidOperationException("Current browsing context is no longer open");
+
+            if (ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+            {
+                var correlationId = Guid.NewGuid().ToString("N");
+                var trackedId = NextTrackedNavigationId();
+                _pendingRendererNavigations[trackedId] = (tab.Id, correlationId);
+                await RunOnMainThread(() => tab.NavigateProgrammaticAsync(url, navigationCorrelationId: correlationId)).ConfigureAwait(false);
+                return trackedId;
+            }
+
+            // In-process: the awaited navigation drives the local lifecycle
+            // tracker to a terminal phase for the navigation it began, so the
+            // snapshot at completion identifies both the id and the outcome.
+            var tracked = await RunOnMainThread(async () =>
+            {
+                var host = GetActiveHostOrThrow();
+                await tab.NavigateProgrammaticAsync(url);
+                var snapshot = host.NavigationLifecycleState;
+                return (snapshot.NavigationId, snapshot.Phase);
+            }).ConfigureAwait(false);
+
+            var localId = NextTrackedNavigationId();
+            _pendingLocalNavigations[localId] = (tracked.NavigationId, tracked.Phase);
+            return localId;
+        }
+
+        private long NextTrackedNavigationId()
+        {
+            var id = Interlocked.Increment(ref _nextTrackedNavigationId);
+            PruneStaleNavigations(id);
+            return id;
+        }
+
+        private void PruneStaleNavigations(long currentId)
+        {
+            foreach (var key in _pendingRendererNavigations.Keys)
+            {
+                if (key < currentId - 32)
+                {
+                    _pendingRendererNavigations.TryRemove(key, out _);
+                }
+            }
+
+            foreach (var key in _pendingLocalNavigations.Keys)
+            {
+                if (key < currentId - 32)
+                {
+                    _pendingLocalNavigations.TryRemove(key, out _);
+                }
+            }
+        }
+
+        public async Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs, long navigationId)
+        {
+            // Out-of-process renderer: navigation (and its lifecycle) runs in the
+            // renderer child, so waiting on the local BrowserHost tracker would
+            // never complete. Consume the coordinator's renderer-forwarded
+            // lifecycle stream instead, filtered to this navigation's correlation.
+            if (ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+            {
+                string correlation = null;
+                var tabId = _tabs.ActiveTab?.Id ?? -1;
+                if (navigationId != 0 && _pendingRendererNavigations.TryRemove(navigationId, out var pending))
+                {
+                    correlation = pending.CorrelationId;
+                    tabId = pending.TabId;
+                }
+
+                return await WaitForRendererReadinessAsync(stage, timeoutMs, tabId, correlation).ConfigureAwait(false);
+            }
+
+            if (navigationId != 0 && _pendingLocalNavigations.TryRemove(navigationId, out var local))
+            {
+                return await WaitForLocalTrackedReadinessAsync(stage, timeoutMs, local.TrackerId, local.InitialPhase).ConfigureAwait(false);
+            }
+
+            // Untracked (id 0): legacy semantics on the local tracker.
+            return await WaitForLocalUntrackedReadinessAsync(stage, timeoutMs).ConfigureAwait(false);
+        }
+
+        private async Task<WdReadinessWaitStatus> WaitForRendererReadinessAsync(
+            WdDocumentReadinessStage stage,
+            int timeoutMs,
+            int tabId,
+            string requiredCorrelationId)
+        {
+            var coordinator = ProcessIsolation.ProcessIsolationRuntime.Current;
+            if (coordinator == null || timeoutMs <= 0)
+            {
+                return WdReadinessWaitStatus.TimedOut;
+            }
+
+            var targetPhase = TargetLifecyclePhase(stage);
+            var completion = new TaskCompletionSource<WdReadinessWaitStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            void OnLifecycle(int reportedTabId, RendererNavigationLifecyclePayload payload)
+            {
+                if (reportedTabId != tabId || payload?.Phase == null)
+                {
+                    return;
+                }
+
+                // A later user/script navigation carries a different correlation
+                // (or none); its transitions must never satisfy this wait.
+                if (!string.IsNullOrEmpty(requiredCorrelationId) &&
+                    !string.Equals(payload.NavigationCorrelationId, requiredCorrelationId, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                if (TryClassifyPhase(payload.Phase, targetPhase, out var status))
+                {
+                    completion.TrySetResult(status);
+                }
+            }
+
+            coordinator.NavigationLifecycleReceived += OnLifecycle;
+            try
+            {
+                var finished = await Task.WhenAny(completion.Task, Task.Delay(timeoutMs)).ConfigureAwait(false);
+                if (finished != completion.Task)
+                {
+                    return WdReadinessWaitStatus.TimedOut;
+                }
+
+                return await completion.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                coordinator.NavigationLifecycleReceived -= OnLifecycle;
+            }
+        }
+
+        private async Task<WdReadinessWaitStatus> WaitForLocalTrackedReadinessAsync(
+            WdDocumentReadinessStage stage,
+            int timeoutMs,
+            long trackerId,
+            FenBrowser.Core.Engine.NavigationLifecyclePhase initialPhase)
+        {
+            var targetPhase = TargetLifecyclePhase(stage);
+            if (TryClassifyPhase(initialPhase.ToString(), targetPhase, out var initialStatus))
+            {
+                return initialStatus;
+            }
+
+            var wait = await RunOnMainThread(() => BeginReadinessWait(stage, trackerId)).ConfigureAwait(false);
+            return await AwaitReadinessWait(wait, timeoutMs).ConfigureAwait(false);
+        }
+
+        private async Task<WdReadinessWaitStatus> WaitForLocalUntrackedReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
+        {
+            var wait = await RunOnMainThread(() => BeginReadinessWait(stage, trackerIdFilter: null)).ConfigureAwait(false);
+            return await AwaitReadinessWait(wait, timeoutMs).ConfigureAwait(false);
+        }
+
+        private static FenBrowser.Core.Engine.NavigationLifecyclePhase TargetLifecyclePhase(WdDocumentReadinessStage stage)
+        {
+            return stage == WdDocumentReadinessStage.Interactive
+                ? FenBrowser.Core.Engine.NavigationLifecyclePhase.Interactive
+                : FenBrowser.Core.Engine.NavigationLifecyclePhase.Complete;
+        }
+
+        private static bool TryClassifyPhase(
+            string phaseName,
+            FenBrowser.Core.Engine.NavigationLifecyclePhase targetPhase,
+            out WdReadinessWaitStatus status)
+        {
+            status = WdReadinessWaitStatus.TimedOut;
+            if (string.IsNullOrEmpty(phaseName) ||
+                !Enum.TryParse<FenBrowser.Core.Engine.NavigationLifecyclePhase>(phaseName, ignoreCase: true, out var phase))
+            {
+                return false;
+            }
+
+            if (phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Failed ||
+                phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Cancelled)
+            {
+                status = WdReadinessWaitStatus.NavigationAborted;
+                return true;
+            }
+
+            if (phase >= targetPhase && phase <= FenBrowser.Core.Engine.NavigationLifecyclePhase.Complete)
+            {
+                status = WdReadinessWaitStatus.Reached;
+                return true;
+            }
+
+            return false;
+        }
+
         private sealed class ReadinessWait
         {
             public TaskCompletionSource<WdReadinessWaitStatus> Completion { get; } =
@@ -168,22 +369,8 @@ namespace FenBrowser.Host.WebDriver
             public void Unsubscribe() => Host.NavigationLifecycleChanged -= Handler;
         }
 
-        public async Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
+        private async Task<WdReadinessWaitStatus> AwaitReadinessWait(ReadinessWait wait, int timeoutMs)
         {
-            // Out-of-process renderer: navigation (and its lifecycle) runs in the
-            // renderer child, so waiting on the local BrowserHost tracker would
-            // never complete. Consume the coordinator's renderer-forwarded
-            // lifecycle stream instead. (Navigation correlation filtering arrives
-            // with tracked navigations.)
-            if (ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
-            {
-                return await WaitForRendererReadinessAsync(stage, timeoutMs).ConfigureAwait(false);
-            }
-
-            // Snapshot and subscribe on the main thread, then await off it: the
-            // engine raises lifecycle transitions on the main thread, so blocking
-            // there would deadlock the wait.
-            var wait = await RunOnMainThread(() => BeginReadinessWait(stage)).ConfigureAwait(false);
             try
             {
                 if (wait.Completion.Task.IsCompleted)
@@ -210,59 +397,46 @@ namespace FenBrowser.Host.WebDriver
             }
         }
 
-        private async Task<WdReadinessWaitStatus> WaitForRendererReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
+        private ReadinessWait BeginReadinessWait(WdDocumentReadinessStage stage, long? trackerIdFilter)
         {
-            var coordinator = ProcessIsolation.ProcessIsolationRuntime.Current;
-            if (coordinator == null || timeoutMs <= 0)
-            {
-                return WdReadinessWaitStatus.TimedOut;
-            }
+            var host = GetActiveHostOrThrow();
+            var targetPhase = TargetLifecyclePhase(stage);
 
-            var tabId = _tabs.ActiveTab?.Id ?? -1;
-            var targetPhase = stage == WdDocumentReadinessStage.Interactive
-                ? FenBrowser.Core.Engine.NavigationLifecyclePhase.Interactive
-                : FenBrowser.Core.Engine.NavigationLifecyclePhase.Complete;
-            var completion = new TaskCompletionSource<WdReadinessWaitStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            void OnLifecycle(int reportedTabId, RendererNavigationLifecyclePayload payload)
+            var wait = new ReadinessWait
             {
-                if (reportedTabId != tabId || payload?.Phase == null)
+                Host = host
+            };
+            wait.Handler = (_, transition) =>
+            {
+                // Correlation: only transitions of the tracked navigation complete
+                // the wait; other navigations are ignored.
+                if (trackerIdFilter.HasValue && transition.NavigationId != trackerIdFilter.Value)
                 {
                     return;
                 }
 
-                if (!Enum.TryParse<FenBrowser.Core.Engine.NavigationLifecyclePhase>(
-                        payload.Phase, ignoreCase: true, out var phase))
+                if (TryClassifyPhase(transition.Phase.ToString(), targetPhase, out var status))
                 {
-                    return;
+                    wait.Completion.TrySetResult(status);
                 }
+            };
 
-                if (phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Failed ||
-                    phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Cancelled)
-                {
-                    completion.TrySetResult(WdReadinessWaitStatus.NavigationAborted);
-                }
-                else if (phase >= targetPhase && phase <= FenBrowser.Core.Engine.NavigationLifecyclePhase.Complete)
-                {
-                    completion.TrySetResult(WdReadinessWaitStatus.Reached);
-                }
-            }
-
-            coordinator.NavigationLifecycleReceived += OnLifecycle;
-            try
+            // The tracked variant deliberately skips the snapshot check: the
+            // tracker snapshot may already describe a LATER navigation. The
+            // tracked wait's outcome is anchored to the phase captured when its
+            // navigation completed.
+            if (!trackerIdFilter.HasValue)
             {
-                var finished = await Task.WhenAny(completion.Task, Task.Delay(timeoutMs)).ConfigureAwait(false);
-                if (finished != completion.Task)
+                var snapshot = host.NavigationLifecycleState;
+                if (TryClassifyPhase(snapshot.Phase.ToString(), targetPhase, out var status))
                 {
-                    return WdReadinessWaitStatus.TimedOut;
+                    wait.Completion.TrySetResult(status);
+                    return wait;
                 }
+            }
 
-                return await completion.Task.ConfigureAwait(false);
-            }
-            finally
-            {
-                coordinator.NavigationLifecycleReceived -= OnLifecycle;
-            }
+            host.NavigationLifecycleChanged += wait.Handler;
+            return wait;
         }
 
         private ReadinessWait BeginReadinessWait(WdDocumentReadinessStage stage)

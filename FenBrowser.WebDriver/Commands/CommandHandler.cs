@@ -1568,10 +1568,23 @@ namespace FenBrowser.WebDriver.Commands
         /// Reached, TimedOut when the deadline passes first, or NavigationAborted
         /// when the navigation fails or is cancelled while waiting. A closed context
         /// surfaces through the same InvalidOperationException convention as
-        /// GetCurrentUrlAsync. Implementors that cannot observe document readiness
-        /// keep the legacy URL-commit-only semantics by returning Reached.
+        /// GetCurrentUrlAsync. Lifecycle events that belong to a different
+        /// navigation than <paramref name="navigationId"/> are ignored, so a later
+        /// user or script navigation cannot complete an in-flight wait.
+        /// Implementors that cannot observe document readiness keep the legacy
+        /// URL-commit-only semantics by returning Reached.
         /// </summary>
-        Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
+        Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs, long navigationId)
             => Task.FromResult(WdReadinessWaitStatus.Reached);
+
+        /// <summary>
+        /// Initiates a navigation and returns the driver's navigation identifier
+        /// that subsequent WaitForDocumentReadinessAsync calls correlate against.
+        /// Zero means the driver cannot attribute the navigation to an identifier.
+        /// </summary>
+        Task<long> NavigateTrackedAsync(string url)
+        {
+            return NavigateAsync(url).ContinueWith(static t => 0L, TaskContinuationOptions.OnlyOnRanToCompletion);
+        }
     }
 }

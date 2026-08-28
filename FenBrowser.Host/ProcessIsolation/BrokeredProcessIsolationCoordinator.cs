@@ -211,15 +211,7 @@ namespace FenBrowser.Host.ProcessIsolation
             }
         }
 
-        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput)
-        {
-            // Every navigation gets a correlation id so renderer-forwarded
-            // lifecycle transitions can be attributed to the navigation that
-            // caused them (WebDriver page-load waits rely on this).
-            OnNavigationRequested(tab, url, isUserInput, Guid.NewGuid().ToString("N"));
-        }
-
-        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput, string navigationCorrelationId)
+        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput, string navigationCorrelationId = null)
         {
             if (tab == null || string.IsNullOrWhiteSpace(url))
                 return;

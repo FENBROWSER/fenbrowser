@@ -209,6 +209,39 @@ namespace FenBrowser.Tests.WebDriver
             Assert.Equal(0, driver.RequestedTimeoutMs);
         }
 
+        // Correlation: the readiness wait must receive the navigation identifier
+        // captured when the navigation began.
+        [Fact]
+        public async Task TrackedNavigate_DefaultSeamPassesUntrackedId()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            {
+                OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.Reached)
+            };
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 2000);
+
+            await navigation.NavigateToAsync(session.Id, Body("https://example.test/a"));
+
+            // The default NavigateTrackedAsync delegates to NavigateAsync and
+            // reports the navigation as untracked (0).
+            Assert.Equal(0, driver.RequestedNavigationId);
+        }
+
+        [Fact]
+        public async Task TrackedNavigate_PassesNavigationIdToReadinessWait()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            {
+                OnNavigateTracked = _ => Task.FromResult(4242L),
+                OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.Reached)
+            };
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 2000);
+
+            await navigation.NavigateToAsync(session.Id, Body("https://example.test/a"));
+
+            Assert.Equal(4242, driver.RequestedNavigationId);
+        }
+
         private static (CommandHandler Handler, NavigationCommands Navigation, Session Session) CreateHarness(
             ReadinessFakeDriver driver,
             string pageLoadStrategy,
@@ -259,17 +292,29 @@ namespace FenBrowser.Tests.WebDriver
 
             public Func<Task<WdReadinessWaitStatus>>? OnReadinessWait { get; init; }
 
-            public async Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
+            public long RequestedNavigationId { get; private set; } = -1;
+
+            public Func<string, Task<long>>? OnNavigateTracked { get; init; }
+
+            public async Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs, long navigationId)
             {
                 ReadinessWaitCalled = true;
                 RequestedStage = stage;
                 RequestedTimeoutMs = timeoutMs;
+                RequestedNavigationId = navigationId;
                 if (OnReadinessWait != null)
                 {
                     return await OnReadinessWait();
                 }
 
                 return await ReadinessGate.Task;
+            }
+
+            public async Task<long> NavigateTrackedAsync(string url)
+            {
+                var id = OnNavigateTracked != null ? await OnNavigateTracked(url) : 0;
+                await NavigateAsync(url);
+                return id;
             }
 
             public async Task NavigateAsync(string url)

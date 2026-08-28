@@ -70,7 +70,7 @@ namespace FenBrowser.WebDriver.Commands
             // each wait receives only the time still left on it.
             var navigationClock = System.Diagnostics.Stopwatch.StartNew();
 
-            await _handler.Browser.NavigateAsync(absoluteUri.AbsoluteUri);
+            var navigationId = await _handler.Browser.NavigateTrackedAsync(absoluteUri.AbsoluteUri);
 
             // pageLoadStrategy=none returns as soon as navigation is initiated.
             if (string.Equals(strategy, "none", StringComparison.Ordinal))
@@ -92,7 +92,7 @@ namespace FenBrowser.WebDriver.Commands
             var readinessStage = string.Equals(strategy, "eager", StringComparison.Ordinal)
                 ? WdDocumentReadinessStage.Interactive
                 : WdDocumentReadinessStage.Complete;
-            await WaitForReadinessAsync(readinessStage, timeoutMs, navigationClock.ElapsedMilliseconds);
+            await WaitForReadinessAsync(readinessStage, timeoutMs, navigationClock.ElapsedMilliseconds, navigationId);
 
             return WebDriverResponse.Success(null);
         }
@@ -102,16 +102,17 @@ namespace FenBrowser.WebDriver.Commands
             return timeoutMs - (int)Math.Min(elapsedMs, timeoutMs);
         }
 
-        private async Task<WdReadinessWaitStatus> WaitForReadinessAsync(
+        private async Task WaitForReadinessAsync(
             WdDocumentReadinessStage stage,
             int timeoutMs,
-            long elapsedMs)
+            long elapsedMs,
+            long navigationId)
         {
             var remainingMs = RemainingMs(timeoutMs, elapsedMs);
             WdReadinessWaitStatus readiness;
             try
             {
-                readiness = await _handler.Browser.WaitForDocumentReadinessAsync(stage, Math.Max(0, remainingMs));
+                readiness = await _handler.Browser.WaitForDocumentReadinessAsync(stage, Math.Max(0, remainingMs), navigationId);
             }
             catch (InvalidOperationException ex) when (ex.Message.IndexOf("browsing context", StringComparison.OrdinalIgnoreCase) >= 0)
             {
@@ -131,8 +132,6 @@ namespace FenBrowser.WebDriver.Commands
                     ErrorCodes.UnknownError,
                     $"Navigation failed or was cancelled before the document reached readiness '{stage}'");
             }
-
-            return readiness;
         }
         
         /// <summary>

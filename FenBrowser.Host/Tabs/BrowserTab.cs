@@ -166,12 +166,14 @@ public class BrowserTab : IDisposable
 
     /// <summary>
     /// Navigate this tab programmatically (automation/script paths).
+    /// The optional navigation correlation id attributes renderer lifecycle
+    /// transitions to this navigation (WebDriver page-load waits).
     /// </summary>
-    public async Task NavigateProgrammaticAsync(string url)
+    public async Task NavigateProgrammaticAsync(string url, string navigationCorrelationId = null)
     {
         IsCrashed = false; // Reset crash state on new navigation
         SetPendingNavigationDisplayUrl(url);
-        await Browser.NavigateProgrammaticAsync(url);
+        await Browser.NavigateProgrammaticAsync(url, navigationCorrelationId);
     }
 
     private void SetPendingNavigationDisplayUrl(string url)
