@@ -53,6 +53,7 @@ Extends `ContainerNode`. Represents HTML tags.
 - **MutationObserver**: Fully implemented.
   - `NotifyMutation()`: Called internally by `AppendChild`, `Remove`, etc.
   - `MutationRecord`: Queued for observers to process asynchronously.
+  - Child-list records preserve the mutation-time `previousSibling` and `nextSibling` boundaries for append, insertion, and removal, including subtree observers.
 
 ---
 

@@ -496,7 +496,11 @@ namespace FenBrowser.Core.Dom.V2
             InvalidateStructuralCachesAfterMutation();
 
             // Notify observers
-            NotifyChildListMutation(null, node);
+            NotifyChildListMutation(
+                removed: null,
+                added: node,
+                previousSibling: node._previousSibling,
+                nextSibling: node._nextSibling);
 
             if (node is Element el)
             {
@@ -551,7 +555,11 @@ namespace FenBrowser.Core.Dom.V2
             InvalidateStructuralCachesAfterMutation();
 
             // Notify observers
-            NotifyChildListMutation(null, node);
+            NotifyChildListMutation(
+                removed: null,
+                added: node,
+                previousSibling: node._previousSibling,
+                nextSibling: node._nextSibling);
 
             if (node is Element el)
             {
@@ -585,6 +593,8 @@ namespace FenBrowser.Core.Dom.V2
         private Node RemoveChildInternal(Node child)
         {
             var owningDocument = child._ownerDocument;
+            var previousSibling = child._previousSibling;
+            var nextSibling = child._nextSibling;
             owningDocument?.NotifyNodeRemoved(child);
 
             _children.Remove(child);
@@ -602,7 +612,11 @@ namespace FenBrowser.Core.Dom.V2
             this.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
 
             // Notify observers
-            NotifyChildListMutation(child, null);
+            NotifyChildListMutation(
+                removed: child,
+                added: null,
+                previousSibling,
+                nextSibling);
 
             if (child is Element el)
             {
@@ -687,12 +701,20 @@ namespace FenBrowser.Core.Dom.V2
             _registeredObservers?.Remove(observer);
         }
 
-        private void NotifyChildListMutation(Node removed, Node added)
+        private void NotifyChildListMutation(
+            Node removed,
+            Node added,
+            Node previousSibling,
+            Node nextSibling)
         {
             MutationRecord record = null;
             if (_registeredObservers is { } directObservers)
             {
-                record = CreateChildListMutationRecord(removed, added);
+                record = CreateChildListMutationRecord(
+                    removed,
+                    added,
+                    previousSibling,
+                    nextSibling);
                 directObservers.NotifyChildList(record);
             }
 
@@ -704,20 +726,30 @@ namespace FenBrowser.Core.Dom.V2
             {
                 if (parent is ContainerNode { _registeredObservers: { } } container)
                 {
-                    record ??= CreateChildListMutationRecord(removed, added);
+                    record ??= CreateChildListMutationRecord(
+                        removed,
+                        added,
+                        previousSibling,
+                        nextSibling);
                     container._registeredObservers.NotifySubtree(record);
                 }
             }
         }
 
-        private MutationRecord CreateChildListMutationRecord(Node removed, Node added)
+        private MutationRecord CreateChildListMutationRecord(
+            Node removed,
+            Node added,
+            Node previousSibling,
+            Node nextSibling)
         {
             return new MutationRecord
             {
                 Type = MutationRecordType.ChildList,
                 Target = this,
-                RemovedNodes = removed != null ? new[] { removed } : null,
-                AddedNodes = added != null ? new[] { added } : null
+                RemovedNodes = removed != null ? new[] { removed } : Array.Empty<Node>(),
+                AddedNodes = added != null ? new[] { added } : Array.Empty<Node>(),
+                PreviousSibling = previousSibling,
+                NextSibling = nextSibling
             };
         }
 
