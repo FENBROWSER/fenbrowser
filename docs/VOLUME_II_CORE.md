@@ -27,6 +27,7 @@ All DOM objects inherit from the abstract `Node` class.
 **Key Architecture Notes (V2):**
 
 - **No Child List**: Unlike V1, the base `Node` class does not store children. Only `ContainerNode` subclasses (like `Element` and `Document`) have child lists, reducing memory footprint for leaf nodes like Text.
+- **Child removal scaling**: `ChildNodeStorage` repairs only the removed node's adjacent sibling links and advances an amortized-compacted overflow prefix for repeated front removals; clearing large containers no longer rebuilds every sibling link or shifts the full overflow list per child.
 - **Root Node**: Implements `GetRootNode()` for Shadow DOM support.
 - **Connectivity**: Tracks `IsConnected` state for lifecycle callbacks (`connectedCallback`).
 - **Nested browsing-context documents (2026-07-03)**: `ContainerNode` preserves the owned `Document` identity when a parsed frame document is attached under an `iframe` / `frame` element. Frame descendants keep `OwnerDocument` pointing at the frame document instead of being adopted into the embedding page document.

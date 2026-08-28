@@ -876,6 +876,7 @@ namespace FenBrowser.Core.Dom.V2
         // Inline slots (no heap for ≤4 children)
         private Node _slot0, _slot1, _slot2, _slot3;
         private List<Node> _overflow;
+        private int _overflowStart;
         private int _count;
 
         public int Count => _count;
@@ -953,11 +954,11 @@ namespace FenBrowser.Core.Dom.V2
                     for (int i = 3; i > index; i--)
                         SetSlot(i, GetSlot(i - 1));
                     SetSlot(index, node);
-                    _overflow.Insert(0, last);
+                    _overflow.Insert(_overflowStart, last);
                 }
                 else
                 {
-                    _overflow.Insert(index - 4, node);
+                    _overflow.Insert(_overflowStart + index - 4, node);
                 }
             }
             _count++;
@@ -977,9 +978,8 @@ namespace FenBrowser.Core.Dom.V2
             int index = IndexOf(node);
             if (index < 0) return;
 
-            // Clear sibling links
-            node._previousSibling = null;
-            node._nextSibling = null;
+            var previous = node._previousSibling;
+            var next = node._nextSibling;
 
             // Shift elements
             if (_count <= 4)
@@ -995,10 +995,10 @@ namespace FenBrowser.Core.Dom.V2
                     SetSlot(i, GetSlot(i + 1));
 
                 // Pull from overflow
-                if (_overflow.Count > 0)
+                if (_overflowStart < _overflow.Count)
                 {
-                    _slot3 = _overflow[0];
-                    _overflow.RemoveAt(0);
+                    _slot3 = _overflow[_overflowStart++];
+                    CompactOverflowPrefixIfNeeded();
                 }
                 else
                 {
@@ -1007,11 +1007,19 @@ namespace FenBrowser.Core.Dom.V2
             }
             else
             {
-                _overflow.RemoveAt(index - 4);
+                _overflow.RemoveAt(_overflowStart + index - 4);
             }
 
             _count--;
-            RebuildSiblingLinks();
+
+            // Storage shifts do not change any remaining node's logical neighbours.
+            // Repair only the removed node's two adjacent links.
+            if (previous != null)
+                previous._nextSibling = next;
+            if (next != null)
+                next._previousSibling = previous;
+            node._previousSibling = null;
+            node._nextSibling = null;
         }
 
         public int IndexOf(Node node)
@@ -1030,10 +1038,10 @@ namespace FenBrowser.Core.Dom.V2
             if (ReferenceEquals(_slot2, node)) return 2;
             if (ReferenceEquals(_slot3, node)) return 3;
 
-            for (int i = 0; i < _overflow.Count; i++)
+            for (int i = _overflowStart; i < _overflow.Count; i++)
             {
                 if (ReferenceEquals(_overflow[i], node))
-                    return i + 4;
+                    return i - _overflowStart + 4;
             }
             return -1;
         }
@@ -1058,7 +1066,7 @@ namespace FenBrowser.Core.Dom.V2
                     _ => null
                 };
             }
-            return _overflow?[index - 4];
+            return _overflow?[_overflowStart + index - 4];
         }
 
         private void SetSlot(int index, Node node)
@@ -1076,7 +1084,7 @@ namespace FenBrowser.Core.Dom.V2
             else
             {
                 EnsureOverflow();
-                var overflowIndex = index - 4;
+                var overflowIndex = _overflowStart + index - 4;
                 while (_overflow.Count <= overflowIndex)
                     _overflow.Add(null);
                 _overflow[overflowIndex] = node;
@@ -1086,6 +1094,15 @@ namespace FenBrowser.Core.Dom.V2
         private void EnsureOverflow()
         {
             _overflow ??= new List<Node>(4);
+        }
+
+        private void CompactOverflowPrefixIfNeeded()
+        {
+            if (_overflowStart < 64 || _overflowStart * 2 < _overflow.Count)
+                return;
+
+            _overflow.RemoveRange(0, _overflowStart);
+            _overflowStart = 0;
         }
 
         private void UpdateSiblings(Node node, int index)
@@ -1107,20 +1124,5 @@ namespace FenBrowser.Core.Dom.V2
             node._nextSibling = null;
         }
 
-        private void RebuildSiblingLinks()
-        {
-            Node prev = null;
-            for (int i = 0; i < _count; i++)
-            {
-                var curr = GetSlot(i);
-                if (curr == null) continue;
-
-                curr._previousSibling = prev;
-                if (prev != null)
-                    prev._nextSibling = curr;
-                curr._nextSibling = null;
-                prev = curr;
-            }
-        }
     }
 }
