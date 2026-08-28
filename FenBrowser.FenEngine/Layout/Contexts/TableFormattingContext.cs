@@ -14,6 +14,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
     /// </summary>
     public sealed class TableFormattingContext : FormattingContext
     {
+        private const int MaxColumnSpan = 1000;
+        private const int MaxRowSpan = 65534;
+
         private static TableFormattingContext _instance;
         public static TableFormattingContext Instance => _instance ??= new TableFormattingContext();
 
@@ -183,7 +186,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     while (occupied.Contains((r, col))) col++;
 
                     slots.Add(new TableSlot(cell, col, colspan, rowspan));
-                    for (int rr = r; rr < r + rowspan; rr++)
+                    // Occupancy beyond the table's actual row model cannot affect
+                    // placement, so do not materialize up to 65,534 synthetic rows.
+                    int occupiedRowEnd = Math.Min(rows.Count, r + rowspan);
+                    for (int rr = r; rr < occupiedRowEnd; rr++)
                     {
                         for (int cc = col; cc < col + colspan; cc++)
                         {
@@ -205,7 +211,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
             string raw = element.GetAttribute(attribute);
             if (string.IsNullOrWhiteSpace(raw)) return 1;
-            return int.TryParse(raw.Trim(), out int value) && value >= 1 ? value : 1;
+            if (!int.TryParse(raw.Trim(), out int value) || value < 1)
+            {
+                return 1;
+            }
+
+            int maximum = string.Equals(attribute, "rowspan", StringComparison.OrdinalIgnoreCase)
+                ? MaxRowSpan
+                : MaxColumnSpan;
+            return Math.Min(value, maximum);
         }
 
         private void LayoutRowGroup(LayoutBox groupBox, LayoutState state)

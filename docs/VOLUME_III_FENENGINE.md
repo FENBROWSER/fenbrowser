@@ -10679,3 +10679,15 @@ Verification:
 Verification:
 
 - Focused CSS math and adjacent media/layout contract tests pass (`10/10`).
+
+## 2.409 Bounded HTML Table Spans (2026-08-28)
+
+- Table layout clamps `colspan` to 1,000 and `rowspan` to 65,534 before slot-grid
+  construction, matching the HTML table-model limits.
+- Row-span occupancy is materialized only for rows that actually exist in the
+  table model, preventing extreme combined spans from creating millions of
+  unused occupancy entries.
+
+Verification:
+
+- Focused span-limit and adjacent table-layout integration tests pass (`11/11`).
