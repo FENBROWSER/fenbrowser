@@ -292,6 +292,7 @@ Represents a continuous fragment of the document.
 
 - **Lines 63-156**: **Boundary Management**: `SetStart`, `SetEnd`.
 - **Lines 244-261**: **`DeleteContents`**: Complex logic to remove nodes partially contained in the range.
+- **Partial-boundary contents (2026-08-28)**: `cloneContents`, `extractContents`, and `deleteContents` recursively preserve partially selected character data and the required ancestor structure across separate boundary branches. Mutating operations remove only selected data and collapse at the DOM-defined point.
 
 #### `MutationObserver.cs` (Lines 1-506)
 

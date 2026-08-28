@@ -451,22 +451,9 @@ namespace FenBrowser.Core.Dom.V2
                 return fragment;
             }
 
-            // Complex case: different containers
-            // Collect nodes to extract
-            var nodesToExtract = CollectNodesInRange();
-
-            foreach (var node in nodesToExtract)
-            {
-                if (node.ParentNode is ContainerNode parent)
-                {
-                    parent.RemoveChild(node);
-                    if (!deleteOnly && fragment != null)
-                        fragment.AppendChild(node);
-                }
-            }
-
-            Collapse(true);
-            return fragment;
+            return ProcessCrossContainerContents(
+                deleteOnly ? ContentOperation.Delete : ContentOperation.Extract,
+                fragment);
         }
 
         private DocumentFragment CloneContentsInternal()
@@ -497,30 +484,120 @@ namespace FenBrowser.Core.Dom.V2
                 return fragment;
             }
 
-            // Complex case: different containers
-            var nodesToClone = CollectNodesInRange();
-            foreach (var node in nodesToClone)
+            return ProcessCrossContainerContents(ContentOperation.Clone, fragment);
+        }
+
+        private DocumentFragment ProcessCrossContainerContents(
+            ContentOperation operation,
+            DocumentFragment fragment)
+        {
+            var commonAncestor = CommonAncestorContainer;
+            if (commonAncestor is not ContainerNode commonContainer)
+                return fragment;
+
+            var collapseContainer = _startContainer;
+            var collapseOffset = _startOffset;
+            if (!IsInclusiveAncestor(_startContainer, _endContainer))
             {
-                fragment.AppendChild(node.CloneNode(true));
+                var startBranch = FindChildContaining(commonAncestor, _startContainer);
+                if (startBranch?.ParentNode is ContainerNode parent)
+                {
+                    collapseContainer = parent;
+                    collapseOffset = GetNodeIndex(startBranch) + 1;
+                }
+            }
+
+            var children = new List<Node>();
+            for (var child = commonContainer.FirstChild; child != null; child = child.NextSibling)
+                children.Add(child);
+
+            foreach (var child in children)
+            {
+                var selected = ProcessSelectedNode(child, operation);
+                if (selected != null && fragment != null)
+                    fragment.AppendChild(selected);
+            }
+
+            if (operation != ContentOperation.Clone)
+            {
+                _startContainer = collapseContainer;
+                _startOffset = collapseOffset;
+                _endContainer = collapseContainer;
+                _endOffset = collapseOffset;
             }
 
             return fragment;
         }
 
-        private List<Node> CollectNodesInRange()
+        private Node ProcessSelectedNode(Node node, ContentOperation operation)
         {
-            var result = new List<Node>();
-            var commonAncestor = CommonAncestorContainer;
-            if (commonAncestor == null) return result;
+            if (!IntersectsSelection(node))
+                return null;
 
-            // Walk through descendants and collect fully contained nodes
-            foreach (var node in commonAncestor.Descendants())
+            if (IsNodeFullyContained(node))
             {
-                if (IsNodeFullyContained(node))
-                    result.Add(node);
+                if (node is DocumentType && operation != ContentOperation.Delete)
+                    throw new DomException("HierarchyRequestError", "A Range fragment cannot contain a DocumentType");
+
+                if (operation == ContentOperation.Clone)
+                    return node.CloneNode(true);
+
+                if (node.ParentNode is ContainerNode parent)
+                    parent.RemoveChild(node);
+
+                return operation == ContentOperation.Extract ? node : null;
             }
 
-            return result;
+            if (node is CharacterData characterData)
+            {
+                var start = ReferenceEquals(node, _startContainer) ? _startOffset : 0;
+                var end = ReferenceEquals(node, _endContainer) ? _endOffset : characterData.Length;
+                if (end <= start)
+                    return null;
+
+                CharacterData selected = null;
+                if (operation != ContentOperation.Delete)
+                {
+                    selected = (CharacterData)characterData.CloneNode(false);
+                    selected.Data = characterData.SubstringData(start, end - start);
+                }
+
+                if (operation != ContentOperation.Clone)
+                    characterData.DeleteData(start, end - start);
+
+                return selected;
+            }
+
+            if (node is not ContainerNode container)
+                return null;
+
+            ContainerNode selectedContainer = null;
+            if (operation != ContentOperation.Delete)
+                selectedContainer = node.CloneNode(false) as ContainerNode;
+
+            var children = new List<Node>();
+            for (var child = container.FirstChild; child != null; child = child.NextSibling)
+                children.Add(child);
+
+            foreach (var child in children)
+            {
+                var selectedChild = ProcessSelectedNode(child, operation);
+                if (selectedChild != null && selectedContainer != null)
+                    selectedContainer.AppendChild(selectedChild);
+            }
+
+            return selectedContainer;
+        }
+
+        private bool IntersectsSelection(Node node)
+        {
+            var parent = node.ParentNode;
+            if (parent == null)
+                return false;
+
+            var index = GetNodeIndex(node);
+            return ComparePoints(parent, index + 1, _startContainer, _startOffset) > 0 &&
+                   ComparePoints(parent, index, _endContainer, _endOffset) < 0;
         }
 
         private bool IsNodeFullyContained(Node node)
@@ -533,6 +610,24 @@ namespace FenBrowser.Core.Dom.V2
             // Check if entirely within range
             return ComparePoints(parent, index, _startContainer, _startOffset) >= 0 &&
                    ComparePoints(parent, index + 1, _endContainer, _endOffset) <= 0;
+        }
+
+        private static bool IsInclusiveAncestor(Node ancestor, Node node)
+        {
+            for (var current = node; current != null; current = current.ParentNode)
+            {
+                if (ReferenceEquals(current, ancestor))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private enum ContentOperation
+        {
+            Clone,
+            Extract,
+            Delete
         }
 
         private bool PartiallyContainsNonTextNode()
