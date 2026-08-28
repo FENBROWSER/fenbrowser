@@ -23,6 +23,7 @@ namespace FenBrowser.Core.Parsing
         private int _emittedTokenCount;
         private bool _emissionLimitReached;
         private bool _inputSizeLimitReached;
+        private bool _tokenizationStarted;
         
         // Current state
         private TokenizerState _state = TokenizerState.Data;
@@ -356,6 +357,13 @@ namespace FenBrowser.Core.Parsing
 
         public IEnumerable<HtmlToken> Tokenize()
         {
+            if (_tokenizationStarted)
+            {
+                throw new InvalidOperationException(
+                    "HtmlTokenizer is single-use; create a new tokenizer for each input stream.");
+            }
+
+            _tokenizationStarted = true;
             LastReasonCode = HtmlParsingReasonCode.None;
             LastReasonDetail = null;
             _errors.Clear();

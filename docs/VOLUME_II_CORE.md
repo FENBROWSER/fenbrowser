@@ -166,6 +166,7 @@ Based strictly on the **HTML5 Parsing Specification**.
 - **Recoverable Error Diagnostics (2026-08-27)**:
   - `HtmlTokenizer.Errors` exposes message and input-cursor location for tokenizer recovery errors instead of discarding them; retained entries are capped at 256 while `ErrorCount` and `ErrorsTruncated` preserve total-volume visibility.
   - Canonical parser entrypoints snapshot these diagnostics into `HtmlParsingOutcome` without classifying ordinary malformed-markup recovery as a failed parse.
+- **Tokenizer Lifecycle (2026-08-28)**: `HtmlTokenizer` is explicitly single-use because its string/reader input and state machine are forward-only. A second or concurrent enumeration now throws deterministically; callers create a new tokenizer rather than receiving a partial stream with stale emission counters and buffers.
 - `HtmlParser` now accepts centralized `ParserSecurityPolicy` and applies tokenizer/open-elements limits at parser entrypoints.
 - `HtmlParser` now aligns parsed document URL state by setting both `Document.URL` and `Document.BaseURI` from the active parser base URI, so detached nodes created from that document inherit correct URL-resolution context.
 - `Document.CreateElementNS(...)` now validates qualified names and namespace/prefix combinations closely enough to reject malformed names and illegal namespace usage with the correct DOMException class for the Acid3 namespace tranche.
