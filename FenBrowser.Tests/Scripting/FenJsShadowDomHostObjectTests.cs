@@ -88,6 +88,83 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
+        public async Task HtmlSlotElement_ExposesManualAssignmentApi()
+        {
+            var baseUri = new Uri("https://example.test/");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(
+                """
+                (function () {
+                    var host = document.createElement('div');
+                    var shadow = host.attachShadow({ mode: 'open', slotAssignment: 'manual' });
+                    var first = document.createElement('slot');
+                    var second = document.createElement('slot');
+                    var child = document.createElement('span');
+                    var text = document.createTextNode('text');
+                    shadow.append(first, second);
+                    first.assign(child, text, child);
+                    host.append(child, text);
+
+                    var initial = [
+                        typeof first.assign,
+                        typeof HTMLSlotElement.prototype.assign,
+                        String(first instanceof HTMLSlotElement),
+                        first.assignedNodes().length,
+                        first.assignedElements().length,
+                        String(child.assignedSlot === first),
+                        String(text.assignedSlot === first)
+                    ].join('|');
+
+                    second.assign(child);
+                    return initial + '|' + [
+                        first.assignedNodes().length,
+                        second.assignedNodes().length,
+                        String(child.assignedSlot === second)
+                    ].join('|');
+                })();
+                """);
+
+            Assert.Equal("function|function|true|2|1|true|true|1|1|true", result?.ToString());
+        }
+
+        [Fact]
+        public async Task AttachShadow_RejectsInvalidSlotAssignmentMode()
+        {
+            var baseUri = new Uri("https://example.test/");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(
+                """
+                (function () {
+                    try {
+                        document.createElement('div').attachShadow({
+                            mode: 'open',
+                            slotAssignment: 'invalid'
+                        });
+                        return 'no-error';
+                    } catch (error) {
+                        return error.name;
+                    }
+                })();
+                """);
+
+            Assert.Equal("TypeError", result?.ToString());
+        }
+
+        [Fact]
         public async Task HTMLElementPrototypeAttachShadow_CallReachesHostElement()
         {
             var baseUri = new Uri("https://www.youtube.com/");

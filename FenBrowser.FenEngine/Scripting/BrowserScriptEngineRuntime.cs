@@ -7166,6 +7166,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         typeof candidate.getAttribute === 'function';
                 });
 
+                var HTMLSlotElement = defineCtor('HTMLSlotElement', HTMLElement, ['Node', 'Element', 'HTMLElement', 'HTMLSlotElement'], function (candidate) {
+                    return candidate.localName === 'slot' &&
+                        typeof candidate.getAttribute === 'function';
+                });
+
                 var CharacterData = defineCtor('CharacterData', Node, ['Node', 'CharacterData'], function (candidate) {
                     return typeof candidate.nodeName === 'string' &&
                         typeof candidate.data === 'string' &&
@@ -7449,6 +7454,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 elementHostMethods.forEach(function (name) { defineHostMethod(Element.prototype, name); });
 
                 [
+                    'assign',
+                    'assignedNodes',
+                    'assignedElements'
+                ].forEach(function (name) { defineHostMethod(HTMLSlotElement.prototype, name); });
+
+                [
                     'setStart',
                     'setEnd',
                     'setStartBefore',
@@ -7676,7 +7687,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         'HTMLFormElement','HTMLImageElement','HTMLSelectElement',
                         'HTMLOptionElement','HTMLTextAreaElement','HTMLTableElement',
                         'HTMLTableRowElement','HTMLTableCellElement','HTMLTemplateElement',
-                        'HTMLSlotElement','HTMLDialogElement','HTMLDetailsElement',
+                        'HTMLDialogElement','HTMLDetailsElement',
                         'HTMLSummaryElement','HTMLFieldSetElement','HTMLLegendElement',
                         'HTMLDataListElement','HTMLOptGroupElement','HTMLOutputElement',
                         'HTMLProgressElement','HTMLMeterElement','HTMLLabelElement',
@@ -18921,7 +18932,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 : CoerceToHostString(slotAssignmentValue);
                             var slotAssignment = string.Equals(slotAssignmentText, "manual", StringComparison.Ordinal)
                                 ? SlotAssignmentMode.Manual
-                                : SlotAssignmentMode.Named;
+                                : string.Equals(slotAssignmentText, "named", StringComparison.Ordinal)
+                                    ? SlotAssignmentMode.Named
+                                    : (SlotAssignmentMode?)null;
+
+                            if (slotAssignment == null)
+                            {
+                                _owner.ThrowDomException(
+                                    "TypeError",
+                                    "Failed to execute 'attachShadow' on 'Element': slotAssignment must be 'named' or 'manual'.");
+                            }
 
                             try
                             {
@@ -18929,7 +18949,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 {
                                     Mode = mode.Value,
                                     DelegatesFocus = _owner.ReadJsBoolProperty(init, "delegatesFocus"),
-                                    SlotAssignment = slotAssignment
+                                    SlotAssignment = slotAssignment.Value
                                 });
                                 var shadowRootValue = _owner.ToHostNodeOrNull(shadowRoot);
                                 var upgradeFragmentValue = _owner.ReadJsProperty(init, "shadyUpgradeFragment");
@@ -18943,6 +18963,68 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             }
                         },
                         length: 1);
+                    return true;
+                case "assign":
+                    if (!string.Equals(element.LocalName, "slot", StringComparison.Ordinal) ||
+                        !string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+                    {
+                        value = JsValue.Undefined;
+                        return false;
+                    }
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "assign",
+                        (_, args) =>
+                        {
+                            var nodes = new Node[args.Count];
+                            for (var i = 0; i < args.Count; i++)
+                            {
+                                nodes[i] = _owner.ResolveHostObjectOrNull<Node>(args[i]);
+                                if (nodes[i] is not Element && nodes[i] is not Text)
+                                {
+                                    _owner.ThrowDomException(
+                                        "TypeError",
+                                        "Failed to execute 'assign' on 'HTMLSlotElement': each argument must be an Element or Text node.");
+                                }
+                            }
+
+                            try
+                            {
+                                element.Assign(nodes);
+                                return JsValue.Undefined;
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        });
+                    return true;
+                case "assignedNodes":
+                    if (!string.Equals(element.LocalName, "slot", StringComparison.Ordinal) ||
+                        !string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+                    {
+                        value = JsValue.Undefined;
+                        return false;
+                    }
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "assignedNodes",
+                        (_, _) => _owner.CreateNodeArrayLike(element.AssignedNodes()),
+                        length: 0);
+                    return true;
+                case "assignedElements":
+                    if (!string.Equals(element.LocalName, "slot", StringComparison.Ordinal) ||
+                        !string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+                    {
+                        value = JsValue.Undefined;
+                        return false;
+                    }
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "assignedElements",
+                        (_, _) => _owner.CreateNodeArrayLike(element.AssignedElements()),
+                        length: 0);
                     return true;
                 case "appendChild":
                     value = _owner.GetOrCreateHostCallable(
@@ -19304,6 +19386,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "isConnected":
                     value = JsValue.FromBoolean(element.IsConnected);
+                    return true;
+                case "assignedSlot":
+                    value = _owner.ToHostNodeOrNull(element.AssignedSlot);
                     return true;
                 case "childNodes":
                     value = _owner.CreateNodeArrayLike(element.ChildNodes.ToArray());
@@ -19744,6 +19829,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "ownerDocument":
                     value = _owner.ToHostOrNull(characterData.OwnerDocument, HostObjectKind.DomDocument);
+                    return true;
+                case "assignedSlot":
+                    value = characterData is Text text
+                        ? _owner.ToHostNodeOrNull(text.AssignedSlot)
+                        : JsValue.Null;
                     return true;
                 case "parentNode":
                     value = _owner.ToHostNodeOrNull(characterData.ParentNode);

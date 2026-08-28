@@ -165,8 +165,36 @@ namespace FenBrowser.Core.Dom.V2
             _assignedSlotBySlottable = new Dictionary<ISlottable, Element>();
             _assignedNodesBySlot = new Dictionary<Element, List<Node>>();
 
-            if (SlotAssignment != SlotAssignmentMode.Named || Host == null)
+            if (Host == null)
             {
+                return;
+            }
+
+            if (SlotAssignment == SlotAssignmentMode.Manual)
+            {
+                var assigned = new HashSet<ISlottable>();
+                foreach (var slot in GetSlots())
+                {
+                    foreach (var node in slot.GetManuallyAssignedNodes())
+                    {
+                        if (node is not ISlottable slottable ||
+                            !ReferenceEquals(node.ParentNode, Host) ||
+                            !ReferenceEquals(slottable.ManualSlotAssignment, slot) ||
+                            !assigned.Add(slottable))
+                        {
+                            continue;
+                        }
+
+                        _assignedSlotBySlottable[slottable] = slot;
+                        if (!_assignedNodesBySlot.TryGetValue(slot, out var nodes))
+                        {
+                            nodes = new List<Node>();
+                            _assignedNodesBySlot[slot] = nodes;
+                        }
+                        nodes.Add(node);
+                    }
+                }
+
                 return;
             }
 

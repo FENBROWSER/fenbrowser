@@ -773,6 +773,102 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
+        Element ISlottable.ManualSlotAssignment { get; set; }
+
+        private List<Node> _manuallyAssignedNodes;
+
+        /// <summary>
+        /// Manually assigns host children to this HTML slot element.
+        /// Mirrors HTMLSlotElement.assign().
+        /// </summary>
+        public void Assign(params Node[] nodes)
+        {
+            EnsureHtmlSlotElement();
+
+            var assignment = new List<Node>();
+            var seen = new HashSet<Node>();
+            foreach (var node in nodes ?? Array.Empty<Node>())
+            {
+                if (node is not ISlottable slottable)
+                    throw new DomException("TypeError", "Assigned nodes must be Element or Text nodes");
+
+                if (!seen.Add(node))
+                    continue;
+
+                if (slottable.ManualSlotAssignment is Element previousSlot &&
+                    !ReferenceEquals(previousSlot, this))
+                {
+                    previousSlot._manuallyAssignedNodes?.Remove(node);
+                    previousSlot.InvalidateOwningShadowSlotAssignments();
+                }
+
+                slottable.ManualSlotAssignment = this;
+                assignment.Add(node);
+            }
+
+            if (_manuallyAssignedNodes != null)
+            {
+                foreach (var previousNode in _manuallyAssignedNodes)
+                {
+                    if (!seen.Contains(previousNode) && previousNode is ISlottable previousSlottable &&
+                        ReferenceEquals(previousSlottable.ManualSlotAssignment, this))
+                    {
+                        previousSlottable.ManualSlotAssignment = null;
+                    }
+                }
+            }
+
+            _manuallyAssignedNodes = assignment;
+            InvalidateOwningShadowSlotAssignments();
+        }
+
+        /// <summary>
+        /// Returns the nodes currently assigned to this HTML slot element.
+        /// </summary>
+        public IReadOnlyList<Node> AssignedNodes()
+        {
+            EnsureHtmlSlotElement();
+            return GetRootNode() is ShadowRoot shadowRoot
+                ? shadowRoot.GetAssignedNodesForSlot(this)
+                : Array.Empty<Node>();
+        }
+
+        /// <summary>
+        /// Returns the assigned nodes that are elements.
+        /// </summary>
+        public IReadOnlyList<Element> AssignedElements()
+        {
+            var nodes = AssignedNodes();
+            if (nodes.Count == 0)
+                return Array.Empty<Element>();
+
+            var elements = new List<Element>();
+            foreach (var node in nodes)
+            {
+                if (node is Element element)
+                    elements.Add(element);
+            }
+            return elements;
+        }
+
+        internal IReadOnlyList<Node> GetManuallyAssignedNodes()
+            => _manuallyAssignedNodes ?? (IReadOnlyList<Node>)Array.Empty<Node>();
+
+        private void EnsureHtmlSlotElement()
+        {
+            if (!string.Equals(LocalName, "slot", StringComparison.Ordinal) ||
+                !string.Equals(NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+            {
+                throw new DomException("TypeError", "The element is not an HTML slot element");
+            }
+        }
+
+        private void InvalidateOwningShadowSlotAssignments()
+        {
+            if (GetRootNode() is ShadowRoot shadowRoot)
+                shadowRoot.InvalidateSlotAssignments();
+        }
+
         // --- IChildNode ---
 
         public void Remove()

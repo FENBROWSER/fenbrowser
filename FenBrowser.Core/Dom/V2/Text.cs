@@ -101,6 +101,8 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
+        Element ISlottable.ManualSlotAssignment { get; set; }
+
         // --- Cloning ---
 
         public override Node CloneNode(bool deep = false)
@@ -134,5 +136,7 @@ namespace FenBrowser.Core.Dom.V2
     public interface ISlottable
     {
         Element AssignedSlot { get; }
+
+        internal Element ManualSlotAssignment { get; set; }
     }
 }

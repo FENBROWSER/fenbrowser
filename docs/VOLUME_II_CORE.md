@@ -45,6 +45,7 @@ Extends `ContainerNode`. Represents HTML tags.
   - `ShadowRoot` now maintains deterministic slot-assignment caches (slottable -> slot and slot -> assigned nodes) rebuilt from host light-DOM children.
   - Host child mutations and relevant attribute changes (`slot` on slottables, `name` on `<slot>`) now invalidate assignment caches.
   - `Element.AssignedSlot` / `Text.AssignedSlot` now resolve through the assignment cache and keep closed-root encapsulation (returns `null` when assignment is in a closed shadow tree).
+  - Manual roots preserve explicit `<slot>.assign(...)` ownership on Element/Text slottables, including disconnected nodes. Assignments become observable when the slot and slottable join the corresponding shadow root and host, retain argument order, deduplicate repeated nodes, and transfer ownership on reassignment.
 
 ### 2.3 Events & Mutation
 
