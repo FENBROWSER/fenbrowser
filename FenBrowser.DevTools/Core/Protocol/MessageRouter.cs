@@ -68,18 +68,20 @@ public class MessageRouter
 
     /// <summary>
     /// Remove all registered domain handlers while preserving event subscriptions.
-    /// The per-domain gates are dropped together with the handlers. They are not
-    /// disposed: an in-flight dispatch holds its own gate reference and releases
-    /// it safely, and re-registered domains simply allocate fresh gates on demand.
+    /// Handler removal and gate removal are one atomic step, so a concurrent
+    /// dispatch cannot pair a re-registered handler with a gate that is about to
+    /// be dropped (which would let two same-domain handlers run concurrently).
+    /// Gates are not disposed: an in-flight dispatch holds its own gate
+    /// reference and releases it safely, and re-registered domains simply
+    /// allocate fresh gates on demand.
     /// </summary>
     public void ClearHandlers()
     {
         lock (_lock)
         {
             _handlers.Clear();
+            _domainGates.Clear();
         }
-
-        _domainGates.Clear();
     }
     
     /// <summary>
@@ -166,18 +168,22 @@ public class MessageRouter
         var domain = parts[0];
         var method = parts[1];
         
+        // Handler resolution and gate acquisition are one atomic step under the
+        // registration lock: a gate can never be created for a handler that
+        // ClearHandlers is dropping, and two dispatches can never run the same
+        // domain through different gates.
         IProtocolHandler? handler;
+        SemaphoreSlim domainGate;
         lock (_lock)
         {
-            _handlers.TryGetValue(domain, out handler);
+            if (!_handlers.TryGetValue(domain, out handler))
+            {
+                return ProtocolResponse.Failure(request.Id, $"Unknown domain: {domain}", -32601);
+            }
+
+            domainGate = _domainGates.GetOrAdd(domain, static _ => new SemaphoreSlim(1, 1));
         }
-        
-        if (handler == null)
-        {
-            return ProtocolResponse.Failure(request.Id, $"Unknown domain: {domain}", -32601);
-        }
-        
-        var domainGate = _domainGates.GetOrAdd(domain, static _ => new SemaphoreSlim(1, 1));
+
         await domainGate.WaitAsync().ConfigureAwait(false);
         try
         {

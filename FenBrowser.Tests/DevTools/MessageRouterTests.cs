@@ -160,6 +160,83 @@ namespace FenBrowser.Tests.DevTools
             Assert.Equal(1, router.DomainGateCount);
         }
 
+        // Gate acquisition and handler resolution are atomic, and ClearHandlers
+        // drops both together: even while the router is being cleared and
+        // re-registered, two dispatches of the same domain must never run
+        // concurrently through different gates.
+        [Fact]
+        public async Task ConcurrentClearAndDispatch_NeverOverlapsSameDomain()
+        {
+            var router = new MessageRouter();
+            var inFlight = 0;
+            var maxInFlight = 0;
+            var overlapDetected = false;
+            var stop = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(3));
+
+            router.RegisterHandler(new ScriptedHandler("DOM", _ =>
+            {
+                var current = System.Threading.Interlocked.Increment(ref inFlight);
+                var snapshot = System.Threading.Volatile.Read(ref maxInFlight);
+                while (current > snapshot &&
+                       System.Threading.Interlocked.CompareExchange(ref maxInFlight, current, snapshot) != snapshot)
+                {
+                    snapshot = System.Threading.Volatile.Read(ref maxInFlight);
+                }
+
+                if (current > 1)
+                {
+                    overlapDetected = true;
+                }
+
+                Thread.Sleep(5);
+                System.Threading.Interlocked.Decrement(ref inFlight);
+                return Task.CompletedTask;
+            }));
+
+            var churn = Task.Run(async () =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    router.ClearHandlers();
+                    router.RegisterHandler(new ScriptedHandler("DOM", _ =>
+                    {
+                        var current = System.Threading.Interlocked.Increment(ref inFlight);
+                        var snapshot = System.Threading.Volatile.Read(ref maxInFlight);
+                        while (current > snapshot &&
+                               System.Threading.Interlocked.CompareExchange(ref maxInFlight, current, snapshot) != snapshot)
+                        {
+                            snapshot = System.Threading.Volatile.Read(ref maxInFlight);
+                        }
+
+                        if (current > 1)
+                        {
+                            overlapDetected = true;
+                        }
+
+                        Thread.Sleep(5);
+                        System.Threading.Interlocked.Decrement(ref inFlight);
+                        return Task.CompletedTask;
+                    }));
+                    await Task.Delay(10);
+                }
+            });
+
+            var dispatches = Task.Run(async () =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    await router.DispatchAsync(new ProtocolRequest { Id = 1, Method = "DOM.getDocument" });
+                }
+            });
+
+            await Task.WhenAny(Task.WhenAll(churn, dispatches), Task.Delay(TimeSpan.FromSeconds(3)));
+            stop.Cancel();
+            await Task.WhenAll(churn, dispatches).WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.False(overlapDetected, "same-domain handlers overlapped while the router was being cleared");
+            Assert.True(System.Threading.Volatile.Read(ref maxInFlight) >= 1, "no dispatches were exercised");
+        }
+
         private sealed class ScriptedHandler : IProtocolHandler
         {
             private readonly Func<int, Task> _script;
