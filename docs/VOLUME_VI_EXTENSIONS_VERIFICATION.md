@@ -4438,3 +4438,11 @@ Verification:
 
 - `WptToolRunnerRawLogTests.ResolveProcessMode_ReportsEffectiveAutomationMode`: pass (`3/3`).
 - `FenBrowser.Tooling` builds with zero errors through the focused test build.
+
+## 6.195 Test262 Runner: onlyStrict Legacy-Octal Negatives Parse For Real (2026-08-28)
+
+- `FenBrowser.Js.Test262/Test262Runner.cs`
+  - Removed the parser-subset pre-pass that marked `onlyStrict` + legacy-octal + `negative: phase: parse, type: SyntaxError` tests as Passed without invoking the parser. The parser strict-octal early error (see 6.37) makes the source scan redundant, and the scan masked any future parser regression for this test family.
+  - Parse results for this family are now classified like every other parser-subset test: a real `JsParserException` satisfies the negative, a successful parse is a parser-bug failure, and a managed engine fault is a crash — never a negative-test pass.
+- `FenBrowser.Js.Tests/Test262RunnerTests.cs`
+  - Added parser-subset negative fixtures: real-parser SyntaxError pass, non-throwing parse failure, forced `JsParserException` pass, managed-fault crash classification, and invalid-configuration handling for parse-phase negatives with a non-`SyntaxError` type.

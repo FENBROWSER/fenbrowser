@@ -245,7 +245,6 @@ public sealed class Test262Runner
             var expectsSyntaxError = ExpectsSyntaxErrorParseFailure(frontmatter);
             var parserInput = PrepareParserInput(sourceText, frontmatter);
             var parseAsModule = frontmatter.Flags.Any(f => string.Equals(f, "module", StringComparison.OrdinalIgnoreCase));
-            var onlyStrict = frontmatter.Flags.Any(f => string.Equals(f, "onlyStrict", StringComparison.OrdinalIgnoreCase));
 
             if (IsInvalidParserSubsetConfiguration(frontmatter, out var invalidReason))
             {
@@ -304,16 +303,10 @@ public sealed class Test262Runner
 
             try
             {
-                if (expectsSyntaxError && onlyStrict && ContainsLegacyOctalEscape(sourceText))
-                {
-                    passed++;
-                    testSw.Stop();
-                    var te = TestEntry.FromFrontmatter(relativePath, frontmatter);
-                    te.Status = "Passed";
-                    te.DurationMs = testSw.ElapsedMilliseconds;
-                    tests.Add(te);
-                    continue;
-                }
+                // T262-002: onlyStrict legacy-octal negative tests must go through
+                // the real parser. A source scan cannot prove the parser rejects
+                // the file, so the parse result is classified below against the
+                // expected negative phase/type like every other test.
 
                 var source = new SourceText(parserInput, file);
                 var parseCompleted = RunWithPerTestTimeout(token =>
@@ -2025,34 +2018,6 @@ public sealed class Test262Runner
         }
 
         return "\"use strict\";\n" + sourceText;
-    }
-
-    private static bool ContainsLegacyOctalEscape(string source)
-    {
-        for (var i = 0; i + 2 < source.Length; i++)
-        {
-            if (source[i] != '\\')
-            {
-                continue;
-            }
-
-            var next = source[i + 1];
-            if (next is >= '0' and <= '7')
-            {
-                var third = source[i + 2];
-                if (third is >= '0' and <= '9')
-                {
-                    return true;
-                }
-
-                if (next != '0')
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 
     private static Test262ExpectationEntry? FindMatchingExpectation(Test262Expectations? expectations, string relativePath, params string[] statuses)

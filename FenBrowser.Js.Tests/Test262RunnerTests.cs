@@ -3159,4 +3159,130 @@ public sealed class Test262RunnerTests
             Directory.Delete(tempRoot, recursive: true);
         }
     }
+
+    // T262-002: onlyStrict legacy-octal SyntaxError tests must run the real parser
+    // and be classified against the expected negative phase/type. The former
+    // source-scan shortcut marked them Passed without parsing anything.
+    private static JsonElement RunNegativeParserFixture(
+        string negativeType,
+        string body,
+        Func<SourceText, bool, Task>? parseInvoker)
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-negative-parser-" + Guid.NewGuid().ToString("N"));
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var outputPath = Path.Combine(tempRoot, "result.json");
+
+        try
+        {
+            File.WriteAllText(Path.Combine(testDir, "negative-parse.js"), $$"""
+            /*---
+            flags: [onlyStrict]
+            negative:
+              phase: parse
+              type: {{negativeType}}
+            ---*/
+            {{body}}
+            """);
+
+            Test262Runner.ParseInvokerForTests = parseInvoker;
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: true,
+                runtimeSubset: false,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 2000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            return doc.RootElement.Clone();
+        }
+        finally
+        {
+            Test262Runner.ParseInvokerForTests = null;
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_ParserSubset_OnlyStrictLegacyOctalSyntaxErrorPasses()
+    {
+        var result = RunNegativeParserFixture("SyntaxError", "var x = \"\\1\";", parseInvoker: null);
+
+        Assert.Equal(1, result.GetProperty("summary").GetProperty("passed").GetInt32());
+        Assert.Equal(0, result.GetProperty("summary").GetProperty("parserErrors").GetInt32());
+        Assert.Equal("Passed", result.GetProperty("tests")[0].GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public void Run_ParserSubset_OnlyStrictLegacyOctalWithoutParseThrowFails()
+    {
+        var result = RunNegativeParserFixture(
+            "SyntaxError",
+            "var x = \"\\1\";",
+            parseInvoker: (_source, _isModule) => Task.CompletedTask);
+
+        // The parser ran and did not reject, so the negative expectation fails.
+        Assert.Equal(0, result.GetProperty("summary").GetProperty("passed").GetInt32());
+        Assert.Equal(1, result.GetProperty("summary").GetProperty("parserErrors").GetInt32());
+        Assert.Equal("Failed", result.GetProperty("tests")[0].GetProperty("status").GetString());
+        Assert.Equal("parser-error", result.GetProperty("failures")[0].GetProperty("classification").GetString());
+    }
+
+    [Fact]
+    public void Run_ParserSubset_OnlyStrictLegacyOctalParserThrowPasses()
+    {
+        var result = RunNegativeParserFixture(
+            "SyntaxError",
+            "var x = \"\\1\";",
+            parseInvoker: (_source, _isModule) => throw new JsParserException("legacy octal escape in strict mode"));
+
+        Assert.Equal(1, result.GetProperty("summary").GetProperty("passed").GetInt32());
+        Assert.Equal(0, result.GetProperty("summary").GetProperty("parserErrors").GetInt32());
+        Assert.Equal("Passed", result.GetProperty("tests")[0].GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public void Run_ParserSubset_OnlyStrictLegacyOctalManagedFaultIsCrash()
+    {
+        var result = RunNegativeParserFixture(
+            "SyntaxError",
+            "var x = \"\\1\";",
+            parseInvoker: (_source, _isModule) => throw new InvalidOperationException("forced engine fault"));
+
+        // A managed exception is a crash, never a negative-test pass.
+        Assert.Equal(0, result.GetProperty("summary").GetProperty("passed").GetInt32());
+        Assert.Equal(1, result.GetProperty("summary").GetProperty("crashes").GetInt32());
+        Assert.Equal("Crashed", result.GetProperty("tests")[0].GetProperty("status").GetString());
+        Assert.Equal("crash", result.GetProperty("failures")[0].GetProperty("classification").GetString());
+    }
+
+    [Fact]
+    public void Run_ParserSubset_ParsePhaseNegativeWithWrongTypeIsInvalidConfiguration()
+    {
+        // Only (parse|early, SyntaxError) negatives are classifiable in the parser
+        // subset; any other type must never be credited as a pass.
+        var result = RunNegativeParserFixture(
+            "TypeError",
+            "var x = \"\\1\";",
+            parseInvoker: (_source, _isModule) => throw new JsParserException("legacy octal escape in strict mode"));
+
+        Assert.Equal(0, result.GetProperty("summary").GetProperty("passed").GetInt32());
+        Assert.Equal(1, result.GetProperty("summary").GetProperty("invalidTestConfiguration").GetInt32());
+        Assert.Equal("InvalidTestConfiguration", result.GetProperty("tests")[0].GetProperty("status").GetString());
+    }
 }
