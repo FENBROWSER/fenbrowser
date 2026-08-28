@@ -767,26 +767,89 @@ namespace FenBrowser.Core.Dom.V2
 
         protected override void ValidateChildType(Node node)
         {
-            // Document can have: DocumentType (max 1), Element (max 1), Comment, ProcessingInstruction
-            if (node is Document)
-                throw new DomException("HierarchyRequestError", "Cannot insert a Document as a child");
-
-            if (node is Text)
-                throw new DomException("HierarchyRequestError", "Document cannot have Text children");
-
-            if (node is DocumentType)
+            if (node is DocumentFragment fragment)
             {
-                // Check if we already have a doctype
-                if (Doctype != null)
-                    throw new DomException("HierarchyRequestError", "Document already has a DocumentType");
+                for (var child = fragment.FirstChild; child != null; child = child.NextSibling)
+                {
+                    ValidateChildType(child);
+                }
+
+                return;
             }
 
-            if (node is Element)
+            // Document can have DocumentType, Element, and Comment children.
+            if (node is not DocumentType &&
+                node is not Element &&
+                node is not Comment)
             {
-                // Check if we already have a document element
-                if (DocumentElement != null)
-                    throw new DomException("HierarchyRequestError", "Document already has a document element");
+                throw new DomException("HierarchyRequestError", "Node type is not valid for a Document");
             }
+        }
+
+        protected override void ValidateChildSequence(Node node, Node referenceChild, Node childToReplace)
+        {
+            var prospectiveChildren = new List<Node>();
+            var insertionIndex = 0;
+
+            for (var child = FirstChild; child != null; child = child.NextSibling)
+            {
+                if (ReferenceEquals(child, referenceChild))
+                {
+                    insertionIndex = prospectiveChildren.Count;
+                }
+
+                var movingExistingChild = node is not DocumentFragment && ReferenceEquals(child, node);
+                if (!ReferenceEquals(child, childToReplace) && !movingExistingChild)
+                {
+                    prospectiveChildren.Add(child);
+                }
+            }
+
+            if (referenceChild == null)
+            {
+                insertionIndex = prospectiveChildren.Count;
+            }
+
+            if (node is DocumentFragment fragment)
+            {
+                for (var child = fragment.FirstChild; child != null; child = child.NextSibling)
+                {
+                    prospectiveChildren.Insert(insertionIndex++, child);
+                }
+            }
+            else
+            {
+                prospectiveChildren.Insert(insertionIndex, node);
+            }
+
+            var elementCount = 0;
+            var doctypeCount = 0;
+            var elementIndex = -1;
+            var doctypeIndex = -1;
+
+            for (var index = 0; index < prospectiveChildren.Count; index++)
+            {
+                switch (prospectiveChildren[index])
+                {
+                    case Element:
+                        elementCount++;
+                        elementIndex = index;
+                        break;
+                    case DocumentType:
+                        doctypeCount++;
+                        doctypeIndex = index;
+                        break;
+                }
+            }
+
+            if (elementCount > 1)
+                throw new DomException("HierarchyRequestError", "Document cannot have more than one document element");
+
+            if (doctypeCount > 1)
+                throw new DomException("HierarchyRequestError", "Document cannot have more than one DocumentType");
+
+            if (doctypeIndex >= 0 && elementIndex >= 0 && doctypeIndex > elementIndex)
+                throw new DomException("HierarchyRequestError", "DocumentType must precede the document element");
         }
 
         // --- Cloning ---

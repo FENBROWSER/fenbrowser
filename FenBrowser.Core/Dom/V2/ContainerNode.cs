@@ -165,7 +165,7 @@ namespace FenBrowser.Core.Dom.V2
         public Node AppendChild(Node node)
         {
             AssertNotInRestrictedPhase();
-            ValidateForInsertion(node);
+            ValidateForInsertion(node, referenceChild: null, childToReplace: null);
             return AppendChildInternal(node);
         }
 
@@ -176,14 +176,20 @@ namespace FenBrowser.Core.Dom.V2
         public Node InsertBefore(Node node, Node child)
         {
             AssertNotInRestrictedPhase();
-            ValidateForInsertion(node);
 
             if (child == null)
+            {
+                ValidateForInsertion(node, referenceChild: null, childToReplace: null);
                 return AppendChildInternal(node);
+            }
 
             if (!ReferenceEquals(child._parentNode, this))
                 throw new DomException("NotFoundError", "Child is not a child of this node");
 
+            if (ReferenceEquals(node, child))
+                return child;
+
+            ValidateForInsertion(node, referenceChild: child, childToReplace: null);
             return InsertBeforeInternal(node, child);
         }
 
@@ -194,11 +200,11 @@ namespace FenBrowser.Core.Dom.V2
         public Node ReplaceChild(Node node, Node child)
         {
             AssertNotInRestrictedPhase();
-            ValidateForInsertion(node);
 
             if (!ReferenceEquals(child._parentNode, this))
                 throw new DomException("NotFoundError", "Child is not a child of this node");
 
+            ValidateForInsertion(node, referenceChild: child, childToReplace: child);
             return ReplaceChildInternal(node, child);
         }
 
@@ -372,7 +378,7 @@ namespace FenBrowser.Core.Dom.V2
                 EnginePhase.Paint);
         }
 
-        private void ValidateForInsertion(Node node)
+        private void ValidateForInsertion(Node node, Node referenceChild, Node childToReplace)
         {
             if (node == null)
                 throw new ArgumentNullException(nameof(node));
@@ -395,14 +401,29 @@ namespace FenBrowser.Core.Dom.V2
 
             // Check node type validity
             ValidateChildType(node);
+            ValidateChildSequence(node, referenceChild, childToReplace);
         }
 
         protected virtual void ValidateChildType(Node node)
         {
             // By default, accept Element, Text, Comment, ProcessingInstruction, DocumentFragment
             // Document and DocumentType have additional restrictions
-            if (node is Document)
-                throw new DomException("HierarchyRequestError", "Cannot insert a Document as a child");
+            if (node is DocumentFragment fragment)
+            {
+                for (var child = fragment.FirstChild; child != null; child = child.NextSibling)
+                {
+                    ValidateChildType(child);
+                }
+
+                return;
+            }
+
+            if (node is Document || node is DocumentType)
+                throw new DomException("HierarchyRequestError", "Node type is not valid for this parent");
+        }
+
+        protected virtual void ValidateChildSequence(Node node, Node referenceChild, Node childToReplace)
+        {
         }
 
         private static string DescribeNodeForInsertion(Node node)
