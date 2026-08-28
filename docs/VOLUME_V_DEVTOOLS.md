@@ -525,4 +525,12 @@ Net effect:
 - `FenBrowser.DevTools/Panels/SourcesPanel.cs`
   - Sources entries are ordered by origin group and preserve the selected script record when protocol updates refresh metadata.
 
+### 5.23 Per-Domain Protocol Dispatch Concurrency (2026-08-28)
+
+- `FenBrowser.DevTools/Core/Protocol/MessageRouter.cs`
+  - Request dispatch previously serialized every protocol command behind a single global gate: one slow `Runtime.evaluate` blocked DOM/CSS work for all connected clients.
+  - Dispatch ordering is now enforced per domain: same-domain requests remain serialized (handlers are not guaranteed reentrant), while requests to distinct domains may execute concurrently.
+  - Per-domain gates are allocated only for domains that resolve to a registered handler, so the gate set is bounded by registration and never grows per request.
+  - Regression coverage (`FenBrowser.Tests/DevTools/MessageRouterTests.cs`, re-included in the test project) proves same-domain serialization, cross-domain overlap, gate release on handler exceptions, and bounded gate lifecycle.
+
 _End of Volume V_

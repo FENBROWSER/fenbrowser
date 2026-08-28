@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace FenBrowser.DevTools.Core.Protocol;
 
 /// <summary>
@@ -28,7 +30,19 @@ public class MessageRouter
     private readonly Dictionary<string, IProtocolHandler> _handlers = new();
     private Action<ProtocolEvent>[] _eventListeners = Array.Empty<Action<ProtocolEvent>>();
     private readonly object _lock = new();
-    private readonly SemaphoreSlim _dispatchGate = new(1, 1);
+
+    // DEVTOOLS-001: dispatch ordering is enforced per domain, not globally.
+    // Handlers are not guaranteed reentrant, so same-domain requests must stay
+    // serialized, but a slow Runtime.evaluate must not block DOM/CSS work for
+    // every connected client. Gates are only created for domains that resolved
+    // to a registered handler, so the key set is bounded by registration.
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _domainGates = new();
+
+    /// <summary>
+    /// Number of per-domain dispatch gates currently allocated. Bounded by the
+    /// set of registered domains; exposed for leak diagnostics.
+    /// </summary>
+    internal int DomainGateCount => _domainGates.Count;
     
     /// <summary>
     /// Register a domain handler.
@@ -158,7 +172,8 @@ public class MessageRouter
             return ProtocolResponse.Failure(request.Id, $"Unknown domain: {domain}", -32601);
         }
         
-        await _dispatchGate.WaitAsync().ConfigureAwait(false);
+        var domainGate = _domainGates.GetOrAdd(domain, static _ => new SemaphoreSlim(1, 1));
+        await domainGate.WaitAsync().ConfigureAwait(false);
         try
         {
             return await handler.HandleAsync(method, request);
@@ -169,7 +184,7 @@ public class MessageRouter
         }
         finally
         {
-            _dispatchGate.Release();
+            domainGate.Release();
         }
     }
     
