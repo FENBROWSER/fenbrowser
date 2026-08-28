@@ -434,10 +434,12 @@ namespace FenBrowser.Core
 
             private readonly Document _document;
             private readonly Stack<Node> _stack;
+            private bool _initialMode = true;
 
             public IncrementalParseState(Document document)
             {
                 _document = document;
+                _document.Mode = QuirksMode.Quirks;
                 _stack = new Stack<Node>();
                 _stack.Push(document);
             }
@@ -452,10 +454,14 @@ namespace FenBrowser.Core
                     return;
 
                 if (token.StartsWith("!", StringComparison.Ordinal))
+                {
+                    ProcessMarkupDeclaration(token);
                     return;
+                }
 
                 if (token.StartsWith("/", StringComparison.Ordinal))
                 {
+                    _initialMode = false;
                     var endTagText = token.Substring(1).TrimStart();
                     var end = 0;
                     while (end < endTagText.Length &&
@@ -501,6 +507,7 @@ namespace FenBrowser.Core
                 }
 
                 var selfClosing = token.EndsWith("/", StringComparison.Ordinal);
+                _initialMode = false;
                 if (selfClosing)
                     token = token.Substring(0, token.Length - 1).Trim();
 
@@ -525,6 +532,9 @@ namespace FenBrowser.Core
                 if (string.IsNullOrEmpty(text))
                     return;
 
+                if (_initialMode && !string.IsNullOrWhiteSpace(text))
+                    _initialMode = false;
+
                 var value = decodeCharacterReferences
                     ? System.Net.WebUtility.HtmlDecode(text)
                     : text;
@@ -541,6 +551,35 @@ namespace FenBrowser.Core
                 else
                 {
                     parent.AppendChild(new Text(value, _document));
+                }
+            }
+
+            private void ProcessMarkupDeclaration(string declaration)
+            {
+                var tokenizer = new HtmlTokenizer($"<{declaration}>");
+                foreach (var parsedToken in tokenizer.Tokenize())
+                {
+                    if (parsedToken is CommentToken comment)
+                    {
+                        if (_stack.Peek() is ContainerNode parent)
+                            parent.AppendChild(_document.CreateComment(comment.Data));
+                        return;
+                    }
+
+                    if (parsedToken is DoctypeToken doctype)
+                    {
+                        if (!_initialMode)
+                            return;
+
+                        _initialMode = false;
+                        _document.Mode = HtmlTreeBuilder.DetermineQuirksMode(doctype);
+                        _document.AppendChild(new DocumentType(
+                            doctype.Name,
+                            doctype.PublicIdentifier,
+                            doctype.SystemIdentifier,
+                            _document));
+                        return;
+                    }
                 }
             }
 

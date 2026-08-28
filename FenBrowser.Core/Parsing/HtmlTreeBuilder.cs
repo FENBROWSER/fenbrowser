@@ -3399,7 +3399,7 @@ namespace FenBrowser.Core.Parsing
             SwitchTo(InsertionMode.Text);
         }
 
-        private QuirksMode DetermineQuirksMode(DoctypeToken dt)
+        internal static QuirksMode DetermineQuirksMode(DoctypeToken dt)
         {
             if (dt == null) return QuirksMode.Quirks;
             if (dt.ForceQuirks) return QuirksMode.Quirks;

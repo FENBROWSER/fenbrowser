@@ -127,6 +127,7 @@ Based strictly on the **HTML5 Parsing Specification**.
   - `HtmlParserOptions.ScriptingEnabled` now controls `noscript` tree construction (enabled by default); active-formatting reconstruction, Noah's Ark limits, nested-anchor adoption, and table foster placement share the canonical tree-builder state.
 - `FenBrowser.Core/StreamingHtmlParser.cs`
   - Primary async/incremental APIs now route through canonical parser entrypoints (`ParseDocument` / `ParseStream`) instead of bypass instance parsing paths.
+  - The progressive path preserves comments and DOCTYPE nodes, defaults missing-DOCTYPE input to quirks mode, and reuses the canonical tokenizer plus tree-builder quirks classifier for declaration semantics.
 - `FenBrowser.Core/Dom/V2/Element.cs`
   - `Element.InnerHTML` now uses canonical `HtmlParser.ParseFragment(...)` (no `<html><body>` wrapper parse path).
 - `FenBrowser.Core/Dom/V2/ShadowRoot.cs`

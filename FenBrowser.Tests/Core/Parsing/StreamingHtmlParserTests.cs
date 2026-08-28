@@ -96,6 +96,52 @@ namespace FenBrowser.Tests.Core.Parsing
         }
 
         [Fact]
+        public async Task ParseIncrementallyAsync_PreservesDoctypeAndStandardsMode()
+        {
+            const string html = "<!doctype html><html><body>ready</body></html>";
+            using var parser = new StreamingHtmlParser(html);
+
+            Document? document = null;
+            await parser.ParseIncrementallyAsync(parsed => document = parsed);
+
+            Assert.NotNull(document);
+            Assert.NotNull(document!.Doctype);
+            Assert.Equal("html", document.Doctype!.Name);
+            Assert.Equal(QuirksMode.NoQuirks, document.Mode);
+        }
+
+        [Fact]
+        public async Task ParseIncrementallyAsync_UsesQuirksModeWhenDoctypeIsMissing()
+        {
+            using var parser = new StreamingHtmlParser("<html><body>legacy</body></html>");
+
+            Document? document = null;
+            await parser.ParseIncrementallyAsync(parsed => document = parsed);
+
+            Assert.NotNull(document);
+            Assert.Null(document!.Doctype);
+            Assert.Equal(QuirksMode.Quirks, document.Mode);
+        }
+
+        [Fact]
+        public async Task ParseIncrementallyAsync_PreservesCommentsAtTheirInsertionParent()
+        {
+            const string html = "<!--before--><html><body><!--inside--><p>ready</p></body></html>";
+            using var parser = new StreamingHtmlParser(html);
+
+            Document? document = null;
+            await parser.ParseIncrementallyAsync(parsed => document = parsed);
+
+            Assert.NotNull(document);
+            var comments = document!.Descendants().OfType<Comment>().ToList();
+            Assert.Equal(2, comments.Count);
+            Assert.Equal("before", comments[0].Data);
+            Assert.Same(document, comments[0].ParentNode);
+            Assert.Equal("inside", comments[1].Data);
+            Assert.Equal("body", ((Element)comments[1].ParentNode!).LocalName);
+        }
+
+        [Fact]
         public async Task ParseIncrementallyAsync_PreservesParserAcceptedFrameworkAttributes()
         {
             const string html = "<html><body><div @click='submit' :prop=value data-ok=yes>ready</div></body></html>";
