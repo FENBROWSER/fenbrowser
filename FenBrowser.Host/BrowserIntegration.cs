@@ -2356,7 +2356,11 @@ public class BrowserIntegration : IDisposable
             RecordFirstFrameAfterInput();
 
             // Seed-image management is engine-thread-only; no lock needed.
-            if (ReferenceEquals(newSeedImage, _currentFrameSeedImage))
+            // Only retaining the exact same image counts as consecutive base-frame
+            // reuse. Damage/compositor frames that produced a new seed have already
+            // refreshed the base and must reset the forced-refresh counter.
+            bool retainedExistingSeed = ReferenceEquals(newSeedImage, _currentFrameSeedImage);
+            if (retainedExistingSeed)
             {
                 // Reusing the existing seed: do not dispose it. Refresh the age so the
                 // reuse policy does not evict a perfectly valid base frame.
@@ -2371,9 +2375,11 @@ public class BrowserIntegration : IDisposable
                 _currentFrameSeedCreatedUtc = newSeedImage != null ? DateTime.UtcNow : DateTime.MinValue;
             }
 
-            _consecutiveBaseFrameReuseCount = (canReuseBaseFrame && _currentFrameSeedImage != null)
-                ? _consecutiveBaseFrameReuseCount + 1
-                : 0;
+            _consecutiveBaseFrameReuseCount = NextConsecutiveBaseFrameReuseCount(
+                canReuseBaseFrame,
+                retainedExistingSeed,
+                _currentFrameSeedImage != null,
+                _consecutiveBaseFrameReuseCount);
 
             // Reset compositor scroll preview now that the engine has caught up.
             lock (_compositorScrollLock)
@@ -2414,6 +2420,15 @@ public class BrowserIntegration : IDisposable
             EngineLogBridge.Error($"[BrowserIntegration] Recording error: {ex.Message}", LogCategory.General);
         }
     }
+
+    internal static int NextConsecutiveBaseFrameReuseCount(
+        bool canReuseBaseFrame,
+        bool retainedExistingSeed,
+        bool hasCurrentSeed,
+        int currentCount) =>
+        canReuseBaseFrame && retainedExistingSeed && hasCurrentSeed
+            ? currentCount + 1
+            : 0;
 
     private static SKImage CreateSeedImageFromFrame(SKPicture frame, SKSize viewportSize)
     {

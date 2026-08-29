@@ -1,5 +1,6 @@
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Core;
+using FenBrowser.Host;
 using SkiaSharp;
 using Xunit;
 
@@ -106,6 +107,26 @@ namespace FenBrowser.Tests.Rendering
                 maxBaseFrameAgeMs: 2000);
 
             Assert.False(canReuse);
+        }
+
+        [Fact]
+        public void ReuseStreak_IncrementsOnlyWhenTheExistingSeedIsRetained()
+        {
+            Assert.Equal(
+                8,
+                BrowserIntegration.NextConsecutiveBaseFrameReuseCount(
+                    canReuseBaseFrame: true,
+                    retainedExistingSeed: true,
+                    hasCurrentSeed: true,
+                    currentCount: 7));
+
+            Assert.Equal(
+                0,
+                BrowserIntegration.NextConsecutiveBaseFrameReuseCount(
+                    canReuseBaseFrame: true,
+                    retainedExistingSeed: false,
+                    hasCurrentSeed: true,
+                    currentCount: 7));
         }
     }
 }

@@ -50,6 +50,7 @@ This class acts as the "Glue" between the Host and the Engine.
 - **Frame Commit Guard (2026-05-08)**:
   - `BrowserIntegration.RecordFrame(...)` serializes renderer access under `_rendererLock` to prevent concurrent frame-building races.
   - The host continues presenting the committed `SKPicture` while maintaining a parallel `SKImage` seed snapshot for base-frame reuse/damage workflows.
+  - The consecutive-reuse guard advances only when a frame retains the same seed image; producing a refreshed seed resets the streak so damage/compositor updates do not trigger an unnecessary forced full raster.
   - Navigation resets now clear `_root` and `_styles` up front; sync/render adopts live snapshot styles directly to avoid stale pre-style presentation.
 - **Google Input-Latency Repaint Guard (2026-07-05)**:
   - `BrowserIntegration` now classifies `RepaintReady` snapshots before requesting a frame: first styled render and changed root/style snapshots still request `Navigation`/`Dom`/`Style` work, layout-dirty snapshots request `Layout|Paint`, and stable snapshots request `Paint` only.

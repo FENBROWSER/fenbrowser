@@ -85,7 +85,9 @@ namespace FenBrowser.FenEngine.Rendering
             // Allow scroll-only frames to reuse the base frame even when scrollY
             // changed — that's the whole point of damage rasterisation: translate
             // the base image and only re-render the exposed band.
-            bool isScrollOnly = (invalidationReasons & ~RenderFrameInvalidationReason.Scroll) == 0;
+            bool isScrollOnly =
+                (invalidationReasons & RenderFrameInvalidationReason.Scroll) != 0 &&
+                (invalidationReasons & ~RenderFrameInvalidationReason.Scroll) == 0;
             if (!isScrollOnly &&
                 Math.Abs(previousScrollY - currentScrollY) > scrollEpsilon)
             {

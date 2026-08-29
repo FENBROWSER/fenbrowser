@@ -103,6 +103,7 @@
     <Compile Include="Rendering\Phase4CompositorOnlyPathTests.cs" />
     <!-- Phase 13 end-to-end pipeline animation tests (real renderer verification). -->
     <Compile Include="Rendering\PipelineAnimationTests.cs" />
+    <Compile Include="Rendering\BaseFrameReusePolicyTests.cs" />
     <!-- Phase 12 async input dispatch non-blocking regression. -->
     <Compile Include="Engine\Phase12AsyncInputDispatchTests.cs" />
     <Compile Include="Engine\CustomHtmlEngineFallbackPromotionTests.cs" />
