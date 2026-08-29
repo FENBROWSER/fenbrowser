@@ -131,6 +131,36 @@ public sealed class JobQueueTests
         Assert.Contains(handler, tracer.Objects);
     }
 
+    [Fact]
+    public void NestedCheckpointKeepsOuterRunningJobTraceable()
+    {
+        var queue = new JobQueue();
+        var outerHandler = new ObjectHandle(7, 1);
+        var innerHandler = new ObjectHandle(8, 1);
+        queue.Enqueue(new PromiseReactionJob(
+            new PromiseReaction(PromiseCapability.Empty, PromiseReactionType.Fulfill, JsValue.FromObject(outerHandler)),
+            JsValue.Undefined,
+            realmId: 0));
+        var tracer = new RecordingTracer();
+
+        queue.RunMicrotaskCheckpoint(_ =>
+        {
+            queue.Enqueue(new PromiseReactionJob(
+                new PromiseReaction(PromiseCapability.Empty, PromiseReactionType.Fulfill, JsValue.FromObject(innerHandler)),
+                JsValue.Undefined,
+                realmId: 0));
+            queue.RunMicrotaskCheckpoint(_ =>
+            {
+                queue.Trace(tracer);
+                return true;
+            });
+            return true;
+        });
+
+        Assert.Contains(outerHandler, tracer.Objects);
+        Assert.Contains(innerHandler, tracer.Objects);
+    }
+
     private static PromiseReactionJob NewReactionJob(JsValue argument) => new(
         reaction: new PromiseReaction(PromiseCapability.Empty, PromiseReactionType.Fulfill, JsValue.Undefined),
         argument: argument,

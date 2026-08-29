@@ -135,4 +135,67 @@ public sealed class PromiseRuntimeTests
         var (_, interpreter) = Run("Promise.resolve(1).then(function(){}).then(function(){});");
         Assert.Equal(0, interpreter.PromiseJobQueueDepthForTest);
     }
+
+    [Fact]
+    public void EscapedResolverKeepsItsPromiseAliveAcrossMinorCollections()
+    {
+        var interpreter = new BytecodeInterpreter();
+        interpreter.Heap.YoungAllocationsPerMinorGc = 8;
+        var fn = new BytecodeCompiler().CompileScript(new SourceText(
+            "var resolveLater; " +
+            "(function(){ new Promise(function(resolve){ resolveLater = resolve; }); })(); " +
+            "var junk; for (var i = 0; i < 200; i++) { junk = { value: i }; } " +
+            "resolveLater(42); 'ok';"));
+        new BytecodeVerifier().Verify(fn);
+
+        Assert.Equal("ok", interpreter.Execute(fn).AsString());
+    }
+
+    [Fact]
+    public void PendingReactionKeepsHandlerAliveAcrossMinorCollections()
+    {
+        var interpreter = new BytecodeInterpreter();
+        var warmup = new BytecodeCompiler().CompileScript(new SourceText("0;"));
+        new BytecodeVerifier().Verify(warmup);
+        _ = interpreter.Execute(warmup);
+        interpreter.Heap.YoungAllocationsPerMinorGc = 1;
+        interpreter.Heap.DeferAutomaticCollectionUntilSafePoint = false;
+        var side = new BytecodeCompiler().CompileScript(new SourceText(
+            "var resolveLater; var observed = 0; " +
+            "var pending = new Promise(function(resolve){ resolveLater = resolve; }); " +
+            "var junk; for (var warm = 0; warm < 50; warm++) { junk = { warm: warm }; } " +
+            "pending.then(function(value){ observed = value; }); " +
+            "for (var i = 0; i < 200; i++) { junk = { value: i }; } " +
+            "resolveLater(42);"));
+        new BytecodeVerifier().Verify(side);
+        _ = interpreter.Execute(side);
+
+        var read = new BytecodeCompiler().CompileScript(new SourceText("observed;"));
+        new BytecodeVerifier().Verify(read);
+        Assert.Equal(42d, interpreter.Execute(read).AsNumber());
+    }
+
+    [Fact]
+    public void RunningReactionKeepsResultCapabilityAliveAcrossMinorCollections()
+    {
+        var interpreter = new BytecodeInterpreter();
+        var warmup = new BytecodeCompiler().CompileScript(new SourceText("0;"));
+        new BytecodeVerifier().Verify(warmup);
+        _ = interpreter.Execute(warmup);
+        interpreter.Heap.YoungAllocationsPerMinorGc = 1;
+        interpreter.Heap.DeferAutomaticCollectionUntilSafePoint = false;
+
+        var side = new BytecodeCompiler().CompileScript(new SourceText(
+            "var observed = 0; " +
+            "Promise.resolve(40).then(function(value){ " +
+            "  var junk; for (var i = 0; i < 200; i++) { junk = { value: i }; } " +
+            "  observed = value + 2; " +
+            "});"));
+        new BytecodeVerifier().Verify(side);
+        _ = interpreter.Execute(side);
+
+        var read = new BytecodeCompiler().CompileScript(new SourceText("observed;"));
+        new BytecodeVerifier().Verify(read);
+        Assert.Equal(42d, interpreter.Execute(read).AsNumber());
+    }
 }

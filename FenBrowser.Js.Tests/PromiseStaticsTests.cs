@@ -62,6 +62,30 @@ public sealed class PromiseStaticsTests
             "observed;").AsNumber());
     }
 
+    [Fact]
+    public void AllKeepsAggregateResolverAliveAcrossMinorCollections()
+    {
+        var interpreter = new BytecodeInterpreter();
+        var warmup = new BytecodeCompiler().CompileScript(new SourceText("0;"));
+        new BytecodeVerifier().Verify(warmup);
+        _ = interpreter.Execute(warmup);
+        interpreter.Heap.YoungAllocationsPerMinorGc = 1;
+        interpreter.Heap.DeferAutomaticCollectionUntilSafePoint = false;
+
+        var side = new BytecodeCompiler().CompileScript(new SourceText(
+            "var resolveLater; var observed = 0; " +
+            "var pending = new Promise(function(resolve){ resolveLater = resolve; }); " +
+            "Promise.all([pending, Promise.resolve(2)]).then(function(values){ observed = values[0] + values[1]; }); " +
+            "var junk; for (var i = 0; i < 200; i++) { junk = { value: i }; } " +
+            "resolveLater(40);"));
+        new BytecodeVerifier().Verify(side);
+        _ = interpreter.Execute(side);
+
+        var read = new BytecodeCompiler().CompileScript(new SourceText("observed;"));
+        new BytecodeVerifier().Verify(read);
+        Assert.Equal(42d, interpreter.Execute(read).AsNumber());
+    }
+
     // Promise.race
 
     [Fact]

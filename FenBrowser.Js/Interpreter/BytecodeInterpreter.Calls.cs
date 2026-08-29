@@ -311,6 +311,7 @@ public sealed partial class BytecodeInterpreter
             var rootMark = _heap.RootCount;
             try
             {
+                PinIfObject(value);
                 PinIfObject(thisValue);
                 for (var i = 0; i < args.Count; i++) PinIfObject(args[i]);
                 return native.Call(thisValue, args);

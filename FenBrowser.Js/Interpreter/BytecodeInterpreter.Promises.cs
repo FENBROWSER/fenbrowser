@@ -336,6 +336,13 @@ public sealed partial class BytecodeInterpreter
             return capability.Promise;
         }
 
+        using var scope = new HandleScope(_heap);
+        PinPromiseValue(scope, thisValue);
+        PinPromiseValue(scope, capability.Promise);
+        PinPromiseValue(scope, capability.Resolve);
+        PinPromiseValue(scope, capability.Reject);
+        PinPromiseValue(scope, promiseResolve);
+
         try
         {
             // ECMA-262 27.2.4.1.1: drain iterable. The spec calls promiseResolve
@@ -343,16 +350,26 @@ public sealed partial class BytecodeInterpreter
             // simplicity but cap iterations to prevent infinite loops from
             // never-ending iterators.
             var sources = DrainIterableToListCapped(iterable, "Promise.all", cap: 100_000);
+            for (var i = 0; i < sources.Count; i++)
+            {
+                PinPromiseValue(scope, sources[i]);
+            }
+
             if (sources.Count == 0)
             {
                 var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
                 var emptyHandle = _heap.AllocateObject(emptyArr, AllocationSite.Current());
+                _ = scope.Create(emptyHandle);
                 _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(emptyHandle) }, JsValue.Undefined);
                 return capability.Promise;
             }
 
             var slots = new JsValue[sources.Count];
             for (var i = 0; i < slots.Length; i++) slots[i] = JsValue.Undefined;
+            var resultArray = CreateArrayFromElements(slots);
+            var resultHandle = _heap.AllocateObject(resultArray, AllocationSite.Current());
+            _ = scope.Create(resultHandle);
+            var resultValue = JsValue.FromObject(resultHandle);
             var remaining = new[] { sources.Count };
             var alreadyCalled = new bool[sources.Count];
 
@@ -360,20 +377,27 @@ public sealed partial class BytecodeInterpreter
             {
                 var idx = i;
                 var child = CallFunction(promiseResolve, new[] { sources[i] }, thisValue);
+                PinPromiseValue(scope, child);
                 var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
                 {
                     if (alreadyCalled[idx]) return JsValue.Undefined;
                     alreadyCalled[idx] = true;
                     slots[idx] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                    resultArray.DefineOwnProperty(
+                        idx.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        new JsPropertyDescriptor(
+                            slots[idx],
+                            Writable: true,
+                            Enumerable: true,
+                            Configurable: true));
                     remaining[0]--;
                     if (remaining[0] == 0)
                     {
-                        var arr = CreateArrayFromElements(slots);
-                        var handle = _heap.AllocateObject(arr, AllocationSite.Current());
-                        _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(handle) }, JsValue.Undefined);
+                        _ = CallFunction(capability.Resolve, new[] { resultValue }, JsValue.Undefined);
                     }
                     return JsValue.Undefined;
-                });
+                }, new[] { capability.Resolve, resultValue });
+                PinPromiseValue(scope, onFulfilled);
                 InvokePromiseThen(child, onFulfilled, capability.Reject);
             }
         }
@@ -763,9 +787,11 @@ public sealed partial class BytecodeInterpreter
         return index.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private JsValue AllocateNativeCallback(Func<JsValue, IReadOnlyList<JsValue>, JsValue> call)
+    private JsValue AllocateNativeCallback(
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
+        IReadOnlyList<JsValue>? capturedRoots = null)
     {
-        var fn = new NativeFunctionObject("", call, length: 1);
+        var fn = new NativeFunctionObject("", call, length: 1, capturedRoots: capturedRoots);
         fn.SetPrototype(EnsureFunctionPrototype());
         var handle = _heap.AllocateObject(fn, AllocationSite.Current());
         return JsValue.FromObject(handle);
@@ -991,6 +1017,9 @@ public sealed partial class BytecodeInterpreter
     private (JsValue Resolve, JsValue Reject) CreateResolvingFunctions(ObjectHandle promiseHandle)
     {
         var alreadyResolved = new bool[1];
+        var promiseValue = JsValue.FromObject(promiseHandle);
+        using var scope = new HandleScope(_heap);
+        _ = scope.Create(promiseHandle);
 
         var resolveFn = new NativeFunctionObject("", (_, fnArgs) =>
         {
@@ -999,7 +1028,7 @@ public sealed partial class BytecodeInterpreter
             var resolution = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
             ResolvePromise(promiseHandle, resolution);
             return JsValue.Undefined;
-        }, length: 1);
+        }, length: 1, capturedRoots: new[] { promiseValue });
 
         var rejectFn = new NativeFunctionObject("", (_, fnArgs) =>
         {
@@ -1008,9 +1037,10 @@ public sealed partial class BytecodeInterpreter
             var reason = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
             RejectPromise(promiseHandle, reason);
             return JsValue.Undefined;
-        }, length: 1);
+        }, length: 1, capturedRoots: new[] { promiseValue });
 
         var resolveHandle = _heap.AllocateObject(resolveFn, AllocationSite.Current());
+        _ = scope.Create(resolveHandle);
         var rejectHandle = _heap.AllocateObject(rejectFn, AllocationSite.Current());
         return (JsValue.FromObject(resolveHandle), JsValue.FromObject(rejectHandle));
     }
@@ -1172,16 +1202,28 @@ public sealed partial class BytecodeInterpreter
         JsValue onRejected,
         PromiseCapability resultCapability)
     {
+        using var scope = new HandleScope(_heap);
+        _ = scope.Create(promiseHandle);
+        PinPromiseValue(scope, onFulfilled);
+        PinPromiseValue(scope, onRejected);
+        PinPromiseValue(scope, resultCapability.Promise);
+        PinPromiseValue(scope, resultCapability.Resolve);
+        PinPromiseValue(scope, resultCapability.Reject);
+
         var fulfillReaction = new PromiseReaction(resultCapability, PromiseReactionType.Fulfill, onFulfilled);
         var rejectReaction = new PromiseReaction(resultCapability, PromiseReactionType.Reject, onRejected);
         var fulfillHandle = AllocateReactionCell(fulfillReaction);
+        _ = scope.Create(fulfillHandle);
         var rejectHandle = AllocateReactionCell(rejectReaction);
+        _ = scope.Create(rejectHandle);
 
         switch (promise.State)
         {
             case PromiseState.Pending:
                 promise.QueueFulfillReaction(fulfillHandle);
                 promise.QueueRejectReaction(rejectHandle);
+                _heap.WriteBarrier(promiseHandle, fulfillHandle);
+                _heap.WriteBarrier(promiseHandle, rejectHandle);
                 break;
             case PromiseState.Fulfilled:
                 _jobQueue.Enqueue(new PromiseReactionJob(fulfillReaction, promise.GetResultUnchecked(), DefaultPromiseRealmId));
@@ -1197,6 +1239,14 @@ public sealed partial class BytecodeInterpreter
 
         promise.IsHandled = true;
         return resultCapability.Promise;
+    }
+
+    private static void PinPromiseValue(HandleScope scope, JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            _ = scope.Create(value.AsObjectHandle());
+        }
     }
 
     private ObjectHandle AllocateReactionCell(PromiseReaction reaction)

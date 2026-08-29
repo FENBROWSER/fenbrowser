@@ -16,7 +16,7 @@ public sealed class JobQueue : IHeapRootSource
 {
     private readonly Queue<PromiseJob> _jobs = new();
     private readonly object _sync = new();
-    private PromiseJob? _runningJob;
+    private readonly Stack<PromiseJob> _runningJobs = new();
 
     public int Count
     {
@@ -64,7 +64,10 @@ public sealed class JobQueue : IHeapRootSource
 
         lock (_sync)
         {
-            _runningJob?.Trace(tracer);
+            foreach (var runningJob in _runningJobs)
+            {
+                runningJob.Trace(tracer);
+            }
             foreach (var job in _jobs)
             {
                 job.Trace(tracer);
@@ -96,7 +99,7 @@ public sealed class JobQueue : IHeapRootSource
                 }
 
                 job = _jobs.Dequeue();
-                _runningJob = job;
+                _runningJobs.Push(job);
             }
 
             try
@@ -112,9 +115,9 @@ public sealed class JobQueue : IHeapRootSource
             {
                 lock (_sync)
                 {
-                    if (ReferenceEquals(_runningJob, job))
+                    if (_runningJobs.Count > 0 && ReferenceEquals(_runningJobs.Peek(), job))
                     {
-                        _runningJob = null;
+                        _runningJobs.Pop();
                     }
                 }
             }
