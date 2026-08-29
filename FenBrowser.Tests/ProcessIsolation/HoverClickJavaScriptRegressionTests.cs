@@ -128,6 +128,17 @@ public sealed class HoverClickJavaScriptRegressionTests
             host.OnMouseMove(hoverRect.Left + hoverRect.Width / 2f, hoverRect.Top + hoverRect.Height / 2f);
             Assert.Same(hoverTarget, ElementStateManager.Instance.HoveredElement);
 
+            // Continuous interaction invalidation must not keep restarting a host-side
+            // debounce and postpone :hover until movement stops.
+            for (var i = 0; i < 30; i++)
+            {
+                ElementStateManager.Instance.NotifyStateChanged(hoverTarget);
+                await Task.Delay(5);
+            }
+            Assert.True(
+                HasBackground(host.ComputedStyles, hoverTarget, 1, 2, 3),
+                "Continuous pointer-state changes starved the hover recascade.");
+
             await WaitForAsync(
                 () => HasBackground(host.ComputedStyles, hoverTarget, 1, 2, 3),
                 "Hover did not recascade #hover-target:hover background.");
@@ -338,6 +349,77 @@ public sealed class HoverClickJavaScriptRegressionTests
         finally
         {
             Environment.SetEnvironmentVariable("FEN_FENJS_INPUT_EVENT_TIMEOUT_MS", previousTimeout);
+        }
+    }
+
+    [Fact]
+    public async Task RenderedPage_BusyScriptWorker_DoesNotDelayHoverState()
+    {
+        const string html = """
+<!doctype html>
+<html>
+<head><style>
+  body { margin: 0; }
+  #target { width: 180px; height: 56px; margin: 40px; background: rgb(10, 20, 30); }
+  #target:hover { background: rgb(1, 2, 3); }
+</style></head>
+<body>
+  <div id="target"></div>
+</body>
+</html>
+""";
+
+        var previousTimeout = Environment.GetEnvironmentVariable("FEN_FENJS_SCRIPT_TIMEOUT_MS");
+        Environment.SetEnvironmentVariable("FEN_FENJS_SCRIPT_TIMEOUT_MS", "500");
+        try
+        {
+            using var host = new BrowserHost();
+            var renderer = new SkiaDomRenderer();
+            host.EnableJavaScript = true;
+            host.SetActiveRenderer(renderer);
+            host.Engine.SetExternalRenderer(renderer);
+
+            await host.Engine.RenderAsync(
+                html,
+                new Uri("https://fen.test/nonblocking-hover"),
+                _ => Task.FromResult(string.Empty),
+                _ => Task.FromResult<Stream>(null),
+                _ => { },
+                viewportWidth: 640,
+                viewportHeight: 360,
+                forceJavascript: true);
+
+            var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+            var target = FindById(root, "target");
+            RenderFrame(renderer, root, host.ComputedStyles, 640, 360);
+            Assert.True(renderer.LastLayout.TryGetElementRect(target, out var targetRect), "Missing target layout rect.");
+
+            var busyScript = Task.Run(() =>
+            {
+                try { host.Engine.Evaluate("while (true) {}"); }
+                catch { }
+            });
+            await WaitForAsync(
+                () => host.Engine.ScriptEngine.IsEventDispatchBusy(target),
+                "FenJS worker did not enter the blocking script task.");
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            host.OnMouseMove(
+                targetRect.Left + targetRect.Width / 2f,
+                targetRect.Top + targetRect.Height / 2f);
+            stopwatch.Stop();
+
+            Assert.Same(target, ElementStateManager.Instance.HoveredElement);
+            Assert.True(
+                stopwatch.ElapsedMilliseconds < 250,
+                $"Hover dispatch blocked for {stopwatch.ElapsedMilliseconds}ms behind page JavaScript.");
+
+            await busyScript.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            ElementStateManager.Instance.SetHoveredElement(null);
+            Environment.SetEnvironmentVariable("FEN_FENJS_SCRIPT_TIMEOUT_MS", previousTimeout);
         }
     }
 

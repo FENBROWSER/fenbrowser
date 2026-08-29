@@ -316,6 +316,7 @@ namespace FenBrowser.FenEngine.Rendering
         // painting so that hit tests in DispatchInputEvent use the correct (populated) paint tree
         // instead of the stale _engine._cachedRenderer that never has Render() called on it.
         private SkiaDomRenderer _activeRenderer;
+        private bool _suppressNextMouseUp;
         public void SetActiveRenderer(SkiaDomRenderer renderer) { _activeRenderer = renderer; }
 
         private (double? Width, double? Height) GetRenderViewportHint()
@@ -3360,11 +3361,23 @@ pre {{
 
         public void OnMouseDown(float x, float y, int button)
         {
+            if (button == 0 && TryHandleScrollbarTrackPress(x, y))
+            {
+                _suppressNextMouseUp = true;
+                return;
+            }
+
             QueueInputTask("mousedown", x, y, button);
         }
 
         public void OnMouseUp(float x, float y, int button)
         {
+            if (button == 0 && _suppressNextMouseUp)
+            {
+                _suppressNextMouseUp = false;
+                return;
+            }
+
             QueueInputTask("mouseup", x, y, button);
         }
 
@@ -3402,18 +3415,44 @@ pre {{
                 return defaultAllowed;
             }
 
+            const float wheelStepPixels = 60f;
+            for (var candidate = _lastDispatchedInputTarget; candidate != null; candidate = candidate.ParentElement)
+            {
+                var manager = _activeRenderer.ScrollManager;
+                var hasHorizontal = manager.HasHorizontalScrollbar(candidate);
+                var hasVertical = manager.HasVerticalScrollbar(candidate);
+                if (!hasHorizontal && !hasVertical)
+                {
+                    continue;
+                }
+
+                var candidateBefore = manager.GetScrollOffset(candidate);
+                manager.Scroll(
+                    candidate,
+                    hasHorizontal ? -(deltaX * wheelStepPixels) : 0f,
+                    hasVertical ? -(deltaY * wheelStepPixels) : 0f);
+                var candidateAfter = manager.GetScrollOffset(candidate);
+                if (Math.Abs(candidateAfter.x - candidateBefore.x) <= 0.01f &&
+                    Math.Abs(candidateAfter.y - candidateBefore.y) <= 0.01f)
+                {
+                    continue;
+                }
+
+                _engine.ScriptEngine?.RequestRender?.Invoke();
+                return false;
+            }
+
             var frame = TryGetEmbeddingFrame(_lastDispatchedInputTarget);
             if (frame == null)
             {
                 return true;
             }
 
-            const float nestedWheelStepPixels = 60f;
             var before = _activeRenderer.ScrollManager.GetScrollOffset(frame);
             _activeRenderer.ScrollManager.Scroll(
                 frame,
-                -(deltaX * nestedWheelStepPixels),
-                -(deltaY * nestedWheelStepPixels));
+                -(deltaX * wheelStepPixels),
+                -(deltaY * wheelStepPixels));
             var after = _activeRenderer.ScrollManager.GetScrollOffset(frame);
             if (Math.Abs(after.x - before.x) <= 0.01f && Math.Abs(after.y - before.y) <= 0.01f)
             {
@@ -3422,6 +3461,55 @@ pre {{
 
             _engine.ScriptEngine?.NotifyFrameScrollChanged(frame);
             _engine.ScriptEngine?.RequestRender?.Invoke();
+            return false;
+        }
+
+        private bool TryHandleScrollbarTrackPress(float x, float y)
+        {
+            if (_activeRenderer?.LastLayout == null)
+            {
+                return false;
+            }
+
+            var target = FindElementAtPoint(x, y);
+            var manager = _activeRenderer.ScrollManager;
+            var scrollbars = new FenBrowser.FenEngine.Rendering.Interaction.ScrollbarRenderer(manager);
+            for (var candidate = target; candidate != null; candidate = candidate.ParentElement)
+            {
+                if (!_activeRenderer.LastLayout.TryGetElementRect(candidate, out var rect) ||
+                    _engine.LastComputedStyles == null ||
+                    !_engine.LastComputedStyles.TryGetValue(candidate, out var style))
+                {
+                    continue;
+                }
+
+                var contentBox = new SKRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
+                var hit = scrollbars.HitTestScrollbar(candidate, contentBox, style, x, y);
+                if (hit == 1)
+                {
+                    scrollbars.HandleVerticalDrag(
+                        candidate,
+                        contentBox,
+                        y,
+                        manager.HasHorizontalScrollbar(candidate));
+                }
+                else if (hit == 2)
+                {
+                    scrollbars.HandleHorizontalDrag(
+                        candidate,
+                        contentBox,
+                        x,
+                        manager.HasVerticalScrollbar(candidate));
+                }
+                else
+                {
+                    continue;
+                }
+
+                _engine.ScriptEngine?.RequestRender?.Invoke();
+                return true;
+            }
+
             return false;
         }
 
@@ -8518,6 +8606,7 @@ pre {{
         private double _pointerY = 0;
 
         private HashSet<string> _pressedKeys = new HashSet<string>();
+        private readonly HashSet<int> _pressedPointerButtons = new HashSet<int>();
 
         public async Task PerformActionsAsync(List<ActionChain> actions)
         {
@@ -8576,19 +8665,37 @@ pre {{
                         }
                         if (action.Duration > 0)
                             await Task.Delay(action.Duration);
+                        await DispatchInputEventAsync(
+                            "mousemove",
+                            (float)_pointerX,
+                            (float)_pointerY,
+                            _pressedPointerButtons.FirstOrDefault()).ConfigureAwait(false);
                         break;
 
                     case "pointerdown":
-                        // Simulate click on element at current position
-                        var elementAtPoint = FindElementAtPoint(_pointerX, _pointerY);
-                        if (elementAtPoint != null)
+                        if (_pressedPointerButtons.Add(action.Button))
                         {
-                            // Trigger click behavior
-                            await HandleElementClick(elementAtPoint);
+                            await DispatchInputEventAsync(
+                                "mousedown",
+                                (float)_pointerX,
+                                (float)_pointerY,
+                                action.Button).ConfigureAwait(false);
                         }
                         break;
 
                     case "pointerup":
+                        if (_pressedPointerButtons.Remove(action.Button))
+                        {
+                            await DispatchInputEventAsync(
+                                "mouseup",
+                                (float)_pointerX,
+                                (float)_pointerY,
+                                action.Button).ConfigureAwait(false);
+                            await DispatchClickAndActivate(
+                                (float)_pointerX,
+                                (float)_pointerY,
+                                action.Button).ConfigureAwait(false);
+                        }
                         break;
 
                     case "pause":
@@ -11325,11 +11432,19 @@ pre {{
                 .FirstOrDefault(IsTextEntryElement);
         }
 
-        public Task ReleaseActionsAsync()
+        public async Task ReleaseActionsAsync()
         {
             // Release all pressed keys and pointer buttons
             _pressedKeys.Clear();
-            return Task.CompletedTask;
+            foreach (var button in _pressedPointerButtons.ToArray())
+            {
+                await DispatchInputEventAsync(
+                    "mouseup",
+                    (float)_pointerX,
+                    (float)_pointerY,
+                    button).ConfigureAwait(false);
+            }
+            _pressedPointerButtons.Clear();
         }
 
         // Alerts - connected to JavaScript engine
@@ -11530,12 +11645,13 @@ pre {{
             // that another task may still be using: doing so races with the
             // task's own Dispose and throws ObjectDisposedException under load.
             var owner = new CancellationTokenSource();
-            var token = owner.Token;
+            if (Interlocked.CompareExchange(ref _interactionRecascadeDebounce, owner, null) != null)
+            {
+                owner.Dispose();
+                return;
+            }
 
-            var previous = Interlocked.Exchange(ref _interactionRecascadeDebounce, owner);
-            previous?.Cancel();
-
-            _ = RunInteractionRecascadeAsync(owner, token);
+            _ = RunInteractionRecascadeAsync(owner, owner.Token);
         }
 
         private async Task RunInteractionRecascadeAsync(
@@ -11553,7 +11669,7 @@ pre {{
             }
             catch (OperationCanceledException)
             {
-                // Superseded by a newer interaction recascade request.
+                // BrowserHost disposal canceled the pending recascade.
             }
             finally
             {
