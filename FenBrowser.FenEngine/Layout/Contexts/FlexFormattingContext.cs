@@ -1282,7 +1282,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 if (!resolvedPercentHeight)
                 {
-                    if (!string.IsNullOrEmpty(box.ComputedStyle?.HeightExpression))
+                    if (state.IsForced &&
+                        float.IsFinite(state.AvailableSize.Height) &&
+                        state.AvailableSize.Height >= 0f)
+                    {
+                        // A containing formatting context has already solved the used
+                        // size (for example position:fixed with top+bottom). Re-layout
+                        // flex children against that definite cross-size so alignment
+                        // is not left at the intrinsic first-pass position.
+                        height = Math.Max(
+                            0f,
+                            state.AvailableSize.Height - (float)margin.Vertical - verticalChrome);
+                    }
+                    else if (!string.IsNullOrEmpty(box.ComputedStyle?.HeightExpression))
                     {
                         float parentHeight = state.AvailableSize.Height;
                         if (float.IsInfinity(parentHeight) || parentHeight <= 0)

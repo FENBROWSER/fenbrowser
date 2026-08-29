@@ -304,6 +304,43 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public async System.Threading.Tasks.Task FixedInsetFlexOverlay_CentersChildInResolvedViewportHeight()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body { margin: 0; min-height: 100%; }
+    #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+    #challenge { width: 410px; height: 520px; }
+  </style>
+</head>
+<body><div id='overlay'><iframe id='challenge'></iframe></div></body>
+</html>";
+
+            var parser = new HtmlParser(html, new System.Uri("https://x.test/"));
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await FenBrowser.FenEngine.Rendering.CssLoader.ComputeAsync(
+                root,
+                new System.Uri("https://x.test/"),
+                null,
+                viewportWidth: 1920,
+                viewportHeight: 927);
+
+            var computer = new LayoutEngineComputer(styles, 1920, 927);
+            computer.Measure(doc, new SKSize(1920, 927));
+            computer.Arrange(doc, new SKRect(0, 0, 1920, 927));
+
+            var overlayBox = computer.GetBox(doc.GetElementById("overlay"));
+            var challengeBox = computer.GetBox(doc.GetElementById("challenge"));
+
+            Assert.InRange(overlayBox.ContentBox.Height, 926f, 928f);
+            Assert.InRange(challengeBox.BorderBox.Top, 203f, 204f);
+        }
+
+        [Fact]
         public void AlignItems_Baseline_UsesItemBaselinesInsteadOfFlexStart()
         {
             var container = CreateFlexContainer(2);

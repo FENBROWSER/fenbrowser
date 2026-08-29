@@ -842,6 +842,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     state.ViewportWidth,
                     state.ViewportHeight,
                     state.Deadline);
+                resolvedState.IsForced = true;
                 context.Layout(oof, resolvedState);
 
                 // Re-apply final absolute position after child layout potentially touched geometry.
