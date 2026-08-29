@@ -1193,6 +1193,103 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal(1, loadCount);
         }
 
+        [Fact]
+        public async Task IframeSrcSetAfterAppend_QueuesFrameElementLoader()
+        {
+            var baseUri = new Uri("http://127.0.0.1:8000/");
+            var document = new HtmlParser(
+                """
+                <html>
+                  <body>
+                    <iframe id="captchaFrame"></iframe>
+                    <script>
+                      document.getElementById('captchaFrame').src =
+                        'http://127.0.0.1:8001/anchor.html';
+                    </script>
+                  </body>
+                </html>
+                """,
+                baseUri).Parse();
+
+            var loaded = new TaskCompletionSource<Uri>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll,
+                AllowExternalScripts = true,
+                FrameElementLoader = (_, uri) =>
+                {
+                    loaded.TrySetResult(uri);
+                    return Task.CompletedTask;
+                }
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var completed = await Task.WhenAny(loaded.Task, Task.Delay(1000));
+
+            Assert.Same(loaded.Task, completed);
+            Assert.Equal("http://127.0.0.1:8001/anchor.html", (await loaded.Task).AbsoluteUri);
+        }
+
+        [Fact]
+        public async Task CrossOriginFrame_PostMessageStillReachesAnchorAfterSiblingFrameIsClosed()
+        {
+            var parentUri = new Uri("http://127.0.0.1:8000/");
+            var parentDocument = new HtmlParser(
+                "<html><body>" +
+                "<iframe id='captchaFrame' src='http://127.0.0.1:8001/anchor.html'></iframe>" +
+                "<iframe id='challengeFrame' src='http://127.0.0.1:8001/challenge.html'></iframe>" +
+                "<script>addEventListener('message',function(e){var d=e.data||{};" +
+                "if(d.type==='captcha-challenge-result'&&d.ok){" +
+                "document.getElementById('challengeFrame').src='about:blank';" +
+                "document.getElementById('captchaFrame').contentWindow.postMessage(" +
+                "{type:'captcha-verified',session:'test',token:d.token},'http://127.0.0.1:8001');" +
+                "globalThis.__parentVerified='yes';}" +
+                "if(d.type==='captcha-verified')globalThis.__anchorCommitted='yes';});</script>" +
+                "</body></html>",
+                parentUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll,
+                AllowExternalScripts = true,
+                FrameElementLoader = (_, _) => Task.CompletedTask
+            };
+            await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+            var anchorFrame = Assert.IsType<Element>(parentDocument.GetElementById("captchaFrame"));
+            var anchorUri = new Uri("http://127.0.0.1:8001/anchor.html?parent=http%3A%2F%2F127.0.0.1%3A8000&session=test");
+            var anchorDocument = new HtmlParser(
+                "<html><body><button id='checkbox'></button><script>" +
+                "var cb=document.getElementById('checkbox');" +
+                "addEventListener('message',function(e){var d=e.data||{};" +
+                "if(e.origin==='http://127.0.0.1:8000'&&d.session==='test'&&d.type==='captcha-verified'){" +
+                "cb.dataset.state='checked';parent.postMessage({type:'captcha-verified',session:'test'},'http://127.0.0.1:8000');}});" +
+                "</script></body></html>",
+                anchorUri).Parse();
+            anchorFrame.AppendChild(anchorDocument);
+            await engine.SetSubdocumentDomAsync(anchorDocument.DocumentElement, anchorUri);
+
+            var challengeFrame = Assert.IsType<Element>(parentDocument.GetElementById("challengeFrame"));
+            var challengeUri = new Uri("http://127.0.0.1:8001/challenge.html?parent=http%3A%2F%2F127.0.0.1%3A8000&session=test");
+            var challengeDocument = new HtmlParser("<html><body></body></html>", challengeUri).Parse();
+            challengeFrame.AppendChild(challengeDocument);
+            await engine.SetSubdocumentDomAsync(challengeDocument.DocumentElement, challengeUri);
+
+            engine.EvaluateInSubdocumentForTest(
+                challengeDocument,
+                "parent.postMessage({type:'captcha-challenge-result',session:'test',ok:true,token:'token'},'http://127.0.0.1:8000')");
+
+            await WaitForEngineValueAsync(engine, "String(globalThis.__anchorCommitted)", "yes");
+
+            Assert.Equal("yes", engine.Evaluate("String(globalThis.__parentVerified)")?.ToString());
+            Assert.Equal("yes", engine.Evaluate("String(globalThis.__anchorCommitted)")?.ToString());
+            Assert.Equal(
+                "checked",
+                engine.EvaluateInSubdocumentForTest(
+                    anchorDocument,
+                    "String(document.getElementById('checkbox').dataset.state)")?.ToString());
+        }
+
         private static JsHostAdapter CreateHost()
         {
             return new JsHostAdapter(

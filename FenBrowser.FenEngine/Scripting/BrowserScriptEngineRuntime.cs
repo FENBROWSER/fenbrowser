@@ -17580,6 +17580,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case Element element when string.Equals(property, "src", StringComparison.Ordinal):
                     element.SetAttribute("src", CoerceToHostString(value));
+                    if (IsIFrameElement(element))
+                    {
+                        _owner.QueueFrameElementLoad(element);
+                    }
                     return true;
                 case Element element when string.Equals(property, "href", StringComparison.Ordinal):
                     element.SetAttribute("href", CoerceToHostString(value));
