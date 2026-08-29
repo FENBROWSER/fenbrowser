@@ -3358,7 +3358,9 @@ namespace FenBrowser.Core.Parsing
             foreach (var el in _openElements)
             {
                 if (el == target) return true;
-                string tag = el.LocalName;
+                // SVG adjustment preserves camelCase (e.g. foreignObject), so
+                // normalize before matching the lowercase boundary list.
+                string tag = el.LocalName?.ToLowerInvariant();
                 // Scope boundary elements
                 if (tag == "applet" || tag == "caption" || tag == "html" ||
                     tag == "table" || tag == "td" || tag == "th" ||
@@ -3420,7 +3422,9 @@ namespace FenBrowser.Core.Parsing
                 if (string.Equals(element.TagName, tagName, StringComparison.OrdinalIgnoreCase))
                     return true;
 
-                switch (element.LocalName)
+                // SVG adjustment preserves camelCase (e.g. foreignObject), so
+                // normalize before matching the lowercase boundary list.
+                switch (element.LocalName?.ToLowerInvariant())
                 {
                     case "applet":
                     case "caption":
