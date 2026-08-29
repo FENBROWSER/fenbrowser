@@ -65,13 +65,45 @@ public sealed class ActiveFormattingNoahsArkTests
     }
 
     [Fact]
-    public void MarkerStopsEquivalentEntryCounting()
+    public void MarkerScopedFormattingRunDiesWithItsTableCell()
     {
-        // <td> inserts a marker; three <b> before it and three after it must all
-        // survive (cap applies per marker-delimited run, not globally).
-        var document = new HtmlTreeBuilder("<!doctype html><b>1<b>2<b>3<table><td><b>4<b>5<b>6<b>7<tr><td><p>8").Build();
+        // <td> pushes a marker; the b run accumulated after it must be discarded
+        // when the cell closes (ClearActiveFormattingElementsMarker), so nothing
+        // reconstructs into the next cell.
+        var document = new HtmlTreeBuilder(
+            "<!doctype html><table><tr><td><b>1<b>2<b>3<b>4</td><td>5</td></table>").Build();
+        var body = document.Body!;
 
-        // Sanity: parse completes without loss of the later text.
-        Assert.Contains("8", document.Body!.TextContent);
+        var cells = body.GetElementsByTagName("td").OfType<Element>().ToList();
+        Assert.Equal(2, cells.Count);
+
+        var firstCell = cells[0];
+        var secondCell = cells[1];
+
+        // First cell keeps its nested formatting run in the DOM...
+        Assert.Equal("1234", firstCell.TextContent);
+        Assert.NotEmpty(firstCell.GetElementsByTagName("b").OfType<Element>());
+
+        // ...but the marker-scoped run is gone from the active-formatting list:
+        // the next cell must contain plain text with no reconstructed <b> clones.
+        Assert.Equal("5", secondCell.TextContent);
+        Assert.Empty(secondCell.GetElementsByTagName("b").OfType<Element>());
+    }
+
+    [Fact]
+    public void FormattingElementPoppedByTableContextClear_IsNotResurrected()
+    {
+        // `</table>` pops the fostered <b> off the open-element stack while it
+        // stays in the active-formatting list (stale reference). A later `</b>`
+        // must hit the AAA "not on the stack" recovery path: remove from the list
+        // and return, never reconstructing a clone.
+        var document = new HtmlTreeBuilder("<!doctype html><table><b>x</table></b>y").Build();
+        var body = document.Body!;
+
+        var table = body.ChildNodes.OfType<Element>().Single(e => e.LocalName == "table");
+        Assert.Equal("x", table.PreviousSibling!.TextContent); // fostered <b> keeps "x"
+
+        // The trailing text is a direct child of body: no <b> clone wraps "y".
+        Assert.Equal("y", body.ChildNodes.OfType<Text>().Last().Data);
     }
 }
