@@ -1358,6 +1358,12 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
                 
+                if (st.TagName == "nobr" && HasElementInButtonScope("nobr"))
+                {
+                    // Misnested <nobr>: run the adoption agency before inserting the new one.
+                    RunAdoptionAgencyAlgorithm("nobr");
+                }
+
                 if (st.TagName == "b" || st.TagName == "strong" || st.TagName == "em" || st.TagName == "i" || st.TagName == "u" || st.TagName == "s" || st.TagName == "small" || st.TagName == "code" ||
                     st.TagName == "nobr" || st.TagName == "big" || st.TagName == "font" || st.TagName == "tt" || st.TagName == "strike")
                 {
@@ -2376,9 +2382,24 @@ namespace FenBrowser.Core.Parsing
 
         private (ContainerNode Parent, Node Before) GetAppropriateInsertionLocation()
         {
-            return _fosterParenting
-                ? GetFosterParentInsertionLocation()
-                : (CurrentInsertionTarget, null);
+            // Foster parenting only applies when the insertion target itself is a
+            // table-family element (WHATWG "appropriate place for inserting a node").
+            if (_fosterParenting && IsTableFamilyInsertionTarget(CurrentInsertionTarget))
+            {
+                return GetFosterParentInsertionLocation();
+            }
+
+            return (CurrentInsertionTarget, null);
+        }
+
+        private static bool IsTableFamilyInsertionTarget(Node target)
+        {
+            return target is Element element &&
+                (string.Equals(element.LocalName, "table", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(element.LocalName, "tbody", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(element.LocalName, "tfoot", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(element.LocalName, "thead", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(element.LocalName, "tr", StringComparison.OrdinalIgnoreCase));
         }
 
         private void InsertNodeAtAppropriatePlace(Node node)
@@ -3387,6 +3408,41 @@ namespace FenBrowser.Core.Parsing
             {
                 if (string.Equals(element.TagName, tagName, StringComparison.OrdinalIgnoreCase))
                     return true;
+            }
+
+            return false;
+        }
+
+        private bool HasElementInButtonScope(string tagName)
+        {
+            foreach (var element in _openElements)
+            {
+                if (string.Equals(element.TagName, tagName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                switch (element.LocalName)
+                {
+                    case "applet":
+                    case "caption":
+                    case "html":
+                    case "table":
+                    case "td":
+                    case "th":
+                    case "marquee":
+                    case "object":
+                    case "template":
+                    case "button":
+                    case "mi":
+                    case "mo":
+                    case "mn":
+                    case "ms":
+                    case "mtext":
+                    case "annotation-xml":
+                    case "foreignobject":
+                    case "desc":
+                    case "title":
+                        return false;
+                }
             }
 
             return false;
