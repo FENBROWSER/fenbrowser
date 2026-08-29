@@ -112,7 +112,11 @@ public sealed class PopupWindow : IDisposable
         }
     }
 
-    public void SetContent(string html)
+    public void SetContent(
+        string html,
+        Func<Uri, Task<string>> fetchExternalCssAsync = null,
+        Func<Uri, Task<System.IO.Stream>> imageLoader = null,
+        Uri baseUrl = null)
     {
         if (Volatile.Read(ref _closeRequested) != 0)
         {
@@ -126,10 +130,10 @@ public sealed class PopupWindow : IDisposable
             engine = new FenBrowser.FenEngine.Rendering.CustomHtmlEngine();
             renderTask = engine.LoadHtmlAsync(
                 html,
-                new Uri("fen://popup/" + (_name ?? "unnamed")),
+                baseUrl ?? new Uri("fen://popup/" + (_name ?? "unnamed")),
+                fetchExternalCssAsync,
+                imageLoader,
                 _ => System.Threading.Tasks.Task.FromResult<string>(null),
-                _ => System.Threading.Tasks.Task.FromResult<System.IO.Stream>(null),
-                _ => { },
                 viewportWidth: Volatile.Read(ref _width));
         }
         catch (Exception ex)

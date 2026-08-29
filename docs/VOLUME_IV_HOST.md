@@ -1639,3 +1639,23 @@ Verification:
 Verification:
 
 - Focused tab display-URL and Host WebDriver URL tests pass (`6/6`).
+
+## Popup URL Self-Loading (2026-08-29)
+
+- `window.open(url)` popups no longer sit on the `Loading {url}...`
+  placeholder forever when nothing document-writes into the popup context.
+  `HostDialogCoordinator` now loads the target URL through the popup tab's
+  `ResourceManager` (shared session/cookie state) via `NavigationManager`
+  and pushes the result into the popup window: the page HTML on success
+  (with real CSS/image fetchers and the final URI as base for relative
+  subresources), or the standard tab error page on failure — connection
+  failure, SSL error, timeout, 404, generic. A 4xx response carrying an
+  HTML body renders that server body, matching tab navigation.
+- `PopupWindow.SetContent` gained optional CSS/image fetchers and a base
+  URI; the placeholder path is unchanged when they are omitted. A finalized
+  `document.write` popup still wins over the URL load, and a closed popup
+  cancels the update.
+- Verification: `FenBrowser.Tests/Host/PopupUrlContentTests.cs` (error-page
+  mapping incl. 4xx-body passthrough, and a live
+  `NavigationManager` fetch of `https://popup.test/` failing fast with
+  `ConnectionFailed`); `FenJsPopupSecurityTests` still pass 4/4.

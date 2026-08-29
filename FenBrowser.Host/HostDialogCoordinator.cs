@@ -244,6 +244,16 @@ public static class HostDialogCoordinator
                     ? state.AccumulatedHtml
                     : $"<html><body style='font-family:sans-serif;padding:20px;'>Loading {state.NavigationUrl}...</body></html>";
                 popup.SetContent(displayHtml);
+
+                // The engine-side popup context only finalizes through
+                // document.write(); a plain URL popup would otherwise sit on the
+                // placeholder forever, success or failure. Load the URL into the
+                // popup window here so it shows the page or the standard error
+                // page (e.g. unresolvable hosts).
+                if (!state.HasFinalizedDocument)
+                {
+                    _ = LoadPopupUrlContentAsync(state);
+                }
             }
 
             if (state.HasFinalizedDocument)
@@ -252,6 +262,82 @@ public static class HostDialogCoordinator
                     "data:text/html;charset=utf-8," + Uri.EscapeDataString(state.AccumulatedHtml));
             }
         }
+    }
+
+    private static async Task LoadPopupUrlContentAsync(PopupState state)
+    {
+        try
+        {
+            var resources = state.Tab?.Browser?.Host?.ResourceManager;
+            if (resources == null)
+            {
+                return;
+            }
+
+            var navigation = new FenBrowser.FenEngine.Rendering.NavigationManager(resources);
+            var result = await navigation.NavigateAsync(state.NavigationUrl, FenBrowser.FenEngine.Rendering.NavigationRequestKind.Programmatic)
+                .ConfigureAwait(false);
+
+            var uiTask = WindowManager.Instance.RunOnMainThread(() =>
+            {
+                PopupWindow window;
+                lock (state.Sync)
+                {
+                    if (state.Closed || state.HasFinalizedDocument)
+                    {
+                        return;
+                    }
+                    window = state.Window;
+                }
+
+                if (window == null || window.IsClosed)
+                {
+                    return;
+                }
+
+                if (result.Status == FetchStatus.Success)
+                {
+                    window.SetContent(
+                        result.Content ?? string.Empty,
+                        cssUri => resources.FetchCssAsync(cssUri),
+                        imageUri => resources.FetchImageAsync(imageUri),
+                        result.FinalUri);
+                }
+                else
+                {
+                    window.SetContent(RenderPopupErrorHtml(state.NavigationUrl, result));
+                }
+            });
+            ObservePopupUiTask(uiTask, state, "load popup url", closeOnFailure: false);
+        }
+        catch (Exception ex)
+        {
+            FenLogger.Error(
+                $"[HostDialogCoordinator] Popup URL load failed for '{state.NavigationUrl}': {ex.Message}",
+                LogCategory.JavaScript);
+        }
+    }
+
+    internal static string RenderPopupErrorHtml(string url, FetchResult result)
+    {
+        // Mirror the tab navigation error pages; a 4xx response that carried an
+        // HTML body (challenge pages, access denied) renders that body instead.
+        if (result.FailureReason == FetchFailureReasonCode.HttpError &&
+            result.StatusCode >= 400 && result.StatusCode < 500 &&
+            !string.IsNullOrWhiteSpace(result.Content) &&
+            (result.ContentType ?? string.Empty).StartsWith("text/html", StringComparison.OrdinalIgnoreCase))
+        {
+            return result.Content;
+        }
+
+        return result.Status switch
+        {
+            FetchStatus.ConnectionFailed => FenBrowser.FenEngine.Rendering.ErrorPageRenderer.RenderConnectionFailed(url, result.ErrorDetail),
+            FetchStatus.SslError => FenBrowser.FenEngine.Rendering.ErrorPageRenderer.RenderSslError(url, result.ErrorDetail, result.Certificate),
+            FetchStatus.Timeout => FenBrowser.FenEngine.Rendering.ErrorPageRenderer.RenderGenericError(url, "Connection Timed Out", "The server took too long to respond.", result.ErrorDetail),
+            FetchStatus.NotFound => FenBrowser.FenEngine.Rendering.ErrorPageRenderer.RenderGenericError(url, "404 Not Found", "The page you requested could not be found.", result.ErrorDetail),
+            _ => FenBrowser.FenEngine.Rendering.ErrorPageRenderer.RenderGenericError(url, "Error", "Something went wrong.", result.ErrorDetail)
+        };
     }
 
     private static string NormalizePopupNavigationUrl(string url)
