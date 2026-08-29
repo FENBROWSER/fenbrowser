@@ -383,6 +383,7 @@ namespace FenBrowser.Host
             using var browser = new FenBrowser.FenEngine.Rendering.BrowserHost();
             using var logForwarder = new ChildProcessLogForwarder("renderer", tabId);
             var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
+            ConfigureRendererChildBrowser(browser, childRenderer);
 
             bool handshakeComplete = false;
             bool running = true;
@@ -2139,6 +2140,19 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                     browser.OnMouseWheel(input.X, input.Y, input.DeltaX, input.DeltaY);
                     break;
             }
+        }
+
+        internal static void ConfigureRendererChildBrowser(BrowserHost browser, SkiaDomRenderer renderer)
+        {
+            ArgumentNullException.ThrowIfNull(browser);
+            ArgumentNullException.ThrowIfNull(renderer);
+
+            // The renderer child must use one renderer instance for both frame
+            // production and input hit testing. Otherwise BrowserHost falls back
+            // to CustomHtmlEngine's private cached renderer, whose layout snapshot
+            // can predate dynamically attached iframe documents.
+            browser.SetActiveRenderer(renderer);
+            browser.Engine.SetExternalRenderer(renderer);
         }
 
         internal static bool ShouldPublishRendererMetadata(string title, bool faviconChanged, bool urlChanged) =>

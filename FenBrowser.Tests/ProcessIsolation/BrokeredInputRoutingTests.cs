@@ -166,8 +166,7 @@ public sealed class BrokeredInputRoutingTests
         using var host = new BrowserHost();
         var renderer = new SkiaDomRenderer();
         host.EnableJavaScript = true;
-        host.SetActiveRenderer(renderer);
-        host.Engine.SetExternalRenderer(renderer);
+        FenBrowser.Host.Program.ConfigureRendererChildBrowser(host, renderer);
         await host.Engine.RenderAsync(
             html,
             new Uri("https://fen.test/renderer-input"),
@@ -207,6 +206,74 @@ public sealed class BrokeredInputRoutingTests
             });
 
         Assert.True(ElementStateManager.Instance.IsChecked(target));
+    }
+
+    [Fact]
+    public async Task Program_DispatchRendererInputAsync_MouseMoveRunsIframeBoundaryHandlerWhenRealmIsBusy()
+    {
+        const int viewportWidth = 320;
+        const int viewportHeight = 200;
+        const string html = """
+            <!doctype html>
+            <html><body style="margin:0">
+              <iframe id="frame" width="180" height="80" style="display:block;border:0;margin:20px"
+                srcdoc="<!doctype html><html><body style='margin:0'><span id='target' style='display:block;width:40px;height:40px'>box</span><script>var target=document.getElementById('target');target.addEventListener('mouseover',function(){target.className='recaptcha-checkbox-hover';});setInterval(function(){var total=0;for(var i=0;i&lt;250000;i++){total+=i;}window.__timerTotal=total;},0);</script></body></html>">
+              </iframe>
+            </body></html>
+            """;
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        FenBrowser.Host.Program.ConfigureRendererChildBrowser(host, renderer);
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/renderer-iframe-hover"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var frame = Assert.IsType<Element>(root.OwnerDocument?.GetElementById("frame"));
+        await WaitForAsync(
+            () => frame.FirstChild is Document document && document.GetElementById("target") != null,
+            "srcdoc iframe target did not load");
+        var frameDocument = Assert.IsType<Document>(frame.FirstChild);
+        var target = Assert.IsType<Element>(frameDocument.GetElementById("target"));
+
+        using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
+        using var canvas = new SKCanvas(bitmap);
+        renderer.RenderFrame(new RenderFrameRequest
+        {
+            Root = root,
+            Canvas = canvas,
+            Styles = host.ComputedStyles,
+            Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+            BaseUrl = "https://fen.test/renderer-iframe-hover",
+            InvalidationReason = RenderFrameInvalidationReason.Input,
+            RequestedBy = nameof(Program_DispatchRendererInputAsync_MouseMoveRunsIframeBoundaryHandlerWhenRealmIsBusy),
+            EmitVerificationReport = false
+        });
+        Assert.True(renderer.LastLayout.TryGetElementRect(target, out var rect));
+        await WaitForAsync(
+            () => host.Engine.ScriptEngine.IsEventDispatchBusy(target),
+            "iframe timer did not make the realm busy");
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(
+            host,
+            new RendererInputEvent
+            {
+                Type = RendererInputEventType.MouseMove,
+                X = rect.Left + (rect.Width / 2f),
+                Y = rect.Top + (rect.Height / 2f)
+            });
+
+        await WaitForAsync(
+            () => string.Equals(target.GetAttribute("class"), "recaptcha-checkbox-hover", StringComparison.Ordinal),
+            "iframe mouseover handler did not publish its hover class");
     }
 
     [Fact]
@@ -833,7 +900,6 @@ public sealed class BrokeredInputRoutingTests
 #pragma warning disable CS0067
         public event System.Action<int, RendererFrameReadyPayload> FrameReceived;
         public event System.Action<int, RendererMetadataChangedPayload> MetadataChanged;
-        public event System.Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
         public event System.Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
         public event System.Action<int, string> RendererCrashed;
 #pragma warning restore CS0067
