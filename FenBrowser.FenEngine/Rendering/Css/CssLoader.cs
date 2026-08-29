@@ -1216,7 +1216,7 @@ namespace FenBrowser.FenEngine.Rendering
             // 4.5) Resolve CSS variables
             EngineLogCompat.Debug("[PERF-CSS] Starting variable resolution...", LogCategory.Rendering);
             long variableResolutionStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-            ResolveVariables(allRulesForVars);
+            ResolveVariables(allRulesForVars, ComputeRootCascadedProperties(styleSet, cascadeRoot ?? root));
             double variableResolutionMs = System.Diagnostics.Stopwatch.GetElapsedTime(variableResolutionStarted).TotalMilliseconds;
             EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms");
             if (!parseStageTimedOut)
@@ -1378,7 +1378,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 var allRules = styleSet.Sheets.SelectMany(static sheet => sheet.Rules).ToList();
-                ResolveVariables(allRules);
+                ResolveVariables(allRules, ComputeRootCascadedProperties(styleSet, cascadeRoot ?? stylesheetRoot));
                 var computed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(
                     cascadeRoot,
                     styleSet,
@@ -1530,10 +1530,39 @@ namespace FenBrowser.FenEngine.Rendering
         // ===========================
         
         /// <summary>
-        /// Extract CSS custom properties (--name: value) from :root and html rules
-        /// into the active document style state for var() resolution.
+        /// Compute the cascade-winning declarations for the document root element
+        /// before the main cascade pass, so the document-global custom-property map
+        /// reflects only declarations that actually match the root, resolved by
+        /// specificity and cascade order.
         /// </summary>
-        private static void ResolveVariables(List<NewCss.CssRule> rules)
+        private static Dictionary<string, NewCss.CssDeclaration> ComputeRootCascadedProperties(
+            StyleSet styleSet,
+            Element cascadeRoot)
+        {
+            if (cascadeRoot == null)
+            {
+                return null;
+            }
+
+            var engine = new CascadeEngine(styleSet);
+            return engine.ComputeCascadedValues(cascadeRoot);
+        }
+
+        /// <summary>
+        /// Build the document-global custom-property map.
+        ///
+        /// The map is seeded from the cascade-computed declarations of the root
+        /// element only (matching, specificity, and cascade order already applied),
+        /// plus @property initial values, which are document-global by definition.
+        /// Selector-shape inspection of style rules is deliberately not used: it
+        /// cannot verify that a rule matches the root, nor resolve competing
+        /// declarations. Body-scoped declarations inherit through the per-element
+        /// parent chain in ResolveStyle and must not enter the document map, since
+        /// they do not inherit into <head> (CSS-001).
+        /// </summary>
+        private static void ResolveVariables(
+            List<NewCss.CssRule> rules,
+            Dictionary<string, NewCss.CssDeclaration> rootCascadedProperties)
         {
             if (rules == null) return;
 
@@ -1543,7 +1572,7 @@ namespace FenBrowser.FenEngine.Rendering
                 state.CustomProperties.Clear();
                 state.RootFontSize = 16.0;
                 int count = 0;
-                
+
                 foreach (var rule in rules)
                 {
                     if (rule is NewCss.CssPropertyRule propertyRule)
@@ -1560,66 +1589,29 @@ namespace FenBrowser.FenEngine.Rendering
                                 state.CustomProperties[name] = initialValue;
                             }
                         }
-
-                        continue;
                     }
+                }
 
-                    if (!(rule is NewCss.CssStyleRule styleRule)) continue;
-
-                    bool isRootRule = false;
-                    foreach (var chain in styleRule.Selector.Chains)
+                if (rootCascadedProperties != null)
+                {
+                    foreach (var kv in rootCascadedProperties)
                     {
-                        if (chain.Segments.Count > 0)
+                        if (kv.Key != null && kv.Key.StartsWith("--", StringComparison.Ordinal) &&
+                            !string.IsNullOrWhiteSpace(kv.Value?.Value))
                         {
-                            var lastSeg = chain.Segments[chain.Segments.Count - 1];
-                            string tag = lastSeg.TagName?.ToLowerInvariant() ?? "";
-                            if (tag == ":root" || tag == "html" || tag == "body" || tag == "*" || lastSeg.PseudoClasses?.Any(pc => pc.Name == "root" || pc.Name == ":root") == true)
-                            {
-                                isRootRule = true;
-                                break;
-                            }
-                            // Check pseudo-classes if tag is empty/implied
-                            if (string.IsNullOrEmpty(tag) && lastSeg.PseudoClasses != null)
-                            {
-                                foreach (var pc in lastSeg.PseudoClasses)
-                                {
-                                    if (pc.Name.ToLowerInvariant().Contains("root"))
-                                    {
-                                        isRootRule = true;
-                                        break;
-                                    }
-                                }
-                            }
+                            state.CustomProperties[kv.Key] = kv.Value.Value.Trim();
+                            count++;
                         }
                     }
-                    
-                    foreach (var decl in styleRule.Declarations)
+
+                    var rootFontSizeDecl = rootCascadedProperties
+                        .FirstOrDefault(kv => string.Equals(kv.Key, "font-size", StringComparison.OrdinalIgnoreCase))
+                        .Value;
+                    if (rootFontSizeDecl != null)
                     {
-                        string propName = decl.Property;
-                        if (string.IsNullOrEmpty(propName)) continue;
-
-                        if (propName.StartsWith("--"))
+                        var rawFontSize = rootFontSizeDecl.Value?.Trim();
+                        if (!string.IsNullOrEmpty(rawFontSize))
                         {
-                            string value = decl.Value?.Trim() ?? "";
-                            if (!string.IsNullOrEmpty(value) && isRootRule)
-                            {
-                                // Only :root/html/body-scoped declarations are captured in the
-                                // document map; they inherit to every element anyway. Non-root
-                                // custom properties must resolve through the per-element parent
-                                // chain in ResolveStyle, never document-wide (CSS-001).
-                                state.CustomProperties[propName] = value;
-                                count++;
-                            }
-                        }
-                        
-                        if (isRootRule && propName.Equals("font-size", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var rawFontSize = decl.Value?.Trim();
-                            if (string.IsNullOrEmpty(rawFontSize))
-                            {
-                                continue;
-                            }
-
                             // Resolve root-level var() references before converting to px.
                             // Without this guard, unresolved var() can evaluate to 0 and poison rem basis.
                             var fontSizeForParse = rawFontSize;
@@ -1637,8 +1629,7 @@ namespace FenBrowser.FenEngine.Rendering
                                 }
                             }
 
-                            double fs;
-                            if (TryPx(fontSizeForParse, out fs, percentBase: 16.0) &&
+                            if (TryPx(fontSizeForParse, out var fs, percentBase: 16.0) &&
                                 double.IsFinite(fs) &&
                                 fs > 0)
                             {
@@ -1654,7 +1645,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
                 }
-                
+
                 DebugLog(@"debug_log.txt", $"[CSS-VAR] Final Root Font Size: {state.RootFontSize}px\r\n");
                 DebugLog(@"debug_log.txt", $"[CSS-VAR] Extracted {count} global variables.\r\n");
             }

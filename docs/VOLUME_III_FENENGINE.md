@@ -10720,19 +10720,30 @@ Verification:
 ## 2.411 Custom-Property Document Scoping (2026-08-29)
 
 - `ResolveVariables` no longer flattens every style rule's custom-property
-  declarations into the document-global map. Only root-scoped rules
-  (`:root`, `html`, `body`, universal) and `@property` initial values are
-  captured there; those inherit to the whole document anyway. Non-root
-  declarations such as `div.x { --y: ... }` now resolve strictly through the
-  per-element cascade and the parent-chain inherited map in `ResolveStyle`
-  (CSS-001), so `var(--y)` on an unrelated subtree takes its fallback or the
+  declarations into the document-global map. The map is now seeded from the
+  cascade-computed declarations of the document root element only (selector
+  matching, specificity, and cascade order already applied by
+  `CascadeEngine.ComputeCascadedValues`), plus `@property` initial values,
+  which are document-global by definition. Selector-shape inspection is not
+  used: it cannot prove that a rule matches the root. Non-root declarations
+  such as `div.x { --y: ... }` resolve strictly through the per-element
+  cascade and the parent-chain inherited map in `ResolveStyle` (CSS-001), so
+  `var(--y)` on an unrelated subtree takes its fallback or the
   guaranteed-invalid state instead of leaking the scoped value.
-- Custom properties still inherit normally within the declaring subtree, and
-  the root font-size capture and rem basis are unchanged.
+- Body-scoped declarations inherit into body's subtree through the normal
+  parent chain but do not enter the document map, because body's custom
+  properties do not inherit into `<head>`.
+- Root font-size capture derives from the same root cascade instead of
+  root-shaped selector inspection; the computed root font-size override
+  applied during the cascade pass and the rem basis are unchanged.
 - Verification: `FenBrowser.Tests/Core/CssCustomPropertyRegressionTests.cs`
-  (`ComputeAsync_NonRootCustomProperty_DoesNotLeakToUnrelatedSubtree`,
-  `ComputeAsync_ScopedCustomProperty_InheritsWithinSubtree`); full
-  `FenBrowser.Tests` run shows no new failures versus baseline.
+  (`ComputeAsync_UniversalSegmentRule_DoesNotLeakIntoDocumentMap`,
+  `ComputeAsync_RootSelectorRule_OnlyCountsWhenItActuallyMatches`,
+  `ComputeAsync_RootRuleCascade_UsesWinningDeclaration`,
+  `ComputeAsync_BodyCustomProperty_DoesNotReachHeadElements`,
+  `ComputeAsync_NonRootCustomProperty_DoesNotLeakToUnrelatedSubtree`,
+  `ComputeAsync_ScopedCustomProperty_InheritsWithinSubtree`); CSS-wide
+  test slice shows no new failures versus baseline.
 
 ## 2.412 Shared Recursive Calc Evaluator In Layout (2026-08-29)
 

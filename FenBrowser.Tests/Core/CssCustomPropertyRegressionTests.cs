@@ -83,6 +83,121 @@ public class CssCustomPropertyRegressionTests
     }
 
     [Fact]
+    public async Task ComputeAsync_UniversalSegmentRule_DoesNotLeakIntoDocumentMap()
+    {
+        CssLoader.ClearCaches();
+
+        const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    div * { --x: rgb(1, 2, 3); }
+    #outside { color: var(--x, rgb(9, 9, 9)); }
+  </style>
+</head>
+<body>
+  <div><span>a</span></div>
+  <p id='outside'>b</p>
+</body>
+</html>";
+
+        var parser = new HtmlParser(html);
+        var doc = parser.Parse();
+        var root = doc.Children.OfType<Element>().First(element => element.TagName == "HTML");
+        var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+        var outside = doc.Descendants().OfType<Element>().First(element => element.Id == "outside");
+
+        // A universal selector inside a descendant chain is not a document-global
+        // declaration; var(--x) outside the div subtree must take the fallback.
+        Assert.Equal("rgb(9, 9, 9)", computed[outside].Map["color"]);
+    }
+
+    [Fact]
+    public async Task ComputeAsync_RootSelectorRule_OnlyCountsWhenItActuallyMatches()
+    {
+        CssLoader.ClearCaches();
+
+        const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    html.dark { --x: rgb(1, 2, 3); }
+    #outside { color: var(--x, rgb(9, 9, 9)); }
+  </style>
+</head>
+<body><p id='outside'>a</p></body>
+</html>";
+
+        var parser = new HtmlParser(html);
+        var doc = parser.Parse();
+        var root = doc.Children.OfType<Element>().First(element => element.TagName == "HTML");
+        var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+        var outside = doc.Descendants().OfType<Element>().First(element => element.Id == "outside");
+
+        // html.dark does not match (no class attribute): the declaration must not
+        // reach the document map.
+        Assert.Equal("rgb(9, 9, 9)", computed[outside].Map["color"]);
+    }
+
+    [Fact]
+    public async Task ComputeAsync_RootRuleCascade_UsesWinningDeclaration()
+    {
+        CssLoader.ClearCaches();
+
+        const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    html { --x: rgb(1, 1, 1); }
+    :root { --x: rgb(2, 2, 2); }
+    #outside { color: var(--x); }
+  </style>
+</head>
+<body><p id='outside'>a</p></body>
+</html>";
+
+        var parser = new HtmlParser(html);
+        var doc = parser.Parse();
+        var root = doc.Children.OfType<Element>().First(element => element.TagName == "HTML");
+        var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+        var outside = doc.Descendants().OfType<Element>().First(element => element.Id == "outside");
+
+        // :root (specificity 0,1,0) beats html (0,0,1) regardless of source order.
+        Assert.Equal("rgb(2, 2, 2)", computed[outside].Map["color"]);
+    }
+
+    [Fact]
+    public async Task ComputeAsync_BodyCustomProperty_DoesNotReachHeadElements()
+    {
+        CssLoader.ClearCaches();
+
+        const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style id='hs'></style>
+  <style>
+    body { --x: rgb(1, 2, 3); }
+    #hs { color: var(--x, rgb(9, 9, 9)); }
+  </style>
+</head>
+<body><p>a</p></body>
+</html>";
+
+        var parser = new HtmlParser(html);
+        var doc = parser.Parse();
+        var root = doc.Children.OfType<Element>().First(element => element.TagName == "HTML");
+        var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+        var headStyle = doc.Descendants().OfType<Element>().First(element => element.Id == "hs");
+
+        // Body-scoped declarations inherit into body's subtree, not <head>.
+        Assert.Equal("rgb(9, 9, 9)", computed[headStyle].Map["color"]);
+    }
+
+    [Fact]
     public async Task ComputeAsync_ScopedCustomProperty_InheritsWithinSubtree()
     {
         CssLoader.ClearCaches();
