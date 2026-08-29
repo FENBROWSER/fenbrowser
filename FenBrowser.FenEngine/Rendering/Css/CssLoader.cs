@@ -1601,13 +1601,14 @@ namespace FenBrowser.FenEngine.Rendering
                         if (propName.StartsWith("--"))
                         {
                             string value = decl.Value?.Trim() ?? "";
-                            if (!string.IsNullOrEmpty(value))
+                            if (!string.IsNullOrEmpty(value) && isRootRule)
                             {
-                                if (isRootRule || !state.CustomProperties.ContainsKey(propName))
-                                {
-                                    state.CustomProperties[propName] = value;
-                                    count++;
-                                }
+                                // Only :root/html/body-scoped declarations are captured in the
+                                // document map; they inherit to every element anyway. Non-root
+                                // custom properties must resolve through the per-element parent
+                                // chain in ResolveStyle, never document-wide (CSS-001).
+                                state.CustomProperties[propName] = value;
+                                count++;
                             }
                         }
                         

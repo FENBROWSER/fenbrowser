@@ -10716,3 +10716,20 @@ Verification:
   (probe results, scripting-surface nulls for all WebGL context kinds, Canvas 2D
   fillRect + toDataURL smoke) and the existing
   `CanvasRenderingContextTests` suite.
+
+## 2.411 Custom-Property Document Scoping (2026-08-29)
+
+- `ResolveVariables` no longer flattens every style rule's custom-property
+  declarations into the document-global map. Only root-scoped rules
+  (`:root`, `html`, `body`, universal) and `@property` initial values are
+  captured there; those inherit to the whole document anyway. Non-root
+  declarations such as `div.x { --y: ... }` now resolve strictly through the
+  per-element cascade and the parent-chain inherited map in `ResolveStyle`
+  (CSS-001), so `var(--y)` on an unrelated subtree takes its fallback or the
+  guaranteed-invalid state instead of leaking the scoped value.
+- Custom properties still inherit normally within the declaring subtree, and
+  the root font-size capture and rem basis are unchanged.
+- Verification: `FenBrowser.Tests/Core/CssCustomPropertyRegressionTests.cs`
+  (`ComputeAsync_NonRootCustomProperty_DoesNotLeakToUnrelatedSubtree`,
+  `ComputeAsync_ScopedCustomProperty_InheritsWithinSubtree`); full
+  `FenBrowser.Tests` run shows no new failures versus baseline.
