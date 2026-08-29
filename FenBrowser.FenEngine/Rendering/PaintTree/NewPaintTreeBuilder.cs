@@ -2273,14 +2273,15 @@ namespace FenBrowser.FenEngine.Rendering
             if (hasBgImage)
             {
                 string url = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
+                string resourceBaseUri = GetResourceBaseUri(node);
                 if (!string.IsNullOrWhiteSpace(url) &&
                     !url.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
                     !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
-                    !string.IsNullOrEmpty(_baseUri))
+                    !string.IsNullOrEmpty(resourceBaseUri))
                 {
                     try
                     {
-                        url = new Uri(new Uri(_baseUri), url).ToString();
+                        url = new Uri(new Uri(resourceBaseUri), url).ToString();
                     }
                     catch (Exception ex)
                     {
@@ -2977,14 +2978,15 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // Resolve Relative URLs
-            if (!string.IsNullOrEmpty(url) && 
-                !url.StartsWith("http", StringComparison.OrdinalIgnoreCase) && 
-                !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) && 
-                !string.IsNullOrEmpty(_baseUri))
+            string resourceBaseUri = GetResourceBaseUri(node);
+            if (!string.IsNullOrEmpty(url) &&
+                !url.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+                !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrEmpty(resourceBaseUri))
             {
-                try 
+                try
                 {
-                    var uri = new Uri(new Uri(_baseUri), url);
+                    var uri = new Uri(new Uri(resourceBaseUri), url);
                     url = uri.ToString();
                 }
                 catch (Exception ex) { global::FenBrowser.Core.EngineLogCompat.Warn($"[IMG-BUILD] Failed resolving image URL against base URI: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
@@ -3044,6 +3046,18 @@ namespace FenBrowser.FenEngine.Rendering
                 BackgroundAttachmentFixed = string.Equals(style?.BackgroundAttachment, "fixed", StringComparison.OrdinalIgnoreCase),
                 FixedViewportOrigin = new SKPoint(fixedOriginX, fixedOriginY)
             };
+        }
+
+        private string GetResourceBaseUri(Node node)
+        {
+            string documentUrl = node?.OwnerDocument?.BaseURI;
+            if (Uri.TryCreate(documentUrl, UriKind.Absolute, out var documentUri) &&
+                !string.Equals(documentUri.Scheme, "about", StringComparison.OrdinalIgnoreCase))
+            {
+                return documentUri.AbsoluteUri;
+            }
+
+            return _baseUri;
         }
 
         private ImagePaintNode BuildGradientBackgroundImageNode(Node node, Layout.BoxModel box, CssComputed style)
