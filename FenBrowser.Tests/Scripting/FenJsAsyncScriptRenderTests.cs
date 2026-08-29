@@ -1232,6 +1232,67 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
+        public async Task CrossOriginFrame_AnchorBootstrapAndInitialPostMessageComplete()
+        {
+            var parentUri = new Uri("http://127.0.0.1:8000/");
+            var parentDocument = new HtmlParser(
+                "<html><body><iframe id='captchaFrame' src='http://127.0.0.1:8001/anchor.html'></iframe>" +
+                "<script>addEventListener('message',function(e){globalThis.__received=String(e.data.type);" +
+                "if(e.data.type==='captcha-ready'){globalThis.__readyReceived='yes';document.getElementById('captchaFrame').contentWindow.postMessage({type:'parent-ping',session:'test'},'http://127.0.0.1:8001');}" +
+                "if(e.data.type==='captcha-pong')globalThis.__pongReceived='yes';});</script></body></html>",
+                parentUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll,
+                AllowExternalScripts = true
+            };
+            await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+            var iframe = Assert.IsType<Element>(parentDocument.GetElementById("captchaFrame"));
+            var frameUri = new Uri("http://127.0.0.1:8001/anchor.html?parent=http%3A%2F%2F127.0.0.1%3A8000&session=test");
+            var frameDocument = new HtmlParser(
+                """
+                <html><body><button id="checkbox"></button><div id="anchor"></div><script>
+                const p=new URLSearchParams(location.search),po=p.get("parent")||"*",session=p.get("session")||"missing",cb=document.getElementById("checkbox"),anchor=document.getElementById("anchor");
+                function send(d){parent.postMessage({...d,session},po)}
+                ["pointerdown","mousedown","pointerup","mouseup","click","keydown","focus"].forEach(n=>cb.addEventListener(n,e=>send({type:"captcha-event",name:n}),true));
+                addEventListener("message",e=>{if(e.origin==="http://127.0.0.1:8000"&&e.data.session===session&&e.data.type==="parent-ping")send({type:"captcha-pong"})});
+                send({type:"captcha-ready"});
+                globalThis.__anchorStage="ready-sent";
+                try {
+                Promise.resolve().then(()=>send({type:"captcha-selftest",name:"microtask",pass:true}));
+                globalThis.__anchorStage="promise-queued";
+                const computed=getComputedStyle(anchor);
+                globalThis.__anchorStage="style-read";
+                send({type:"captcha-selftest",name:"border-radius",pass:parseFloat(computed.borderTopLeftRadius)>0});
+                globalThis.__anchorStage="style-sent";
+                requestAnimationFrame(()=>send({type:"captcha-selftest",name:"animation-frame",pass:true}));
+                globalThis.__anchorStage="raf-queued";
+                const img=new Image;
+                globalThis.__anchorStage="image-created";
+                img.onload=()=>send({type:"captcha-selftest",name:"svg-image-load",pass:true});
+                img.onerror=()=>send({type:"captcha-selftest",name:"svg-image-load",pass:false});
+                img.src="assets/logo.svg";
+                globalThis.__anchorStage="image-src-set";
+                globalThis.__anchorBootstrap="complete";
+                } catch(e) { globalThis.__anchorError=String(e&&e.message?e.message:e); }
+                </script></body></html>
+                """,
+                frameUri).Parse();
+            iframe.AppendChild(frameDocument);
+
+            await engine.SetSubdocumentDomAsync(frameDocument.DocumentElement, frameUri);
+
+            Assert.Equal(
+                "complete|image-src-set|undefined",
+                engine.EvaluateInSubdocumentForTest(frameDocument, "[String(globalThis.__anchorBootstrap),String(globalThis.__anchorStage),String(globalThis.__anchorError)].join('|')")?.ToString());
+            await WaitForEngineValueAsync(engine, "String(globalThis.__readyReceived)", "yes");
+            Assert.Equal("yes", engine.Evaluate("String(globalThis.__readyReceived)")?.ToString());
+            await WaitForEngineValueAsync(engine, "String(globalThis.__pongReceived)", "yes");
+            Assert.Equal("yes", engine.Evaluate("String(globalThis.__pongReceived)")?.ToString());
+        }
+
+        [Fact]
         public async Task CrossOriginFrame_PostMessageStillReachesAnchorAfterSiblingFrameIsClosed()
         {
             var parentUri = new Uri("http://127.0.0.1:8000/");

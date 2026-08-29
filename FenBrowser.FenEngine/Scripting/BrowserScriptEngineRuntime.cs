@@ -7572,6 +7572,38 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             _ => ToHostOrNull(new Document(), HostObjectKind.DomDocument));
         _interpreter.RegisterGlobalValue("__fenNativeDocumentCtor", documentConstructor);
 
+        JsValue CreateImage(IReadOnlyList<JsValue> args)
+        {
+            var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
+            if (document == null)
+            {
+                return JsValue.Undefined;
+            }
+
+            var image = document.CreateElement("img");
+            if (args.Count > 0)
+            {
+                image.SetAttribute(
+                    "width",
+                    Math.Max(0, (int)CoerceToFiniteNumber(args[0], 0)).ToString(CultureInfo.InvariantCulture));
+            }
+            if (args.Count > 1)
+            {
+                image.SetAttribute(
+                    "height",
+                    Math.Max(0, (int)CoerceToFiniteNumber(args[1], 0)).ToString(CultureInfo.InvariantCulture));
+            }
+
+            return ToHostNodeOrNull(image);
+        }
+
+        var imageConstructor = _interpreter.AllocateNativeConstructor(
+            "Image",
+            (_, args) => CreateImage(args),
+            CreateImage,
+            length: 0);
+        _interpreter.RegisterGlobalValue("__fenNativeImageCtor", imageConstructor);
+
         EvaluateWithFenJsRaw(
             """
             (function () {
@@ -7588,6 +7620,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     configurable: true
                 });
                 delete globalThis.__fenNativeDocumentCtor;
+
+                var nativeImage = globalThis.__fenNativeImageCtor;
+                if (globalThis.HTMLImageElement && globalThis.HTMLImageElement.prototype) {
+                    nativeImage.prototype = globalThis.HTMLImageElement.prototype;
+                }
+                Object.defineProperty(globalThis, 'Image', {
+                    value: nativeImage,
+                    writable: true,
+                    configurable: true
+                });
+                delete globalThis.__fenNativeImageCtor;
             })();
             """);
     }
@@ -13085,7 +13128,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             // Navigation objects
             "navigator", "performance", "crypto", "screen",
             // Constructors
-            "Event", "CustomEvent", "MessageEvent", "URL", "URLSearchParams",
+            "Event", "CustomEvent", "MessageEvent", "URL", "URLSearchParams", "Image",
             "DOMParser", "FormData", "Blob", "File",
             "TextEncoder", "TextDecoder",
             "Map", "Set", "WeakMap", "WeakSet", "WeakRef",
@@ -13426,11 +13469,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     var ports = args.Count > 2
                         ? ExtractTransferredMessagePorts(args[2])
                         : Array.Empty<MessagePortEndpoint>();
-                    _parentRealmOwner?.QueueMessageFromFrame(
-                        embeddingFrame,
-                        data,
-                        targetOrigin,
-                        ports);
+                    var parentRealm = _parentRealmOwner;
+                    if (parentRealm != null)
+                    {
+                        parentRealm.QueueCrossRealmMessage(() => parentRealm.QueueMessageFromFrame(
+                            embeddingFrame,
+                            data,
+                            targetOrigin,
+                            ports));
+                    }
                     return JsValue.Undefined;
                 },
                 length: 1));
@@ -13643,6 +13690,36 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
     }
 
+    private void QueueCrossRealmMessage(Action delivery)
+    {
+        var sessionGeneration = _fenJsSessionGeneration;
+        lock (_windowMessageQueueLock)
+        {
+            _windowMessageDeliveryTail = _windowMessageDeliveryTail.ContinueWith(
+                _ =>
+                {
+                    if (sessionGeneration != _fenJsSessionGeneration)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        delivery();
+                    }
+                    catch (Exception ex)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[FenJsBridge] Cross-realm message delivery failed: {ex.Message}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
+        }
+    }
+
     private void QueueMessageFromParent(
         object data,
         string sourceOrigin,
@@ -13825,11 +13902,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     var ports = args.Count > 2 ? args[2] : JsValue.Undefined;
                     if (_iframeRealms.TryGetValue(iframe, out var frameRealm))
                     {
-                        frameRealm.QueueMessageFromParent(
-                            ConvertJsValueToObject(data),
-                            GetCurrentWindowOrigin(),
+                        var messageData = ConvertJsValueToObject(data);
+                        var sourceOrigin = GetCurrentWindowOrigin();
+                        var transferredPorts = ExtractTransferredMessagePorts(ports);
+                        frameRealm.QueueCrossRealmMessage(() => frameRealm.QueueMessageFromParent(
+                            messageData,
+                            sourceOrigin,
                             targetOrigin,
-                            ExtractTransferredMessagePorts(ports));
+                            transferredPorts));
                         return JsValue.Undefined;
                     }
                     QueueWindowMessage(
