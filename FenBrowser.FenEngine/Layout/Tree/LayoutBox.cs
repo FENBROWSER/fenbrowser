@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Layout;
+using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Layout.Tree
 {
@@ -116,6 +117,13 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 return Store.GetIsAnonymous(StoreId);
             }
         }
+
+        /// <summary>
+        /// Static position of an out-of-flow box relative to its parent's content
+        /// origin, captured during flow layout. Null when the formatting context
+        /// did not record one. Valid for one layout pass only.
+        /// </summary>
+        public SKPoint? OutOfFlowStaticPosition;
 
         /// <summary>
         /// Returns true if the element is out of normal flow (absolute or fixed).

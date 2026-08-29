@@ -19,7 +19,8 @@ namespace FenBrowser.FenEngine.Layout
             BoxModel containerGeometry,
             LayoutState? state = null,
             bool collapsePositioningMarginsInFinalGeometry = false,
-            SKPoint? staticPosition = null)
+            SKPoint? staticPosition = null,
+            SKRect? finalContainingBlockRect = null)
         {
             if (box?.ComputedStyle == null || box.Geometry == null || containerGeometry == null) return;
 
@@ -31,11 +32,18 @@ namespace FenBrowser.FenEngine.Layout
             bool isFixed = string.Equals(effectivePosition, "fixed", StringComparison.OrdinalIgnoreCase);
             bool useViewportContainingBlock =
                 isFixed &&
+                finalContainingBlockRect == null &&
                 state.HasValue &&
                 state.Value.ViewportWidth > 0 &&
                 state.Value.ViewportHeight > 0;
 
-            if (useViewportContainingBlock)
+            if (finalContainingBlockRect != null)
+            {
+                // Explicit containing-block rect (page coordinates) supplied by the
+                // final out-of-flow pass — CSS 2.1 §10.1 resolution already happened.
+                cbRect = finalContainingBlockRect.Value;
+            }
+            else if (useViewportContainingBlock)
             {
                 cbRect = new SKRect(0, 0, state.Value.ViewportWidth, state.Value.ViewportHeight);
             }
@@ -145,6 +153,121 @@ namespace FenBrowser.FenEngine.Layout
 
             return AbsolutePositionSolver.SolveWithAnchorOverrides(
                 style, cb, anchorBox, intrinsicWidth, intrinsicHeight, preserveIntrinsicAutoSize);
+        }
+
+        /// <summary>
+        /// CSS 2.1 §10.1: walks the layout-tree ancestors and returns the nearest
+        /// box that establishes a containing block for an absolutely positioned
+        /// descendant: the nearest ancestor with position other than static, or
+        /// with a transform/filter/perspective. Null when the containing block is
+        /// the initial containing block.
+        /// </summary>
+        public static LayoutBox FindContainingBlockForPositioned(LayoutBox box)
+        {
+            var current = box?.Parent;
+            while (current != null)
+            {
+                if (EstablishesContainingBlockForAbsolute(current))
+                {
+                    return current;
+                }
+
+                current = current.Parent;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// A transform, filter, or perspective ancestor becomes the containing
+        /// block even for position:fixed descendants (CSS Transforms §3).
+        /// </summary>
+        public static LayoutBox FindTransformContainingBlockForFixed(LayoutBox box)
+        {
+            var current = box?.Parent;
+            while (current != null)
+            {
+                if (HasEstablishingTransform(current))
+                {
+                    return current;
+                }
+
+                current = current.Parent;
+            }
+
+            return null;
+        }
+
+        private static bool EstablishesContainingBlockForAbsolute(LayoutBox box)
+        {
+            var style = box?.ComputedStyle;
+            if (style == null)
+            {
+                return false;
+            }
+
+            var position = LayoutStyleResolver.GetEffectivePosition(style);
+            if (!string.IsNullOrWhiteSpace(position) &&
+                !string.Equals(position, "static", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return HasEstablishingTransform(box);
+        }
+
+        private static bool HasEstablishingTransform(LayoutBox box)
+        {
+            var style = box?.ComputedStyle;
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(style.Transform) &&
+                !string.Equals(style.Transform, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(style.Filter) &&
+                !string.Equals(style.Filter, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return style.Map != null &&
+                   style.Map.TryGetValue("perspective", out var perspective) &&
+                   !string.IsNullOrWhiteSpace(perspective) &&
+                   !string.Equals(perspective, "none", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Containing-block padding box for an out-of-flow box whose containing
+        /// block is <paramref name="cbBox"/>; viewport rect when the containing
+        /// block is the initial containing block.
+        /// </summary>
+        public static SKRect GetContainingBlockRect(
+            LayoutBox cbBox,
+            float viewportWidth,
+            float viewportHeight)
+        {
+            if (cbBox?.Geometry != null)
+            {
+                var paddingBox = cbBox.Geometry.PaddingBox;
+                if (paddingBox.Width > 0 && paddingBox.Height > 0)
+                {
+                    return paddingBox;
+                }
+
+                var contentBox = cbBox.Geometry.ContentBox;
+                if (contentBox.Width > 0 && contentBox.Height > 0)
+                {
+                    return contentBox;
+                }
+            }
+
+            return new SKRect(0, 0, Math.Max(0f, viewportWidth), Math.Max(0f, viewportHeight));
         }
 
         private static void ApplyStaticPositionForAutoInsets(

@@ -90,6 +90,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (child.IsOutOfFlow)
                 {
                     outOfFlow.Add(new OutOfFlowLayoutCandidate(child, new SKPoint(xOffset, yOffset + currentY)));
+                    child.OutOfFlowStaticPosition = new SKPoint(0, currentY);
                     continue;
                 }
 

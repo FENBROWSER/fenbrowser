@@ -128,6 +128,7 @@ flowchart TD
     - **Measure Pass**: Calculates desired sizes (Intrinsic/Extrinsic).
     - **Arrange Pass**: Assigns final X/Y coordinates relative to the parent.
 4.  **Absolute Logic**: The `LayoutEngine` post-processes the tree to calculate absolute screen coordinates for the renderer.
+5.  **Final Out-of-Flow Positioning (CSS 2.1 §10.1)**: After the formatting-context pass, `LayoutEngine.PositionOutOfFlowBoxes` re-resolves every `position:absolute` box in final page coordinates against its containing block: the nearest ancestor with `position` other than `static`, or with a `transform`/`filter`/`perspective` (`LayoutPositioningLogic.FindContainingBlockForPositioned`), falling back to the initial containing block (viewport). `position:fixed` keeps its viewport resolution unless a transform/filter/perspective ancestor establishes its containing block (`FindTransformContainingBlockForFixed`). Formatting contexts only provisionally resolve out-of-flow children against the immediate parent; the final pass is the spec-authoritative placement. The static position for auto-inset absolute boxes is captured per box during flow layout (`LayoutBox.OutOfFlowStaticPosition`, relative to the parent content origin) and re-based to page coordinates in the final pass. The legacy dead `ContainingBlockResolver` class was removed; the `ContainingBlock` geometry struct it hosted (shared with `AbsolutePositionSolver`) remains in `Layout/ContainingBlockResolver.cs`.
 
 ### 2.2 Key Components
 

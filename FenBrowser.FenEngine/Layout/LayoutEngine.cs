@@ -167,6 +167,14 @@ namespace FenBrowser.FenEngine.Layout
                     DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Layout Pass Complete\n");
             }
 
+            // 3.5 Final out-of-flow positioning — CSS 2.1 §10.1 containing-block
+            // resolution. Formatting contexts provisionally resolve abs/fixed
+            // boxes against the immediate parent in flow-local coordinates; this
+            // pass re-resolves them in final page coordinates against the nearest
+            // valid containing block (nearest positioned/transformed ancestor, or
+            // the initial containing block).
+            PositionOutOfFlowBoxes(rootBox, initialState);
+
             // 4. Materialize renderer-facing layout artifacts from the box tree.
             // Tracked separately so a slow flatten/collect step doesn't get
             // misattributed to the formatting-context Layout() pass above.
@@ -513,6 +521,81 @@ namespace FenBrowser.FenEngine.Layout
             bool candidateVisible = candidateArea > 0.5f ||
                                     (Math.Max(0f, candidateModel.ContentBox.Width) * Math.Max(0f, candidateModel.ContentBox.Height) > 0.5f);
             return existingEmpty && candidateVisible;
+        }
+
+        /// <summary>
+        /// Re-resolves out-of-flow boxes in final page coordinates against their
+        /// CSS 2.1 §10.1 containing blocks. position:absolute resolves against the
+        /// nearest positioned/transformed ancestor (or the initial containing
+        /// block); position:fixed keeps the viewport resolution unless a
+        /// transform/filter/perspective ancestor establishes its containing block.
+        /// Runs top-down so nested out-of-flow boxes see updated ancestor geometry.
+        /// </summary>
+        private void PositionOutOfFlowBoxes(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, FenBrowser.FenEngine.Layout.Contexts.LayoutState state)
+        {
+            if (box == null)
+            {
+                return;
+            }
+
+            if (box.Geometry != null && box.ComputedStyle != null)
+            {
+                var position = LayoutStyleResolver.GetEffectivePosition(box.ComputedStyle);
+                if (string.Equals(position, "absolute", StringComparison.OrdinalIgnoreCase))
+                {
+                    ResolveFinalOutOfFlowGeometry(box, state, forFixed: false);
+                }
+                else if (string.Equals(position, "fixed", StringComparison.OrdinalIgnoreCase))
+                {
+                    ResolveFinalOutOfFlowGeometry(box, state, forFixed: true);
+                }
+            }
+
+            var children = box.Children;
+            for (int i = 0; i < children.Count; i++)
+            {
+                PositionOutOfFlowBoxes(children[i], state);
+            }
+        }
+
+        private void ResolveFinalOutOfFlowGeometry(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, FenBrowser.FenEngine.Layout.Contexts.LayoutState state, bool forFixed)
+        {
+            var cbBox = forFixed
+                ? LayoutPositioningLogic.FindTransformContainingBlockForFixed(box)
+                : LayoutPositioningLogic.FindContainingBlockForPositioned(box);
+
+            // position:fixed with no transform ancestor keeps its viewport
+            // resolution from the flow pass.
+            if (forFixed && cbBox == null)
+            {
+                return;
+            }
+
+            var cbRect = LayoutPositioningLogic.GetContainingBlockRect(
+                cbBox,
+                state.ViewportWidth,
+                state.ViewportHeight);
+
+            SKPoint? staticPosition = null;
+            if (!forFixed &&
+                box.OutOfFlowStaticPosition.HasValue &&
+                box.Parent?.Geometry != null)
+            {
+                var contentOrigin = box.Parent.Geometry.ContentBox;
+                var relativeStatic = box.OutOfFlowStaticPosition.Value;
+                staticPosition = new SKPoint(
+                    contentOrigin.Left + relativeStatic.X,
+                    contentOrigin.Top + relativeStatic.Y);
+            }
+
+            LayoutPositioningLogic.ResolvePositionedBox(
+                box,
+                cbBox ?? box.Parent,
+                cbBox?.Geometry ?? box.Parent?.Geometry,
+                state,
+                collapsePositioningMarginsInFinalGeometry: true,
+                staticPosition: staticPosition,
+                finalContainingBlockRect: cbRect);
         }
 
         private void FlattenBoxTreeAbsolute(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, Dictionary<Element, ElementGeometry> rects, LayoutContext context, float parentContentAbsX, float parentContentAbsY)
