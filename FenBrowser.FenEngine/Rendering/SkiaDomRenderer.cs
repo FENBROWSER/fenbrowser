@@ -2806,7 +2806,6 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (node == null) return;
             node.ClearDirty(kind);
-            node.ClearDirty(InvalidationKind.Style); // Ensure Style is cleared too
 
             // This walk only mutates dirty flags, so DOM sibling links remain stable.
             // Avoid NodeList's mutation-safe snapshot allocation on every visited node.

@@ -39,9 +39,12 @@ public class Phase15NoOpWorkEliminationTests
     public void CollectPaintDirtyRoots_ReturnsEmpty_WhenTreeIsClean()
     {
         var root = new Element("div");
-        root.AppendChild(new Element("span"));
+        var child = new Element("span");
+        root.AppendChild(child);
 
-        // Never set any dirty flags.
+        // New DOM nodes start dirty until their first pipeline pass.
+        root.ClearDirty(InvalidationKind.Paint);
+        child.ClearDirty(InvalidationKind.Paint);
         var dirtyRoots = typeof(SkiaDomRenderer)
             .GetMethod("CollectPaintDirtyRoots",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
@@ -49,6 +52,22 @@ public class Phase15NoOpWorkEliminationTests
 
         Assert.NotNull(dirtyRoots);
         Assert.Empty(dirtyRoots);
+    }
+
+    [Fact]
+    public void PaintCleanup_DoesNotConsumePendingStyleInvalidation()
+    {
+        var root = new Element("div");
+        var child = new Element("span");
+        root.AppendChild(child);
+        child.MarkDirty(InvalidationKind.Style | InvalidationKind.Paint);
+
+        var renderer = new SkiaDomRenderer();
+        renderer.RecursivelyClearDirty(root, InvalidationKind.Paint);
+
+        Assert.False(child.PaintDirty);
+        Assert.True(child.StyleDirty);
+        Assert.True(root.ChildStyleDirty);
     }
 
     [Fact]
