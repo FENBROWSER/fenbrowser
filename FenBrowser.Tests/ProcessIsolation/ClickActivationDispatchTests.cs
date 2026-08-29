@@ -150,6 +150,23 @@ public sealed class ClickActivationDispatchTests
         Assert.Equal("3,-7", host.Engine.Evaluate("globalThis.__wheel")?.ToString());
     }
 
+    [Fact]
+    public async Task GetComputedStyle_ExposesRawMapPropertiesAsCamelCaseMembers()
+    {
+        using var host = await RenderAsync(
+            """
+            <!doctype html><html><body>
+              <div id="target" style="border-radius:9px;box-shadow:1px 2px 3px #000"></div>
+            </body></html>
+            """);
+
+        Assert.Equal(
+            "9px|1px 2px 3px #000|9px|1px 2px 3px #000",
+            host.Engine.Evaluate(
+                "var s=getComputedStyle(document.getElementById('target'));" +
+                "[s.borderRadius,s.boxShadow,s.getPropertyValue('border-radius'),s.getPropertyValue('box-shadow')].join('|')")?.ToString());
+    }
+
     private static async Task<BrowserHost> RenderAsync(string html)
     {
         var host = new BrowserHost();
