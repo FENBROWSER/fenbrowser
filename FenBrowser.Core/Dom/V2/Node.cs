@@ -525,7 +525,19 @@ namespace FenBrowser.Core.Dom.V2
 
         private void UpdateTreeScopeRecursive(TreeScope newScope)
         {
+            var oldScope = _treeScope;
+            if (this is Element element && !string.IsNullOrEmpty(element.Id))
+            {
+                oldScope?.UnregisterId(element.Id, element);
+            }
+
             _treeScope = newScope;
+
+            if (this is Element insertedElement && !string.IsNullOrEmpty(insertedElement.Id))
+            {
+                newScope?.RegisterId(insertedElement.Id, insertedElement);
+            }
+
             for (var child = FirstChild; child != null; child = child._nextSibling)
             {
                 child.UpdateTreeScopeRecursive(newScope);

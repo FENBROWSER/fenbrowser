@@ -6,6 +6,23 @@ namespace FenBrowser.Tests.Core;
 public sealed class DomIdIndexTests
 {
     [Fact]
+    public void AppendSubtree_RegistersIdsAfterIndexWasInitialized()
+    {
+        var document = Document.CreateHtmlDocument();
+        Assert.Null(document.GetElementById("late-token"));
+
+        var container = document.CreateElement("div");
+        var token = document.CreateElement("input");
+        token.Id = "late-token";
+        container.AppendChild(token);
+
+        document.Body.AppendChild(container);
+
+        Assert.Same(token, document.GetElementById("late-token"));
+        Assert.Equal(1, document.IdIndexFullRebuildCount);
+    }
+
+    [Fact]
     public void DuplicateIdMutation_UpdatesOnlyAffectedBucket()
     {
         var document = Document.CreateHtmlDocument();
