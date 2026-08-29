@@ -5953,6 +5953,26 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 var origin = __fenPerformanceTimeOrigin;
                 var marks = Object.create(null);
                 var entries = [];
+                var observers = [];
+
+                function queueObserverDelivery(observer) {
+                    if (observer._scheduled || observer._records.length === 0) return;
+                    observer._scheduled = true;
+                    Promise.resolve().then(function () {
+                        observer._scheduled = false;
+                        if (observer._records.length === 0) return;
+                        var records = observer.takeRecords();
+                        observer._callback(records, observer);
+                    });
+                }
+
+                function enqueueForObservers(entry) {
+                    observers.forEach(function (observer) {
+                        if (observer._entryTypes.indexOf(entry.entryType) < 0) return;
+                        observer._records.push(entry);
+                        queueObserverDelivery(observer);
+                    });
+                }
 
                 function pushEntry(name, entryType, startTime, duration) {
                     var e = {
@@ -5965,8 +5985,60 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         }
                     };
                     entries.push(e);
+                    enqueueForObservers(e);
                     return e;
                 }
+
+                function PerformanceObserver(callback) {
+                    if (!(this instanceof PerformanceObserver)) {
+                        throw new TypeError("Constructor PerformanceObserver requires 'new'");
+                    }
+                    if (typeof callback !== 'function') {
+                        throw new TypeError('PerformanceObserver callback must be a function');
+                    }
+                    this._callback = callback;
+                    this._entryTypes = [];
+                    this._records = [];
+                    this._scheduled = false;
+                    observers.push(this);
+                }
+
+                PerformanceObserver.supportedEntryTypes = ['mark', 'measure'];
+                PerformanceObserver.prototype.observe = function (options) {
+                    if (options == null || typeof options !== 'object') {
+                        throw new TypeError('PerformanceObserver.observe requires an options object');
+                    }
+                    var requested;
+                    if (options.entryTypes != null) {
+                        if (options.type != null) {
+                            throw new TypeError('PerformanceObserver options cannot contain both type and entryTypes');
+                        }
+                        requested = Array.prototype.slice.call(options.entryTypes);
+                    } else if (options.type != null) {
+                        requested = [String(options.type)];
+                    } else {
+                        throw new TypeError('PerformanceObserver options require type or entryTypes');
+                    }
+                    this._entryTypes = requested.filter(function (type) {
+                        return PerformanceObserver.supportedEntryTypes.indexOf(type) >= 0;
+                    });
+                    if (options.buffered === true && options.type != null) {
+                        var type = String(options.type);
+                        for (var i = 0; i < entries.length; i++) {
+                            if (entries[i].entryType === type) this._records.push(entries[i]);
+                        }
+                        queueObserverDelivery(this);
+                    }
+                };
+                PerformanceObserver.prototype.disconnect = function () {
+                    this._entryTypes = [];
+                    this._records = [];
+                };
+                PerformanceObserver.prototype.takeRecords = function () {
+                    var records = this._records.slice();
+                    this._records.length = 0;
+                    return records;
+                };
 
                 var perf = {
                     now: function () { return nowFn(); },
@@ -6013,6 +6085,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                 Object.defineProperty(globalThis, 'performance', {
                     value: perf, writable: true, configurable: true, enumerable: true
+                });
+                Object.defineProperty(globalThis, 'PerformanceObserver', {
+                    value: PerformanceObserver, writable: true, configurable: true
                 });
             })();
             """);

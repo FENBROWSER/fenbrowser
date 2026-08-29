@@ -90,6 +90,10 @@
 
 - FenJS exposes `Element.getClientRects()` through the current layout snapshot. The call flushes pending layout, returns the element border box as a DOMRect list when geometry exists, and returns an empty list with `item(...) === null` when no layout box is available (`FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`).
 
+### 1.6 Performance Observer
+
+- FenJS exposes `PerformanceObserver` for `mark` and `measure` entries. Observers validate `type`/`entryTypes` options, deliver matching records at a microtask checkpoint, support buffered single-type observation, and implement `takeRecords()` and `disconnect()` (`FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`).
+
 ## 2. The Layout Engine (`FenBrowser.FenEngine.Layout`)
 
 The layout engine acts as a pure function: `(DOM Tree + Styles + Viewport) -> Geometry`.
