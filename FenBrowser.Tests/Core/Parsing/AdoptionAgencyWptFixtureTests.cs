@@ -23,6 +23,15 @@ public sealed class AdoptionAgencyWptFixtureTests
         {
             foreach (var block in ParseDatBlocks(ResolveRepoFile("wpt", "html", "syntax", "parsing", "resources", file)))
             {
+                // <a><svg><tr><input></a> is governed by foreign-content breakout
+                // rules, not the adoption agency algorithm; it is covered by the
+                // dedicated unsupported-behavior characterization below instead of
+                // the tree-comparison theory.
+                if (block.Markup.Contains("<svg>"))
+                {
+                    continue;
+                }
+
                 yield return new object[] { file, block.Markup, block.ExpectedDump };
             }
         }
@@ -32,14 +41,6 @@ public sealed class AdoptionAgencyWptFixtureTests
     [MemberData(nameof(AdoptionFixtures))]
     public void MatchesWptAdoptionAgencyTrees(string file, string markup, string expectedDump)
     {
-        if (markup.Contains("<svg>"))
-        {
-            // The <a><svg><tr><input></a> case is governed by foreign-content
-            // breakout rules, not the adoption agency algorithm; it stays excluded
-            // until SVG token handling is wired up.
-            return;
-        }
-
         var document = HtmlParser.ParseDocument(markup);
 
         var actual = string.Join(Environment.NewLine, DumpTree(document));
@@ -47,6 +48,36 @@ public sealed class AdoptionAgencyWptFixtureTests
 
         Assert.True(string.Equals(expected, actual, StringComparison.Ordinal),
             $"{file} case {markup}:{Environment.NewLine}--- expected ---{Environment.NewLine}{expected}{Environment.NewLine}--- actual ---{Environment.NewLine}{actual}");
+    }
+
+    /// <summary>
+    /// Characterization of the one adoption01.dat case the engine cannot run yet:
+    /// <c>&lt;a&gt;&lt;svg&gt;&lt;tr&gt;&lt;input&gt;&lt;/a&gt;</c> needs SVG
+    /// foreign-content token handling, which is not implemented. Locking the
+    /// current (non-conformant) tree here keeps the unsupported case visible as a
+    /// failing candidate the day foreign content lands; at that point this test
+    /// must be replaced by the WPT expectation.
+    /// </summary>
+    [Fact]
+    public void SvgForeignContentCase_RemainsUnsupported_UntilForeignContentHandling()
+    {
+        var document = HtmlParser.ParseDocument("<a><svg><tr><input></a>");
+
+        var actual = string.Join(Environment.NewLine, DumpTree(document));
+        var currentUnsupportedTree = string.Join(Environment.NewLine, new[]
+        {
+            "| <html>",
+            "|   <head>",
+            "|   <body>",
+            "|     <a>",
+            "|       <svg svg>",
+            "|     <tr svg>",
+            "|       <a>",
+            "|   <input svg>",
+            "|     <a>",
+        });
+
+        Assert.Equal(currentUnsupportedTree, actual);
     }
 
     private static string ResolveRepoFile(params string[] parts)
