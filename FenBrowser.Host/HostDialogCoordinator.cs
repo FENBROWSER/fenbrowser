@@ -184,7 +184,6 @@ public static class HostDialogCoordinator
     {
         public readonly object Sync = new();
         public PopupWindow Window;
-        public BrowserTab Tab;
         public string Name;
         public string NavigationUrl;
         public string AccumulatedHtml = string.Empty;
@@ -233,33 +232,28 @@ public static class HostDialogCoordinator
                 return;
             }
 
-            var tab = TabManager.Instance.CreateTab(state.NavigationUrl, isProgrammatic: true);
-            state.Tab = tab;
+            // The popup window is the only surface for window.open(). The previous
+            // flow also created a main-window tab per popup, duplicating the load
+            // and stealing active-tab focus; document.write popups surfaced only as
+            // such a tab and never got a window at all.
+            var popup = PopupWindowManager.Create(state.Name, width, height);
+            state.Window = popup;
 
-            if (!string.Equals(state.NavigationUrl, "about:blank", StringComparison.OrdinalIgnoreCase))
+            if (state.HasFinalizedDocument)
             {
-                var popup = PopupWindowManager.Create(state.Name, width, height);
-                state.Window = popup;
-                var displayHtml = state.HasFinalizedDocument
-                    ? state.AccumulatedHtml
-                    : $"<html><body style='font-family:sans-serif;padding:20px;'>Loading {state.NavigationUrl}...</body></html>";
-                popup.SetContent(displayHtml);
+                popup.SetContent(state.AccumulatedHtml);
+            }
+            else if (!string.Equals(state.NavigationUrl, "about:blank", StringComparison.OrdinalIgnoreCase))
+            {
+                popup.SetContent(
+                    $"<html><body style='font-family:sans-serif;padding:20px;'>Loading {state.NavigationUrl}...</body></html>");
 
                 // The engine-side popup context only finalizes through
                 // document.write(); a plain URL popup would otherwise sit on the
                 // placeholder forever, success or failure. Load the URL into the
                 // popup window here so it shows the page or the standard error
                 // page (e.g. unresolvable hosts).
-                if (!state.HasFinalizedDocument)
-                {
-                    _ = LoadPopupUrlContentAsync(state);
-                }
-            }
-
-            if (state.HasFinalizedDocument)
-            {
-                _ = tab.NavigateProgrammaticAsync(
-                    "data:text/html;charset=utf-8," + Uri.EscapeDataString(state.AccumulatedHtml));
+                _ = LoadPopupUrlContentAsync(state);
             }
         }
     }
@@ -268,7 +262,9 @@ public static class HostDialogCoordinator
     {
         try
         {
-            var resources = state.Tab?.Browser?.Host?.ResourceManager;
+            // Popups no longer own a tab; share the opener session's resources so
+            // cookies and caches match the browsing context that opened them.
+            var resources = TabManager.Instance.ActiveTab?.Browser?.Host?.ResourceManager;
             if (resources == null)
             {
                 return;
@@ -402,7 +398,6 @@ public static class HostDialogCoordinator
             var task = WindowManager.Instance.RunOnMainThread(() =>
             {
                 PopupWindow window;
-                BrowserTab tab;
                 string content;
                 lock (state.Sync)
                 {
@@ -412,7 +407,6 @@ public static class HostDialogCoordinator
                     }
 
                     window = state.Window;
-                    tab = state.Tab;
                     content = state.AccumulatedHtml;
                 }
 
@@ -420,11 +414,6 @@ public static class HostDialogCoordinator
                 // PopupState.Sync across either operation or JS close()/native close
                 // can block behind unrelated rendering work.
                 window?.SetContent(content);
-                if (tab != null)
-                {
-                    _ = tab.NavigateProgrammaticAsync(
-                        "data:text/html;charset=utf-8," + Uri.EscapeDataString(content));
-                }
             });
             ObservePopupUiTask(task, state, "finalize popup document", closeOnFailure: false);
         }
@@ -468,24 +457,6 @@ public static class HostDialogCoordinator
                         $"[HostDialogCoordinator] Native popup close failed: {ex.Message}",
                         LogCategory.JavaScript);
                 }
-
-                var tab = state.Tab;
-                if (tab == null)
-                {
-                    return;
-                }
-
-                var tabs = TabManager.Instance;
-                for (var i = 0; i < tabs.Tabs.Count; i++)
-                {
-                    if (!ReferenceEquals(tabs.Tabs[i], tab))
-                    {
-                        continue;
-                    }
-
-                    tabs.CloseTab(i);
-                    break;
-                }
             });
             ObservePopupUiTask(task, state, "close popup", closeOnFailure: false);
         }
@@ -505,7 +476,6 @@ public static class HostDialogCoordinator
         }
 
         PopupWindow window;
-        BrowserTab tab;
         lock (state.Sync)
         {
             if (state.Closed)
@@ -514,7 +484,6 @@ public static class HostDialogCoordinator
             }
 
             window = state.Window;
-            tab = state.Tab;
         }
 
         // Native user-close must immediately propagate to WindowProxy.closed and
@@ -527,34 +496,9 @@ public static class HostDialogCoordinator
             return true;
         }
 
-        if (tab == null)
-        {
-            // UI creation is queued but not yet completed.
-            return false;
-        }
-
-        bool tabExists;
-        try
-        {
-            tabExists = TabManager.Instance.Tabs.Any(candidate => ReferenceEquals(candidate, tab));
-        }
-        catch (Exception ex)
-        {
-            // A cross-thread tab snapshot failure is not proof that the popup is
-            // closed. Fail conservatively and leave state intact for a later check.
-            FenLogger.Debug(
-                $"[HostDialogCoordinator] Popup tab-state check deferred: {ex.Message}",
-                LogCategory.JavaScript);
-            return false;
-        }
-
-        if (tabExists)
-        {
-            return false;
-        }
-
-        MarkPopupClosed(state);
-        return true;
+        // UI creation is queued but not yet completed; the native close check
+        // above covers every later lifetime transition.
+        return false;
     }
 
     private static void ObservePopupUiTask(

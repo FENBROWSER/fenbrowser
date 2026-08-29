@@ -1644,13 +1644,19 @@ Verification:
 
 - `window.open(url)` popups no longer sit on the `Loading {url}...`
   placeholder forever when nothing document-writes into the popup context.
-  `HostDialogCoordinator` now loads the target URL through the popup tab's
-  `ResourceManager` (shared session/cookie state) via `NavigationManager`
-  and pushes the result into the popup window: the page HTML on success
+  `HostDialogCoordinator` loads the target URL through the opener session's
+  `ResourceManager` (shared cookies/caches) via `NavigationManager` and
+  pushes the result into the popup window: the page HTML on success
   (with real CSS/image fetchers and the final URI as base for relative
   subresources), or the standard tab error page on failure — connection
   failure, SSL error, timeout, 404, generic. A 4xx response carrying an
   HTML body renders that server body, matching tab navigation.
+- Popups no longer create a main-window tab. The popup window is the sole
+  surface for every `window.open()`: URL popups load there, `about:blank`
+  popups now get a real window that `document.write()` finalization fills
+  (previously they surfaced only as a hidden data-URL tab and never got a
+  window). This removes the duplicated page load and the active-tab steal;
+  popup close/closed-state tracking uses the window lifetime only.
 - `PopupWindow.SetContent` gained optional CSS/image fetchers and a base
   URI; the placeholder path is unchanged when they are omitted. A finalized
   `document.write` popup still wins over the URL load, and a closed popup
