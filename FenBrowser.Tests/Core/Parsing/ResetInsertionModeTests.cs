@@ -54,6 +54,40 @@ public sealed class ResetInsertionModeTests
         Assert.Equal("AfterHead", GetInsertionMode(builder));
     }
 
+    [Theory]
+    [InlineData("select", "InSelect")]
+    [InlineData("template", "InTemplate")]
+    public void FragmentContextSelectsSpecializedInsertionMode(string contextName, string expectedMode)
+    {
+        var document = Document.CreateHtmlDocument();
+        var context = document.CreateElement(contextName);
+        var builder = new HtmlTreeBuilder(string.Empty, context);
+
+        Assert.Equal(expectedMode, GetInsertionMode(builder));
+    }
+
+    [Fact]
+    public void TemplateFragmentContextStartsInTemplateMode()
+    {
+        var document = Document.CreateHtmlDocument();
+        var context = document.CreateElement("template");
+        var builder = new HtmlTreeBuilder("<div>hi</div>", context);
+
+        Assert.Equal("InTemplate", GetInsertionMode(builder));
+    }
+
+    [Fact]
+    public void SelectFragmentContextSelectsInSelect()
+    {
+        var document = Document.CreateHtmlDocument();
+        var select = document.CreateElement("select");
+
+        var builder = new HtmlTreeBuilder("<option>x</option>", select);
+        builder.BuildFragment();
+
+        Assert.Equal("InSelect", GetInsertionMode(builder));
+    }
+
     private static string GetInsertionMode(HtmlTreeBuilder builder)
     {
         var field = typeof(HtmlTreeBuilder).GetField("_insertionMode", BindingFlags.NonPublic | BindingFlags.Instance);

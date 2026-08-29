@@ -479,6 +479,12 @@ namespace FenBrowser.Core.Parsing
         private void ConfigureFragmentContext(Element contextElement)
         {
             var name = contextElement.LocalName?.ToLowerInvariant() ?? "div";
+            if (string.Equals(name, "template", StringComparison.OrdinalIgnoreCase))
+            {
+                // Fragment parsing: a template context seeds the template insertion mode stack
+                // so ResetInsertionMode lands in InTemplate above it.
+                _templateInsertionModes.Push(InsertionMode.InTemplate);
+            }
             _tokenizer.LastStartTagName = name;
             _tokenizer.SetState(!string.Equals(contextElement.NamespaceUri, Namespaces.Html, StringComparison.Ordinal)
                 ? HtmlTokenizer.TokenizerState.Data
