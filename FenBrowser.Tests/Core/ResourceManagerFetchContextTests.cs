@@ -214,6 +214,39 @@ public sealed class ResourceManagerFetchContextTests
     }
 
     [Fact]
+    public async Task FetchCssAsync_DecodesUtf8WhenCharsetIsOmitted()
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(".selected::after{content:\"✓\"}");
+        using var client = new HttpClient(new StubHandler(request =>
+        {
+            var content = new ByteArrayContent(bytes);
+            content.Headers.ContentType = new MediaTypeHeaderValue("text/css");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = content
+            };
+        }));
+        var manager = new ResourceManager(client, isPrivate: true);
+        var uri = new Uri("https://frame.example.test/challenge.css");
+
+        var css = await manager.FetchCssAsync(new FetchContext
+        {
+            RequestUri = uri,
+            InitiatorUri = uri,
+            FrameDocumentUri = uri,
+            TopLevelDocumentUri = uri,
+            Destination = "style",
+            Mode = "no-cors",
+            CredentialsMode = "include",
+            Method = "GET"
+        });
+
+        Assert.Contains("✓", css);
+        Assert.DoesNotContain("â", css);
+    }
+
+    [Fact]
     public async Task FrameResponsePolicy_DoesNotReplaceTopLevelPolicy_AndAppliesToFrameSubresources()
     {
         HttpRequestMessage frameScriptRequest = null;

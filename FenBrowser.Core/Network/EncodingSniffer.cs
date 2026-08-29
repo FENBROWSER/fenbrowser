@@ -57,6 +57,12 @@ namespace FenBrowser.Core.Network
                     if (enc != null)
                         return enc;
                 }
+
+                // CSS Syntax defines UTF-8 as the fallback encoding for a stylesheet.
+                // The legacy Windows-1252 fallback below is for HTML documents and
+                // corrupts non-ASCII generated content when text/css omits charset.
+                if (contentTypeHeader.TrimStart().StartsWith("text/css", StringComparison.OrdinalIgnoreCase))
+                    return Encoding.UTF8;
             }
 
             // 3. Prescan HTML <meta> declarations in the first 1024 bytes. The scan
