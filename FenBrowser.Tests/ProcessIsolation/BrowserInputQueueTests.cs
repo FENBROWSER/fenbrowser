@@ -27,6 +27,51 @@ public sealed class BrowserInputQueueTests
     }
 
     [Fact]
+    public void Enqueue_FrameSampledMouseMoves_PreservesHoverTargetCrossings()
+    {
+        var queue = new BrowserInputQueue(maxPendingEvents: 8);
+
+        queue.Enqueue(Input(BrowserInputType.MouseMove, 1, x: 20, y: 10) with
+        {
+            IsFrameSampledMouseMove = true
+        });
+        queue.Enqueue(Input(BrowserInputType.MouseMove, 2, x: 120, y: 10) with
+        {
+            IsFrameSampledMouseMove = true
+        });
+        queue.Enqueue(Input(BrowserInputType.MouseMove, 3, x: 220, y: 10) with
+        {
+            IsFrameSampledMouseMove = true
+        });
+
+        var drained = new List<BrowserInputEvent>();
+        queue.Drain(drained.Add, TimeSpan.FromSeconds(1), maxEvents: 8);
+
+        Assert.Equal(new long[] { 1, 2, 3 }, drained.ConvertAll(input => input.Sequence));
+        Assert.Equal(0, queue.CoalescedMouseMoveCount);
+    }
+
+    [Fact]
+    public void Enqueue_FrameSampledMouseMoveOverflow_DropsOldestAndKeepsSettledPosition()
+    {
+        var queue = new BrowserInputQueue(maxPendingEvents: 4);
+
+        for (var sequence = 1; sequence <= 8; sequence++)
+        {
+            queue.Enqueue(Input(BrowserInputType.MouseMove, sequence, x: sequence * 10, y: 10) with
+            {
+                IsFrameSampledMouseMove = true
+            });
+        }
+
+        var drained = new List<BrowserInputEvent>();
+        queue.Drain(drained.Add, TimeSpan.FromSeconds(1), maxEvents: 8);
+
+        Assert.Equal(new long[] { 5, 6, 7, 8 }, drained.ConvertAll(input => input.Sequence));
+        Assert.Equal(4, queue.DroppedMouseMoveCount);
+    }
+
+    [Fact]
     public void Enqueue_ButtonTransitions_AreNeverCoalescedOrDroppedByMoveFlood()
     {
         var queue = new BrowserInputQueue(maxPendingEvents: 4);

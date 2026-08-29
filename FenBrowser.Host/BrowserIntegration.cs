@@ -3109,7 +3109,8 @@ public class BrowserIntegration : IDisposable
         long sequence = 0,
         float deltaX = 0,
         float deltaY = 0,
-        string command = null)
+        string command = null,
+        bool isFrameSampledMouseMove = false)
     {
         if (sequence <= 0)
         {
@@ -3128,7 +3129,8 @@ public class BrowserIntegration : IDisposable
             Environment.CurrentManagedThreadId,
             deltaX,
             deltaY,
-            command));
+            command,
+            isFrameSampledMouseMove));
         _wakeEvent.Set();
         return sequence;
     }
@@ -3649,7 +3651,14 @@ public class BrowserIntegration : IDisposable
             return result;
         }
 
-        EnqueueInput(BrowserInputType.MouseMove, docX, docY);
+        // ChromeManager/CompositorThread already reduced native movement to one
+        // frame sample. Preserve that sample through the engine queue so a later
+        // sample over another element cannot erase this hover target crossing.
+        EnqueueInput(
+            BrowserInputType.MouseMove,
+            docX,
+            docY,
+            isFrameSampledMouseMove: true);
         return result;
     }
     

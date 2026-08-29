@@ -1618,6 +1618,15 @@ Verification:
 
 - Focused caret-state and hit-test tooltip contracts cover publish/clear/clamp/blink anchoring plus `title` and `aria-label` projection.
 
+### Pointer Hover Sample Preservation (2026-08-25)
+
+- `CompositorThread` and `ChromeManager` remain the high-frequency native pointer coalescing boundary. `BrowserIntegration` marks their output as frame-sampled, and `BrowserInputQueue` preserves those samples instead of applying a second latest-only merge that could erase element crossings before FenEngine hit testing.
+- Under queue pressure, the oldest mouse-move sample remains discardable so the latest settled pointer position is retained and discrete press/release ordering stays bounded.
+- `BrowserInputQueueTests` covers both cross-target frame-sample preservation and overflow retention of the newest position.
+
+Verification:
+
+- Focused Host input, hover, and interaction-recascade tests pass (`20/20`) in Release configuration; the Release Host build completes with zero warnings and zero errors.
 
 ### Closed Tab Restoration Lifecycle (2026-08-28)
 

@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Host;
+using FenBrowser.Host.Input;
 using Xunit;
 
 namespace FenBrowser.Tests.Host;
@@ -30,6 +31,24 @@ public sealed class BrowserInputThreadOwnershipTests
         {
             ShutdownEngineLoop(integration);
         }
+    }
+
+    [Fact]
+    public void HandleMouseMove_PreservesCompositorFrameSampleInEngineQueue()
+    {
+        var integration = new BrowserIntegration();
+        ShutdownEngineLoop(integration);
+
+        integration.HandleMouseMove(120, 80);
+
+        var queueField = typeof(BrowserIntegration).GetField(
+            "_inputQueue",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var queue = Assert.IsType<BrowserInputQueue>(queueField?.GetValue(integration));
+
+        Assert.True(queue.TryDequeue(out var input));
+        Assert.Equal(BrowserInputType.MouseMove, input.Type);
+        Assert.True(input.IsFrameSampledMouseMove);
     }
 
     private static async Task WaitForAsync(Func<bool> predicate, string description)

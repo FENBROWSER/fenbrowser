@@ -34,7 +34,8 @@ public readonly record struct BrowserInputEvent(
     int ReceiptThreadId = 0,
     float DeltaX = 0,
     float DeltaY = 0,
-    string Command = null);
+    string Command = null,
+    bool IsFrameSampledMouseMove = false);
 
 public readonly record struct BrowserInputDrainResult(
     int ProcessedCount,
@@ -129,9 +130,9 @@ public sealed class BrowserInputQueue
     {
         lock (_sync)
         {
-            if (CanCoalesceMouseMove(input) &&
+            if (CanMergeMouseMove(input) &&
                 _pending.Last is { Value: var last } &&
-                CanCoalesceMouseMove(last))
+                CanMergeMouseMove(last))
             {
                 _pending.Last.Value = input;
                 _coalescedMouseMoveCount++;
@@ -183,7 +184,7 @@ public sealed class BrowserInputQueue
                     RecordDrop(staleInput.Value);
                     _pending.Remove(staleInput);
                 }
-                else if (CanCoalesceMouseMove(input))
+                else if (IsOrdinaryMouseMove(input))
                 {
                     _droppedMouseMoveCount++;
                     return;
@@ -280,7 +281,7 @@ public sealed class BrowserInputQueue
 
     private void RecordDrop(BrowserInputEvent input)
     {
-        if (CanCoalesceMouseMove(input))
+        if (IsOrdinaryMouseMove(input))
         {
             _droppedMouseMoveCount++;
         }
@@ -342,11 +343,14 @@ public sealed class BrowserInputQueue
         input.Type is BrowserInputType.MouseUp or BrowserInputType.KeyUp;
 
     private static bool IsCoalescibleInput(BrowserInputEvent input) =>
-        CanCoalesceMouseMove(input) ||
+        IsOrdinaryMouseMove(input) ||
         input.Type is BrowserInputType.MouseWheel or
             BrowserInputType.ScrollTo or
             BrowserInputType.ScrollAnimationTick;
 
-    private static bool CanCoalesceMouseMove(BrowserInputEvent input) =>
+    private static bool IsOrdinaryMouseMove(BrowserInputEvent input) =>
         input.Type == BrowserInputType.MouseMove && input.Buttons == 0;
+
+    private static bool CanMergeMouseMove(BrowserInputEvent input) =>
+        IsOrdinaryMouseMove(input) && !input.IsFrameSampledMouseMove;
 }
