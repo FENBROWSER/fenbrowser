@@ -70,6 +70,37 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                 return;
             }
 
+            // Absolute-positioned descendants are placed by out-of-flow
+            // resolution (ResolvePositionedBox), not by in-flow child
+            // placement. Probe/reset passes that afterwards only shift the
+            // in-flow subtree into place never re-run that resolution, so
+            // each OOF box's containing-block-relative offset must survive
+            // the reset — otherwise the box collapses onto its containing
+            // block's origin (reCAPTCHA anchor checkbox rendered at the
+            // iframe's top-left corner).
+            List<ResetOffset> outOfFlowOffsets = null;
+            CollectOutOfFlowResetOffsets(
+                box,
+                box,
+                ref outOfFlowOffsets);
+
+            List<KeyValuePair<LayoutBox, SKPoint>> tableCellOffsets = null;
+            if (IsVerticallyAlignedTableCell(box))
+            {
+                tableCellOffsets = new List<KeyValuePair<LayoutBox, SKPoint>>(box.Children.Count);
+                foreach (var child in box.Children)
+                {
+                    if (child?.Geometry == null || child.IsOutOfFlow)
+                    {
+                        continue;
+                    }
+
+                    tableCellOffsets.Add(new KeyValuePair<LayoutBox, SKPoint>(child, new SKPoint(
+                        child.Geometry.ContentBox.Left - box.Geometry.ContentBox.Left,
+                        child.Geometry.ContentBox.Top - box.Geometry.ContentBox.Top)));
+                }
+            }
+
             float dx = -box.Geometry.ContentBox.Left;
             float dy = -box.Geometry.ContentBox.Top;
             ShiftBoxModel(box.Geometry, dx, dy);
@@ -79,7 +110,100 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
             {
                 ResetSubtreeToOrigin(children[index]);
             }
+
+            if (outOfFlowOffsets != null)
+            {
+                foreach (var entry in outOfFlowOffsets)
+                {
+                    var geometry = entry.Box.Geometry;
+                    var containingGeometry = entry.ContainingBlock.Geometry;
+                    if (geometry == null || containingGeometry == null)
+                    {
+                        continue;
+                    }
+
+                    ShiftBoxModel(
+                        geometry,
+                        containingGeometry.ContentBox.Left + entry.Offset.X - geometry.ContentBox.Left,
+                        containingGeometry.ContentBox.Top + entry.Offset.Y - geometry.ContentBox.Top);
+                }
+            }
+
+            if (tableCellOffsets != null)
+            {
+                foreach (var entry in tableCellOffsets)
+                {
+                    var geometry = entry.Key.Geometry;
+                    if (geometry == null)
+                    {
+                        continue;
+                    }
+
+                    ShiftSubtree(
+                        entry.Key,
+                        box.Geometry.ContentBox.Left + entry.Value.X - geometry.ContentBox.Left,
+                        box.Geometry.ContentBox.Top + entry.Value.Y - geometry.ContentBox.Top);
+                }
+            }
         }
+
+        private static bool IsVerticallyAlignedTableCell(LayoutBox box)
+        {
+            if (!string.Equals(box?.ComputedStyle?.Display, "table-cell", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string verticalAlign = box.ComputedStyle.VerticalAlign?.Trim();
+            return string.Equals(verticalAlign, "middle", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(verticalAlign, "bottom", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Records the position of every absolute-positioned box in the subtree
+        /// relative to its containing block (nearest positioned ancestor, or
+        /// the reset root when no positioned ancestor exists inside the
+        /// subtree). Descendants of an OOF box are not collected: their
+        /// geometry is owned by the OOF box's own formatting pass.
+        /// </summary>
+        private static void CollectOutOfFlowResetOffsets(
+            LayoutBox box,
+            LayoutBox containingBlock,
+            ref List<ResetOffset> collected)
+        {
+            if (box?.Geometry == null)
+            {
+                return;
+            }
+
+            var position = LayoutStyleResolver.GetEffectivePosition(box.ComputedStyle);
+            bool isPositioned = position == "relative" || position == "absolute" ||
+                                position == "sticky" || position == "fixed";
+            LayoutBox childContainingBlock = isPositioned ? box : containingBlock;
+
+            var children = box.Children;
+            for (var index = 0; index < children.Count; index++)
+            {
+                var child = children[index];
+                if (child?.Geometry == null)
+                {
+                    continue;
+                }
+
+                if (child.IsOutOfFlow)
+                {
+                    collected ??= new List<ResetOffset>();
+                    collected.Add(new ResetOffset(child, childContainingBlock, new SKPoint(
+                        child.Geometry.ContentBox.Left - childContainingBlock.Geometry.ContentBox.Left,
+                        child.Geometry.ContentBox.Top - childContainingBlock.Geometry.ContentBox.Top)));
+                    continue;
+                }
+
+                CollectOutOfFlowResetOffsets(child, childContainingBlock, ref collected);
+            }
+        }
+
+        private sealed record ResetOffset(LayoutBox Box, LayoutBox ContainingBlock, SKPoint Offset);
 
         public static void ShiftSubtree(LayoutBox box, float dx, float dy)
         {

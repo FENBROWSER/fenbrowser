@@ -166,7 +166,10 @@ namespace FenBrowser.FenEngine.Layout
 
             if (IsAutoInset(style, "left") && IsAutoInset(style, "right"))
             {
-                solved.X = point.X - containingBlockRect.Left;
+                solved.X = point.X - containingBlockRect.Left
+                    + (float)style.Margin.Left
+                    + (float)style.BorderThickness.Left
+                    + (float)style.Padding.Left;
             }
 
             if (IsAutoInset(style, "top") && IsAutoInset(style, "bottom"))
