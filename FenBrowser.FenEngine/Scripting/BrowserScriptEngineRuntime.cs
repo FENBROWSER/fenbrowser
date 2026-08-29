@@ -16161,6 +16161,33 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         return array;
     }
 
+    private JsValue ReadElementClientRects(Element element)
+    {
+        FlushPendingLayout?.Invoke();
+        var box = LayoutBoxResolver?.Invoke(element) as BoxModel;
+        if (box == null)
+        {
+            return CreateEmptyDomRectList();
+        }
+
+        var rect = box.BorderBox;
+        var values = new[] { CreateDomRect(rect.Left, rect.Top, rect.Width, rect.Height) };
+        var array = _interpreter.AllocateArray(values);
+        _interpreter.SetObjectProperty(
+            array,
+            "item",
+            _interpreter.AllocateNativeFunction(
+                "item",
+                (_, args) =>
+                {
+                    var index = args.Count > 0 ? CoerceToHostUInt32(args[0], 0) : 0;
+                    return index == 0 ? values[0] : JsValue.Null;
+                },
+                length: 1),
+            enumerable: false);
+        return array;
+    }
+
     private DocumentFragment CreateContextualFragment(DomRange range, string html)
     {
         var context = ResolveRangeContextElement(range);
@@ -19444,6 +19471,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     value = _owner.GetOrCreateHostCallable(
                         element, "getBoundingClientRect",
                         (_, _) => _owner.ReadElementBoundingClientRect(element),
+                        length: 0);
+                    return true;
+                case "getClientRects":
+                    value = _owner.GetOrCreateHostCallable(
+                        element, "getClientRects",
+                        (_, _) => _owner.ReadElementClientRects(element),
                         length: 0);
                     return true;
                 case "style":

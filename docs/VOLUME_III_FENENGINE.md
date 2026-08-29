@@ -86,6 +86,10 @@
 - Cross-document readiness polling (e.g. `iframe.contentDocument.readyState`, `window.parent.document.readyState`) now observes real state; realm-internal `document.readyState` behavior is unchanged.
 - Found while diagnosing the Google reCAPTCHA challenge stall: the anchor iframe's checkbox is left `disabled`+`loading` by reCAPTCHA's own init because its anchor↔parent handshake never completes; all handshake primitives (postMessage duplex with origins, MessageChannel port transfer, timers, XHR, iframe `load` events) were verified working in isolation (`scripts/frame_realm_probe_server.py`). The remaining bail point inside `recaptcha__en.js` is a follow-up investigation.
 
+### 1.5 Element Client Rects
+
+- FenJS exposes `Element.getClientRects()` through the current layout snapshot. The call flushes pending layout, returns the element border box as a DOMRect list when geometry exists, and returns an empty list with `item(...) === null` when no layout box is available (`FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`).
+
 ## 2. The Layout Engine (`FenBrowser.FenEngine.Layout`)
 
 The layout engine acts as a pure function: `(DOM Tree + Styles + Viewport) -> Geometry`.
