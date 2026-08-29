@@ -771,7 +771,14 @@ namespace FenBrowser.FenEngine.Rendering
             
             // Parse animation properties
             string animationName = GetAnimationProperty(style, "animation-name");
-            if (string.IsNullOrWhiteSpace(animationName) || animationName == "none") return;
+            if (string.IsNullOrWhiteSpace(animationName) || animationName == "none")
+            {
+                // A completed forwards-filled animation is retained so its final
+                // effect participates in rendering. Drop that retained effect as
+                // soon as the declaration no longer applies.
+                StopAnimations(element);
+                return;
+            }
 
             var names = SplitAnimationList(animationName);
             bool startedAny = false;
@@ -796,7 +803,7 @@ namespace FenBrowser.FenEngine.Rendering
                     AnimationName = currentName,
                     Keyframes = keyframes,
                     DurationMs = ParseDuration(GetAnimationProperty(style, "animation-duration", i)),
-                    DelayMs = ParseDuration(GetAnimationProperty(style, "animation-delay", i)),
+                    DelayMs = ParseDuration(GetAnimationProperty(style, "animation-delay", i), defaultMilliseconds: 0),
                     IterationCount = ParseIterationCount(GetAnimationProperty(style, "animation-iteration-count", i)),
                     Direction = GetAnimationProperty(style, "animation-direction", i) ?? "normal",
                     FillMode = GetAnimationProperty(style, "animation-fill-mode", i) ?? "none",
@@ -805,8 +812,6 @@ namespace FenBrowser.FenEngine.Rendering
                     StartTime = Now()
                 };
 
-                EngineLogCompat.Debug($"[Animation] Starting: {currentName} on {element.TagName}, duration={animation.DurationMs}ms", LogCategory.Layout);
-
                 // Add to active animations
                 lock (_activeAnimations)
                 {
@@ -814,11 +819,9 @@ namespace FenBrowser.FenEngine.Rendering
                         _activeAnimations[element] = new List<ActiveAnimation>();
 
                     var existing = _activeAnimations[element].FirstOrDefault(a =>
-                        a.AnimationName == currentName &&
-                        !a.IsComplete);
+                        a.AnimationName == currentName);
 
                     if (existing != null &&
-                        existing.Keyframes == keyframes &&
                         Math.Abs(existing.DurationMs - animation.DurationMs) < 0.01 &&
                         Math.Abs(existing.DelayMs - animation.DelayMs) < 0.01 &&
                         existing.IterationCount == animation.IterationCount &&
@@ -833,6 +836,7 @@ namespace FenBrowser.FenEngine.Rendering
                     // Remove existing animation with same name when the definition changed.
                     _activeAnimations[element].RemoveAll(a => a.AnimationName == currentName);
                     _activeAnimations[element].Add(animation);
+                    EngineLogCompat.Debug($"[Animation] Starting: {currentName} on {element.TagName}, duration={animation.DurationMs}ms", LogCategory.Layout);
                 }
 
                 startedAny = true;
@@ -941,7 +945,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             lock (_activeAnimations)
             {
-                hasAnimations = _activeAnimations.Count > 0;
+                hasAnimations = _activeAnimations.Values.Any(list => list.Any(animation => !animation.IsComplete));
             }
 
             lock (_activeTransitions)
@@ -1015,7 +1019,8 @@ namespace FenBrowser.FenEngine.Rendering
         {
             lock (_activeAnimations)
             {
-                return _activeAnimations.ContainsKey(element) && _activeAnimations[element].Count > 0;
+                return _activeAnimations.TryGetValue(element, out var animations) &&
+                    animations.Any(animation => !animation.IsComplete);
             }
         }
 
@@ -1244,6 +1249,15 @@ namespace FenBrowser.FenEngine.Rendering
 
                     foreach (var anim in kvp.Value)
                     {
+                        if (anim.IsComplete)
+                        {
+                            // animation-fill-mode: forwards/both retains the final
+                            // animation effect, but it must not keep the timer alive
+                            // or emit additional animation frames/end events.
+                            ApplyToOverlay(element, anim.ComputedProperties);
+                            continue;
+                        }
+
                         if (anim.PlayState == "paused") continue;
 
                         // Skip time-based progression for scroll-driven animations
@@ -1284,7 +1298,11 @@ namespace FenBrowser.FenEngine.Rendering
                                     NotifyElement(element, classification.DomInvalidation, classification.ChangedProperties);
                                 }
                             }
-                            toRemove.Add((element, anim));
+                            if (!anim.FillMode.Equals("forwards", StringComparison.OrdinalIgnoreCase) &&
+                                !anim.FillMode.Equals("both", StringComparison.OrdinalIgnoreCase))
+                            {
+                                toRemove.Add((element, anim));
+                            }
                             OnAnimationEnd?.Invoke(element, anim.AnimationName);
                             continue;
                         }
@@ -1408,8 +1426,7 @@ namespace FenBrowser.FenEngine.Rendering
                 OnAnimationFrame?.Invoke(ev);
             }
 
-            if (notifications.Count == 0 && _activeAnimations.Count == 0 && _activeTransitions.Count == 0)
-                Stop();
+            StopIfIdle();
         }
 
         private bool ApplyAnimationFrame(Element element, ActiveAnimation anim, double progressPercent)
@@ -1481,6 +1498,21 @@ namespace FenBrowser.FenEngine.Rendering
             if (anim.Keyframes == null || anim.Keyframes.Frames.Count == 0) return;
 
             var frames = anim.Keyframes.Frames.OrderBy(f => f.Percentage).ToList();
+            var animatedPropertyNames = frames
+                .SelectMany(frame => frame.Properties.Keys)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (frames[0].Percentage > 0)
+            {
+                frames.Insert(0, CreateImplicitKeyframe(anim.Element, 0, animatedPropertyNames));
+            }
+
+            if (frames[^1].Percentage < 100)
+            {
+                frames.Add(CreateImplicitKeyframe(anim.Element, 100, animatedPropertyNames));
+            }
+
             double normalizedProgress = Math.Clamp(progress, 0.0, 100.0);
             
             // Find bounding keyframes
@@ -1518,6 +1550,28 @@ namespace FenBrowser.FenEngine.Rendering
                     anim.ComputedProperties[prop] = toVal;
                 }
             }
+        }
+
+        private static CssLoader.CssKeyframe CreateImplicitKeyframe(
+            Element element,
+            double percentage,
+            IEnumerable<string> properties)
+        {
+            var frame = new CssLoader.CssKeyframe { Percentage = percentage };
+            var style = element?.GetComputedStyle();
+
+            foreach (var property in properties)
+            {
+                string value = null;
+                style?.Map?.TryGetValue(property, out value);
+                value ??= CssComputed.GetInitialValue(property);
+                if (value != null)
+                {
+                    frame.Properties[property] = value;
+                }
+            }
+
+            return frame;
         }
 
         private string InterpolateValue(string property, string from, string to, double progress)
@@ -1691,7 +1745,8 @@ namespace FenBrowser.FenEngine.Rendering
             
             if (style.Map.TryGetValue("animation", out var shorthand))
             {
-                var parts = shorthand.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                var animation = GetIndexedAnimationValue(shorthand, listIndex);
+                var parts = animation.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 switch (property)
                 {
                     case "animation-name":
@@ -1700,8 +1755,28 @@ namespace FenBrowser.FenEngine.Rendering
                     case "animation-duration":
                         foreach (var p in parts) if (IsDurationValue(p)) return p;
                         break;
+                    case "animation-delay":
+                        var durationIndex = 0;
+                        foreach (var p in parts)
+                        {
+                            if (!IsDurationValue(p)) continue;
+                            if (durationIndex++ == 1) return p;
+                        }
+                        break;
                     case "animation-timing-function":
                         foreach (var p in parts) if (IsTimingFunction(p)) return p;
+                        break;
+                    case "animation-iteration-count":
+                        foreach (var p in parts) if (IsIterationCount(p)) return p;
+                        break;
+                    case "animation-direction":
+                        foreach (var p in parts) if (IsDirection(p)) return p;
+                        break;
+                    case "animation-fill-mode":
+                        foreach (var p in parts) if (IsFillMode(p)) return p;
+                        break;
+                    case "animation-play-state":
+                        foreach (var p in parts) if (IsPlayState(p)) return p;
                         break;
                 }
             }
@@ -1718,13 +1793,13 @@ namespace FenBrowser.FenEngine.Rendering
             return parts[Math.Max(0, Math.Min(listIndex, parts.Count - 1))];
         }
         
-        private double ParseDuration(string value)
+        private double ParseDuration(string value, double defaultMilliseconds = 1000)
         {
-            if (string.IsNullOrWhiteSpace(value)) return 1000;
+            if (string.IsNullOrWhiteSpace(value)) return defaultMilliseconds;
             value = value.Trim().ToLower();
             if (value.EndsWith("ms") && double.TryParse(value.Replace("ms", ""), out double ms)) return ms;
             if (value.EndsWith("s") && double.TryParse(value.Replace("s", ""), out double s)) return s * 1000;
-            return 1000;
+            return defaultMilliseconds;
         }
         
         private int ParseIterationCount(string value)

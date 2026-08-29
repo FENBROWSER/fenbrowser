@@ -41,6 +41,58 @@ public sealed class CssAnimationEngineFrameTests
         engine.Stop();
     }
 
+    [Fact]
+    public void ApplyKeyframeAt_SynthesizesMissingFromEndpointFromUnderlyingStyle()
+    {
+        var engine = new CssAnimationEngine();
+        var element = new Element("span");
+        element.SetComputedStyle(new CssComputed());
+        var animation = new CssAnimationEngine.ActiveAnimation
+        {
+            Element = element,
+            Keyframes = new CssLoader.CssKeyframes
+            {
+                Name = "spin",
+                Frames =
+                {
+                    new CssLoader.CssKeyframe
+                    {
+                        Percentage = 100,
+                        Properties = { ["transform"] = "rotate(360deg)" }
+                    }
+                }
+            }
+        };
+
+        InvokeApplyKeyframeAt(engine, animation, 50d);
+
+        Assert.True(animation.ComputedProperties.TryGetValue("transform", out var transform));
+        Assert.Contains("rotate(180", transform);
+        engine.Stop();
+    }
+
+    [Theory]
+    [InlineData("animation-name", "spinner-spin")]
+    [InlineData("animation-duration", "2.5s")]
+    [InlineData("animation-timing-function", "linear")]
+    [InlineData("animation-iteration-count", "infinite")]
+    public void GetAnimationProperty_ParsesRecaptchaSpinnerShorthand(string property, string expected)
+    {
+        var engine = new CssAnimationEngine();
+        var style = new CssComputed();
+        style.Map["animation"] = "spinner-spin 2.5s linear infinite";
+
+        var method = typeof(CssAnimationEngine).GetMethod(
+            "GetAnimationProperty",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        var actual = method.Invoke(engine, new object[] { style, property, 0 });
+
+        Assert.Equal(expected, actual);
+        engine.Stop();
+    }
+
     private static CssAnimationEngine.ActiveAnimation CreateOpacityAnimation()
     {
         return new CssAnimationEngine.ActiveAnimation

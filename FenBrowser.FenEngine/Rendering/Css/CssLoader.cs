@@ -1111,7 +1111,13 @@ namespace FenBrowser.FenEngine.Rendering
                             blob.BaseUri,
                             log,
                             root.OwnerDocument);
-                        
+
+                        // Keyframes are document-scoped runtime data, whereas parsed
+                        // style rules are cached process-wide. Register them for every
+                        // document before consulting the shared parse cache; otherwise a
+                        // cache hit leaves a newly loaded iframe without its animations.
+                        ExtractKeyframes(processedCss, log);
+
                         ParsedRuleCacheKey parseCacheKey = BuildParsedRuleCacheKey(
                             processedCss,
                             blob.BaseUri,

@@ -1,7 +1,13 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Threading.Tasks;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Rendering.Css;
 using FenBrowser.FenEngine.Rendering.Core;
 using FenBrowser.Host;
 using SkiaSharp;
@@ -24,6 +30,143 @@ public class PipelineAnimationTests
     {
         var doc = Document.CreateHtmlDocument();
         return doc;
+    }
+
+    [Fact]
+    public async Task RenderFrame_StartsAnimationDeclaredOnlyByShorthand()
+    {
+        const string htmlSource = "<!doctype html><html><head><style>@keyframes spin { to { transform: rotate(360deg); } } #target { animation: spin .75s linear infinite; }</style></head><body><div id='target'></div></body></html>";
+
+        var baseUri = new Uri("https://test.local/");
+        var parser = new HtmlParser(htmlSource, baseUri);
+        var doc = parser.Parse();
+        var html = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+        var target = doc.GetElementById("target");
+        var styles = await CssLoader.ComputeAsync(html, baseUri, _ => Task.FromResult(string.Empty), viewportWidth: 128, viewportHeight: 128);
+        var renderer = CreateRenderer();
+
+        using var bitmap = new SKBitmap(128, 128);
+        using var canvas = new SKCanvas(bitmap);
+        renderer.RenderFrame(new RenderFrameRequest
+        {
+            Root = html,
+            Canvas = canvas,
+            Styles = styles,
+            Viewport = new SKRect(0, 0, 128, 128),
+            BaseUrl = baseUri.AbsoluteUri,
+            InvalidationReason = RenderFrameInvalidationReason.Style,
+            RequestedBy = "PipelineAnimationTests.ShorthandAnimation",
+            EmitVerificationReport = false
+        });
+
+        var animationEngineField = typeof(SkiaDomRenderer).GetField(
+            "_animationEngine",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(animationEngineField);
+        var animationEngine = Assert.IsType<FenBrowser.FenEngine.Rendering.CssAnimationEngine>(
+            animationEngineField.GetValue(renderer));
+        Assert.True(animationEngine.HasActiveAnimations(target));
+    }
+
+    [Fact]
+    public async Task ComputeAsync_RegistersCachedKeyframesForEachDocument()
+    {
+        const string htmlSource = "<!doctype html><html><head><style>@keyframes iframeCacheSpin_6f17 { to { transform: rotate(360deg); } } .spinner { animation: iframeCacheSpin_6f17 .75s linear infinite; }</style></head><body><span class='spinner'></span></body></html>";
+        var baseUri = new Uri("https://iframe-animation-cache.test/anchor.html");
+
+        var first = new HtmlParser(htmlSource, baseUri).Parse();
+        await CssLoader.ComputeAsync(
+            first.DocumentElement,
+            baseUri,
+            _ => Task.FromResult(string.Empty),
+            viewportWidth: 128,
+            viewportHeight: 128);
+        Assert.NotNull(CssLoader.GetKeyframes("iframeCacheSpin_6f17", first.QuerySelector(".spinner")));
+
+        // The second document intentionally has identical CSS and base URI so its
+        // rules come from the process-wide parse cache.
+        var second = new HtmlParser(htmlSource, baseUri).Parse();
+        await CssLoader.ComputeAsync(
+            second.DocumentElement,
+            baseUri,
+            _ => Task.FromResult(string.Empty),
+            viewportWidth: 128,
+            viewportHeight: 128);
+
+        Assert.NotNull(CssLoader.GetKeyframes("iframeCacheSpin_6f17", second.QuerySelector(".spinner")));
+    }
+
+    [Fact]
+    public async Task CssAnimationEngine_ForwardsFillRetainsFinalEffectWithoutRemainingActive()
+    {
+        const string htmlSource = "<!doctype html><html><head><style>@keyframes reveal { from { opacity: 0; } to { opacity: 1; } } #target { opacity: 0; animation: reveal 100ms linear 1 forwards; }</style></head><body><div id='target'></div></body></html>";
+        var now = new DateTime(2026, 8, 25, 0, 0, 0, DateTimeKind.Utc);
+        var previousNowProvider = CssAnimationEngine.NowProvider;
+        var engine = new CssAnimationEngine();
+
+        try
+        {
+            CssAnimationEngine.NowProvider = () => now;
+            var baseUri = new Uri("https://test.local/");
+            var parser = new HtmlParser(htmlSource, baseUri);
+            var doc = parser.Parse();
+            var html = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var target = doc.GetElementById("target");
+            var styles = await CssLoader.ComputeAsync(html, baseUri, _ => Task.FromResult(string.Empty), viewportWidth: 128, viewportHeight: 128);
+            target.SetComputedStyle(styles[target]);
+            var animationEndCount = 0;
+            engine.OnAnimationEnd += (_, _) => animationEndCount++;
+
+            engine.StartAnimation(target, styles[target]);
+            var active = GetAnimations(engine, target).Single();
+            Assert.Equal(100d, active.DurationMs);
+            Assert.Equal(1, active.IterationCount);
+            Assert.Equal("forwards", active.FillMode);
+            engine.Stop();
+            now = now.AddMilliseconds(150);
+            InvokeAnimationTick(engine);
+
+            string timeline = null;
+            target.GetComputedStyle()?.Map.TryGetValue("animation-timeline", out timeline);
+            Assert.True(active.IsComplete, $"start={active.StartTime:o}, now={now:o}, provider={CssAnimationEngine.NowProvider():o}, play={active.PlayState}, delay={active.DelayMs}, connected={target.IsConnected}, display={target.GetComputedStyle()?.Display}, timeline={timeline}");
+            Assert.False(engine.HasActiveAnimations(target));
+            Assert.Contains(target, engine.GetAllActiveAnimationElements());
+            Assert.Equal("1", engine.GetAnimatedProperties(target)["opacity"]);
+            Assert.Equal(1, animationEndCount);
+
+            InvokeAnimationTick(engine);
+            Assert.Equal("1", engine.GetAnimatedProperties(target)["opacity"]);
+            Assert.Equal(1, animationEndCount);
+
+            styles[target].Map["animation-name"] = "none";
+            styles[target].Map.Remove("animation");
+            engine.StartAnimation(target, styles[target]);
+            Assert.DoesNotContain(target, engine.GetAllActiveAnimationElements());
+            Assert.Empty(engine.GetAnimatedProperties(target));
+        }
+        finally
+        {
+            engine.Stop();
+            CssAnimationEngine.NowProvider = previousNowProvider;
+        }
+    }
+
+    private static void InvokeAnimationTick(CssAnimationEngine engine)
+    {
+        var runningField = typeof(CssAnimationEngine).GetField("_isRunning", BindingFlags.Instance | BindingFlags.NonPublic);
+        var tick = typeof(CssAnimationEngine).GetMethod("Tick", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(runningField);
+        Assert.NotNull(tick);
+        runningField.SetValue(engine, true);
+        tick.Invoke(engine, new object[] { null });
+    }
+
+    private static List<CssAnimationEngine.ActiveAnimation> GetAnimations(CssAnimationEngine engine, Element element)
+    {
+        var animationsField = typeof(CssAnimationEngine).GetField("_activeAnimations", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(animationsField);
+        var animations = Assert.IsType<Dictionary<Element, List<CssAnimationEngine.ActiveAnimation>>>(animationsField.GetValue(engine));
+        return animations[element];
     }
 
     private static Dictionary<Node, CssComputed> CreateStyles(Element element,

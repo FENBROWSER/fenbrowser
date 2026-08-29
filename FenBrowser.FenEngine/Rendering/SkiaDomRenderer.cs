@@ -593,7 +593,9 @@ namespace FenBrowser.FenEngine.Rendering
 
                             // Check if this element should START an animation
                             var style = kvp.Value;
-                            if (style.Map.ContainsKey("animation-name") || style.Map.ContainsKey("transition"))
+                            if (style.Map.ContainsKey("animation-name") ||
+                                style.Map.ContainsKey("animation") ||
+                                style.Map.ContainsKey("transition"))
                             {
                                 _animationEngine.CheckTransitions(elem, style);
                                 _animationEngine.StartAnimation(elem, style);
