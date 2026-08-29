@@ -317,6 +317,7 @@ namespace FenBrowser.Core.Css
         public double? TextIndent { get; set; }              // First line indentation in pixels
         public string WordBreak { get; set; }                // normal, break-all, keep-all, break-word
         public string OverflowWrap { get; set; }             // normal, break-word, anywhere
+        public string LineBreak { get; set; }                // auto, loose, normal, strict, anywhere
         public string TabSize { get; set; }                  // Number or length for tab character width
         public string TextUnderlineOffset { get; set; }      // auto or length value
         public string TextDecorationStyle { get; set; }      // solid, double, dotted, dashed, wavy
@@ -604,6 +605,7 @@ namespace FenBrowser.Core.Css
 
             // Other
             ["opacity"] = "1",
+            ["transform"] = "none",
             ["overflow"] = "visible",
             ["cursor"] = "auto",
             ["pointer-events"] = "auto"
@@ -616,7 +618,8 @@ namespace FenBrowser.Core.Css
         {
             "color", "font-family", "font-size", "font-weight", "font-style",
             "line-height", "text-align", "text-indent", "text-transform",
-            "white-space", "word-spacing", "letter-spacing", "direction",
+            "white-space", "word-spacing", "letter-spacing", "word-break",
+            "overflow-wrap", "word-wrap", "line-break", "direction",
             "visibility", "cursor", "quotes", "list-style", "list-style-type",
             "list-style-position", "list-style-image"
         };
