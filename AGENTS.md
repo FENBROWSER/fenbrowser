@@ -114,6 +114,41 @@ Avoid:
 - repeating the user prompt
 - long educational explanations unless requested
 
+## Context and token hygiene
+
+Every model request re-sends the full conversation, so context size multiplies across
+hundreds of tool calls. These rules are mandatory cost controls, not style advice.
+
+Output capping (Bash/Read):
+- Never dump unbounded output into the transcript. Pipe builds, test runs, greps, and
+  log sweeps through filters (`| grep -E "..."`, `| head -N`, `wc -l` first, then narrow).
+- For large result sets, write the full output to `logs/` and read back only excerpts
+  with `Read` offset/limit.
+- Prefer targeted `Read` (offset/limit) over whole-file reads; never re-Read a file
+  already in context unless it changed.
+- Long scripts (test262/WPT batches) must print summaries, not per-test lines.
+
+Images/screenshots:
+- Reading an image permanently embeds it in context. Read `logs/debug_screenshot.png`
+  at most once per debugging cycle and extract facts immediately.
+- Prefer zoomed crops or pixel-diff scripts over repeated full screenshots.
+
+Session lifecycle:
+- One task unit per session. After a unit is verified and committed, start a fresh
+  session for the next unit instead of carrying a long-running conversation forward.
+- Treat ~150k context as the wrap-up threshold: finish the current step, hand off
+  findings in the final message, and continue in a new session.
+- If a turn errors out, do not blindly re-continue in the same bloated session;
+  summarize state and restart in a fresh session.
+
+No subagents (strict):
+- Never use the Agent/subagent tools (general-purpose, Explore, judge, or any other
+  spawned agent). All work happens in the main ZCode conversation only.
+- Subagents duplicate context and multiply token cost. Do direct `grep`/`Read` in the
+  main thread instead of delegating searches.
+- Do not compensate for a large task by spawning agents; split it across sessions per
+  the session lifecycle rule instead.
+
 ## Debug and artifact workflow
 
 For runtime/rendering issues, prefer this diagnostic order:
