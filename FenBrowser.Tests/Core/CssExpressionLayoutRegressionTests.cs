@@ -40,6 +40,42 @@ public class CssExpressionLayoutRegressionTests
     }
 
     [Fact]
+    public void EvaluateCssExpression_GroupedExpression_ObeysParentheses()
+    {
+        float result = LayoutHelper.EvaluateCssExpression(
+            "calc((100% - 40px) * 2)",
+            parentSize: 500f,
+            viewportWidth: 1280f,
+            viewportHeight: 800f);
+
+        Assert.Equal(920f, result, 2);
+    }
+
+    [Fact]
+    public void EvaluateCssExpression_GroupedDivisor_EvaluatesInnerSum()
+    {
+        float result = LayoutHelper.EvaluateCssExpression(
+            "calc(90px / (1 + 2))",
+            parentSize: 500f,
+            viewportWidth: 1280f,
+            viewportHeight: 800f);
+
+        Assert.Equal(30f, result, 2);
+    }
+
+    [Fact]
+    public void EvaluateCssExpression_NestedCalc_ResolvesInnerFirst()
+    {
+        float result = LayoutHelper.EvaluateCssExpression(
+            "calc(calc(10px + 5px) * 2)",
+            parentSize: 500f,
+            viewportWidth: 1280f,
+            viewportHeight: 800f);
+
+        Assert.Equal(30f, result, 2);
+    }
+
+    [Fact]
     public void EvaluateCssExpression_UsesMultiplicationPrecedence()
     {
         float result = LayoutHelper.EvaluateCssExpression(

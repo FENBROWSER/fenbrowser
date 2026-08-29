@@ -253,6 +253,16 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         /// <summary>
+        /// Shared calc() entry point for layout-side consumers. Delegates to the
+        /// recursive-descent evaluator so grouped and nested calc() expressions
+        /// resolve identically everywhere (emBase scales em, percentBase scales %).
+        /// </summary>
+        internal static bool TryEvaluateCalcExpression(string s, out double px, double emBase = 16.0, double percentBase = 0)
+        {
+            return TryParseCalc(s, out px, emBase, percentBase);
+        }
+
+        /// <summary>
         /// Parse a single-argument math function like abs(), sign(), sqrt(), etc.
         /// </summary>
         private static bool TryParseMathFunc(string value, string funcName, out double result, double emBase = 16.0, double percentBase = 0)

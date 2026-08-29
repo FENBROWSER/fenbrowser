@@ -10733,3 +10733,20 @@ Verification:
   (`ComputeAsync_NonRootCustomProperty_DoesNotLeakToUnrelatedSubtree`,
   `ComputeAsync_ScopedCustomProperty_InheritsWithinSubtree`); full
   `FenBrowser.Tests` run shows no new failures versus baseline.
+
+## 2.412 Shared Recursive Calc Evaluator In Layout (2026-08-29)
+
+- `LayoutHelper.EvaluateCssExpression` no longer uses the flat
+  `TokenizeCalcExpression` tokenizer for `calc()`. It delegates to the
+  recursive-descent evaluator shared with cascade-time math
+  (`CssLoader.TryEvaluateCalcExpression`), so grouped operands
+  (`calc((100% - 40px) * 2)`), grouped divisors (`calc(90px / (1 + 2))`),
+  and nested `calc(calc(...) ...)` resolve identically everywhere (CSS-002).
+  The tokenizer and operand-collapse loop are removed.
+- `em` continues to scale by the element font size and `%` by the parent
+  size; layout-side `rem` inside `calc()` now uses the captured document
+  root font size instead of a hardcoded 16px.
+- Verification: `FenBrowser.Tests/Core/CssExpressionLayoutRegressionTests.cs`
+  gains grouped, grouped-divisor, and nested-calc cases (all three failed on
+  the tokenizer path); the focused layout/expression/custom-property slice
+  passes `49/49`.

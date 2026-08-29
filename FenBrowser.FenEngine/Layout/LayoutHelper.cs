@@ -327,77 +327,18 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
 
-            // Simple parser
+            // calc() delegates to the shared recursive-descent evaluator in the
+            // CssLoader partial class, so grouped and nested calc() expressions
+            // resolve identically to cascade-time math. em maps to fontSize and
+            // % maps to parentSize, matching the unit handling below.
             if (expression.StartsWith("calc"))
             {
-                // Basic calc() support: "calc(100% - 20px)"
-                int start = expression.IndexOf('(');
-                int end = expression.LastIndexOf(')');
-                if (start > -1 && end > start)
+                if (CssLoader.TryEvaluateCalcExpression(expression, out double calcPx, fontSize, parentSize) &&
+                    float.IsFinite((float)calcPx))
                 {
-                    string inner = expression.Substring(start + 1, end - start - 1);
-                    
-                    var parts = TokenizeCalcExpression(inner);
-
-                    if (parts.Count == 0 || !TryEvaluateCalcOperand(
-                            parts[0], parentSize, viewportWidth, viewportHeight, fontSize, out float firstValue))
-                    {
-                        return -1f;
-                    }
-
-                    // Collapse multiplication/division first, then addition/subtraction.
-                    // CSS calc() follows normal arithmetic precedence; evaluating left-to-right
-                    // turns expressions such as 100% - 2px * 2 into (100% - 2px) * 2.
-                    var values = new List<float> { firstValue };
-                    var additiveOperators = new List<string>();
-
-                    for (int i = 1; i < parts.Count; i += 2)
-                    {
-                        if (i + 1 >= parts.Count)
-                        {
-                            return -1f;
-                        }
-
-                        string op = parts[i].Trim();
-                        if (op != "+" && op != "-" && op != "*" && op != "/")
-                        {
-                            return -1f;
-                        }
-
-                        if (!TryEvaluateCalcOperand(
-                                parts[i + 1], parentSize, viewportWidth, viewportHeight, fontSize, out float operand))
-                        {
-                            return -1f;
-                        }
-
-                        if (op == "*" || op == "/")
-                        {
-                            if (op == "/" && Math.Abs(operand) <= float.Epsilon)
-                            {
-                                return -1f;
-                            }
-
-                            int last = values.Count - 1;
-                            values[last] = op == "*" ? values[last] * operand : values[last] / operand;
-                        }
-                        else
-                        {
-                            additiveOperators.Add(op);
-                            values.Add(operand);
-                        }
-                    }
-
-                    float result = values[0];
-                    for (int i = 0; i < additiveOperators.Count; i++)
-                    {
-                        result = additiveOperators[i] == "+"
-                            ? result + values[i + 1]
-                            : result - values[i + 1];
-                    }
-
-                    return float.IsFinite(result) ? result : -1f;
+                    return (float)calcPx;
                 }
-                return -1; 
+                return -1f;
             }
 
             if (expression.EndsWith("px"))
@@ -428,84 +369,5 @@ namespace FenBrowser.FenEngine.Layout
 
             return -1;
         }
-
-        private static bool TryEvaluateCalcOperand(
-            string operand,
-            float parentSize,
-            float viewportWidth,
-            float viewportHeight,
-            float fontSize,
-            out float value)
-        {
-            value = EvaluateCssExpression(operand, parentSize, viewportWidth, viewportHeight, fontSize);
-            if (value != -1f)
-            {
-                return true;
-            }
-
-            // -1 is both the public failure sentinel and a valid unitless operand.
-            return float.TryParse(
-                operand?.Trim(),
-                NumberStyles.Float,
-                CultureInfo.InvariantCulture,
-                out value);
-        }
-
-        private static List<string> TokenizeCalcExpression(string expression)
-        {
-            var tokens = new List<string>();
-            if (string.IsNullOrWhiteSpace(expression))
-            {
-                return tokens;
-            }
-
-            var current = new StringBuilder();
-            bool previousWasOperator = true;
-            for (int i = 0; i < expression.Length; i++)
-            {
-                char ch = expression[i];
-                if (char.IsWhiteSpace(ch))
-                {
-                    if (current.Length > 0)
-                    {
-                        tokens.Add(current.ToString());
-                        current.Clear();
-                        previousWasOperator = false;
-                    }
-                    continue;
-                }
-
-                bool isOperator = ch == '+' || ch == '-' || ch == '*' || ch == '/';
-                bool isSignedNumber = (ch == '+' || ch == '-') &&
-                    previousWasOperator &&
-                    i + 1 < expression.Length &&
-                    (char.IsDigit(expression[i + 1]) || expression[i + 1] == '.');
-
-                if (isOperator && !isSignedNumber)
-                {
-                    if (current.Length > 0)
-                    {
-                        tokens.Add(current.ToString());
-                        current.Clear();
-                    }
-
-                    tokens.Add(ch.ToString());
-                    previousWasOperator = true;
-                    continue;
-                }
-
-                current.Append(ch);
-                previousWasOperator = false;
-            }
-
-            if (current.Length > 0)
-            {
-                tokens.Add(current.ToString());
-            }
-
-            return tokens;
-        }
     }
 }
-
-
