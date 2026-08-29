@@ -638,7 +638,7 @@ public class BrowserIntegration : IDisposable
         var activeDocument = _root?.OwnerDocument;
         if (animation == null ||
             animation.OwnerDocument == null ||
-            !ReferenceEquals(animation.OwnerDocument, activeDocument))
+            !IsDocumentInActiveFrameTree(animation.OwnerDocument, activeDocument))
         {
             return;
         }
@@ -684,6 +684,33 @@ public class BrowserIntegration : IDisposable
         RequestFrame(
             MapAnimationInvalidation(animation),
             "CssAnimationEngine");
+    }
+
+    private bool IsDocumentInActiveFrameTree(Document candidate, Document activeDocument)
+    {
+        if (candidate == null || activeDocument == null)
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(candidate, activeDocument))
+        {
+            return true;
+        }
+
+        // Subdocuments are attached beneath their owning iframe element. Walk
+        // that concrete DOM attachment chain so animation ticks from visible
+        // same- or cross-origin frames wake this integration, while detached
+        // documents and documents owned by other tabs remain rejected.
+        for (Node current = candidate.ParentNode; current != null; current = current.ParentNode)
+        {
+            if (ReferenceEquals(current, _root))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

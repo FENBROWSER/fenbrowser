@@ -53,6 +53,35 @@ public class Phase1AnimationScopingTests
     }
 
     [Fact]
+    public void AnimationInAttachedIframe_RequestsFrameInOwningTab()
+    {
+        var topDocument = Document.CreateHtmlDocument();
+        var iframe = topDocument.CreateElement("iframe");
+        topDocument.Body.AppendChild(iframe);
+
+        var childDocument = Document.CreateHtmlDocument();
+        var spinner = childDocument.CreateElement("div");
+        childDocument.Body.AppendChild(spinner);
+        iframe.AppendChild(childDocument);
+
+        using var tab = new BrowserTab();
+        var browser = tab.Browser;
+        SetRoot(browser, topDocument.DocumentElement);
+        ResetFrameState(browser);
+
+        InvokeOnAnimationFrame(browser, new AnimationFrameEvent
+        {
+            Element = spinner,
+            OwnerDocument = childDocument,
+            Invalidation = InvalidationKind.Paint,
+            UpdateKind = AnimationUpdateKind.Composite,
+            ChangedProperties = new System.Collections.Generic.List<string> { "transform" }
+        });
+
+        Assert.True(GetNeedsRepaint(browser), "An attached iframe animation must wake its owning tab.");
+    }
+
+    [Fact]
     public void InactiveTab_ReceivesNoNormalFrequencyFrame()
     {
         var docB = Document.CreateHtmlDocument();
