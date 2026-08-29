@@ -1705,7 +1705,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // if even this is exceeded, rather than crashing the process.
     private const int FenJsLargeStackBytes = 256 * 1024 * 1024;
     private const int FenJsBrowserInstructionBudget = 100_000_000;
-    private const int FenJsBrowserTaskInstructionBudget = 100_000_000;
+    // Event/timer callbacks on real pages can be deliberately CPU-heavy —
+    // reCAPTCHA's post-click signal collection burns >100M interpreter
+    // instructions by design (proof-of-work style toast) and used to die with
+    // "Maximum instruction budget exceeded", rejecting the verification
+    // promise chain. The wall-clock script timeout remains the runaway guard;
+    // this budget only backstops per-item runaway loops.
+    private const int FenJsBrowserTaskInstructionBudget = 2_000_000_000;
     private const int FenJsBrowserParserMaxRecursionDepth = 1024;
     private const int FenJsBoundaryGcAllocationThreshold = 4_096;
 
@@ -1876,9 +1882,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             {
                 var timeout = new FenBrowser.FenEngine.Errors.FenTimeoutError(
                     $"Timed out waiting for FenJS worker after {waitForWorkerMs} ms.");
-                // Mark a queued item stale without leaving a faulted Task whose
-                // exception can later surface on the finalizer thread.
-                workItem.Completion.TrySetCanceled();
+                // The caller stopped waiting, but the queued work itself is still
+                // valid: dropping it here loses dispatched events/timers whose
+                // handlers legitimately exceed the caller's wait (e.g. reCAPTCHA
+                // signal collection). Leave it runnable; just observe a later
+                // fault so no unobserved-task exception reaches the finalizer.
+                ObserveAbandonedCompletion(workItem.Completion.Task);
                 throw timeout;
             }
         }
@@ -1932,16 +1941,28 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         {
             if (cts != null)
             {
+                // The timeout bounds only how long the CALLER waits. The queued
+                // work must still run: cancelling it here silently drops
+                // dispatched input events and timer callbacks whose handlers
+                // legitimately exceed the wait (e.g. reCAPTCHA signal
+                // collection), leaving the page stuck mid-flow.
                 using var reg = cts.Token.Register(() =>
                 {
-                    workItem.Completion.TrySetException(new FenBrowser.FenEngine.Errors.FenTimeoutError(
-                        $"FenJS async work timed out after {timeoutMs}ms"));
+                    ObserveAbandonedCompletion(workItem.Completion.Task);
                 });
 
                 using (cts)
                 {
-                    var result = await workItem.Completion.Task.ConfigureAwait(false);
-                    return (T)result;
+                    try
+                    {
+                        var result = await workItem.Completion.Task.WaitAsync(cts.Token).ConfigureAwait(false);
+                        return (T)result;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw new FenBrowser.FenEngine.Errors.FenTimeoutError(
+                            $"FenJS async work timed out after {timeoutMs}ms; the queued work continues on the JS worker.");
+                    }
                 }
             }
             else
@@ -1955,6 +1976,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             // Propagate timeout directly without wrapping.
             throw;
         }
+    }
+
+    /// <summary>
+    /// Keeps an abandoned (caller-timed-out) work item's completion task from
+    /// surfacing an unobserved task exception on the finalizer thread if the
+    /// worker later executes it and it throws.
+    /// </summary>
+    private static void ObserveAbandonedCompletion(Task task)
+    {
+        _ = task.ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
     }
 
     private void BeginScriptLoadingSnapshot(Node domRoot, Uri baseUri)
@@ -13675,19 +13710,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return;
         }
 
-        lock (_fenJsLock)
+        QueueOnDeliveryTail(() =>
         {
-            var sourceWindow = GetOrCreateIFrameContentWindow(frame);
-            var ports = ImportTransferredMessagePorts(transferredEndpoints);
-            QueueWindowMessage(
-                _fenJsGlobalThis,
-                _windowEventListeners,
-                ConvertObjectToJsValue(data),
-                sourceWindow,
-                ports,
-                targetOrigin,
-                _currentBaseUri?.GetLeftPart(UriPartial.Authority));
-        }
+            lock (_fenJsLock)
+            {
+                var sourceWindow = GetOrCreateIFrameContentWindow(frame);
+                var ports = ImportTransferredMessagePorts(transferredEndpoints);
+                QueueWindowMessage(
+                    _fenJsGlobalThis,
+                    _windowEventListeners,
+                    ConvertObjectToJsValue(data),
+                    sourceWindow,
+                    ports,
+                    targetOrigin,
+                    _currentBaseUri?.GetLeftPart(UriPartial.Authority));
+            }
+        }, "frame postMessage enqueue failed");
     }
 
     private void QueueCrossRealmMessage(Action delivery)
@@ -13726,18 +13764,65 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         string targetOrigin,
         IReadOnlyList<MessagePortEndpoint> transferredEndpoints)
     {
-        lock (_fenJsLock)
+        QueueOnDeliveryTail(() =>
         {
-            var ports = ImportTransferredMessagePorts(transferredEndpoints);
-            QueueWindowMessage(
-                _fenJsGlobalThis,
-                _windowEventListeners,
-                ConvertObjectToJsValue(data),
-                _embeddedParentWindowProxy,
-                ports,
-                targetOrigin,
-                GetCurrentWindowOrigin(),
-                sourceOrigin);
+            lock (_fenJsLock)
+            {
+                var ports = ImportTransferredMessagePorts(transferredEndpoints);
+                QueueWindowMessage(
+                    _fenJsGlobalThis,
+                    _windowEventListeners,
+                    ConvertObjectToJsValue(data),
+                    _embeddedParentWindowProxy,
+                    ports,
+                    targetOrigin,
+                    GetCurrentWindowOrigin(),
+                    sourceOrigin);
+            }
+        }, "parent postMessage enqueue failed");
+    }
+
+    /// <summary>
+    /// Runs a delivery body on the shared FenJS worker with the interpreter
+    /// lock held there, chained onto the window-message delivery tail. Cross-
+    /// realm postMessage entry points must never take <see cref="_fenJsLock"/>
+    /// on their calling thread: importing transferred MessagePorts blocks on
+    /// the worker, and the worker's current item needs the same lock — a
+    /// guaranteed self-deadlock that freezes every later JS dispatch (timers,
+    /// pointer events) in the realm. This mirrors the QueueMessagePort
+    /// delivery pattern.
+    /// </summary>
+    private void QueueOnDeliveryTail(Action body, string failureLogPrefix)
+    {
+        var sessionGeneration = _fenJsSessionGeneration;
+        lock (_windowMessageQueueLock)
+        {
+            _windowMessageDeliveryTail = _windowMessageDeliveryTail.ContinueWith(
+                _ =>
+                {
+                    if (sessionGeneration != _fenJsSessionGeneration)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        RunFenJsWithLargeStack<object>(() =>
+                        {
+                            body();
+                            return null;
+                        }, waitForWorkerMs: -1, instructionBudget: ResolveFenJsTaskInstructionBudget());
+                    }
+                    catch (Exception ex)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[FenJsBridge] {failureLogPrefix}: {ex.Message}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
         }
     }
 
