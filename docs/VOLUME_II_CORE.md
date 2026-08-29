@@ -37,6 +37,7 @@ All DOM objects inherit from the abstract `Node` class.
 Extends `ContainerNode`. Represents HTML tags.
 
 - **Attributes**: Managed via `NamedNodeMap` with security sanitization.
+- **Attribute-selector invalidation (2026-08-25)**: every attribute mutation marks the element style-dirty and raises `StyleAttributeChanged`, because any attribute can participate in selectors (`data-*`, `aria-*`, state attributes, and application-defined names). Invalidation is no longer limited to `id`, `class`, and `style`.
 - **ClassList**: `DOMTokenList` implementation for efficient class toggling.
 - **ShadowRoot**: Hooks for Shadow DOM encapsulation.
 - **Shadow connectivity propagation (2026-04-07)**:

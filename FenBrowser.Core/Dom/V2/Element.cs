@@ -567,9 +567,11 @@ namespace FenBrowser.Core.Dom.V2
 
         private static bool IsStyleAffectingAttribute(string name)
         {
-            return name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
-                   name.Equals("class", StringComparison.OrdinalIgnoreCase) ||
-                   name.Equals("style", StringComparison.OrdinalIgnoreCase);
+            // Any attribute can participate in a CSS attribute selector, including
+            // data-*, aria-*, hidden, disabled, and application-defined names. Limiting
+            // invalidation to id/class/style leaves selectors such as
+            // [data-state="checked"] stale after a DOM mutation.
+            return !string.IsNullOrEmpty(name);
         }
 
         private void NotifySlotAssignmentMayHaveChanged(string attributeName)
