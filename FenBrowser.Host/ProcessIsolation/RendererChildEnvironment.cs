@@ -11,7 +11,11 @@ internal static class RendererChildEnvironment
         "SystemRoot",
         "WINDIR",
         "DOTNET_ROOT",
-        "DOTNET_ROOT(x86)"
+        "DOTNET_ROOT(x86)",
+        // Diagnostics-only toggles; the renderer child writes probes/dumps to the
+        // workspace logs dir, so it needs the same envelope as the host process.
+        "FEN_DIAGNOSTIC_APPENDS",
+        "FEN_DIAGNOSTICS_DIR"
     };
 
     private static readonly string[] UnixGraphicsEnvironmentKeys =

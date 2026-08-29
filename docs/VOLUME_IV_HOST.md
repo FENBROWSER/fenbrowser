@@ -337,6 +337,7 @@ The Omnibox implementation.
     - CLI arg: `--renderer-child`
     - env flag: `FEN_RENDERER_CHILD=1`
   - Renderer child loop monitors parent process lifetime and exits cleanly when parent terminates.
+  - Renderer child environment is reduced to a safe key list (`RendererChildEnvironment`); diagnostics toggles `FEN_DIAGNOSTIC_APPENDS` and `FEN_DIAGNOSTICS_DIR` are inherited so child-process probes and dumps land in the same workspace envelope the host was launched with.
 
 - `ChromeManager.cs`
   - Added tab-close and shutdown calls into process-isolation coordinator (`OnTabClosed`, `Shutdown`).
