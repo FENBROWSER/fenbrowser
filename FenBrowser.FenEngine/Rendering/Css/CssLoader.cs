@@ -5638,6 +5638,7 @@ private static double? ExtractPx(string text, string prop)
             {
                 css.OverflowWrap = Safe(DictGet(css.Map, "word-wrap"))?.ToLowerInvariant();
             }
+            css.LineBreak = Safe(DictGet(css.Map, "line-break"))?.ToLowerInvariant();
 
             css.VerticalAlign = Safe(DictGet(css.Map, "vertical-align"));
             css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
