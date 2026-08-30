@@ -148,7 +148,7 @@ The browser's internal settings page (`fen://settings`).
 
 The visual implementation of the browser tabs.
 
-- **TabWidget**: Renders the individual tab shape (trapezoid/rounded), title, and close button.
+- **TabWidget**: Renders the individual tab shape, title, close button, and favicon. While a navigation is loading, it replaces the favicon with an animated spinner and restores the favicon after the Host loading state clears.
 - **TabBarWidget**: Manages the collection of tabs, scrolling, and dragging logic.
 
 #### ToolbarWidget.cs (Lines 1-168)

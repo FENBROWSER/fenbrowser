@@ -135,10 +135,45 @@ public class TabWidget : Widget
         // Favicon
         float faviconX = bounds.Left + PADDING;
         float faviconY = bounds.MidY - FAVICON_SIZE / 2;
-        
-        if (_tab.Favicon != null)
+        var faviconRect = new SKRect(faviconX, faviconY, faviconX + FAVICON_SIZE, faviconY + FAVICON_SIZE);
+
+        if (_tab.IsLoading)
         {
-            var faviconRect = new SKRect(faviconX, faviconY, faviconX + FAVICON_SIZE, faviconY + FAVICON_SIZE);
+            using var trackPaint = new SKPaint
+            {
+                Color = theme.TextMuted.WithAlpha(55),
+                IsAntialias = true,
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = 2
+            };
+            using var spinnerPaint = new SKPaint
+            {
+                Color = theme.Accent,
+                IsAntialias = true,
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = 2,
+                StrokeCap = SKStrokeCap.Round
+            };
+
+            var spinnerRect = new SKRect(
+                faviconRect.Left + 2,
+                faviconRect.Top + 2,
+                faviconRect.Right - 2,
+                faviconRect.Bottom - 2);
+            long nowMs = Environment.TickCount64;
+            float spinnerAngle = (float)((nowMs % 900) / 900.0 * 360.0);
+
+            canvas.DrawOval(spinnerRect, trackPaint);
+            canvas.DrawArc(spinnerRect, spinnerAngle, 250, false, spinnerPaint);
+
+            if (nowMs - _lastSpinnerInvalidationMs >= SPINNER_INVALIDATE_INTERVAL_MS)
+            {
+                _lastSpinnerInvalidationMs = nowMs;
+                Invalidate(faviconRect);
+            }
+        }
+        else if (_tab.Favicon != null)
+        {
             canvas.DrawBitmap(_tab.Favicon, faviconRect, FaviconSampling);
         }
         else
@@ -161,6 +196,11 @@ public class TabWidget : Widget
             float fW = iconFont.MeasureText(fText);
             float textY = faviconY + FAVICON_SIZE / 2 + 4;
             canvas.DrawText(fText, faviconX + FAVICON_SIZE / 2 - fW / 2, textY, SKTextAlign.Left, iconFont, iconTextPaint);
+        }
+
+        if (!_tab.IsLoading)
+        {
+            _lastSpinnerInvalidationMs = 0;
         }
         
         // Title
@@ -206,35 +246,6 @@ public class TabWidget : Widget
         canvas.DrawLine(closeX + margin, closeY + CLOSE_BUTTON_SIZE - margin, 
                        closeX + CLOSE_BUTTON_SIZE - margin, closeY + margin, closePaint);
         
-        // Loading indicator
-        if (_tab.IsLoading)
-        {
-            using var loadPaint = new SKPaint 
-            { 
-                Color = theme.Accent, 
-                IsAntialias = true,
-                Style = SKPaintStyle.Stroke,
-                StrokeWidth = 2
-            };
-
-            long nowMs = Environment.TickCount64;
-            float spinnerAngle = (float)((nowMs % 1000) / 1000.0 * 360.0);
-
-            // Half-circle for "spinner" feel
-            canvas.DrawArc(new SKRect(faviconX, faviconY, faviconX + FAVICON_SIZE, faviconY + FAVICON_SIZE), 
-                           spinnerAngle, 270, false, loadPaint);
-
-            // Keep spinner animating even with no external mouse/input invalidations.
-            if (nowMs - _lastSpinnerInvalidationMs >= SPINNER_INVALIDATE_INTERVAL_MS)
-            {
-                _lastSpinnerInvalidationMs = nowMs;
-                Invalidate(new SKRect(Bounds.Left + faviconX, Bounds.Top + faviconY, Bounds.Left + faviconX + FAVICON_SIZE, Bounds.Top + faviconY + FAVICON_SIZE));
-            }
-        }
-        else
-        {
-            _lastSpinnerInvalidationMs = 0;
-        }
     }
     
     public override void OnMouseMove(float x, float y)
