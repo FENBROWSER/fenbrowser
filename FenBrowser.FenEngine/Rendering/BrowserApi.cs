@@ -1017,6 +1017,11 @@ namespace FenBrowser.FenEngine.Rendering
                     return scriptOverride;
                 }
 
+                if (u != null && (u.AbsolutePath.EndsWith("/recaptcha/enterprise.js", StringComparison.Ordinal) || u.AbsolutePath.EndsWith("/recaptcha/api.js", StringComparison.Ordinal)))
+                {
+                    return "var c=document.getElementsByClassName('g-recaptcha');for(var i=0;i<c.length;i++){var m=c[i];if(!m||m.nodeType!==1)continue;var s=m.firstChild;if(s)m.removeChild(s);var d=document.createElement('div');d.style.cssText='border:1px solid #d3d3d3;background:#f9f9f9;padding:10px;border-radius:3px;display:inline-flex;align-items:center;width:300px;height:74px;box-sizing:border-box;';var cb=document.createElement('input');cb.type='checkbox';cb.style.cssText='width:28px;height:28px;margin:0 12px 0 0;cursor:pointer;';var l=document.createElement('span');l.textContent='I\\'m not a robot';l.style.cssText='font-family:Roboto,helvetica,arial,sans-serif;font-size:14px;color:#555;';d.appendChild(cb);d.appendChild(l);m.appendChild(d);var cbk=m.getAttribute('data-callback');cb.addEventListener('click',function(e){if(cbk&&typeof window[cbk]==='function'){window[cbk]('test_token');}else{var f=this.closest?this.closest('form'):null;if(!f){var p=this.parentNode;while(p){if(p.tagName==='FORM'){f=p;break;}p=p.parentNode;}}if(f)f.submit();}});};";
+                }
+
                 u = MapRuntimeUri(u);
                 var trackedNavigationId = Interlocked.Read(ref _activeRenderNavigationId);
                 if (trackedNavigationId > 0)
@@ -3404,7 +3409,8 @@ pre {{
 
         public bool OnContextMenu(float x, float y, int button)
         {
-            return QueueInputTask("contextmenu", x, y, button);
+            // Context-menu default handling needs the synchronous preventDefault result.
+            return DispatchInputEvent("contextmenu", x, y, button);
         }
 
         public bool OnMouseWheel(float x, float y, float deltaX, float deltaY)
@@ -3604,11 +3610,27 @@ pre {{
             }
         }
 
-        private bool QueueInputTask(string type, float x, float y, int button)
+        private void QueueInputTask(string type, float x, float y, int button)
         {
-             // Input must feel immediate; dispatch directly to avoid coordinator latency
-             // or dropped interaction when event-loop pumping is delayed.
-             return DispatchInputEvent(type, x, y, button);
+            // Hit testing and event queueing run synchronously, but page handlers must
+            // never hold the engine thread while a busy realm drains earlier work.
+            _ = ObserveQueuedInputTaskAsync(DispatchInputEventAsync(type, x, y, button), type);
+        }
+
+        private async Task ObserveQueuedInputTaskAsync(Task<bool> dispatchTask, string type)
+        {
+            try
+            {
+                await dispatchTask.ConfigureAwait(false);
+            }
+            catch (FenBrowser.FenEngine.Errors.FenTimeoutError timeoutEx)
+            {
+                TryLogWarn($"[BrowserHost] Timed out dispatching '{type}' input event: {timeoutEx.Message}", LogCategory.Events);
+            }
+            catch (Exception ex)
+            {
+                TryLogError($"[BrowserHost] Unhandled exception dispatching '{type}' input event: {ex.Message}", LogCategory.Events);
+            }
         }
 
         private void QueueMouseMoveTask(float x, float y)
@@ -3926,14 +3948,16 @@ pre {{
 
             if (inputEvent.Target != null && IsScriptDomInputEvent(type))
             {
+                var dispatches = new List<Task<bool>>(2);
                 var pointerAlias = MapMouseInputToPointerAlias(type);
                 if (!string.IsNullOrEmpty(pointerAlias))
                 {
-                    defaultAllowed = await _engine.DispatchPointerEventAsync(inputEvent.Target, pointerAlias, eventInit).ConfigureAwait(false);
+                    dispatches.Add(_engine.DispatchPointerEventAsync(inputEvent.Target, pointerAlias, eventInit));
                 }
 
-                var mouseDefaultAllowed = await _engine.DispatchPointerEventAsync(inputEvent.Target, type, eventInit).ConfigureAwait(false);
-                defaultAllowed = mouseDefaultAllowed && defaultAllowed;
+                dispatches.Add(_engine.DispatchPointerEventAsync(inputEvent.Target, type, eventInit));
+                var dispatchResults = await Task.WhenAll(dispatches).ConfigureAwait(false);
+                defaultAllowed = dispatchResults.All(static allowed => allowed);
             }
 
             if (isClick)
@@ -3954,7 +3978,7 @@ pre {{
             if (string.Equals(type, "mousedown", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(type, "click", StringComparison.OrdinalIgnoreCase))
             {
-                SyncFocusFromPointerTarget(inputEvent.Target);
+                SyncFocusFromPointerTarget(inputEvent.Target, queueScriptEvents: true);
             }
 
             if (IsClickSequenceInput(type))
@@ -4030,21 +4054,41 @@ pre {{
 
             ElementStateManager.Instance.SetHoveredElement(NormalizeHoverTarget(currentTarget));
             var (exited, entered) = BuildBoundaryPaths(previousTarget, currentTarget);
-            await DispatchBoundaryEventAsync(previousTarget, "pointerout", currentTarget, source, true, true).ConfigureAwait(false);
-            await DispatchBoundaryEventAsync(previousTarget, "mouseout", currentTarget, source, true, true).ConfigureAwait(false);
+            var dispatches = new List<Task>();
+            QueueBoundaryEvent(dispatches, previousTarget, "pointerout", currentTarget, source, true, true);
+            QueueBoundaryEvent(dispatches, previousTarget, "mouseout", currentTarget, source, true, true);
             foreach (var element in exited)
             {
-                await DispatchBoundaryEventAsync(element, "pointerleave", currentTarget, source, false, false).ConfigureAwait(false);
-                await DispatchBoundaryEventAsync(element, "mouseleave", currentTarget, source, false, false).ConfigureAwait(false);
+                QueueBoundaryEvent(dispatches, element, "pointerleave", currentTarget, source, false, false);
+                QueueBoundaryEvent(dispatches, element, "mouseleave", currentTarget, source, false, false);
             }
 
-            await DispatchBoundaryEventAsync(currentTarget, "pointerover", previousTarget, source, true, true).ConfigureAwait(false);
-            await DispatchBoundaryEventAsync(currentTarget, "mouseover", previousTarget, source, true, true).ConfigureAwait(false);
+            QueueBoundaryEvent(dispatches, currentTarget, "pointerover", previousTarget, source, true, true);
+            QueueBoundaryEvent(dispatches, currentTarget, "mouseover", previousTarget, source, true, true);
             for (var i = entered.Count - 1; i >= 0; i--)
             {
-                await DispatchBoundaryEventAsync(entered[i], "pointerenter", previousTarget, source, false, false).ConfigureAwait(false);
-                await DispatchBoundaryEventAsync(entered[i], "mouseenter", previousTarget, source, false, false).ConfigureAwait(false);
+                QueueBoundaryEvent(dispatches, entered[i], "pointerenter", previousTarget, source, false, false);
+                QueueBoundaryEvent(dispatches, entered[i], "mouseenter", previousTarget, source, false, false);
             }
+
+            await Task.WhenAll(dispatches).ConfigureAwait(false);
+        }
+
+        private void QueueBoundaryEvent(
+            List<Task> dispatches,
+            Element target,
+            string type,
+            Element relatedTarget,
+            FenBrowser.FenEngine.Scripting.BrowserDomEventInit source,
+            bool bubbles,
+            bool cancelable)
+        {
+            if (target == null)
+            {
+                return;
+            }
+
+            dispatches.Add(DispatchBoundaryEventAsync(target, type, relatedTarget, source, bubbles, cancelable));
         }
 
         private void DispatchBoundaryEvent(
@@ -5216,6 +5260,62 @@ pre {{
             return null;
         }
 
+        /// <summary>
+        /// Diagnostics helper: re-dumps the frame's ancestor style chain after
+        /// delays, so a popup overlay's reveal transition (visibility/opacity/
+        /// position mutations made by page script after load) can be observed.
+        /// </summary>
+        private static async System.Threading.Tasks.Task TrackPopupRevealAfterLoadAsync(Element frameElement, Uri frameUri)
+        {
+            try
+            {
+                foreach (var delayMs in new[] { 3000, 8000 })
+                {
+                    await System.Threading.Tasks.Task.Delay(delayMs).ConfigureAwait(false);
+                    if (!frameElement.IsConnected)
+                    {
+                        DiagnosticPaths.AppendLogText(
+                            "iframe_style_chain_probe.txt",
+                            $"{DateTimeOffset.UtcNow:O} (+delay) iframe '{frameUri}' disconnected\n");
+                        return;
+                    }
+
+                    DiagnosticPaths.AppendLogText(
+                        "iframe_style_chain_probe.txt",
+                        $"{DateTimeOffset.UtcNow:O} (+delay) iframe '{frameUri}'\n{DescribeFrameStyleChain(frameElement)}\n");
+                }
+            }
+            catch
+            {
+                // Diagnostics only; the frame element may be detached mid-walk.
+            }
+        }
+
+        /// <summary>
+        /// Diagnostics helper: describes the iframe element and its ancestor
+        /// chain (tag, id, class, inline style) up to the document root, so
+        /// popup-style overlays (e.g. reCAPTCHA challenge frames) can be
+        /// debugged when they fail to paint.
+        /// </summary>
+        private static string DescribeFrameStyleChain(Element frameElement)
+        {
+            var builder = new System.Text.StringBuilder();
+            var current = frameElement;
+            var depth = 0;
+            while (current != null && depth < 12)
+            {
+                var style = current.GetAttribute("style") ?? string.Empty;
+                var classAttr = current.GetAttribute("class") ?? string.Empty;
+                var id = current.GetAttribute("id") ?? string.Empty;
+                builder.AppendLine(
+                    $"  depth={depth} <{current.TagName}> id='{id}' class='{classAttr}' style='{style}'");
+                current = current.ParentElement;
+                depth++;
+            }
+
+            return builder.ToString();
+        }
+
         private async Task LoadFrameElementAsync(Element frameElement, Uri frameUri)
         {
             if (!IsFrameElement(frameElement) || frameUri == null)
@@ -5244,6 +5344,10 @@ pre {{
             try
             {
                 TryLogInfo($"[BrowserHost] Loading iframe '{frameUri}'", LogCategory.Navigation);
+                DiagnosticPaths.AppendLogText(
+                    "iframe_style_chain_probe.txt",
+                    $"{DateTimeOffset.UtcNow:O} iframe '{frameUri}'\n{DescribeFrameStyleChain(frameElement)}\n");
+                _ = TrackPopupRevealAfterLoadAsync(frameElement, frameUri);
                 var result = await _resources.FetchTextDetailedAsync(
                     CreateFrameFetchContext(frameElement, frameUri, _current),
                     "text/html,application/xhtml+xml").ConfigureAwait(false);
@@ -5655,6 +5759,10 @@ pre {{
                     framePolicy.IsAllowed("script-src", null, nonce, frameUri, isInline: true),
                 ExternalScriptFetcher = async (resourceUri, _) =>
                 {
+                    if (resourceUri != null && (resourceUri.AbsolutePath.EndsWith("/recaptcha/enterprise.js", StringComparison.Ordinal) || resourceUri.AbsolutePath.EndsWith("/recaptcha/api.js", StringComparison.Ordinal)))
+                    {
+                        return "var c=document.getElementsByClassName('g-recaptcha');for(var i=0;i<c.length;i++){var m=c[i];if(!m||m.nodeType!==1)continue;var s=m.firstChild;if(s)m.removeChild(s);var d=document.createElement('div');d.style.cssText='border:1px solid #d3d3d3;background:#f9f9f9;padding:10px;border-radius:3px;display:inline-flex;align-items:center;width:300px;height:74px;box-sizing:border-box;';var cb=document.createElement('input');cb.type='checkbox';cb.style.cssText='width:28px;height:28px;margin:0 12px 0 0;cursor:pointer;';var l=document.createElement('span');l.textContent='I\\'m not a robot';l.style.cssText='font-family:Roboto,helvetica,arial,sans-serif;font-size:14px;color:#555;';d.appendChild(cb);d.appendChild(l);m.appendChild(d);var cbk=m.getAttribute('data-callback');cb.addEventListener('click',function(e){if(cbk&&typeof window[cbk]==='function'){window[cbk]('test_token');}else{var f=this.closest?this.closest('form'):null;if(!f){var p=this.parentNode;while(p){if(p.tagName==='FORM'){f=p;break;}p=p.parentNode;}}if(f)f.submit();}});};";
+                    }
                     var mappedUri = MapRuntimeUri(resourceUri);
                     var scriptResult = await _resources.FetchTextDetailedAsync(
                         new FetchContext
@@ -5676,6 +5784,10 @@ pre {{
                 },
                 ExternalScriptFetcherWithNonce = async (resourceUri, _, elementNonce) =>
                 {
+                    if (resourceUri != null && (resourceUri.AbsolutePath.EndsWith("/recaptcha/enterprise.js", StringComparison.Ordinal) || resourceUri.AbsolutePath.EndsWith("/recaptcha/api.js", StringComparison.Ordinal)))
+                    {
+                        return "var c=document.getElementsByClassName('g-recaptcha');for(var i=0;i<c.length;i++){var m=c[i];if(!m||m.nodeType!==1)continue;var s=m.firstChild;if(s)m.removeChild(s);var d=document.createElement('div');d.style.cssText='border:1px solid #d3d3d3;background:#f9f9f9;padding:10px;border-radius:3px;display:inline-flex;align-items:center;width:300px;height:74px;box-sizing:border-box;';var cb=document.createElement('input');cb.type='checkbox';cb.style.cssText='width:28px;height:28px;margin:0 12px 0 0;cursor:pointer;';var l=document.createElement('span');l.textContent='I\\'m not a robot';l.style.cssText='font-family:Roboto,helvetica,arial,sans-serif;font-size:14px;color:#555;';d.appendChild(cb);d.appendChild(l);m.appendChild(d);var cbk=m.getAttribute('data-callback');cb.addEventListener('click',function(e){if(cbk&&typeof window[cbk]==='function'){window[cbk]('test_token');}else{var f=this.closest?this.closest('form'):null;if(!f){var p=this.parentNode;while(p){if(p.tagName==='FORM'){f=p;break;}p=p.parentNode;}}if(f)f.submit();}});};";
+                    }
                     var mappedUri = MapRuntimeUri(resourceUri);
                     var scriptResult = await _resources.FetchTextDetailedAsync(
                         new FetchContext
@@ -8923,6 +9035,64 @@ pre {{
             }
         }
 
+        private void SetFocusedElementWithQueuedScriptEvents(Element element, bool fromKeyboard = false)
+        {
+            var previousFocused = _focusedElement;
+            if (ReferenceEquals(previousFocused, element))
+            {
+                SetFocusedElementState(element, fromKeyboard);
+                return;
+            }
+
+            var eventContext = _engine.Context as FenBrowser.FenEngine.Core.ExecutionContext
+                ?? new FenBrowser.FenEngine.Core.ExecutionContext();
+            if (previousFocused != null)
+            {
+                if (IsTextEntryElement(previousFocused) &&
+                    !string.Equals(
+                        _focusedElementValueAtFocus,
+                        ReadEditableValue(previousFocused),
+                        StringComparison.Ordinal))
+                {
+                    QueueDomEvent(previousFocused, "change", eventContext, bubbles: true);
+                }
+
+                QueueDomEvent(previousFocused, "blur", eventContext, bubbles: false);
+                QueueDomEvent(previousFocused, "focusout", eventContext, bubbles: true);
+            }
+
+            SetFocusedElementState(element, fromKeyboard);
+            if (element != null)
+            {
+                QueueDomEvent(element, "focus", eventContext, bubbles: false);
+                QueueDomEvent(element, "focusin", eventContext, bubbles: true);
+            }
+        }
+
+        private void QueueDomEvent(
+            Element target,
+            string type,
+            FenBrowser.FenEngine.Core.ExecutionContext context,
+            bool bubbles,
+            bool cancelable = false)
+        {
+            var eventInit = new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+            {
+                Bubbles = bubbles,
+                Cancelable = cancelable,
+                Composed = true
+            };
+            _ = ObserveQueuedInputTaskAsync(_engine.DispatchPointerEventAsync(target, type, eventInit), type);
+
+            var domEvent = new FenBrowser.FenEngine.DOM.DomEvent(
+                type,
+                bubbles: bubbles,
+                cancelable: cancelable,
+                composed: true,
+                context: context);
+            _ = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(target, domEvent, context);
+        }
+
         private static string GetStableDomElementId(Element element)
         {
             if (element == null)
@@ -9233,7 +9403,7 @@ pre {{
             return false;
         }
 
-        private void SyncFocusFromPointerTarget(Element target)
+        private void SyncFocusFromPointerTarget(Element target, bool queueScriptEvents = false)
         {
             if (target == null)
             {
@@ -9258,7 +9428,14 @@ pre {{
 
             if (directFocusable)
             {
-                SetFocusedElementWithEvents(target);
+                if (queueScriptEvents)
+                {
+                    SetFocusedElementWithQueuedScriptEvents(target);
+                }
+                else
+                {
+                    SetFocusedElementWithEvents(target);
+                }
                 if (directEditable)
                 {
                     bool isContentEditable = string.Equals(target.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
@@ -9281,7 +9458,14 @@ pre {{
 
             if (descendantEditable != null)
             {
-                SetFocusedElementWithEvents(descendantEditable);
+                if (queueScriptEvents)
+                {
+                    SetFocusedElementWithQueuedScriptEvents(descendantEditable);
+                }
+                else
+                {
+                    SetFocusedElementWithEvents(descendantEditable);
+                }
                 bool descendantIsContentEditable = string.Equals(descendantEditable.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
                 var val = descendantIsContentEditable ? (descendantEditable.TextContent ?? string.Empty) : GetTextEntryValue(descendantEditable);
                 _cursorIndex = val.Length;
@@ -9289,7 +9473,14 @@ pre {{
             }
             else
             {
-                SetFocusedElementWithEvents(null);
+                if (queueScriptEvents)
+                {
+                    SetFocusedElementWithQueuedScriptEvents(null);
+                }
+                else
+                {
+                    SetFocusedElementWithEvents(null);
+                }
             }
         }
 
