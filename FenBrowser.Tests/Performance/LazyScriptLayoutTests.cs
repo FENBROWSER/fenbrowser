@@ -9,6 +9,38 @@ namespace FenBrowser.Tests.Performance;
 public sealed class LazyScriptLayoutTests
 {
     [Fact]
+    public async Task GeometryReadUsesHostInjectedRenderer()
+    {
+        using var engine = new CustomHtmlEngine();
+        var renderer = new SkiaDomRenderer();
+        engine.SetExternalRenderer(renderer);
+
+        await engine.RenderAsync(
+            """
+            <!doctype html>
+            <html>
+              <head><style>#target { width: 304px; height: 78px; }</style></head>
+              <body>
+                <main id="target">content</main>
+                <script>
+                  var rect = document.getElementById('target').getBoundingClientRect();
+                  globalThis.geometryResult = rect.width + 'x' + rect.height;
+                </script>
+              </body>
+            </html>
+            """,
+            new Uri("https://layout.test/"),
+            _ => Task.FromResult(string.Empty),
+            imageLoader: null,
+            onNavigate: _ => { },
+            viewportWidth: 640,
+            viewportHeight: 480,
+            forceJavascript: true);
+
+        Assert.Equal("304x78", engine.Evaluate("String(globalThis.geometryResult)")?.ToString());
+    }
+
+    [Fact]
     public async Task RenderAsyncDoesNotForceLayoutBeforeScriptThatDoesNotReadGeometry()
     {
         using var engine = new CustomHtmlEngine();

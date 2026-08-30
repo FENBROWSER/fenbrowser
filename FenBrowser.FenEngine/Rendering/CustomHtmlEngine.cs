@@ -2513,7 +2513,7 @@ public void Dispose()
                 // Wire layout box resolution for getBoundingClientRect / offsetHeight etc.
                 // Use a late-bound lookup so scripts that run after layout completes
                 // (setTimeout, event handlers, React hydration) see real box geometry.
-                js.LayoutBoxResolver = el => _cachedRenderer?.GetElementBox(el);
+                js.LayoutBoxResolver = el => (_externalRenderer ?? _cachedRenderer)?.GetElementBox(el);
                 js.FrameScrollReader = el =>
                 {
                     var renderer = _externalRenderer ?? _cachedRenderer;

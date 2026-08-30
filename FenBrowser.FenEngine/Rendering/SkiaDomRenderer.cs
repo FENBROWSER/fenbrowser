@@ -1843,7 +1843,6 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var mergedRects = new Dictionary<Element, ElementGeometry>(_lastLayout.ElementRects);
-            var workingContentHeight = _lastLayout.ContentHeight;
             var appliedRoots = 0;
 
             for (var i = 0; i < plan.DirtyRoots.Count; i++)
@@ -1890,6 +1889,16 @@ namespace FenBrowser.FenEngine.Rendering
                     return false;
                 }
 
+                if (!layoutEngine.AllBoxes.TryGetValue(dirtyRoot, out var updatedRootBox) ||
+                    Math.Abs(updatedRootBox.MarginBox.Width - previousRootBox.MarginBox.Width) > 0.5f ||
+                    Math.Abs(updatedRootBox.MarginBox.Height - previousRootBox.MarginBox.Height) > 0.5f)
+                {
+                    // A changed isolation-root outer size affects ancestor flow and
+                    // document scroll extent. Escalate to full layout so ancestors
+                    // are resized instead of retaining stale pre-style geometry.
+                    return false;
+                }
+
                 RemoveBoxesForSubtree(dirtyRoot);
                 RemoveElementRectsForSubtree(dirtyRoot, mergedRects);
 
@@ -1907,19 +1916,27 @@ namespace FenBrowser.FenEngine.Rendering
                     mergedRects[rectEntry.Key] = rectEntry.Value;
                 }
 
-                foreach (var geometry in partial.ElementRects.Values)
-                {
-                    if (float.IsFinite(geometry.Bottom))
-                    {
-                        workingContentHeight = Math.Max(workingContentHeight, geometry.Bottom);
-                    }
-                }
                 appliedRoots++;
             }
 
             if (appliedRoots == 0)
             {
                 return false;
+            }
+
+            float workingContentHeight = _viewportHeight;
+            foreach (var rectEntry in mergedRects)
+            {
+                if (styles.TryGetValue(rectEntry.Key, out var style) &&
+                    string.Equals(LayoutStyleResolver.GetEffectivePosition(style), "fixed", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (float.IsFinite(rectEntry.Value.Bottom))
+                {
+                    workingContentHeight = Math.Max(workingContentHeight, rectEntry.Value.Bottom);
+                }
             }
 
             _lastLayout = new LayoutResult(
