@@ -1,4 +1,5 @@
 using FenBrowser.Js.Heap;
+using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Promises;
@@ -28,6 +29,14 @@ public sealed class PromiseObject : ITraceable
 
     public bool IsHandled { get; set; }
 
+    // The PromiseInstance JsObject cell wrapping this record. Reaction/result
+    // stores below go through it so an Old promise receiving a Young reaction
+    // or result dirties its remembered-set card (write barrier).
+    internal JsObject? OwnerInstance;
+
+    private void BarrierSlot(JsValue value) => OwnerInstance?.BarrierInternalSlot(value);
+    private void BarrierSlot(ObjectHandle handle) => OwnerInstance?.BarrierInternalSlot(handle);
+
     // 27.2.1.4 FulfillPromise / 27.2.1.7 RejectPromise: caller asserts state is
     // Pending. Returns false when the promise has already settled so the caller can
     // ignore the duplicate settle attempt.
@@ -46,6 +55,7 @@ public sealed class PromiseObject : ITraceable
 
         State = terminalState;
         _result = value;
+        BarrierSlot(value);
 
         // Only one reaction branch can ever run after settlement. The interpreter
         // still drains the selected branch to enqueue jobs, so keep that list intact
@@ -69,6 +79,7 @@ public sealed class PromiseObject : ITraceable
         }
 
         _fulfillReactions.Add(reaction);
+        BarrierSlot(reaction);
     }
 
     public void QueueRejectReaction(ObjectHandle reaction)
@@ -79,6 +90,7 @@ public sealed class PromiseObject : ITraceable
         }
 
         _rejectReactions.Add(reaction);
+        BarrierSlot(reaction);
     }
 
     public IReadOnlyList<ObjectHandle> DrainFulfillReactions()

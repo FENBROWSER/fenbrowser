@@ -365,6 +365,7 @@ public sealed partial class BytecodeInterpreter
         if (_heap.GetObject(fnValue.AsObjectHandle()) is JsFunctionObject fn)
         {
             fn.HomeObject = homeValue.AsObjectHandle();
+            fn.BarrierInternalSlot(homeValue.AsObjectHandle());
             _heap.WriteBarrier(fnValue.AsObjectHandle(), homeValue.AsObjectHandle());
         }
     }

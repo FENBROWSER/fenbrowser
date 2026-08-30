@@ -43,6 +43,16 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
         GlobalThisValue = globalThisValue;
     }
 
+    internal override void AttachOwnerHeap(JsHeap heap)
+    {
+        OwnerHeap = heap;
+        // Lexical binding stores delegate to the inner declarative record and
+        // global-property stores to the object record; both must know the heap
+        // so object-valued stores join the remembered-environment set.
+        _declarativeRecord.OwnerHeap = heap;
+        _objectRecord.OwnerHeap = heap;
+    }
+
     // 9.1.1.4.11 GetThisBinding ( ): return [[GlobalThisValue]]. Stored explicitly so
     // that hosts (Window vs. a sandbox global) can decide what `this` should resolve
     // to at the top level.
@@ -318,7 +328,7 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
     public ObjectEnvironmentRecord ObjectRecordForTest => _objectRecord;
     public IReadOnlyCollection<string> VarNamesSnapshotForTest => _varNames;
 
-    protected override void TraceOwnEdges(IHeapTracer tracer)
+    protected internal override void TraceOwnEdges(IHeapTracer tracer)
     {
         TraceValue(tracer, GlobalThisValue);
         _declarativeRecord.Trace(tracer);

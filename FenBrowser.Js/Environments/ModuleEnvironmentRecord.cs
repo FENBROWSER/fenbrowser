@@ -115,7 +115,7 @@ public sealed class ModuleEnvironmentRecord : DeclarativeEnvironmentRecord
     /// identity rather than recursing A -> B -> A indefinitely. The outer-scope
     /// chain itself is walked iteratively by the base <see cref="EnvironmentRecord.Trace"/>.
     /// </summary>
-    protected override void TraceOwnEdges(IHeapTracer tracer)
+    protected internal override void TraceOwnEdges(IHeapTracer tracer)
     {
         ArgumentNullException.ThrowIfNull(tracer);
 

@@ -91,6 +91,31 @@ public class JsObject : ITraceable
         }
     }
 
+    // Write barrier for internal-slot stores that bypass SetProperty /
+    // DefineOwnProperty (async context, generator, function and promise
+    // internals). Keeps the generational remembered set precise: an Old owner
+    // receiving a Young child dirties its card, so the heap never needs blanket
+    // sticky rescans of non-plain object payloads.
+    internal void BarrierInternalSlot(JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object &&
+            OwnerHandle is { } owner &&
+            OwnerHeap is { } heap)
+        {
+            heap.WriteBarrier(owner, value.AsObjectHandle());
+        }
+    }
+
+    internal void BarrierInternalSlot(ObjectHandle? handle)
+    {
+        if (handle is { } child &&
+            OwnerHandle is { } owner &&
+            OwnerHeap is { } heap)
+        {
+            heap.WriteBarrier(owner, child);
+        }
+    }
+
     // Internal accessors for inline caches.
     internal Shape CurrentShape => _shape;
     internal JsPropertyDescriptor?[] PropertyArray => _properties;

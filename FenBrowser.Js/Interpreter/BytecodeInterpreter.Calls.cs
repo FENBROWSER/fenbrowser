@@ -107,7 +107,26 @@ public sealed partial class BytecodeInterpreter
     }
 
 
+    // Native-interleave return pin: a value returned from JS into a CLR/native
+    // caller is held in a C# local the tracer cannot see. A safe-point
+    // collection inside a nested call (or a lazy builtin install) can then
+    // sweep the result before the caller roots it. A bounded FIFO of recent
+    // returns keeps such results reachable far longer than any native body
+    // needs; slots are simply overwritten as new calls return.
+    private void PinReturnValue(JsValue value)
+    {
+        _returnPinRing[_returnPinIndex] = value;
+        _returnPinIndex = (_returnPinIndex + 1) & ReturnPinRingMask;
+    }
+
     private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
+    {
+        var result = CallFunctionCore(value, args, thisValue);
+        PinReturnValue(result);
+        return result;
+    }
+
+    private JsValue CallFunctionCore(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
         if (value.Tag == JsValueTag.Undefined || value.Tag == JsValueTag.Null)
         {
@@ -314,7 +333,18 @@ public sealed partial class BytecodeInterpreter
                 PinIfObject(value);
                 PinIfObject(thisValue);
                 for (var i = 0; i < args.Count; i++) PinIfObject(args[i]);
-                return native.Call(thisValue, args);
+                // Fresh objects allocated inside the native body may live only
+                // in C# locals across nested safe-point collections; the heap's
+                // scoped allocation pin covers exactly this window.
+                _heap.BeginNativeExecution();
+                try
+                {
+                    return native.Call(thisValue, args);
+                }
+                finally
+                {
+                    _heap.EndNativeExecution();
+                }
             }
             finally
             {
@@ -749,9 +779,9 @@ public sealed partial class BytecodeInterpreter
             TryGetPropertyValue(function, JsValue.FromObject(handle), "__realmGlobal__", out var realmGlobal) &&
             realmGlobal.Tag == JsValueTag.Object)
         {
-            return new GlobalEnvironmentRecord(
+            return StampEnvironment(new GlobalEnvironmentRecord(
                 CreateBindingAdapter(realmGlobal.AsObjectHandle()),
-                realmGlobal);
+                realmGlobal));
         }
 
         return function.OuterEnvironment;

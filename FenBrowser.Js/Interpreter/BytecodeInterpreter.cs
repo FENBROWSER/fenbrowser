@@ -92,6 +92,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // rooted even though no promise reaction holds it yet.
             if (frame.AsyncContext?.SelfHandle is { } asyncCtxHandle)
                 tracer.Trace(asyncCtxHandle);
+            // The callee's own cell can otherwise become unreachable while its
+            // body runs: the caller's register that held it is the only heap
+            // edge, and top-level invocations (microtask drain, timer callbacks)
+            // hold the callee solely in C# locals. Pin it for the frame's life.
+            if (frame.CalleeFunctionObject?.OwnerHandle is { } calleeSelf)
+                tracer.Trace(calleeSelf);
             frame.Environment?.Trace(tracer);
         }
 
@@ -147,6 +153,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _jobQueue.Trace(tracer);
         TraceRootValue(tracer, _pendingNewTarget);
         TraceRootValue(tracer, _tailCallee);
+        foreach (var pinned in _returnPinRing)
+        {
+            TraceRootValue(tracer, pinned);
+        }
         TraceRootValue(tracer, _tailThis);
         if (_tailArgs != null)
         {
@@ -352,6 +362,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue _pendingNewTarget = JsValue.Undefined;
 
     private bool _tailCallRequested;
+    // Bounded FIFO of recent JS->CLR call returns, traced so results held only
+    // in native C# locals survive safe-point collections. See PinReturnValue.
+    private const int ReturnPinRingSize = 256;
+    private const int ReturnPinRingMask = ReturnPinRingSize - 1;
+    private readonly JsValue[] _returnPinRing = new JsValue[ReturnPinRingSize];
+    private int _returnPinIndex;
     private JsValue _tailCallee;
     private IReadOnlyList<JsValue>? _tailArgs;
     private JsValue _tailThis;
@@ -386,7 +402,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Diagnostic access for explicitly instrumented runs. The normal execution
     // path leaves InstructionBudget at zero and therefore does not increment
     // this counter in the dispatch loop.
-    public int InstructionsExecuted => _instructionCount;
+    public int InstructionsExecuted => System.Threading.Volatile.Read(ref _instructionCount);
+    public int LastExecutionInstructions { get; private set; }
 
     // Tier 5 #27: wall-clock execution deadline in milliseconds. Zero = no
     // limit. Checked every WallClockCheckInterval instructions to keep the
@@ -427,6 +444,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         finally
         {
+            LastExecutionInstructions = _instructionCount;
             InstructionBudget = previousInstructionBudget;
             _instructionCount = previousInstructionCount;
             _wallClockDeadlineTicks = previousDeadlineTicks;
@@ -473,6 +491,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _heap.DeferAutomaticCollectionUntilSafePoint = true;
         _heap.AddRootSource(this);
 
+    }
+
+    // Stamps a freshly created environment record with the owning heap so its
+    // object-valued binding stores join the heap's remembered-environment set
+    // (environment records are not heap cells and cannot carry cards).
+    private T StampEnvironment<T>(T record) where T : EnvironmentRecord
+    {
+        record.AttachOwnerHeap(_heap);
+        return record;
     }
 
     private bool ProxyObjSet(ProxyObject proxy, JsValue receiver, string prop, JsValue value)
@@ -678,6 +705,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         gen.InstructionPointer = frame.InstructionPointer;
         Array.Copy(frame.Registers, gen.Registers, frame.Registers.Length);
+        foreach (var register in frame.Registers)
+        {
+            gen.BarrierInternalSlot(register);
+        }
         gen.Environment = frame.Environment;
         gen.State = GeneratorState.Suspended;
         gen.YieldDestReg = yieldDestReg;
@@ -687,7 +718,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 		gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
 		gen.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
 		gen.PendingException = frame.PendingException;
+		if (frame.PendingException is { } suspendedPendingException)
+		{
+			gen.BarrierInternalSlot(suspendedPendingException);
+		}
 		gen.PendingReturn = frame.PendingReturn;
+		if (frame.PendingReturn is { } suspendedPendingReturn)
+		{
+			gen.BarrierInternalSlot(suspendedPendingReturn);
+		}
     }
 
     // ECMA-262 27.5.1.2 — execute (or resume) a generator function body.
@@ -695,6 +734,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         _instructionCount = 0;
         gen.SentValue = sentValue;
+        gen.BarrierInternalSlot(sentValue);
 
         // First call: let ExecuteInternalCore create a proper DeclarativeEnvironmentRecord
         // chained to the outer scope. Resume: reuse the saved frame environment so local
@@ -737,6 +777,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         ctx.InstructionPointer = frame.InstructionPointer;
         Array.Copy(frame.Registers, ctx.Registers, frame.Registers.Length);
+        foreach (var register in frame.Registers)
+        {
+            ctx.BarrierInternalSlot(register);
+        }
         ctx.Environment = frame.Environment;
         ctx.IsSuspended = true;
         ctx.AwaitDestReg = awaitDestReg;
@@ -744,6 +788,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 		ctx.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
 		ctx.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
 		ctx.PendingException = frame.PendingException;
+		if (frame.PendingException is { } asyncPendingException)
+		{
+			ctx.BarrierInternalSlot(asyncPendingException);
+		}
     }
 
     // ECMA-262 27.7.5.3 — resume an async function after the awaited promise
@@ -753,6 +801,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         _instructionCount = 0;
         ctx.SentValue = value;
+        ctx.BarrierInternalSlot(value);
         ctx.IsRejectResume = isReject;
         ctx.IsSuspended = false;
 
@@ -817,7 +866,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     public ModuleEnvironmentRecord CreateModuleEnvironment(string? importMetaUrl = null)
-        => new(EnsureGlobalEnvironment(), importMetaUrl);
+        => StampEnvironment(new ModuleEnvironmentRecord(EnsureGlobalEnvironment(), importMetaUrl));
 
     // E.6.next - read a binding directly from a caller-supplied env record.
     // Used by ModuleEvaluator to harvest export values out of a per-module
@@ -888,6 +937,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 CheckCheckpointBudget();
                 var (callback, heldValues) = _finalizationCleanupJobs.Dequeue();
+                var cleanupRootMark = _heap.RootCount;
+                if (callback.Tag == JsValueTag.Object)
+                {
+                    _heap.PushRoot(callback.AsObjectHandle());
+                }
                 foreach (var held in heldValues)
                 {
                     // Skip held values that were themselves collected in the
@@ -901,6 +955,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                     _ = CallFunction(callback, new[] { held }, JsValue.Undefined);
                 }
+
+                _heap.PopRootsTo(cleanupRootMark);
             }
 
             // Drain queueMicrotask first so an early host callback that resolves a
@@ -910,6 +966,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 CheckCheckpointBudget();
                 var callback = _pendingMicrotasks.Dequeue();
+                // The dequeued callback leaves the traced root set here; pin it
+                // for the invocation so a safe-point collection inside the
+                // callback's own body cannot sweep the closure cell that is
+                // executing (top-level invocations hold it only in this local).
+                var microtaskRootMark = _heap.RootCount;
+                if (callback.Tag == JsValueTag.Object)
+                {
+                    _heap.PushRoot(callback.AsObjectHandle());
+                }
                 try
                 {
                     _ = CallFunction(callback, Array.Empty<JsValue>(), JsValue.Undefined);
@@ -926,6 +991,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
 
                     throw;
+                }
+                finally
+                {
+                    _heap.PopRootsTo(microtaskRootMark);
                 }
             }
 
@@ -1085,17 +1154,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         else if (function.IsDerivedConstructor)
         {
             // `this` stays uninitialized until super(...) runs InitThisBinding.
-            frameEnv = new FunctionEnvironmentRecord(
+            frameEnv = StampEnvironment(new FunctionEnvironmentRecord(
                 ThisBindingStatus.Uninitialized,
                 callee?.SelfHandle is { } sh ? JsValue.FromObject(sh) : JsValue.Undefined,
-                JsValue.Undefined, callee?.HomeObject, outerEnvironment);
+                JsValue.Undefined, callee?.HomeObject, outerEnvironment));
         }
         else if (function.Kind == FunctionKind.Arrow)
         {
             // ECMA-262 9.1.1.3: arrow functions have no `this` binding of their
             // own; a plain declarative record lets `this` resolve through the
             // outer (enclosing function/global) environment.
-            frameEnv = new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment);
+            frameEnv = StampEnvironment(new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
         }
         else
         {
@@ -1104,10 +1173,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // arrow functions — which read `this` via GetThisEnvironment — can
             // observe it. Previously this lived only in frame.ThisValue, which
             // is invisible to an inner arrow's own frame.
-            var functionEnv = new FunctionEnvironmentRecord(
+            var functionEnv = StampEnvironment(new FunctionEnvironmentRecord(
                 ThisBindingStatus.Uninitialized,
                 callee?.SelfHandle is { } sh ? JsValue.FromObject(sh) : JsValue.Undefined,
-                JsValue.Undefined, callee?.HomeObject, outerEnvironment);
+                JsValue.Undefined, callee?.HomeObject, outerEnvironment));
             _ = functionEnv.BindThisValue(thisValue);
             // ECMA-262 15.2.5: a named function expression binds its own name (immutably)
             // in scope of its body so it can reference itself (e.g. for recursion).
@@ -1121,6 +1190,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             frameEnv = functionEnv;
         }
         var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator, AsyncContext = asyncContext };
+        // Safety net: cover frame environments created without StampEnvironment
+        // (InterpreterFrame's null-env fallback) so no store can miss the
+        // remembered-environment set.
+        if (frame.Environment is { } frameEnvRecord && frameEnvRecord.OwnerHeap is null)
+        {
+            frameEnvRecord.OwnerHeap = _heap;
+        }
         // Audit �1: pin this frame's registers/env into the GC root set for
         // its execution lifetime. Dispose pops on every return path (normal
         // return, exception, generator yield) via using-scope semantics.
@@ -1266,6 +1342,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 #endif
 
+        try
+        {
         while (frame.InstructionPointer < function.Instructions.Count)
         {
             _heap.CollectAtSafePointIfRequested();
@@ -1460,6 +1538,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         if (ctorObj is JsFunctionObject ctorFn)
                         {
                             ctorFn.ComputedFieldKeys.Add(keyValue);
+                            ctorFn.BarrierInternalSlot(keyValue);
                         }
                     }
                     break;
@@ -1690,6 +1769,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                 throw new JsThrownException(CreateTypeError("@@iterator did not return an object."));
                             iterHandle = iterResult.AsObjectHandle();
                             gen.YieldStarIterator = iterHandle;
+                            gen.BarrierInternalSlot(iterHandle);
                         }
                         catch (JsThrownException ex)
                         {
@@ -1867,12 +1947,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // re-enters this handler to call .next() again on the inner iterator.
                     gen.InstructionPointer = frame.InstructionPointer - 1;
                     Array.Copy(frame.Registers, gen.Registers, frame.Registers.Length);
+                    foreach (var register in frame.Registers)
+                    {
+                        gen.BarrierInternalSlot(register);
+                    }
                     gen.Environment = frame.Environment;
                     gen.State = GeneratorState.Suspended;
                     gen.SavedCatchHandlers = frame.CatchHandlers.ToArray();
 		gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
 		gen.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
 		gen.PendingException = frame.PendingException;
+		if (frame.PendingException is { } yieldStarPendingException)
+		{
+			gen.BarrierInternalSlot(yieldStarPendingException);
+		}
 
                     var yieldObj = CreateOrdinaryObject();
                     yieldObj.DefineOwnProperty("value", new JsPropertyDescriptor(
@@ -1885,7 +1973,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.EnterScope:
                 {
-                    var newScope = new DeclarativeEnvironmentRecord(frame.Environment);
+                    var newScope = StampEnvironment(new DeclarativeEnvironmentRecord(frame.Environment));
                     // ECMA-262 14.2: every block creates a fresh lexical env-record.
                     // ins.A is the variable-slot index for the let/const name.
                     var scopeName = SlotNameTable.GetName(function, ins.A);
@@ -1921,7 +2009,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         var bindingValue = ToObjectValue(frame.Registers[ins.A]);
                         var bindingHandle = bindingValue.AsObjectHandle();
                         var adapter = CreateBindingAdapter(bindingHandle);
-                        var withEnv = new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, frame.Environment);
+                        var withEnv = StampEnvironment(new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, frame.Environment));
                         var unscopablesSymId = GetWellKnownSymbolId("unscopables");
                         if (unscopablesSymId != 0)
                             withEnv.IsUnscopable = name => IsBlockedByUnscopables(bindingHandle, unscopablesSymId, name);
@@ -2969,6 +3057,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         return JsValue.Undefined;
+        }
+        catch (JsEngineFatalException fex)
+        {
+            // Fatal heap errors (stale handles) are deterministic engine bugs.
+            // Enrich with the failing function/ip/nearby opcodes so the load
+            // that produced the dead handle can be located from logs alone.
+            var fatalIp = frame.InstructionPointer;
+            var ops = new System.Text.StringBuilder();
+            for (var i = Math.Max(0, fatalIp - 24); i < Math.Min(function.Instructions.Count, fatalIp + 3); i++)
+            {
+                var d = function.Instructions[i];
+                ops.Append(i).Append(':').Append(d.OpCode)
+                   .Append('(').Append(d.A).Append(',').Append(d.B).Append(',').Append(d.C).Append(')');
+                if ((d.OpCode == OpCode.GetPropByName || d.OpCode == OpCode.SetPropByName) &&
+                    d.C < function.PropertyNames.Count)
+                {
+                    ops.Append('<').Append(function.PropertyNames[d.C]).Append('>');
+                }
+
+                ops.Append(' ');
+            }
+
+            throw new JsEngineFatalException($"{fex.Message} [fatal-at fn={function.Name} ip={fatalIp} ops={ops}]");
+        }
     }
 
     private JsObject CreateOrdinaryObject()
@@ -4233,6 +4345,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         public void Set(JsValue key, JsValue value)
         {
+            // Write barrier: an Old map receiving a Young key/value must dirty
+            // its remembered-set card (entries are strong references).
+            BarrierInternalSlot(key);
+            BarrierInternalSlot(value);
             for (var i = 0; i < _entries.Count; i++)
             {
                 if (SameValueZero(_entries[i].Key, key))
@@ -4546,6 +4662,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         public void Add(JsValue value)
         {
+            // Write barrier (strong entry; see MapObject.Set).
+            BarrierInternalSlot(value);
             if (!Has(value))
             {
                 _entries.Add(value);
@@ -4954,15 +5072,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         private readonly Dictionary<HostObjectHandle, JsValue> _hostEntries = new();
         // ECMA-262: a non-registered Symbol can also be held weakly.
         private readonly Dictionary<long, JsValue> _symbolEntries = new();
-        public void Set(ObjectHandle key, JsValue value) => _entries[key] = value;
+        public void Set(ObjectHandle key, JsValue value)
+        {
+            // Values are strong references (keys are weak): write barrier.
+            BarrierInternalSlot(value);
+            _entries[key] = value;
+        }
         public bool TryGet(ObjectHandle key, out JsValue value) => _entries.TryGetValue(key, out value);
         public bool Has(ObjectHandle key) => _entries.ContainsKey(key);
         public bool Remove(ObjectHandle key) => _entries.Remove(key);
-        public void SetHost(HostObjectHandle key, JsValue value) => _hostEntries[key] = value;
+        public void SetHost(HostObjectHandle key, JsValue value)
+        {
+            // Strong value; write barrier (see Set(ObjectHandle, JsValue)).
+            BarrierInternalSlot(value);
+            _hostEntries[key] = value;
+        }
         public bool TryGetHost(HostObjectHandle key, out JsValue value) => _hostEntries.TryGetValue(key, out value);
         public bool HasHost(HostObjectHandle key) => _hostEntries.ContainsKey(key);
         public bool RemoveHost(HostObjectHandle key) => _hostEntries.Remove(key);
-        public void SetSymbol(long id, JsValue value) => _symbolEntries[id] = value;
+        public void SetSymbol(long id, JsValue value)
+        {
+            // Strong value; write barrier (see Set(ObjectHandle, JsValue)).
+            BarrierInternalSlot(value);
+            _symbolEntries[id] = value;
+        }
         public bool TryGetSymbol(long id, out JsValue value) => _symbolEntries.TryGetValue(id, out value);
         public bool HasSymbol(long id) => _symbolEntries.ContainsKey(id);
         public bool RemoveSymbol(long id) => _symbolEntries.Remove(id);
@@ -5589,9 +5722,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var globalHandle = EnsureGlobalObject();
-        _globalEnvironment = new GlobalEnvironmentRecord(
+        _globalEnvironment = StampEnvironment(new GlobalEnvironmentRecord(
             CreateBindingAdapter(globalHandle),
-            JsValue.FromObject(globalHandle));
+            JsValue.FromObject(globalHandle)));
         return _globalEnvironment;
     }
 
@@ -6079,7 +6212,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // Strict direct eval gets a fresh lexical scope so var/function
             // declarations do not leak into the caller's environment.
             env = directEvalStrictMode
-                ? new DeclarativeEnvironmentRecord(directEvalEnvironment)
+                ? StampEnvironment(new DeclarativeEnvironmentRecord(directEvalEnvironment))
                 : directEvalEnvironment;
         }
         else
@@ -12843,6 +12976,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var bareHandle = _heap.AllocateObject(fnObj, AllocationSite.Current());
             fnObj.SelfHandle = bareHandle;
+            fnObj.BarrierInternalSlot(bareHandle);
             return JsValue.FromObject(bareHandle);
         }
 
@@ -12876,6 +13010,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
             _heap.PushRoot(handle);
             fnObj.SelfHandle = handle;
+            fnObj.BarrierInternalSlot(handle);
             // ECMA-262 25.2.4.2: GeneratorFunction instances have a `prototype`
             // property that is a plain object with no own properties. The
             // `constructor` back-link is NOT defined here — it is inherited

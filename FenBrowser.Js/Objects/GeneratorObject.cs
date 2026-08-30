@@ -68,12 +68,15 @@ public sealed class GeneratorObject : JsObject
         if (SelfHandle is { } self)
             tracer.Trace(self);
 
-        Environment?.Trace(tracer);
-        if (!ReferenceEquals(OuterEnvironment, Environment))
-            OuterEnvironment?.Trace(tracer);
+        if (tracer.TraceEnvironmentChains)
+        {
+            Environment?.Trace(tracer);
+            if (!ReferenceEquals(OuterEnvironment, Environment))
+                OuterEnvironment?.Trace(tracer);
 
-        foreach (var handlerEnvironment in SavedHandlerEnvironments)
-            handlerEnvironment?.Trace(tracer);
+            foreach (var handlerEnvironment in SavedHandlerEnvironments)
+                handlerEnvironment?.Trace(tracer);
+        }
     }
 
     public JsValue[] GetInitialParameters()

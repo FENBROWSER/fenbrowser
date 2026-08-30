@@ -262,6 +262,10 @@ public sealed partial class BytecodeInterpreter
             var inner = helper.Inner;
             helper.Inner = JsValue.Undefined;
             helper.InnerNext = JsValue.Undefined;
+            // Write barrier: the helper may be Old while the fresh inner
+            // iterator record is Young (remembered set is precise).
+            helper.BarrierInternalSlot(helper.Inner);
+            helper.BarrierInternalSlot(helper.InnerNext);
             IteratorRecordCloseNormal(inner);
         }
 
@@ -427,6 +431,8 @@ public sealed partial class BytecodeInterpreter
                 helper.HasInner = false;
                 helper.Inner = JsValue.Undefined;
                 helper.InnerNext = JsValue.Undefined;
+                helper.BarrierInternalSlot(helper.Inner);
+                helper.BarrierInternalSlot(helper.InnerNext);
             }
 
             if (!IteratorRecordStepValue(helper.Underlying, helper.UnderlyingNext, out var value))
@@ -444,6 +450,10 @@ public sealed partial class BytecodeInterpreter
                 var (innerIter, innerNext) = GetIteratorFlattenable(mapped, rejectPrimitives: true);
                 helper.Inner = innerIter;
                 helper.InnerNext = innerNext;
+                // Write barrier: the helper may be Old while the fresh inner
+                // iterator record is Young (remembered set is precise).
+                helper.BarrierInternalSlot(innerIter);
+                helper.BarrierInternalSlot(innerNext);
                 helper.HasInner = true;
             }
             catch (JsThrownException)
@@ -468,6 +478,8 @@ public sealed partial class BytecodeInterpreter
                 helper.HasInner = false;
                 helper.Inner = JsValue.Undefined;
                 helper.InnerNext = JsValue.Undefined;
+                helper.BarrierInternalSlot(helper.Inner);
+                helper.BarrierInternalSlot(helper.InnerNext);
             }
 
             var records = helper.ConcatRecords!;
@@ -487,6 +499,8 @@ public sealed partial class BytecodeInterpreter
             var (innerIter, innerNext) = GetIteratorDirect(iter);
             helper.Inner = innerIter;
             helper.InnerNext = innerNext;
+            helper.BarrierInternalSlot(innerIter);
+            helper.BarrierInternalSlot(innerNext);
             helper.HasInner = true;
         }
     }

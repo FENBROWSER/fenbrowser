@@ -137,7 +137,7 @@ public sealed partial class BytecodeInterpreter
 
     internal void EnterScopeForJit(InterpreterFrame frame, int slotNameIndex, int isConst)
     {
-        var newScope = new DeclarativeEnvironmentRecord(frame.Environment);
+        var newScope = StampEnvironment(new DeclarativeEnvironmentRecord(frame.Environment));
         var scopeName = SlotNameTable.GetName(frame.Function, slotNameIndex);
         if (scopeName != null)
         {

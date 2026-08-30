@@ -46,7 +46,10 @@ public sealed class JsFunctionObject : JsObject
     public override void Trace(IHeapTracer tracer)
     {
         base.Trace(tracer);
-        OuterEnvironment?.Trace(tracer);
+        if (tracer.TraceEnvironmentChains)
+        {
+            OuterEnvironment?.Trace(tracer);
+        }
 
         if (HomeObject is { } home)
             tracer.Trace(home);

@@ -1,8 +1,9 @@
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
-using FenBrowser.Js.Objects;
+using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
+using FenBrowser.Js.Source;
 using Xunit;
 
 namespace FenBrowser.Js.Tests;
@@ -12,31 +13,29 @@ public sealed class ClosureEnvironmentTraceTests
     [Fact]
     public void FunctionTraceKeepsCapturedEnvironmentObjectsAlive()
     {
+        // A captured binding whose only strong reference is the closure's
+        // environment chain must survive a full collection: the closure's
+        // Trace walks its environment chain (bindings included).
         var heap = new JsHeap();
-        var capturedHandle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
-
-        var outerEnv = new DeclarativeEnvironmentRecord(outerEnv: null);
-        Assert.Equal(BindingOpResult.Ok, outerEnv.CreateMutableBinding("captured", deletable: false));
-        Assert.Equal(BindingOpResult.Ok, outerEnv.InitializeBinding("captured", JsValue.FromObject(capturedHandle)));
-        var functionEnv = new DeclarativeEnvironmentRecord(outerEnv);
-
-        var function = new BytecodeFunction
-        {
-            Instructions = Array.Empty<Instruction>(),
-            Constants = Array.Empty<JsValue>(),
-            VariableSlots = new Dictionary<string, int>(StringComparer.Ordinal),
-            PropertyNames = Array.Empty<string>(),
-            ParameterNames = Array.Empty<string>(),
-            NestedFunctions = Array.Empty<BytecodeFunction>(),
-            RegisterCount = 1
-        };
-
-        var functionHandle = heap.AllocateObject(new JsFunctionObject(function, functionEnv), AllocationSite.Current());
-        heap.PushRoot(functionHandle);
+        var interpreter = new BytecodeInterpreter(heap);
+        Run(interpreter, """
+            var __f;
+            (function () {
+                var captured = { marker: 7 };
+                __f = function () { return captured.marker; };
+            })();
+            """);
 
         heap.CollectGarbage();
 
-        var exception = Record.Exception(() => heap.Validate(capturedHandle));
-        Assert.Null(exception);
+        var marker = Run(interpreter, "__f();");
+        Assert.Equal(7, marker.AsNumber());
+    }
+
+    private static JsValue Run(BytecodeInterpreter interpreter, string source)
+    {
+        var fn = new BytecodeCompiler().CompileScript(new SourceText(source));
+        new BytecodeVerifier().Verify(fn);
+        return interpreter.Execute(fn);
     }
 }

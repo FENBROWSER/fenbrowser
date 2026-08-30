@@ -85,41 +85,24 @@ public sealed class GcRootingHygieneTests
     }
 
     [Fact]
-    public void FunctionEnvironmentInternalSlotsSurviveMajorCollection()
+        public void FunctionEnvironmentInternalSlotsSurviveMajorCollection()
     {
+        // A bound `this` captured only through a closure's environment chain
+        // must survive a full collection (FunctionEnvironmentRecord internal
+        // slots: this / function / newTarget / home are traced with the chain).
         var heap = new JsHeap { YoungAllocationsPerMinorGc = 0 };
-        var thisHandle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
-        var functionHandle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
-        var newTargetHandle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
-        var homeHandle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
-
-        var environment = new FunctionEnvironmentRecord(
-            ThisBindingStatus.Uninitialized,
-            JsValue.FromObject(functionHandle),
-            JsValue.FromObject(newTargetHandle),
-            homeHandle,
-            outerEnv: null);
-        Assert.Equal(BindingOpResult.Ok, environment.BindThisValue(JsValue.FromObject(thisHandle)));
-
-        var bytecode = new BytecodeFunction
-        {
-            Instructions = Array.Empty<Instruction>(),
-            Constants = Array.Empty<JsValue>(),
-            VariableSlots = new Dictionary<string, int>(StringComparer.Ordinal),
-            PropertyNames = Array.Empty<string>(),
-            ParameterNames = Array.Empty<string>(),
-            NestedFunctions = Array.Empty<BytecodeFunction>(),
-            RegisterCount = 1
-        };
-        var closure = heap.AllocateObject(new JsFunctionObject(bytecode, environment), AllocationSite.Current());
-        heap.PushRoot(closure);
+        var interpreter = new BytecodeInterpreter(heap);
+        Exec(interpreter, """
+            var __f;
+            var __receiver = { tag: 42 };
+            var __holder = { m: function () { var self = this; __f = function () { return self.tag; }; } };
+            __holder.m.call(__receiver);
+            """);
 
         heap.CollectGarbage();
 
-        heap.Validate(thisHandle);
-        heap.Validate(functionHandle);
-        heap.Validate(newTargetHandle);
-        heap.Validate(homeHandle);
+        var tag = Exec(interpreter, "__f();");
+        Assert.Equal(42, tag.AsNumber());
     }
 
     // --- JSRT-002: native-call pin windows release on thrown calls ---

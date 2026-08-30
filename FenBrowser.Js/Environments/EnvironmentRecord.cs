@@ -24,8 +24,38 @@ public abstract class EnvironmentRecord
     }
 
     // The outer (enclosing) Environment Record in the lexical environment chain, or
-    // null for the outermost (global) record.
+    // null for the outermost global record.
     public EnvironmentRecord? OuterEnv { get; }
+
+    // Generational-GC bookkeeping. Environment records are not heap cells, so
+    // an object stored into a binding of a record reachable only through Old
+    // (promoted) cells cannot dirty any remembered-set card. The owning heap
+    // (stamped by the interpreter at record construction) registers such
+    // records in its remembered-environment set instead.
+    internal JsHeap? OwnerHeap;
+    internal bool IsRememberedForMinorGc;
+
+    // Attach hook so composite records (e.g. GlobalEnvironmentRecord's inner
+    // declarative/object records) can stamp their children together with
+    // themselves.
+    internal virtual void AttachOwnerHeap(JsHeap heap)
+    {
+        OwnerHeap = heap;
+    }
+
+    internal void RememberBindingStore()
+    {
+        if (OwnerHeap is null)
+        {
+            // A store into an unstamped record would silently miss the
+            // remembered-environment set and corrupt the heap later. Fail at
+            // the store so the missing stamp site is identified immediately.
+            throw new FenBrowser.Js.Heap.JsEngineFatalException(
+                $"Unstamped environment binding store: {GetType().Name}");
+        }
+
+        OwnerHeap.RememberEnvironment(this);
+    }
 
     // 9.1.1.1.1 HasBinding ( N ) - true if the record has a binding for N.
     public abstract bool HasBinding(string name);
@@ -97,7 +127,7 @@ public abstract class EnvironmentRecord
     /// import targets). The outer-environment walk is handled once by
     /// <see cref="Trace"/>; overrides must not recurse into it.
     /// </summary>
-    protected virtual void TraceOwnEdges(IHeapTracer tracer)
+    protected internal virtual void TraceOwnEdges(IHeapTracer tracer)
     {
     }
 

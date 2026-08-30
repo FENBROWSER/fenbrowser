@@ -53,12 +53,15 @@ public sealed class AsyncContext : JsObject
 		if (PendingException is { } pendingException)
 			TraceValue(tracer, pendingException);
 
-		Environment?.Trace(tracer);
-		if (!ReferenceEquals(OuterEnvironment, Environment))
-			OuterEnvironment?.Trace(tracer);
+		if (tracer.TraceEnvironmentChains)
+		{
+			Environment?.Trace(tracer);
+			if (!ReferenceEquals(OuterEnvironment, Environment))
+				OuterEnvironment?.Trace(tracer);
 
-		foreach (var handlerEnvironment in SavedHandlerEnvironments)
-			handlerEnvironment?.Trace(tracer);
+			foreach (var handlerEnvironment in SavedHandlerEnvironments)
+				handlerEnvironment?.Trace(tracer);
+		}
 
 		Parent?.Trace(tracer);
 		if (CapabilityPromise is { } p) tracer.Trace(p);

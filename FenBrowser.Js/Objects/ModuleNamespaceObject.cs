@@ -121,7 +121,10 @@ public sealed class ModuleNamespaceObject : JsObject
     public override void Trace(IHeapTracer tracer)
     {
         base.Trace(tracer);
-        _environment?.Trace(tracer);
+        if (tracer.TraceEnvironmentChains)
+        {
+            _environment?.Trace(tracer);
+        }
     }
 
     private static bool SameValue(JsValue left, JsValue right)

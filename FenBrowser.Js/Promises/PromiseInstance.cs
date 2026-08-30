@@ -14,6 +14,9 @@ public sealed class PromiseInstance : JsObject
     {
         ArgumentNullException.ThrowIfNull(promise);
         Promise = promise;
+        // Route the record's internal-slot write barriers through this cell
+        // (the record itself is not a heap cell and has no owner handle).
+        promise.OwnerInstance = this;
     }
 
     public PromiseObject Promise { get; }

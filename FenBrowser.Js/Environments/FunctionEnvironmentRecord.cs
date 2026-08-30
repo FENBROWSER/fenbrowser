@@ -63,6 +63,10 @@ public sealed class FunctionEnvironmentRecord : DeclarativeEnvironmentRecord
             case ThisBindingStatus.Uninitialized:
                 _thisValue = value;
                 ThisBindingStatus = ThisBindingStatus.Initialized;
+                if (value.Tag == JsValueTag.Object)
+                {
+                    RememberBindingStore();
+                }
                 return BindingOpResult.Ok;
             default:
                 return BindingOpResult.NotInitializable;
@@ -96,7 +100,7 @@ public sealed class FunctionEnvironmentRecord : DeclarativeEnvironmentRecord
     // this override, _thisValue / FunctionObject / NewTarget / HomeObject are
     // invisible to GC — after a collection they resurface as stale-handle fatal
     // throws or slot-reuse corruption.
-    protected override void TraceOwnEdges(IHeapTracer tracer)
+    protected internal override void TraceOwnEdges(IHeapTracer tracer)
     {
         base.TraceOwnEdges(tracer);
         EnvironmentRecord.TraceValue(tracer, _thisValue);

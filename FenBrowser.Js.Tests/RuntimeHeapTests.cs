@@ -468,9 +468,37 @@ public sealed class RuntimeHeapTests
 
         var child = heap.AllocateObject(new JsObject(), AllocationSite.Current());
         container.Child = child;
+        // Internal-slot stores on Old cells must emit the write barrier — the
+        // remembered set is precise (no blanket sticky rescans), so without a
+        // barrier the next minor collection would sweep the child.
+        heap.WriteBarrier(containerHandle, child);
         heap.MinorCollect();
 
         Assert.NotNull(heap.GetObject(child));
+    }
+
+    [Fact]
+    public void UnbarrieredInternalSlotStoreDoesNotKeepYoungChildAlive()
+    {
+        // Precision contract: the remembered set is barrier-driven. A raw
+        // internal-slot store without a barrier must not retain the child —
+        // this guards the removal of blanket sticky rescans (the perf defect
+        // behind minutes-long MessagePort worker turns).
+        var heap = new JsHeap
+        {
+            YoungAllocationsPerMinorGc = 0,
+            PromotionThreshold = 1
+        };
+        var container = new HiddenEdgeObject();
+        var containerHandle = heap.AllocateObject(container, AllocationSite.Current());
+        heap.PushRoot(containerHandle);
+        heap.CollectGarbage();
+
+        var child = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        container.Child = child;
+        heap.MinorCollect();
+
+        Assert.Throws<JsEngineFatalException>(() => heap.GetObject(child));
     }
 
     [Fact]

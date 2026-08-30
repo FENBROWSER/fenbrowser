@@ -91,6 +91,10 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         }
 
         _bindings[name] = binding with { Value = value, IsInitialized = true };
+        if (value.Tag == JsValueTag.Object)
+        {
+            RememberBindingStore();
+        }
         return BindingOpResult.Ok;
     }
 
@@ -120,6 +124,10 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         }
 
         _bindings[name] = binding with { Value = value };
+        if (value.Tag == JsValueTag.Object)
+        {
+            RememberBindingStore();
+        }
         return BindingOpResult.Ok;
     }
 
@@ -172,7 +180,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     public bool IsMutableForTest(string name)
         => _bindings?.TryGetValue(name, out var b) == true && b.IsMutable;
 
-    protected override void TraceOwnEdges(IHeapTracer tracer)
+    protected internal override void TraceOwnEdges(IHeapTracer tracer)
     {
         TraceDeclarativeBindings(tracer);
     }

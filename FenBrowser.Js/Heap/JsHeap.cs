@@ -40,9 +40,15 @@ public sealed class JsHeap
     }
     private const int CardShift = 6;
     private const byte DirtyCard = 1;
-    private const byte StickyCard = 2;
     private byte[] _cards = Array.Empty<byte>();
     private readonly List<int> _dirtyCards = new();
+    // Remembered-environment set: environment records are not heap cells, so a
+    // young object stored into a binding of a record reachable only through Old
+    // (promoted) cells cannot dirty any card. Such records register here on
+    // every object-valued binding store; each minor collection scans them once
+    // (not once per referencing closure) and drops the ones whose bindings no
+    // longer hold young cells. See EnvironmentRecord.RememberBindingStore.
+    private readonly List<FenBrowser.Js.Environments.EnvironmentRecord> _rememberedEnvironments = new();
     // Tier 4 #22: after this many minor collections, a surviving Young cell
     // is promoted to Old. Default mirrors common nursery survival heuristics.
     public byte PromotionThreshold { get; set; } = 2;
@@ -67,7 +73,54 @@ public sealed class JsHeap
     private readonly HeapVerifier _verifier = new();
     // Diagnostic breadcrumbs: last sweep record per cell index, so a stale
     // handle error can say which collection freed the cell it points at.
-    private readonly Dictionary<int, string> _sweepLog = new();
+    // Stored as a compact struct and formatted only when a stale-handle error
+    // actually needs it — eager string formatting here used to dominate
+    // collection cost in allocation-heavy workloads.
+    private readonly Dictionary<int, SweepRecord> _sweepLog = new();
+    // Diagnostic: last allocation site per cell index, so a stale-handle fatal
+    // can name the payload's producer. Rewritten on slot reuse.
+    private string[] _allocationSites = Array.Empty<string>();
+    private string _pendingAllocationSite = string.Empty;
+
+    // Native-interleave allocation pin: values freshly allocated on behalf of a
+    // native/CLR caller are held in C# locals the tracer cannot see, and a
+    // safe-point collection during a nested call can sweep such an object
+    // before the native body stores it somewhere traceable. A bounded FIFO of
+    // recent allocations (a mini-nursery above the real one) keeps each new
+    // object reachable far longer than any native-local window; entries simply
+    // age out as later allocations arrive.
+    private const int AllocationPinRingSize = 1024;
+    private const int AllocationPinRingMask = AllocationPinRingSize - 1;
+    private readonly ObjectHandle[] _allocationPinRing = new ObjectHandle[AllocationPinRingSize];
+    private int _allocationPinIndex;
+    // Recording is active only while a native body is on the call stack: pure
+    // JS execution roots every fresh object through its frame registers, so
+    // pinning there would violate observable reclamation (WeakRef, direct
+    // collect assertions). The dangerous window is exclusively
+    // native-allocates-then-calls-nested-JS.
+    private int _nativeExecutionDepth;
+
+    public void BeginNativeExecution() => _nativeExecutionDepth++;
+    public void EndNativeExecution() => _nativeExecutionDepth--;
+
+    private void TraceAllocationPinRing(IHeapTracer tracer)
+    {
+        foreach (var pinned in _allocationPinRing)
+        {
+            // Aged-out entries may reference swept cells; only live handles
+            // still provide reachability. Non-throwing check (see its use in
+            // FinalizationRegistry draining).
+            if (IsLiveObjectHandle(pinned))
+            {
+                tracer.Trace(pinned);
+            }
+        }
+    }
+
+    private readonly record struct SweepRecord(int Generation, HeapCellKind Kind, int MinorGc, int MajorGc, string PayloadType)
+    {
+        public string Describe() => $"gen{Generation}/{Kind}({PayloadType}) minor#{MinorGc} major#{MajorGc}";
+    }
 
     public JsHeap(
         GcStressMode stressMode = GcStressMode.None,
@@ -159,15 +212,21 @@ public sealed class JsHeap
             return _dirtyCards.Count;
         }
     }
+    public int RememberedEnvironmentCount => _rememberedEnvironments.Count;
     public int LiveCellCount => _cells.Count(c => c is not null);
 
     public ObjectHandle AllocateObject(JsObject obj, AllocationSite site)
     {
-        _ = site;
+        _pendingAllocationSite = site.MemberName;
         MaybeStressGc();
 
         var handle = AllocateCell(HeapCellKind.Object, obj);
         var objHandle = new ObjectHandle(handle.Index, handle.Generation);
+        if (_nativeExecutionDepth > 0)
+        {
+            _allocationPinRing[_allocationPinIndex] = objHandle;
+            _allocationPinIndex = (_allocationPinIndex + 1) & AllocationPinRingMask;
+        }
         if (_constructionWindowDepth > 0)
         {
             _roots.Push(objHandle);
@@ -321,9 +380,10 @@ public sealed class JsHeap
         var cell = _cells[index];
         if (cell is null || cell.Generation != generation)
         {
-            var sweepInfo = _sweepLog.TryGetValue(index, out var info) ? info : "no-sweep-record";
+            var sweepInfo = _sweepLog.TryGetValue(index, out var info) ? info.Describe() : "no-sweep-record";
+            var allocSite = GetAllocationSiteForDiagnostics(index);
             throw new JsEngineFatalException(
-                $"Stale heap handle. idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] minor#{_minorGcCount} major#{_gcCollectionCount}");
+                $"Stale heap handle. idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] allocSite={allocSite} rememberedEnvs={_rememberedEnvironments.Count} envRegs={_rememberedEnvironmentRegistrations} envScanMarks={_rememberedEnvironmentScanMarks} minor#{_minorGcCount} major#{_gcCollectionCount}");
         }
 
         if (cell.Kind != expectedKind)
@@ -367,8 +427,10 @@ public sealed class JsHeap
         }
 
         _currentMarkMinorMode = true;
-        var marker = new MarkingTracer(this, minorMode: true);
+        _sharedMarkingTracer ??= new MarkingTracer(this, minorMode: true);
+        var marker = _sharedMarkingTracer;
         _roots.Trace(marker);
+        TraceAllocationPinRing(marker);
 
         // Audit §1: external root sources (interpreter frame registers).
         for (var i = 0; i < _rootSources.Count; i++)
@@ -377,6 +439,7 @@ public sealed class JsHeap
         }
 
         ScanDirtyCards(marker);
+        ScanRememberedEnvironments(marker);
 
         var survivors = new List<(int Index, int Generation)>(_nursery.Count);
         foreach (var entry in _nursery)
@@ -393,7 +456,12 @@ public sealed class JsHeap
                 {
                     cell.Tier = GenerationTier.Old;
                     _lastMinorPromoted++;
-                    DirtyCardForCell(i, cell.Payload is JsObject obj && obj.GetType() != typeof(JsObject));
+                    // Dirty (non-sticky) so the promoted cell's remaining Young
+                    // references are scanned next minor; the card self-clears
+                    // once nothing Young is reachable from it. Internal-slot
+                    // stores on Old cells go through write barriers, so no
+                    // sticky rescans are needed.
+                    DirtyCardForCell(i);
                 }
                 else
                 {
@@ -402,7 +470,7 @@ public sealed class JsHeap
             }
             else
             {
-                _sweepLog[i] = $"gen{cell.Generation}/{cell.Kind} minorGc#{_minorGcCount}";
+                _sweepLog[i] = new SweepRecord(cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount, cell.Payload.GetType().Name);
                 _cells[i] = null;
                 _lastMinorSwept++;
                 if (!_isFree[i])
@@ -504,7 +572,73 @@ public sealed class JsHeap
         }
     }
 
-    private void DirtyCardForCell(int cellIndex, bool sticky = false)
+    /// <summary>
+    /// Registers an environment record whose bindings may hold young cells.
+    /// Deduplicated by the record's <c>IsRememberedForMinorGc</c> flag; the
+    /// set self-cleans in <see cref="ScanRememberedEnvironments"/> when a minor
+    /// collection proves the record's bindings hold no young cells.
+    /// </summary>
+    private int _rememberedEnvironmentRegistrations;
+
+    public int RememberedEnvironmentRegistrations => _rememberedEnvironmentRegistrations;
+
+    public void RememberEnvironment(FenBrowser.Js.Environments.EnvironmentRecord record)
+    {
+        if (record.IsRememberedForMinorGc)
+        {
+            return;
+        }
+
+        record.IsRememberedForMinorGc = true;
+        _rememberedEnvironments.Add(record);
+        _rememberedEnvironmentRegistrations++;
+    }
+
+    private int _rememberedEnvironmentScanMarks;
+
+    private void ScanRememberedEnvironments(IHeapTracer youngMarker)
+    {
+        if (_rememberedEnvironments.Count == 0)
+        {
+            return;
+        }
+
+        var marksBefore = _lastMinorMarked;
+        var retained = new List<FenBrowser.Js.Environments.EnvironmentRecord>(_rememberedEnvironments.Count);
+        var envTracer = new CardTracer(this, youngMarker);
+        foreach (var record in _rememberedEnvironments)
+        {
+            envTracer.Reset();
+            // TraceOwnEdges visits only this record's bindings (and subclass
+            // extras such as import targets), never the outer chain — exactly
+            // the edges the remembered set must cover.
+            record.TraceOwnEdges(envTracer);
+            if (envTracer.SawYoungReference)
+            {
+                retained.Add(record);
+            }
+            else
+            {
+                record.IsRememberedForMinorGc = false;
+            }
+        }
+
+        _rememberedEnvironmentScanMarks += _lastMinorMarked - marksBefore;
+        _rememberedEnvironments.Clear();
+        _rememberedEnvironments.AddRange(retained);
+    }
+
+    private void ClearRememberedEnvironments()
+    {
+        for (var i = 0; i < _rememberedEnvironments.Count; i++)
+        {
+            _rememberedEnvironments[i].IsRememberedForMinorGc = false;
+        }
+
+        _rememberedEnvironments.Clear();
+    }
+
+    private void DirtyCardForCell(int cellIndex)
     {
         var cardIndex = cellIndex >> CardShift;
         if (cardIndex >= _cards.Length)
@@ -517,7 +651,6 @@ public sealed class JsHeap
             _cards[cardIndex] |= DirtyCard;
             _dirtyCards.Add(cardIndex);
         }
-        if (sticky) _cards[cardIndex] |= StickyCard;
     }
 
     private void ScanDirtyCards(IHeapTracer youngMarker)
@@ -525,9 +658,10 @@ public sealed class JsHeap
         if (_dirtyCards.Count == 0) return;
 
         var retained = new List<int>(_dirtyCards.Count);
+        var cardTracer = new CardTracer(this, youngMarker);
         foreach (var cardIndex in _dirtyCards)
         {
-            var cardTracer = new CardTracer(this, youngMarker);
+            cardTracer.Reset();
             var start = cardIndex << CardShift;
             var end = Math.Min(start + (1 << CardShift), _cells.Count);
             for (var i = start; i < end; i++)
@@ -537,9 +671,10 @@ public sealed class JsHeap
                 cell.Payload.Trace(cardTracer);
             }
 
-            var sticky = (_cards[cardIndex] & StickyCard) != 0;
-            var keepDirty = sticky || cardTracer.SawYoungReference;
-            _cards[cardIndex] = (byte)((sticky ? StickyCard : 0) | (keepDirty ? DirtyCard : 0));
+            // A card stays remembered only while an Old cell inside it still
+            // references a Young cell; otherwise it self-clears.
+            var keepDirty = cardTracer.SawYoungReference;
+            _cards[cardIndex] = keepDirty ? DirtyCard : (byte)0;
             if (keepDirty) retained.Add(cardIndex);
         }
 
@@ -569,8 +704,10 @@ public sealed class JsHeap
         }
 
         // Mark from explicit roots.
-        var marker = new MarkingTracer(this);
+        _sharedMarkingTracer ??= new MarkingTracer(this);
+        var marker = _sharedMarkingTracer;
         _roots.Trace(marker);
+        TraceAllocationPinRing(marker);
 
         // Audit §1: roots held by external subsystems (interpreter frames).
         for (var i = 0; i < _rootSources.Count; i++)
@@ -587,7 +724,7 @@ public sealed class JsHeap
                 continue;
             }
 
-            _sweepLog[i] = $"gen{cell.Generation}/{cell.Kind} majorGc#{_gcCollectionCount}";
+            _sweepLog[i] = new SweepRecord(cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount, cell.Payload.GetType().Name);
             _cells[i] = null;
             _lastGcSweptCells++;
             if (!_isFree[i])
@@ -610,14 +747,14 @@ public sealed class JsHeap
         _nursery.Clear();
         Array.Clear(_cards);
         _dirtyCards.Clear();
-        for (var i = 0; i < _cells.Count; i++)
-        {
-            if (_cells[i] is { Tier: GenerationTier.Old, Payload: JsObject obj } &&
-                obj.GetType() != typeof(JsObject))
-            {
-                DirtyCardForCell(i, sticky: true);
-            }
-        }
+        // After a major collection every surviving cell is Old and the nursery
+        // is empty, so no old→young edges exist yet: remembered-set cards and
+        // remembered environments re-populate through write barriers and
+        // binding stores from this point on. (Previously every Old non-plain
+        // object was re-marked sticky here, which made each minor collection
+        // rescan the entire Old population — the dominant cost of long-running
+        // MessagePort/promise workloads.)
+        ClearRememberedEnvironments();
 
         FireCollectedWeakTargets();
 
@@ -774,6 +911,15 @@ public sealed class JsHeap
     // shares one queue instead of growing the call stack.
     private readonly Stack<ObjectHandle> _markWorklist = new();
     private bool _isDrainingMarkWorklist;
+    // MarkingTracer is stateless (heap reference only), so one instance serves
+    // every Trace callback of a collection instead of allocating a tracer per
+    // marked cell — a full collection marks the entire live heap.
+    private MarkingTracer? _sharedMarkingTracer;
+
+    private MarkingTracer GetMarkingTracer()
+    {
+        return _sharedMarkingTracer ??= new MarkingTracer(this, _currentMarkMinorMode);
+    }
 
     private void Mark(ObjectHandle handle)
     {
@@ -806,7 +952,7 @@ public sealed class JsHeap
                 cell.Marked = true;
                 if (_currentMarkMinorMode) _lastMinorMarked++;
                 else _lastGcMarkedCells++;
-                cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
+                cell.Payload.Trace(GetMarkingTracer());
             }
         }
         finally
@@ -828,7 +974,7 @@ public sealed class JsHeap
         cell.Marked = true;
         if (_currentMarkMinorMode) _lastMinorMarked++;
         else _lastGcMarkedCells++;
-        cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
+        cell.Payload.Trace(GetMarkingTracer());
     }
 
     private void Mark(SymbolHandle handle)
@@ -843,7 +989,20 @@ public sealed class JsHeap
         cell.Marked = true;
         if (_currentMarkMinorMode) _lastMinorMarked++;
         else _lastGcMarkedCells++;
-        cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
+        cell.Payload.Trace(GetMarkingTracer());
+    }
+
+    private string GetAllocationSiteForDiagnostics(int index) =>
+        (uint)index < (uint)_allocationSites.Length ? _allocationSites[index] : string.Empty;
+
+    private void RecordAllocationSite(int index)
+    {
+        if (index >= _allocationSites.Length)
+        {
+            Array.Resize(ref _allocationSites, Math.Max(index + 1, _allocationSites.Length * 2));
+        }
+
+        _allocationSites[index] = _pendingAllocationSite;
     }
 
     private (int Index, int Generation) AllocateCell(HeapCellKind kind, ITraceable payload)
@@ -851,7 +1010,6 @@ public sealed class JsHeap
         _allocationCount++;
         int index;
         int generation;
-
         if (_freeList.Count > 0)
         {
             index = _freeList.Pop();
@@ -866,6 +1024,7 @@ public sealed class JsHeap
                 Tier = GenerationTier.Young,
                 MinorSurvivedCount = 0,
             };
+            RecordAllocationSite(index);
         }
         else
         {
@@ -881,6 +1040,7 @@ public sealed class JsHeap
                 Tier = GenerationTier.Young,
                 MinorSurvivedCount = 0,
             });
+            RecordAllocationSite(index);
         }
 
         _nursery.Add((index, generation));
@@ -975,6 +1135,11 @@ public sealed class JsHeap
         }
 
         public bool SawYoungReference { get; private set; }
+
+        // Reused across cards/records within one scan: clears the per-item flag.
+        public void Reset() => SawYoungReference = false;
+
+        public bool TraceEnvironmentChains => false;
 
         public void Trace(ObjectHandle handle)
         {
