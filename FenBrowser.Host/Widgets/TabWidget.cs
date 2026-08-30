@@ -23,6 +23,8 @@ public class TabWidget : Widget
     private const float FAVICON_SIZE = 16;
     private const float PADDING = 8;
     private const int SPINNER_INVALIDATE_INTERVAL_MS = 16;
+    private static readonly SKSamplingOptions FaviconSampling =
+        new(SKFilterMode.Linear, SKMipmapMode.Linear);
     
     /// <summary>
     /// The tab this widget represents.
@@ -137,7 +139,7 @@ public class TabWidget : Widget
         if (_tab.Favicon != null)
         {
             var faviconRect = new SKRect(faviconX, faviconY, faviconX + FAVICON_SIZE, faviconY + FAVICON_SIZE);
-            canvas.DrawBitmap(_tab.Favicon, faviconRect, SKSamplingOptions.Default);
+            canvas.DrawBitmap(_tab.Favicon, faviconRect, FaviconSampling);
         }
         else
         {

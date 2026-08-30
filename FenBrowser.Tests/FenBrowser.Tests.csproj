@@ -95,6 +95,7 @@
     <Compile Include="Rendering\Phase3AnimationClassificationTests.cs" />
     <!-- Phase 17 final multi-tab performance/isolation regression suite. -->
     <Compile Include="Host\Phase17MultiTabPerformanceTests.cs" />
+    <Compile Include="Host\TabWidgetRenderingTests.cs" />
     <!-- window.open URL-popup loading/error-page mapping regression. -->
     <Compile Include="Host\PopupUrlContentTests.cs" />
     <!-- Phase 15 no-op full-document work elimination regression. -->
