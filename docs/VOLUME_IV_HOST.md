@@ -1666,3 +1666,20 @@ Verification:
   mapping incl. 4xx-body passthrough, and a live
   `NavigationManager` fetch of `https://popup.test/` failing fast with
   `ConnectionFailed`); `FenJsPopupSecurityTests` still pass 4/4.
+
+## Brokered CSS Animation Frame Presentation (2026-08-30)
+
+- Renderer-child animation ticks retain their `AnimationFrameEvent` update kind,
+  dirty-element sets, and generation when constructing `RenderFrameRequest`.
+  Animation-only ticks carry `Animation` invalidation rather than a structural
+  `ProcessIsolation` reason.
+- The renderer child reuses one viewport-sized Skia raster surface and publishes
+  its native BGRA pixels directly to the shared-memory frame region. This avoids
+  allocating and copying an intermediate managed frame buffer on every tick.
+- Transform animation currently uses a correctness-first paint fallback because
+  retained promoted-layer surfaces contain their previous transform and the base
+  raster does not exclude those layers. Compositor-only reuse remains disabled for
+  this case until layer rasters are transform-free and base-frame exclusion exists.
+- Verification: the focused animation/frame-coalescing slice passes `10/10`; the
+  live `anim_probe2.html` shorthand/longhand rotation probe produces continuous
+  no-input `RendererChild.AnimationTick` commits with `Animation` invalidation.

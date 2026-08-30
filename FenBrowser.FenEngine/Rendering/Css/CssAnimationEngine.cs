@@ -228,6 +228,8 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public event Action<AnimationFrameEvent> OnAnimationFrame;
 
+        public bool IsRunning => Volatile.Read(ref _isRunning);
+
         /// <summary>
         /// Event raised when transition completes.
         /// </summary>
@@ -1190,7 +1192,7 @@ namespace FenBrowser.FenEngine.Rendering
         private void Tick(object state)
         {
             if (!_isRunning) return;
-            
+
             var now = Now();
             var toRemove = new List<(Element element, ActiveAnimation anim)>();
             var notifications = new Dictionary<Element, AnimationFrameEvent>();

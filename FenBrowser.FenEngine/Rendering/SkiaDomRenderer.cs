@@ -834,10 +834,20 @@ namespace FenBrowser.FenEngine.Rendering
                     // done once by CssAnimationEngine and forwarded by the host.
                     bool structuralInvalidation =
                         (invalidationReason & ~RenderFrameInvalidationReason.Animation) != 0;
+                    // Cached promoted surfaces currently include the source node's
+                    // transform, and the retained base frame includes the promoted
+                    // pixels as well. Re-compositing that cache with a new transform
+                    // would preserve stale pixels or double-apply the transform.
+                    // Keep composite-property animation correct through the localized
+                    // paint fallback until promoted surfaces are rasterized transform-
+                    // free and excluded from the base frame.
+                    bool requiresCompositePaintFallback =
+                        (_requestAnimationUpdateKind & AnimationUpdateKind.Composite) != 0;
                     bool compositorOnly =
                         _lastPaintTree != null &&
                         _lastCompositedLayers.Count > 0 &&
                         _requestAnimationUpdateKind != AnimationUpdateKind.None &&
+                        !requiresCompositePaintFallback &&
                         !structuralInvalidation &&
                         (_requestAnimationUpdateKind &
                             (AnimationUpdateKind.Paint | AnimationUpdateKind.Layout)) == 0 &&
@@ -846,7 +856,8 @@ namespace FenBrowser.FenEngine.Rendering
                         !root.LayoutDirty && !root.ChildLayoutDirty;
                     _frameWasCompositorOnly = compositorOnly;
                     bool isPaintDirty = !compositorOnly &&
-                        (paintInvalidationSignal || _lastPaintTree == null || forcePaintRebuild);
+                        (paintInvalidationSignal || requiresCompositePaintFallback ||
+                         _lastPaintTree == null || forcePaintRebuild);
 
                     if (compositorOnly)
                     {

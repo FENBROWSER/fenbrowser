@@ -348,6 +348,8 @@ namespace FenBrowser.Host
 
             // Shared memory writer for frame delivery. Created lazily on first FrameRequest.
             FenBrowser.Host.ProcessIsolation.FrameSharedMemory frameSharedMemory = null;
+            SkiaSharp.SKBitmap frameBitmap = null;
+            SkiaSharp.SKCanvas frameCanvas = null;
 
             EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[RendererChild] Started for tab={tabId}, parentPid={parentPid}, pipe={pipeName}, assignment={assignmentKey}");
 
@@ -392,11 +394,64 @@ namespace FenBrowser.Host
             float lastFrameViewportHeight = 720f;
             float lastFrameScrollY = 0f;
             int pendingRendererRepaintFrame = 0;
+            // Set when a CSS animation/transition tick produced changed values.
+            // Without this pump the engine updates animation overlays internally
+            // but nothing schedules a new frame, so animations freeze on screen.
+            int pendingAnimationRepaintFrame = 0;
+            var pendingAnimationWorkLock = new object();
+            var pendingAnimationUpdateKind = FenBrowser.FenEngine.Rendering.AnimationUpdateKind.None;
+            var pendingAnimationCompositeElements = new System.Collections.Generic.HashSet<FenBrowser.Core.Dom.V2.Element>();
+            var pendingAnimationPaintElements = new System.Collections.Generic.HashSet<FenBrowser.Core.Dom.V2.Element>();
+            long pendingAnimationGeneration = 0;
+            // Set when the DOM signalled a repaint (RepaintReady): those frames may
+            // carry style changes (class flips that toggle animations), so the
+            // renderer must run its new-animation registration scan.
+            int pendingRepaintNeedsStyleScan = 0;
             FenBrowser.Core.Dom.V2.Element lastBlinkCaretElement = null;
             int lastBlinkCaretOffset = -1;
             int lastBlinkCaretPhase = -1;
 
-            void SendFrameReady(float viewportWidth, float viewportHeight, float scrollY, string requestedBy, string correlationId)
+            // CSS animation/transition ticks must drive frame production in the child:
+            // the engine updates animation overlays internally, but without this pump
+            // nothing schedules the repaint that shows the animated value, so pages
+            // freeze mid-animation (spinner not spinning, pop not playing).
+            childRenderer.AnimationEngine.OnAnimationFrame += animation =>
+            {
+                if (!handshakeComplete || !hasFrameViewport)
+                {
+                    return;
+                }
+
+                lock (pendingAnimationWorkLock)
+                {
+                    pendingAnimationUpdateKind |= animation.UpdateKind;
+                    if (animation.Element != null &&
+                        (animation.UpdateKind & FenBrowser.FenEngine.Rendering.AnimationUpdateKind.Composite) != 0)
+                    {
+                        pendingAnimationCompositeElements.Add(animation.Element);
+                    }
+
+                    if (animation.Element != null &&
+                        (animation.UpdateKind & (FenBrowser.FenEngine.Rendering.AnimationUpdateKind.Paint |
+                                                 FenBrowser.FenEngine.Rendering.AnimationUpdateKind.Layout)) != 0)
+                    {
+                        pendingAnimationPaintElements.Add(animation.Element);
+                    }
+
+                    pendingAnimationGeneration = Math.Max(pendingAnimationGeneration, animation.Generation);
+                }
+
+                Interlocked.Exchange(ref pendingAnimationRepaintFrame, 1);
+            };
+
+            void SendFrameReady(float viewportWidth, float viewportHeight, float scrollY, string requestedBy, string correlationId,
+                FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason invalidationReason =
+                    FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.ProcessIsolation,
+                FenBrowser.FenEngine.Rendering.AnimationUpdateKind animationUpdateKind =
+                    FenBrowser.FenEngine.Rendering.AnimationUpdateKind.None,
+                System.Collections.Generic.IReadOnlyCollection<FenBrowser.Core.Dom.V2.Element> compositeDirtyElements = null,
+                System.Collections.Generic.IReadOnlyCollection<FenBrowser.Core.Dom.V2.Element> paintDirtyElements = null,
+                long animationGeneration = 0)
             {
                 viewportWidth = Math.Max(1f, Math.Min(viewportWidth, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxWidth));
                 viewportHeight = Math.Max(1f, Math.Min(viewportHeight, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight));
@@ -426,8 +481,16 @@ namespace FenBrowser.Host
                         if (domRoot != null)
                         {
                             var imageInfo = new SkiaSharp.SKImageInfo(iWidth, iHeight, SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul);
-                            using var bitmap = new SkiaSharp.SKBitmap(imageInfo);
-                            using var canvas = new SkiaSharp.SKCanvas(bitmap);
+                            if (frameBitmap == null || frameBitmap.Width != iWidth || frameBitmap.Height != iHeight)
+                            {
+                                frameCanvas?.Dispose();
+                                frameBitmap?.Dispose();
+                                frameBitmap = new SkiaSharp.SKBitmap(imageInfo);
+                                frameCanvas = new SkiaSharp.SKCanvas(frameBitmap);
+                            }
+
+                            var bitmap = frameBitmap;
+                            var canvas = frameCanvas;
                             canvas.Clear(SkiaSharp.SKColors.White);
 
                             // Document-space raster viewport (top advances with scroll); the canvas
@@ -458,20 +521,24 @@ namespace FenBrowser.Host
                                 Viewport = viewport,
                                 BaseUrl = browser.CurrentUri?.AbsoluteUri,
                                 SeparateLayoutViewport = new SkiaSharp.SKSize(viewportWidth, viewportHeight),
-                                InvalidationReason = FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.ProcessIsolation,
+                                HasBaseFrame = false,
+                                InvalidationReason = invalidationReason,
                                 RequestedBy = requestedBy,
+                                AnimationUpdateKind = animationUpdateKind,
+                                CompositeDirtyElements = compositeDirtyElements,
+                                PaintDirtyElements = paintDirtyElements,
+                                AnimationGeneration = animationGeneration,
                                 EmitVerificationReport = false
                             });
                             canvas.Restore();
                             canvas.Flush();
 
-                            // GetPixelSpan() is a ref struct; copy to byte[] to avoid
-                            // "ref struct in async method" language restriction.
                             int byteCount = iWidth * iHeight * 4;
-                            var pixelBytes = new byte[byteCount];
-                            System.Runtime.InteropServices.Marshal.Copy(
-                                bitmap.GetPixels(), pixelBytes, 0, byteCount);
-                            frameSharedMemory.WriteFrame(iWidth, iHeight, pixelBytes);
+                            frameSharedMemory.WriteFrame(
+                                iWidth,
+                                iHeight,
+                                bitmap.GetPixels(),
+                                byteCount);
                             frameSharedMemory.SignalReady();
                             seqNum = 1; // Approximate; actual seq tracked inside WriteFrame.
                             EngineLog.Write(LogSubsystem.Paint, LogSeverity.Debug, $"[RendererChild] Frame written to shared memory: {iWidth}x{iHeight} for tab={tabId} requestedBy={requestedBy}");
@@ -524,7 +591,13 @@ namespace FenBrowser.Host
 
             void DrainPendingRendererRepaintFrame()
             {
-                if (Interlocked.Exchange(ref pendingRendererRepaintFrame, 0) != 1)
+                bool animationDriven = Interlocked.Exchange(ref pendingAnimationRepaintFrame, 0) == 1;
+                bool domRepaint = Interlocked.Exchange(ref pendingRendererRepaintFrame, 0) == 1;
+                // A DOM-change frame may toggle animation applicability (class flips
+                // that show/hide animated elements), so it must carry the Style reason
+                // and re-run the renderer's new-animation registration scan.
+                bool needsStyleScan = domRepaint && Interlocked.Exchange(ref pendingRepaintNeedsStyleScan, 0) == 1;
+                if (!animationDriven && !domRepaint)
                 {
                     return;
                 }
@@ -534,12 +607,61 @@ namespace FenBrowser.Host
                     return;
                 }
 
+                var animationUpdateKind = FenBrowser.FenEngine.Rendering.AnimationUpdateKind.None;
+                FenBrowser.Core.Dom.V2.Element[] compositeDirtyElements = null;
+                FenBrowser.Core.Dom.V2.Element[] paintDirtyElements = null;
+                long animationGeneration = 0;
+                if (animationDriven)
+                {
+                    lock (pendingAnimationWorkLock)
+                    {
+                        animationUpdateKind = pendingAnimationUpdateKind;
+                        compositeDirtyElements = pendingAnimationCompositeElements.Count > 0
+                            ? pendingAnimationCompositeElements.ToArray()
+                            : Array.Empty<FenBrowser.Core.Dom.V2.Element>();
+                        paintDirtyElements = pendingAnimationPaintElements.Count > 0
+                            ? pendingAnimationPaintElements.ToArray()
+                            : Array.Empty<FenBrowser.Core.Dom.V2.Element>();
+                        animationGeneration = pendingAnimationGeneration;
+
+                        pendingAnimationUpdateKind = FenBrowser.FenEngine.Rendering.AnimationUpdateKind.None;
+                        pendingAnimationCompositeElements.Clear();
+                        pendingAnimationPaintElements.Clear();
+                    }
+                }
+
+                var invalidationReason = needsStyleScan
+                    ? FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Style
+                    : domRepaint
+                        ? FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.ProcessIsolation
+                        : FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.None;
+                if (animationDriven)
+                {
+                    invalidationReason |= FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Animation;
+                    if ((animationUpdateKind & FenBrowser.FenEngine.Rendering.AnimationUpdateKind.Layout) != 0)
+                    {
+                        invalidationReason |= FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Layout |
+                                              FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Paint;
+                    }
+                    else if ((animationUpdateKind & FenBrowser.FenEngine.Rendering.AnimationUpdateKind.Paint) != 0)
+                    {
+                        invalidationReason |= FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.Paint;
+                    }
+                }
+
                 SendFrameReady(
                     lastFrameViewportWidth,
                     lastFrameViewportHeight,
                     lastFrameScrollY,
-                    "RendererChild.RepaintReady",
-                    Guid.NewGuid().ToString("N"));
+                    domRepaint && animationDriven
+                        ? "RendererChild.RepaintReady+AnimationTick"
+                        : domRepaint ? "RendererChild.RepaintReady" : "RendererChild.AnimationTick",
+                    Guid.NewGuid().ToString("N"),
+                    invalidationReason,
+                    animationUpdateKind,
+                    compositeDirtyElements,
+                    paintDirtyElements,
+                    animationGeneration);
             }
 
             void CheckTextCaretBlink()
@@ -689,7 +811,9 @@ namespace FenBrowser.Host
 
                 var readResult = await RendererChildLoopIo.ReadLineWithTimeoutAsync(
                     reader,
-                    TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+                    childRenderer.AnimationEngine.IsRunning
+                        ? TimeSpan.FromMilliseconds(8)
+                        : TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
                 if (!readResult.Completed)
                 {
                     if (handshakeComplete)
@@ -875,6 +999,8 @@ namespace FenBrowser.Host
             }
 
             frameSharedMemory?.Dispose();
+            frameCanvas?.Dispose();
+            frameBitmap?.Dispose();
             EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[RendererChild] Exiting for tab={tabId}");
         }
 

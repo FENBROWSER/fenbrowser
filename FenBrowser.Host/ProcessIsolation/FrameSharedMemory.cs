@@ -312,6 +312,56 @@ namespace FenBrowser.Host.ProcessIsolation
             _accessor.Write(OffsetSeq, publishedSequence);
         }
 
+        public unsafe void WriteFrame(int width, int height, IntPtr bgraPixels, int bufferLength)
+        {
+            if (!_isWriter)
+                throw new InvalidOperationException("A shared-frame reader cannot publish frames.");
+            if (_accessor == null || _disposed)
+                return;
+
+            if (!TryComputePixelBytes(width, height, out var pixelBytes) || pixelBytes > _regionCapacity)
+            {
+                EngineLogBridge.Warn(
+                    $"[FrameSharedMemory] Rejected invalid/oversized frame dimensions: {width}x{height}.",
+                    LogCategory.Rendering);
+                return;
+            }
+
+            if (bgraPixels == IntPtr.Zero || bufferLength < pixelBytes)
+            {
+                EngineLogBridge.Warn(
+                    $"[FrameSharedMemory] Rejected invalid native frame buffer: have={bufferLength}, need={pixelBytes}.",
+                    LogCategory.Rendering);
+                return;
+            }
+
+            uint previous = _accessor.ReadUInt32(OffsetSeq);
+            uint writingSequence = (previous & 1u) == 0 ? previous + 1u : previous + 2u;
+            uint publishedSequence = writingSequence + 1u;
+            _accessor.Write(OffsetSeq, writingSequence);
+            Thread.MemoryBarrier();
+
+            byte* destination = null;
+            _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref destination);
+            try
+            {
+                Buffer.MemoryCopy(
+                    bgraPixels.ToPointer(),
+                    destination + HeaderSize,
+                    pixelBytes,
+                    pixelBytes);
+            }
+            finally
+            {
+                _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+            }
+
+            _accessor.Write(OffsetWidth, width);
+            _accessor.Write(OffsetHeight, height);
+            Thread.MemoryBarrier();
+            _accessor.Write(OffsetSeq, publishedSequence);
+        }
+
         public unsafe bool TryCopyFrame(
             IntPtr destination,
             int destinationCapacity,
