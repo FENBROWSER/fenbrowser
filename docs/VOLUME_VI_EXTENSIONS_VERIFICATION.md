@@ -8,6 +8,7 @@
 This volume details the infrastructure used to extend the browser and verify its correctness. FenBrowser emphasizes **Spec Compliance** over ad-hoc features, relying heavily on standard test suites (WPT, Test262, Acid2).
 
 - The scheduled CI workflow has a dedicated blocking rendering loop, independently runnable through `run_rendering_loop`. It validates 68 compiled paint, animation, compositor, image-coalescing, watchdog, and brokered-scroll contracts with zero-match protection and uploads per-filter TRX evidence.
+- Repository builds are pinned by `global.json` to the .NET SDK 10.0.400 feature band with `latestPatch` roll-forward. Install a compatible 10.0.4xx SDK before running build, test, publish, or conformance commands.
 
 ### 1.1 WPT Harness Policy (2026-04-22)
 
