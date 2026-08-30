@@ -226,23 +226,29 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             using var path = PathBuilderHelper.Build(p =>
             {
                 float offset = width / 2f;
+                // Each side spans its full edge extent: the side drawn later owns the
+                // shared corner (matching the uniform-border fast path). Ending sides
+                // at the adjacent side's inner edge left mixed-border corners unpainted
+                // — under a transform (e.g. a rotated checkmark built from
+                // border-right + border-bottom) the missing corner visibly split the
+                // two arms apart.
                 switch (side)
                 {
                     case BorderSide.Top:
-                        p.MoveTo(rect.Left + border.LeftWidth, rect.Top + offset);
-                        p.LineTo(rect.Right - border.RightWidth, rect.Top + offset);
+                        p.MoveTo(rect.Left, rect.Top + offset);
+                        p.LineTo(rect.Right, rect.Top + offset);
                         break;
                     case BorderSide.Right:
-                        p.MoveTo(rect.Right - offset, rect.Top + border.TopWidth);
-                        p.LineTo(rect.Right - offset, rect.Bottom - border.BottomWidth);
+                        p.MoveTo(rect.Right - offset, rect.Top);
+                        p.LineTo(rect.Right - offset, rect.Bottom);
                         break;
                     case BorderSide.Bottom:
-                        p.MoveTo(rect.Left + border.LeftWidth, rect.Bottom - offset);
-                        p.LineTo(rect.Right - border.RightWidth, rect.Bottom - offset);
+                        p.MoveTo(rect.Left, rect.Bottom - offset);
+                        p.LineTo(rect.Right, rect.Bottom - offset);
                         break;
                     case BorderSide.Left:
-                        p.MoveTo(rect.Left + offset, rect.Top + border.TopWidth);
-                        p.LineTo(rect.Left + offset, rect.Bottom - border.BottomWidth);
+                        p.MoveTo(rect.Left + offset, rect.Top);
+                        p.LineTo(rect.Left + offset, rect.Bottom);
                         break;
                 }
             });

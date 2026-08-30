@@ -424,15 +424,19 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 canvas.DrawLine(box.Left, y, box.Right, y, linePaint);
             }
 
-            // Right — inset vertically by top/bottom thickness to avoid corner overlap
+            // Right — start below the top border so the top side keeps the top-right
+            // corner, but run to the box bottom: the bottom side is painted later,
+            // spans the full width, and owns the bottom-right corner. Ending the
+            // stroke at the bottom border's inner edge truncated the shared corner
+            // block, which under antialiasing/transforms (e.g. a rotated checkmark
+            // built from border-right + border-bottom) visibly gaps the two arms.
             if (thickness.Right > 0 && IsPaintableBorderStyle(style.BorderStyleRight))
             {
                 linePaint.StrokeWidth = (float)thickness.Right;
                 SetupBorderStyle(linePaint, style.BorderStyleRight, linePaint.StrokeWidth);
                 float x = box.Right - (float)thickness.Right / 2;
                 float rY0 = box.Top + (float)thickness.Top;
-                float rY1 = box.Bottom - (float)thickness.Bottom;
-                canvas.DrawLine(x, rY0, x, rY1, linePaint);
+                canvas.DrawLine(x, rY0, x, box.Bottom, linePaint);
             }
 
             // Bottom
@@ -444,15 +448,14 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 canvas.DrawLine(box.Left, y, box.Right, y, linePaint);
             }
 
-            // Left — inset vertically by top/bottom thickness to avoid corner overlap
+            // Left — full edge extent like the other sides; the later-drawn side owns
+            // shared corners so mixed-border corners are never left unpainted.
             if (thickness.Left > 0 && IsPaintableBorderStyle(style.BorderStyleLeft))
             {
                 linePaint.StrokeWidth = (float)thickness.Left;
                 SetupBorderStyle(linePaint, style.BorderStyleLeft, linePaint.StrokeWidth);
                 float x = box.Left + (float)thickness.Left / 2;
-                float lY0 = box.Top + (float)thickness.Top;
-                float lY1 = box.Bottom - (float)thickness.Bottom;
-                canvas.DrawLine(x, lY0, x, lY1, linePaint);
+                canvas.DrawLine(x, box.Top, x, box.Bottom, linePaint);
             }
         }
 
