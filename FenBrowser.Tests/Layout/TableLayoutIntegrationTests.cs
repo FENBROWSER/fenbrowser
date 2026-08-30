@@ -1,4 +1,5 @@
 ﻿using Xunit;
+using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.Core.Css;
@@ -193,6 +194,91 @@ namespace FenBrowser.Tests.Layout
                  var trBox = boxes[tr];
                  Assert.True(trBox.BorderBox.Height > 0, "TR height should be > 0");
              }
+        }
+
+        [Fact]
+        public void TableLayout_IndentedThreeColumnMarkup_PositionsEveryColumn()
+        {
+            const string html = """
+                <section id='grid'>
+                  <div>left column</div>
+                  <div>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th id='first'>Check</th>
+                          <th id='second'>Status</th>
+                          <th id='third'>center offsets: checkbox 0.00 px, label 0.00 px, brand 0.00 px</th>
+                        </tr>
+                      </thead>
+                    </table>
+                  </div>
+                </section>
+                """;
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var body = new Element("BODY");
+            var nodes = doc.Children.ToList();
+            doc.RemoveAllChildren();
+            doc.AppendChild(body);
+            foreach (var node in nodes) body.AppendChild(node);
+
+            var styles = new Dictionary<Node, CssComputed>();
+            void ApplyStyles(Node node)
+            {
+                var style = new CssComputed();
+                if (node is Element element)
+                {
+                    if (TagEquals(element, "BODY")) style.Display = "block";
+                    else if (string.Equals(element.GetAttribute("id"), "grid", StringComparison.Ordinal))
+                    {
+                        style.Display = "grid";
+                        style.GridTemplateColumns = "minmax(340px, 430px) minmax(460px, 1fr)";
+                        style.ColumnGap = 28;
+                    }
+                    else if (TagEquals(element, "TABLE"))
+                    {
+                        style.Display = "table";
+                        style.WidthPercent = 100;
+                    }
+                    else if (TagEquals(element, "THEAD")) style.Display = "table-header-group";
+                    else if (TagEquals(element, "TR")) style.Display = "table-row";
+                    else if (TagEquals(element, "TH"))
+                    {
+                        style.Display = "table-cell";
+                        style.Padding = new Thickness(8);
+                        style.BorderThickness = new Thickness(1);
+                    }
+                    else style.Display = "block";
+                }
+                styles[node] = style;
+                if (node.ChildNodes != null)
+                {
+                    foreach (var child in node.ChildNodes) ApplyStyles(child);
+                }
+            }
+            ApplyStyles(body);
+
+            var layout = new LayoutEngineComputer(styles, 800, 600);
+            layout.Measure(body, new SKSize(800, 600));
+            layout.Arrange(body, new SKRect(0, 0, 800, 600));
+            var boxes = layout.GetAllBoxes().ToDictionary(k => k.Key, v => v.Value);
+            var table = boxes[FindFirstElementByTag(body, "TABLE")].BorderBox;
+            var first = boxes[FindElementById(body, "first")].BorderBox;
+            var second = boxes[FindElementById(body, "second")].BorderBox;
+            var third = boxes[FindElementById(body, "third")].BorderBox;
+
+            Assert.True(first.Width > 0f, $"First column width should be positive, got {first.Width}");
+            Assert.True(second.Width > 0f, $"Second column width should be positive, got {second.Width}");
+            Assert.True(third.Width > 0f, $"Third column width should be positive, got {third.Width}");
+            Assert.True(second.Left >= first.Right - 0.5f,
+                $"Second column should follow first: first={first}, second={second}");
+            Assert.True(third.Left >= second.Right - 0.5f,
+                $"Third column should follow second: second={second}, third={third}");
+            Assert.True(third.Right <= table.Right + 0.5f,
+                $"Columns should fit the specified table width: table={table}, third={third}");
+            Assert.True(table.Width <= 460.5f,
+                $"The 100% table should fit its 460px grid track, got {table.Width}px");
         }
 
         [Fact]

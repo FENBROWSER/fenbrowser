@@ -69,6 +69,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     columnWidths[i] += perColumn;
                 }
             }
+            else if (specifiedWidth > 0f && intrinsicWidth > specifiedWidth && columnWidths.Length > 0)
+            {
+                // A definite table width constrains the used track width. The
+                // current intrinsic pass measures max-content widths, so reduce
+                // those contributions proportionally and allow cell text to wrap.
+                float scale = specifiedWidth / intrinsicWidth;
+                for (int i = 0; i < columnWidths.Length; i++)
+                {
+                    columnWidths[i] *= scale;
+                }
+            }
+
+            intrinsicWidth = columnWidths.Sum();
 
             float[] rowHeights = MeasureRowHeights(grid, columnWidths, state);
             float intrinsicHeight = rowHeights.Sum();
@@ -554,8 +567,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (style.WidthPercent.HasValue)
             {
-                float cbWidth = state.ContainingBlockWidth > 0f ? state.ContainingBlockWidth : state.ViewportWidth;
-                return (float)(style.WidthPercent.Value / 100d * cbWidth);
+                // Percentage table widths are indefinite during intrinsic sizing.
+                // Resolving them against an infinite grid probe poisons subsequent
+                // cell positions (Infinity - Infinity becomes NaN on relayout).
+                if (!float.IsFinite(state.ContainingBlockWidth) || state.ContainingBlockWidth <= 0f)
+                {
+                    return 0f;
+                }
+
+                return (float)(style.WidthPercent.Value / 100d * state.ContainingBlockWidth);
             }
 
             return 0f;
@@ -575,8 +595,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (style.HeightPercent.HasValue)
             {
-                float cbHeight = state.ContainingBlockHeight > 0f ? state.ContainingBlockHeight : state.ViewportHeight;
-                return (float)(style.HeightPercent.Value / 100d * cbHeight);
+                if (!float.IsFinite(state.ContainingBlockHeight) || state.ContainingBlockHeight <= 0f)
+                {
+                    return 0f;
+                }
+
+                return (float)(style.HeightPercent.Value / 100d * state.ContainingBlockHeight);
             }
 
             return 0f;
