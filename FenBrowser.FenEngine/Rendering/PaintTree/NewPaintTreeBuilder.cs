@@ -3553,10 +3553,10 @@ namespace FenBrowser.FenEngine.Rendering
 
             var typeface = TextLayoutHelper.ResolveTypeface(fontFamily, textNode.Data, weight, slant);
             
-            // RULE 2: FenEngine controls font size and line-height, not external libraries
-            // Enforce minimum 16px font size for readable text
+            // RULE 2: FenEngine controls font size and line-height, not external libraries.
+            // Preserve the authored computed size; accessibility zoom belongs at the
+            // viewport/user-preference layer, not as a paint-only geometry mismatch.
             float fontSize = (float)(parentStyle?.FontSize ?? 16);
-            if (fontSize < 10) fontSize = 16f; // Force readable minimum
             
             // Extract text decorations
             List<string> textDecorations = null;

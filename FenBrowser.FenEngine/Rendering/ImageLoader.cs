@@ -888,7 +888,11 @@ namespace FenBrowser.FenEngine.Rendering
 
                     var srcRect = new SKRect(0, 0, srcW, srcH);
                     var destRect = new SKRect(destX, destY, destX + destW, destY + destH);
-                    canvas.DrawBitmap(result.Bitmap, srcRect, destRect, SKSamplingOptions.Default);
+                    canvas.DrawBitmap(
+                        result.Bitmap,
+                        srcRect,
+                        destRect,
+                        new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
                 }
                 
 #if DEBUG

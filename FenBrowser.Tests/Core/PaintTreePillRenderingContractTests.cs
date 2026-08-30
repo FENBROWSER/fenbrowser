@@ -83,6 +83,34 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async System.Threading.Tasks.Task AuthoredSmallFontSize_IsPreservedInPaintTree()
+        {
+            const string html = """
+                <!doctype html>
+                <html>
+                  <head><style>#links { font-size: 8px; line-height: 9px; }</style></head>
+                  <body><div id="links">Privacy - Terms</div></body>
+                </html>
+                """;
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(element => element.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var computer = new LayoutEngineComputer(styles, 800, 600);
+            computer.Measure(doc, new SKSize(800, 600));
+            computer.Arrange(doc, new SKRect(0, 0, 800, 600));
+
+            var boxes = new ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
+            var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 800, 600, null);
+            var text = Flatten(tree.Roots)
+                .OfType<TextPaintNode>()
+                .FirstOrDefault(node => node.FallbackText == "Privacy - Terms");
+
+            Assert.NotNull(text);
+            Assert.Equal(8f, text.FontSize);
+        }
+
+        [Fact]
         public async System.Threading.Tasks.Task TextAlignCenter_MixedInlineChildren_PaintsAtLaidOutRunPositions()
         {
             const string html = @"

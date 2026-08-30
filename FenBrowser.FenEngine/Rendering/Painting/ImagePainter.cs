@@ -73,7 +73,10 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             try
             {
                 canvas.ClipRect(box);
-                canvas.DrawBitmap(bitmap, destRect, SKSamplingOptions.Default);
+                canvas.DrawBitmap(
+                    bitmap,
+                    destRect,
+                    new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
             }
             finally
             {
