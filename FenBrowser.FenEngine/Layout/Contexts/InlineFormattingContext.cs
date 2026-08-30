@@ -886,7 +886,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         // spuriously wrap to two lines because per-word widths
                         // can sum to a hair more than the cached probe width.
                         bool needsTextProbeGuard = TryMeasureInlineLabelContent(item, out _, out _);
-                        float itemW = MathF.Ceiling(Math.Max(0f, item.Geometry.ContentBox.Width)) + (needsTextProbeGuard ? 2f : 0f);
+                        // The available width must be the item's outer (margin-box) size:
+                        // the inner layout subtracts padding/border from it again, so using
+                        // the content-box width here makes padded controls (buttons) wrap.
+                        float itemW = MathF.Ceiling(Math.Max(0f, item.Geometry.MarginBox.Width)) + (needsTextProbeGuard ? 2f : 0f);
                         if (!float.IsFinite(itemW) || itemW <= 0f)
                         {
                             itemW = Math.Max(0f, item.Geometry.BorderBox.Width);

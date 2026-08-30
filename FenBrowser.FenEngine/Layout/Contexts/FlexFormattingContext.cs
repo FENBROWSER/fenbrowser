@@ -2262,14 +2262,26 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, targetHeight);
 
+            // targetWidth is a content-space extent, but style.Width is a border-box
+            // width when box-sizing is border-box. Force the chrome-inclusive width so
+            // the item re-layout does not subtract padding/border from it a second time
+            // (which made padded controls like buttons wrap their label).
+            var itemStyle = item.ComputedStyle;
+            bool itemIsBorderBox = string.Equals(itemStyle?.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
+            float forcedWidth = itemIsBorderBox
+                ? targetWidth +
+                  (float)(itemStyle.Padding.Left + itemStyle.Padding.Right +
+                          itemStyle.BorderThickness.Left + itemStyle.BorderThickness.Right)
+                : targetWidth;
+
             var reState = state.Clone();
             reState.AvailableSize = new SKSize(
                 item.Geometry.MarginBox.Width,
                 targetHeight > 0f ? targetHeight : state.AvailableSize.Height);
-            reState.ContainingBlockWidth = targetWidth;
+            reState.ContainingBlockWidth = item.Geometry.MarginBox.Width;
             reState.ContainingBlockHeight = targetHeight > 0f ? targetHeight : state.ContainingBlockHeight;
 
-            LayoutWithForcedWidth(item, reState, targetWidth);
+            LayoutWithForcedWidth(item, reState, forcedWidth);
 
             if (item.Geometry.ContentBox.Width + 0.5f < targetWidth)
             {
