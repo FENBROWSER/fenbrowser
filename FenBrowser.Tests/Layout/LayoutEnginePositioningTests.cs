@@ -590,5 +590,35 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(24f, svgGeometry.Height, 0.5f);
         }
 
+        [Fact]
+        public void DocumentRoot_DoesNotCollapseBodyMarginOutsideViewport()
+        {
+            var document = new Document();
+            var html = new Element("HTML");
+            var body = new Element("BODY");
+            var box = new Element("DIV");
+
+            document.AppendChild(html);
+            html.AppendChild(body);
+            body.AppendChild(box);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [html] = new CssComputed { Display = "block" },
+                [body] = new CssComputed { Display = "block", Margin = new Thickness(20) },
+                [box] = new CssComputed { Display = "block", Width = 40, Height = 40 }
+            };
+
+            var engine = new LayoutEngine(styles, 800, 600);
+            var result = engine.ComputeLayout(document, 0, 0, 800, availableHeight: 600);
+
+            Assert.True(result.ElementRects.TryGetValue(body, out var bodyGeometry));
+            Assert.True(result.ElementRects.TryGetValue(box, out var boxGeometry));
+            Assert.Equal(20f, bodyGeometry.X, 0.5f);
+            Assert.Equal(20f, bodyGeometry.Y, 0.5f);
+            Assert.Equal(20f, boxGeometry.X, 0.5f);
+            Assert.Equal(20f, boxGeometry.Y, 0.5f);
+        }
+
     }
 }

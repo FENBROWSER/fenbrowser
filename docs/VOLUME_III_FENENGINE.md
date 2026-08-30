@@ -883,6 +883,8 @@ Inline formatting context for text runs and atomic inline boxes.
 
 Block formatting context implementation for vertical flow and floats.
 
+- The document root prevents first-child top-margin collapse, keeping BODY margins
+  inside the initial containing block instead of discarding them above viewport y=0.
 - **Lines 114-183**: Float placement now iterates float-exclusion bands (`GetAvailableSpace`) so multiple `float:left`/`float:right` siblings pack into the same row correctly instead of anchoring at identical X positions.
 - **Lines 114-121, 548-551**: Auto-width floated blocks now probe with unconstrained child measurement while keeping a finite initial content width, enabling shrink-to-fit text measurement instead of zero-width/full-width mis-sizing.
 - **Lines 216-245**: In-flow block placement now consults active float exclusions; explicit-width blocks are advanced below floats when the current band is too narrow.

@@ -859,6 +859,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private static bool PreventsChildTopMarginCollapse(LayoutBox box)
         {
+            // CSS2: the root element's margins do not collapse. In particular,
+            // BODY's top margin must remain inside the initial containing block
+            // instead of being collapsed through HTML and discarded above y=0.
+            if (box.SourceNode?.ParentNode is Document)
+            {
+                return true;
+            }
+
             if (box.Geometry.Padding.Top > 0 || box.Geometry.Border.Top > 0)
             {
                 return true;
