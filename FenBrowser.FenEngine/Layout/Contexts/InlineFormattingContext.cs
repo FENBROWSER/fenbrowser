@@ -2811,7 +2811,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             float fontSize = 16f;
             if (style?.FontSize != null) fontSize = (float)style.FontSize.Value;
-            fontSize = Math.Max(fontSize, 10f);
+            // Layout metrics must match paint, which renders the true computed size.
+            // The historic 10px floor made sub-10px text (small print, brand links)
+            // lay out wider than it paints, breaking centering and fit.
+            fontSize = Math.Max(fontSize, 0.5f);
 
             int fontWeight = style?.FontWeight ?? 400;
             string fontFamily = style?.FontFamilyName ?? "sans-serif";

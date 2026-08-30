@@ -592,6 +592,13 @@ flowchart TD
 
 Rendering is the process of converting the Layout Tree into Skia draw commands.
 
+### 3.0 CAPTCHA Fixture Rendering Fixes (2026-08-30)
+
+- Per-side border painting now draws each side to its full edge extent in both retained paint-tree borders (`SkiaRenderBackend.DrawBorderSide`) and direct `BoxPainter.PaintBorder` borders; the side drawn later owns the shared corner, matching the uniform-border fast path. Ending sides at the adjacent side's inner edge left mixed-border corners unpainted, which under a transform (a checkmark built from `border-right` + `border-bottom` rotated 45°) visibly split the two arms apart.
+- `InlineFormattingContext` atomic-inline placement re-layout now passes the item's margin-box width as the available width instead of its content-box width; the inner layout subtracts padding/border again, so the content-box basis made padded controls (`<button>` labels) wrap into two lines despite a correctly sized box.
+- `FlexFormattingContext.ExpandRowFlexItemToDescendantWidth` now forces a chrome-inclusive border-box width when `box-sizing: border-box` applies; forcing the content-space descendant extent as `style.Width` subtracted padding/border a second time and wrapped padded flex items' labels.
+- `InlineFormattingContext.GetStyleFontInfo` no longer applies a hardcoded 10px minimum font size. Layout metrics must match paint, which renders the true computed size; the floor made sub-10px text (small print, reCAPTCHA-style brand links) lay out wider than it paints, breaking text centering and fit.
+- Verified against the local reCAPTCHA-like fixture (`http://127.0.0.1:5000/`): buttons render on one line, the rotated checkmark is connected, brand text centers under the shield logo, and all 15 fixture self-diagnostics pass.
 
 ### 2.6 Runtime Hardening (2026-03-04, Wave 2)
 
