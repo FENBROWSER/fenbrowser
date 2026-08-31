@@ -1619,7 +1619,8 @@ namespace FenBrowser.Tooling
                 "color=" + FormatColor(style.ForegroundColor),
                 "background=" + FormatColor(style.BackgroundColor),
                 "fontSize=" + FormatCssValue(style.FontSize?.ToString()),
-                "lineHeight=" + FormatCssValue(style.LineHeight?.ToString())
+                "lineHeight=" + FormatCssValue(style.LineHeight?.ToString()),
+                "verticalAlign=" + FormatCssValue(style.VerticalAlign)
             });
         }
 
