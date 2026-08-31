@@ -437,78 +437,88 @@ public sealed class JsHeap
         }
 
         _currentMarkMinorMode = true;
-        _sharedMarkingTracer ??= new MarkingTracer(this, minorMode: true);
-        var marker = _sharedMarkingTracer;
-        _roots.Trace(marker);
-        TraceAllocationPinRing(marker);
-
-        // Audit §1: external root sources (interpreter frame registers).
-        for (var i = 0; i < _rootSources.Count; i++)
+        try
         {
-            _rootSources[i].TraceRoots(marker);
-        }
+            _sharedMarkingTracer ??= new MarkingTracer(this, minorMode: true);
+            var marker = _sharedMarkingTracer;
+            _roots.Trace(marker);
+            TraceAllocationPinRing(marker);
 
-        ScanDirtyCards(marker);
-        ScanRememberedEnvironments(marker);
-        if (_auditRememberedSet)
-        {
-            AuditRememberedSet();
-        }
-        var auditDirectRoots = _auditRememberedSet ? CaptureDirectRootSources() : null;
-
-        var survivors = new List<(int Index, int Generation)>(_nursery.Count);
-        foreach (var entry in _nursery)
-        {
-            var i = entry.Index;
-            if ((uint)i >= (uint)_cells.Count) continue;
-            var cell = _cells[i];
-            if (cell is null || cell.Generation != entry.Generation || cell.Tier != GenerationTier.Young) continue;
-
-            if (cell.Marked)
+            // Audit §1: external root sources (interpreter frame registers).
+            for (var i = 0; i < _rootSources.Count; i++)
             {
-                if (cell.MinorSurvivedCount < byte.MaxValue) cell.MinorSurvivedCount++;
-                if (cell.MinorSurvivedCount >= PromotionThreshold)
+                _rootSources[i].TraceRoots(marker);
+            }
+
+            ScanDirtyCards(marker);
+            ScanRememberedEnvironments(marker);
+            if (_auditRememberedSet)
+            {
+                AuditRememberedSet();
+            }
+            var auditDirectRoots = _auditRememberedSet ? CaptureDirectRootSources() : null;
+
+            var survivors = new List<(int Index, int Generation)>(_nursery.Count);
+            foreach (var entry in _nursery)
+            {
+                var i = entry.Index;
+                if ((uint)i >= (uint)_cells.Count) continue;
+                var cell = _cells[i];
+                if (cell is null || cell.Generation != entry.Generation || cell.Tier != GenerationTier.Young) continue;
+
+                if (cell.Marked)
                 {
-                    cell.Tier = GenerationTier.Old;
-                    _lastMinorPromoted++;
-                    // Dirty (non-sticky) so the promoted cell's remaining Young
-                    // references are scanned next minor; the card self-clears
-                    // once nothing Young is reachable from it. Internal-slot
-                    // stores on Old cells go through write barriers, so no
-                    // sticky rescans are needed.
-                    DirtyCardForCell(i);
+                    if (cell.MinorSurvivedCount < byte.MaxValue) cell.MinorSurvivedCount++;
+                    if (cell.MinorSurvivedCount >= PromotionThreshold)
+                    {
+                        cell.Tier = GenerationTier.Old;
+                        _lastMinorPromoted++;
+                        // Dirty (non-sticky) so the promoted cell's remaining Young
+                        // references are scanned next minor; the card self-clears
+                        // once nothing Young is reachable from it. Internal-slot
+                        // stores on Old cells go through write barriers, so no
+                        // sticky rescans are needed.
+                        DirtyCardForCell(i);
+                    }
+                    else
+                    {
+                        survivors.Add(entry);
+                    }
                 }
                 else
                 {
-                    survivors.Add(entry);
+                    if (auditDirectRoots is not null &&
+                        cell.Kind == HeapCellKind.Object &&
+                        auditDirectRoots.TryGetValue(new ObjectHandle(i, cell.Generation), out var directRootSource))
+                    {
+                        throw new JsEngineFatalException(
+                            $"Direct root was not marked. source={directRootSource} " +
+                            $"child={i}/{cell.Payload.GetType().Name} " +
+                            $"allocSite={GetAllocationSiteForDiagnostics(i)} " +
+                            $"minor#{_minorGcCount} major#{_gcCollectionCount}");
+                    }
+                    _sweepLog[i] = new SweepRecord(cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount, cell.Payload.GetType().Name, "minor");
+                    _cells[i] = null;
+                    _lastMinorSwept++;
+                    if (!_isFree[i])
+                    {
+                        _isFree[i] = true;
+                        _freeList.Push(i);
+                    }
                 }
             }
-            else
-            {
-                if (auditDirectRoots is not null &&
-                    cell.Kind == HeapCellKind.Object &&
-                    auditDirectRoots.TryGetValue(new ObjectHandle(i, cell.Generation), out var directRootSource))
-                {
-                    throw new JsEngineFatalException(
-                        $"Direct root was not marked. source={directRootSource} " +
-                        $"child={i}/{cell.Payload.GetType().Name} " +
-                        $"allocSite={GetAllocationSiteForDiagnostics(i)} " +
-                        $"minor#{_minorGcCount} major#{_gcCollectionCount}");
-                }
-                _sweepLog[i] = new SweepRecord(cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount, cell.Payload.GetType().Name, "minor");
-                _cells[i] = null;
-                _lastMinorSwept++;
-                if (!_isFree[i])
-                {
-                    _isFree[i] = true;
-                    _freeList.Push(i);
-                }
-            }
-        }
 
-        _nursery.Clear();
-        _nursery.AddRange(survivors);
-        _currentMarkMinorMode = false;
+            _nursery.Clear();
+            _nursery.AddRange(survivors);
+        }
+        finally
+        {
+            // Marking calls Validate(), which throws JsEngineFatalException on a stale
+            // handle. If that escapes, the minor-traversal flag must not survive into the
+            // next major collection: Mark() skips Old cells while it is set, so a major GC
+            // would leave the whole old generation unmarked and sweep it as garbage.
+            _currentMarkMinorMode = false;
+        }
 
         // Weak targets whose Young cell died must fire even in a minor
         // collection (e.g. a WeakRef to a nursery-allocated object).
@@ -753,6 +763,10 @@ public sealed class JsHeap
 
     public void CollectGarbage()
     {
+        // Full GC must traverse old-generation cells even if a previous minor
+        // collection was interrupted before it could clear its traversal mode.
+        _currentMarkMinorMode = false;
+
         if (_verifyHeapBeforeGc)
         {
             _verifier.Verify(this);
