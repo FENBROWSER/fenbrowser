@@ -12,6 +12,11 @@ public sealed partial class BytecodeInterpreter
 {
     private void InstallAnnexBObjectPrototype(ObjectHandle prototypeHandle, JsObject prototype)
     {
+        // getProtoHandle is reachable only from a CLR local while setProto is
+        // being allocated, and that allocation can collect. Pin every cell
+        // allocated here until the accessor is linked onto the prototype.
+        using var constructionWindow = _heap.BeginConstructionWindow();
+
         // B.2.2.1 Object.prototype.__proto__ — an accessor property
         // { [[Enumerable]]: false, [[Configurable]]: true }.
         var getProto = new NativeFunctionObject("get __proto__",

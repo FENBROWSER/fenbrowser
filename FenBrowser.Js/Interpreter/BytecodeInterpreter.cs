@@ -13237,6 +13237,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
         int length = 0)
     {
+        // The freshly allocated function is reachable only from a CLR local until
+        // the DefineOwnProperty below links it into the prototype, but
+        // EnsureFunctionCallMethod() can allocate — and therefore collect — in
+        // between. Pin everything allocated here for the duration of the build.
+        using var constructionWindow = _heap.BeginConstructionWindow();
+
         var function = new NativeFunctionObject(name, call, length: length);
         // ECMA-262 — every built-in function inherits %Function.prototype%. Set it
         // when already materialised (it always is by the time lazy builtins like the

@@ -126,6 +126,14 @@ public sealed partial class BytecodeInterpreter
             return existing;
         }
 
+        // Installing the global object materialises the whole builtin graph
+        // bottom-up: intrinsics are allocated and held in CLR locals before the
+        // property store that links them into a rooted object, and any allocation
+        // in between (a string intern, the next intrinsic) can collect. Pin every
+        // cell allocated during the install; the window releases them once the
+        // graph hangs off the rooted global.
+        using var constructionWindow = _heap.BeginConstructionWindow();
+
         var global = CreateOrdinaryObject();
         var handle = _heap.AllocateObject(global, AllocationSite.Current());
         _heap.PushRoot(handle);

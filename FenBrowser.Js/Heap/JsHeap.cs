@@ -11,6 +11,12 @@ public sealed class JsHeap
     private readonly Stack<int> _freeList = new();
     private readonly List<(int Index, int Generation)> _nursery = new();
     private readonly RootSet _roots = new();
+
+    // Construction-window pins live in their own set, never on _roots. Permanent
+    // intrinsic roots are pushed onto _roots by the builtin installers (PushRoot,
+    // never popped); if a window marked and popped _roots it would discard any
+    // permanent root a wrapped installer pushed while the window was open.
+    private readonly RootSet _constructionPins = new();
     private readonly List<IHeapRootSource> _rootSources = new();
     private GcStressMode _stressMode;
     private readonly List<(ObjectHandle Owner, ObjectHandle Child)>? _writeBarrierEdges;
@@ -157,8 +163,8 @@ public sealed class JsHeap
     internal void SetStressModeForDiagnostics(GcStressMode mode) => _stressMode = mode;
 
     // Construction window (audit JSRT rooting family): while open, every cell
-    // allocated through this heap is pushed as an explicit root, and the whole
-    // window's pins are popped together on close. Host builders create graphs
+    // allocated through this heap is pinned in _constructionPins, and the whole
+    // window's pins are released together on close. Host builders create graphs
     // bottom-up (record facades → element arrays → top-level object) where a
     // freshly made cell has no incoming JS edge until its parent materializes;
     // under automatic or stress collection those intermediates sweep and later
@@ -170,7 +176,7 @@ public sealed class JsHeap
     {
         if (++_constructionWindowDepth == 1)
         {
-            _constructionWindowMark = _roots.Count;
+            _constructionWindowMark = _constructionPins.Count;
         }
 
         return new ConstructionWindowScope(this);
@@ -180,7 +186,7 @@ public sealed class JsHeap
     {
         if (--_constructionWindowDepth == 0)
         {
-            _roots.PopTo(_constructionWindowMark);
+            _constructionPins.PopTo(_constructionWindowMark);
         }
     }
 
@@ -239,7 +245,7 @@ public sealed class JsHeap
         }
         if (_constructionWindowDepth > 0)
         {
-            _roots.Push(objHandle);
+            _constructionPins.Push(objHandle);
         }
         // Tier 4 #22: stamp the freshly-allocated object with its handle
         // and owning heap so JsObject.SetProperty / DefineOwnProperty can
@@ -278,7 +284,7 @@ public sealed class JsHeap
         var stringHandle = new StringHandle(handle.Index, handle.Generation);
         if (_constructionWindowDepth > 0)
         {
-            _roots.Push(stringHandle);
+            _constructionPins.Push(stringHandle);
         }
 
         if (_stressMode == GcStressMode.AfterEveryAlloc)
@@ -307,7 +313,7 @@ public sealed class JsHeap
         var symbolHandle = new SymbolHandle(handle.Index, handle.Generation);
         if (_constructionWindowDepth > 0)
         {
-            _roots.Push(symbolHandle);
+            _constructionPins.Push(symbolHandle);
         }
 
         if (_stressMode == GcStressMode.AfterEveryAlloc)
@@ -442,6 +448,7 @@ public sealed class JsHeap
             _sharedMarkingTracer ??= new MarkingTracer(this, minorMode: true);
             var marker = _sharedMarkingTracer;
             _roots.Trace(marker);
+            _constructionPins.Trace(marker);
             TraceAllocationPinRing(marker);
 
             // Audit §1: external root sources (interpreter frame registers).
@@ -751,6 +758,10 @@ public sealed class JsHeap
         {
             roots.TryAdd(root, "HeapRootSet");
         }
+        foreach (var root in _constructionPins.Snapshot())
+        {
+            roots.TryAdd(root, "ConstructionWindow");
+        }
         var tracer = new DirectRootCaptureTracer(roots);
         for (var i = 0; i < _rootSources.Count; i++)
         {
@@ -790,6 +801,7 @@ public sealed class JsHeap
         _sharedMarkingTracer ??= new MarkingTracer(this);
         var marker = _sharedMarkingTracer;
         _roots.Trace(marker);
+        _constructionPins.Trace(marker);
         TraceAllocationPinRing(marker);
 
         // Audit §1: roots held by external subsystems (interpreter frames).
