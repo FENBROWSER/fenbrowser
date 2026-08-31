@@ -1,4 +1,4 @@
-using FenBrowser.Js.Objects;
+﻿using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Heap;
@@ -49,6 +49,7 @@ public sealed class JsHeap
     // (not once per referencing closure) and drops the ones whose bindings no
     // longer hold young cells. See EnvironmentRecord.RememberBindingStore.
     private readonly List<FenBrowser.Js.Environments.EnvironmentRecord> _rememberedEnvironments = new();
+    private readonly HashSet<FenBrowser.Js.Environments.EnvironmentRecord>? _auditEnvironments;
     // Tier 4 #22: after this many minor collections, a surviving Young cell
     // is promoted to Old. Default mirrors common nursery survival heuristics.
     public byte PromotionThreshold { get; set; } = 2;
@@ -70,6 +71,10 @@ public sealed class JsHeap
     private bool _minorCollectionPending;
     private readonly bool _verifyHeapBeforeGc;
     private readonly bool _verifyHeapAfterGc;
+    private readonly bool _auditRememberedSet = string.Equals(
+        Environment.GetEnvironmentVariable("FEN_FENJS_GC_AUDIT_REMEMBERED"),
+        "1",
+        StringComparison.Ordinal);
     private readonly HeapVerifier _verifier = new();
     // Diagnostic breadcrumbs: last sweep record per cell index, so a stale
     // handle error can say which collection freed the cell it points at.
@@ -117,9 +122,9 @@ public sealed class JsHeap
         }
     }
 
-    private readonly record struct SweepRecord(int Generation, HeapCellKind Kind, int MinorGc, int MajorGc, string PayloadType)
+    private readonly record struct SweepRecord(int Generation, HeapCellKind Kind, int MinorGc, int MajorGc, string PayloadType, string Collector)
     {
-        public string Describe() => $"gen{Generation}/{Kind}({PayloadType}) minor#{MinorGc} major#{MajorGc}";
+        public string Describe() => $"{Collector}:gen{Generation}/{Kind}({PayloadType}) minor#{MinorGc} major#{MajorGc}";
     }
 
     public JsHeap(
@@ -136,6 +141,11 @@ public sealed class JsHeap
         if (_verifyHeapBeforeGc || _verifyHeapAfterGc)
         {
             _writeBarrierEdges = new List<(ObjectHandle Owner, ObjectHandle Child)>();
+        }
+        if (_auditRememberedSet)
+        {
+            _auditEnvironments = new HashSet<FenBrowser.Js.Environments.EnvironmentRecord>(
+                ReferenceEqualityComparer.Instance);
         }
     }
 
@@ -440,6 +450,11 @@ public sealed class JsHeap
 
         ScanDirtyCards(marker);
         ScanRememberedEnvironments(marker);
+        if (_auditRememberedSet)
+        {
+            AuditRememberedSet();
+        }
+        var auditDirectRoots = _auditRememberedSet ? CaptureDirectRootSources() : null;
 
         var survivors = new List<(int Index, int Generation)>(_nursery.Count);
         foreach (var entry in _nursery)
@@ -470,7 +485,17 @@ public sealed class JsHeap
             }
             else
             {
-                _sweepLog[i] = new SweepRecord(cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount, cell.Payload.GetType().Name);
+                if (auditDirectRoots is not null &&
+                    cell.Kind == HeapCellKind.Object &&
+                    auditDirectRoots.TryGetValue(new ObjectHandle(i, cell.Generation), out var directRootSource))
+                {
+                    throw new JsEngineFatalException(
+                        $"Direct root was not marked. source={directRootSource} " +
+                        $"child={i}/{cell.Payload.GetType().Name} " +
+                        $"allocSite={GetAllocationSiteForDiagnostics(i)} " +
+                        $"minor#{_minorGcCount} major#{_gcCollectionCount}");
+                }
+                _sweepLog[i] = new SweepRecord(cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount, cell.Payload.GetType().Name, "minor");
                 _cells[i] = null;
                 _lastMinorSwept++;
                 if (!_isFree[i])
@@ -584,6 +609,7 @@ public sealed class JsHeap
 
     public void RememberEnvironment(FenBrowser.Js.Environments.EnvironmentRecord record)
     {
+        _auditEnvironments?.Add(record);
         if (record.IsRememberedForMinorGc)
         {
             return;
@@ -682,6 +708,49 @@ public sealed class JsHeap
         _dirtyCards.AddRange(retained);
     }
 
+    private void AuditRememberedSet()
+    {
+        for (var i = 0; i < _cells.Count; i++)
+        {
+            if (_cells[i] is not { Tier: GenerationTier.Old } cell)
+            {
+                continue;
+            }
+
+            cell.Payload.Trace(new RememberedSetAuditTracer(this, i, cell.Payload.GetType().Name));
+        }
+
+        if (_auditEnvironments is null)
+        {
+            return;
+        }
+
+        foreach (var record in _auditEnvironments)
+        {
+            record.TraceOwnEdges(new RememberedSetAuditTracer(
+                this,
+                -1,
+                $"env:{record.GetType().Name}:remembered={record.IsRememberedForMinorGc}"));
+        }
+    }
+
+    private Dictionary<ObjectHandle, string> CaptureDirectRootSources()
+    {
+        var roots = new Dictionary<ObjectHandle, string>();
+        foreach (var root in _roots.Snapshot())
+        {
+            roots.TryAdd(root, "HeapRootSet");
+        }
+        var tracer = new DirectRootCaptureTracer(roots);
+        for (var i = 0; i < _rootSources.Count; i++)
+        {
+            tracer.Source = _rootSources[i].GetType().FullName ?? _rootSources[i].GetType().Name;
+            _rootSources[i].TraceRoots(tracer);
+        }
+
+        return roots;
+    }
+
     public void CollectGarbage()
     {
         if (_verifyHeapBeforeGc)
@@ -715,6 +784,23 @@ public sealed class JsHeap
             _rootSources[i].TraceRoots(marker);
         }
 
+        var auditDirectRoots = _auditRememberedSet ? CaptureDirectRootSources() : null;
+        if (_auditRememberedSet)
+        {
+            for (var i = 0; i < _cells.Count; i++)
+            {
+                if (_cells[i] is not { Marked: true } markedCell)
+                {
+                    continue;
+                }
+
+                markedCell.Payload.Trace(new MajorReachabilityAuditTracer(
+                    this,
+                    i,
+                    markedCell.Payload.GetType().Name));
+            }
+        }
+
         // Sweep unreachable cells.
         for (var i = 0; i < _cells.Count; i++)
         {
@@ -724,7 +810,19 @@ public sealed class JsHeap
                 continue;
             }
 
-            _sweepLog[i] = new SweepRecord(cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount, cell.Payload.GetType().Name);
+
+            if (auditDirectRoots is not null &&
+                cell.Kind == HeapCellKind.Object &&
+                auditDirectRoots.TryGetValue(new ObjectHandle(i, cell.Generation), out var directRootSource))
+            {
+                throw new JsEngineFatalException(
+                    $"Direct root was not marked by major GC. source={directRootSource} " +
+                    $"child={i}/{cell.Payload.GetType().Name} " +
+                    $"allocSite={GetAllocationSiteForDiagnostics(i)} " +
+                    $"minorMode={_currentMarkMinorMode} minor#{_minorGcCount} major#{_gcCollectionCount}");
+            }
+
+            _sweepLog[i] = new SweepRecord(cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount, cell.Payload.GetType().Name, "major");
             _cells[i] = null;
             _lastGcSweptCells++;
             if (!_isFree[i])
@@ -1161,6 +1259,97 @@ public sealed class JsHeap
             SawYoungReference = true;
             _youngMarker.Trace(handle);
         }
+    }
+
+    private sealed class RememberedSetAuditTracer : IHeapTracer
+    {
+        private readonly JsHeap _heap;
+        private readonly int _ownerIndex;
+        private readonly string _ownerType;
+
+        public RememberedSetAuditTracer(JsHeap heap, int ownerIndex, string ownerType)
+        {
+            _heap = heap;
+            _ownerIndex = ownerIndex;
+            _ownerType = ownerType;
+        }
+
+        public bool TraceEnvironmentChains => false;
+
+        public void Trace(ObjectHandle handle)
+        {
+            var child = _heap.Validate(handle);
+            if (child.Tier == GenerationTier.Young && !child.Marked)
+            {
+                throw new JsEngineFatalException(
+                    $"Missing remembered-set edge. owner={_ownerIndex}/{_ownerType} " +
+                    $"child={handle.Index}/{child.Payload.GetType().Name} " +
+                    $"allocSite={_heap.GetAllocationSiteForDiagnostics(handle.Index)} " +
+                    $"minor#{_heap._minorGcCount} major#{_heap._gcCollectionCount}");
+            }
+        }
+
+        public void Trace(StringHandle handle)
+        {
+            _ = _heap.Validate(handle);
+        }
+
+        public void Trace(SymbolHandle handle)
+        {
+            _ = _heap.Validate(handle);
+        }
+    }
+
+    private sealed class DirectRootCaptureTracer : IHeapTracer
+    {
+        private readonly Dictionary<ObjectHandle, string> _roots;
+
+        public DirectRootCaptureTracer(Dictionary<ObjectHandle, string> roots)
+        {
+            _roots = roots;
+        }
+
+        public string Source { get; set; } = string.Empty;
+
+        public void Trace(ObjectHandle handle)
+        {
+            _roots.TryAdd(handle, Source);
+        }
+
+        public void Trace(StringHandle handle) => _ = handle;
+
+        public void Trace(SymbolHandle handle) => _ = handle;
+    }
+
+    private sealed class MajorReachabilityAuditTracer : IHeapTracer
+    {
+        private readonly JsHeap _heap;
+        private readonly int _ownerIndex;
+        private readonly string _ownerType;
+
+        public MajorReachabilityAuditTracer(JsHeap heap, int ownerIndex, string ownerType)
+        {
+            _heap = heap;
+            _ownerIndex = ownerIndex;
+            _ownerType = ownerType;
+        }
+
+        public void Trace(ObjectHandle handle)
+        {
+            var child = _heap.Validate(handle);
+            if (!child.Marked)
+            {
+                throw new JsEngineFatalException(
+                    $"Major GC missed reachable edge. owner={_ownerIndex}/{_ownerType} " +
+                    $"child={handle.Index}/{child.Payload.GetType().Name} " +
+                    $"allocSite={_heap.GetAllocationSiteForDiagnostics(handle.Index)} " +
+                    $"minor#{_heap._minorGcCount} major#{_heap._gcCollectionCount}");
+            }
+        }
+
+        public void Trace(StringHandle handle) => _ = _heap.Validate(handle);
+
+        public void Trace(SymbolHandle handle) => _ = _heap.Validate(handle);
     }
 
     internal bool IsOld(int index)
