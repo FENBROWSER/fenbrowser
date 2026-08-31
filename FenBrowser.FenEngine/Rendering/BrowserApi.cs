@@ -1017,11 +1017,6 @@ namespace FenBrowser.FenEngine.Rendering
                     return scriptOverride;
                 }
 
-                if (u != null && (u.AbsolutePath.EndsWith("/recaptcha/enterprise.js", StringComparison.Ordinal) || u.AbsolutePath.EndsWith("/recaptcha/api.js", StringComparison.Ordinal)))
-                {
-                    return "var c=document.getElementsByClassName('g-recaptcha');for(var i=0;i<c.length;i++){var m=c[i];if(!m||m.nodeType!==1)continue;var s=m.firstChild;if(s)m.removeChild(s);var d=document.createElement('div');d.style.cssText='border:1px solid #d3d3d3;background:#f9f9f9;padding:10px;border-radius:3px;display:inline-flex;align-items:center;width:300px;height:74px;box-sizing:border-box;';var cb=document.createElement('input');cb.type='checkbox';cb.style.cssText='width:28px;height:28px;margin:0 12px 0 0;cursor:pointer;';var l=document.createElement('span');l.textContent='I\\'m not a robot';l.style.cssText='font-family:Roboto,helvetica,arial,sans-serif;font-size:14px;color:#555;';d.appendChild(cb);d.appendChild(l);m.appendChild(d);var cbk=m.getAttribute('data-callback');cb.addEventListener('click',function(e){if(cbk&&typeof window[cbk]==='function'){window[cbk]('test_token');}else{var f=this.closest?this.closest('form'):null;if(!f){var p=this.parentNode;while(p){if(p.tagName==='FORM'){f=p;break;}p=p.parentNode;}}if(f)f.submit();}});};";
-                }
-
                 u = MapRuntimeUri(u);
                 var trackedNavigationId = Interlocked.Read(ref _activeRenderNavigationId);
                 if (trackedNavigationId > 0)
@@ -5759,10 +5754,6 @@ pre {{
                     framePolicy.IsAllowed("script-src", null, nonce, frameUri, isInline: true),
                 ExternalScriptFetcher = async (resourceUri, _) =>
                 {
-                    if (resourceUri != null && (resourceUri.AbsolutePath.EndsWith("/recaptcha/enterprise.js", StringComparison.Ordinal) || resourceUri.AbsolutePath.EndsWith("/recaptcha/api.js", StringComparison.Ordinal)))
-                    {
-                        return "var c=document.getElementsByClassName('g-recaptcha');for(var i=0;i<c.length;i++){var m=c[i];if(!m||m.nodeType!==1)continue;var s=m.firstChild;if(s)m.removeChild(s);var d=document.createElement('div');d.style.cssText='border:1px solid #d3d3d3;background:#f9f9f9;padding:10px;border-radius:3px;display:inline-flex;align-items:center;width:300px;height:74px;box-sizing:border-box;';var cb=document.createElement('input');cb.type='checkbox';cb.style.cssText='width:28px;height:28px;margin:0 12px 0 0;cursor:pointer;';var l=document.createElement('span');l.textContent='I\\'m not a robot';l.style.cssText='font-family:Roboto,helvetica,arial,sans-serif;font-size:14px;color:#555;';d.appendChild(cb);d.appendChild(l);m.appendChild(d);var cbk=m.getAttribute('data-callback');cb.addEventListener('click',function(e){if(cbk&&typeof window[cbk]==='function'){window[cbk]('test_token');}else{var f=this.closest?this.closest('form'):null;if(!f){var p=this.parentNode;while(p){if(p.tagName==='FORM'){f=p;break;}p=p.parentNode;}}if(f)f.submit();}});};";
-                    }
                     var mappedUri = MapRuntimeUri(resourceUri);
                     var scriptResult = await _resources.FetchTextDetailedAsync(
                         new FetchContext
@@ -5784,10 +5775,6 @@ pre {{
                 },
                 ExternalScriptFetcherWithNonce = async (resourceUri, _, elementNonce) =>
                 {
-                    if (resourceUri != null && (resourceUri.AbsolutePath.EndsWith("/recaptcha/enterprise.js", StringComparison.Ordinal) || resourceUri.AbsolutePath.EndsWith("/recaptcha/api.js", StringComparison.Ordinal)))
-                    {
-                        return "var c=document.getElementsByClassName('g-recaptcha');for(var i=0;i<c.length;i++){var m=c[i];if(!m||m.nodeType!==1)continue;var s=m.firstChild;if(s)m.removeChild(s);var d=document.createElement('div');d.style.cssText='border:1px solid #d3d3d3;background:#f9f9f9;padding:10px;border-radius:3px;display:inline-flex;align-items:center;width:300px;height:74px;box-sizing:border-box;';var cb=document.createElement('input');cb.type='checkbox';cb.style.cssText='width:28px;height:28px;margin:0 12px 0 0;cursor:pointer;';var l=document.createElement('span');l.textContent='I\\'m not a robot';l.style.cssText='font-family:Roboto,helvetica,arial,sans-serif;font-size:14px;color:#555;';d.appendChild(cb);d.appendChild(l);m.appendChild(d);var cbk=m.getAttribute('data-callback');cb.addEventListener('click',function(e){if(cbk&&typeof window[cbk]==='function'){window[cbk]('test_token');}else{var f=this.closest?this.closest('form'):null;if(!f){var p=this.parentNode;while(p){if(p.tagName==='FORM'){f=p;break;}p=p.parentNode;}}if(f)f.submit();}});};";
-                    }
                     var mappedUri = MapRuntimeUri(resourceUri);
                     var scriptResult = await _resources.FetchTextDetailedAsync(
                         new FetchContext
