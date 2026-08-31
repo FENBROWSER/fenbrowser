@@ -257,6 +257,14 @@ public sealed class IframeInputRetargetingTests
 
         host.OnClick(visualX, visualY, button: 0);
 
+        // OnClick queues the dispatch and returns (QueueInputTask -> fire-and-forget
+        // ObserveQueuedInputTaskAsync), so page handlers never hold the engine
+        // thread. Asserting synchronously raced that queue and always observed the
+        // pre-click state.
+        await WaitForAsync(
+            () => frameDocument.Body?.GetAttribute("data-clicked") != null,
+            "queued click to reach the iframe document");
+
         Assert.Equal("yes", frameDocument.Body?.GetAttribute("data-clicked"));
         Assert.Same(button, frameDocument.ActiveElement);
         Assert.Same(iframe, root.OwnerDocument?.ActiveElement);
