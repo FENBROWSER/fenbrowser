@@ -1,4 +1,4 @@
-using FenBrowser.Core.Css;
+﻿using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
@@ -2448,6 +2448,25 @@ public void Dispose()
                  }
                  return true;
              };
+             // A script element created and inserted by script is never parser-inserted,
+             // so under 'strict-dynamic' the inserting script authorizes it and the host
+             // allowlist must not be consulted (CSP3 6.6.3.4). Loaders whose only job is
+             // to inject their real bundle -- reCAPTCHA's api.js among them -- rely on it.
+             js.TrustedDynamicSubresourceAllowed = (u, kind) =>
+             {
+                 if (!allowJs) return false;
+                 if (ActivePolicy == null) return true;
+                 var directive = string.Equals(kind, "script", StringComparison.Ordinal)
+                     ? "script-src"
+                     : "default-src";
+                 return ActivePolicy.IsAllowed(
+                     directive,
+                     u,
+                     nonce: null,
+                     origin: baseUri,
+                     scriptProvenance: FenBrowser.Core.Security.CspScriptProvenance.TrustedDynamic);
+             };
+
              js.ExecuteInlineScriptsOnInnerHTML = allowJs;
 
              // Wire up CSP Nonce check

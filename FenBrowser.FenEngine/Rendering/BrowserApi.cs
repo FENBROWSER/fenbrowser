@@ -1,4 +1,4 @@
-using FenBrowser.Core.Css;
+﻿using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections;
@@ -5749,6 +5749,26 @@ pre {{
                         _ => "default-src"
                     };
                     return framePolicy.IsAllowed(directive, resourceUri, frameUri);
+                },
+                // Script-inserted (non-parser-inserted) scripts carry TrustedDynamic
+                // provenance, which is what lets CspPolicy honour 'strict-dynamic'
+                // instead of falling back to the host allowlist (CSP3 6.6.3.4).
+                TrustedDynamicSubresourceAllowed = (resourceUri, kind) =>
+                {
+                    if (framePolicy == null)
+                    {
+                        return true;
+                    }
+
+                    var directive = string.Equals(kind, "script", StringComparison.Ordinal)
+                        ? "script-src"
+                        : "default-src";
+                    return framePolicy.IsAllowed(
+                        directive,
+                        resourceUri,
+                        nonce: null,
+                        origin: frameUri,
+                        scriptProvenance: FenBrowser.Core.Security.CspScriptProvenance.TrustedDynamic);
                 },
                 NonceAllowed = nonce => framePolicy == null ||
                     framePolicy.IsAllowed("script-src", null, nonce, frameUri, isInline: true),

@@ -41,6 +41,15 @@ namespace FenBrowser.FenEngine.Scripting;
 public sealed record BrowserFrameExecutionOptions
 {
     public Func<Uri, string, bool> SubresourceAllowed { get; init; }
+
+    /// <summary>
+    /// CSP check for a script element created and inserted by script rather than by
+    /// the parser. Under 'strict-dynamic' such a script is authorized by the script
+    /// that inserted it, not by the host allowlist or a nonce of its own
+    /// (CSP3 6.6.3.4), so the URL-only <see cref="SubresourceAllowed"/> check would
+    /// wrongly reject it. Null falls back to that URL-only check.
+    /// </summary>
+    public Func<Uri, string, bool> TrustedDynamicSubresourceAllowed { get; init; }
     public Func<string, bool> NonceAllowed { get; init; }
     public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; init; }
 
@@ -299,6 +308,7 @@ public interface IBrowserScriptEngine
     JavaScriptRuntimeProfile RuntimeProfile { get; }
     Func<Uri, Task<string>> FetchOverride { get; set; }
     Func<Uri, string, bool> SubresourceAllowed { get; set; }
+    Func<Uri, string, bool> TrustedDynamicSubresourceAllowed { get; set; }
     Func<string, bool> NonceAllowed { get; set; }
     Func<HttpRequestMessage, Task<HttpResponseMessage>> FetchHandler { get; set; }
     Func<Uri, string> CookieReadBridge { get; set; }
@@ -743,6 +753,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     public Func<Uri, Task<string>> FetchOverride { get; set; }
     public Func<Uri, string, bool> SubresourceAllowed { get; set; }
+    /// <summary>
+    /// CSP check for a script element created and inserted by script rather than by
+    /// the parser. Under 'strict-dynamic' such a script is authorized by the script
+    /// that inserted it, not by the host allowlist or a nonce of its own
+    /// (CSP3 6.6.3.4), so the URL-only <see cref="SubresourceAllowed"/> check would
+    /// wrongly reject it. Null falls back to that URL-only check.
+    /// </summary>
+    public Func<Uri, string, bool> TrustedDynamicSubresourceAllowed { get; set; }
     public Func<string, bool> NonceAllowed { get; set; }
     public Func<HttpRequestMessage, Task<HttpResponseMessage>> FetchHandler { get; set; }
     public Func<Uri, string> CookieReadBridge { get; set; }
@@ -1362,6 +1380,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         if (options != null)
         {
             frameRealm.SubresourceAllowed = options.SubresourceAllowed ?? frameRealm.SubresourceAllowed;
+            frameRealm.TrustedDynamicSubresourceAllowed = options.TrustedDynamicSubresourceAllowed ?? frameRealm.TrustedDynamicSubresourceAllowed;
             frameRealm.NonceAllowed = options.NonceAllowed ?? frameRealm.NonceAllowed;
             frameRealm.ExternalScriptFetcher = options.ExternalScriptFetcher ?? frameRealm.ExternalScriptFetcher;
             frameRealm.ExternalScriptFetcherWithNonce = options.ExternalScriptFetcherWithNonce ?? frameRealm.ExternalScriptFetcherWithNonce;
@@ -1394,6 +1413,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         realm.RuntimeProfile = RuntimeProfile;
         realm.FetchOverride = FetchOverride;
         realm.SubresourceAllowed = SubresourceAllowed;
+        realm.TrustedDynamicSubresourceAllowed = TrustedDynamicSubresourceAllowed;
         realm.NonceAllowed = NonceAllowed;
         realm.FetchHandler = FetchHandler;
         realm.CookieReadBridge = CookieReadBridge;
@@ -15721,7 +15741,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return ToHostNodeOrNull(scriptElement);
         }
 
-        if (SubresourceAllowed != null && !SubresourceAllowed(scriptUri, "script"))
+        // CSP3 6.6.3.4: this element was created and inserted by script, never by the
+        // parser. Under 'strict-dynamic' it is authorized by the already-trusted script
+        // that inserted it, so it must not be re-judged against the host allowlist or
+        // required to carry a nonce of its own. Loaders that exist only to inject their
+        // real bundle (reCAPTCHA's api.js, for one) depend on exactly this rule.
+        var dynamicScriptAllowed = TrustedDynamicSubresourceAllowed ?? SubresourceAllowed;
+        if (dynamicScriptAllowed != null && !dynamicScriptAllowed(scriptUri, "script"))
         {
             MarkScriptSkipped(scriptRecord, $"csp-block:{scriptUri}");
             DispatchScriptElementEvent(scriptElement, "error");
