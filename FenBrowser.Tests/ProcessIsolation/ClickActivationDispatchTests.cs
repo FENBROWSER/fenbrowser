@@ -225,6 +225,26 @@ public sealed class ClickActivationDispatchTests
     }
 
     [Fact]
+    public async Task GetComputedStyle_FlushesAncestorClassSelectorMutation()
+    {
+        using var host = await RenderAsync(
+            """
+            <!doctype html><html><head><style>
+              .spinner { display: none; }
+              .captcha.loading .spinner { display: block; }
+            </style></head><body>
+              <div id="captcha" class="captcha"><span id="spinner" class="spinner"></span></div>
+            </body></html>
+            """);
+
+        Assert.Equal(
+            "block",
+            host.Engine.Evaluate(
+                "document.getElementById('captcha').classList.add('loading');" +
+                "getComputedStyle(document.getElementById('spinner')).display")?.ToString());
+    }
+
+    [Fact]
     public async Task PerformPointerActions_DispatchesTrustedSequenceThroughInputPipeline()
     {
         using var host = await RenderAsync(

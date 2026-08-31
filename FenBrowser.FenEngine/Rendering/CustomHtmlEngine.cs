@@ -2036,13 +2036,18 @@ public void Dispose()
 
         private void FlushPendingLayoutForScript()
         {
+            var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
+            if (root != null && (root.StyleDirty || root.ChildStyleDirty))
+            {
+                ScheduleRecascade();
+            }
+
             var pendingRecascade = _pendingRecascade;
             if (pendingRecascade != null && !pendingRecascade.IsCompleted)
             {
                 pendingRecascade.GetAwaiter().GetResult();
             }
 
-            var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
             var renderer = _externalRenderer ?? _cachedRenderer;
             if (root == null || renderer == null ||
                 (!root.StyleDirty && !root.ChildStyleDirty &&

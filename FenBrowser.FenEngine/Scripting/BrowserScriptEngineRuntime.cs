@@ -9944,6 +9944,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return CreateComputedStyleObject(new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase));
                 }
 
+                FlushPendingLayout?.Invoke();
                 return CreateComputedStyleObjectForElement(element);
             },
             length: 1);
