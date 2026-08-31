@@ -4256,6 +4256,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private void InstallFenJsDomGlobals(Node domRoot, Uri baseUri)
     {
+        // The DOM globals are built bottom-up (navigator/location/history
+        // facades, seeded property bags, native constructors) and each
+        // intermediate lives only in a CLR local until the call that links it
+        // into the rooted global object. Any allocation in between - the next
+        // facade, a property-name intern - can collect, sweeping a cell whose
+        // handle the builder is still holding. Pin everything allocated for the
+        // duration of the install; the window releases them once the graph
+        // hangs off the global.
+        using var constructionWindow = _interpreter.Heap.BeginConstructionWindow();
+
         var document = domRoot as Document ?? domRoot.OwnerDocument;
         var navigator = CreateNavigatorHost();
         var location = new FenJsLocationHost(baseUri ?? TryCreateUri(document?.URL));
