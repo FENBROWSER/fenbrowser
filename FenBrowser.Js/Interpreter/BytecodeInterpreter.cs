@@ -1,4 +1,4 @@
-using FenBrowser.Js.Builtins;
+﻿using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
@@ -1410,6 +1410,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             var ins = function.Instructions[frame.InstructionPointer++];
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
+            {
+                FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordOpCode(ins.OpCode);
+            }
             switch (ins.OpCode)
             {
                 case OpCode.LoadConst:

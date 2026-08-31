@@ -1842,6 +1842,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 $"inputQueue={_fenJsInputWorkQueue.Count} normalQueue={_fenJsWorkQueue.Count} " +
                                 $"documentId={workItem.DocumentId} url={workItem.Url}",
                                 FenBrowser.Core.Logging.LogCategory.JavaScript);
+                            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
+                            {
+                                FenBrowser.Core.EngineLogCompat.Warn(
+                                    FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(),
+                                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                            }
                         },
                         null,
                         dueTime: 2_000,
