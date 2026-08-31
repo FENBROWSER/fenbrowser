@@ -1405,6 +1405,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             _embeddingFrameElement = frameElement
         };
         CopyFrameRealmConfiguration(realm);
+        Interlocked.Increment(ref _frameRealmCount);
+        EnsureFrameTeardownObserver();
         return realm;
     }
 
@@ -1762,9 +1764,42 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private readonly ConcurrentQueue<FenJsWorkItem> _fenJsInputWorkQueue = new();
     private readonly ConcurrentQueue<FenJsWorkItem> _fenJsWorkQueue = new();
     private bool _fenJsWorkerRunning;
+
+    // Set once this realm's frame has been detached from the tree (or the owning
+    // document navigated away). A detached nested browsing context is discarded
+    // per HTML "destroy a child navigable", so its scripts must stop: the flag
+    // aborts the in-flight script at the next interrupt check, stops the worker
+    // loop, and makes every later enqueue a no-op. Volatile because it is set
+    // from the render thread and read by the JS worker thread.
+    private volatile bool _realmAbandoned;
+
+    internal bool IsRealmAbandoned => _realmAbandoned;
     private int _fenJsWorkerActive;
     private long _fenJsWorkItemSequence;
     private FenJsWorkItem _activeFenJsWorkItem;
+
+    // The work item that was running when the current document was installed.
+    // It legitimately carries the previous document's id, so it is never stale.
+    private FenJsWorkItem _documentTransitionWorkItem;
+
+    // Work belongs to a document that has since been replaced: its results can no
+    // longer be observed, so running it only starves the live document.
+    private bool IsWorkItemStale(FenJsWorkItem workItem)
+    {
+        if (workItem == null || workItem.DocumentId.Length == 0)
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(workItem, Volatile.Read(ref _documentTransitionWorkItem)))
+        {
+            return false;
+        }
+
+        var currentDocumentId = _currentDocumentId;
+        return currentDocumentId.Length != 0 &&
+               !string.Equals(workItem.DocumentId, currentDocumentId, StringComparison.Ordinal);
+    }
 
     private sealed class FenJsWorkItem
     {
@@ -1802,6 +1837,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private void EnsureFenJsWorkerRunning()
     {
+        if (_realmAbandoned)
+            return;
+
         if (_fenJsWorkerThread != null && _fenJsWorkerThread.IsAlive)
             return;
 
@@ -1828,6 +1866,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 // Do not execute that stale event after the caller has moved on.
                 if (workItem.Completion.Task.IsCompleted)
                     continue;
+
+                // The frame was detached while this item sat in the queue.
+                if (_realmAbandoned)
+                {
+                    workItem.Completion.TrySetResult(null);
+                    continue;
+                }
+
+                // The document this item belongs to was replaced while it queued.
+                if (IsWorkItemStale(workItem))
+                {
+                    workItem.Completion.TrySetResult(null);
+                    continue;
+                }
 
                 try
                 {
@@ -1950,6 +2002,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         bool prioritize = false,
         [CallerMemberName] string workKind = null)
     {
+        if (_realmAbandoned)
+        {
+            // The frame is gone; its scripts must not run and no caller should
+            // block waiting for a worker that has stopped.
+            return default;
+        }
+
         if (_onFenJsLargeStackThread)
         {
             // Re-entrant call from within the large-stack thread itself â€”
@@ -2015,6 +2074,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         bool prioritize = false,
         [CallerMemberName] string workKind = null)
     {
+        if (_realmAbandoned)
+        {
+            return default;
+        }
+
         if (_onFenJsLargeStackThread)
         {
             // Re-entrant: run inline.
@@ -2391,6 +2455,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private void BeginEventLoopSnapshot(Node domRoot, Uri baseUri)
     {
+        // A frame that is re-navigated (reCAPTCHA replaces its widget rather than
+        // removing the iframe) keeps the same realm and worker, so the previous
+        // document's in-flight script would otherwise keep running against a
+        // document nobody can see any more — burning the CPU the new document
+        // needs. Retiring the id here makes that work stale; the interrupt hook
+        // and the worker loop then abandon it.
+        //
+        // The item performing this transition captured the outgoing id, so exempt
+        // it or it would abort itself mid-navigation.
+        Volatile.Write(ref _documentTransitionWorkItem, Volatile.Read(ref _activeFenJsWorkItem));
         _currentDocumentId = "document-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
         Interlocked.Exchange(ref _callbackFailureSequence, 0);
         Interlocked.Exchange(ref _diagnosticCallbackIdSequence, 0);
@@ -3637,6 +3711,167 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
     }
 
+    // HTML "destroy a child navigable": when an iframe leaves the tree its
+    // nested browsing context is discarded, so the frame's scripts, timers and
+    // pending tasks stop. Without this a timed-out or replaced widget keeps its
+    // realm running forever on its own worker thread — observed on
+    // google.com/recaptcha, where reCAPTCHA's own anchor-ms/execute-ms deadlines
+    // expire, it rebuilds the widget, and every abandoned copy keeps burning the
+    // CPU the replacement needs, so the page can never recover.
+    internal void AbandonRealm()
+    {
+        if (_realmAbandoned)
+        {
+            return;
+        }
+
+        // Set first and unlocked: this is what aborts a script already running on
+        // the worker thread (via InterruptCallback), so the worker can reach a
+        // safe point and drop _fenJsLock before the teardown below needs it.
+        _realmAbandoned = true;
+        UnsubscribeFrameTeardownObserver();
+
+        foreach (var childRealm in DetachFrameRealms())
+        {
+            childRealm.AbandonRealm();
+        }
+
+        _fenJsWorkerRunning = false;
+        try { _fenJsWorkAvailable.Set(); }
+        catch (ObjectDisposedException) { }
+
+        DrainAbandonedWorkQueue(_fenJsInputWorkQueue);
+        DrainAbandonedWorkQueue(_fenJsWorkQueue);
+
+        try
+        {
+            ReleaseRealmResources();
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] AbandonRealm cleanup failed: {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+    }
+
+    // Unblock anything already waiting on queued work. A null result is the
+    // signal callers already understand for "the session went away".
+    private static void DrainAbandonedWorkQueue(ConcurrentQueue<FenJsWorkItem> queue)
+    {
+        while (queue.TryDequeue(out var pending))
+        {
+            pending.Completion.TrySetResult(null);
+        }
+    }
+
+    // Node.OnMutation is process-wide, so the handler must stay cheap and must
+    // only ever act on frames this realm actually owns: the _iframeRealms lookup
+    // is the ownership check, and _frameRealmCount short-circuits pages that
+    // have no frames at all.
+    private int _frameRealmCount;
+    private bool _frameTeardownObserverSubscribed;
+
+    private void EnsureFrameTeardownObserver()
+    {
+        if (_frameTeardownObserverSubscribed)
+        {
+            return;
+        }
+
+        _frameTeardownObserverSubscribed = true;
+        Node.OnMutation += OnDomMutationForFrameTeardown;
+    }
+
+    private void UnsubscribeFrameTeardownObserver()
+    {
+        if (!_frameTeardownObserverSubscribed)
+        {
+            return;
+        }
+
+        _frameTeardownObserverSubscribed = false;
+        Node.OnMutation -= OnDomMutationForFrameTeardown;
+    }
+
+    private void OnDomMutationForFrameTeardown(
+        Node target,
+        string type,
+        string attributeName,
+        string attributeNamespace,
+        List<Node> addedNodes,
+        List<Node> removedNodes)
+    {
+        if (Volatile.Read(ref _frameRealmCount) == 0 ||
+            removedNodes == null ||
+            removedNodes.Count == 0 ||
+            !string.Equals(type, "childList", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        for (var i = 0; i < removedNodes.Count; i++)
+        {
+            AbandonRealmsInDetachedSubtree(removedNodes[i]);
+        }
+    }
+
+    // The removed node may be the frame itself or an ancestor of one.
+    private void AbandonRealmsInDetachedSubtree(Node removed)
+    {
+        if (removed == null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (removed is Element removedElement)
+            {
+                AbandonRealmForFrameElement(removedElement);
+            }
+
+            foreach (var descendant in removed.Descendants())
+            {
+                if (descendant is Element descendantElement)
+                {
+                    AbandonRealmForFrameElement(descendantElement);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Frame teardown walk failed: {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+    }
+
+    private void AbandonRealmForFrameElement(Element element)
+    {
+        if (!IsIFrameElement(element))
+        {
+            return;
+        }
+
+        FenJsBrowserScriptEngine realm;
+        lock (_fenJsLock)
+        {
+            if (!_iframeRealms.TryGetValue(element, out realm))
+            {
+                return;
+            }
+
+            _iframeRealms.Remove(element);
+            Interlocked.Decrement(ref _frameRealmCount);
+        }
+
+        FenBrowser.Core.EngineLogCompat.Info(
+            "[FenJsBridge] iframe detached - abandoning its realm",
+            FenBrowser.Core.Logging.LogCategory.JavaScript);
+        realm.AbandonRealm();
+    }
+
     private FenJsBrowserScriptEngine[] DetachFrameRealms()
     {
         lock (_fenJsLock)
@@ -3646,6 +3881,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 .Distinct()
                 .ToArray();
             _iframeRealms = new ConditionalWeakTable<Element, FenJsBrowserScriptEngine>();
+            Interlocked.Exchange(ref _frameRealmCount, 0);
             return realms;
         }
     }
@@ -3654,7 +3890,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         foreach (var frameRealm in DetachFrameRealms())
         {
-            frameRealm.ReleaseRealmResources();
+            frameRealm.AbandonRealm();
         }
 
         Interlocked.Increment(ref _fenJsSessionGeneration);
@@ -3701,7 +3937,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         var detachedFrameRealms = DetachFrameRealms();
         foreach (var frameRealm in detachedFrameRealms)
         {
-            frameRealm.ReleaseRealmResources();
+            frameRealm.AbandonRealm();
         }
 
         // Establish the large-stack worker BEFORE taking _fenJsLock. ResetFenJsSession
@@ -3753,7 +3989,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 // re-runs the session reset per document with the real policies.
                 ExposeSharedArrayBuffer = Sandbox?.Allows(SandboxFeature.SharedArrayBuffer) == true &&
                     DocumentSecurityContext?.Allows(SandboxFeature.SharedArrayBuffer) == true,
-                InterruptCallback = () => !_executionCancellation.IsCancellationRequested,
+                InterruptCallback = () =>
+                    !_realmAbandoned &&
+                    !_executionCancellation.IsCancellationRequested &&
+                    !IsWorkItemStale(Volatile.Read(ref _activeFenJsWorkItem)),
                 MaxCallDepth = 1024,
                 ParserMaxRecursionDepth = FenJsBrowserParserMaxRecursionDepth
             };
