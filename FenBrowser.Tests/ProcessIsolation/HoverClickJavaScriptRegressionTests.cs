@@ -424,6 +424,82 @@ public sealed class HoverClickJavaScriptRegressionTests
     }
 
     [Fact]
+    public async Task RenderedPage_BusyScriptWorker_DoesNotBlockPhysicalPointerSequence()
+    {
+        const string html = """
+<!doctype html>
+<html><body>
+  <input id="target" type="checkbox" style="width:24px;height:24px">
+  <script>
+    globalThis.__events=[];
+    var target=document.getElementById('target');
+    ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(
+      n=>target.addEventListener(n,()=>globalThis.__events.push(n)));
+  </script>
+</body></html>
+""";
+
+        var previousTimeout = Environment.GetEnvironmentVariable("FEN_FENJS_SCRIPT_TIMEOUT_MS");
+        Environment.SetEnvironmentVariable("FEN_FENJS_SCRIPT_TIMEOUT_MS", "500");
+        try
+        {
+            using var host = new BrowserHost();
+            var renderer = new SkiaDomRenderer();
+            host.EnableJavaScript = true;
+            host.SetActiveRenderer(renderer);
+            host.Engine.SetExternalRenderer(renderer);
+
+            await host.Engine.RenderAsync(
+                html,
+                new Uri("https://fen.test/nonblocking-pointer-sequence"),
+                _ => Task.FromResult(string.Empty),
+                _ => Task.FromResult<Stream>(null),
+                _ => { },
+                viewportWidth: 640,
+                viewportHeight: 360,
+                forceJavascript: true);
+
+            var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+            var target = FindById(root, "target");
+            RenderFrame(renderer, root, host.ComputedStyles, 640, 360);
+            Assert.True(renderer.LastLayout.TryGetElementRect(target, out var targetRect));
+
+            var busyScript = Task.Run(() =>
+            {
+                try { host.Engine.Evaluate("while (true) {}"); }
+                catch { }
+            });
+            await WaitForAsync(
+                () => host.Engine.ScriptEngine.IsEventDispatchBusy(target),
+                "FenJS worker did not enter the blocking script task.");
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var x = targetRect.Left + targetRect.Width / 2f;
+            var y = targetRect.Top + targetRect.Height / 2f;
+            host.OnMouseDown(x, y, button: 0);
+            host.OnMouseUp(x, y, button: 0);
+            stopwatch.Stop();
+
+            Assert.True(
+                stopwatch.ElapsedMilliseconds < 250,
+                $"Physical pointer dispatch blocked for {stopwatch.ElapsedMilliseconds}ms behind page JavaScript.");
+
+            var clickTask = host.DispatchClickAndActivate(x, y, button: 0);
+            await busyScript.WaitAsync(TimeSpan.FromSeconds(2));
+            await clickTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(
+                "pointerdown,mousedown,pointerup,mouseup,click",
+                host.Engine.Evaluate("globalThis.__events.join(',')")?.ToString());
+        }
+        finally
+        {
+            ElementStateManager.Instance.SetHoveredElement(null);
+            Environment.SetEnvironmentVariable("FEN_FENJS_SCRIPT_TIMEOUT_MS", previousTimeout);
+        }
+    }
+
+    [Fact]
     public async Task RenderedPage_UserInputIsNotStarvedByRepeatingTimer()
     {
         const string html = """

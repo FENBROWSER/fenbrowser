@@ -1743,19 +1743,41 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private readonly ConcurrentQueue<FenJsWorkItem> _fenJsWorkQueue = new();
     private bool _fenJsWorkerRunning;
     private int _fenJsWorkerActive;
+    private long _fenJsWorkItemSequence;
+    private FenJsWorkItem _activeFenJsWorkItem;
 
     private sealed class FenJsWorkItem
     {
-        public FenJsWorkItem(Func<object> work, int instructionBudget)
+        public FenJsWorkItem(
+            long sequence,
+            Func<object> work,
+            int instructionBudget,
+            string kind,
+            string documentId,
+            string url)
         {
+            Sequence = sequence;
             Work = work ?? throw new ArgumentNullException(nameof(work));
             InstructionBudget = instructionBudget;
+            Kind = string.IsNullOrWhiteSpace(kind) ? "unspecified" : kind;
+            DocumentId = documentId ?? string.Empty;
+            Url = url ?? string.Empty;
+            EnqueuedTick = Environment.TickCount64;
         }
 
+        public long Sequence { get; }
         public Func<object> Work { get; }
         public int InstructionBudget { get; }
+        public string Kind { get; }
+        public string DocumentId { get; }
+        public string Url { get; }
+        public long EnqueuedTick { get; }
+        public string Phase { get; private set; } = "queued";
         public TaskCompletionSource<object> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void SetPhase(string phase) =>
+            Phase = string.IsNullOrWhiteSpace(phase) ? "unspecified" : phase;
     }
 
     private void EnsureFenJsWorkerRunning()
@@ -1790,7 +1812,40 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 try
                 {
                     Interlocked.Exchange(ref _fenJsWorkerActive, 1);
+                    Volatile.Write(ref _activeFenJsWorkItem, workItem);
+                    workItem.SetPhase("executing");
                     var interpreter = _interpreter;
+                    var startedTick = Environment.TickCount64;
+                    var queuedMs = Math.Max(0, startedTick - workItem.EnqueuedTick);
+                    FenBrowser.Core.EngineLogCompat.Debug(
+                        $"[FenJsWorker] Started id={workItem.Sequence} kind={workItem.Kind} queuedMs={queuedMs} " +
+                        $"budget={workItem.InstructionBudget} inputQueue={_fenJsInputWorkQueue.Count} " +
+                        $"normalQueue={_fenJsWorkQueue.Count} documentId={workItem.DocumentId} url={workItem.Url}",
+                        FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    using var longRunningProbe = new Timer(
+                        _ =>
+                        {
+                            if (workItem.Completion.Task.IsCompleted)
+                            {
+                                return;
+                            }
+
+                            var elapsedMs = Math.Max(0, Environment.TickCount64 - startedTick);
+                            var instructions = interpreter?.InstructionsExecuted ?? 0;
+                            var heap = interpreter?.Heap;
+                            FenBrowser.Core.EngineLogCompat.Warn(
+                                $"[FenJsWorker] StillRunning id={workItem.Sequence} kind={workItem.Kind} " +
+                                $"phase={workItem.Phase} elapsedMs={elapsedMs} instructions={instructions} " +
+                                $"budget={workItem.InstructionBudget} allocations={heap?.AllocationCount ?? 0} " +
+                                $"minorGc={heap?.MinorCollectionCount ?? 0} majorGc={heap?.GcCollectionCount ?? 0} " +
+                                $"liveCells={heap?.LiveCellCount ?? 0} " +
+                                $"inputQueue={_fenJsInputWorkQueue.Count} normalQueue={_fenJsWorkQueue.Count} " +
+                                $"documentId={workItem.DocumentId} url={workItem.Url}",
+                                FenBrowser.Core.Logging.LogCategory.JavaScript);
+                        },
+                        null,
+                        dueTime: 2_000,
+                        period: 5_000);
                     var result = interpreter == null
                         ? workItem.Work()
                         : interpreter.RunWithExecutionBudget(
@@ -1798,13 +1853,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             workItem.InstructionBudget,
                             workItem.Work);
                     workItem.Completion.TrySetResult(result);
+                    var elapsedMs = Math.Max(0, Environment.TickCount64 - startedTick);
+                    FenBrowser.Core.EngineLogCompat.Debug(
+                        $"[FenJsWorker] Completed id={workItem.Sequence} kind={workItem.Kind} " +
+                        $"elapsedMs={elapsedMs} instructions={interpreter?.LastExecutionInstructions ?? 0}",
+                        FenBrowser.Core.Logging.LogCategory.JavaScript);
                 }
                 catch (Exception ex)
                 {
                     workItem.Completion.TrySetException(ex);
+                    FenBrowser.Core.EngineLogCompat.Warn(
+                        $"[FenJsWorker] Failed id={workItem.Sequence} kind={workItem.Kind} " +
+                        $"errorType={ex.GetType().Name} error={ex.Message}",
+                        FenBrowser.Core.Logging.LogCategory.JavaScript);
                 }
                 finally
                 {
+                    Volatile.Write(ref _activeFenJsWorkItem, null);
                     Volatile.Write(ref _fenJsWorkerActive, 0);
                 }
             }
@@ -1828,12 +1893,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                _fenJsWorkQueue.TryDequeue(out workItem);
     }
 
-    private T RunFenJsWithLargeStack<T>(Func<T> work)
+    private T RunFenJsWithLargeStack<T>(
+        Func<T> work,
+        [CallerMemberName] string workKind = null)
     {
         return RunFenJsWithLargeStack(
             work,
             waitForWorkerMs: -1,
-            instructionBudget: FenJsBrowserInstructionBudget);
+            instructionBudget: FenJsBrowserInstructionBudget,
+            workKind: workKind);
     }
 
     private JsValue EvaluateBootstrapWithFenJsRaw(string script)
@@ -1853,7 +1921,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         Func<T> work,
         long waitForWorkerMs,
         int instructionBudget = FenJsBrowserInstructionBudget,
-        bool prioritize = false)
+        bool prioritize = false,
+        [CallerMemberName] string workKind = null)
     {
         if (_onFenJsLargeStackThread)
         {
@@ -1864,7 +1933,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         EnsureFenJsWorkerRunning();
 
-        var workItem = new FenJsWorkItem(() => (object)work(), instructionBudget);
+        var workItem = CreateFenJsWorkItem(() => (object)work(), instructionBudget, workKind);
         (prioritize ? _fenJsInputWorkQueue : _fenJsWorkQueue).Enqueue(workItem);
         _fenJsWorkAvailable.Set();
 
@@ -1917,7 +1986,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         Func<T> work,
         long timeoutMs = -1,
         int instructionBudget = FenJsBrowserInstructionBudget,
-        bool prioritize = false)
+        bool prioritize = false,
+        [CallerMemberName] string workKind = null)
     {
         if (_onFenJsLargeStackThread)
         {
@@ -1927,9 +1997,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         EnsureFenJsWorkerRunning();
 
-        var workItem = new FenJsWorkItem(
-            () => (object)work(),
-            instructionBudget);
+        var workItem = CreateFenJsWorkItem(() => (object)work(), instructionBudget, workKind);
         var cts = timeoutMs > 0
             ? new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs))
             : null;
@@ -1976,6 +2044,25 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             // Propagate timeout directly without wrapping.
             throw;
         }
+    }
+
+    private FenJsWorkItem CreateFenJsWorkItem(
+        Func<object> work,
+        int instructionBudget,
+        string workKind)
+    {
+        return new FenJsWorkItem(
+            Interlocked.Increment(ref _fenJsWorkItemSequence),
+            work,
+            instructionBudget,
+            workKind,
+            _currentDocumentId,
+            _currentBaseUri?.AbsoluteUri);
+    }
+
+    private void SetFenJsWorkerPhase(string phase)
+    {
+        Volatile.Read(ref _activeFenJsWorkItem)?.SetPhase(phase);
     }
 
     /// <summary>
@@ -6854,8 +6941,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         {
             RunFenJsWithLargeStack<object>(() =>
             {
+                SetFenJsWorkerPhase("callback:waiting-interpreter-lock");
                 lock (_fenJsLock)
                 {
+                    SetFenJsWorkerPhase("callback:validating-context");
                     if ((expectedSessionGeneration >= 0 &&
                          expectedSessionGeneration != _fenJsSessionGeneration) ||
                         (expectedDocumentId != null &&
@@ -6910,6 +6999,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             });
                         if (_interpreter.CanCallValue(callback))
                         {
+                            SetFenJsWorkerPhase("callback:invoking");
                             _interpreter.InvokeFunction(callback, args ?? Array.Empty<JsValue>(), callbackThis);
                             invoked = true;
                         }
@@ -6978,6 +7068,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 });
                         }
 
+                        SetFenJsWorkerPhase("callback:microtask-checkpoint");
                         _interpreter.PumpMicrotasks((microtaskCallback, exception) =>
                         {
                             RecordDiagnosticCallbackFailure(
@@ -6989,6 +7080,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 exception);
                             attributedMicrotaskFailure = exception;
                         });
+                        SetFenJsWorkerPhase("callback:checkpoint-complete");
                         RecordMicrotaskCheckpoint(origin);
                     }
                     catch (Exception ex)
@@ -13365,8 +13457,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     {
                         RunFenJsWithLargeStack<object>(() =>
                         {
+                            SetFenJsWorkerPhase("messageport:waiting-interpreter-lock");
                             lock (_fenJsLock)
                             {
+                                SetFenJsWorkerPhase("messageport:importing-ports");
                                 // Import transferred ports in the receiving realm only after
                                 // its queued delivery owns the interpreter lock. Acquiring the
                                 // receiver lock synchronously from the sending realm deadlocks
@@ -13384,6 +13478,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                                 using (ActivateWindowCallbackContext(_fenJsGlobalThis, _windowEventListeners))
                                 {
+                                    SetFenJsWorkerPhase("messageport:dispatching-handler");
                                     var handler = ReadJsProperty(target.Port, "onmessage");
                                     if (_interpreter.CanCallValue(handler))
                                     {
@@ -13401,7 +13496,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                         }
                                     }
                                 }
+                                SetFenJsWorkerPhase("messageport:microtask-checkpoint");
                                 _interpreter.PumpMicrotasks();
+                                SetFenJsWorkerPhase("messageport:checkpoint-complete");
                             }
                             return null;
                         }, waitForWorkerMs: -1, instructionBudget: ResolveFenJsTaskInstructionBudget());
