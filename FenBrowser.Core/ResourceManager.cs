@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using System.IO;
 using System.Net.Http;
 using System.Text;
@@ -77,6 +79,13 @@ namespace FenBrowser.Core
 
     public class FetchResult
     {
+        /// <summary>
+        /// A copy for a caller that joined an in-flight fetch. Shallow is right: the
+        /// shared pieces (headers, redirect chain) are read-only, while the fields
+        /// callers overwrite are value-typed or references they replace wholesale.
+        /// </summary>
+        internal FetchResult MemberwiseCloneForSharing() => (FetchResult)MemberwiseClone();
+
         public FetchStatus Status;
         public string Content;
         public string ErrorDetail;
@@ -1189,7 +1198,112 @@ public Uri LastTextResponseUri { get; private set; }
                 accept);
         }
 
-        public async Task<FetchResult> FetchTextDetailedAsync(
+        // Concurrent identical subresource requests are collapsed onto one round
+        // trip. The response cache only helps once a response has arrived, so a page
+        // that references the same asset from several places — github.com links one
+        // stylesheet five times — still issued a burst of simultaneous requests that
+        // all missed and all hit the network. Joining an in-flight fetch is what
+        // browsers do for idempotent subresource loads.
+        private readonly ConcurrentDictionary<string, Lazy<Task<FetchResult>>> _inFlightTextFetches = new();
+
+        public Task<FetchResult> FetchTextDetailedAsync(
+            FetchContext context,
+            string accept = null)
+        {
+            if (!TryBuildInFlightFetchKey(context, accept, out var inFlightKey))
+            {
+                return FetchTextDetailedCoreAsync(context, accept);
+            }
+
+            return JoinOrStartTextFetchAsync(inFlightKey, context, accept);
+        }
+
+        private async Task<FetchResult> JoinOrStartTextFetchAsync(
+            string inFlightKey,
+            FetchContext context,
+            string accept)
+        {
+            var candidate = new Lazy<Task<FetchResult>>(
+                () => FetchTextDetailedCoreAsync(context, accept),
+                LazyThreadSafetyMode.ExecutionAndPublication);
+            var shared = _inFlightTextFetches.GetOrAdd(inFlightKey, candidate);
+            var isOwner = ReferenceEquals(shared, candidate);
+
+            try
+            {
+                var result = await shared.Value.ConfigureAwait(false);
+
+                // Every joiner gets its own FetchResult: it is a mutable class, and
+                // callers do adjust fields (final URI, MIME) on what they receive.
+                return isOwner ? result : CloneFetchResult(result);
+            }
+            finally
+            {
+                if (isOwner)
+                {
+                    _inFlightTextFetches.TryRemove(
+                        new KeyValuePair<string, Lazy<Task<FetchResult>>>(inFlightKey, shared));
+                }
+            }
+        }
+
+        // Only idempotent subresource GETs are collapsed. Top-level navigations are
+        // excluded: they are one-per-navigation by nature and carry lifecycle side
+        // effects that must not be shared.
+        private bool TryBuildInFlightFetchKey(FetchContext context, string accept, out string key)
+        {
+            key = null;
+            var url = context?.RequestUri;
+            if (url == null)
+            {
+                return false;
+            }
+
+            var method = context.Method;
+            if (!string.IsNullOrEmpty(method) &&
+                !string.Equals(method, HttpMethod.Get.Method, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var secFetchDest = context.Destination;
+            if (IsTopLevelDocumentRequest(secFetchDest))
+            {
+                return false;
+            }
+
+            accept = NormalizeAccept(context, accept);
+
+            var fetchMode = string.IsNullOrWhiteSpace(context.Mode)
+                ? DetermineFetchMode(secFetchDest)
+                : context.Mode;
+            var topLevelDocumentUri = context.TopLevelDocumentUri ??
+                context.FrameDocumentUri ??
+                context.InitiatorUri ??
+                url;
+
+            // Same identity the response cache uses, plus the network partition, so
+            // two requests are only shared when the cache would have shared them.
+            key = string.Concat(
+                context.NetworkPartitionKey.ToStorageKey(),
+                " ",
+                BuildTextCacheKey(context, accept, topLevelDocumentUri, secFetchDest, fetchMode));
+            return true;
+        }
+
+        private static string NormalizeAccept(FetchContext context, string accept)
+        {
+            return string.IsNullOrWhiteSpace(accept)
+                ? BrowserNetworkCapabilities.ResolveDefaultAcceptForDestination(context?.Destination)
+                : accept;
+        }
+
+        private static FetchResult CloneFetchResult(FetchResult source)
+        {
+            return source == null ? null : (FetchResult)source.MemberwiseCloneForSharing();
+        }
+
+        private async Task<FetchResult> FetchTextDetailedCoreAsync(
             FetchContext context,
             string accept = null)
         {
@@ -1197,6 +1311,8 @@ public Uri LastTextResponseUri { get; private set; }
             {
                 return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Fetch context is null" };
             }
+
+            accept = NormalizeAccept(context, accept);
 
             var url = context.RequestUri;
             var referer = context.InitiatorUri;
@@ -1426,9 +1542,7 @@ public Uri LastTextResponseUri { get; private set; }
                         req,
                         context,
                         context.ReferrerPolicy ?? ReferrerPolicyDirective.StrictOriginWhenCrossOrigin,
-                        string.IsNullOrWhiteSpace(accept)
-                            ? BrowserNetworkCapabilities.DocumentAcceptHeader
-                            : accept,
+                        accept,
                         effectiveReferer);
                     var credentialsAllowed = AreCredentialsAllowed(context, current);
                     if (credentialsAllowed)

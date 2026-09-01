@@ -18,7 +18,36 @@ public static class BrowserNetworkCapabilities
         ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8"
         : "text/html,application/xhtml+xml,application/xml;q=0.9,image/apng,*/*;q=0.8";
 
+    public static string StyleAcceptHeader => "text/css,*/*;q=0.1";
+
     public static string AcceptEncodingHeader => NetworkConfiguration.Instance.GetAcceptEncodingHeader();
+
+    /// <summary>
+    /// The Accept header a request carries when the caller did not specify one,
+    /// chosen by request destination as the Fetch standard requires.
+    /// </summary>
+    /// <remarks>
+    /// Defaulting every destination to the document Accept was both wrong on the
+    /// wire (a stylesheet asking for text/html) and self-defeating: Accept is part
+    /// of the response-cache key, so a preload issued with the document default
+    /// could never satisfy the real load that asked for text/css.
+    /// </remarks>
+    public static string ResolveDefaultAcceptForDestination(string destination)
+    {
+        switch ((destination ?? string.Empty).Trim().ToLowerInvariant())
+        {
+            case "document":
+            case "frame":
+            case "iframe":
+                return DocumentAcceptHeader;
+            case "style":
+                return StyleAcceptHeader;
+            case "image":
+                return ImageAcceptHeader;
+            default:
+                return "*/*";
+        }
+    }
 
     private static bool ProbeWebPDecoder()
     {
