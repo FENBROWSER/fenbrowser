@@ -402,20 +402,29 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             }
 
             var origin = GetFrameContentOrigin(frameBox);
+
+            // clientX/clientY are frame-local per CSSOM View — that is what the
+            // frame's own scripts observe — so they keep the origin subtraction.
             frameClientX = framePointX - origin.X;
             frameClientY = framePointY - origin.Y;
+
+            // Hit testing does not. LayoutEngine lays a frame's document out at (0,0)
+            // and then shifts every box by the frame's content origin
+            // (LayoutNestedBrowsingContexts -> ShiftBoxModel), and
+            // CreateFrameRenderContext reuses those same boxes, so frame content is
+            // stored in PARENT-absolute space and must be matched with the
+            // parent-space point. Subtracting the origin here missed by the whole
+            // frame offset; it used to fall through to a second attempt with the
+            // untranslated point, which hid the mismatch except when the shifted
+            // point happened to land on another element in the frame — then it
+            // silently returned the wrong one.
             var frameScroll = ctx.GetScrollOffset(frame);
-            var frameHitX = frameClientX + frameScroll.X;
-            var frameHitY = frameClientY + frameScroll.Y;
-
             var frameContext = CreateFrameRenderContext(ctx, frameDocument);
-            if (TryHitFrameContext(frameContext, frameHitX, frameHitY, out result) ||
-                TryHitFrameContext(frameContext, x + frameScroll.X, y + frameScroll.Y, out result))
-            {
-                return true;
-            }
-
-            return false;
+            return TryHitFrameContext(
+                frameContext,
+                x + frameScroll.X,
+                y + frameScroll.Y,
+                out result);
         }
 
         private static bool TryResolveFrameAtPoint(
