@@ -113,6 +113,36 @@ internal static class CaptchaFlowRunner
         var console = new List<string>();
         host.ConsoleMessage += m => { lock (console) console.Add(m); };
 
+        // The verification call reCAPTCHA makes after a click is a network
+        // request, so the request log is what says whether the widget got as
+        // far as asking Google anything.
+        var started = DateTime.UtcNow;
+        var pending = new Dictionary<string, string>(StringComparer.Ordinal);
+        void Note(string text) =>
+            Console.WriteLine(FormattableString.Invariant($"[net] +{(DateTime.UtcNow - started).TotalSeconds:0.0}s {text}"));
+
+        var resources = host.ResourceManager;
+        if (resources != null)
+        {
+            resources.NetworkRequestStarting += (id, request) =>
+            {
+                var url = request?.RequestUri?.AbsoluteUri ?? "?";
+                lock (pending) pending[id ?? string.Empty] = url;
+                Note($"-> {request?.Method?.Method ?? "?"} {Shorten(url)}");
+            };
+            resources.NetworkRequestCompleted += (id, response) =>
+            {
+                lock (pending) pending.Remove(id ?? string.Empty);
+                Note($"<- {(int?)response?.StatusCode} {Shorten(response?.RequestMessage?.RequestUri?.AbsoluteUri ?? "?")}");
+            };
+            resources.NetworkRequestFailed += (id, error) =>
+            {
+                string url;
+                lock (pending) url = pending.TryGetValue(id ?? string.Empty, out var known) ? known : "?";
+                Note($"XX {error?.GetType().Name}: {error?.Message} {Shorten(url)}");
+            };
+        }
+
         Console.WriteLine($"[captcha] navigate {url}");
         try
         {
@@ -142,30 +172,14 @@ internal static class CaptchaFlowRunner
             return 4;
         }
 
-        var rect = await SafeAsync(() => host.GetElementRectAsync(anchorId)).ConfigureAwait(false);
-        Console.WriteLine(
-            FormattableString.Invariant(
-                $"[captcha] anchor ready rect=({rect?.X ?? -1:0.#},{rect?.Y ?? -1:0.#}) {rect?.Width ?? -1:0.#}x{rect?.Height ?? -1:0.#}"));
-
         Console.WriteLine($"[captcha] before: {await StateLineAsync(host, anchorFrameId).ConfigureAwait(false)}");
 
         Console.WriteLine("[captcha] clicking checkbox…");
         var clickStarted = DateTime.UtcNow;
-        try
+        if (!await ClickAnchorAsync(host, anchorFrameId, anchorId, readyMs).ConfigureAwait(false))
         {
-            await host.SwitchToFrameAsync(anchorFrameId).ConfigureAwait(false);
-            await host.ClickElementAsync(anchorId).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[captcha] click threw: {ex.GetType().Name}: {ex.Message}");
             DumpConsole(console);
             return 5;
-        }
-        finally
-        {
-            await SafeAsync(async () => { await host.SwitchToFrameAsync(null).ConfigureAwait(false); return 0; })
-                .ConfigureAwait(false);
         }
 
         var dumped = new HashSet<string>(StringComparer.Ordinal);
@@ -198,6 +212,74 @@ internal static class CaptchaFlowRunner
         DumpConsole(console);
         Console.WriteLine(solved ? "[captcha] RESULT solved" : "[captcha] RESULT unsolved");
         return solved ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Clicks the checkbox from inside the anchor frame. The element id and its
+    /// geometry both belong to that browsing context, so the frame has to stay
+    /// selected across measure and click; and the widget is still being laid out
+    /// while its bundle runs, so an early attempt reports "element not
+    /// interactable" and we retry until it has a box.
+    /// </summary>
+    private static async Task<bool> ClickAnchorAsync(
+        BrowserHost host,
+        string frameId,
+        string anchorId,
+        int timeoutMs)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        var attempt = 0;
+        string lastError = "never attempted";
+
+        while (DateTime.UtcNow < deadline)
+        {
+            attempt++;
+            try
+            {
+                await host.SwitchToFrameAsync(frameId).ConfigureAwait(false);
+                var rect = await host.GetElementRectAsync(anchorId).ConfigureAwait(false);
+                if (rect == null || rect.Width <= 0 || rect.Height <= 0)
+                {
+                    lastError = FormattableString.Invariant(
+                        $"anchor has no box yet ({rect?.Width ?? 0:0.#}x{rect?.Height ?? 0:0.#})");
+                }
+                else
+                {
+                    await host.ClickElementAsync(anchorId).ConfigureAwait(false);
+                    Console.WriteLine(
+                        FormattableString.Invariant(
+                            $"[captcha] clicked on attempt {attempt} at ({rect.X:0.#},{rect.Y:0.#}) {rect.Width:0.#}x{rect.Height:0.#}"));
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.GetType().Name + ": " + ex.Message;
+            }
+            finally
+            {
+                await SafeAsync(async () => { await host.SwitchToFrameAsync(null).ConfigureAwait(false); return 0; })
+                    .ConfigureAwait(false);
+            }
+
+            await Task.Delay(500).ConfigureAwait(false);
+        }
+
+        Console.WriteLine($"[captcha] FAIL could not click after {attempt} attempts: {lastError}");
+        return false;
+    }
+
+    // reCAPTCHA URLs carry multi-kilobyte tokens; the path and key are what
+    // identify a request.
+    private static string Shorten(string url)
+    {
+        if (string.IsNullOrEmpty(url) || url.Length <= 120)
+        {
+            return url;
+        }
+
+        var query = url.IndexOf('?');
+        return query > 0 && query <= 120 ? url[..query] + "?…" : url[..120] + "…";
     }
 
     private static int TokenLength(string line)
