@@ -295,7 +295,10 @@ namespace FenBrowser.FenEngine.Rendering
                 ComputeCssContentDigest(css),
                 baseUri?.AbsoluteUri ?? "null",
                 origin,
-                shadowScopeRoot == null ? 0 : RuntimeHelpers.GetHashCode(shadowScopeRoot));
+                // ShadowRoot.ScopeIdentity is a unique counter, not a hash: two live
+                // shadow roots can never share one, so a cached entry can only ever be
+                // reused inside the shadow tree it was parsed for.
+                shadowScopeRoot == null ? 0 : shadowScopeRoot.ScopeIdentity);
         }
 
         private static CssContentDigest ComputeCssContentDigest(string css)
@@ -419,32 +422,21 @@ namespace FenBrowser.FenEngine.Rendering
                      List<NewCss.CssRule> rules;
                      if (!source.TryGetCachedRules(out rules))
                      {
-                         // Shadow-scoped sheets deliberately bypass the parse cache.
-                         // ParsedRuleCacheKey identifies the shadow root by
-                         // RuntimeHelpers.GetHashCode, which is not unique — two live
-                         // ShadowRoots can collide and would then serve each other's
-                         // rules. Non-shadow sheets are unaffected (their identity is a
-                         // constant 0), so the cache is only consulted below. Routing
-                         // these through it needs a collision-free per-root id first.
-                         if (source.ShadowScopeRoot != null)
-                         {
-                             rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, viewportWidth, viewportHeight, null, MapToNewCssOrigin(source.Origin));
-                         }
-                         else
-                         {
-                             ParsedRuleCacheKey parseCacheKey = BuildParsedRuleCacheKey(
-                                 source.CssText,
-                                 source.BaseUri,
-                                 viewportWidth,
-                                 viewportHeight,
-                                 source.SourceOrder,
-                                 MapToNewCssOrigin(source.Origin),
-                                 null);
-                             var template = GetOrParseRules(
-                                 parseCacheKey,
-                                 () => ParseRules(source.CssText, TemplateSourceOrder, source.BaseUri, viewportWidth, viewportHeight, null, MapToNewCssOrigin(source.Origin)));
-                             rules = MaterializeRegistrationRules(template, source.SourceOrder);
-                         }
+                         // Shadow-scoped sheets cache too: the key carries the shadow
+                         // root's unique ScopeIdentity, so an entry is only ever reused
+                         // within the shadow tree it was parsed for.
+                         ParsedRuleCacheKey parseCacheKey = BuildParsedRuleCacheKey(
+                             source.CssText,
+                             source.BaseUri,
+                             viewportWidth,
+                             viewportHeight,
+                             source.SourceOrder,
+                             MapToNewCssOrigin(source.Origin),
+                             source.ShadowScopeRoot);
+                         var template = GetOrParseRules(
+                             parseCacheKey,
+                             () => ParseRules(source.CssText, TemplateSourceOrder, source.BaseUri, viewportWidth, viewportHeight, null, MapToNewCssOrigin(source.Origin)));
+                         rules = MaterializeRegistrationRules(template, source.SourceOrder);
                          source.SetCachedRules(rules);
                      }
 
@@ -1170,7 +1162,6 @@ namespace FenBrowser.FenEngine.Rendering
                             MapToNewCssOrigin(blob.Origin),
                             blob.ShadowScopeRoot);
                         List<NewCss.CssRule> parsed;
-                        if (blob.ShadowScopeRoot == null)
                         {
                             var template = await GetOrParseRulesAsync(
                                 parseCacheKey,
@@ -1188,12 +1179,6 @@ namespace FenBrowser.FenEngine.Rendering
                                 },
                                 parseStageToken).ConfigureAwait(false);
                             parsed = MaterializeRegistrationRules(template, blob.SourceOrder);
-                        }
-                        else
-                        {
-                            // Shadow-scoped: bypasses the cache on purpose, see the note
-                            // on the other shadow branch (hash-code shadow identity).
-                            parsed = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, viewportHeight, log, MapToNewCssOrigin(blob.Origin));
                         }
                         
                         if (parsed != null && !parseStageToken.IsCancellationRequested)
@@ -1410,42 +1395,26 @@ namespace FenBrowser.FenEngine.Rendering
                         log,
                         stylesheetRoot?.OwnerDocument);
                     // Progressive style publication re-runs this loop as more of the
-                    // document arrives, so the same inline sheet is re-parsed on every
-                    // pass without the cache. Shadow-scoped sources still parse
-                    // directly — see the note on the shadow branch above.
-                    List<NewCss.CssRule> parsed;
-                    if (source.ShadowScopeRoot == null)
-                    {
-                        var template = GetOrParseRules(
-                            BuildParsedRuleCacheKey(
-                                processedCss,
-                                source.BaseUri,
-                                viewportWidth,
-                                viewportHeight,
-                                TemplateSourceOrder,
-                                MapToNewCssOrigin(source.Origin),
-                                null),
-                            () => ParseRules(
-                                processedCss,
-                                TemplateSourceOrder,
-                                source.BaseUri,
-                                viewportWidth,
-                                viewportHeight,
-                                log,
-                                MapToNewCssOrigin(source.Origin)));
-                        parsed = MaterializeRegistrationRules(template, source.SourceOrder);
-                    }
-                    else
-                    {
-                        parsed = ParseRules(
+                    // document arrives, so the same sheet would be re-parsed on every
+                    // pass without the cache.
+                    var template = GetOrParseRules(
+                        BuildParsedRuleCacheKey(
                             processedCss,
-                            source.SourceOrder,
+                            source.BaseUri,
+                            viewportWidth,
+                            viewportHeight,
+                            TemplateSourceOrder,
+                            MapToNewCssOrigin(source.Origin),
+                            source.ShadowScopeRoot),
+                        () => ParseRules(
+                            processedCss,
+                            TemplateSourceOrder,
                             source.BaseUri,
                             viewportWidth,
                             viewportHeight,
                             log,
-                            MapToNewCssOrigin(source.Origin));
-                    }
+                            MapToNewCssOrigin(source.Origin)));
+                    var parsed = MaterializeRegistrationRules(template, source.SourceOrder);
 
                     ApplyShadowScope(parsed, source.ShadowScopeRoot);
                     var sheet = new NewCss.CssStylesheet();

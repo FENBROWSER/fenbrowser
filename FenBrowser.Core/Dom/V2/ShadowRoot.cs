@@ -41,6 +41,22 @@ namespace FenBrowser.Core.Dom.V2
 
         private Element _activeElement;
 
+        private static int _nextScopeIdentity;
+
+        /// <summary>
+        /// A process-unique, stable identity for this shadow root.
+        /// </summary>
+        /// <remarks>
+        /// Caches that are keyed per shadow tree need to tell two live shadow roots
+        /// apart. <see cref="System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode"/>
+        /// cannot do that: it is a hash, so two distinct roots may share a value and
+        /// would then be served each other's entries. This counter is allocated once
+        /// per shadow root and never reused, so equality of ScopeIdentity means
+        /// identity of the shadow root.
+        /// </remarks>
+        public int ScopeIdentity { get; } =
+            System.Threading.Interlocked.Increment(ref _nextScopeIdentity);
+
         /// <summary>
         /// Creates a new ShadowRoot attached to the given host element.
         /// </summary>
