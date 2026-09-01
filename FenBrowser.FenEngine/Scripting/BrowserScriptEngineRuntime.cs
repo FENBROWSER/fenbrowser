@@ -537,6 +537,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private FenJsBrowserScriptEngine _parentRealmOwner;
     private Element _embeddingFrameElement;
     private JsValue _embeddedParentWindowProxy = JsValue.Undefined;
+    private readonly Dictionary<Element, JsValue> _siblingWindowProxies = new();
     private readonly Dictionary<object, string> _hostPrototypeNames =
         new(ReferenceEqualityComparer.Instance);
     private List<BrowserEventListener> _activeWindowEventListeners;
@@ -1395,6 +1396,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             var proxy = GetOrCreateIFrameContentWindow(frameElement, frameDocument, baseUri);
             CopyFrameRealmObservables(frameRealm, proxy);
         }
+
+        RefreshChildFrameTables();
     }
 
     private FenJsBrowserScriptEngine CreateFrameRealm(Element frameElement)
@@ -13811,8 +13814,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         _interpreter.SetObjectProperty(parentProxy, "parent", parentProxy);
         _interpreter.SetObjectProperty(parentProxy, "top", parentProxy);
         _interpreter.SetObjectProperty(parentProxy, "frames", parentProxy);
-        _interpreter.SetObjectProperty(parentProxy, "length", JsValue.FromInt32(1));
-        _interpreter.SetObjectProperty(parentProxy, "0", _fenJsGlobalThis);
         _interpreter.SetObjectProperty(
             parentProxy,
             "innerWidth",
@@ -13823,10 +13824,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             JsValue.FromNumber(_parentRealmOwner?.WindowHeight ?? WindowHeight));
         var frameName = embeddingFrame.GetAttribute("name") ?? string.Empty;
         _interpreter.RegisterGlobalValue("name", JsValue.FromString(frameName));
-        if (!string.IsNullOrWhiteSpace(frameName))
-        {
-            _interpreter.SetObjectProperty(parentProxy, frameName, _fenJsGlobalThis);
-        }
         if (sameOrigin && embeddingFrame.OwnerDocument != null)
         {
             _interpreter.SetObjectProperty(
@@ -13897,7 +13894,252 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             sameOrigin
                 ? ToHostOrNull(embeddingFrame, HostObjectKind.DomElement)
                 : JsValue.Null);
+        RefreshEmbeddedParentFrameTable();
         InstallOwnedFrameScrollGlobals();
+    }
+
+    /// <summary>
+    /// Publishes the parent's child browsing contexts on the parent window this
+    /// realm sees. Per HTML, a WindowProxy's indexed properties are the child
+    /// browsing contexts of its document in tree order and its named properties
+    /// are their browsing-context names, which is how a frame reaches a
+    /// *sibling*: `parent.frames[i]`, `parent.frames[name]`, `parent[name]`.
+    /// We used to publish a single child — this frame itself — so every sibling
+    /// lookup answered undefined. reCAPTCHA's challenge frame talks to its
+    /// anchor sibling that way and died on `undefined.postMessage`.
+    /// Must run with <see cref="_fenJsLock"/> held and the parent proxy already
+    /// rooted as the `parent` global.
+    /// </summary>
+    private void RefreshEmbeddedParentFrameTable()
+    {
+        var parentProxy = _embeddedParentWindowProxy;
+        var embeddingFrame = _embeddingFrameElement;
+        if (parentProxy.Tag != JsValueTag.Object || embeddingFrame == null || _interpreter == null)
+        {
+            return;
+        }
+
+        var children = EnumerateChildBrowsingContexts(embeddingFrame.OwnerDocument);
+        if (children.Count == 0)
+        {
+            children.Add(embeddingFrame);
+        }
+
+        using var constructionWindow = _interpreter.Heap.BeginConstructionWindow();
+
+        for (var index = 0; index < children.Count; index++)
+        {
+            var frame = children[index];
+            var window = ReferenceEquals(frame, embeddingFrame)
+                ? _fenJsGlobalThis
+                : GetOrCreateSiblingWindowProxy(frame, parentProxy);
+            if (window.Tag != JsValueTag.Object)
+            {
+                continue;
+            }
+
+            _interpreter.SetObjectProperty(parentProxy, index.ToString(CultureInfo.InvariantCulture), window);
+            var name = frame.GetAttribute("name");
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                _interpreter.SetObjectProperty(parentProxy, name, window);
+            }
+        }
+
+        _interpreter.SetObjectProperty(parentProxy, "length", JsValue.FromInt32(children.Count));
+
+        // Drop proxies for frames that have left the tree: everything still in
+        // the map stays reachable from the rooted parent proxy, so nothing we
+        // keep can be swept out from under us.
+        var stale = _siblingWindowProxies.Keys.Where(frame => !children.Contains(frame)).ToArray();
+        foreach (var frame in stale)
+        {
+            _siblingWindowProxies.Remove(frame);
+        }
+    }
+
+    /// <summary>
+    /// The frame elements that form a document's child browsing contexts. The
+    /// walk stops at each frame because this engine attaches frame content
+    /// under the frame element itself, so descending further would collect the
+    /// grandchildren of nested documents as if they were siblings.
+    /// </summary>
+    private static List<Element> EnumerateChildBrowsingContexts(Node documentRoot)
+    {
+        var frames = new List<Element>();
+        if (documentRoot == null)
+        {
+            return frames;
+        }
+
+        void Walk(Node node)
+        {
+            for (var child = node.FirstChild; child != null; child = child.NextSibling)
+            {
+                if (child is Element element && IsIFrameElement(element))
+                {
+                    frames.Add(element);
+                    continue;
+                }
+
+                Walk(child);
+            }
+        }
+
+        Walk(documentRoot);
+        return frames;
+    }
+
+    /// <summary>
+    /// A stand-in, allocated in THIS realm, for a sibling frame's window.
+    /// A sibling runs in its own realm on its own heap, so its objects can
+    /// never be handed across; we expose the WindowProxy surface a sibling may
+    /// see and route postMessage back through the parent realm, which is the
+    /// only holder of the frame -> realm map.
+    /// </summary>
+    private JsValue GetOrCreateSiblingWindowProxy(Element frame, JsValue parentProxy)
+    {
+        if (frame == null)
+        {
+            return JsValue.Undefined;
+        }
+
+        if (_siblingWindowProxies.TryGetValue(frame, out var cached) && cached.Tag == JsValueTag.Object)
+        {
+            return cached;
+        }
+
+        var proxy = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        _interpreter.SetObjectProperty(proxy, "window", proxy);
+        _interpreter.SetObjectProperty(proxy, "self", proxy);
+        _interpreter.SetObjectProperty(proxy, "frames", proxy);
+        _interpreter.SetObjectProperty(proxy, "length", JsValue.FromInt32(0));
+        _interpreter.SetObjectProperty(proxy, "closed", JsValue.FromBoolean(false));
+        _interpreter.SetObjectProperty(proxy, "parent", parentProxy);
+        _interpreter.SetObjectProperty(proxy, "top", parentProxy);
+        _interpreter.SetObjectProperty(
+            proxy,
+            "name",
+            JsValue.FromString(frame.GetAttribute("name") ?? string.Empty));
+
+        var href = ResolveIFrameWindowHref(frame, null, null);
+        if (IsSameOriginFrameAccess(frame, href, _currentBaseUri))
+        {
+            _interpreter.SetObjectProperty(proxy, "location", CreatePlainLocationObject(href));
+        }
+
+        var owner = _parentRealmOwner;
+        var sourceFrame = _embeddingFrameElement;
+        _interpreter.SetObjectProperty(
+            proxy,
+            "postMessage",
+            _interpreter.AllocateNativeFunction(
+                "postMessage",
+                (_, args) =>
+                {
+                    var data = args.Count > 0 ? ConvertJsValueToObject(args[0]) : null;
+                    var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
+                    var ports = args.Count > 2
+                        ? ExtractTransferredMessagePorts(args[2])
+                        : Array.Empty<MessagePortEndpoint>();
+                    owner?.RouteMessageBetweenChildFrames(
+                        sourceFrame,
+                        frame,
+                        data,
+                        GetCurrentWindowOrigin(),
+                        targetOrigin,
+                        ports);
+                    return JsValue.Undefined;
+                },
+                length: 1));
+
+        _siblingWindowProxies[frame] = proxy;
+        return proxy;
+    }
+
+    /// <summary>
+    /// Carries a postMessage from one child frame of this document to another.
+    /// Sender and receiver each own a realm; the parent holds the only map from
+    /// frame element to realm, so it is the only place the two can be joined.
+    /// </summary>
+    private void RouteMessageBetweenChildFrames(
+        Element sourceFrame,
+        Element targetFrame,
+        object data,
+        string sourceOrigin,
+        string targetOrigin,
+        IReadOnlyList<MessagePortEndpoint> transferredEndpoints)
+    {
+        if (targetFrame == null || !_iframeRealms.TryGetValue(targetFrame, out var targetRealm))
+        {
+            return;
+        }
+
+        targetRealm.QueueCrossRealmMessage(() => targetRealm.QueueMessageFromSibling(
+            sourceFrame,
+            data,
+            sourceOrigin,
+            targetOrigin,
+            transferredEndpoints));
+    }
+
+    private void QueueMessageFromSibling(
+        Element sourceFrame,
+        object data,
+        string sourceOrigin,
+        string targetOrigin,
+        IReadOnlyList<MessagePortEndpoint> transferredEndpoints)
+    {
+        QueueOnDeliveryTail(() =>
+        {
+            lock (_fenJsLock)
+            {
+                var ports = ImportTransferredMessagePorts(transferredEndpoints);
+                using var constructionWindow = _interpreter.Heap.BeginConstructionWindow();
+                var source = GetOrCreateSiblingWindowProxy(sourceFrame, _embeddedParentWindowProxy);
+                QueueWindowMessage(
+                    _fenJsGlobalThis,
+                    _windowEventListeners,
+                    ConvertObjectToJsValue(data),
+                    source.Tag == JsValueTag.Object ? source : _embeddedParentWindowProxy,
+                    ports,
+                    targetOrigin,
+                    GetCurrentWindowOrigin(),
+                    sourceOrigin);
+            }
+        }, "sibling postMessage enqueue failed");
+    }
+
+    /// <summary>
+    /// A new child document changes every sibling's view of `parent.frames`, so
+    /// republish the table in each child realm. reCAPTCHA builds its challenge
+    /// frame long after the anchor frame; without this the anchor realm would
+    /// never see the sibling it has to talk to.
+    /// </summary>
+    private void RefreshChildFrameTables()
+    {
+        foreach (var realm in _iframeRealms.Select(entry => entry.Value).Distinct().ToArray())
+        {
+            realm.QueueParentFrameTableRefresh();
+        }
+    }
+
+    private void QueueParentFrameTableRefresh()
+    {
+        if (_embeddedParentWindowProxy.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        QueueOnDeliveryTail(
+            () =>
+            {
+                lock (_fenJsLock)
+                {
+                    RefreshEmbeddedParentFrameTable();
+                }
+            },
+            "parent frame table refresh failed");
     }
 
     private string DescribePostMessageValue(JsValue value)
