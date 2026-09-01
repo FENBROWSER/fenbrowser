@@ -124,7 +124,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 
                 if (clearStyle != "none")
                 {
-                    float childMarginTopForClear = (float)(child.ComputedStyle?.Margin.Top ?? 0.0);
+                    float childMarginTopForClear = ResolveUsedTopMargin(child);
                     float collapsedMarginForClear;
                     if (isFirstChild)
                     {
@@ -260,7 +260,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     // Normal Flow Block
                     // Compute margin before layout so FloatOriginY is available for
                     // child IFCs that need to query float intrusions per line.
-                    float childMarginTop = (float)(child.ComputedStyle?.Margin.Top ?? 0.0);
+                    float childMarginTop = ResolveUsedTopMargin(child);
                     float childMarginBottom = (float)(child.ComputedStyle?.Margin.Bottom ?? 0.0);
 
                     // MARGIN COLLAPSING
@@ -855,6 +855,52 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     collapsePositioningMarginsInFinalGeometry: true,
                     staticPosition: outOfFlowCandidate.StaticPosition);
             }
+        }
+
+        /// <summary>
+        /// The top margin this box is actually positioned by (CSS 2.1 8.3.1).
+        /// </summary>
+        /// <remarks>
+        /// When a box has no top border or padding, its top margin collapses with its
+        /// first in-flow child's, and the collapsed margin belongs to the PARENT — the
+        /// child is then placed flush against the parent's content top. The child side
+        /// of that was already implemented (the child's margin is zeroed below), but
+        /// the parent never adopted the margin, so it was simply discarded: an element
+        /// with margin-top:50px landed at y=0 whenever it was its parent's first
+        /// child, while its margin-left applied normally. Collapsing runs down the
+        /// chain of first in-flow children, because each of them collapses into its
+        /// own parent in turn.
+        /// </remarks>
+        private static float ResolveUsedTopMargin(LayoutBox box)
+        {
+            float own = (float)(box?.ComputedStyle?.Margin.Top ?? 0.0);
+            if (box == null || PreventsChildTopMarginCollapseForUsedMargin(box))
+            {
+                return own;
+            }
+
+            var firstInFlow = box.Children?.FirstOrDefault(static child => child != null && !child.IsOutOfFlow);
+            if (firstInFlow == null)
+            {
+                return own;
+            }
+
+            return MarginCollapseComputer.Collapse(own, ResolveUsedTopMargin(firstInFlow));
+        }
+
+        // The parent asks this before the child's box geometry exists, so the top
+        // border and padding have to come from computed style here. The geometry-based
+        // check still runs for everything else it covers (root element, display type,
+        // out-of-flow positioning).
+        private static bool PreventsChildTopMarginCollapseForUsedMargin(LayoutBox box)
+        {
+            var style = box.ComputedStyle;
+            if (style != null && (style.Padding.Top > 0 || style.BorderThickness.Top > 0))
+            {
+                return true;
+            }
+
+            return PreventsChildTopMarginCollapse(box);
         }
 
         private static bool PreventsChildTopMarginCollapse(LayoutBox box)
