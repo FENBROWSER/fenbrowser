@@ -315,7 +315,16 @@ namespace FenBrowser.Core.Dom.V2
                     changed = true;
                 }
 
-                if (!changed) break; // Path already marked
+                // No early exit on an already-marked ancestor. That optimisation
+                // assumes "this node is marked" implies "everything above it is
+                // marked", and that does not hold across a nested browsing context:
+                // a frame's #document keeps its ChildStyleDirty flag while the page
+                // path above it is cleared, so the walk stopped at the frame boundary
+                // and every later mutation inside the frame became invisible to the
+                // page — the frame's content changed and nothing repainted.
+                // The walk only runs when a node actually goes clean -> dirty, so it
+                // is bounded by tree depth and allocates nothing.
+                _ = changed;
                 parent = parent._parentNode;
             }
         }
