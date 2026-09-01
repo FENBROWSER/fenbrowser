@@ -63,6 +63,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
              ShiftBoxModel(box.Geometry, dx, dy);
         }
 
+        /// <summary>
+        /// Moves <paramref name="box"/> so its content origin sits at (0, 0), carrying
+        /// its descendants with it.
+        /// </summary>
+        /// <remarks>
+        /// This used to zero every descendant independently, which did not move the
+        /// subtree — it flattened it, collapsing every box onto its own origin. Callers
+        /// reset a subtree immediately before laying it out again, and
+        /// FormattingContext.Layout may answer that from its cache, whose stated
+        /// contract is that "children retain their relative offsets". The flatten broke
+        /// exactly that invariant, so a cached re-layout left the subtree collapsed:
+        /// a table cell's vertical-align:middle offset was computed correctly and then
+        /// wiped, which is why the reCAPTCHA checkbox sat in the top-left corner of its
+        /// cell instead of centred.
+        /// </remarks>
         public static void ResetSubtreeToOrigin(LayoutBox box)
         {
             if (box?.Geometry == null)
@@ -70,14 +85,25 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                 return;
             }
 
-            float dx = -box.Geometry.ContentBox.Left;
-            float dy = -box.Geometry.ContentBox.Top;
+            ShiftSubtreeUniform(box, -box.Geometry.ContentBox.Left, -box.Geometry.ContentBox.Top);
+        }
+
+        // Same traversal the reset has always used — no visited set, so it stays
+        // allocation-free on a hot path — but every box moves by the SAME delta
+        // instead of each collapsing onto its own origin.
+        private static void ShiftSubtreeUniform(LayoutBox box, float dx, float dy)
+        {
+            if (box?.Geometry == null)
+            {
+                return;
+            }
+
             ShiftBoxModel(box.Geometry, dx, dy);
 
             var children = box.Children;
             for (var index = 0; index < children.Count; index++)
             {
-                ResetSubtreeToOrigin(children[index]);
+                ShiftSubtreeUniform(children[index], dx, dy);
             }
         }
 
