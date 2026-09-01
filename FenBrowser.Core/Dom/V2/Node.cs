@@ -292,6 +292,12 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
+        // A document that is itself parented (a frame's content document). Its dirty
+        // flags are managed by a different style pass than its embedder's, so the
+        // "ancestors are already marked" shortcut cannot be trusted here.
+        private static bool IsNestedBrowsingContextRoot(Node node) =>
+            node is Document && node._parentNode != null;
+
         private void PropagateChildDirtyUp(bool style, bool layout, bool paint)
         {
             var parent = _parentNode;
@@ -315,16 +321,21 @@ namespace FenBrowser.Core.Dom.V2
                     changed = true;
                 }
 
-                // No early exit on an already-marked ancestor. That optimisation
-                // assumes "this node is marked" implies "everything above it is
-                // marked", and that does not hold across a nested browsing context:
-                // a frame's #document keeps its ChildStyleDirty flag while the page
-                // path above it is cleared, so the walk stopped at the frame boundary
-                // and every later mutation inside the frame became invisible to the
-                // page — the frame's content changed and nothing repainted.
-                // The walk only runs when a node actually goes clean -> dirty, so it
-                // is bounded by tree depth and allocates nothing.
-                _ = changed;
+                // Stopping at an already-marked ancestor assumes "this node is
+                // marked" implies "everything above it is marked". That holds inside
+                // one document, because flags are only ever cleared from a subtree
+                // root downwards. It does NOT hold across a nested browsing context:
+                // a frame's #document is cleared by the frame's own style pass while
+                // the page path above it is cleared by the page's, so the frame's
+                // document can stay marked while the iframe element and everything
+                // above it are clean. The walk then stopped at the boundary and the
+                // page never learned the frame had changed — frame content mutated
+                // and nothing repainted.
+                if (!changed && !IsNestedBrowsingContextRoot(parent))
+                {
+                    break; // Path already marked
+                }
+
                 parent = parent._parentNode;
             }
         }
