@@ -92,10 +92,16 @@ namespace FenBrowser.FenEngine.Rendering
 
         private readonly record struct CssContentDigest(ulong A, ulong B, ulong C, ulong D);
 
+        // Deliberately does NOT include the stylesheet's source order. Source order
+        // changes exactly one thing in the parse output — CssStyleRule.Order, which is
+        // plain arithmetic (sourceOrder * 10000 + index) — so keying on it forced a
+        // full re-tokenisation of byte-identical CSS for every registration. github.com
+        // ships one primer-react-css URL five times and re-parsed 286KB each time.
+        // The cached list is a pristine template; MaterializeRegistrationRules stamps
+        // the real order onto per-registration copies.
         private readonly record struct ParsedRuleCacheKey(
             CssContentDigest ContentHash,
             string BaseUri,
-            int SourceOrder,
             NewCss.CssOrigin Origin,
             int ShadowScopeIdentity);
 
@@ -206,6 +212,42 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        // Stylesheets are parsed once under this canonical order and cached; each
+        // registration gets copies re-stamped with its own order.
+        private const int TemplateSourceOrder = 0;
+
+        /// <summary>
+        /// Turns a cached parse template into rules for one stylesheet registration:
+        /// fresh rule objects (the cascade writes StylesheetSourceOrder/Origin onto
+        /// them per sheet) carrying this registration's cascade order. Reproduces
+        /// exactly what ParseRules would have stamped — Order counts CssStyleRule
+        /// entries in flattened list order, which is deterministic for given content.
+        /// </summary>
+        private static List<NewCss.CssRule> MaterializeRegistrationRules(
+            List<NewCss.CssRule> template,
+            int sourceOrder)
+        {
+            if (template == null)
+            {
+                return null;
+            }
+
+            var materialized = new List<NewCss.CssRule>(template.Count);
+            int ruleIndexInsideSheet = 0;
+            foreach (var rule in template)
+            {
+                var copy = rule.CloneForRegistration();
+                if (copy is NewCss.CssStyleRule styleRule)
+                {
+                    styleRule.Order = (sourceOrder * 10000) + ruleIndexInsideSheet++;
+                }
+
+                materialized.Add(copy);
+            }
+
+            return materialized;
+        }
+
         private static List<NewCss.CssRule> GetOrParseRules(
             ParsedRuleCacheKey key,
             Func<List<NewCss.CssRule>> parser)
@@ -248,10 +290,10 @@ namespace FenBrowser.FenEngine.Rendering
             NewCss.CssOrigin origin = NewCss.CssOrigin.Author,
             ShadowRoot shadowScopeRoot = null)
         {
+            _ = sourceOrder; // not part of the key — see ParsedRuleCacheKey.
             return new ParsedRuleCacheKey(
                 ComputeCssContentDigest(css),
                 baseUri?.AbsoluteUri ?? "null",
-                sourceOrder,
                 origin,
                 shadowScopeRoot == null ? 0 : RuntimeHelpers.GetHashCode(shadowScopeRoot));
         }
@@ -391,16 +433,10 @@ namespace FenBrowser.FenEngine.Rendering
                                  source.SourceOrder,
                                  MapToNewCssOrigin(source.Origin),
                                  null);
-                             if (_parsedRuleTasks.TryGetValue(parseCacheKey, out var cachedRules))
-                             {
-                                 rules = cachedRules.Value.GetAwaiter().GetResult();
-                             }
-                             else
-                             {
-                                 rules = GetOrParseRules(
-                                     parseCacheKey,
-                                     () => ParseRules(source.CssText, source.SourceOrder, source.BaseUri, viewportWidth, viewportHeight, null, MapToNewCssOrigin(source.Origin)));
-                             }
+                             var template = GetOrParseRules(
+                                 parseCacheKey,
+                                 () => ParseRules(source.CssText, TemplateSourceOrder, source.BaseUri, viewportWidth, viewportHeight, null, MapToNewCssOrigin(source.Origin)));
+                             rules = MaterializeRegistrationRules(template, source.SourceOrder);
                          }
                          source.SetCachedRules(rules);
                      }
@@ -1129,14 +1165,14 @@ namespace FenBrowser.FenEngine.Rendering
                         List<NewCss.CssRule> parsed;
                         if (blob.ShadowScopeRoot == null)
                         {
-                            parsed = await GetOrParseRulesAsync(
+                            var template = await GetOrParseRulesAsync(
                                 parseCacheKey,
                                 () =>
                                 {
                                     EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS-TRACK] START Parse Rules Source={myOrder} Len={myLen} Base={blob.BaseUri}");
                                     try
                                     {
-                                        return ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, viewportHeight, log, MapToNewCssOrigin(blob.Origin));
+                                        return ParseRules(processedCss, TemplateSourceOrder, blob.BaseUri, viewportWidth, viewportHeight, log, MapToNewCssOrigin(blob.Origin));
                                     }
                                     finally
                                     {
@@ -1144,6 +1180,7 @@ namespace FenBrowser.FenEngine.Rendering
                                     }
                                 },
                                 parseStageToken).ConfigureAwait(false);
+                            parsed = MaterializeRegistrationRules(template, blob.SourceOrder);
                         }
                         else
                         {

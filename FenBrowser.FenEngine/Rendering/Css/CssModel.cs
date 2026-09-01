@@ -35,6 +35,18 @@ namespace FenBrowser.FenEngine.Rendering.Css
         // Author rules declared inside a shadow tree only participate in that
         // tree's cascade. Document author rules do not cross the shadow boundary.
         public FenBrowser.Core.Dom.V2.ShadowRoot ShadowScopeRoot { get; set; }
+
+        /// <summary>
+        /// A per-registration copy of this rule. The parse cache keys on stylesheet
+        /// CONTENT, so one parse can serve every <c>&lt;link&gt;</c> that points at the
+        /// same bytes; but each registration then needs its own rule objects, because
+        /// the cascade stamps <see cref="StylesheetSourceOrder"/> and
+        /// <see cref="Origin"/> onto them per stylesheet (CascadeEngine.IndexRules) and
+        /// <see cref="CssStyleRule.Order"/> differs per source order. Shallow is
+        /// sufficient and deliberate: selectors, declarations and nested rules are
+        /// never mutated after parsing, so the copies share them.
+        /// </summary>
+        public CssRule CloneForRegistration() => (CssRule)MemberwiseClone();
     }
 
     public class CssStyleRule : CssRule
