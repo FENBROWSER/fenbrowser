@@ -152,6 +152,10 @@ namespace FenBrowser.Core
             public ReferrerPolicyDirective ReferrerPolicy;
             public CrossOriginIsolationPolicy CrossOriginIsolation;
             public string CrossOriginResourcePolicy;
+            // Request headers this response was negotiated on (RFC 9111 Vary), and
+            // the values it was stored under, so reuse can be validated.
+            public string[] VaryHeaders;
+            public IReadOnlyDictionary<string, string> VaryRequestValues;
             public Security.PermissionsPolicy PermissionsPolicy;
             public DateTimeOffset ExpiresAtUtc;
         }
@@ -404,7 +408,12 @@ public Uri LastTextResponseUri { get; private set; }
                 return false;
             }
 
-            if (response.Headers.Vary != null && response.Headers.Vary.Count > 0)
+            // RFC 9111 4.1: a Vary response is still cacheable — it just has to be
+            // matched on the listed request headers. Refusing outright disabled the
+            // cache for most of the real web: virtually every CDN sends
+            // "Vary: Accept-Encoding", so github.com refetched one 286KB stylesheet
+            // eleven times in a single load. "Vary: *" is genuinely uncacheable.
+            if (ResponseVariesOnEverything(response))
             {
                 return false;
             }
@@ -424,6 +433,144 @@ public Uri LastTextResponseUri { get; private set; }
             }
 
             return false;
+        }
+
+        private static bool ResponseVariesOnEverything(HttpResponseMessage response)
+        {
+            var vary = response?.Headers?.Vary;
+            if (vary == null)
+            {
+                return false;
+            }
+
+            foreach (var value in vary)
+            {
+                if (value != null && value.Trim() == "*")
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // The request-header names a cached response varies on, normalised. Empty
+        // when the response carries no Vary.
+        private static string[] ExtractVaryHeaderNames(HttpResponseMessage response)
+        {
+            var vary = response?.Headers?.Vary;
+            if (vary == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            var names = new List<string>();
+            foreach (var value in vary)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                foreach (var part in value.Split(','))
+                {
+                    var name = part.Trim().ToLowerInvariant();
+                    if (name.Length > 0 && name != "*" && !names.Contains(name))
+                    {
+                        names.Add(name);
+                    }
+                }
+            }
+
+            return names.Count == 0 ? Array.Empty<string>() : names.ToArray();
+        }
+
+        // What this client would send for a varied header on this request. Returns
+        // false for anything we cannot predict, which makes the entry unusable rather
+        // than risk serving a response negotiated for different request headers.
+        private bool TryResolveVaryRequestValue(
+            string headerName,
+            FetchContext context,
+            string accept,
+            out string value)
+        {
+            switch (headerName)
+            {
+                case "accept":
+                    value = accept ?? string.Empty;
+                    return true;
+                case "accept-encoding":
+                    value = FenBrowser.Core.Network.BrowserNetworkCapabilities.AcceptEncodingHeader ?? string.Empty;
+                    return true;
+                case "accept-language":
+                    value = "en-US,en;q=0.9";
+                    return true;
+                // Deliberately unresolved: the UA actually sent is assembled by
+                // BrowserSettings.ApplyBrowserRequestHeaders from the selected profile,
+                // and guessing it here could reuse a response negotiated for a
+                // different one. Vary: User-Agent therefore just skips the cache.
+                case "origin":
+                    value = ExtractOrigin(context?.InitiatorUri)?.AbsoluteUri ?? string.Empty;
+                    return true;
+                // Cookies already participate in the cache key via cookieIdentity.
+                case "cookie":
+                    value = string.Empty;
+                    return true;
+                default:
+                    value = null;
+                    return false;
+            }
+        }
+
+        // A cached entry may only be reused when every header it varies on still
+        // resolves to the value it was stored under.
+        private bool VaryMatches(TextEntry entry, FetchContext context, string accept)
+        {
+            var names = entry?.VaryHeaders;
+            if (names == null || names.Length == 0)
+            {
+                return true;
+            }
+
+            var stored = entry.VaryRequestValues;
+            for (var i = 0; i < names.Length; i++)
+            {
+                if (!TryResolveVaryRequestValue(names[i], context, accept, out var current))
+                {
+                    return false;
+                }
+
+                if (stored == null ||
+                    !stored.TryGetValue(names[i], out var previous) ||
+                    !string.Equals(previous, current, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private Dictionary<string, string> CaptureVaryRequestValues(
+            string[] varyHeaders,
+            FetchContext context,
+            string accept)
+        {
+            if (varyHeaders == null || varyHeaders.Length == 0)
+            {
+                return null;
+            }
+
+            var captured = new Dictionary<string, string>(varyHeaders.Length, StringComparer.Ordinal);
+            foreach (var name in varyHeaders)
+            {
+                if (TryResolveVaryRequestValue(name, context, accept, out var value))
+                {
+                    captured[name] = value;
+                }
+            }
+
+            return captured;
         }
 
         private string BuildTextCacheKey(
@@ -1197,6 +1344,11 @@ public Uri LastTextResponseUri { get; private set; }
                 {
                     _textCache.TryRemove(cachePartition, cacheKey, out _);
                 }
+                else if (!VaryMatches(cachedDetailed, context, accept))
+                {
+                    // Stored under different values for the headers this response
+                    // varies on: refetch rather than serve the wrong negotiation.
+                }
                 else
                 {
                     var cachedFinalUri = cachedDetailed.FinalUri ?? url;
@@ -1628,8 +1780,11 @@ public Uri LastTextResponseUri { get; private set; }
                 {
                     try
                     {
+                        var varyHeaders = ExtractVaryHeaderNames(resp);
                         _textCache.Put(cachePartition, cacheKey, new TextEntry
                         {
+                            VaryHeaders = varyHeaders,
+                            VaryRequestValues = CaptureVaryRequestValues(varyHeaders, context, accept),
                             Body = text ?? string.Empty,
                             ContentType = effectiveMime ?? string.Empty,
                             FinalUri = finalUri,
