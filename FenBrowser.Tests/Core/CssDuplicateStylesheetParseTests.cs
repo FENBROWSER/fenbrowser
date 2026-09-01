@@ -65,8 +65,12 @@ namespace FenBrowser.Tests.Core
             Assert.Equal(3 * 10000, matched[0].Order);
             Assert.Equal(7 * 10000, matched[1].Order);
 
-            // One parse serves both registrations.
-            Assert.Equal(1, CssLoader.ParsedRuleCacheCount);
+            // One parse served both registrations. The per-registration copies are
+            // shallow, so they share the declaration list that the single parse
+            // produced — two independent parses would have built two lists. This is
+            // asserted on object identity rather than CssLoader.ParsedRuleCacheCount,
+            // which is process-global and moves under xUnit's parallel collections.
+            Assert.Same(matched[0].Declarations, matched[1].Declarations);
         }
     }
 }

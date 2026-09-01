@@ -419,6 +419,13 @@ namespace FenBrowser.FenEngine.Rendering
                      List<NewCss.CssRule> rules;
                      if (!source.TryGetCachedRules(out rules))
                      {
+                         // Shadow-scoped sheets deliberately bypass the parse cache.
+                         // ParsedRuleCacheKey identifies the shadow root by
+                         // RuntimeHelpers.GetHashCode, which is not unique — two live
+                         // ShadowRoots can collide and would then serve each other's
+                         // rules. Non-shadow sheets are unaffected (their identity is a
+                         // constant 0), so the cache is only consulted below. Routing
+                         // these through it needs a collision-free per-root id first.
                          if (source.ShadowScopeRoot != null)
                          {
                              rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, viewportWidth, viewportHeight, null, MapToNewCssOrigin(source.Origin));
@@ -1184,6 +1191,8 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                         else
                         {
+                            // Shadow-scoped: bypasses the cache on purpose, see the note
+                            // on the other shadow branch (hash-code shadow identity).
                             parsed = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, viewportHeight, log, MapToNewCssOrigin(blob.Origin));
                         }
                         
@@ -1400,14 +1409,44 @@ namespace FenBrowser.FenEngine.Rendering
                         source.BaseUri,
                         log,
                         stylesheetRoot?.OwnerDocument);
-                    var parsed = ParseRules(
-                        processedCss,
-                        source.SourceOrder,
-                        source.BaseUri,
-                        viewportWidth,
-                        viewportHeight,
-                        log,
-                        MapToNewCssOrigin(source.Origin));
+                    // Progressive style publication re-runs this loop as more of the
+                    // document arrives, so the same inline sheet is re-parsed on every
+                    // pass without the cache. Shadow-scoped sources still parse
+                    // directly — see the note on the shadow branch above.
+                    List<NewCss.CssRule> parsed;
+                    if (source.ShadowScopeRoot == null)
+                    {
+                        var template = GetOrParseRules(
+                            BuildParsedRuleCacheKey(
+                                processedCss,
+                                source.BaseUri,
+                                viewportWidth,
+                                viewportHeight,
+                                TemplateSourceOrder,
+                                MapToNewCssOrigin(source.Origin),
+                                null),
+                            () => ParseRules(
+                                processedCss,
+                                TemplateSourceOrder,
+                                source.BaseUri,
+                                viewportWidth,
+                                viewportHeight,
+                                log,
+                                MapToNewCssOrigin(source.Origin)));
+                        parsed = MaterializeRegistrationRules(template, source.SourceOrder);
+                    }
+                    else
+                    {
+                        parsed = ParseRules(
+                            processedCss,
+                            source.SourceOrder,
+                            source.BaseUri,
+                            viewportWidth,
+                            viewportHeight,
+                            log,
+                            MapToNewCssOrigin(source.Origin));
+                    }
+
                     ApplyShadowScope(parsed, source.ShadowScopeRoot);
                     var sheet = new NewCss.CssStylesheet();
                     sheet.Rules.AddRange(parsed);
