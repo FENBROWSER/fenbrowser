@@ -74,6 +74,9 @@ namespace FenBrowser.Tooling
                 case "debug-site-interact":
                     await RunDebugSiteInteractionAsync(args).ConfigureAwait(false);
                     return;
+                case "captcha":
+                    Environment.ExitCode = await RunCaptchaFlowAsync(args).ConfigureAwait(false);
+                    return;
                 case "jstime":
                     RunJsTime(args);
                     return;
@@ -384,6 +387,22 @@ namespace FenBrowser.Tooling
             PrintDebugSiteReport(report);
             Console.WriteLine();
             Console.WriteLine($"[debug-site] Bundle: {bundleDir}");
+        }
+
+        private static async Task<int> RunCaptchaFlowAsync(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                throw new ArgumentException("captcha requires <url> [ready_ms] [observe_ms]");
+            }
+
+            var url = args[1];
+            var readyMs = args.Length > 2 && int.TryParse(args[2], out var parsedReady) ? parsedReady : 45000;
+            var observeMs = args.Length > 3 && int.TryParse(args[3], out var parsedObserve) ? parsedObserve : 90000;
+
+            CssEngineConfig.CurrentEngine = CssEngineType.Custom;
+            using var host = CreateDebugSiteBrowserHost();
+            return await CaptchaFlowRunner.RunAsync(host, url, readyMs, observeMs).ConfigureAwait(false);
         }
 
         internal static FenBrowser.FenEngine.Rendering.BrowserHost CreateDebugSiteBrowserHost()
@@ -3261,6 +3280,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  diagnose <url> [settle_ms]");
             Console.WriteLine("  debug-site <url> [settle_ms]");
             Console.WriteLine("  debug-site-interact <url> <target_selector> <text> <submit_selector> [settle_ms] [interaction_settle_ms]");
+            Console.WriteLine("  captcha <url> [ready_ms] [observe_ms]");
             Console.WriteLine("  acid2");
             Console.WriteLine("  acid2-compare");
             Console.WriteLine("  acid2-layout-html [output_html]");
