@@ -67,6 +67,21 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly HashSet<string> _failedFonts
             = new HashSet<string>(StringComparer.Ordinal);
 
+        // Keyed by the resolved font URL rather than by the @font-face rule that
+        // asked for it, so one file is fetched and decoded once however many
+        // rules or documents name it.
+        private static readonly Dictionary<string, SKTypeface> _typefacesByUrl
+            = new Dictionary<string, SKTypeface>(StringComparer.Ordinal);
+
+        private static readonly Dictionary<string, Task<SKTypeface>> _typefaceLoadsByUrl
+            = new Dictionary<string, Task<SKTypeface>>(StringComparer.Ordinal);
+
+        // Files that downloaded fine but Skia could not decode - WOFF2, for one.
+        // That answer cannot change on a retry, so remember it and stop paying
+        // for the download again on every rule and every document.
+        private static readonly HashSet<string> _undecodableFontUrls
+            = new HashSet<string>(StringComparer.Ordinal);
+
         private static readonly object _lock = new object();
 
         public static event Action<string> FontLoaded;
@@ -182,6 +197,114 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        /// <summary>
+        /// Downloads and decodes a font file at most once per URL, and hands the
+        /// same typeface to every rule that names it. The load cache above is
+        /// keyed by the @font-face rule — family, weight, style, unicode-range
+        /// and the document's base URI — so a file shared between rules, or a
+        /// family a second document declares again, was fetched and decoded once
+        /// per rule. Google's robot check asked for nine Roboto subsets
+        /// twenty-seven times for the anchor frame, then all nine again for the
+        /// challenge frame. Typefaces are immutable and never disposed here, so
+        /// sharing one instance is safe.
+        /// </summary>
+        private static async Task<SKTypeface> LoadTypefaceFromUrlAsync(Uri uri, FontLoaderRequestContext context)
+        {
+            var key = uri.AbsoluteUri;
+            TaskCompletionSource<SKTypeface> completion = null;
+            Task<SKTypeface> pending;
+
+            lock (_lock)
+            {
+                if (_typefacesByUrl.TryGetValue(key, out var cached))
+                {
+                    return cached;
+                }
+
+                if (_undecodableFontUrls.Contains(key))
+                {
+                    return null;
+                }
+
+                if (!_typefaceLoadsByUrl.TryGetValue(key, out pending))
+                {
+                    completion = new TaskCompletionSource<SKTypeface>(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    pending = completion.Task;
+                    _typefaceLoadsByUrl[key] = pending;
+                }
+            }
+
+            if (completion == null)
+            {
+                return await pending.ConfigureAwait(false);
+            }
+
+            SKTypeface typeface = null;
+            var undecodable = false;
+            try
+            {
+                var fetcher = context?.FetchDetailedAsync;
+                if (fetcher == null)
+                {
+                    EngineLogCompat.Warn(
+                        $"[FontRegistry] No browser font fetcher is configured for {uri.Host}",
+                        LogCategory.Network);
+                }
+                else
+                {
+                    var result = await fetcher(uri).ConfigureAwait(false);
+                    if (result?.Succeeded == true && result.Body != null && result.Body.Length > 0)
+                    {
+                        using var stream = new MemoryStream(result.Body, writable: false);
+                        typeface = SKTypeface.FromStream(stream);
+                        undecodable = typeface == null;
+                        if (undecodable)
+                        {
+                            EngineLogCompat.Log(
+                                LogCategory.Rendering,
+                                LogLevel.Debug,
+                                $"[FontRegistry] Font downloaded but not decodable: {uri}");
+                        }
+                    }
+                    else
+                    {
+                        EngineLogCompat.Log(
+                            LogCategory.Network,
+                            LogLevel.Debug,
+                            $"[FontRegistry] Font fetch failed: host={uri.Host} reason={result?.FailureReason}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Warn(
+                    $"[FontRegistry] Font fetch threw for {uri.Host}: {ex.Message}",
+                    LogCategory.Network);
+            }
+            finally
+            {
+                lock (_lock)
+                {
+                    _typefaceLoadsByUrl.Remove(key);
+                    if (typeface != null)
+                    {
+                        _typefacesByUrl[key] = typeface;
+                    }
+                    else if (undecodable)
+                    {
+                        // Only a decode failure is remembered. A transport
+                        // failure may be transient, so leave that one retryable.
+                        _undecodableFontUrls.Add(key);
+                    }
+                }
+
+                completion.TrySetResult(typeface);
+            }
+
+            return typeface;
+        }
+
         private static async Task<SKTypeface> LoadFontFaceAsync(FontFaceDescriptor descriptor)
         {
             string src = descriptor.Source;
@@ -272,28 +395,11 @@ namespace FenBrowser.FenEngine.Rendering
 
                         if (uri.Scheme == "http" || uri.Scheme == "https")
                         {
-                            var fetcher = descriptor.RequestContext?.FetchDetailedAsync;
-                            if (fetcher == null)
+                            typeface = await LoadTypefaceFromUrlAsync(uri, descriptor.RequestContext)
+                                .ConfigureAwait(false);
+                            if (typeface == null)
                             {
-                                EngineLogCompat.Warn(
-                                    $"[FontRegistry] No browser font fetcher is configured for {uri.Host}",
-                                    LogCategory.Network);
                                 continue;
-                            }
-
-                            var result = await fetcher(uri).ConfigureAwait(false);
-                            if (result?.Succeeded != true || result.Body == null || result.Body.Length == 0)
-                            {
-                                EngineLogCompat.Log(
-                                    LogCategory.Network,
-                                    LogLevel.Debug,
-                                    $"[FontRegistry] Font fetch failed: host={uri.Host} reason={result?.FailureReason}");
-                                continue;
-                            }
-
-                            using (var ms = new MemoryStream(result.Body, writable: false))
-                            {
-                                typeface = SKTypeface.FromStream(ms);
                             }
                         }
                         else if (uri.Scheme == "file")
@@ -659,6 +765,9 @@ namespace FenBrowser.FenEngine.Rendering
                 _loadedFonts.Clear();
                 _loadingTasks.Clear();
                 _failedFonts.Clear();
+                _typefacesByUrl.Clear();
+                _typefaceLoadsByUrl.Clear();
+                _undecodableFontUrls.Clear();
             }
             NotifyPendingLoadCountChanged();
         }
