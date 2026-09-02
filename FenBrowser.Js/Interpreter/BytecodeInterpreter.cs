@@ -2892,17 +2892,47 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     frame.Registers[ins.A] = JsValue.FromString(TypeOfName(frame, ins.B));
                     break;
                 case OpCode.Add:
-                    try { frame.Registers[ins.A] = Add(frame.Registers[ins.B], frame.Registers[ins.C]); }
+                {
+                    var addL = frame.Registers[ins.B];
+                    var addR = frame.Registers[ins.C];
+                    if (IsFastNumeric(addL) && IsFastNumeric(addR))
+                    {
+                        frame.Registers[ins.A] = FastNumberResult(addL.AsNumber() + addR.AsNumber());
+                        break;
+                    }
+
+                    try { frame.Registers[ins.A] = Add(addL, addR); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
+                }
                 case OpCode.Sub:
-                    try { frame.Registers[ins.A] = BigIntArith(frame.Registers[ins.B], frame.Registers[ins.C], "subtraction", (a, b) => a - b, (a, b) => a - b); }
+                {
+                    var subL = frame.Registers[ins.B];
+                    var subR = frame.Registers[ins.C];
+                    if (IsFastNumeric(subL) && IsFastNumeric(subR))
+                    {
+                        frame.Registers[ins.A] = FastNumberResult(subL.AsNumber() - subR.AsNumber());
+                        break;
+                    }
+
+                    try { frame.Registers[ins.A] = BigIntArith(subL, subR, "subtraction", (a, b) => a - b, (a, b) => a - b); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
+                }
                 case OpCode.Mul:
-                    try { frame.Registers[ins.A] = BigIntArith(frame.Registers[ins.B], frame.Registers[ins.C], "multiplication", (a, b) => a * b, (a, b) => a * b); }
+                {
+                    var mulL = frame.Registers[ins.B];
+                    var mulR = frame.Registers[ins.C];
+                    if (IsFastNumeric(mulL) && IsFastNumeric(mulR))
+                    {
+                        frame.Registers[ins.A] = FastNumberResult(mulL.AsNumber() * mulR.AsNumber());
+                        break;
+                    }
+
+                    try { frame.Registers[ins.A] = BigIntArith(mulL, mulR, "multiplication", (a, b) => a * b, (a, b) => a * b); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
+                }
                 case OpCode.Mod:
                     try { frame.Registers[ins.A] = BigIntArith(frame.Registers[ins.B], frame.Registers[ins.C], "modulo", (a, b) => a % b, (a, b) => a % b); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
@@ -2988,9 +3018,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 }
                 case OpCode.Lt:
-                    try { frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThan(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                {
+                    var ltL = frame.Registers[ins.B];
+                    var ltR = frame.Registers[ins.C];
+                    if (IsFastNumeric(ltL) && IsFastNumeric(ltR))
+                    {
+                        frame.Registers[ins.A] = JsValue.FromBoolean(ltL.AsNumber() < ltR.AsNumber());
+                        break;
+                    }
+
+                    try { frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThan(ltL, ltR)); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
+                }
                 case OpCode.Gt:
                     try { frame.Registers[ins.A] = JsValue.FromBoolean(IsGreaterThan(frame.Registers[ins.B], frame.Registers[ins.C])); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
@@ -5871,6 +5911,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // non-strict unresolvable writes create/update a property on the global object.
     // Tier 4 #24: internal so the JIT-emitted Expression-tree code (in
     // JitCompiler) can invoke it from inside the same assembly.
+    // Arithmetic and comparison on two numbers is what a loop actually does,
+    // and it was reaching the fully general operators: a try region entered per
+    // instruction, and for subtraction and multiplication a pair of delegate
+    // calls to work for BigInt as well. Take the numeric case directly.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static bool IsFastNumeric(in JsValue value) =>
+        value.Tag is JsValueTag.Int32 or JsValueTag.Number;
+
+    // Small integer results stay tagged as integers so the paths that look for
+    // an integer (array indexing, for one) still find one.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static JsValue FastNumberResult(double value)
+    {
+        var truncated = (int)value;
+        return truncated == value && !double.IsNegative(value - truncated)
+            ? JsValue.FromInt32(truncated)
+            : JsValue.FromNumber(value);
+    }
+
     internal JsValue LoadName(InterpreterFrame frame, int slot)
     {
         var name = SlotNameTable.GetName(frame.Function, slot);
