@@ -22082,6 +22082,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case "cookieEnabled":
                     value = JsValue.FromBoolean(navigator.CookieEnabled);
                     return true;
+                case "webdriver":
+                    // NavigatorAutomationInformation: false unless the user agent
+                    // itself was started under remote automation control. Leaving it
+                    // undefined is a visible difference from every real browser, and
+                    // pages that fingerprint the navigator read it constantly.
+                    value = JsValue.FromBoolean(false);
+                    return true;
                 case "hardwareConcurrency":
                     value = JsValue.FromInt32(Math.Max(1, Environment.ProcessorCount));
                     return true;
