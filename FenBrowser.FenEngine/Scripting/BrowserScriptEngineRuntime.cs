@@ -5023,6 +5023,34 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return InvokeFenJsHostMethod(receiver, methodName, methodArgs);
                 },
                 length: 3));
+        // Installs a host method as a real native function on a prototype.
+        // The JS shim it replaces cost a JS frame, an arguments object and a
+        // read of every argument by string index, on every DOM call made.
+        _interpreter.RegisterGlobalValue(
+            "__fenDefineNativeHostMethod",
+            _interpreter.AllocateNativeFunction(
+                "__fenDefineNativeHostMethod",
+                (_, args) =>
+                {
+                    if (args.Count < 2 || args[0].Tag != JsValueTag.Object)
+                    {
+                        return JsValue.FromBoolean(false);
+                    }
+
+                    var prototypeHandle = args[0].AsObjectHandle();
+                    var name = CoerceToHostString(args[1]);
+                    if (string.IsNullOrEmpty(name))
+                    {
+                        return JsValue.FromBoolean(false);
+                    }
+
+                    var native = _interpreter.AllocateNativeFunction(
+                        name,
+                        (thisValue, callArgs) => InvokeFenJsHostMethod(thisValue, name, callArgs));
+                    _interpreter.SetObjectProperty(args[0], name, native);
+                    return JsValue.FromBoolean(true);
+                },
+                length: 2));
         _interpreter.RegisterGlobalValue(
             "__fenCreateCustomElementConstructionElement",
             _interpreter.AllocateNativeFunction(
@@ -7908,10 +7936,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     } catch (_probeError) {}
                 }
                 function defineHostMethod(prototype, name) {
-                    var hostMethod = function () {
-                        recordFenHostMethodProbe(name, this, arguments);
-                        return globalThis.__fenInvokeHostMethod(this, name, arguments);
-                    };
+                    // The probe only ever reports the three mutation methods, so
+                    // decide that once here rather than calling into it - and
+                    // materialising `arguments` for it - on every DOM call made.
+                    var probed = name === 'appendChild' || name === 'insertBefore' ||
+                        name === 'replaceChild';
+                    if (!probed && typeof globalThis.__fenDefineNativeHostMethod === 'function' &&
+                        globalThis.__fenDefineNativeHostMethod(prototype, name)) {
+                        return;
+                    }
+                    var hostMethod = probed
+                        ? function () {
+                            recordFenHostMethodProbe(name, this, arguments);
+                            return globalThis.__fenInvokeHostMethod(this, name, arguments);
+                        }
+                        : function () {
+                            return globalThis.__fenInvokeHostMethod(this, name, arguments);
+                        };
                     Object.defineProperty(hostMethod, 'toString', {
                         value: function () { return 'function ' + name + '() { [native code] }'; },
                         writable: true,
