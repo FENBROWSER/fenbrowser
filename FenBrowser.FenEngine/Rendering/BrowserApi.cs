@@ -5918,30 +5918,82 @@ pre {{
                 return;
             }
 
+            if (_engine?.ScriptEngine == null)
+            {
+                return;
+            }
+
+            // Setting a frame document up runs that document's scripts, which for
+            // a large bundle takes seconds. The hydrated marker was only written
+            // once that finished, so everyone who arrived meanwhile — every
+            // WebDriver frame switch — saw "not hydrated" and started another
+            // setup on the same realm. That rebinds the realm underneath the
+            // batch already running in it: globals a parser-blocking script had
+            // just defined were gone by the time the next script used them, and
+            // reCAPTCHA's bootstrap died on "recaptcha is not defined". Callers
+            // that arrive during a setup join the one in flight instead.
+            var requestedUrl = frameUri?.AbsoluteUri ?? string.Empty;
+            Task hydration;
+            lock (_frameScriptHydrationGate)
+            {
+                if (_frameScriptHydrations.TryGetValue(frameElement, out var running) &&
+                    string.Equals(running.Url, requestedUrl, StringComparison.Ordinal) &&
+                    !running.Task.IsCompleted)
+                {
+                    hydration = running.Task;
+                }
+                else
+                {
+                    var started = new FrameScriptHydration { Url = requestedUrl };
+                    started.Task = HydrateFrameScriptsAsync(frameElement, frameRoot, frameUri, options);
+                    _frameScriptHydrations.Remove(frameElement);
+                    _frameScriptHydrations.Add(frameElement, started);
+                    hydration = started.Task;
+                }
+            }
+
+            try
+            {
+                await hydration.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[WebDriverFrame] failed initializing frame scripts: {ex.Message}", LogCategory.Navigation);
+            }
+        }
+
+        private sealed class FrameScriptHydration
+        {
+            public string Url { get; init; } = string.Empty;
+            public Task Task { get; set; } = Task.CompletedTask;
+        }
+
+        private readonly ConditionalWeakTable<Element, FrameScriptHydration> _frameScriptHydrations = new();
+        private readonly object _frameScriptHydrationGate = new();
+
+        private async Task HydrateFrameScriptsAsync(
+            Element frameElement,
+            Element frameRoot,
+            Uri frameUri,
+            BrowserFrameExecutionOptions options)
+        {
             var jsEngine = _engine?.ScriptEngine;
             if (jsEngine == null)
             {
                 return;
             }
 
-            try
+            if (jsEngine is FenJsBrowserScriptEngine fenJsEngine)
             {
-                if (jsEngine is FenJsBrowserScriptEngine fenJsEngine)
-                {
-                    await fenJsEngine.SetSubdocumentDomAsync(frameRoot, frameUri, options).ConfigureAwait(false);
-                }
-                else
-                {
-                    await jsEngine.SetDomAsync(frameRoot, frameUri).ConfigureAwait(false);
-                }
+                await fenJsEngine.SetSubdocumentDomAsync(frameRoot, frameUri, options).ConfigureAwait(false);
+            }
+            else
+            {
+                await jsEngine.SetDomAsync(frameRoot, frameUri).ConfigureAwait(false);
+            }
 
-                frameElement.SetAttribute(WebDriverFrameScriptsHydratedAttribute, "1");
-                frameElement.SetAttribute(WebDriverFrameScriptsHydratedUrlAttribute, frameUri?.AbsoluteUri ?? string.Empty);
-            }
-            catch (Exception ex)
-            {
-                TryLogWarn($"[WebDriverFrame] failed initializing frame scripts: {ex.Message}", LogCategory.Navigation);
-            }
+            frameElement.SetAttribute(WebDriverFrameScriptsHydratedAttribute, "1");
+            frameElement.SetAttribute(WebDriverFrameScriptsHydratedUrlAttribute, frameUri?.AbsoluteUri ?? string.Empty);
         }
 
         private static bool IsFrameScriptsHydratedForUri(Element frameElement, Uri frameUri)
