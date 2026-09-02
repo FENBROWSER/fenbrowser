@@ -7917,6 +7917,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return parts.join(':');
                 }
                 function recordFenHostMethodProbe(name, receiver, args) {
+                    // Opt in before doing any of this. The probe captures a stack
+                    // trace, and it ran on every appendChild, insertBefore,
+                    // replaceChild and contains a page made - which is what made a
+                    // single DOM insertion cost about 400 microseconds.
+                    if (!globalThis.__fenHostMethodProbeEnabled) {
+                        return;
+                    }
                     if (name !== 'contains' &&
                         name !== 'appendChild' &&
                         name !== 'insertBefore' &&
