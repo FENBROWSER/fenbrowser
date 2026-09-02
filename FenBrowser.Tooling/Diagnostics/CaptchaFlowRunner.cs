@@ -446,6 +446,7 @@ internal static class CaptchaFlowRunner
         if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
         {
             Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(25));
+            Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.VarReport());
         }
 
         Console.WriteLine(solved ? "[captcha] RESULT solved" : "[captcha] RESULT unsolved");

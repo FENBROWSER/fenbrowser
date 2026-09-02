@@ -34,6 +34,26 @@ public static class InterpreterProfiler
         _total++;
     }
 
+    // Where identifier reads actually land, and how many scopes they walk
+    // past first - the two facts that decide which cache is worth building.
+    private static long _varGlobal;
+    private static long _varLocal;
+    private static long _varDepth;
+
+    public static void RecordVarResolve(bool onObjectRecord, int depth)
+    {
+        if (onObjectRecord) _varGlobal++; else _varLocal++;
+        _varDepth += depth;
+    }
+
+    public static string VarReport()
+    {
+        var total = _varGlobal + _varLocal;
+        if (total == 0) return "[FenJsProfile] no identifier reads recorded";
+        return $"[FenJsProfile] identifier reads={total:N0} onGlobalObject={100.0*_varGlobal/total:F1}% " +
+               $"inLocalScope={100.0*_varLocal/total:F1}% avgScopesWalked={(double)_varDepth/total:F2}";
+    }
+
     public static void Reset()
     {
         Array.Clear(OpCodeCounts);

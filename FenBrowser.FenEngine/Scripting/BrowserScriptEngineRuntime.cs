@@ -18118,12 +18118,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             }
 
             var hostObject = resolution.HostObject;
-            var ownerName = GetHostApiOwnerName(hostObject);
             var found = TryGetHostObjectDefinedProperty(hostObject, property, out value);
 
             if (!found)
             {
-                RecordMissingHostApi(hostObject, ownerName, property, ToMissingApiOperationKind(accessKind));
+                // Naming the interface means a catalog lookup, and it is only
+                // wanted to report a property we could not find. Every DOM read
+                // and every DOM method call was paying for it on the way past.
+                RecordMissingHostApi(
+                    hostObject, GetHostApiOwnerName(hostObject), property, ToMissingApiOperationKind(accessKind));
             }
 
             return found;

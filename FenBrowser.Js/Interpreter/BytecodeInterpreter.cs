@@ -5947,12 +5947,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // through the lexical chain so closures over parameters of an outer
             // function (whose params now live on FunctionEnvironmentRecord since
             // B.6.4) read the live outer binding rather than the stale snapshot.
+            var probeDepth = 0;
             for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
             {
                 var status = env.TryLookupBinding(name, strict: frame.Function.IsStrictMode, out var envValue);
                 if (status == BindingOpResult.NotFound)
                 {
+                    probeDepth++;
                     continue;
+                }
+
+                if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
+                {
+                    FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordVarResolve(env is GlobalEnvironmentRecord or ObjectEnvironmentRecord, probeDepth);
                 }
 
                 if (status == BindingOpResult.Ok)
