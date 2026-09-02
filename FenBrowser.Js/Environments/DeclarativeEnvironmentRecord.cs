@@ -18,6 +18,13 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     {
     }
 
+    // GetBindingValue already answers NotFound for an absent binding here, so
+    // one dictionary probe settles both questions. ModuleEnvironmentRecord and
+    // FunctionEnvironmentRecord inherit this; their GetBindingValue overrides
+    // fall through to this record's for a name they do not know.
+    public override BindingOpResult TryLookupBinding(string name, bool strict, out JsValue value)
+        => GetBindingValue(name, strict, out value);
+
     public override bool HasBinding(string name)
     {
         ArgumentNullException.ThrowIfNull(name);

@@ -133,6 +133,25 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
     }
 
     // 9.1.1.4.6 GetBindingValue ( N, S ).
+    // The declarative half answers a miss itself; only the object half needs
+    // the two-step form (see EnvironmentRecord.TryLookupBinding).
+    public override BindingOpResult TryLookupBinding(string name, bool strict, out JsValue value)
+    {
+        var declarative = _declarativeRecord.TryLookupBinding(name, strict, out value);
+        if (declarative != BindingOpResult.NotFound)
+        {
+            return declarative;
+        }
+
+        if (!_objectRecord.HasBinding(name))
+        {
+            value = default;
+            return BindingOpResult.NotFound;
+        }
+
+        return _objectRecord.GetBindingValue(name, strict, out value);
+    }
+
     public override BindingOpResult GetBindingValue(string name, bool strict, out JsValue value)
     {
         ArgumentNullException.ThrowIfNull(name);

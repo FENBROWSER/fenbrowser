@@ -57,6 +57,25 @@ public abstract class EnvironmentRecord
         OwnerHeap.RememberEnvironment(this);
     }
 
+    // Reads a binding in one step where the record can report a miss itself.
+    // Resolving an identifier walks the whole scope chain, and asking each
+    // record first whether it has the binding and then for its value probes
+    // the same dictionary twice per level. Records that already return
+    // NotFound for an absent binding override this to probe once; the base
+    // keeps the two-step form for object-backed records, whose GetBindingValue
+    // reports Ok for a missing name in sloppy mode and so cannot be used to
+    // decide whether to keep walking outwards.
+    public virtual BindingOpResult TryLookupBinding(string name, bool strict, out JsValue value)
+    {
+        if (!HasBinding(name))
+        {
+            value = default;
+            return BindingOpResult.NotFound;
+        }
+
+        return GetBindingValue(name, strict, out value);
+    }
+
     // 9.1.1.1.1 HasBinding ( N ) - true if the record has a binding for N.
     public abstract bool HasBinding(string name);
 

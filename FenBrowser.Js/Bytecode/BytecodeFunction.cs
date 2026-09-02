@@ -16,9 +16,29 @@ public sealed class BytecodeFunction
 
     public required IReadOnlyList<Instruction> Instructions { get; init; }
 
+    // The dispatch loop reads an instruction for every step it takes, and
+    // through the interface that is two virtual calls plus a copy of a
+    // 24-byte struct each time, with no bounds-check elimination and no
+    // inlining. Materialise the array once per function and let the loop
+    // index it directly.
+    private Instruction[]? _instructionArray;
+
+    internal Instruction[] InstructionArray =>
+        _instructionArray ??= Instructions as Instruction[] ?? System.Linq.Enumerable.ToArray(Instructions);
+
     public required IReadOnlyList<JsValue> Constants { get; init; }
 
     public required IReadOnlyDictionary<string, int> VariableSlots { get; init; }
+    // Every variable read and write translates a slot back to its name, and
+    // that lookup used to go through a weak table keyed by this function on
+    // each access. The array derives only from VariableSlots and lives and
+    // dies with this function, so holding it here is the same lifetime with
+    // none of the lookup.
+    private string?[]? _slotNames;
+
+    internal string?[] SlotNames =>
+        _slotNames ??= FenBrowser.Js.Interpreter.SlotNameTable.BuildNames(this);
+
 
     public IReadOnlyList<string> VarDeclarationNames { get; init; } = Array.Empty<string>();
 

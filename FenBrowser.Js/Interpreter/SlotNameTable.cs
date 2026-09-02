@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using FenBrowser.Js.Bytecode;
 
 namespace FenBrowser.Js.Interpreter;
@@ -11,13 +10,11 @@ namespace FenBrowser.Js.Interpreter;
 // per function and is released for collection together with the function itself.
 public static class SlotNameTable
 {
-    private static readonly ConditionalWeakTable<BytecodeFunction, string?[]> _cache = new();
-
     public static string? GetName(BytecodeFunction function, int slot)
     {
         ArgumentNullException.ThrowIfNull(function);
 
-        var names = _cache.GetValue(function, Build);
+        var names = function.SlotNames;
         if ((uint)slot >= (uint)names.Length)
         {
             return null;
@@ -26,7 +23,7 @@ public static class SlotNameTable
         return names[slot];
     }
 
-    private static string?[] Build(BytecodeFunction function)
+    internal static string?[] BuildNames(BytecodeFunction function)
     {
         var max = -1;
         foreach (var kv in function.VariableSlots)

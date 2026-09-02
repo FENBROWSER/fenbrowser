@@ -1344,7 +1344,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         try
         {
-        while (frame.InstructionPointer < function.Instructions.Count)
+        var instructions = function.InstructionArray;
+        // Only a generator or async frame can have an abrupt completion
+        // injected at a suspension point. Both are fixed when the frame is
+        // built, so an ordinary call need not re-test for one on every
+        // instruction it executes.
+        var mayResumeAbruptly = frame.OwnerGenerator is not null || frame.AsyncContext is not null;
+        while (frame.InstructionPointer < instructions.Length)
         {
             _heap.CollectAtSafePointIfRequested();
             // Plan §14.2: instruction budget and interrupt check.
@@ -1367,7 +1373,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // through the frame's exception handler stack so try/catch blocks
             // inside the generator can intercept the injected exception.
             // YieldStar handles Throw/Return itself (ECMA-262 15.5.5 step 5).
-            if (frame.OwnerGenerator is { } genFrame && genFrame.CompletionMode == GeneratorCompletionMode.Throw)
+            if (mayResumeAbruptly && frame.OwnerGenerator is { } genFrame && genFrame.CompletionMode == GeneratorCompletionMode.Throw)
             {
                 var nextIns = function.Instructions[frame.InstructionPointer];
                 if (nextIns.OpCode != OpCode.YieldStar)
@@ -1383,7 +1389,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // only finally blocks covering the yield run (catch handlers never see
             // a return completion). With no covering finally the generator
             // completes immediately with the .return() argument.
-            if (frame.OwnerGenerator is { } genReturn && genReturn.CompletionMode == GeneratorCompletionMode.Return)
+            if (mayResumeAbruptly && frame.OwnerGenerator is { } genReturn && genReturn.CompletionMode == GeneratorCompletionMode.Return)
             {
                 var nextIns = function.Instructions[frame.InstructionPointer];
                 if (nextIns.OpCode != OpCode.YieldStar)
@@ -1402,14 +1408,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // ECMA-262 27.7.5.3 AwaitRejected — when an awaited promise rejects,
             // inject the rejection reason as a throw completion into the resumed
             // async function body so `await rejectedPromise` throws.
-            if (frame.AsyncContext is { } acFrame && acFrame.IsRejectResume)
+            if (mayResumeAbruptly && frame.AsyncContext is { } acFrame && acFrame.IsRejectResume)
             {
                 acFrame.IsRejectResume = false;
                 ThrowOrHandle(frame, acFrame.SentValue);
                 continue;
             }
 
-            var ins = function.Instructions[frame.InstructionPointer++];
+            var ins = instructions[frame.InstructionPointer++];
             if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
             {
                 FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordOpCode(ins.OpCode);
@@ -5876,12 +5882,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // B.6.4) read the live outer binding rather than the stale snapshot.
             for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
             {
-                if (!env.HasBinding(name))
+                var status = env.TryLookupBinding(name, strict: frame.Function.IsStrictMode, out var envValue);
+                if (status == BindingOpResult.NotFound)
                 {
                     continue;
                 }
 
-                var status = env.GetBindingValue(name, strict: frame.Function.IsStrictMode, out var envValue);
                 if (status == BindingOpResult.Ok)
                 {
                     return envValue;
