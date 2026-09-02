@@ -8811,11 +8811,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 URL.revokeObjectURL = function () {};
 
                 var _trustedPolicies = Object.create(null);
+                var _trustedPolicyNames = [];
                 globalThis.trustedTypes = {
                     createPolicy: function (name, rules) {
-                        if (_trustedPolicies[name]) {
-                            throw new TypeError("TrustedTypes policy '" + name + "' already exists.");
-                        }
+                        // Trusted Types createPolicy only rejects a repeated name when a
+                        // CSP trusted-types directive lists the allowed policies and omits
+                        // 'allow-duplicates'. With no such directive every call succeeds.
+                        // Rejecting unconditionally broke any page that loads two bundles
+                        // registering the same policy: the second caller catches the throw,
+                        // is left holding an undefined policy, and dies on first use.
                         var policy = { name: name };
                         if (rules) {
                             Object.keys(rules).forEach(function (key) {
@@ -8823,10 +8827,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             });
                         }
                         _trustedPolicies[name] = policy;
+                        _trustedPolicyNames.push(name);
                         return policy;
                     },
                     getPolicyNames: function () {
-                        return Object.keys(_trustedPolicies);
+                        return _trustedPolicyNames.slice();
                     },
                     getAttributeType: function () { return null; },
                     getPropertyType: function () { return null; },
