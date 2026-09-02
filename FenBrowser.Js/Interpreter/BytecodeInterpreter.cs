@@ -457,27 +457,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         _heap.CollectAtSafePointIfRequested();
         if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
-            throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
+            throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded.")) { IsUncatchableByScript = true };
 
         if (--_wallClockCheckCountdown > 0)
             return;
 
         _wallClockCheckCountdown = WallClockCheckInterval;
         if (InterruptCallback is { } callback && !callback())
-            throw new JsThrownException(CreateRangeError("Execution interrupted."));
+            throw new JsThrownException(CreateRangeError("Execution interrupted.")) { IsUncatchableByScript = true };
         if (_wallClockDeadlineTicks != 0 && Environment.TickCount64 >= _wallClockDeadlineTicks)
-            throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded."));
+            throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded.")) { IsUncatchableByScript = true };
     }
 
     private void CheckExecutionBudgetAtTaskBoundary()
     {
         _heap.CollectAtSafePointIfRequested();
         if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
-            throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
+            throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded.")) { IsUncatchableByScript = true };
         if (InterruptCallback is { } callback && !callback())
-            throw new JsThrownException(CreateRangeError("Execution interrupted."));
+            throw new JsThrownException(CreateRangeError("Execution interrupted.")) { IsUncatchableByScript = true };
         if (_wallClockDeadlineTicks != 0 && Environment.TickCount64 >= _wallClockDeadlineTicks)
-            throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded."));
+            throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded.")) { IsUncatchableByScript = true };
     }
 
     // Tier 5 #25: per-realm CSP eval policy. When false, eval() and the
@@ -1367,7 +1367,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.CollectAtSafePointIfRequested();
             // Plan §14.2: instruction budget and interrupt check.
             if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
-                throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
+                throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded.")) { IsUncatchableByScript = true };
             // Tier 5 #27: interrupt + wall-clock deadline, sampled every N
             // instructions to amortize the delegate invocation and TickCount64
             // read (a per-instruction delegate call is measurable on hot loops).
@@ -1375,9 +1375,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 _wallClockCheckCountdown = WallClockCheckInterval;
                 if (InterruptCallback is { } cb && !cb())
-                    throw new JsThrownException(CreateRangeError("Execution interrupted."));
+                    throw new JsThrownException(CreateRangeError("Execution interrupted.")) { IsUncatchableByScript = true };
                 if (_wallClockDeadlineTicks != 0 && System.Environment.TickCount64 >= _wallClockDeadlineTicks)
-                    throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded."));
+                    throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded.")) { IsUncatchableByScript = true };
             }
 
             // ECMA-262 27.5.1.5 GeneratorResumeAbrupt — inject a throw-mode

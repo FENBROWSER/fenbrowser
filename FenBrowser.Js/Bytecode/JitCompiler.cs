@@ -265,6 +265,45 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.Construct1ForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiConstructN = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.ConstructNForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly PropertyInfo PiCatchHandlers =
+        typeof(InterpreterFrame).GetProperty("CatchHandlers")!;
+
+    private static readonly PropertyInfo PiFinallyHandlers =
+        typeof(InterpreterFrame).GetProperty("FinallyHandlers")!;
+
+    private static readonly PropertyInfo PiHandlerEnvironments =
+        typeof(InterpreterFrame).GetProperty("HandlerEnvironments")!;
+
+    private static readonly PropertyInfo PiFrameEnvironment =
+        typeof(InterpreterFrame).GetProperty("Environment")!;
+
+    private static readonly PropertyInfo PiFrameInstructionPointer =
+        typeof(InterpreterFrame).GetProperty("InstructionPointer")!;
+
+    private static readonly MethodInfo MiIntStackPush = typeof(Stack<int>).GetMethod("Push")!;
+    private static readonly MethodInfo MiIntStackPop = typeof(Stack<int>).GetMethod("Pop")!;
+    private static readonly PropertyInfo PiIntStackCount = typeof(Stack<int>).GetProperty("Count")!;
+
+    private static readonly MethodInfo MiEnvStackPush =
+        typeof(Stack<FenBrowser.Js.Environments.EnvironmentRecord>).GetMethod("Push")!;
+    private static readonly MethodInfo MiEnvStackPop =
+        typeof(Stack<FenBrowser.Js.Environments.EnvironmentRecord>).GetMethod("Pop")!;
+    private static readonly PropertyInfo PiEnvStackCount =
+        typeof(Stack<FenBrowser.Js.Environments.EnvironmentRecord>).GetProperty("Count")!;
+
+    private static readonly ConstructorInfo CtorJsThrown =
+        typeof(JsThrownException).GetConstructor(new[] { typeof(JsValue) })!;
+
+    private static readonly PropertyInfo PiThrownValue =
+        typeof(JsThrownException).GetProperty("Value")!;
+
+    private static readonly PropertyInfo PiThrownUncatchable =
+        typeof(JsThrownException).GetProperty(
+            "IsUncatchableByScript", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    private static readonly MethodInfo MiRouteThrow = typeof(BytecodeInterpreter)
+        .GetMethod("TryRouteThrowForJit", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
     private static readonly MethodInfo MiApplyBinop = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.ApplyBinopForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiApplyUnaryOp = typeof(BytecodeInterpreter)
@@ -325,7 +364,9 @@ public static class JitCompiler
         for (var i = 0; i < function.Instructions.Count; i++)
         {
             var op = function.Instructions[i].OpCode;
-            if (op == OpCode.PushHandler || op == OpCode.PopHandler || op == OpCode.EndFinally)
+            // A finally block resumes at an offset picked at run time, or
+            // completes the function outright; neither is expressible yet.
+            if (op == OpCode.EndFinally)
             {
                 NoteRejection(op);
                 return null;
@@ -351,31 +392,33 @@ public static class JitCompiler
         for (var i = 0; i < instructionLabels.Length; i++)
             instructionLabels[i] = Expression.Label("ip_" + i);
 
-        // A loop header -- the target of a backwards branch -- is the only
-        // place a running frame is allowed to hand over, and the only place
-        // worth paying for a jump-table entry.
+        // A loop header -- the target of a backwards branch -- is where a
+        // running frame may hand over. A catch target is where a routed throw
+        // resumes. Both need a slot in the dispatch below; nothing else does.
         var loopHeaders = CollectLoopHeaders(function);
-
-        var body = new List<Expression>
+        var resumePoints = new HashSet<int>(loopHeaders);
+        foreach (var handler in CollectHandlerTargets(function))
         {
-            Expression.Assign(registersLocal, Expression.Property(frameParam, PiRegisters)),
-            Expression.Assign(constantsLocal, Expression.Property(Expression.Property(frameParam, PiFunction), PiConstants)),
-        };
+            resumePoints.Add(handler);
+        }
 
-        if (loopHeaders.Count > 0)
+        var resumeIpLocal = Expression.Variable(typeof(int), "resumeIp");
+        var body = new List<Expression>();
+
+        if (resumePoints.Count > 0)
         {
-            var entryCases = new List<SwitchCase>(loopHeaders.Count);
-            foreach (var header in loopHeaders)
+            var entryCases = new List<SwitchCase>(resumePoints.Count);
+            foreach (var target in resumePoints)
             {
                 entryCases.Add(Expression.SwitchCase(
-                    Expression.Goto(instructionLabels[header]),
-                    Expression.Constant(header)));
+                    Expression.Goto(instructionLabels[target]),
+                    Expression.Constant(target)));
             }
 
             // Anything else -- including 0 -- falls through to the top.
             body.Add(Expression.Switch(
                 typeof(void),
-                startIpParam,
+                resumeIpLocal,
                 Expression.Empty(),
                 comparison: null,
                 entryCases));
@@ -393,12 +436,43 @@ public static class JitCompiler
             }
         }
 
-        // If control flow falls off the end without hitting Return, the
-        // function returns undefined — matches interpreter behavior.
-        body.Add(Expression.Label(returnLabel, Expression.Constant(JsValue.Undefined)));
+        // Falling off the end without a Return yields undefined, same as the
+        // dispatch loop. Leaving the try lands on the label below it.
+        body.Add(Expression.Goto(returnLabel, Expression.Constant(JsValue.Undefined)));
 
-        var block = Expression.Block(typeof(JsValue), new[] { registersLocal, constantsLocal }, body);
-        var lambda = Expression.Lambda<JitDelegate>(block, interpParam, frameParam, startIpParam);
+        // Anything the body throws is offered to this frame's handlers exactly
+        // as the dispatch loop offers it. If one takes it, ThrowOrHandle has
+        // already set the instruction pointer and restored the environment, so
+        // resuming is a matter of dispatching to that offset; if none does, the
+        // exception carries on out of the frame.
+        var thrownParam = Expression.Parameter(typeof(JsThrownException), "thrown");
+        var routed = Expression.IfThenElse(
+            Expression.AndAlso(
+                // An interrupt or an exhausted budget is not the script's to
+                // catch; it stops the script, and routing it into a handler
+                // would let a runaway loop swallow the thing ending it.
+                Expression.Not(Expression.Property(thrownParam, PiThrownUncatchable)),
+                Expression.Call(interpParam, MiRouteThrow, frameParam,
+                    Expression.Property(thrownParam, PiThrownValue))),
+            Expression.Assign(resumeIpLocal, Expression.Property(frameParam, PiFrameInstructionPointer)),
+            Expression.Rethrow());
+
+        var guarded = Expression.TryCatch(
+            Expression.Block(typeof(void), body),
+            Expression.Catch(thrownParam, routed));
+
+        var full = Expression.Block(
+            typeof(JsValue),
+            new[] { registersLocal, constantsLocal, resumeIpLocal },
+            Expression.Assign(registersLocal, Expression.Property(frameParam, PiRegisters)),
+            Expression.Assign(constantsLocal, Expression.Property(Expression.Property(frameParam, PiFunction), PiConstants)),
+            Expression.Assign(resumeIpLocal, startIpParam),
+            // The loop only ever repeats when a throw was routed back into the
+            // body; every other way out of it goes through the return label.
+            Expression.Loop(guarded),
+            Expression.Label(returnLabel, Expression.Constant(JsValue.Undefined)));
+
+        var lambda = Expression.Lambda<JitDelegate>(full, interpParam, frameParam, startIpParam);
         try
         {
             var compiled = lambda.Compile();
@@ -410,6 +484,28 @@ public static class JitCompiler
             function.OsrEntryPoints = null;
             return null;
         }
+    }
+
+    /// <summary>
+    /// Catch offsets named by the function's handler pushes. A throw routed to
+    /// one of these has to be resumable, so each needs a dispatch entry.
+    /// </summary>
+    private static HashSet<int> CollectHandlerTargets(BytecodeFunction function)
+    {
+        var targets = new HashSet<int>();
+        for (var i = 0; i < function.Instructions.Count; i++)
+        {
+            var ins = function.Instructions[i];
+            if (ins.OpCode != OpCode.PushHandler)
+            {
+                continue;
+            }
+
+            if (ins.A >= 0 && ins.A < function.Instructions.Count) targets.Add(ins.A);
+            if (ins.D >= 0 && ins.D < function.Instructions.Count) targets.Add(ins.D);
+        }
+
+        return targets;
     }
 
     /// <summary>
@@ -556,8 +652,38 @@ public static class JitCompiler
                 return true;
             case OpCode.Throw:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
-                body.Add(Expression.Call(interp, MiThrow, frame,
-                    Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
+                // Raise it for real rather than asking the interpreter to move
+                // an instruction pointer this body does not have. The wrapper
+                // routes it to a handler in this frame or lets it leave, the
+                // same two outcomes ThrowOrHandle produces.
+                body.Add(Expression.Throw(Expression.New(
+                    CtorJsThrown,
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)))));
+                return true;
+            case OpCode.PushHandler:
+                body.Add(Expression.Call(
+                    Expression.Property(frame, PiCatchHandlers), MiIntStackPush,
+                    Expression.Constant(ins.A)));
+                body.Add(Expression.Call(
+                    Expression.Property(frame, PiFinallyHandlers), MiIntStackPush,
+                    Expression.Constant(ins.D)));
+                body.Add(Expression.Call(
+                    Expression.Property(frame, PiHandlerEnvironments), MiEnvStackPush,
+                    Expression.Property(frame, PiFrameEnvironment)));
+                return true;
+            case OpCode.PopHandler:
+                body.Add(Expression.IfThen(
+                    Expression.GreaterThan(
+                        Expression.Property(Expression.Property(frame, PiCatchHandlers), PiIntStackCount),
+                        Expression.Constant(0)),
+                    Expression.Block(
+                        Expression.Call(Expression.Property(frame, PiCatchHandlers), MiIntStackPop),
+                        Expression.Call(Expression.Property(frame, PiFinallyHandlers), MiIntStackPop),
+                        Expression.IfThen(
+                            Expression.GreaterThan(
+                                Expression.Property(Expression.Property(frame, PiHandlerEnvironments), PiEnvStackCount),
+                                Expression.Constant(0)),
+                            Expression.Call(Expression.Property(frame, PiHandlerEnvironments), MiEnvStackPop)))));
                 return true;
             case OpCode.GetPropByName:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;

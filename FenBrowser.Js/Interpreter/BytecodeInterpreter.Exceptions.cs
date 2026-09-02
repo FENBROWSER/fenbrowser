@@ -85,6 +85,26 @@ public sealed partial class BytecodeInterpreter
         return false;
     }
 
+    /// <summary>
+    /// Routes a throw the way the dispatch loop does and reports whether this
+    /// frame took it. Compiled bodies have no instruction pointer of their own
+    /// to redirect, so they need to know whether to resume at the handler
+    /// ThrowOrHandle selected or let the exception leave the frame.
+    /// </summary>
+    internal bool TryRouteThrowForJit(InterpreterFrame frame, JsValue value)
+    {
+        try
+        {
+            ThrowOrHandle(frame, value);
+            return true;
+        }
+        catch (JsThrownException)
+        {
+            // Nothing in this frame wanted it; the caller rethrows.
+            return false;
+        }
+    }
+
     private void ThrowOrHandle(InterpreterFrame frame, JsValue value)
     {
         // Audit JSRT-005: pin the thrown value while routing it, then hand
