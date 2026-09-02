@@ -5774,6 +5774,14 @@ pre {{
                     framePolicy.IsAllowed("script-src", null, nonce, frameUri, isInline: true),
                 ExternalScriptFetcher = async (resourceUri, _) =>
                 {
+                    // A tooling script override has to apply wherever a script is
+                    // fetched. It was only consulted for the top document, so a
+                    // frame silently loaded the real script instead.
+                    if (_options.TryGetScriptOverride(resourceUri, out var frameScriptOverride))
+                    {
+                        return frameScriptOverride;
+                    }
+
                     var mappedUri = MapRuntimeUri(resourceUri);
                     var scriptResult = await _resources.FetchTextDetailedAsync(
                         new FetchContext
@@ -5795,6 +5803,11 @@ pre {{
                 },
                 ExternalScriptFetcherWithNonce = async (resourceUri, _, elementNonce) =>
                 {
+                    if (_options.TryGetScriptOverride(resourceUri, out var noncedScriptOverride))
+                    {
+                        return noncedScriptOverride;
+                    }
+
                     var mappedUri = MapRuntimeUri(resourceUri);
                     var scriptResult = await _resources.FetchTextDetailedAsync(
                         new FetchContext
