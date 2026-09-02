@@ -82,6 +82,12 @@ public sealed class FenJsBrowserHeapCollectionTests
         };
 
         await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+        // These tests are about surviving a collection, not about how often
+        // one happens. Pin the cadence they need rather than depending on the
+        // engine's default nursery, which is sized for real pages and is far
+        // larger than the burst below.
+        GetInterpreter(engine).Heap.YoungAllocationsPerMinorGc = 4096;
         return engine;
     }
 

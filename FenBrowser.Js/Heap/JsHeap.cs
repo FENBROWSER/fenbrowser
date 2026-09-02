@@ -65,7 +65,12 @@ public sealed class JsHeap
     // manually). Default is conservative — large enough that test suites
     // don't pay nursery overhead unnecessarily, small enough that long
     // allocation-heavy runs see periodic minor sweeps.
-    public int YoungAllocationsPerMinorGc { get; set; } = 4096;
+    // A minor collection every 4096 young allocations is far too eager for a
+    // real page: Google's robot check ran 299 of them inside a single
+    // callback, which was about a fifth of that callback's 22 seconds. Eight
+    // times the budget is still only a few megabytes of nursery before a
+    // collection, and it takes that to roughly forty.
+    public int YoungAllocationsPerMinorGc { get; set; } = 131072;
     public bool DeferAutomaticCollectionUntilSafePoint { get; set; }
     // Long-running browser workloads can keep temporary objects alive across
     // enough nursery collections to promote them. Without a periodic major
