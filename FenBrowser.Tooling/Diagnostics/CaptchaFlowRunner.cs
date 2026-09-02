@@ -42,7 +42,7 @@ internal static class CaptchaFlowRunner
         "var s=document.getElementsByTagName('script');" +
         "out+='SCRIPTS='+s.length+'\\n';" +
         "for(var i=0;i<s.length;i++){" +
-        "var t=s[i].text||'';" +
+        "var t=s[i].textContent||s[i].text||'';" +
         "out+='--- script '+i+' src='+(s[i].getAttribute('src')||'')+' len='+t.length+'\\n'+t+'\\n';" +
         "}" +
         "out+='=== BODY ===\\n'+(document.body?document.body.innerHTML:'<no body>');" +
@@ -104,6 +104,23 @@ internal static class CaptchaFlowRunner
         "if(String(t).toLowerCase()==='form')log('createElement form');" +
         "return el;};}catch(e){}" +
         "return 'installed';})()";
+
+    // The bootstrap call builds the widget, reports nothing and leaves no DOM
+    // behind. Its own try/catch would swallow whatever went wrong, so run the
+    // very same inline script again with our own catch around it and read the
+    // error out.
+    private const string ReplayBootstrapScript =
+        "(function(){" +
+        "var s=document.getElementsByTagName('script');" +
+        "for(var i=0;i<s.length;i++){" +
+        "var t=s[i].textContent||s[i].text||'';" +
+        "if(t.indexOf('Main.init')<0)continue;" +
+        "try{(0,eval)(t);}catch(e){" +
+        "return 'threw '+(e&&e.name?e.name:'?')+': '+(e&&e.message?e.message:String(e))+" +
+        "' @ '+((e&&e.stack)?String(e.stack).replace(/\\s+/g,' ').slice(0,300):'no stack');}" +
+        "return 'ran without throwing; anchor='+(document.getElementById('recaptcha-anchor')?'built':'still missing');" +
+        "}" +
+        "return 'no bootstrap script in this document';})()";
 
     private const string ReadNetworkRecorderScript =
         "(function(){var l=window.__fenNetLog||[];" +
@@ -233,7 +250,14 @@ internal static class CaptchaFlowRunner
         var anchorId = await WaitForAnchorElementAsync(host, anchorFrameId, readyMs).ConfigureAwait(false);
         if (anchorId == null)
         {
+            // The widget missing is itself a result worth keeping: reCAPTCHA
+            // reports its own setup failures into #rc-anchor-alert, so dump the
+            // frame rather than walking away with only "never appeared".
             Console.WriteLine("[captcha] FAIL anchor frame never produced #recaptcha-anchor.");
+            await RunInFrameAsync(host, anchorFrameId, ReplayBootstrapScript, "replay anchor bootstrap")
+                .ConfigureAwait(false);
+            await DumpFramesAsync(host, "no-anchor", new HashSet<string>(StringComparer.Ordinal))
+                .ConfigureAwait(false);
             DumpConsole(console);
             return 4;
         }
