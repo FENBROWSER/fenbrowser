@@ -184,6 +184,28 @@ internal static class CaptchaFlowRunner
         "for(var j=0;j<top.length;j++)top[j]=top[j]+'x'+counts[top[j]];" +
         "return l.length+' registrations; onAnchor=['+anchor.join(',')+'] common='+top.join(',');})()";
 
+    // The bundle catches its own start-up failures and reports them to console,
+    // so without this a fatal error is indistinguishable from the widget simply
+    // being slow. Read back what the prologue recorded in this realm.
+    private const string ReadErrorLogScript =
+        "(function(){var l=window.__fenErrorLog;" +
+        "if(!l)return 'prologue not installed in this realm';" +
+        "if(!l.length)return 'no errors recorded';" +
+        "return l.length+' entries: '+l.join(' | ');})()";
+
+    private const string ReadPrologueNetLogScript =
+        "(function(){var l=window.__fenNetLog;" +
+        "if(!l)return 'prologue not installed in this realm';" +
+        "if(!l.length)return 'the bundle made no requests and created no iframes';" +
+        "return l.length+' entries: '+l.join(' | ');})()";
+
+    private const string CountFramesScript =
+        "(function(){var f=document.getElementsByTagName('iframe'),o=[];" +
+        "for(var i=0;i<f.length;i++){var s=f[i].getAttribute('src')||'';" +
+        "o.push((f[i].id||f[i].name||'?')+' src='+(s?s.slice(0,60):'<none>')+" +
+        "' doc='+(f[i].contentDocument?'yes':'no'));}" +
+        "return f.length+' iframes: '+o.join(' || ');})()";
+
     private const string ReadClickRecorderScript =
         "(function(){var c=window.__fenClicks||[];" +
         "var a=document.getElementById('recaptcha-anchor');" +
@@ -406,6 +428,8 @@ internal static class CaptchaFlowRunner
         await Task.Delay(1500).ConfigureAwait(false);
         await RunInFrameAsync(host, anchorFrameId, ReadClickRecorderScript, "clicks seen").ConfigureAwait(false);
         await RunInFrameAsync(host, anchorFrameId, ReadListenerLogScript, "listeners registered").ConfigureAwait(false);
+        await RunInFrameAsync(host, anchorFrameId, ReadErrorLogScript, "errors on anchor").ConfigureAwait(false);
+        await RunInFrameAsync(host, anchorFrameId, ReadPrologueNetLogScript, "bundle-net on anchor").ConfigureAwait(false);
         var dumped = new HashSet<string>(StringComparer.Ordinal);
         await DumpFramesAsync(host, "click", dumped).ConfigureAwait(false);
 
@@ -533,6 +557,15 @@ internal static class CaptchaFlowRunner
             return;
         }
 
+        // The widget is built by the top-level page, so the realm that creates
+        // the iframes and drives the handshake is the one the per-frame loop
+        // below never visits. Report it first.
+        await SafeAsync(async () => { await host.SwitchToFrameAsync(null).ConfigureAwait(false); return 0; })
+            .ConfigureAwait(false);
+        Console.WriteLine($"[captcha] bundle-net top: {await EvalAsync(host, ReadPrologueNetLogScript).ConfigureAwait(false)}");
+        Console.WriteLine($"[captcha] errors top: {await EvalAsync(host, ReadErrorLogScript).ConfigureAwait(false)}");
+        Console.WriteLine($"[captcha] frames top: {await EvalAsync(host, CountFramesScript).ConfigureAwait(false)}");
+
         foreach (var frameId in frameIds)
         {
             var src = await SafeAsync(() => host.GetElementAttributeAsync(frameId, "src")).ConfigureAwait(false)
@@ -542,6 +575,8 @@ internal static class CaptchaFlowRunner
                 : "frame";
             await RunInFrameAsync(host, frameId, ReadNetworkRecorderScript, "netlog " + kind).ConfigureAwait(false);
             await RunInFrameAsync(host, frameId, ReadListenerLogScript, "listeners " + kind).ConfigureAwait(false);
+            await RunInFrameAsync(host, frameId, ReadErrorLogScript, "errors " + kind).ConfigureAwait(false);
+            await RunInFrameAsync(host, frameId, ReadPrologueNetLogScript, "bundle-net " + kind).ConfigureAwait(false);
         }
     }
 

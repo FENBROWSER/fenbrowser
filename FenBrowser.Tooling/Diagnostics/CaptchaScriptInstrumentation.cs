@@ -27,8 +27,112 @@ internal static class CaptchaScriptInstrumentation
     // Runs immediately before the bundle, in whichever realm loads it.
     private const string Prologue = """
         (function () {
-            if (window.__fenListenerLog) { return; }
-            window.__fenListenerLog = [];
+            if (window.__fenPrologueInstalled) { return; }
+            window.__fenPrologueInstalled = 1;
+            if (!window.__fenListenerLog) { window.__fenListenerLog = []; }
+
+            // The bundle wraps its own start-up in try/catch and reports failures
+            // by calling console methods, so a fatal error looks like silence from
+            // the outside: no listeners, no requests, a widget stuck loading.
+            // Record what actually threw, in the realm where it threw.
+            window.__fenErrorLog = [];
+            var note = function (what) {
+                try {
+                    if (window.__fenErrorLog.length < 40) { window.__fenErrorLog.push(String(what)); }
+                } catch (e) { }
+            };
+            try {
+                window.addEventListener('error', function (ev) {
+                    note('error: ' + ((ev && (ev.message || ev.error)) || 'unknown'));
+                });
+                window.addEventListener('unhandledrejection', function (ev) {
+                    note('rejection: ' + ((ev && ev.reason) || 'unknown'));
+                });
+            } catch (e) { }
+            try {
+                ['error', 'warn', 'log'].forEach(function (level) {
+                    if (!window.console || typeof window.console[level] !== 'function') { return; }
+                    var original = window.console[level];
+                    window.console[level] = function () {
+                        note(level + ': ' + Array.prototype.join.call(arguments, ' '));
+                        return original.apply(this, arguments);
+                    };
+                });
+            } catch (e) { }
+            // The runner's own recorder is installed after load, so every request
+            // and element the bundle makes during setup is already invisible by
+            // then. This runs before the bundle in the same realm, which is the
+            // only place those are observable.
+            window.__fenNetLog = [];
+            var stamp = function () {
+                try { return Math.round(performance.now()) + 'ms'; } catch (e) { return '?'; }
+            };
+            try {
+                var open = XMLHttpRequest.prototype.open;
+                var send = XMLHttpRequest.prototype.send;
+                XMLHttpRequest.prototype.open = function (method, url) {
+                    try { this.__fenUrl = String(method) + ' ' + String(url); } catch (e) { }
+                    return open.apply(this, arguments);
+                };
+                XMLHttpRequest.prototype.send = function () {
+                    var self = this;
+                    try {
+                        window.__fenNetLog.push(stamp() + ' xhr-send ' + (self.__fenUrl || '?'));
+                        var already = self.onreadystatechange;
+                        self.onreadystatechange = function () {
+                            try {
+                                if (self.readyState === 4) {
+                                    window.__fenNetLog.push(stamp() + ' xhr-done ' + self.status +
+                                        ' len=' + ((self.responseText || '').length) + ' ' + (self.__fenUrl || '?'));
+                                }
+                            } catch (e) { }
+                            if (already) { return already.apply(this, arguments); }
+                        };
+                    } catch (e) { }
+                    return send.apply(this, arguments);
+                };
+            } catch (e) { note('xhr-hook-threw:' + e); }
+            try {
+                if (typeof window.fetch === 'function') {
+                    var realFetch = window.fetch;
+                    window.fetch = function (input) {
+                        try {
+                            window.__fenNetLog.push(stamp() + ' fetch ' +
+                                String((input && input.url) || input));
+                        } catch (e) { }
+                        return realFetch.apply(this, arguments);
+                    };
+                }
+            } catch (e) { note('fetch-hook-threw:' + e); }
+            try {
+                var create = document.createElement;
+                document.createElement = function (tag) {
+                    var el = create.apply(this, arguments);
+                    try {
+                        if (String(tag).toLowerCase() === 'iframe') {
+                            window.__fenNetLog.push(stamp() + ' iframe-created');
+                        }
+                    } catch (e) { }
+                    return el;
+                };
+            } catch (e) { note('createElement-hook-threw:' + e); }
+
+            try {
+                if (window.trustedTypes && typeof window.trustedTypes.createPolicy === 'function') {
+                    var createPolicy = window.trustedTypes.createPolicy;
+                    window.trustedTypes.createPolicy = function (name) {
+                        var made;
+                        try {
+                            made = createPolicy.apply(this, arguments);
+                        } catch (err) {
+                            note('createPolicy(' + name + ') threw: ' + err);
+                            throw err;
+                        }
+                        note('createPolicy(' + name + ') ok=' + !!made);
+                        return made;
+                    };
+                }
+            } catch (e) { }
             try {
                 var proto = (typeof EventTarget === 'function' && EventTarget.prototype)
                     ? EventTarget.prototype
