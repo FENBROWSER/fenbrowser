@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Globalization;
 using FenBrowser.FenEngine.Rendering;
 
@@ -29,7 +30,8 @@ internal static class CaptchaFlowRunner
         "var frames=document.querySelectorAll('iframe');" +
         "var bframes=0;" +
         "for(var i=0;i<frames.length;i++){var s=frames[i].getAttribute('src')||'';if(s.indexOf('bframe')>=0)bframes++;}" +
-        "return 'url='+location.href+';token='+tok+';iframes='+frames.length+';bframes='+bframes;" +
+        "return 'url='+location.href+';token='+tok+';iframes='+frames.length+';bframes='+bframes+" +
+        "';readyState='+document.readyState;" +
         "})()";
 
     // Runs inside a frame: identifies the document and returns every script it holds,
@@ -46,6 +48,66 @@ internal static class CaptchaFlowRunner
         "out+='=== BODY ===\\n'+(document.body?document.body.innerHTML:'<no body>');" +
         "return out;" +
         "})()";
+
+    // The widget stalls with no request and no error, so start by establishing
+    // what the realm can actually do rather than assuming: whether it has the
+    // networking globals at all, whether a request really leaves (fetch
+    // something same-origin and read the status back), and whether the basics
+    // reCAPTCHA leans on — expando round-trip, readyState, its own namespace —
+    // are intact.
+    private const string FrameNetworkProbeScript =
+        "(function(){" +
+        "var r='xhr='+(typeof XMLHttpRequest)+' syncXhr='+(typeof __fenSyncXhr)+" +
+        "' fetch='+(typeof fetch)+' syncFetch='+(typeof __fenSyncFetch);" +
+        // Only once per realm: this probe's own request would otherwise drown
+        // out the page's calls in the recorder below.
+        "try{if(window.__fenProbedNet){r+=' probe=skipped';}else{window.__fenProbedNet=1;" +
+        "var x=new XMLHttpRequest();" +
+        "x.open('GET','https://www.google.com/favicon.ico',true);x.send();" +
+        "r+=' probeStatus='+x.status+' readyState='+x.readyState+" +
+        "' bytes='+(x.responseText?x.responseText.length:0);}}" +
+        "catch(e){r+=' probeThrew='+e;}" +
+        // Closure keeps its listener maps in expando properties on the element
+        // (closure_lm_<id>), so if an expando does not round-trip, handlers are
+        // registered and then never found again.
+        "try{var d=document.createElement('div');d.closure_probe_1={a:1};" +
+        "r+=' expando='+(d.closure_probe_1&&d.closure_probe_1.a===1?'ok':'lost');}" +
+        "catch(e){r+=' expandoThrew='+e;}" +
+        // reCAPTCHA fingerprints the client and simply stops if it decides the
+        // page is automated, which looks identical to a widget that never
+        // finishes: no request, no error.
+        "r+=' webdriver='+navigator.webdriver+' plugins='+((navigator.plugins||[]).length)+" +
+        "' langs='+((navigator.languages||[]).join(','))+' ua='+(navigator.userAgent||'').slice(0,60);" +
+        "r+=' readyState='+document.readyState+' recaptcha='+(typeof recaptcha);" +
+        "try{r+=' rcKeys='+(typeof recaptcha==='object'?Object.keys(recaptcha).join('|'):'-');}catch(e){}" +
+        "return r;})()";
+
+    // The verification call never reaches the network, and nothing throws. That
+    // leaves two very different stories: reCAPTCHA asks and the request is
+    // dropped on our side, or it never asks. Wrap every outbound call in the
+    // realm and record what it was handed, so the answer is not a guess.
+    private const string InstallNetworkRecorderScript =
+        "(function(){" +
+        "if(window.__fenNetLog)return 'already';" +
+        "window.__fenNetLog=[];" +
+        "var log=function(s){try{window.__fenNetLog.push(s);}catch(e){}};" +
+        "try{var O=XMLHttpRequest.prototype.open,S=XMLHttpRequest.prototype.send;" +
+        "XMLHttpRequest.prototype.open=function(m,u){log('open '+m+' '+u);return O.apply(this,arguments);};" +
+        "XMLHttpRequest.prototype.send=function(b){log('send bodyLen='+(b==null?0:String(b).length));" +
+        "return S.apply(this,arguments);};}catch(e){log('xhrHookThrew '+e);}" +
+        "try{if(window.fetch){var F=window.fetch;" +
+        "window.fetch=function(u){log('fetch '+u);return F.apply(this,arguments);};}}catch(e){}" +
+        "try{if(navigator.sendBeacon){var B=navigator.sendBeacon;" +
+        "navigator.sendBeacon=function(u){log('beacon '+u);return B.apply(this,arguments);};}}catch(e){}" +
+        "try{var C=document.createElement;document.createElement=function(t){" +
+        "var el=C.apply(this,arguments);" +
+        "if(String(t).toLowerCase()==='form')log('createElement form');" +
+        "return el;};}catch(e){}" +
+        "return 'installed';})()";
+
+    private const string ReadNetworkRecorderScript =
+        "(function(){var l=window.__fenNetLog||[];" +
+        "return l.length+' calls: '+l.join(' | ');})()";
 
     /// <summary>
     /// Writes the live source of every frame we can reach. reCAPTCHA builds the
@@ -72,11 +134,13 @@ internal static class CaptchaFlowRunner
         {
             string src;
             string html;
+            string probe;
             try
             {
                 src = await host.GetElementAttributeAsync(frameIds[i], "src").ConfigureAwait(false) ?? string.Empty;
                 await host.SwitchToFrameAsync(frameIds[i]).ConfigureAwait(false);
                 html = await EvalAsync(host, FrameSourceScript).ConfigureAwait(false);
+                probe = await EvalAsync(host, FrameNetworkProbeScript).ConfigureAwait(false);
             }
             catch
             {
@@ -99,6 +163,8 @@ internal static class CaptchaFlowRunner
             {
                 continue;
             }
+
+            Console.WriteLine($"[captcha] net {kind}: {probe}");
 
             var path = Path.Combine(dir, $"{kind}-{tag}-{html.Length}.html");
             await File.WriteAllTextAsync(path, "<!-- " + src + " -->\n" + html).ConfigureAwait(false);
@@ -174,6 +240,9 @@ internal static class CaptchaFlowRunner
 
         Console.WriteLine($"[captcha] before: {await StateLineAsync(host, anchorFrameId).ConfigureAwait(false)}");
 
+        var instrumented = new HashSet<string>(StringComparer.Ordinal);
+        await EnsureNetworkRecordersAsync(host, instrumented).ConfigureAwait(false);
+
         Console.WriteLine("[captcha] clicking checkbox…");
         var clickStarted = DateTime.UtcNow;
         if (!await ClickAnchorAsync(host, anchorFrameId, anchorId, readyMs).ConfigureAwait(false))
@@ -191,6 +260,7 @@ internal static class CaptchaFlowRunner
         while (DateTime.UtcNow < deadline)
         {
             await Task.Delay(1000).ConfigureAwait(false);
+            await EnsureNetworkRecordersAsync(host, instrumented).ConfigureAwait(false);
             await DumpFramesAsync(host, "observe", dumped).ConfigureAwait(false);
             var line = await StateLineAsync(host, anchorFrameId).ConfigureAwait(false);
             if (!string.Equals(line, last, StringComparison.Ordinal))
@@ -209,9 +279,101 @@ internal static class CaptchaFlowRunner
         }
 
         Console.WriteLine($"[captcha] final: {last}");
+        await ReportNetworkRecordersAsync(host).ConfigureAwait(false);
         DumpConsole(console);
         Console.WriteLine(solved ? "[captcha] RESULT solved" : "[captcha] RESULT unsolved");
         return solved ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Evaluates a script inside one frame's own realm, restoring the top-level
+    /// context afterwards so the caller is not left pointing at a frame.
+    /// </summary>
+    private static async Task<string> RunInFrameAsync(
+        BrowserHost host,
+        string frameId,
+        string script,
+        string label)
+    {
+        try
+        {
+            await host.SwitchToFrameAsync(frameId).ConfigureAwait(false);
+            var result = await EvalAsync(host, script).ConfigureAwait(false);
+            Console.WriteLine($"[captcha] {label}: {result}");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[captcha] {label} threw: {ex.GetType().Name}: {ex.Message}");
+            return string.Empty;
+        }
+        finally
+        {
+            await SafeAsync(async () => { await host.SwitchToFrameAsync(null).ConfigureAwait(false); return 0; })
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Installs the recorder into every frame that does not have it yet. The
+    /// challenge frame is created after the click, so this runs each tick —
+    /// otherwise its very first requests happen before we are listening.
+    /// </summary>
+    private static async Task EnsureNetworkRecordersAsync(BrowserHost host, HashSet<string> instrumented)
+    {
+        string[] frameIds;
+        try
+        {
+            frameIds = await host.FindElementsAsync("css selector", "iframe").ConfigureAwait(false)
+                       ?? Array.Empty<string>();
+        }
+        catch
+        {
+            return;
+        }
+
+        foreach (var frameId in frameIds)
+        {
+            if (!instrumented.Add(frameId))
+            {
+                continue;
+            }
+
+            var src = await SafeAsync(() => host.GetElementAttributeAsync(frameId, "src")).ConfigureAwait(false)
+                      ?? string.Empty;
+            var kind = src.Contains("bframe", StringComparison.Ordinal) ? "bframe"
+                : src.Contains("anchor", StringComparison.Ordinal) ? "anchor"
+                : "frame";
+            await RunInFrameAsync(host, frameId, InstallNetworkRecorderScript, "recorder " + kind)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Reads back what each frame recorded.
+    /// </summary>
+    private static async Task ReportNetworkRecordersAsync(BrowserHost host)
+    {
+        string[] frameIds;
+        try
+        {
+            frameIds = await host.FindElementsAsync("css selector", "iframe").ConfigureAwait(false)
+                       ?? Array.Empty<string>();
+        }
+        catch
+        {
+            return;
+        }
+
+        foreach (var frameId in frameIds)
+        {
+            var src = await SafeAsync(() => host.GetElementAttributeAsync(frameId, "src")).ConfigureAwait(false)
+                      ?? string.Empty;
+            var kind = src.Contains("bframe", StringComparison.Ordinal) ? "bframe"
+                : src.Contains("anchor", StringComparison.Ordinal) ? "anchor"
+                : "frame";
+            await RunInFrameAsync(host, frameId, ReadNetworkRecorderScript, "netlog " + kind).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
