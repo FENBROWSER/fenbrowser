@@ -19623,6 +19623,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case "textContent":
                     value = JsValue.FromString(element.TextContent ?? string.Empty);
                     return true;
+                case "text" when string.Equals(element.TagName, "script", StringComparison.OrdinalIgnoreCase):
+                    // HTMLScriptElement.text reflects the element's child text
+                    // content. Scripts that build and inspect script elements read
+                    // it, and an undefined here reads as an empty bundle.
+                    value = JsValue.FromString(element.TextContent ?? string.Empty);
+                    return true;
                 case "nextSibling":
                     value = _owner.ToHostNodeOrNull(element.NextSibling);
                     return true;
