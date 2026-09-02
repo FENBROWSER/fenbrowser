@@ -151,6 +151,28 @@ internal static class CaptchaFlowRunner
         "((e&&e.target&&e.target.id)||'?'));});})(types[i]);}" +
         "return 'installed';})()";
 
+    // addEventListener is an own property of each element here rather than
+    // inherited, so patching EventTarget.prototype intercepts nothing. Wrap
+    // createElement instead and wrap the listener method on each element it
+    // hands out, which is how the widget's own nodes are made.
+    private const string InstallListenerRecorderScript =
+        "(function(){" +
+        "if(window.__fenListenerLog)return 'already@'+location.href;" +
+        "window.__fenListenerLog=[];" +
+        "var note=function(t,el){try{var who=el&&el.id?('#'+el.id):" +
+        "(el&&el.tagName?String(el.tagName).toLowerCase():'?');" +
+        "window.__fenListenerLog.push(String(t)+'@'+who);}catch(e){}};" +
+        "var wrap=function(el){try{if(!el||el.__fenWrapped)return el;" +
+        "var orig=el.addEventListener;if(typeof orig!=='function')return el;" +
+        "el.__fenWrapped=1;" +
+        "el.addEventListener=function(t){note(t,this);return orig.apply(this,arguments);};" +
+        "}catch(e){}return el;};" +
+        "try{var C=document.createElement;" +
+        "document.createElement=function(){return wrap(C.apply(this,arguments));};}" +
+        "catch(e){window.__fenListenerLog.push('createElementHookThrew');}" +
+        "try{wrap(document.body);wrap(document.documentElement);}catch(e){}" +
+        "return 'installed@'+location.href;})()";
+
     private const string ReadListenerLogScript =
         "(function(){var l=window.__fenListenerLog;" +
         "if(!l)return 'bundle not instrumented in this realm';" +
@@ -321,6 +343,21 @@ internal static class CaptchaFlowRunner
             return 3;
         }
 
+        // The frame realm does not exist the moment the element does, so keep
+        // offering the recorder until it lands in the anchor document rather
+        // than falling back to the top one.
+        for (var attempt = 0; attempt < 60; attempt++)
+        {
+            var placed = await RunInFrameAsync(
+                host, anchorFrameId, InstallListenerRecorderScript, "listener-recorder").ConfigureAwait(false);
+            if (placed != null && placed.Contains("/anchor", StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            await Task.Delay(200).ConfigureAwait(false);
+        }
+
         var anchorId = await WaitForAnchorElementAsync(host, anchorFrameId, readyMs).ConfigureAwait(false);
         if (anchorId == null)
         {
@@ -342,6 +379,22 @@ internal static class CaptchaFlowRunner
         await EnsureNetworkRecordersAsync(host, instrumented).ConfigureAwait(false);
 
         await RunInFrameAsync(host, anchorFrameId, InstallClickRecorderScript, "click-recorder").ConfigureAwait(false);
+        // reCAPTCHA rebuilds its anchor iframe (a fresh cb= each time), so ids
+        // resolved while waiting can name a frame that is no longer the live one.
+        // Re-resolve both right before clicking.
+        var freshFrameId = await WaitForAnchorFrameAsync(host, 5000).ConfigureAwait(false);
+        if (freshFrameId != null && !string.Equals(freshFrameId, anchorFrameId, StringComparison.Ordinal))
+        {
+            Console.WriteLine("[captcha] anchor frame changed since it was found; using the current one");
+            anchorFrameId = freshFrameId;
+        }
+
+        var freshAnchorId = await WaitForAnchorElementAsync(host, anchorFrameId, 5000).ConfigureAwait(false);
+        if (freshAnchorId != null)
+        {
+            anchorId = freshAnchorId;
+        }
+
         Console.WriteLine("[captcha] clicking checkbox…");
         var clickStarted = DateTime.UtcNow;
         if (!await ClickAnchorAsync(host, anchorFrameId, anchorId, readyMs).ConfigureAwait(false))
