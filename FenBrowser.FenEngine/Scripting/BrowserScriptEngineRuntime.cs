@@ -589,6 +589,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         TraceJsRoot(tracer, _fenJsTopWindowFacade);
         TraceJsRoot(tracer, _fenJsSameOriginTopWindowFacade);
         TraceJsRoot(tracer, _embeddedParentWindowProxy);
+
+        // The stand-in windows a frame sees for its siblings are held only
+        // here, in a C# dictionary the collector cannot see. Left untraced
+        // they were swept while still cached, and the next lookup of a
+        // sibling by name handed back a dangling handle.
+        foreach (var siblingProxy in _siblingWindowProxies.Values)
+        {
+            TraceJsRoot(tracer, siblingProxy);
+        }
         TraceJsRoot(tracer, _activeWindowEventTarget);
         TraceJsRoot(tracer, _fenJsFileConstructor);
 
