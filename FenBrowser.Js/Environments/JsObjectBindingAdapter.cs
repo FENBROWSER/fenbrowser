@@ -31,6 +31,12 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
     // delegates to the interpreter's ProxyHas so the `with` statement triggers
     // the proxy's "has" trap instead of silently walking own properties.
     private readonly Func<string, bool>? _proxyHas;
+    // Held as a field rather than converted at each call site. Passing the
+    // method group directly allocates a fresh delegate every time, because it
+    // captures this adapter, and a global variable is read and written through
+    // here on every access - which made an ordinary loop over a global
+    // allocate hundreds of bytes per iteration.
+    private readonly Func<ObjectHandle, JsObject> _resolvePrototype;
 
     public JsObjectBindingAdapter(
         JsHeap heap, ObjectHandle handle, Func<ObjectHandle, string, JsValue>? accessorGet = null,
@@ -40,6 +46,7 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
         _heap = heap;
         _handle = handle;
         _accessorGet = accessorGet;
+        _resolvePrototype = ResolvePrototype;
         _proxyHas = proxyHas;
     }
 
@@ -51,14 +58,14 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
         var obj = _heap.GetObject(_handle);
         if (obj is ProxyObject && _proxyHas is not null)
             return _proxyHas(name);
-        return obj.TryGetProperty(name, ResolvePrototype, out _);
+        return obj.TryGetProperty(name, _resolvePrototype, out _);
     }
 
     public bool TryGet(string name, out JsValue value)
     {
         ArgumentNullException.ThrowIfNull(name);
         var obj = _heap.GetObject(_handle);
-        if (obj.TryGetProperty(name, ResolvePrototype, out var descriptor))
+        if (obj.TryGetProperty(name, _resolvePrototype, out var descriptor))
         {
             if (descriptor.IsAccessor)
             {
