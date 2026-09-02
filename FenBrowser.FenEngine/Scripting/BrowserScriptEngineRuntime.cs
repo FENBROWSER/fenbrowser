@@ -4428,8 +4428,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             (_, args) =>
             {
                 var data = args.Count > 0 ? args[0] : JsValue.Undefined;
-                var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
-                var ports = args.Count > 2 ? args[2] : JsValue.Undefined;
+                ReadPostMessageTarget(args, out var targetOrigin, out var ports);
                 var sourceWindow = GetActiveWindowEventTarget();
                 QueueWindowMessage(
                     _fenJsGlobalThis,
@@ -13563,8 +13562,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 (_, args) =>
                 {
                     var data = args.Count > 0 ? args[0] : JsValue.Undefined;
-                    var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
-                    var ports = args.Count > 2 ? args[2] : JsValue.Undefined;
+                    ReadPostMessageTarget(args, out var targetOrigin, out var ports);
                     if (_iframeRealms.TryGetValue(iframe, out var frameRealm))
                     {
                         frameRealm.QueueMessageFromParent(
@@ -13830,8 +13828,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     if (sessionGeneration != _fenJsSessionGeneration ||
                         target.Owner != this || target.Closed || target.Port.Tag != JsValueTag.Object)
                     {
+                        // The send side already logged; without this the message
+                        // just disappears between the two realms.
+                        if (DiagnosticPaths.AppendEnabled)
+                        DiagnosticPaths.AppendLogText(
+                            "postmessage_probe.txt",
+                            $"{DateTimeOffset.UtcNow:O} port-DROPPED " +
+                            $"staleSession={sessionGeneration != _fenJsSessionGeneration} " +
+                            $"wrongOwner={target.Owner != this} closed={target.Closed} " +
+                            $"portTag={target.Port.Tag}{Environment.NewLine}");
                         return;
                     }
+
+                    if (DiagnosticPaths.AppendEnabled)
+                    DiagnosticPaths.AppendLogText(
+                        "postmessage_probe.txt",
+                        $"{DateTimeOffset.UtcNow:O} port-deliver{Environment.NewLine}");
 
                     try
                     {
@@ -13867,6 +13879,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                                     var listeners = ReadJsProperty(target.Port, "_fenListeners");
                                     var listenerCount = ReadArrayLikeLength(listeners);
+                                    // If nothing is listening the message is received
+                                    // and then thrown away, which looks exactly like
+                                    // never having arrived.
+                                    if (DiagnosticPaths.AppendEnabled)
+                                    DiagnosticPaths.AppendLogText(
+                                        "postmessage_probe.txt",
+                                        $"{DateTimeOffset.UtcNow:O} port-handlers onmessage=" +
+                                        $"{_interpreter.CanCallValue(handler)} listeners={listenerCount}" +
+                                        $"{Environment.NewLine}");
                                     for (var index = 0; index < listenerCount; index++)
                                     {
                                         var listener = ReadJsProperty(listeners, index.ToString(CultureInfo.InvariantCulture));
@@ -13972,10 +13993,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         $"targetOrigin={(args.Count > 1 ? CoerceToHostString(args[1]) : "*")} " +
                         $"transferCount={(args.Count > 2 ? ReadArrayLikeLength(args[2]) : 0)}{Environment.NewLine}");
                     var data = args.Count > 0 ? ConvertJsValueToObject(args[0]) : null;
-                    var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
-                    var ports = args.Count > 2
-                        ? ExtractTransferredMessagePorts(args[2])
-                        : Array.Empty<MessagePortEndpoint>();
+                    ReadPostMessageTarget(args, out var targetOrigin, out var transferValue);
+                    var ports = ExtractTransferredMessagePorts(transferValue);
                     var parentRealm = _parentRealmOwner;
                     if (parentRealm != null)
                     {
@@ -14140,10 +14159,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 (_, args) =>
                 {
                     var data = args.Count > 0 ? ConvertJsValueToObject(args[0]) : null;
-                    var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
-                    var ports = args.Count > 2
-                        ? ExtractTransferredMessagePorts(args[2])
-                        : Array.Empty<MessagePortEndpoint>();
+                    ReadPostMessageTarget(args, out var targetOrigin, out var transferValue);
+                    var ports = ExtractTransferredMessagePorts(transferValue);
                     owner?.RouteMessageBetweenChildFrames(
                         sourceFrame,
                         frame,
@@ -14700,8 +14717,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 (_, args) =>
                 {
                     var data = args.Count > 0 ? args[0] : JsValue.Undefined;
-                    var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
-                    var ports = args.Count > 2 ? args[2] : JsValue.Undefined;
+                    ReadPostMessageTarget(args, out var targetOrigin, out var ports);
                     if (_iframeRealms.TryGetValue(iframe, out var frameRealm))
                     {
                         var messageData = ConvertJsValueToObject(data);
@@ -14944,10 +14960,26 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         if (!ShouldDeliverWindowMessage(targetWindow, targetOrigin, targetWindowOriginOverride))
         {
+            // A dropped message is invisible from script: the sender sees a
+            // successful postMessage and the receiver simply never hears. Say so.
+            if (DiagnosticPaths.AppendEnabled)
+            DiagnosticPaths.AppendLogText(
+                "postmessage_probe.txt",
+                $"{DateTimeOffset.UtcNow:O} DROPPED wanted='{NormalizePostMessageOrigin(targetOrigin)}' " +
+                $"raw='{targetOrigin}' actual='{targetWindowOriginOverride ?? ReadWindowOrigin(targetWindow)}' " +
+                $"override='{targetWindowOriginOverride ?? "<null>"}' " +
+                $"readWindow='{ReadWindowOrigin(targetWindow)}' " +
+                $"data={DescribePostMessageValue(data)}{Environment.NewLine}");
             return;
         }
 
         var origin = sourceOriginOverride ?? GetMessageSourceOrigin(sourceWindow);
+        if (DiagnosticPaths.AppendEnabled)
+        DiagnosticPaths.AppendLogText(
+            "postmessage_probe.txt",
+            $"{DateTimeOffset.UtcNow:O} deliver listeners={listeners?.Count ?? 0} " +
+            $"fromOrigin={origin} targetOrigin={targetOrigin} " +
+            $"data={DescribePostMessageValue(data)}{Environment.NewLine}");
         var exposedSourceWindow = GetMessageSourceForTarget(sourceWindow, targetWindow);
         var sessionGeneration = _fenJsSessionGeneration;
         // The payload values are captured by the delivery continuation, which
@@ -15061,6 +15093,40 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         });
     }
 
+    // HTML: postMessage(message, targetOrigin, transfer) and the newer
+    // postMessage(message, options) where options is
+    // { targetOrigin, transfer }. Only the first form was understood, so the
+    // options object was stringified into the target origin, never matched a
+    // real one, and the message was dropped without a word. reCAPTCHA sends its
+    // setup handshake that way.
+    private void ReadPostMessageTarget(
+        IReadOnlyList<JsValue> args,
+        out string targetOrigin,
+        out JsValue transfer)
+    {
+        if (args.Count > 1 && args[1].Tag == JsValueTag.Object)
+        {
+            var options = args[1];
+            var originValue = ReadJsProperty(options, "targetOrigin");
+            // The options form defaults to "/", meaning the sender's own origin.
+            targetOrigin = originValue.Tag == JsValueTag.Undefined
+                ? GetCurrentWindowOrigin()
+                : NormalizeSelfPostMessageOrigin(CoerceToHostString(originValue));
+            transfer = ReadJsProperty(options, "transfer");
+            return;
+        }
+
+        targetOrigin = args.Count > 1
+            ? NormalizeSelfPostMessageOrigin(CoerceToHostString(args[1]))
+            : "*";
+        transfer = args.Count > 2 ? args[2] : JsValue.Undefined;
+    }
+
+    private string NormalizeSelfPostMessageOrigin(string targetOrigin) =>
+        string.Equals(targetOrigin, "/", StringComparison.Ordinal)
+            ? GetCurrentWindowOrigin()
+            : targetOrigin;
+
     private bool ShouldDeliverWindowMessage(
         JsValue targetWindow,
         string targetOrigin,
@@ -15072,7 +15138,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return true;
         }
 
+        // Delivery runs in the receiving realm, so when the target window object
+        // cannot report an origin of its own - a bare global with no location
+        // reachable through it - the realm's own document origin is the right
+        // answer. Treating "no origin" as "does not match" silently dropped
+        // same-origin messages, which is how reCAPTCHA's setup handshake was
+        // being lost between its two frames.
         var expectedOrigin = targetWindowOriginOverride ?? ReadWindowOrigin(targetWindow);
+        if (string.IsNullOrWhiteSpace(expectedOrigin))
+        {
+            expectedOrigin = GetCurrentWindowOrigin();
+        }
+
         return string.Equals(
             NormalizePostMessageOrigin(targetOrigin),
             expectedOrigin,
