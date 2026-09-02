@@ -59,6 +59,12 @@ public sealed record BrowserFrameExecutionOptions
     /// nonce must travel with the fetch (CSP3 Â§6.2.2.9).
     /// </summary>
     public Func<Uri, Uri, string, Task<string>> ExternalScriptFetcherWithNonce { get; init; }
+
+    /// <summary>
+    /// Fetches a dedicated worker's script with a "worker" destination, which
+    /// is what worker-src is written against.
+    /// </summary>
+    public Func<Uri, Uri, Task<string>> WorkerScriptFetcher { get; init; }
     public Func<HttpRequestMessage, Task<HttpResponseMessage>> FetchHandler { get; init; }
 }
 
@@ -322,6 +328,14 @@ public interface IBrowserScriptEngine
     /// when set; the third argument is the authorizing element's CSP nonce (or null).
     /// </summary>
     Func<Uri, Uri, string, Task<string>> ExternalScriptFetcherWithNonce { get; set; }
+
+    /// <summary>
+    /// Fetches a dedicated worker's script. A worker is not a classic script:
+    /// it is requested with a "worker" destination and checked against
+    /// worker-src, so the nonce-carrying script fetcher would ask the wrong
+    /// question of the policy and be refused.
+    /// </summary>
+    Func<Uri, Uri, Task<string>> WorkerScriptFetcher { get; set; }
     Func<Element, Uri, Task> FrameElementLoader { get; set; }
     Func<Element, object> LayoutBoxResolver { get; set; }
     Func<Element, (double X, double Y)> FrameScrollReader { get; set; }
@@ -601,6 +615,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         TraceJsRoot(tracer, _activeWindowEventTarget);
         TraceJsRoot(tracer, _fenJsFileConstructor);
 
+        // A running worker's page-side handle is reachable only from this
+        // dictionary, so leaving it untraced frees the very object the worker
+        // delivers its replies to.
+        foreach (var worker in _dedicatedWorkers.Values)
+        {
+            TraceJsRoot(tracer, worker.PageObject);
+        }
+
         TraceBrowserEventListeners(tracer, _documentEventListeners);
         TraceBrowserEventListeners(tracer, _windowEventListeners);
         TraceBrowserEventListeners(tracer, _visualViewportEventListeners);
@@ -789,6 +811,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     public Action FlushPendingLayout { get; set; }
     public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
     public Func<Uri, Uri, string, Task<string>> ExternalScriptFetcherWithNonce { get; set; }
+    public Func<Uri, Uri, Task<string>> WorkerScriptFetcher { get; set; }
     public Func<Element, Uri, Task> FrameElementLoader { get; set; }
     public Func<Element, object> LayoutBoxResolver { get; set; }
     public Func<Element, (double X, double Y)> FrameScrollReader { get; set; }
@@ -1439,6 +1462,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             frameRealm.NonceAllowed = options.NonceAllowed ?? frameRealm.NonceAllowed;
             frameRealm.ExternalScriptFetcher = options.ExternalScriptFetcher ?? frameRealm.ExternalScriptFetcher;
             frameRealm.ExternalScriptFetcherWithNonce = options.ExternalScriptFetcherWithNonce ?? frameRealm.ExternalScriptFetcherWithNonce;
+            frameRealm.WorkerScriptFetcher = options.WorkerScriptFetcher ?? frameRealm.WorkerScriptFetcher;
             frameRealm.FetchHandler = options.FetchHandler ?? frameRealm.FetchHandler;
         }
 
@@ -1485,6 +1509,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         realm.FlushPendingLayout = FlushPendingLayout;
         realm.ExternalScriptFetcher = ExternalScriptFetcher;
         realm.ExternalScriptFetcherWithNonce = ExternalScriptFetcherWithNonce;
+        realm.WorkerScriptFetcher = WorkerScriptFetcher;
         realm.FrameElementLoader = FrameElementLoader;
         realm.LayoutBoxResolver = LayoutBoxResolver;
         realm.FrameScrollReader = FrameScrollReader;
@@ -3987,6 +4012,415 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             }
             _messagePortEndpoints.Clear();
         }
+    }
+
+    /// <summary>
+    /// A dedicated worker: the realm it runs in, the page-side object its
+    /// replies are delivered to, and the script it was started from.
+    /// </summary>
+    private sealed class DedicatedWorkerInstance
+    {
+        public int Id;
+        public FenJsBrowserScriptEngine Realm;
+        public JsValue PageObject;
+        public Uri ScriptUri;
+        public bool Terminated;
+    }
+
+    private readonly Dictionary<int, DedicatedWorkerInstance> _dedicatedWorkers = new();
+    private int _dedicatedWorkerIdCounter;
+
+    // Runs in the worker's own realm, where the global is the worker itself.
+    // Everything a worker shares with a window -- timers, XHR, fetch, console,
+    // crypto -- the realm already installed; this adds what is specific to
+    // being a worker.
+    private const string DedicatedWorkerBootstrapScript = @"
+        (function () {
+            var listeners = [];
+
+            // The realm was given a document so that its Web API globals get
+            // installed, but a worker must not look like a window: scripts pick
+            // their worker branch by asking whether window and document exist,
+            // and a bundle that runs in both will silently take the page path
+            // and never answer the page that started it.
+            try { delete globalThis.window; } catch (e) { globalThis.window = undefined; }
+            try { delete globalThis.document; } catch (e) { globalThis.document = undefined; }
+            try { delete globalThis.frames; } catch (e) { }
+            try { delete globalThis.parent; } catch (e) { }
+            try { delete globalThis.top; } catch (e) { }
+            globalThis.WorkerGlobalScope = function WorkerGlobalScope() { };
+            globalThis.DedicatedWorkerGlobalScope = function DedicatedWorkerGlobalScope() { };
+
+            globalThis.self = globalThis;
+            globalThis.onmessage = null;
+            globalThis.onmessageerror = null;
+            globalThis.onerror = null;
+            globalThis.name = '';
+            globalThis.postMessage = function (data, transfer) {
+                // The transfer list is the whole point of the first message a
+                // worker sends: it hands the page the port the rest of the
+                // conversation happens over. Dropping it leaves the page holding
+                // a message it cannot answer.
+                __fenWorkerEmit(data, transfer || []);
+            };
+            globalThis.close = function () {
+                __fenWorkerEmitClose();
+            };
+            globalThis.importScripts = function () {
+                for (var i = 0; i < arguments.length; i++) {
+                    var code = __fenWorkerImportScript(String(arguments[i]));
+                    if (typeof code === 'string' && code.length) {
+                        (0, eval)(code);
+                    }
+                }
+            };
+            globalThis.addEventListener = function (type, callback) {
+                if (typeof callback !== 'function' || String(type) !== 'message') { return; }
+                if (listeners.indexOf(callback) < 0) { listeners.push(callback); }
+            };
+            globalThis.removeEventListener = function (type, callback) {
+                var at = listeners.indexOf(callback);
+                if (at >= 0) { listeners.splice(at, 1); }
+            };
+            globalThis.__fenWorkerDeliver = function (event) {
+                if (typeof globalThis.onmessage === 'function') {
+                    globalThis.onmessage(event);
+                }
+                var snapshot = listeners.slice();
+                for (var i = 0; i < snapshot.length; i++) {
+                    snapshot[i].call(globalThis, event);
+                }
+            };
+        })();
+        ";
+
+    /// <summary>
+    /// Starts a dedicated worker: fetches its script, gives it a realm of its
+    /// own and runs it there. Returns the id the page-side object addresses it
+    /// by, or -1 if it could not be started.
+    /// </summary>
+    private JsValue StartDedicatedWorker(IReadOnlyList<JsValue> args)
+    {
+        if (args == null || args.Count < 2 || _interpreter == null)
+        {
+            return JsValue.FromInt32(-1);
+        }
+
+        var rawUrl = CoerceToHostString(args[0]);
+        if (string.IsNullOrWhiteSpace(rawUrl) ||
+            !Uri.TryCreate(_currentBaseUri, rawUrl, out var scriptUri))
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Worker script URL unresolvable against {_currentBaseUri}: {rawUrl}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return JsValue.FromInt32(-1);
+        }
+
+        string source;
+        try
+        {
+            source = FetchWorkerScriptAsync(scriptUri, _currentBaseUri).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Worker script fetch failed for {scriptUri}: {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return JsValue.FromInt32(-1);
+        }
+
+        if (string.IsNullOrEmpty(source))
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Worker script was empty: {scriptUri}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return JsValue.FromInt32(-1);
+        }
+
+        var id = ++_dedicatedWorkerIdCounter;
+        var worker = new DedicatedWorkerInstance
+        {
+            Id = id,
+            PageObject = args[1],
+            ScriptUri = scriptUri
+        };
+        _dedicatedWorkers[id] = worker;
+
+        try
+        {
+            worker.Realm = CreateWorkerRealm(scriptUri, id);
+            worker.Realm.EvaluateWithFenJsRaw(DedicatedWorkerBootstrapScript);
+            worker.Realm.EvaluateWithFenJsRaw(source);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Worker script threw while starting ({scriptUri}): {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+            _dedicatedWorkers.Remove(id);
+            worker.Realm?.AbandonRealm();
+            return JsValue.FromInt32(-1);
+        }
+
+        FenBrowser.Core.EngineLogCompat.Info(
+            $"[FenJsBridge] Worker {id} started from {scriptUri} ({source.Length} chars)",
+            FenBrowser.Core.Logging.LogCategory.JavaScript);
+        return JsValue.FromInt32(id);
+    }
+
+    private async Task<string> FetchWorkerScriptAsync(Uri scriptUri, Uri referer)
+    {
+        if (WorkerScriptFetcher != null)
+        {
+            var fromWorkerFetcher = await WorkerScriptFetcher(scriptUri, referer).ConfigureAwait(false);
+            FenBrowser.Core.EngineLogCompat.Info(
+                $"[FenJsBridge] WorkerScriptFetcher result for '{scriptUri}': len={fromWorkerFetcher?.Length ?? -1}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+            if (!string.IsNullOrEmpty(fromWorkerFetcher))
+            {
+                return fromWorkerFetcher;
+            }
+        }
+
+        return await FetchExternalPageScriptAsync(scriptUri, referer).ConfigureAwait(false);
+    }
+
+    private FenJsBrowserScriptEngine CreateWorkerRealm(Uri scriptUri, int workerId)
+    {
+        var realm = new FenJsBrowserScriptEngine(_host)
+        {
+            _parentRealmOwner = this
+        };
+        realm.RuntimeProfile = RuntimeProfile;
+        realm.FetchOverride = FetchOverride;
+        realm.SubresourceAllowed = SubresourceAllowed;
+        realm.TrustedDynamicSubresourceAllowed = TrustedDynamicSubresourceAllowed;
+        realm.NonceAllowed = NonceAllowed;
+        realm.FetchHandler = FetchHandler;
+        realm.CookieReadBridge = CookieReadBridge;
+        realm.CookieWriteBridge = CookieWriteBridge;
+        realm.ExternalScriptFetcher = ExternalScriptFetcher;
+        realm.ExternalScriptFetcherWithNonce = ExternalScriptFetcherWithNonce;
+        realm.WorkerScriptFetcher = WorkerScriptFetcher;
+        realm.ExecutionCancellation = ExecutionCancellation;
+        realm.Sandbox = Sandbox;
+        realm.AllowExternalScripts = AllowExternalScripts;
+        realm.DocumentSecurityContext = DocumentSecurityContext;
+        realm.PermissionsPolicyProvider = PermissionsPolicyProvider;
+
+        // A worker has no document, but the realm installs its Web API globals
+        // alongside the DOM ones. An empty document the worker script cannot
+        // reach is the smallest way to get a realm that actually works.
+        realm.BindFenJsDomContext(new Document(), scriptUri, "complete");
+
+        realm._interpreter.RegisterGlobalValue(
+            "__fenWorkerEmit",
+            realm._interpreter.AllocateNativeFunction(
+                "__fenWorkerEmit",
+                (_, emitArgs) => DeliverMessageFromWorker(workerId, emitArgs)));
+        realm._interpreter.RegisterGlobalValue(
+            "__fenWorkerEmitClose",
+            realm._interpreter.AllocateNativeFunction(
+                "__fenWorkerEmitClose",
+                (_, _) => TerminateDedicatedWorkerById(workerId)));
+        realm._interpreter.RegisterGlobalValue(
+            "__fenWorkerImportScript",
+            realm._interpreter.AllocateNativeFunction(
+                "__fenWorkerImportScript",
+                (_, importArgs) => ImportWorkerScript(workerId, importArgs)));
+        return realm;
+    }
+
+    private JsValue ImportWorkerScript(int workerId, IReadOnlyList<JsValue> args)
+    {
+        if (args == null || args.Count == 0 ||
+            !_dedicatedWorkers.TryGetValue(workerId, out var worker) || worker.Terminated)
+        {
+            return JsValue.FromString(string.Empty);
+        }
+
+        var raw = CoerceToHostString(args[0]);
+        if (string.IsNullOrWhiteSpace(raw) || !Uri.TryCreate(worker.ScriptUri, raw, out var uri))
+        {
+            return JsValue.FromString(string.Empty);
+        }
+
+        try
+        {
+            return JsValue.FromString(
+                FetchWorkerScriptAsync(uri, worker.ScriptUri).GetAwaiter().GetResult() ?? string.Empty);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Worker {workerId} importScripts({uri}) failed: {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return JsValue.FromString(string.Empty);
+        }
+    }
+
+    /// <summary>The page called worker.postMessage(data).</summary>
+    private JsValue PostMessageToDedicatedWorker(IReadOnlyList<JsValue> args)
+    {
+        if (args == null || args.Count == 0 ||
+            !_dedicatedWorkers.TryGetValue((int)CoerceToHostUInt32(args[0], 0), out var worker) ||
+            worker.Terminated || worker.Realm == null)
+        {
+            return JsValue.Undefined;
+        }
+
+        // Cross the realm boundary as data, never as a handle: the realms have
+        // separate heaps and an object from one means nothing in the other.
+        var payload = args.Count > 1 ? ConvertJsValueToObject(args[1]) : null;
+        var transferred = args.Count > 2
+            ? ExtractTransferredMessagePorts(args[2])
+            : Array.Empty<MessagePortEndpoint>();
+        if (DiagnosticPaths.AppendEnabled)
+        {
+            DiagnosticPaths.AppendLogText(
+                "worker_probe.txt",
+                $"{DateTimeOffset.UtcNow:O} page->worker{worker.Id} " +
+                $"data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)}{Environment.NewLine}");
+        }
+
+        worker.Realm.DeliverMessageIntoWorkerRealm(payload, GetCurrentWindowOrigin(), transferred);
+        return JsValue.Undefined;
+    }
+
+    private void DeliverMessageIntoWorkerRealm(
+        object payload,
+        string origin,
+        IReadOnlyList<MessagePortEndpoint> transferred)
+    {
+        try
+        {
+            RunFenJsWithLargeStack<object>(() =>
+            {
+                lock (_fenJsLock)
+                {
+                    if (_interpreter == null)
+                    {
+                        return null;
+                    }
+
+                    var deliver = ReadGlobalValueOrUndefined("__fenWorkerDeliver");
+                    if (!_interpreter.CanCallValue(deliver))
+                    {
+                        return null;
+                    }
+
+                    var eventValue = CreateMessageEventValue(
+                        ConvertObjectToJsValue(payload),
+                        origin,
+                        JsValue.Undefined,
+                        _fenJsGlobalThis,
+                        ImportTransferredMessagePorts(transferred));
+                    _interpreter.InvokeFunction(deliver, new[] { eventValue }, JsValue.Undefined);
+                    return null;
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Worker message delivery threw: {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+    }
+
+    /// <summary>The worker called postMessage(data); hand it to the page.</summary>
+    private JsValue DeliverMessageFromWorker(int workerId, IReadOnlyList<JsValue> args)
+    {
+        if (!_dedicatedWorkers.TryGetValue(workerId, out var worker) || worker.Terminated)
+        {
+            return JsValue.Undefined;
+        }
+
+        var payload = args != null && args.Count > 0 && worker.Realm != null
+            ? worker.Realm.ConvertJsValueToObject(args[0])
+            : null;
+        var transferred = args != null && args.Count > 1 && worker.Realm != null
+            ? worker.Realm.ExtractTransferredMessagePorts(args[1])
+            : Array.Empty<MessagePortEndpoint>();
+        if (DiagnosticPaths.AppendEnabled)
+        {
+            DiagnosticPaths.AppendLogText(
+                "worker_probe.txt",
+                $"{DateTimeOffset.UtcNow:O} worker{workerId}->page " +
+                $"data={(args != null && args.Count > 0 ? worker.Realm.DescribePostMessageValue(args[0]) : "<none>")} " +
+                $"transferCount={transferred.Count} args={args?.Count ?? 0}{Environment.NewLine}");
+        }
+
+        try
+        {
+            RunFenJsWithLargeStack<object>(() =>
+            {
+                lock (_fenJsLock)
+                {
+                    if (_interpreter == null || worker.PageObject.Tag != JsValueTag.Object)
+                    {
+                        return null;
+                    }
+
+                    var eventValue = CreateMessageEventValue(
+                        ConvertObjectToJsValue(payload),
+                        GetCurrentWindowOrigin(),
+                        JsValue.Undefined,
+                        worker.PageObject,
+                        ImportTransferredMessagePorts(transferred));
+                    var dispatch = ReadJsProperty(worker.PageObject, "dispatchEvent");
+                    if (_interpreter.CanCallValue(dispatch))
+                    {
+                        _interpreter.InvokeFunction(dispatch, new[] { eventValue }, worker.PageObject);
+                    }
+                    else if (DiagnosticPaths.AppendEnabled)
+                    {
+                        DiagnosticPaths.AppendLogText(
+                            "worker_probe.txt",
+                            $"{DateTimeOffset.UtcNow:O} worker{workerId}->page NOT DELIVERED: " +
+                            $"page object has no callable dispatchEvent{Environment.NewLine}");
+                    }
+                    return null;
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Worker {workerId} reply delivery threw: {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+        return JsValue.Undefined;
+    }
+
+    private JsValue TerminateDedicatedWorker(IReadOnlyList<JsValue> args)
+    {
+        if (args != null && args.Count > 0)
+        {
+            TerminateDedicatedWorkerById((int)CoerceToHostUInt32(args[0], 0));
+        }
+        return JsValue.Undefined;
+    }
+
+    private JsValue TerminateDedicatedWorkerById(int workerId)
+    {
+        if (_dedicatedWorkers.TryGetValue(workerId, out var worker))
+        {
+            worker.Terminated = true;
+            _dedicatedWorkers.Remove(workerId);
+            worker.Realm?.AbandonRealm();
+        }
+        return JsValue.Undefined;
+    }
+
+    private void TerminateAllDedicatedWorkers()
+    {
+        foreach (var worker in _dedicatedWorkers.Values.ToArray())
+        {
+            worker.Terminated = true;
+            worker.Realm?.AbandonRealm();
+        }
+        _dedicatedWorkers.Clear();
     }
 
     private void ResetFenJsSession()
@@ -8383,6 +8817,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 "__fenSyncFetch",
                 (_, args) => ExecuteSynchronousFetchRequest(args)));
         _interpreter.RegisterGlobalValue(
+            "__fenWorkerStart",
+            _interpreter.AllocateNativeFunction(
+                "__fenWorkerStart",
+                (_, args) => StartDedicatedWorker(args),
+                length: 2));
+        _interpreter.RegisterGlobalValue(
+            "__fenWorkerPost",
+            _interpreter.AllocateNativeFunction(
+                "__fenWorkerPost",
+                (_, args) => PostMessageToDedicatedWorker(args),
+                length: 2));
+        _interpreter.RegisterGlobalValue(
+            "__fenWorkerStop",
+            _interpreter.AllocateNativeFunction(
+                "__fenWorkerStop",
+                (_, args) => TerminateDedicatedWorker(args)));
+        _interpreter.RegisterGlobalValue(
             "__fenParseUrl",
             _interpreter.AllocateNativeFunction(
                 "__fenParseUrl",
@@ -9272,11 +9723,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         this.onmessageerror = null;
                         this._fenListeners = {};
                         this._fenTerminated = false;
+                        // Fetches the script and runs it in a realm of its own.
+                        // A worker that accepted messages and never answered was
+                        // indistinguishable from one still working: callers that
+                        // await a reply simply hung until their own deadline.
+                        this._fenWorkerId = (typeof __fenWorkerStart === 'function')
+                            ? __fenWorkerStart(this.scriptURL, this)
+                            : -1;
                     };
-                    Worker.prototype.postMessage = function (data) {
-                        if (this._fenTerminated) return;
+                    Worker.prototype.postMessage = function (data, transfer) {
+                        if (this._fenTerminated || !(this._fenWorkerId > 0)) return;
+                        __fenWorkerPost(this._fenWorkerId, data, transfer || []);
                     };
                     Worker.prototype.terminate = function () {
+                        if (!this._fenTerminated && this._fenWorkerId > 0) {
+                            __fenWorkerStop(this._fenWorkerId);
+                        }
                         this._fenTerminated = true;
                         this._fenListeners = {};
                     };

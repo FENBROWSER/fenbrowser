@@ -5828,6 +5828,48 @@ pre {{
                         }).ConfigureAwait(false);
                     return scriptResult?.Status == FetchStatus.Success ? scriptResult.Content : null;
                 },
+                WorkerScriptFetcher = async (resourceUri, _) =>
+                {
+                    if (_options.TryGetScriptOverride(resourceUri, out var workerOverride))
+                    {
+                        return workerOverride;
+                    }
+
+                    var workerResult = await _resources.FetchTextDetailedAsync(
+                        new FetchContext
+                        {
+                            RequestUri = MapRuntimeUri(resourceUri),
+                            InitiatorUri = frameUri,
+                            FrameDocumentUri = frameUri,
+                            TopLevelDocumentUri = topLevelUri,
+                            // A worker is fetched as a worker, not as a script:
+                            // worker-src governs it and no element nonce applies.
+                            Destination = "worker",
+                            Mode = "same-origin",
+                            // new Worker() is only ever reached from running
+                            // script, so under 'strict-dynamic' it carries that
+                            // script's trust rather than being matched against
+                            // host sources the directive has already discarded.
+                            ScriptProvenance = FenBrowser.Core.Security.CspScriptProvenance.TrustedDynamic,
+                            CredentialsMode = "same-origin",
+                            ReferrerPolicy = referrerPolicy,
+                            ContentSecurityPolicy = framePolicy,
+                            IsTopLevelNavigation = false,
+                            IsUserInitiated = false,
+                            Method = "GET"
+                        }).ConfigureAwait(false);
+                    if (workerResult?.Status != FetchStatus.Success)
+                    {
+                        FenBrowser.Core.FenLogger.Warn(
+                            $"[BrowserApi] Worker script fetch for {resourceUri} was not served: " +
+                            $"status={workerResult?.Status.ToString() ?? "<null result>"} " +
+                            $"http={workerResult?.StatusCode} reason={workerResult?.FailureReason} detail={workerResult?.ErrorDetail}",
+                            FenBrowser.Core.Logging.LogCategory.Network);
+                        return null;
+                    }
+
+                    return workerResult.Content;
+                },
                 FetchHandler = request =>
                 {
                     request.RequestUri = MapRuntimeUri(request.RequestUri);
