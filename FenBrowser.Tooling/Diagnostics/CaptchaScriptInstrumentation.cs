@@ -27,6 +27,11 @@ internal static class CaptchaScriptInstrumentation
     // Runs immediately before the bundle, in whichever realm loads it.
     private const string Prologue = """
         (function () {
+            // The same bundle is imported into the worker, where there is no
+            // window at all. Anything that reaches for one throws before the
+            // bundle gets to run, so address the global directly.
+            var window = globalThis;
+            if (typeof document === 'undefined' || !document) { return; }
             if (window.__fenPrologueInstalled) { return; }
             window.__fenPrologueInstalled = 1;
             if (!window.__fenListenerLog) { window.__fenListenerLog = []; }
@@ -104,6 +109,38 @@ internal static class CaptchaScriptInstrumentation
                     };
                 }
             } catch (e) { note('fetch-hook-threw:' + e); }
+            // Chrome fetches /recaptcha/api2/webworker during set-up and we never
+            // do, because our Worker is a stub that swallows everything. Record
+            // whether the bundle builds one and what it expects back from it.
+            try {
+                if (typeof window.Worker === 'function') {
+                    var RealWorker = window.Worker;
+                    window.Worker = function (url, opts) {
+                        note('Worker constructed: ' + String(url));
+                        var w = new RealWorker(url, opts);
+                        try {
+                            var post = w.postMessage;
+                            w.postMessage = function (d) {
+                                note('worker.postMessage len=' +
+                                    (function () { try { return JSON.stringify(d).length; } catch (e) { return '?'; } })());
+                                return post.apply(this, arguments);
+                            };
+                            var add = w.addEventListener;
+                            if (typeof add === 'function') {
+                                w.addEventListener = function (t) {
+                                    note('worker.addEventListener ' + t);
+                                    return add.apply(this, arguments);
+                                };
+                            }
+                        } catch (e) { }
+                        return w;
+                    };
+                    window.Worker.prototype = RealWorker.prototype;
+                } else {
+                    note('window.Worker is ' + (typeof window.Worker));
+                }
+            } catch (e) { note('worker-hook-threw:' + e); }
+
             try {
                 var create = document.createElement;
                 document.createElement = function (tag) {
