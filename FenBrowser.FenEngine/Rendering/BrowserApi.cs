@@ -5331,7 +5331,7 @@ pre {{
             }
 
             if (ResolveFrameSearchRoot(frameElement) != null &&
-                IsFrameScriptsHydratedForUri(frameElement, frameUri))
+                IsFrameScriptsHydratedForUri(ResolveFrameSearchRoot(frameElement), frameUri))
             {
                 return;
             }
@@ -5913,7 +5913,7 @@ pre {{
                 return;
             }
 
-            if (IsFrameScriptsHydratedForUri(frameElement, frameUri))
+            if (IsFrameScriptsHydratedForUri(frameRoot, frameUri))
             {
                 return;
             }
@@ -5938,13 +5938,14 @@ pre {{
             {
                 if (_frameScriptHydrations.TryGetValue(frameElement, out var running) &&
                     string.Equals(running.Url, requestedUrl, StringComparison.Ordinal) &&
+                    ReferenceEquals(running.Root, frameRoot) &&
                     !running.Task.IsCompleted)
                 {
                     hydration = running.Task;
                 }
                 else
                 {
-                    var started = new FrameScriptHydration { Url = requestedUrl };
+                    var started = new FrameScriptHydration { Url = requestedUrl, Root = frameRoot };
                     started.Task = HydrateFrameScriptsAsync(frameElement, frameRoot, frameUri, options);
                     _frameScriptHydrations.Remove(frameElement);
                     _frameScriptHydrations.Add(frameElement, started);
@@ -5965,6 +5966,14 @@ pre {{
         private sealed class FrameScriptHydration
         {
             public string Url { get; init; } = string.Empty;
+
+            // The document being set up, not just its address. A frame that
+            // reloads replaces its document while keeping the same URL, and the
+            // setup already in flight is then for a document that is no longer
+            // in the tree — joining it would leave the realm bound to the old
+            // one while everything visible, and every click, belongs to the new.
+            public Element Root { get; init; }
+
             public Task Task { get; set; } = Task.CompletedTask;
         }
 
@@ -5992,19 +6001,24 @@ pre {{
                 await jsEngine.SetDomAsync(frameRoot, frameUri).ConfigureAwait(false);
             }
 
-            frameElement.SetAttribute(WebDriverFrameScriptsHydratedAttribute, "1");
-            frameElement.SetAttribute(WebDriverFrameScriptsHydratedUrlAttribute, frameUri?.AbsoluteUri ?? string.Empty);
+            // Mark the document that was set up, not the frame holding it. A
+            // frame that reloads replaces its document while keeping the same
+            // URL; a mark on the frame then claims the fresh document is
+            // already done, so its scripts never run and nothing in it is
+            // wired up - the widget renders and no click ever reaches it.
+            frameRoot.SetAttribute(WebDriverFrameScriptsHydratedAttribute, "1");
+            frameRoot.SetAttribute(WebDriverFrameScriptsHydratedUrlAttribute, frameUri?.AbsoluteUri ?? string.Empty);
         }
 
-        private static bool IsFrameScriptsHydratedForUri(Element frameElement, Uri frameUri)
+        private static bool IsFrameScriptsHydratedForUri(Element frameRoot, Uri frameUri)
         {
-            if (frameElement == null ||
-                !string.Equals(frameElement.GetAttribute(WebDriverFrameScriptsHydratedAttribute), "1", StringComparison.Ordinal))
+            if (frameRoot == null ||
+                !string.Equals(frameRoot.GetAttribute(WebDriverFrameScriptsHydratedAttribute), "1", StringComparison.Ordinal))
             {
                 return false;
             }
 
-            var hydratedUrl = frameElement.GetAttribute(WebDriverFrameScriptsHydratedUrlAttribute) ?? string.Empty;
+            var hydratedUrl = frameRoot.GetAttribute(WebDriverFrameScriptsHydratedUrlAttribute) ?? string.Empty;
             var requestedUrl = frameUri?.AbsoluteUri ?? string.Empty;
             return string.Equals(hydratedUrl, requestedUrl, StringComparison.Ordinal);
         }
