@@ -68,9 +68,16 @@ public sealed class RegexVM
         _backtrackCount = 0;
         _maxBacktracks = MaxBacktracks + 4 * _cpLen;
         _stackExhausted = false;
+        // One stack and one visited-set for the whole run. Both used to be
+        // allocated afresh - the stack for every start position tried, the
+        // visited set for every state popped - so a pattern that simply does
+        // not match spent most of its time allocating. Clearing them where
+        // they were allocated keeps the scoping identical.
+        var stack = new Stack<ThreadState>(64);
+        var visitedInlineStates = new HashSet<(int PC, int CP, int CapturesHash)>();
         for (int tryCp = startCp; tryCp <= _cpLen; tryCp++)
         {
-            var stack = new Stack<ThreadState>(64);
+            stack.Clear();
             _stack = stack;
 
             var initialState = new ThreadState
@@ -98,7 +105,7 @@ public sealed class RegexVM
             var cp = state.CP;
             var captures = state.Captures;
             var ownsCaptures = state.OwnsCaptures;
-            var visitedInlineStates = new HashSet<(int PC, int CP, int CapturesHash)>();
+            visitedInlineStates.Clear();
 
             while (true)
             {
