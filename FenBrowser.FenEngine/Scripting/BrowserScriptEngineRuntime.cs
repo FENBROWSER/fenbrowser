@@ -6650,6 +6650,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 snapshot.TimersScheduled++;
             }
         });
+        var scheduledAtTicks = System.Diagnostics.Stopwatch.GetTimestamp();
         AddEventLoopRecord("TimerScheduled", callback.Tag.ToString(), id, delayMs, repeat);
         LogEventLoop(
             "TimerScheduled",
@@ -6691,6 +6692,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         callbackDocumentId,
                         () =>
                         {
+                            // A timer that fires early makes a page think it has
+                            // timed out when it has not. Record what was asked for
+                            // against what actually elapsed.
+                            if (DiagnosticPaths.AppendEnabled)
+                            {
+                                var actualMs = (System.Diagnostics.Stopwatch.GetTimestamp() - scheduledAtTicks)
+                                    * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                                DiagnosticPaths.AppendLogText(
+                                    "timer_probe.txt",
+                                    $"{DateTimeOffset.UtcNow:O} id={id} asked={delayMs}ms actual={actualMs:F0}ms " +
+                                    $"drift={actualMs - delayMs:F0}ms {(repeat ? "interval" : "timeout")}{Environment.NewLine}");
+                            }
+
                             AddEventLoopRecord("TimerFired", callback.Tag.ToString(), id, delayMs, repeat);
                             LogEventLoop(
                                 "TimerFired",
