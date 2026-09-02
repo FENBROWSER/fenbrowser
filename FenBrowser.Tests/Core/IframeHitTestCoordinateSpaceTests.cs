@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Core;
 using FenBrowser.FenEngine.Rendering.Interaction;
@@ -87,7 +88,8 @@ public sealed class IframeHitTestCoordinateSpaceTests
 
         using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
         using var canvas = new SKCanvas(bitmap);
-        renderer.RenderFrame(new RenderFrameRequest
+
+        void Render() => renderer.RenderFrame(new RenderFrameRequest
         {
             Root = root,
             Canvas = canvas,
@@ -99,8 +101,36 @@ public sealed class IframeHitTestCoordinateSpaceTests
             EmitVerificationReport = false
         });
 
-        Assert.True(renderer.LastLayout.TryGetElementRect(bottom, out var bottomRect),
-            "Missing layout rect for the frame's bottom target.");
+        // The frame document arrives from a script, so an early pass can still be
+        // moving the frame's boxes. Render until the target's rect stops changing
+        // before reading a click point off it — waiting for layout to converge,
+        // not for any particular answer.
+        ElementGeometry bottomRect = default;
+        var previous = default(ElementGeometry);
+        var havePrevious = false;
+        var settled = false;
+        var settleDeadline = DateTime.UtcNow.AddSeconds(5);
+        while (!settled && DateTime.UtcNow < settleDeadline)
+        {
+            Render();
+            if (renderer.LastLayout.TryGetElementRect(bottom, out bottomRect) && bottomRect.Height > 0)
+            {
+                settled = havePrevious &&
+                          bottomRect.X == previous.X &&
+                          bottomRect.Y == previous.Y &&
+                          bottomRect.Width == previous.Width &&
+                          bottomRect.Height == previous.Height;
+                previous = bottomRect;
+                havePrevious = true;
+            }
+
+            if (!settled)
+            {
+                await Task.Delay(25);
+            }
+        }
+
+        Assert.True(settled, "Layout for the frame's bottom target never converged.");
 
         var ctx = renderer.CreateRenderContext();
         var x = bottomRect.Left + (bottomRect.Width / 2f);
