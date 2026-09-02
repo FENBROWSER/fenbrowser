@@ -453,6 +453,35 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    /// <summary>
+    /// Safepoint for compiled code, charged for a whole run of instructions at
+    /// once. Polling this per instruction costs two calls before every opcode
+    /// -- more than most opcodes are worth -- so compiled bodies poll at loop
+    /// headers instead and pay for the iteration they just finished. What the
+    /// budget is there to stop is a script that does not terminate, and a
+    /// script that does not terminate goes round a loop.
+    /// </summary>
+    internal void CheckExecutionBudgetForJit(int charge)
+    {
+        _heap.CollectAtSafePointIfRequested();
+        if (InstructionBudget > 0)
+        {
+            _instructionCount += charge;
+            if (_instructionCount > InstructionBudget)
+                throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded.")) { IsUncatchableByScript = true };
+        }
+
+        _wallClockCheckCountdown -= charge;
+        if (_wallClockCheckCountdown > 0)
+            return;
+
+        _wallClockCheckCountdown = WallClockCheckInterval;
+        if (InterruptCallback is { } cb && !cb())
+            throw new JsThrownException(CreateRangeError("Execution interrupted.")) { IsUncatchableByScript = true };
+        if (_wallClockDeadlineTicks != 0 && Environment.TickCount64 >= _wallClockDeadlineTicks)
+            throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded.")) { IsUncatchableByScript = true };
+    }
+
     internal void CheckExecutionBudgetForJit()
     {
         _heap.CollectAtSafePointIfRequested();

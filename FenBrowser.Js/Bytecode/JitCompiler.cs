@@ -346,8 +346,13 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperElement), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiHandleLoadSuperConstructor = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperConstructor), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCheckExecutionBudgetCharged = typeof(BytecodeInterpreter)
+        .GetMethod("CheckExecutionBudgetForJit", BindingFlags.Instance | BindingFlags.NonPublic,
+            null, new[] { typeof(int) }, null)!;
+
     private static readonly MethodInfo MiCheckExecutionBudget = typeof(BytecodeInterpreter)
-        .GetMethod(nameof(BytecodeInterpreter.CheckExecutionBudgetForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+        .GetMethod(nameof(BytecodeInterpreter.CheckExecutionBudgetForJit),
+            BindingFlags.Instance | BindingFlags.NonPublic, null, Type.EmptyTypes, null)!;
     private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
     private static readonly PropertyInfo PiFunction = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Function))!;
     private static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
@@ -424,10 +429,39 @@ public static class JitCompiler
                 entryCases));
         }
 
+        // Poll at loop headers rather than before every instruction. Two calls
+        // ahead of each opcode cost more than most opcodes do, and a script that
+        // fails to terminate always goes round a loop, so a header is where the
+        // check earns its keep. Each one is charged for the span it governs so
+        // the instruction budget still measures work rather than iterations.
+        var safepointCharge = new Dictionary<int, int>();
+        foreach (var header in loopHeaders)
+        {
+            var furthest = header;
+            for (var i = header; i < function.Instructions.Count; i++)
+            {
+                var branch = function.Instructions[i];
+                if ((branch.OpCode == OpCode.Jump && branch.A == header) ||
+                    (branch.OpCode == OpCode.JumpIfFalse && branch.B == header))
+                {
+                    furthest = i;
+                }
+            }
+
+            safepointCharge[header] = Math.Max(1, furthest - header + 1);
+        }
+
         for (var i = 0; i < function.Instructions.Count; i++)
         {
             body.Add(Expression.Label(instructionLabels[i]));
-            body.Add(Expression.Call(interpParam, MiCheckExecutionBudget));
+            if (i == 0 || safepointCharge.ContainsKey(i))
+            {
+                body.Add(Expression.Call(
+                    interpParam,
+                    MiCheckExecutionBudgetCharged,
+                    Expression.Constant(safepointCharge.TryGetValue(i, out var charge) ? charge : 1)));
+            }
+
             var ins = function.Instructions[i];
             if (!TryEmitOpcode(function, ins, i, interpParam, frameParam, registersLocal, constantsLocal, instructionLabels, returnLabel, body))
             {
