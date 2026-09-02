@@ -58,6 +58,21 @@ public sealed partial class BytecodeInterpreter
                 continue;
             }
 
+            // The ordinary case - a function body's own vars, hoisted into a
+            // fresh function environment - needs none of the eval checks below
+            // and can be settled in a single lookup.
+            if (!isEval)
+            {
+                var ensured = frame.Environment.EnsureVarBinding(name, deletable: false);
+                if (ensured != BindingOpResult.Ok)
+                {
+                    ThrowTypeError(frame, $"Cannot declare var binding '{name}'.");
+                    return;
+                }
+
+                continue;
+            }
+
             if (frame.Environment.HasBinding(name))
             {
                 // ECMA-262: for eval code, a var declaration that conflicts

@@ -76,6 +76,37 @@ public abstract class EnvironmentRecord
         return GetBindingValue(name, strict, out value);
     }
 
+    // Declaring a binding and giving it its value is one act at a call site:
+    // every parameter and every local of every function is created and then
+    // initialised, immediately, on every call. Doing it as two operations
+    // hashes the same name twice. Records that can do it in one override this.
+    public virtual BindingOpResult CreateAndInitializeBinding(string name, JsValue value, bool deletable)
+    {
+        var created = CreateMutableBinding(name, deletable);
+        if (created is not (BindingOpResult.Ok or BindingOpResult.AlreadyDeclared))
+        {
+            return created;
+        }
+
+        return InitializeBinding(name, value);
+    }
+
+    // Hoisting a var: create it holding undefined, but leave an existing
+    // binding alone - `function f(a){ var a; }` must not blank the argument.
+    // Every var of every function is hoisted on every call, and asking whether
+    // it exists and then creating and initialising it hashes the name three
+    // times. Records that can answer in one lookup override this.
+    public virtual BindingOpResult EnsureVarBinding(string name, bool deletable)
+    {
+        if (HasBinding(name))
+        {
+            return BindingOpResult.Ok;
+        }
+
+        var created = CreateMutableBinding(name, deletable);
+        return created != BindingOpResult.Ok ? created : InitializeBinding(name, JsValue.Undefined);
+    }
+
     // 9.1.1.1.1 HasBinding ( N ) - true if the record has a binding for N.
     public abstract bool HasBinding(string name);
 

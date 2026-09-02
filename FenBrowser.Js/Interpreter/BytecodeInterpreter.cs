@@ -1314,16 +1314,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     paramValue = i < args.Count ? args[i] : JsValue.Undefined;
                 }
 
-                _ = frame.Environment.CreateMutableBinding(paramName, deletable: false);
-                _ = frame.Environment.InitializeBinding(paramName, paramValue);
+                _ = frame.Environment.CreateAndInitializeBinding(paramName, paramValue, deletable: false);
             }
 
             if (function.HasOwnArgumentsObject &&
                 !function.ParameterNames.Contains("arguments", StringComparer.Ordinal))
             {
                 var argumentsObject = CreateArgumentsObject(args, function.UsesRestrictedArgumentsObject, callee);
-                _ = frame.Environment.CreateMutableBinding("arguments", deletable: false);
-                _ = frame.Environment.InitializeBinding("arguments", argumentsObject);
+                _ = frame.Environment.CreateAndInitializeBinding("arguments", argumentsObject, deletable: false);
             }
 
             ValidateDeclarationInstantiation(function, frame);
@@ -6089,8 +6087,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         env ??= frame.Environment;
         if (!env.HasBinding(name))
         {
-            _ = env.CreateMutableBinding(name, deletable: true);
-            _ = env.InitializeBinding(name, value);
+            _ = env.CreateAndInitializeBinding(name, value, deletable: true);
             return;
         }
 
