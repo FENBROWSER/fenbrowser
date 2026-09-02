@@ -2301,122 +2301,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 }
                 case OpCode.SetElem:
-                {
-                    var receiverValue = frame.Registers[ins.A];
-                    var keyValue = frame.Registers[ins.B];
-                    var value = frame.Registers[ins.C];
-
-                    if (receiverValue.Tag == JsValueTag.HostObject)
-                    {
-                        try
-                        {
-                            if (keyValue.Tag != JsValueTag.Symbol)
-                            {
-                                SetHostObjectProperty(receiverValue, ToPropertyKey(keyValue), value);
-                            }
-                        }
-                        catch (JsThrownException ex)
-                        {
-                            ThrowOrHandle(frame, ex.Value);
-                        }
-                        break;
-                    }
-
-                    var ownerHandle = ResolveObjectHandle(receiverValue);
-                    var obj = _heap.GetObject(ownerHandle);
-
-                    // ECMA-262 23.2.4.3 IntegerIndexedElementSet: TypedArray integer
-                    // indices write through to the underlying buffer; out-of-bounds
-                    // writes are silently dropped and the property table is untouched.
-                    if (obj is TypedArrayObject taSet)
-                    {
-                        string? taKey = keyValue.Tag switch
-                        {
-                            JsValueTag.String => keyValue.AsString(),
-                            JsValueTag.Int32 or JsValueTag.Number => ToPropertyKey(keyValue),
-                            _ => null
-                        };
-                        if (taKey != null && IsCanonicalIntegerIndex(taKey, out var taSetIdx))
-                        {
-                            // 23.2.4.3 IntegerIndexedElementSet: coerce via ToNumber /
-                            // ToBigInt (the latter accepts string & boolean, rejects
-                            // number) before writing. The coercion can run user code and
-                            // can throw — keep it inside the try/catch so the throw routes
-                            // through ThrowOrHandle and stays catchable by JS try/catch.
-                            try
-                            {
-                                var coerced = NormalizeTypedArrayElementValue(taSet.ElementType, value);
-                                taSet.SetElement(taSetIdx, coerced);
-                            }
-                            catch (JsThrownException ex)
-                            {
-                                ThrowOrHandle(frame, ex.Value);
-                            }
-                            break;
-                        }
-                    }
-
-                    if (keyValue.Tag == JsValueTag.Symbol)
-                    {
-                        var ok = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, receiverValue);
-                        if (!ok && function.IsStrictMode)
-                        {
-                            ThrowTypeError(frame, "Cannot assign to symbol-keyed property.");
-                        }
-
-                        break;
-                    }
-
-                    var key = ToPropertyKey(keyValue);
-                    try
-                    {
-                        var ok = SetPropertyValue(ownerHandle, obj, key, value, receiverValue);
-                        if (!ok)
-                        {
-                            // ECMA-262 12.2.5.2 ArrayAccumulation / CreateDataProperty:
-                            // array literal elements must be created as own data properties
-                            // even when the prototype has a non-writable property at the
-                            // same index. Fall back to DefineOwnProperty for ArrayObject
-                            // canonical integer indices — but ONLY when the index is not
-                            // already an own property. A plain assignment to an existing
-                            // non-writable own element must fail (and throw in strict mode),
-                            // not silently overwrite it back to a writable data property.
-                            if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out _) &&
-                                !obj.TryGetOwnProperty(key, out _))
-                            {
-                                ok = obj.DefineOwnProperty(key,
-                                    new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
-                            }
-                        }
-                        if (!ok && function.IsStrictMode)
-                        {
-                            ThrowOrHandle(frame, CreateTypeError($"Cannot assign to read-only property '{key}'."));
-                            break;
-                        }
-                    }
-                    catch (JsThrownException ex)
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                        break;
-                    }
-
-                    // ECMA-262 10.4.2.1 ArraySetLength coupling: writing a canonical
-                    // array index that is >= the current length grows "length".
-                    // This is an Array exotic-object behavior ONLY — plain objects
-                    // that merely happen to carry a "length" property (array-likes,
-                    // `Math`, instances inheriting length) must not have their
-                    // length mutated by an indexed assignment.
-                    if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out var arrayIndex))
-                    {
-                        var nextLength = (double)(uint)arrayIndex + 1;
-                        if (!obj.TryGetOwnProperty("length", out var lenDesc) || lenDesc.Value.AsNumber() < nextLength)
-                        {
-                            _ = obj.SetProperty("length", JsValue.FromNumber(nextLength));
-                        }
-                    }
-
+                    PerformSetElement(
+                        frame,
+                        frame.Registers[ins.A],
+                        frame.Registers[ins.B],
+                        frame.Registers[ins.C],
+                        function.IsStrictMode);
                     break;
-                }
                 case OpCode.SpreadAppend:
                 {
                     // ECMA-262 13.2.4.1 / 13.3.7.1 — expand the iterable in C into the
@@ -6193,6 +6084,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Read once: the decline path below is reached on every back-edge a
     // non-compilable loop takes, and an environment lookup there would cost
     // more than the check it is reporting on.
+    private static readonly bool OsrDisabled =
+        string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_NOOSR"), "1", StringComparison.Ordinal);
+
     private static readonly bool OsrTraceEnabled =
         string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_TRACE"), "1", StringComparison.Ordinal);
 
@@ -6203,7 +6097,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         out JsValue result)
     {
         result = JsValue.Undefined;
-        if (!JitCompiler.Enabled || function.BackEdges < OsrBackEdgeThreshold)
+        if (!JitCompiler.Enabled || OsrDisabled || function.BackEdges < OsrBackEdgeThreshold)
         {
             return false;
         }
@@ -22088,12 +21982,22 @@ fallbackArraySpecies:
         }
     }
 
-    internal void SetElemForJit(InterpreterFrame frame, int ownerReg, int keyReg, int valueReg)
+    /// <summary>
+    /// Assigns an element, for both the dispatch loop and compiled code.
+    ///
+    /// This existed twice, and the copies disagreed: the compiled one had no
+    /// integer-indexed path, so writing to a typed array went through ordinary
+    /// property assignment and grew a "length" the array is supposed to compute
+    /// from its buffer. One write left the array reporting a length of one, and
+    /// every loop over it stopped after a single pass.
+    /// </summary>
+    internal void PerformSetElement(
+        InterpreterFrame frame,
+        JsValue receiverValue,
+        JsValue keyValue,
+        JsValue value,
+        bool strict)
     {
-        var receiverValue = frame.Registers[ownerReg];
-        var keyValue = frame.Registers[keyReg];
-        var value = frame.Registers[valueReg];
-
         if (receiverValue.Tag == JsValueTag.HostObject)
         {
             try
@@ -22107,29 +22011,77 @@ fallbackArraySpecies:
             {
                 ThrowOrHandle(frame, ex.Value);
             }
+
             return;
         }
 
         var ownerHandle = ResolveObjectHandle(receiverValue);
         var obj = _heap.GetObject(ownerHandle);
 
+        // ECMA-262 23.2.4.3 IntegerIndexedElementSet: TypedArray integer indices
+        // write through to the underlying buffer; out-of-bounds writes are
+        // silently dropped and the property table is untouched.
+        if (obj is TypedArrayObject taSet)
+        {
+            string? taKey = keyValue.Tag switch
+            {
+                JsValueTag.String => keyValue.AsString(),
+                JsValueTag.Int32 or JsValueTag.Number => ToPropertyKey(keyValue),
+                _ => null
+            };
+            if (taKey != null && IsCanonicalIntegerIndex(taKey, out var taSetIdx))
+            {
+                // The coercion can run user code and can throw; keep it inside the
+                // try so the throw routes through ThrowOrHandle and stays catchable.
+                try
+                {
+                    var coerced = NormalizeTypedArrayElementValue(taSet.ElementType, value);
+                    taSet.SetElement(taSetIdx, coerced);
+                }
+                catch (JsThrownException ex)
+                {
+                    ThrowOrHandle(frame, ex.Value);
+                }
+
+                return;
+            }
+        }
+
         if (keyValue.Tag == JsValueTag.Symbol)
         {
-            try
+            var symbolOk = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, receiverValue);
+            if (!symbolOk && strict)
             {
-                _ = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, receiverValue);
+                ThrowTypeError(frame, "Cannot assign to symbol-keyed property.");
             }
-            catch (JsThrownException ex)
-            {
-                ThrowOrHandle(frame, ex.Value);
-            }
+
             return;
         }
 
         var key = ToPropertyKey(keyValue);
         try
         {
-            _ = SetPropertyValue(ownerHandle, obj, key, value, receiverValue);
+            var ok = SetPropertyValue(ownerHandle, obj, key, value, receiverValue);
+            if (!ok)
+            {
+                // ECMA-262 12.2.5.2: array literal elements must be created as own
+                // data properties even when the prototype has a non-writable
+                // property at the same index -- but only when the index is not
+                // already an own property, so assigning to an existing
+                // non-writable element still fails.
+                if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out _) &&
+                    !obj.TryGetOwnProperty(key, out _))
+                {
+                    ok = obj.DefineOwnProperty(key,
+                        new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+                }
+            }
+
+            if (!ok && strict)
+            {
+                ThrowOrHandle(frame, CreateTypeError($"Cannot assign to read-only property '{key}'."));
+                return;
+            }
         }
         catch (JsThrownException ex)
         {
@@ -22137,15 +22089,27 @@ fallbackArraySpecies:
             return;
         }
 
-        if (double.TryParse(key, out var numericIndex))
+        // ECMA-262 10.4.2.1 ArraySetLength coupling: writing a canonical array
+        // index at or past the current length grows "length". An Array exotic
+        // behaviour only -- an ordinary object that merely carries a "length"
+        // must not have it moved by an indexed assignment.
+        if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out var arrayIndex))
         {
-            var nextLength = numericIndex + 1;
+            var nextLength = (double)(uint)arrayIndex + 1;
             if (!obj.TryGetOwnProperty("length", out var lenDesc) || lenDesc.Value.AsNumber() < nextLength)
             {
                 _ = obj.SetProperty("length", JsValue.FromNumber(nextLength));
             }
         }
     }
+
+    internal void SetElemForJit(InterpreterFrame frame, int ownerReg, int keyReg, int valueReg)
+        => PerformSetElement(
+            frame,
+            frame.Registers[ownerReg],
+            frame.Registers[keyReg],
+            frame.Registers[valueReg],
+            frame.Function.IsStrictMode);
 
     internal void DeleteElemForJit(InterpreterFrame frame, int destReg, int receiverReg, int keyReg)
     {
