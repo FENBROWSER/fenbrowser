@@ -6049,6 +6049,36 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
     }
 
+    /// <summary>
+    /// One inlinable call for the case that dominates every real function: a
+    /// variable the running frame holds itself, initialized, read by slot.
+    /// Everything else defers to <see cref="LoadName"/>.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal JsValue LoadSlotFast(InterpreterFrame frame, int slot)
+    {
+        if (frame.Environment is DeclarativeEnvironmentRecord own &&
+            own.TryReadOwnSlot(frame.Function, slot, out var value))
+        {
+            return value;
+        }
+
+        return LoadName(frame, slot);
+    }
+
+    /// <summary>The write half of <see cref="LoadSlotFast"/>.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal void StoreSlotFast(InterpreterFrame frame, int slot, JsValue value)
+    {
+        if (frame.Environment is DeclarativeEnvironmentRecord own &&
+            own.TryWriteOwnSlot(frame.Function, slot, value))
+        {
+            return;
+        }
+
+        StoreName(frame, slot, value);
+    }
+
     internal JsValue LoadName(InterpreterFrame frame, int slot)
     {
         // The frame's own environment numbers its variables exactly as this

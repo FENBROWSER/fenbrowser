@@ -346,6 +346,12 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperElement), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiHandleLoadSuperConstructor = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperConstructor), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiLoadSlotFast = typeof(BytecodeInterpreter)
+        .GetMethod("LoadSlotFast", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    private static readonly MethodInfo MiStoreSlotFast = typeof(BytecodeInterpreter)
+        .GetMethod("StoreSlotFast", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
     private static readonly MethodInfo MiCheckExecutionBudgetCharged = typeof(BytecodeInterpreter)
         .GetMethod("CheckExecutionBudgetForJit", BindingFlags.Instance | BindingFlags.NonPublic,
             null, new[] { typeof(int) }, null)!;
@@ -595,11 +601,11 @@ public static class JitCompiler
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 body.Add(Expression.Assign(
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
-                    Expression.Call(interp, MiLoadName, frame, Expression.Constant(ins.B))));
+                    Expression.Call(interp, MiLoadSlotFast, frame, Expression.Constant(ins.B))));
                 return true;
             case OpCode.StoreVar:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
-                body.Add(Expression.Call(interp, MiStoreName, frame, Expression.Constant(ins.B),
+                body.Add(Expression.Call(interp, MiStoreSlotFast, frame, Expression.Constant(ins.B),
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
                 return true;
             case OpCode.InitVar:

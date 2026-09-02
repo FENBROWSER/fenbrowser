@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Heap;
 
@@ -53,6 +54,69 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         }
 
         slot = -1;
+        return false;
+    }
+
+    /// <summary>
+    /// Reads a slot this record holds for <paramref name="owner"/>, in one call
+    /// the caller can have inlined. The chain it replaces — an ownership test,
+    /// then a bounds-and-presence test, then a status the caller has to
+    /// re-examine — is four calls deep, and a variable read is far too common
+    /// to pay that. Answers false for anything unusual so the caller can take
+    /// the ordinary path: a slot that is absent, uninitialized, or belongs to
+    /// some other function's numbering.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryReadOwnSlot(object owner, int slot, out JsValue value)
+    {
+        var bindings = _slotBindings;
+        if (bindings is not null &&
+            ReferenceEquals(_slotOwner, owner) &&
+            (uint)slot < (uint)bindings.Length &&
+            _slotPresent![slot])
+        {
+            ref var binding = ref bindings[slot];
+            if (binding.IsInitialized)
+            {
+                value = binding.Value;
+                return true;
+            }
+        }
+
+        value = JsValue.Undefined;
+        return false;
+    }
+
+    /// <summary>
+    /// The write half of <see cref="TryReadOwnSlot"/>. Refuses an immutable or
+    /// uninitialized binding so assignment errors keep going through the path
+    /// that knows how to report them.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryWriteOwnSlot(object owner, int slot, JsValue value)
+    {
+        var bindings = _slotBindings;
+        if (bindings is not null &&
+            ReferenceEquals(_slotOwner, owner) &&
+            (uint)slot < (uint)bindings.Length &&
+            _slotPresent![slot])
+        {
+            ref var binding = ref bindings[slot];
+            if (binding.IsInitialized && binding.IsMutable)
+            {
+                binding = binding with { Value = value };
+                if (value.Tag == JsValueTag.Object)
+                {
+                    // Same write barrier the name-keyed store takes. Skipping it
+                    // hides the reference from the collector's remembered set,
+                    // and the object goes away while the variable still names it.
+                    RememberBindingStore();
+                }
+
+                return true;
+            }
+        }
+
         return false;
     }
 
