@@ -4025,9 +4025,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         public JsValue PageObject;
         public Uri ScriptUri;
         public bool Terminated;
+
+        /// <summary>
+        /// Serializes this worker's start-up and every message after it, so a
+        /// page that posts straight after new Worker() is not racing the script
+        /// it is posting to.
+        /// </summary>
+        public Task Tail = Task.CompletedTask;
+        public readonly object TailGate = new();
     }
 
-    private readonly Dictionary<int, DedicatedWorkerInstance> _dedicatedWorkers = new();
+    private readonly ConcurrentDictionary<int, DedicatedWorkerInstance> _dedicatedWorkers = new();
     private int _dedicatedWorkerIdCounter;
 
     // Runs in the worker's own realm, where the global is the worker itself.
@@ -4116,28 +4124,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return JsValue.FromInt32(-1);
         }
 
-        string source;
-        try
-        {
-            source = FetchWorkerScriptAsync(scriptUri, _currentBaseUri).GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            FenBrowser.Core.EngineLogCompat.Warn(
-                $"[FenJsBridge] Worker script fetch failed for {scriptUri}: {ex.GetType().Name}: {ex.Message}",
-                FenBrowser.Core.Logging.LogCategory.JavaScript);
-            return JsValue.FromInt32(-1);
-        }
-
-        if (string.IsNullOrEmpty(source))
-        {
-            FenBrowser.Core.EngineLogCompat.Warn(
-                $"[FenJsBridge] Worker script was empty: {scriptUri}",
-                FenBrowser.Core.Logging.LogCategory.JavaScript);
-            return JsValue.FromInt32(-1);
-        }
-
-        var id = ++_dedicatedWorkerIdCounter;
+        var id = Interlocked.Increment(ref _dedicatedWorkerIdCounter);
         var worker = new DedicatedWorkerInstance
         {
             Id = id,
@@ -4146,26 +4133,88 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         };
         _dedicatedWorkers[id] = worker;
 
-        try
+        // new Worker() returns as soon as the URL parses; fetching and running
+        // the script happens after. Doing it inline charged the caller the whole
+        // of that work -- for reCAPTCHA, 1.4s taken out of an anchor set-up that
+        // has five seconds in total to finish its handshake.
+        EnqueueWorkerTask(worker, () =>
         {
-            worker.Realm = CreateWorkerRealm(scriptUri, id);
-            worker.Realm.EvaluateWithFenJsRaw(DedicatedWorkerBootstrapScript);
-            worker.Realm.EvaluateWithFenJsRaw(source);
-        }
-        catch (Exception ex)
-        {
-            FenBrowser.Core.EngineLogCompat.Warn(
-                $"[FenJsBridge] Worker script threw while starting ({scriptUri}): {ex.GetType().Name}: {ex.Message}",
-                FenBrowser.Core.Logging.LogCategory.JavaScript);
-            _dedicatedWorkers.Remove(id);
-            worker.Realm?.AbandonRealm();
-            return JsValue.FromInt32(-1);
-        }
+            var startedAt = System.Diagnostics.Stopwatch.StartNew();
+            string source;
+            try
+            {
+                source = FetchWorkerScriptAsync(scriptUri, _currentBaseUri).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] Worker script fetch failed for {scriptUri}: {ex.GetType().Name}: {ex.Message}",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                return;
+            }
 
-        FenBrowser.Core.EngineLogCompat.Info(
-            $"[FenJsBridge] Worker {id} started from {scriptUri} ({source.Length} chars)",
-            FenBrowser.Core.Logging.LogCategory.JavaScript);
+            if (string.IsNullOrEmpty(source))
+            {
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] Worker script was empty: {scriptUri}",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                return;
+            }
+
+            if (worker.Terminated)
+            {
+                return;
+            }
+
+            try
+            {
+                worker.Realm = CreateWorkerRealm(scriptUri, id);
+                worker.Realm.EvaluateWithFenJsRaw(DedicatedWorkerBootstrapScript);
+                worker.Realm.EvaluateWithFenJsRaw(source);
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] Worker script threw while starting ({scriptUri}): {ex.GetType().Name}: {ex.Message}",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                _dedicatedWorkers.TryRemove(id, out _);
+                worker.Realm?.AbandonRealm();
+                return;
+            }
+
+            FenBrowser.Core.EngineLogCompat.Info(
+                $"[FenJsBridge] Worker {id} started from {scriptUri} ({source.Length} chars) " +
+                $"in {startedAt.ElapsedMilliseconds}ms",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        });
+
         return JsValue.FromInt32(id);
+    }
+
+    /// <summary>
+    /// Appends work to a worker's own chain. Start-up is the first entry, so
+    /// everything posted afterwards runs against a worker that is already there.
+    /// </summary>
+    private void EnqueueWorkerTask(DedicatedWorkerInstance worker, Action work)
+    {
+        lock (worker.TailGate)
+        {
+            worker.Tail = worker.Tail.ContinueWith(
+                _ =>
+                {
+                    try
+                    {
+                        work();
+                    }
+                    catch (Exception ex)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[FenJsBridge] Worker {worker.Id} task threw: {ex.GetType().Name}: {ex.Message}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    }
+                },
+                TaskScheduler.Default);
+        }
     }
 
     private async Task<string> FetchWorkerScriptAsync(Uri scriptUri, Uri referer)
@@ -4264,7 +4313,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         if (args == null || args.Count == 0 ||
             !_dedicatedWorkers.TryGetValue((int)CoerceToHostUInt32(args[0], 0), out var worker) ||
-            worker.Terminated || worker.Realm == null)
+            worker.Terminated)
         {
             return JsValue.Undefined;
         }
@@ -4283,7 +4332,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 $"data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)}{Environment.NewLine}");
         }
 
-        worker.Realm.DeliverMessageIntoWorkerRealm(payload, GetCurrentWindowOrigin(), transferred);
+        var senderOrigin = GetCurrentWindowOrigin();
+        EnqueueWorkerTask(worker, () =>
+            worker.Realm?.DeliverMessageIntoWorkerRealm(payload, senderOrigin, transferred));
         return JsValue.Undefined;
     }
 
@@ -4404,10 +4455,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private JsValue TerminateDedicatedWorkerById(int workerId)
     {
-        if (_dedicatedWorkers.TryGetValue(workerId, out var worker))
+        if (_dedicatedWorkers.TryRemove(workerId, out var worker))
         {
             worker.Terminated = true;
-            _dedicatedWorkers.Remove(workerId);
             worker.Realm?.AbandonRealm();
         }
         return JsValue.Undefined;
@@ -15462,6 +15512,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             "postmessage_probe.txt",
             $"{DateTimeOffset.UtcNow:O} deliver listeners={listeners?.Count ?? 0} " +
             $"fromOrigin={origin} targetOrigin={targetOrigin} " +
+            $"ports={(ports.Tag == JsValueTag.Object ? ReadArrayLikeLength(ports) : -1)} " +
             $"data={DescribePostMessageValue(data)}{Environment.NewLine}");
         var exposedSourceWindow = GetMessageSourceForTarget(sourceWindow, targetWindow);
         var sessionGeneration = _fenJsSessionGeneration;
