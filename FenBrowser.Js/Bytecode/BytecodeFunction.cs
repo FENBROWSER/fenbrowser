@@ -36,6 +36,26 @@ public sealed class BytecodeFunction
     // none of the lookup.
     private string?[]? _slotNames;
 
+    // The slots for this function's parameters and hoisted vars, worked out
+    // once rather than by hashing each name on every call.
+    private int[]? _parameterSlots;
+    private int[]? _varSlots;
+
+    internal int[] ParameterSlots => _parameterSlots ??= MapSlots(ParameterNames);
+
+    internal int[] VarSlots => _varSlots ??= MapSlots(VarDeclarationNames);
+
+    private int[] MapSlots(IReadOnlyList<string> names)
+    {
+        var slots = new int[names.Count];
+        for (var i = 0; i < names.Count; i++)
+        {
+            slots[i] = names[i] is { } name && VariableSlots.TryGetValue(name, out var slot) ? slot : -1;
+        }
+
+        return slots;
+    }
+
     internal string?[] SlotNames =>
         _slotNames ??= FenBrowser.Js.Interpreter.SlotNameTable.BuildNames(this);
 

@@ -44,6 +44,27 @@ public sealed partial class BytecodeInterpreter
         // with { configurable: true }.
         var isEval = function.IsEvalCode;
 
+        // A function body's own vars, hoisted into its own environment: the
+        // slots are already known, so nothing here needs to touch a name.
+        if (!isEval && frame.Environment is DeclarativeEnvironmentRecord slotted &&
+            slotted.OwnsSlotsOf(function))
+        {
+            var slots = function.VarSlots;
+            for (var i = 0; i < slots.Length; i++)
+            {
+                if (slots[i] >= 0)
+                {
+                    slotted.DeclareAtSlot(slots[i], JsValue.Undefined, deletable: false, overwrite: false);
+                }
+                else
+                {
+                    _ = frame.Environment.EnsureVarBinding(function.VarDeclarationNames[i], deletable: false);
+                }
+            }
+
+            return;
+        }
+
         foreach (var name in function.VarDeclarationNames)
         {
             if (frame.Environment is GlobalEnvironmentRecord global)
@@ -60,9 +81,11 @@ public sealed partial class BytecodeInterpreter
 
             // The ordinary case - a function body's own vars, hoisted into a
             // fresh function environment - needs none of the eval checks below
-            // and can be settled in a single lookup.
+            // and can be settled without touching the name at all when the
+            // environment carries this function's slot numbering.
             if (!isEval)
             {
+
                 var ensured = frame.Environment.EnsureVarBinding(name, deletable: false);
                 if (ensured != BindingOpResult.Ok)
                 {

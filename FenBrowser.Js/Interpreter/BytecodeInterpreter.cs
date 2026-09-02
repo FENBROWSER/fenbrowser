@@ -1158,6 +1158,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 ThisBindingStatus.Uninitialized,
                 callee?.SelfHandle is { } sh ? JsValue.FromObject(sh) : JsValue.Undefined,
                 JsValue.Undefined, callee?.HomeObject, outerEnvironment));
+            AttachFrameSlots(frameEnv, function);
         }
         else if (function.Kind == FunctionKind.Arrow)
         {
@@ -1165,6 +1166,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // own; a plain declarative record lets `this` resolve through the
             // outer (enclosing function/global) environment.
             frameEnv = StampEnvironment(new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
+            AttachFrameSlots(frameEnv, function);
         }
         else
         {
@@ -1177,6 +1179,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 ThisBindingStatus.Uninitialized,
                 callee?.SelfHandle is { } sh ? JsValue.FromObject(sh) : JsValue.Undefined,
                 JsValue.Undefined, callee?.HomeObject, outerEnvironment));
+            // Attach before anything is bound: a binding created first would go
+            // to the dictionary and then be shadowed by its own empty slot.
+            AttachFrameSlots(functionEnv, function);
             _ = functionEnv.BindThisValue(thisValue);
             // ECMA-262 15.2.5: a named function expression binds its own name (immutably)
             // in scope of its body so it can reference itself (e.g. for recursion).
@@ -1314,7 +1319,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     paramValue = i < args.Count ? args[i] : JsValue.Undefined;
                 }
 
-                _ = frame.Environment.CreateAndInitializeBinding(paramName, paramValue, deletable: false);
+                if (frame.Environment is DeclarativeEnvironmentRecord paramEnv &&
+                    paramEnv.OwnsSlotsOf(function) && i < function.ParameterSlots.Length &&
+                    function.ParameterSlots[i] >= 0)
+                {
+                    paramEnv.DeclareAtSlot(function.ParameterSlots[i], paramValue, deletable: false, overwrite: true);
+                }
+                else
+                {
+                    _ = frame.Environment.CreateAndInitializeBinding(paramName, paramValue, deletable: false);
+                }
             }
 
             if (function.HasOwnArgumentsObject &&
@@ -5936,8 +5950,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             : JsValue.FromNumber(value);
     }
 
+    // The compiler already numbered this function's variables; give the call's
+    // own environment that numbering so declaring and reading them is an array
+    // index rather than a string hash.
+    private static void AttachFrameSlots(EnvironmentRecord? env, BytecodeFunction function)
+    {
+        if (env is DeclarativeEnvironmentRecord declarative && function.SlotNames.Length > 0)
+        {
+            declarative.AttachSlotStorage(function, function.VariableSlots, function.SlotNames.Length);
+        }
+    }
+
     internal JsValue LoadName(InterpreterFrame frame, int slot)
     {
+        // The frame's own environment numbers its variables exactly as this
+        // function's bytecode does, so the slot answers directly.
+        if (frame.Environment is DeclarativeEnvironmentRecord own && own.OwnsSlotsOf(frame.Function) &&
+            own.TryGetAtSlot(slot, out var slotValue, out var slotStatus))
+        {
+            if (slotStatus == BindingOpResult.Ok)
+            {
+                return slotValue;
+            }
+
+            ThrowBindingFailure(frame, slotStatus, SlotNameTable.GetName(frame.Function, slot) ?? "?", assignment: false);
+            return JsValue.Undefined;
+        }
+
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is not null)
         {
@@ -5976,6 +6015,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     internal void StoreName(InterpreterFrame frame, int slot, JsValue value)
     {
+        if (frame.Environment is DeclarativeEnvironmentRecord own && own.OwnsSlotsOf(frame.Function) &&
+            own.TrySetAtSlot(slot, value, frame.Function.IsStrictMode, out var slotStatus))
+        {
+            if (slotStatus == BindingOpResult.Ok)
+            {
+                return;
+            }
+
+            ThrowBindingFailure(frame, slotStatus, SlotNameTable.GetName(frame.Function, slot) ?? "?", assignment: true);
+            return;
+        }
+
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is not null)
         {
@@ -6015,6 +6066,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // resolution even if the binding becomes invisible in between.
     internal void PreResolveBinding(InterpreterFrame frame, int slot)
     {
+        // Resolving is only needed to find which record holds the binding. When
+        // this frame's own record holds it at this slot, there is nothing to walk.
+        if (frame.Environment is DeclarativeEnvironmentRecord own && own.OwnsSlotsOf(frame.Function) &&
+            own.TryGetAtSlot(slot, out _, out _))
+        {
+            _preResolvedEnv = null;
+            _preResolvedName = null;
+            return;
+        }
+
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is null) return;
 
@@ -6037,6 +6098,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // was not found), falls back to walking the environment chain.
     internal void StoreToResolvedBinding(InterpreterFrame frame, int slot, JsValue value)
     {
+        // Same slot, same environment: no need for the name or the resolution
+        // the preceding PreResolveVar performed.
+        if (frame.Environment is DeclarativeEnvironmentRecord own && own.OwnsSlotsOf(frame.Function) &&
+            own.TrySetAtSlot(slot, value, frame.Function.IsStrictMode, out var slotStatus))
+        {
+            _preResolvedEnv = null;
+            _preResolvedName = null;
+            if (slotStatus == BindingOpResult.Ok)
+            {
+                return;
+            }
+
+            ThrowBindingFailure(frame, slotStatus, SlotNameTable.GetName(frame.Function, slot) ?? "?", assignment: true);
+            return;
+        }
+
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is null)
         {

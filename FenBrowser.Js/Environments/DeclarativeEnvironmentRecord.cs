@@ -13,6 +13,126 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
 {
     private Dictionary<string, Binding>? _bindings;
 
+    // Slot storage. The compiler already numbers every variable a function
+    // declares, and the bytecode already carries those numbers - LoadVar r6, 0
+    // means "slot 0". The interpreter then threw the number away and looked the
+    // variable up by name, hashing a string into this dictionary on every
+    // declaration and every read. Where a name has a slot, the binding lives in
+    // the array instead and the dictionary never sees it, so the two never
+    // disagree. Names without a slot - eval-introduced, catch parameters,
+    // anything dynamic - keep the dictionary exactly as before.
+    private object? _slotOwner;
+    private IReadOnlyDictionary<string, int>? _slotMap;
+    private Binding[]? _slotBindings;
+    private bool[]? _slotPresent;
+
+    internal void AttachSlotStorage(object owner, IReadOnlyDictionary<string, int> slotMap, int slotCount)
+    {
+        if (slotCount <= 0)
+        {
+            return;
+        }
+
+        _slotOwner = owner;
+        _slotMap = slotMap;
+        _slotBindings = new Binding[slotCount];
+        _slotPresent = new bool[slotCount];
+    }
+
+    // Slots are numbered per function, so a slot only means anything to the
+    // record built for that function's own call.
+    internal bool OwnsSlotsOf(object owner) =>
+        _slotOwner is not null && ReferenceEquals(_slotOwner, owner);
+
+    private bool TryFindSlot(string name, out int slot)
+    {
+        if (_slotMap is not null && _slotMap.TryGetValue(name, out slot) &&
+            (uint)slot < (uint)(_slotBindings?.Length ?? 0))
+        {
+            return true;
+        }
+
+        slot = -1;
+        return false;
+    }
+
+    // The fast paths: the caller already holds the slot, so no name is involved.
+    internal bool TryGetAtSlot(int slot, out JsValue value, out BindingOpResult status)
+    {
+        if ((uint)slot >= (uint)(_slotBindings?.Length ?? 0) || !_slotPresent![slot])
+        {
+            value = JsValue.Undefined;
+            status = BindingOpResult.NotFound;
+            return false;
+        }
+
+        ref var binding = ref _slotBindings![slot];
+        if (!binding.IsInitialized)
+        {
+            value = JsValue.Undefined;
+            status = BindingOpResult.TdzAccess;
+            return true;
+        }
+
+        value = binding.Value;
+        status = BindingOpResult.Ok;
+        return true;
+    }
+
+    internal bool TrySetAtSlot(int slot, JsValue value, bool strict, out BindingOpResult status)
+    {
+        if ((uint)slot >= (uint)(_slotBindings?.Length ?? 0) || !_slotPresent![slot])
+        {
+            status = BindingOpResult.NotFound;
+            return false;
+        }
+
+        ref var binding = ref _slotBindings![slot];
+        if (!binding.IsInitialized)
+        {
+            status = BindingOpResult.TdzAccess;
+            return true;
+        }
+
+        if (!binding.IsMutable)
+        {
+            status = strict || binding.IsStrict ? BindingOpResult.ConstAssignment : BindingOpResult.Ok;
+            return true;
+        }
+
+        binding = binding with { Value = value };
+        if (value.Tag == JsValueTag.Object)
+        {
+            RememberBindingStore();
+        }
+
+        status = BindingOpResult.Ok;
+        return true;
+    }
+
+    // Declaring a parameter or a hoisted var at a known slot: an array write.
+    internal void DeclareAtSlot(int slot, JsValue value, bool deletable, bool overwrite)
+    {
+        if ((uint)slot >= (uint)(_slotBindings?.Length ?? 0))
+        {
+            return;
+        }
+
+        if (_slotPresent![slot] && !overwrite)
+        {
+            return;
+        }
+
+        _slotBindings![slot] = new Binding(
+            Value: value, IsMutable: true, IsInitialized: true, IsStrict: false, IsDeletable: deletable);
+        _slotPresent[slot] = true;
+        if (value.Tag == JsValueTag.Object)
+        {
+            RememberBindingStore();
+        }
+    }
+
+
     public DeclarativeEnvironmentRecord(EnvironmentRecord? outerEnv)
         : base(outerEnv)
     {
@@ -32,6 +152,17 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     public override BindingOpResult CreateAndInitializeBinding(string name, JsValue value, bool deletable)
     {
         ArgumentNullException.ThrowIfNull(name);
+
+        if (TryFindSlot(name, out var declSlot))
+        {
+            if (_slotPresent![declSlot] && !_slotBindings![declSlot].IsMutable)
+            {
+                return BindingOpResult.AlreadyDeclared;
+            }
+
+            DeclareAtSlot(declSlot, value, deletable, overwrite: true);
+            return BindingOpResult.Ok;
+        }
 
         var bindings = _bindings ??= new Dictionary<string, Binding>(StringComparer.Ordinal);
         ref var slot = ref System.Runtime.InteropServices.CollectionsMarshal
@@ -65,6 +196,12 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     {
         ArgumentNullException.ThrowIfNull(name);
 
+        if (TryFindSlot(name, out var varDeclSlot))
+        {
+            DeclareAtSlot(varDeclSlot, JsValue.Undefined, deletable, overwrite: false);
+            return BindingOpResult.Ok;
+        }
+
         var bindings = _bindings ??= new Dictionary<string, Binding>(StringComparer.Ordinal);
         ref var slot = ref System.Runtime.InteropServices.CollectionsMarshal
             .GetValueRefOrAddDefault(bindings, name, out var existed);
@@ -81,23 +218,41 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     public override bool HasBinding(string name)
     {
         ArgumentNullException.ThrowIfNull(name);
+        if (TryFindSlot(name, out var hasSlot)) return _slotPresent![hasSlot];
         return _bindings?.ContainsKey(name) == true;
     }
 
     // Returns true if the binding exists and is a lexical (non-deletable) binding.
     public bool HasLexicalBinding(string name)
     {
+        if (TryFindSlot(name, out var lexSlot))
+            return _slotPresent![lexSlot] && !_slotBindings![lexSlot].IsDeletable;
         return _bindings?.TryGetValue(name, out var b) == true && !b.IsDeletable;
     }
 
     public bool HasVarBinding(string name)
     {
+        if (TryFindSlot(name, out var varSlot))
+            return _slotPresent![varSlot] && _slotBindings![varSlot].IsDeletable;
         return _bindings?.TryGetValue(name, out var b) == true && b.IsDeletable;
     }
 
     public override BindingOpResult CreateMutableBinding(string name, bool deletable)
     {
         ArgumentNullException.ThrowIfNull(name);
+
+        if (TryFindSlot(name, out var newSlot))
+        {
+            if (_slotPresent![newSlot]) return BindingOpResult.AlreadyDeclared;
+            _slotBindings![newSlot] = new Binding(
+                Value: JsValue.Undefined,
+                IsMutable: true,
+                IsInitialized: false,
+                IsStrict: false,
+                IsDeletable: deletable);
+            _slotPresent[newSlot] = true;
+            return BindingOpResult.Ok;
+        }
 
         var bindings = _bindings ??= new Dictionary<string, Binding>(StringComparer.Ordinal);
         if (bindings.ContainsKey(name))
@@ -118,6 +273,19 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     {
         ArgumentNullException.ThrowIfNull(name);
 
+        if (TryFindSlot(name, out var immutableSlot))
+        {
+            if (_slotPresent![immutableSlot]) return BindingOpResult.AlreadyDeclared;
+            _slotBindings![immutableSlot] = new Binding(
+                Value: JsValue.Undefined,
+                IsMutable: false,
+                IsInitialized: false,
+                IsStrict: strict,
+                IsDeletable: false);
+            _slotPresent[immutableSlot] = true;
+            return BindingOpResult.Ok;
+        }
+
         var bindings = _bindings ??= new Dictionary<string, Binding>(StringComparer.Ordinal);
         if (bindings.ContainsKey(name))
         {
@@ -136,6 +304,16 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     public override BindingOpResult InitializeBinding(string name, JsValue value)
     {
         ArgumentNullException.ThrowIfNull(name);
+
+        if (TryFindSlot(name, out var initSlot))
+        {
+            if (!_slotPresent![initSlot]) return BindingOpResult.NotFound;
+            ref var slotBinding = ref _slotBindings![initSlot];
+            if (slotBinding.IsInitialized) return BindingOpResult.NotInitializable;
+            slotBinding = slotBinding with { Value = value, IsInitialized = true };
+            if (value.Tag == JsValueTag.Object) RememberBindingStore();
+            return BindingOpResult.Ok;
+        }
 
         if (_bindings is null || !_bindings.TryGetValue(name, out var binding))
         {
@@ -161,6 +339,13 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     public override BindingOpResult SetMutableBinding(string name, JsValue value, bool strict)
     {
         ArgumentNullException.ThrowIfNull(name);
+
+        if (TryFindSlot(name, out var setSlot))
+        {
+            if (TrySetAtSlot(setSlot, value, strict, out var slotStatus)) return slotStatus;
+            _ = strict;
+            return BindingOpResult.NotFound;
+        }
 
         if (_bindings is null || !_bindings.TryGetValue(name, out var binding))
         {
@@ -196,6 +381,13 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         ArgumentNullException.ThrowIfNull(name);
         _ = strict;
 
+        if (TryFindSlot(name, out var getSlot))
+        {
+            if (TryGetAtSlot(getSlot, out value, out var slotStatus)) return slotStatus;
+            value = JsValue.Undefined;
+            return BindingOpResult.NotFound;
+        }
+
         if (_bindings is null || !_bindings.TryGetValue(name, out var binding))
         {
             value = JsValue.Undefined;
@@ -218,6 +410,15 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     {
         ArgumentNullException.ThrowIfNull(name);
 
+        if (TryFindSlot(name, out var delSlot))
+        {
+            if (!_slotPresent![delSlot]) return BindingOpResult.NotFound;
+            if (!_slotBindings![delSlot].IsDeletable) return BindingOpResult.ConstAssignment;
+            _slotPresent[delSlot] = false;
+            _slotBindings[delSlot] = default;
+            return BindingOpResult.Ok;
+        }
+
         if (_bindings is null || !_bindings.TryGetValue(name, out var binding))
         {
             return BindingOpResult.NotFound;
@@ -232,13 +433,32 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         return BindingOpResult.Ok;
     }
 
-    public int BindingCountForTest => _bindings?.Count ?? 0;
+    public int BindingCountForTest
+    {
+        get
+        {
+            var count = _bindings?.Count ?? 0;
+            if (_slotPresent is not null)
+            {
+                foreach (var present in _slotPresent)
+                {
+                    if (present) count++;
+                }
+            }
+
+            return count;
+        }
+    }
 
     public bool IsInitializedForTest(string name)
-        => _bindings?.TryGetValue(name, out var b) == true && b.IsInitialized;
+        => TryFindSlot(name, out var slot)
+            ? _slotPresent![slot] && _slotBindings![slot].IsInitialized
+            : _bindings?.TryGetValue(name, out var b) == true && b.IsInitialized;
 
     public bool IsMutableForTest(string name)
-        => _bindings?.TryGetValue(name, out var b) == true && b.IsMutable;
+        => TryFindSlot(name, out var slot)
+            ? _slotPresent![slot] && _slotBindings![slot].IsMutable
+            : _bindings?.TryGetValue(name, out var b) == true && b.IsMutable;
 
     protected internal override void TraceOwnEdges(IHeapTracer tracer)
     {
@@ -251,6 +471,19 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     /// </summary>
     protected void TraceDeclarativeBindings(IHeapTracer tracer)
     {
+        // Slot-held bindings are as reachable as dictionary-held ones; missing
+        // them here would let the collector sweep a live local.
+        if (_slotBindings is not null)
+        {
+            for (var i = 0; i < _slotBindings.Length; i++)
+            {
+                if (_slotPresent![i] && _slotBindings[i].IsInitialized)
+                {
+                    TraceValue(tracer, _slotBindings[i].Value);
+                }
+            }
+        }
+
         if (_bindings is null)
         {
             return;
