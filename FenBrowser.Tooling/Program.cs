@@ -401,7 +401,15 @@ namespace FenBrowser.Tooling
             var observeMs = args.Length > 3 && int.TryParse(args[3], out var parsedObserve) ? parsedObserve : 90000;
 
             CssEngineConfig.CurrentEngine = CssEngineType.Custom;
-            using var host = CreateDebugSiteBrowserHost();
+
+            // Serve reCAPTCHA's own bundle with a recorder in front of it, so the
+            // run can say what the widget asked for rather than only what it left.
+            var options = new FenBrowser.FenEngine.Rendering.BrowserHostOptions
+            {
+                ScriptOverrideProvider = FenBrowser.Tooling.Diagnostics.CaptchaScriptInstrumentation.TryInstrument
+            };
+            using var host = new FenBrowser.FenEngine.Rendering.BrowserHost(isPrivate: false, options: options);
+            host.UpdateViewportHint(DebugSiteViewportWidth, DebugSiteViewportHeight);
             return await CaptchaFlowRunner.RunAsync(host, url, readyMs, observeMs).ConfigureAwait(false);
         }
 

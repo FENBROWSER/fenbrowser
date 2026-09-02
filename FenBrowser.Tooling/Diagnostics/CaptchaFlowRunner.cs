@@ -151,6 +151,17 @@ internal static class CaptchaFlowRunner
         "((e&&e.target&&e.target.id)||'?'));});})(types[i]);}" +
         "return 'installed';})()";
 
+    private const string ReadListenerLogScript =
+        "(function(){var l=window.__fenListenerLog;" +
+        "if(!l)return 'bundle not instrumented in this realm';" +
+        "var anchor=[],counts={};" +
+        "for(var i=0;i<l.length;i++){var s=l[i];" +
+        "if(s.indexOf('#recaptcha-anchor')>=0)anchor.push(s);" +
+        "counts[s]=(counts[s]||0)+1;}" +
+        "var top=Object.keys(counts).sort(function(a,b){return counts[b]-counts[a];}).slice(0,8);" +
+        "for(var j=0;j<top.length;j++)top[j]=top[j]+'x'+counts[top[j]];" +
+        "return l.length+' registrations; onAnchor=['+anchor.join(',')+'] common='+top.join(',');})()";
+
     private const string ReadClickRecorderScript =
         "(function(){var c=window.__fenClicks||[];" +
         "var a=document.getElementById('recaptcha-anchor');" +
@@ -171,12 +182,19 @@ internal static class CaptchaFlowRunner
         "var own='?';" +
         "try{own=Object.getOwnPropertyNames(a).filter(function(k){" +
         "return k.indexOf('closure')===0||k.indexOf('__')===0;}).join('+')||'none';}catch(e){own='threw';}" +
+        "var shape='own='+(a.hasOwnProperty?a.hasOwnProperty('addEventListener'):'?');" +
+        "try{a.__fenProbeExpando=1;" +
+        "shape+=' expandoEnumerable='+(Object.getOwnPropertyNames(a).indexOf('__fenProbeExpando')>=0)+" +
+        "' expandoReadable='+(a.__fenProbeExpando===1);}catch(e){shape+=' expandoProbeThrew';}" +
+        "try{shape+=' protoSame='+(typeof EventTarget==='function'&&" +
+        "EventTarget.prototype.addEventListener===a.addEventListener);}catch(e){shape+=' protoThrew';}" +
+        "try{shape+=' protoChain='+(Object.getPrototypeOf(a)?'yes':'no');}catch(e){}" +
         "var seen=[];" +
         "try{a.addEventListener('mousedown',function(){seen.push('mousedown');});" +
         "a.addEventListener('click',function(){seen.push('click');});}" +
         "catch(e){return 'addEventListener threw '+e;}" +
         "try{a.click();}catch(e){return 'clickThrew '+e;}" +
-        "return 'closureProps='+own+' ourListenersSaw=['+seen.join(',')+'] changed='+(before!==a.className);})()";
+        "return 'closureProps='+own+' '+shape+' ourListenersSaw=['+seen.join(',')+'] changed='+(before!==a.className);})()";
 
     private const string ReadNetworkRecorderScript =
         "(function(){var l=window.__fenNetLog||[];" +
@@ -334,6 +352,7 @@ internal static class CaptchaFlowRunner
 
         await Task.Delay(1500).ConfigureAwait(false);
         await RunInFrameAsync(host, anchorFrameId, ReadClickRecorderScript, "clicks seen").ConfigureAwait(false);
+        await RunInFrameAsync(host, anchorFrameId, ReadListenerLogScript, "listeners registered").ConfigureAwait(false);
         var dumped = new HashSet<string>(StringComparer.Ordinal);
         await DumpFramesAsync(host, "click", dumped).ConfigureAwait(false);
 
@@ -461,6 +480,7 @@ internal static class CaptchaFlowRunner
                 : src.Contains("anchor", StringComparison.Ordinal) ? "anchor"
                 : "frame";
             await RunInFrameAsync(host, frameId, ReadNetworkRecorderScript, "netlog " + kind).ConfigureAwait(false);
+            await RunInFrameAsync(host, frameId, ReadListenerLogScript, "listeners " + kind).ConfigureAwait(false);
         }
     }
 
