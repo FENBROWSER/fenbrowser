@@ -1342,7 +1342,7 @@ public Uri LastTextResponseUri { get; private set; }
             if (context.ContentSecurityPolicy != null)
             {
                 var directive = ResolveCspFetchDirective(secFetchDest);
-                if (!context.ContentSecurityPolicy.IsAllowed(directive, url, context.CspNonce, ExtractOrigin(referer)))
+                if (!context.ContentSecurityPolicy.IsAllowed(directive, url, context.CspNonce, ExtractOrigin(referer), scriptProvenance: context.ScriptProvenance))
                 {
                     return new FetchResult
                     {
@@ -1523,7 +1523,7 @@ public Uri LastTextResponseUri { get; private set; }
                         current = redirectMixedContentDecision.UpgradedUrl;
                     }
                     if (context.ContentSecurityPolicy != null &&
-                        !context.ContentSecurityPolicy.IsAllowed(ResolveCspFetchDirective(secFetchDest), current, context.CspNonce, ExtractOrigin(referer)))
+                        !context.ContentSecurityPolicy.IsAllowed(ResolveCspFetchDirective(secFetchDest), current, context.CspNonce, ExtractOrigin(referer), scriptProvenance: context.ScriptProvenance))
                     {
                         resp?.Dispose();
                         return new FetchResult
@@ -2334,7 +2334,7 @@ public Uri LastTextResponseUri { get; private set; }
                 else if (secFetchDest == "audio" || secFetchDest == "video") directive = "media-src";
                 else if (secFetchDest == "object") directive = "object-src";
                 
-                if (!context.ContentSecurityPolicy.IsAllowed(directive, url, context.CspNonce, ExtractOrigin(referer)))
+                if (!context.ContentSecurityPolicy.IsAllowed(directive, url, context.CspNonce, ExtractOrigin(referer), scriptProvenance: context.ScriptProvenance))
                 {
                     return BinaryFailure(BinaryFetchFailureReason.CspBlocked, url, $"Blocked by {directive}", cspAllowed: false);
                 }

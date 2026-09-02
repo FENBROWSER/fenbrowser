@@ -28,6 +28,16 @@ public sealed record FetchContext
     /// resource layer or a correctly allowed load gets rejected twice.
     /// </summary>
     public string CspNonce { get; init; }
+
+    /// <summary>
+    /// How this request came to be made. CSP Level 3 §6.6.3.4: 'strict-dynamic'
+    /// discards host-source expressions and instead propagates trust from the
+    /// script that asked for the resource, so a request made by an already
+    /// trusted script -- new Worker(url), a script-injected script element --
+    /// is allowed where the same URL from the parser would not be.
+    /// </summary>
+    public FenBrowser.Core.Security.CspScriptProvenance ScriptProvenance { get; init; }
+        = FenBrowser.Core.Security.CspScriptProvenance.Unknown;
     public bool IsTopLevelNavigation { get; init; }
     public bool IsUserInitiated { get; init; }
     public string Method { get; init; } = "GET";
