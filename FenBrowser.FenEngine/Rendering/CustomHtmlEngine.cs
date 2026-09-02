@@ -2513,6 +2513,15 @@ public void Dispose()
                  {
                      return await ScriptFetcher(u).ConfigureAwait(false);
                  };
+
+                 // A frame inherits both fetchers from here. Only the plain one
+                 // was ever set, so a script carrying a nonce - which is most of
+                 // them on a CSP page - fell through to the raw network path and
+                 // missed everything this fetcher does.
+                 js.ExternalScriptFetcherWithNonce = async (u, referer2, nonce) =>
+                 {
+                     return await ScriptFetcher(u).ConfigureAwait(false);
+                 };
              }
 
              // Domain-specific tuning
