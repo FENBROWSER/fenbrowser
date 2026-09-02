@@ -2080,7 +2080,7 @@ pre {{
             await Task.CompletedTask;
             EnsureFrameExecutionContextAvailable();
             TryLogDebug($"[BrowserApi] ExecuteScriptAsync called with script: {script}", LogCategory.JavaScript);
-            var result = _engine.Evaluate(script);
+            var result = EvaluateInCurrentBrowsingContext(script);
             return PostProcessFenJsResult(result);
         }
 
@@ -5957,6 +5957,26 @@ pre {{
             return string.Equals(hydratedUrl, requestedUrl, StringComparison.Ordinal);
         }
 
+        // WebDriver, Execute Script: the script runs in the current browsing
+        // context. Selecting a frame swaps the DOM root the top-level realm
+        // reports, but the script still ran in the top realm, so location,
+        // window and any state the frame's own scripts set were the wrong
+        // document's. Send it to the frame's realm instead.
+        private object EvaluateInCurrentBrowsingContext(string script)
+        {
+            var frameElement = _currentFrameElement;
+            if (frameElement != null)
+            {
+                var jsEngine = _engine?.ScriptEngine;
+                if (jsEngine != null)
+                {
+                    return jsEngine.EvaluateInFrame(frameElement, script);
+                }
+            }
+
+            return _engine.Evaluate(script);
+        }
+
         private void SyncScriptContextToSelectedBrowsingContext()
         {
             var jsEngine = _engine?.ScriptEngine;
@@ -8013,7 +8033,7 @@ pre {{
             }
             
             TryLogDebug($"[ExecuteScript] Wrapped: {wrappedScript.Substring(0, Math.Min(500, wrappedScript.Length))}...", LogCategory.JavaScript);
-            var rawResult = _engine.Evaluate(wrappedScript);
+            var rawResult = EvaluateInCurrentBrowsingContext(wrappedScript);
             TryLogDebug($"[ExecuteScript] Raw result type: {rawResult?.GetType().Name}", LogCategory.JavaScript);
             
             if (rawResult is FenBrowser.FenEngine.Core.FenValue val && val.Type == JsValueType.Error)
@@ -8152,7 +8172,7 @@ pre {{
                 console.log('[rAF-setup] Setup complete. typeof requestAnimationFrame: ' + typeof requestAnimationFrame);
                 console.log('[rAF-setup] typeof window.requestAnimationFrame: ' + typeof window.requestAnimationFrame);
             ";
-            _engine.Evaluate(setupScript);
+            EvaluateInCurrentBrowsingContext(setupScript);
             
             // Do not rewrite user script source. Execute with WebDriver arguments unchanged.
             var processedScript = script;
@@ -8366,7 +8386,7 @@ pre {{
             TryLogDebug($"[AsyncScript] Processed script (first 500 chars): {(processedScript.Length > 500 ? processedScript.Substring(0, 500) : processedScript)}", LogCategory.JavaScript);
             
             // Execute the script and surface immediate JavaScript errors deterministically.
-            var execResult = _engine.Evaluate(wrappedScript);
+            var execResult = EvaluateInCurrentBrowsingContext(wrappedScript);
             TryLogDebug($"[AsyncScript] Script executed, result type: {execResult?.GetType().Name ?? "null"}", LogCategory.JavaScript);
             if (execResult is FenBrowser.FenEngine.Core.FenValue fv && fv.Type == JsValueType.Error)
             {
@@ -8415,7 +8435,7 @@ pre {{
                 // Process any pending requestAnimationFrame callbacks
                 try 
                 { 
-                    var rafResult = _engine.Evaluate(processRafScript);
+                    var rafResult = EvaluateInCurrentBrowsingContext(processRafScript);
                     if (loopCount % 100 == 1) // Log every 100th iteration
                     {
                         TryLogDebug($"[AsyncScript] Poll loop {loopCount}, rafCount: {rafResult}", LogCategory.JavaScript);
@@ -8427,7 +8447,7 @@ pre {{
                 }
                 
                 // Check if the callback was called
-                var doneCheck = _engine.Evaluate($"window.__fen_async_done_{callbackId}");
+                var doneCheck = EvaluateInCurrentBrowsingContext($"window.__fen_async_done_{callbackId}");
                 var isDone = doneCheck switch
                 {
                     FenBrowser.FenEngine.Core.FenValue dv => dv.IsBoolean && dv.ToBoolean(),
@@ -8437,7 +8457,7 @@ pre {{
 
                 if (isDone)
                 {
-                    var asyncError = _engine.Evaluate($"window.__fen_async_error_{callbackId}");
+                    var asyncError = EvaluateInCurrentBrowsingContext($"window.__fen_async_error_{callbackId}");
                     if (asyncError is FenBrowser.FenEngine.Core.FenValue asyncErrorValue &&
                         !asyncErrorValue.IsNull &&
                         !asyncErrorValue.IsUndefined)
@@ -8451,7 +8471,7 @@ pre {{
                     }
 
                     // Get the result
-                    var result = _engine.Evaluate($"window.__fen_async_result_{callbackId}");
+                    var result = EvaluateInCurrentBrowsingContext($"window.__fen_async_result_{callbackId}");
                     TryLogDebug($"[AsyncScript] Callback received result after {sw.ElapsedMilliseconds}ms", LogCategory.JavaScript);
                     
                     // Convert FenValue to native object

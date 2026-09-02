@@ -350,6 +350,16 @@ public interface IBrowserScriptEngine
     /// </summary>
     Task<bool> DispatchEventForElementAsync(Element element, string eventName, BrowserDomEventInit eventInit = null);
     object Evaluate(string script);
+
+    /// <summary>
+    /// Evaluates <paramref name="script"/> in the browsing context that
+    /// <paramref name="frameElement"/> embeds, rather than in this realm.
+    /// WebDriver's Execute Script runs in the current browsing context, so a
+    /// script issued while a frame is selected has to see that frame's window,
+    /// document and location. Falls back to this realm when the frame has no
+    /// realm of its own.
+    /// </summary>
+    object EvaluateInFrame(Element frameElement, string script);
     bool TryResolveHostObject(FenBrowser.Js.Runtime.JsValue value, out object hostObject);
     object ConvertJsValueToObject(FenBrowser.Js.Runtime.JsValue value);
     void SyncDomContext(Node domRoot, Uri baseUri = null);
@@ -1332,6 +1342,41 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             }
             return EvaluateWithFenJs(script);
         }
+        return null;
+    }
+
+    /// <inheritdoc />
+    public object EvaluateInFrame(Element frameElement, string script)
+    {
+        var realm = FindRealmForFrame(frameElement);
+        return realm != null ? realm.Evaluate(script) : Evaluate(script);
+    }
+
+    // A frame's realm is owned by the realm of the document that embeds it,
+    // so a frame nested two levels down is not in this realm's table. Walk the
+    // realm tree to find whoever owns it. Frame trees are acyclic, so this
+    // terminates at the nesting depth of the page.
+    private FenJsBrowserScriptEngine FindRealmForFrame(Element frameElement)
+    {
+        if (frameElement == null)
+        {
+            return null;
+        }
+
+        if (_iframeRealms.TryGetValue(frameElement, out var realm) && realm != null)
+        {
+            return realm;
+        }
+
+        foreach (var entry in _iframeRealms)
+        {
+            var nested = entry.Value?.FindRealmForFrame(frameElement);
+            if (nested != null)
+            {
+                return nested;
+            }
+        }
+
         return null;
     }
 
