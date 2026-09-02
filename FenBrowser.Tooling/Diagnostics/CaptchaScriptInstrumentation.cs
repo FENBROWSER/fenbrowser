@@ -109,6 +109,31 @@ internal static class CaptchaScriptInstrumentation
                     };
                 }
             } catch (e) { note('fetch-hook-threw:' + e); }
+            // The handshake only accepts a message whose source is the very
+            // contentWindow of the frame it expects, so identity of that object
+            // matters as much as delivery. Record what each message actually
+            // carries.
+            try {
+                window.addEventListener('message', function (ev) {
+                    var match = 'no-iframe-match';
+                    try {
+                        var fs = document.getElementsByTagName('iframe');
+                        for (var i = 0; i < fs.length; i++) {
+                            if (fs[i].contentWindow === ev.source) {
+                                match = (fs[i].id || ('iframe#' + i));
+                                break;
+                            }
+                        }
+                    } catch (e) { match = 'compare-threw'; }
+                    note('msg data=' + String(ev.data).slice(0, 20) +
+                        ' ports=' + (ev.ports ? ev.ports.length : 'none') +
+                        ' source=' + (ev.source === window ? 'self' :
+                            (ev.source === null ? 'null' :
+                                (ev.source === undefined ? 'undefined' : match))) +
+                        ' origin=' + ev.origin);
+                });
+            } catch (e) { note('message-probe-threw:' + e); }
+
             // Chrome fetches /recaptcha/api2/webworker during set-up and we never
             // do, because our Worker is a stub that swallows everything. Record
             // whether the bundle builds one and what it expects back from it.

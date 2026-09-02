@@ -1735,10 +1735,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             "(e.g. WAF challenge â†’ location.reload).");
                     }
                     _fenJsEvaluationCount++;
+                    var compileWatch = System.Diagnostics.Stopwatch.StartNew();
                     var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
                     RegisterCallbackFunctionProvenance(function, GetCurrentScriptRecord());
                     new BytecodeVerifier().Verify(function);
-                    return _interpreter.Execute(function);
+                    var compileMs = compileWatch.ElapsedMilliseconds;
+                    compileWatch.Restart();
+                    var evalResult = _interpreter.Execute(function);
+                    if (script.Length > 20000)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Info(
+                            $"[FenJsBridge] script {script.Length} chars: compile+verify {compileMs}ms, " +
+                            $"execute {compileWatch.ElapsedMilliseconds}ms",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    }
+
+                    return evalResult;
                 }
             });
         }
@@ -4036,6 +4048,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     }
 
     private readonly ConcurrentDictionary<int, DedicatedWorkerInstance> _dedicatedWorkers = new();
+
     private int _dedicatedWorkerIdCounter;
 
     // Runs in the worker's own realm, where the global is the worker itself.
