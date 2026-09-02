@@ -9187,7 +9187,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         this._fenListeners = [];
                         this._fenPeer = null;
                         this._fenClosed = false;
-                        this._fenWindow = window;
+                        // globalThis, not window: MessageChannel is available to
+                        // workers too, and there is no window in one.
+                        this._fenWindow = globalThis;
                     }
 
                     MessagePort.prototype.postMessage = function (data, transfer) {
