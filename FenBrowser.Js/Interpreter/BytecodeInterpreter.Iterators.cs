@@ -32,7 +32,7 @@ public sealed partial class BytecodeInterpreter
             // Spec @@iterator dispatch (7.4.2 GetIterator + 7.4.4 IteratorStep).
             var iterId = GetWellKnownSymbolId("iterator");
             if (iterId != 0 &&
-                obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                obj.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) &&
                 iterDesc.Value.Tag == JsValueTag.Object)
             {
                 var iter = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
@@ -129,7 +129,7 @@ public sealed partial class BytecodeInterpreter
             var obj = _heap.GetObject(source.AsObjectHandle());
             var iterId = GetWellKnownSymbolId("iterator");
             if (iterId != 0 &&
-                obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                obj.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) &&
                 iterDesc.Value.Tag == JsValueTag.Object)
             {
                 var iterator = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
@@ -314,7 +314,7 @@ public sealed partial class BytecodeInterpreter
             var obj = _heap.GetObject(source.AsObjectHandle());
             var iterId = GetWellKnownSymbolId("iterator");
             if (iterId != 0 &&
-                obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc))
+                obj.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc))
             {
                 // ECMA-262 7.3.9 GetMethod: invoke getter (if accessor) via GetV.
                 // This propagates any error thrown by the @@iterator accessor.

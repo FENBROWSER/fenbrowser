@@ -245,7 +245,7 @@ public sealed partial class BytecodeInterpreter
 
         var obj = _heap.GetObject(iterable.AsObjectHandle());
         var iterId = GetWellKnownSymbolId("iterator");
-        if (iterId == 0 || !obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) ||
+        if (iterId == 0 || !obj.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) ||
             iterDesc.Value.Tag != JsValueTag.Object)
         {
             return (values, null);
@@ -430,7 +430,7 @@ public sealed partial class BytecodeInterpreter
 
         var obj = _heap.GetObject(iterable.AsObjectHandle());
         var iterId = GetWellKnownSymbolId("iterator");
-        if (iterId == 0 || !obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) ||
+        if (iterId == 0 || !obj.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) ||
             iterDesc.Value.Tag != JsValueTag.Object)
         {
             return values;

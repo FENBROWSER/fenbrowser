@@ -1753,7 +1753,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             {
                                 case JsValueTag.Object:
                                     var operandObj = _heap.GetObject(operand.AsObjectHandle());
-                                    if (!operandObj.TryGetSymbolProperty(iteratorSymId, h => _heap.GetObject(h), out iterFnDesc))
+                                    if (!operandObj.TryGetSymbolProperty(iteratorSymId, ResolvePrototypeDelegate, out iterFnDesc))
                                         throw new JsThrownException(CreateTypeError("yield* operand is not iterable (missing @@iterator)."));
                                     receiver = operand;
                                     iteratorMethod = GetDescriptorValue(iterFnDesc, operand);
@@ -1761,7 +1761,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                 case JsValueTag.String:
                                 {
                                     var stringProto = _heap.GetObject(GetGlobalPrototype("String"));
-                                    if (!stringProto.TryGetSymbolProperty(iteratorSymId, h => _heap.GetObject(h), out iterFnDesc))
+                                    if (!stringProto.TryGetSymbolProperty(iteratorSymId, ResolvePrototypeDelegate, out iterFnDesc))
                                         throw new JsThrownException(CreateTypeError("yield* operand is not iterable (missing @@iterator)."));
                                     receiver = operand;
                                     iteratorMethod = GetDescriptorValue(iterFnDesc, operand);
@@ -1807,7 +1807,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         JsValue retMethod;
                         try
                         {
-                            if (!iterObj.TryGetProperty(methodName, h => _heap.GetObject(h), out var retPropDesc))
+                            if (!iterObj.TryGetProperty(methodName, ResolvePrototypeDelegate, out var retPropDesc))
                             {
                                 retMethod = JsValue.Undefined;
                             }
@@ -1850,7 +1850,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     try
                     {
                         JsValue methodValue;
-                        if (!iterObj.TryGetProperty(methodName, h => _heap.GetObject(h), out var methodPropDesc))
+                        if (!iterObj.TryGetProperty(methodName, ResolvePrototypeDelegate, out var methodPropDesc))
                         {
                             methodValue = JsValue.Undefined;
                         }
@@ -5191,7 +5191,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
             if (keyArg.Tag == JsValueTag.Symbol)
             {
-                return JsValue.FromBoolean(obj.TryGetSymbolProperty(keyArg.AsSymbolId(), h => _heap.GetObject(h), out JsPropertyDescriptor _));
+                return JsValue.FromBoolean(obj.TryGetSymbolProperty(keyArg.AsSymbolId(), ResolvePrototypeDelegate, out JsPropertyDescriptor _));
             }
             var key = ToPropertyKey(keyArg);
             // ECMA-262 28.1.9 Reflect.has → target.[[HasProperty]]: a Proxy must run
@@ -5761,7 +5761,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var obj = _heap.GetObject(handle);
             if (obj is ProxyObject proxy)
                 return ProxyHas(proxy, name);
-            return obj.TryGetProperty(name, h => _heap.GetObject(h), out _);
+            return obj.TryGetProperty(name, ResolvePrototypeDelegate, out _);
         });
 
     private GlobalEnvironmentRecord EnsureGlobalEnvironment()
@@ -5915,6 +5915,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // and it was reaching the fully general operators: a try region entered per
     // instruction, and for subtraction and multiplication a pair of delegate
     // calls to work for BigInt as well. Take the numeric case directly.
+    // Held once rather than written as a lambda at each call site. The lambda
+    // captures this interpreter, so every property lookup that passed one
+    // allocated a delegate first.
+    private Func<ObjectHandle, JsObject>? _resolvePrototypeCached;
+
+    private Func<ObjectHandle, JsObject> ResolvePrototypeDelegate =>
+        _resolvePrototypeCached ??= handle => _heap.GetObject(handle);
+
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private static bool IsFastNumeric(in JsValue value) =>
         value.Tag is JsValueTag.Int32 or JsValueTag.Number;
@@ -9028,7 +9036,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return ProxyGetSymbol(nestedProxy, receiver, symbolId);
         }
 
-        return targetObj.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
+        return targetObj.TryGetSymbolProperty(symbolId, ResolvePrototypeDelegate, out var desc)
             ? GetDescriptorValue(desc, receiver)
             : JsValue.Undefined;
     }
@@ -9107,7 +9115,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             return ProxyHas(nestedProxy, prop);
         }
-        return targetObj.TryGetProperty(prop, h => _heap.GetObject(h), out _);
+        return targetObj.TryGetProperty(prop, ResolvePrototypeDelegate, out _);
     }
 
     [MayExecuteJs]
@@ -9651,7 +9659,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var descriptorObject = _heap.GetObject(descriptorValue.AsObjectHandle());
         var descriptorReceiver = descriptorValue;
         var hasValue = TryGetPropertyValue(descriptorObject, descriptorReceiver, "value", out var value);
-        var hasWritable = descriptorObject.TryGetProperty("writable", h => _heap.GetObject(h), out _);
+        var hasWritable = descriptorObject.TryGetProperty("writable", ResolvePrototypeDelegate, out _);
         var hasGetter = TryGetPropertyValue(descriptorObject, descriptorReceiver, "get", out var getter);
         var hasSetter = TryGetPropertyValue(descriptorObject, descriptorReceiver, "set", out var setter);
 
@@ -11729,7 +11737,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var iterId = GetWellKnownSymbolId("iterator");
 
             if (iterId != 0 &&
-                iterableObj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                iterableObj.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) &&
                 iterDesc.Value.Tag == JsValueTag.Object)
             {
                 // @@iterator path — use lazy iteration so IteratorClose is called on errors.
@@ -13771,7 +13779,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var descriptorObject = _heap.GetObject(args[2].AsObjectHandle());
         var descriptorReceiver = args[2];
         var hasValue = TryGetPropertyValue(descriptorObject, descriptorReceiver, "value", out var value);
-        var hasWritable = descriptorObject.TryGetProperty("writable", h => _heap.GetObject(h), out _);
+        var hasWritable = descriptorObject.TryGetProperty("writable", ResolvePrototypeDelegate, out _);
         var hasGetter = TryGetPropertyValue(descriptorObject, descriptorReceiver, "get", out var getter);
         var hasSetter = TryGetPropertyValue(descriptorObject, descriptorReceiver, "set", out var setter);
         if ((hasGetter || hasSetter) && (hasValue || hasWritable))
@@ -13793,9 +13801,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateTypeError("Property descriptor setter must be callable or undefined."));
         }
 
-        var hasWritableFlag = descriptorObject.TryGetProperty("writable", h => _heap.GetObject(h), out _);
-        var hasEnumerable = descriptorObject.TryGetProperty("enumerable", h => _heap.GetObject(h), out _);
-        var hasConfigurable = descriptorObject.TryGetProperty("configurable", h => _heap.GetObject(h), out _);
+        var hasWritableFlag = descriptorObject.TryGetProperty("writable", ResolvePrototypeDelegate, out _);
+        var hasEnumerable = descriptorObject.TryGetProperty("enumerable", ResolvePrototypeDelegate, out _);
+        var hasConfigurable = descriptorObject.TryGetProperty("configurable", ResolvePrototypeDelegate, out _);
         var writable = hasWritableFlag && ReadDescriptorFlag(descriptorObject, descriptorReceiver, "writable");
         var enumerable = hasEnumerable && ReadDescriptorFlag(descriptorObject, descriptorReceiver, "enumerable");
         var configurable = hasConfigurable && ReadDescriptorFlag(descriptorObject, descriptorReceiver, "configurable");
@@ -15054,7 +15062,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var obj0 = _heap.GetObject(source.AsObjectHandle());
                 var iterId = GetWellKnownSymbolId("iterator");
                 useIterator = iterId != 0 &&
-                    obj0.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                    obj0.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) &&
                     iterDesc.Value.Tag == JsValueTag.Object;
             }
 
@@ -15070,7 +15078,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 // built-ins/Array/from/iter-map-fn-err.js).
                 var srcObj = _heap.GetObject(source.AsObjectHandle());
                 var iterId = GetWellKnownSymbolId("iterator");
-                srcObj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc);
+                srcObj.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc);
                 var iterator = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
                 if (iterator.Tag != JsValueTag.Object)
                 {
@@ -18942,7 +18950,7 @@ fallbackArraySpecies:
             var obj0 = _heap.GetObject(source.AsObjectHandle());
             var iterId = GetWellKnownSymbolId("iterator");
             useIterator = iterId != 0 &&
-                          obj0.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                          obj0.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) &&
                           iterDesc.Value.Tag == JsValueTag.Object;
         }
 
@@ -19083,7 +19091,7 @@ fallbackArraySpecies:
             var srcObj = _heap.GetObject(arg0.AsObjectHandle());
             var iterSymId = GetWellKnownSymbolId("iterator");
             bool hasIterator = iterSymId != 0 &&
-                               srcObj.TryGetSymbolProperty(iterSymId, h => _heap.GetObject(h), out var iterDesc) &&
+                               srcObj.TryGetSymbolProperty(iterSymId, ResolvePrototypeDelegate, out var iterDesc) &&
                                iterDesc.Value.Tag != JsValueTag.Undefined;
 
             if (hasIterator)
@@ -19116,7 +19124,7 @@ fallbackArraySpecies:
                 for (var i = 0; i < len; i++)
                 {
                     var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    var element = srcObj.TryGetProperty(key, h => _heap.GetObject(h), out var d) ? d.Value : JsValue.Undefined;
+                    var element = srcObj.TryGetProperty(key, ResolvePrototypeDelegate, out var d) ? d.Value : JsValue.Undefined;
                     view.SetElement(i, NormalizeTypedArrayElementValue(elementType, element));
                 }
                 view.SetPrototype(protoHandle);
@@ -21482,7 +21490,7 @@ fallbackArraySpecies:
             var matchAllSymId = GetWellKnownSymbolId("matchAll");
             if (matchAllSymId != 0 &&
                 regexp.Tag == JsValueTag.Object &&
-                _heap.GetObject(regexp.AsObjectHandle()).TryGetSymbolProperty(matchAllSymId, h => _heap.GetObject(h), out var mDesc) &&
+                _heap.GetObject(regexp.AsObjectHandle()).TryGetSymbolProperty(matchAllSymId, ResolvePrototypeDelegate, out var mDesc) &&
                 mDesc.Value.Tag != JsValueTag.Undefined &&
                 IsCallable(mDesc.Value))
             {
@@ -21497,7 +21505,7 @@ fallbackArraySpecies:
         var rxObj = _heap.GetObject(rx.AsObjectHandle());
         var rxMatchAllSymId = GetWellKnownSymbolId("matchAll");
         if (rxMatchAllSymId != 0 &&
-            rxObj.TryGetSymbolProperty(rxMatchAllSymId, h => _heap.GetObject(h), out var rxMDesc) &&
+            rxObj.TryGetSymbolProperty(rxMatchAllSymId, ResolvePrototypeDelegate, out var rxMDesc) &&
             rxMDesc.Value.Tag != JsValueTag.Undefined &&
             IsCallable(rxMDesc.Value))
         {

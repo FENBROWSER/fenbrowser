@@ -1033,7 +1033,7 @@ public sealed partial class BytecodeInterpreter
             var target = _heap.GetObject(obj.AsObjectHandle());
             var iterId = GetWellKnownSymbolId("iterator");
             if (iterId != 0 &&
-                target.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                target.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) &&
                 iterDesc.Value.Tag == JsValueTag.Object)
             {
                 iterator = CallFunction(iterDesc.Value, System.Array.Empty<JsValue>(), obj);
@@ -1358,7 +1358,7 @@ public sealed partial class BytecodeInterpreter
             var itemObj = _heap.GetObject(item.AsObjectHandle());
             var iterId = GetWellKnownSymbolId("iterator");
             if (iterId == 0 ||
-                !itemObj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) ||
+                !itemObj.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) ||
                 iterDesc.Value.Tag != JsValueTag.Object)
             {
                 throw new JsThrownException(CreateTypeError("Iterator.concat: argument is not iterable."));

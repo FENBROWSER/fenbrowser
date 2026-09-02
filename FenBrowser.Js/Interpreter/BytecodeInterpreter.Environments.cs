@@ -169,7 +169,7 @@ public sealed partial class BytecodeInterpreter
     private bool IsBlockedByUnscopables(ObjectHandle handle, long unscopablesSymId, string name)
     {
         var obj = _heap.GetObject(handle);
-        if (!obj.TryGetSymbolProperty(unscopablesSymId, h => _heap.GetObject(h), out var desc))
+        if (!obj.TryGetSymbolProperty(unscopablesSymId, ResolvePrototypeDelegate, out var desc))
             return false;
 
         var unscopables = GetDescriptorValue(desc, JsValue.FromObject(handle));

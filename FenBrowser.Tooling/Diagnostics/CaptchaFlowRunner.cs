@@ -441,6 +441,13 @@ internal static class CaptchaFlowRunner
 
         await ReportNetworkRecordersAsync(host).ConfigureAwait(false);
         DumpConsole(console);
+        // With FEN_FENJS_PROFILE=1 the engine counts executed opcodes; print
+        // the mix so the slow path is chosen from data rather than a guess.
+        if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
+        {
+            Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(25));
+        }
+
         Console.WriteLine(solved ? "[captcha] RESULT solved" : "[captcha] RESULT unsolved");
         return solved ? 0 : 1;
     }

@@ -425,7 +425,7 @@ public sealed partial class BytecodeInterpreter
         var keyValue = frame.Registers[ins.B];
         if (keyValue.Tag == JsValueTag.Symbol)
         {
-            frame.Registers[ins.A] = baseProto.TryGetSymbolProperty(keyValue.AsSymbolId(), h => _heap.GetObject(h), out var desc)
+            frame.Registers[ins.A] = baseProto.TryGetSymbolProperty(keyValue.AsSymbolId(), ResolvePrototypeDelegate, out var desc)
                 ? GetDescriptorValue(desc, receiver)
                 : JsValue.Undefined;
             return;

@@ -364,7 +364,7 @@ public sealed partial class BytecodeInterpreter
         }
 
         var prototypeObject = _heap.GetObject(prototype.AsObjectHandle());
-        if (prototypeObject.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var descriptor))
+        if (prototypeObject.TryGetSymbolProperty(symbolId, ResolvePrototypeDelegate, out var descriptor))
         {
             value = GetDescriptorValue(descriptor, receiver);
             return true;
