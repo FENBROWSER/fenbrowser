@@ -78,6 +78,18 @@ internal static class CaptchaFlowRunner
         // finishes: no request, no error.
         "r+=' webdriver='+navigator.webdriver+' plugins='+((navigator.plugins||[]).length)+" +
         "' langs='+((navigator.languages||[]).join(','))+' ua='+(navigator.userAgent||'').slice(0,60);" +
+        // The widget's DOM gets built and then never wired up, and wiring is the
+        // async half of setup. Ask whether async work runs in this realm at all:
+        // arm the probes on the first visit, read them back on later ones.
+        "try{if(window.__asyncProbe===undefined){window.__asyncProbe='armed';" +
+        "window.__timerProbe='pending';window.__microProbe='pending';window.__rafProbe='pending';" +
+        "setTimeout(function(){window.__timerProbe='fired';},10);" +
+        "Promise.resolve().then(function(){window.__microProbe='fired';});" +
+        "if(typeof requestAnimationFrame==='function')" +
+        "requestAnimationFrame(function(){window.__rafProbe='fired';});" +
+        "else window.__rafProbe='absent';}" +
+        "r+=' timer='+window.__timerProbe+' microtask='+window.__microProbe+' raf='+window.__rafProbe;}" +
+        "catch(e){r+=' asyncProbeThrew='+e;}" +
         "r+=' readyState='+document.readyState+' recaptcha='+(typeof recaptcha);" +
         "try{r+=' rcKeys='+(typeof recaptcha==='object'?Object.keys(recaptcha).join('|'):'-');}catch(e){}" +
         "return r;})()";
@@ -121,6 +133,50 @@ internal static class CaptchaFlowRunner
         "return 'ran without throwing; anchor='+(document.getElementById('recaptcha-anchor')?'built':'still missing');" +
         "}" +
         "return 'no bootstrap script in this document';})()";
+
+    // Record every event the real click produces inside the anchor frame, on the
+    // checkbox and on the document, before clicking it. If ours fire and the
+    // widget still does not move, the input pipeline delivers and reCAPTCHA's own
+    // handler is what is missing.
+    private const string InstallClickRecorderScript =
+        "(function(){" +
+        "if(window.__fenClicks)return 'already';" +
+        "window.__fenClicks=[];" +
+        "var a=document.getElementById('recaptcha-anchor');" +
+        "if(!a)return 'no anchor element';" +
+        "var types=['mousedown','mouseup','click','pointerdown','pointerup','keydown'];" +
+        "for(var i=0;i<types.length;i++){(function(t){" +
+        "a.addEventListener(t,function(e){window.__fenClicks.push('anchor:'+t);});" +
+        "document.addEventListener(t,function(e){window.__fenClicks.push('doc:'+t+'@'+" +
+        "((e&&e.target&&e.target.id)||'?'));});})(types[i]);}" +
+        "return 'installed';})()";
+
+    private const string ReadClickRecorderScript =
+        "(function(){var c=window.__fenClicks||[];" +
+        "var a=document.getElementById('recaptcha-anchor');" +
+        "return c.length+' events: '+c.join(',')+' | class='+(a?a.className:'no anchor');})()";
+
+    // A real click that changes nothing has two very different explanations:
+    // the widget never registered a handler, or it did and our input pipeline is
+    // not reaching it. Clicking the same element from inside the realm tells
+    // them apart.
+    private const string JsClickAnchorScript =
+        "(function(){var a=document.getElementById('recaptcha-anchor');" +
+        "if(!a)return 'no anchor element';" +
+        "var before=a.className;" +
+        // Attach our own listener too: if ours fires and the widget still does
+        // not react, dispatch works and reCAPTCHA simply never registered one.
+        // Closure parks its listener map in a closure_lm_<uid> expando on the
+        // element. If there is none, it never wired the widget up at all.
+        "var own='?';" +
+        "try{own=Object.getOwnPropertyNames(a).filter(function(k){" +
+        "return k.indexOf('closure')===0||k.indexOf('__')===0;}).join('+')||'none';}catch(e){own='threw';}" +
+        "var seen=[];" +
+        "try{a.addEventListener('mousedown',function(){seen.push('mousedown');});" +
+        "a.addEventListener('click',function(){seen.push('click');});}" +
+        "catch(e){return 'addEventListener threw '+e;}" +
+        "try{a.click();}catch(e){return 'clickThrew '+e;}" +
+        "return 'closureProps='+own+' ourListenersSaw=['+seen.join(',')+'] changed='+(before!==a.className);})()";
 
     private const string ReadNetworkRecorderScript =
         "(function(){var l=window.__fenNetLog||[];" +
@@ -175,13 +231,13 @@ internal static class CaptchaFlowRunner
             var href = html.StartsWith("HREF=", StringComparison.Ordinal)
                 ? html[5..Math.Max(5, html.IndexOf('\n'))]
                 : "?";
+            Console.WriteLine($"[captcha] net {kind}: {probe}");
             var key = kind + ":" + href + ":" + html.Length.ToString(CultureInfo.InvariantCulture);
             if (!alreadyDumped.Add(key))
             {
                 continue;
             }
 
-            Console.WriteLine($"[captcha] net {kind}: {probe}");
 
             var path = Path.Combine(dir, $"{kind}-{tag}-{html.Length}.html");
             await File.WriteAllTextAsync(path, "<!-- " + src + " -->\n" + html).ConfigureAwait(false);
@@ -267,6 +323,7 @@ internal static class CaptchaFlowRunner
         var instrumented = new HashSet<string>(StringComparer.Ordinal);
         await EnsureNetworkRecordersAsync(host, instrumented).ConfigureAwait(false);
 
+        await RunInFrameAsync(host, anchorFrameId, InstallClickRecorderScript, "click-recorder").ConfigureAwait(false);
         Console.WriteLine("[captcha] clicking checkbox…");
         var clickStarted = DateTime.UtcNow;
         if (!await ClickAnchorAsync(host, anchorFrameId, anchorId, readyMs).ConfigureAwait(false))
@@ -275,6 +332,8 @@ internal static class CaptchaFlowRunner
             return 5;
         }
 
+        await Task.Delay(1500).ConfigureAwait(false);
+        await RunInFrameAsync(host, anchorFrameId, ReadClickRecorderScript, "clicks seen").ConfigureAwait(false);
         var dumped = new HashSet<string>(StringComparer.Ordinal);
         await DumpFramesAsync(host, "click", dumped).ConfigureAwait(false);
 
@@ -303,6 +362,11 @@ internal static class CaptchaFlowRunner
         }
 
         Console.WriteLine($"[captcha] final: {last}");
+        if (!solved)
+        {
+            await RunInFrameAsync(host, anchorFrameId, JsClickAnchorScript, "js-click anchor").ConfigureAwait(false);
+        }
+
         await ReportNetworkRecordersAsync(host).ConfigureAwait(false);
         DumpConsole(console);
         Console.WriteLine(solved ? "[captcha] RESULT solved" : "[captcha] RESULT unsolved");
