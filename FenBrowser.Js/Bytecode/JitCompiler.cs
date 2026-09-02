@@ -34,10 +34,46 @@ public static class JitCompiler
     // the hot path without JIT-compiling every single-call initializer.
     public const int TierUpThreshold = 10;
 
+    /// <summary>
+    /// Set FEN_JIT_DISABLE=1 to keep everything on the dispatch loop. Having a
+    /// switch makes a JIT change measurable against the interpreter it is
+    /// supposed to beat, rather than against the last build.
+    /// </summary>
+    public static readonly bool Enabled =
+        !string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_DISABLE"), "1", StringComparison.Ordinal);
+
     // JIT-compiled body. Runs to completion inside the caller-set-up
     // InterpreterFrame and returns the function's return value. Throws
     // JsThrownException for uncaught exceptions, same as ExecuteInternal.
-    public delegate JsValue JitDelegate(BytecodeInterpreter interp, InterpreterFrame frame);
+    //
+    // startIp is 0 for an ordinary call. A running interpreter frame that
+    // has spent long enough in a loop hands over at a loop header instead,
+    // which is the only way a function that is entered once and then loops
+    // for seconds can ever reach compiled code.
+    public delegate JsValue JitDelegate(BytecodeInterpreter interp, InterpreterFrame frame, int startIp);
+
+    /// <summary>
+    /// Why compilation gave up, tallied by the opcode that could not be
+    /// emitted. A JIT that rejects the functions a page actually runs is worth
+    /// nothing however fast the ones it accepts are, so the rejection reasons
+    /// matter more than the success count.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<OpCode, int> Rejections = new();
+
+    private static void NoteRejection(OpCode op) => Rejections.AddOrUpdate(op, 1, (_, n) => n + 1);
+
+    public static string DescribeRejections()
+    {
+        var ordered = Rejections.ToArray();
+        Array.Sort(ordered, (x, y) => y.Value.CompareTo(x.Value));
+        var parts = new List<string>();
+        foreach (var entry in ordered)
+        {
+            parts.Add($"{entry.Key}={entry.Value}");
+        }
+
+        return parts.Count == 0 ? "none" : string.Join(" ", parts);
+    }
 
     public static long CompileAttempts;
     public static long CompileSuccesses;
@@ -53,6 +89,10 @@ public static class JitCompiler
         // returns it directly.
         if (TryConstantFold(function) is { } folded)
         {
+            // A folded body is the answer for running the function from the
+            // top; there is no partial state it could be resumed into, so it
+            // never advertises an on-stack entry point.
+            function.OsrEntryPoints = null;
             Interlocked.Increment(ref CompileSuccesses);
             return folded;
         }
@@ -151,7 +191,7 @@ public static class JitCompiler
                 case OpCode.Return:
                     if (ins.A < 0 || ins.A >= function.RegisterCount) return null;
                     if (registerValues[ins.A] is not { } returnValue) return null;
-                    return (_, _) => returnValue;
+                    return (_, _, _) => returnValue;
                 default:
                     return null;
             }
@@ -286,16 +326,23 @@ public static class JitCompiler
         {
             var op = function.Instructions[i].OpCode;
             if (op == OpCode.PushHandler || op == OpCode.PopHandler || op == OpCode.EndFinally)
+            {
+                NoteRejection(op);
                 return null;
+            }
             // Frame-suspending ops can't be JIT'd — they need IP save/restore
             // across delegate boundaries which the JIT lambda doesn't model.
             if (op == OpCode.Yield || op == OpCode.YieldStar ||
                 op == OpCode.Await || op == OpCode.EnumerateValuesAsync)
+            {
+                NoteRejection(op);
                 return null;
+            }
         }
 
         var interpParam = Expression.Parameter(typeof(BytecodeInterpreter), "interp");
         var frameParam = Expression.Parameter(typeof(InterpreterFrame), "frame");
+        var startIpParam = Expression.Parameter(typeof(int), "startIp");
         var registersLocal = Expression.Variable(typeof(JsValue[]), "registers");
         var constantsLocal = Expression.Variable(typeof(IReadOnlyList<JsValue>), "constants");
         var returnLabel = Expression.Label(typeof(JsValue), "return");
@@ -304,11 +351,35 @@ public static class JitCompiler
         for (var i = 0; i < instructionLabels.Length; i++)
             instructionLabels[i] = Expression.Label("ip_" + i);
 
+        // A loop header -- the target of a backwards branch -- is the only
+        // place a running frame is allowed to hand over, and the only place
+        // worth paying for a jump-table entry.
+        var loopHeaders = CollectLoopHeaders(function);
+
         var body = new List<Expression>
         {
             Expression.Assign(registersLocal, Expression.Property(frameParam, PiRegisters)),
             Expression.Assign(constantsLocal, Expression.Property(Expression.Property(frameParam, PiFunction), PiConstants)),
         };
+
+        if (loopHeaders.Count > 0)
+        {
+            var entryCases = new List<SwitchCase>(loopHeaders.Count);
+            foreach (var header in loopHeaders)
+            {
+                entryCases.Add(Expression.SwitchCase(
+                    Expression.Goto(instructionLabels[header]),
+                    Expression.Constant(header)));
+            }
+
+            // Anything else -- including 0 -- falls through to the top.
+            body.Add(Expression.Switch(
+                typeof(void),
+                startIpParam,
+                Expression.Empty(),
+                comparison: null,
+                entryCases));
+        }
 
         for (var i = 0; i < function.Instructions.Count; i++)
         {
@@ -317,6 +388,7 @@ public static class JitCompiler
             var ins = function.Instructions[i];
             if (!TryEmitOpcode(function, ins, i, interpParam, frameParam, registersLocal, constantsLocal, instructionLabels, returnLabel, body))
             {
+                NoteRejection(ins.OpCode);
                 return null;
             }
         }
@@ -326,9 +398,45 @@ public static class JitCompiler
         body.Add(Expression.Label(returnLabel, Expression.Constant(JsValue.Undefined)));
 
         var block = Expression.Block(typeof(JsValue), new[] { registersLocal, constantsLocal }, body);
-        var lambda = Expression.Lambda<JitDelegate>(block, interpParam, frameParam);
-        try { return lambda.Compile(); }
-        catch { return null; }
+        var lambda = Expression.Lambda<JitDelegate>(block, interpParam, frameParam, startIpParam);
+        try
+        {
+            var compiled = lambda.Compile();
+            function.OsrEntryPoints = loopHeaders.Count > 0 ? loopHeaders : null;
+            return compiled;
+        }
+        catch
+        {
+            function.OsrEntryPoints = null;
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Instruction offsets that are the target of a backwards branch. These
+    /// are the points a running frame may transfer into compiled code at:
+    /// every register the code reads lives in the frame both sides share, and
+    /// a loop header is reached with no interpreter-only state outstanding.
+    /// </summary>
+    private static HashSet<int> CollectLoopHeaders(BytecodeFunction function)
+    {
+        var headers = new HashSet<int>();
+        for (var i = 0; i < function.Instructions.Count; i++)
+        {
+            var ins = function.Instructions[i];
+            switch (ins.OpCode)
+            {
+                case OpCode.Jump when ins.A <= i:
+                    headers.Add(ins.A);
+                    break;
+                case OpCode.JumpIfFalse when ins.B <= i:
+                    headers.Add(ins.B);
+                    break;
+            }
+        }
+
+        headers.RemoveWhere(h => h < 0 || h >= function.Instructions.Count);
+        return headers;
     }
 
     private static bool TryEmitOpcode(

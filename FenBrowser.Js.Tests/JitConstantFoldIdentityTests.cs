@@ -54,6 +54,6 @@ public sealed class JitConstantFoldIdentityTests
         };
 
         var compiled = Assert.IsType<JitCompiler.JitDelegate>(JitCompiler.TryCompile(function));
-        return compiled(null!, null!).AsBoolean();
+        return compiled(null!, null!, 0).AsBoolean();
     }
 }

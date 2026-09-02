@@ -136,6 +136,12 @@ public sealed class BytecodeFunction
     internal int BackEdges;
 #if !PUBLISH_AOT
     internal bool JitCompileAttempted;
+
+    /// <summary>
+    /// Loop headers the JIT body can be entered at while a frame is already
+    /// running it. Null when the compiled form only makes sense from the top.
+    /// </summary>
+    internal HashSet<int>? OsrEntryPoints;
     internal JitCompiler.JitDelegate? JitDelegate;
 #endif
 

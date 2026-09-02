@@ -1348,9 +1348,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // the dispatch loop. The delegate executes the entire function
         // body and returns the function's return value. Exceptions
         // propagate via JsThrownException same as the interpreter.
-        if (function.JitDelegate is { } jitFn && !IsRecursiveFunctionActivation(function))
+        if (JitCompiler.Enabled && function.JitDelegate is { } jitFn && !IsRecursiveFunctionActivation(function))
         {
-            return jitFn(this, frame);
+            return jitFn(this, frame, 0);
         }
 #endif
 
@@ -1594,7 +1594,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     if (ins.A < frame.InstructionPointer - 1 && function.BackEdges < int.MaxValue)
                     {
                         function.BackEdges++;
+                        frame.InstructionPointer = ins.A;
+#if !PUBLISH_AOT
+                        if (TryTransferToCompiledCode(function, frame, ins.A, out var jumpResult))
+                        {
+                            return jumpResult;
+                        }
+#endif
+                        break;
                     }
+
                     frame.InstructionPointer = ins.A;
                     break;
                 case OpCode.JumpIfFalse:
@@ -1603,7 +1612,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         if (ins.B < frame.InstructionPointer - 1 && function.BackEdges < int.MaxValue)
                         {
                             function.BackEdges++;
+                            frame.InstructionPointer = ins.B;
+#if !PUBLISH_AOT
+                            if (TryTransferToCompiledCode(function, frame, ins.B, out var branchResult))
+                            {
+                                return branchResult;
+                            }
+#endif
+                            break;
                         }
+
                         frame.InstructionPointer = ins.B;
                     }
                     break;
@@ -5939,6 +5957,47 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private static bool IsFastNumeric(in JsValue value) =>
         value.Tag is JsValueTag.Int32 or JsValueTag.Number;
 
+    /// <summary>
+    /// Numeric fast paths shared by the dispatch loop and the JIT's compiled
+    /// body. Both operands being numbers is the overwhelmingly common case, and
+    /// it settles every one of these operators without entering the generic
+    /// algorithms — which for a comparison means abstract relational comparison
+    /// and its ToPrimitive dance, and for arithmetic a BigInt-aware helper
+    /// reached through a delegate.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static bool TryFastBinop(OpCode op, in JsValue left, in JsValue right, out JsValue result)
+    {
+        if (!IsFastNumeric(left) || !IsFastNumeric(right))
+        {
+            result = JsValue.Undefined;
+            return false;
+        }
+
+        var a = left.AsNumber();
+        var b = right.AsNumber();
+        switch (op)
+        {
+            // NaN propagates correctly through every one of these: an unordered
+            // comparison is false whichever way it is written, and NaN is not
+            // equal to itself under == or ===.
+            case OpCode.Add: result = FastNumberResult(a + b); return true;
+            case OpCode.Sub: result = FastNumberResult(a - b); return true;
+            case OpCode.Mul: result = FastNumberResult(a * b); return true;
+            case OpCode.Lt: result = JsValue.FromBoolean(a < b); return true;
+            case OpCode.Gt: result = JsValue.FromBoolean(a > b); return true;
+            case OpCode.Le: result = JsValue.FromBoolean(a <= b); return true;
+            case OpCode.Ge: result = JsValue.FromBoolean(a >= b); return true;
+            // Two numbers compare the same loosely and strictly; Int32 and
+            // Number are both the Number type, so no tag check is needed here.
+            case OpCode.Eq:
+            case OpCode.StrictEq: result = JsValue.FromBoolean(a == b); return true;
+            case OpCode.Neq:
+            case OpCode.StrictNeq: result = JsValue.FromBoolean(a != b); return true;
+            default: result = JsValue.Undefined; return false;
+        }
+    }
+
     // Small integer results stay tagged as integers so the paths that look for
     // an integer (array indexing, for one) still find one.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -6064,6 +6123,71 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Walks the current environment chain and captures the owning environment
     // and name so a subsequent StoreResolvedVar can write through that same
     // resolution even if the binding becomes invisible in between.
+#if !PUBLISH_AOT
+    // A frame that is spinning in a loop is the one case tier-up by call count
+    // can never catch: the counter is only consulted when the function is
+    // called again, and a script's top level is called once. Reaching a loop
+    // header enough times is the same evidence, so compile there and hand the
+    // running frame over at that header.
+    private const int OsrBackEdgeThreshold = 4096;
+
+    // Read once: the decline path below is reached on every back-edge a
+    // non-compilable loop takes, and an environment lookup there would cost
+    // more than the check it is reporting on.
+    private static readonly bool OsrTraceEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_TRACE"), "1", StringComparison.Ordinal);
+
+    private bool TryTransferToCompiledCode(
+        BytecodeFunction function,
+        InterpreterFrame frame,
+        int targetIp,
+        out JsValue result)
+    {
+        result = JsValue.Undefined;
+        if (!JitCompiler.Enabled || function.BackEdges < OsrBackEdgeThreshold)
+        {
+            return false;
+        }
+
+        if (!function.JitCompileAttempted)
+        {
+            function.JitCompileAttempted = true;
+            function.JitDelegate = JitCompiler.TryCompile(function);
+        }
+
+        // Only a loop header the compiled body advertises is safe to enter:
+        // anywhere else the two would disagree about where execution resumes.
+        if (function.JitDelegate is not { } compiled ||
+            function.OsrEntryPoints is not { } entries ||
+            !entries.Contains(targetIp) ||
+            IsRecursiveFunctionActivation(function))
+        {
+            if (OsrTraceEnabled && function.BackEdges == OsrBackEdgeThreshold)
+            {
+                Console.Error.WriteLine(
+                    $"[jit] OSR declined for {function.Name ?? "<anon>"} at ip={targetIp}: " +
+                    $"compiled={function.JitDelegate is not null} " +
+                    $"entries={function.OsrEntryPoints?.Count ?? -1} " +
+                    $"rejections=[{JitCompiler.DescribeRejections()}] " +
+                    $"hasTarget={function.OsrEntryPoints?.Contains(targetIp) ?? false} " +
+                    $"recursive={IsRecursiveFunctionActivation(function)}");
+            }
+
+            return false;
+        }
+
+        if (OsrTraceEnabled)
+        {
+            Console.Error.WriteLine(
+                $"[jit] OSR into {function.Name ?? "<anon>"} at ip={targetIp} " +
+                $"backEdges={function.BackEdges} entries={function.OsrEntryPoints?.Count ?? 0}");
+        }
+
+        result = compiled(this, frame, targetIp);
+        return true;
+    }
+#endif
+
     internal void PreResolveBinding(InterpreterFrame frame, int slot)
     {
         // Resolving is only needed to find which record holds the binding. When
@@ -22107,6 +22231,17 @@ fallbackArraySpecies:
     internal void ApplyBinopForJit(InterpreterFrame frame, int opCodeByte, int a, int b, int c)
     {
         var op = (OpCode)opCodeByte;
+
+        // The dispatch loop takes these shortcuts inline; without them here the
+        // compiled body was reaching the generic operators for work the
+        // interpreter never sent there, and ran arithmetic slower than the loop
+        // it replaced.
+        if (TryFastBinop(op, frame.Registers[b], frame.Registers[c], out var fast))
+        {
+            frame.Registers[a] = fast;
+            return;
+        }
+
         switch (op)
         {
             case OpCode.Add:
