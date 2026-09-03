@@ -560,6 +560,25 @@ namespace FenBrowser.Tooling
             }
             sw.Stop();
 
+            // A page may suppress its own content (anti-scrape code commonly hides a
+            // results container). FEN_DEBUG_SITE_PRESCRIPT runs before the capture so a
+            // run can answer "does the engine render this markup" separately from "did
+            // the site choose to show it".
+            var preScript = Environment.GetEnvironmentVariable("FEN_DEBUG_SITE_PRESCRIPT");
+            if (!string.IsNullOrWhiteSpace(preScript))
+            {
+                try
+                {
+                    var preResult = await host.ExecuteScriptAsync(preScript).ConfigureAwait(false);
+                    Console.WriteLine($"[debug-site] pre-screenshot script => {preResult}");
+                    await host.FlushPendingLayoutAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[debug-site] pre-screenshot script threw: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
             // ── Capture screenshot early ─────────────────────────────────
             // Capture the root, styles, and screenshot now — before the
             // probe scripts run.  Probe ExecuteScriptAsync calls can trigger
