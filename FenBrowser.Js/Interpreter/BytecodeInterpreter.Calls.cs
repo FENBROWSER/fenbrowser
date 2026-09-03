@@ -337,12 +337,14 @@ public sealed partial class BytecodeInterpreter
                 // in C# locals across nested safe-point collections; the heap's
                 // scoped allocation pin covers exactly this window.
                 _heap.BeginNativeExecution();
+                var nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 try
                 {
                     return native.Call(thisValue, args);
                 }
                 finally
                 {
+                    NoteNativeCall(native, System.Diagnostics.Stopwatch.GetTimestamp() - nativeStart);
                     _heap.EndNativeExecution();
                 }
             }

@@ -1882,7 +1882,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 $"minor={heap.MinorCollectionCount} ({heap.MinorGcMilliseconds:F0}ms) " +
                 $"allocs={heap.AllocationCount} " +
                 $"microtasks={_interpreter.MicrotaskJobsRun} ({_interpreter.MicrotaskMilliseconds:F0}ms) " +
-                $"instructions={_interpreter.TotalInstructionsExecuted}",
+                $"instructions={_interpreter.TotalInstructionsExecuted} " +
+                $"slowestJob={_interpreter.SlowestJobMilliseconds:F0}ms/{_interpreter.SlowestJobInstructions}instr " +
+                $"natives=[{_interpreter.DescribeNativeCallCost()}]",
                 FenBrowser.Core.Logging.LogCategory.JavaScript);
         }
     }

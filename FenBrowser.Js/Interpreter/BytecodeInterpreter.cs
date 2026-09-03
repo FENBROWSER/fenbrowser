@@ -1040,6 +1040,50 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private long _microtaskTicks;
 
+    // Built-ins are native code the instruction counter cannot see, so a job
+    // that spends its time inside one looks like a job running almost no
+    // bytecode very slowly. Name the expensive ones.
+    private readonly Dictionary<string, (long Ticks, long Calls)> _nativeCallCost = new(StringComparer.Ordinal);
+
+    internal void NoteNativeCall(FenBrowser.Js.Objects.NativeFunctionObject native, long ticks)
+    {
+        var name = native.Name is { Length: > 0 } n ? n : "<anonymous>";
+        _nativeCallCost.TryGetValue(name, out var entry);
+        _nativeCallCost[name] = (entry.Ticks + ticks, entry.Calls + 1);
+    }
+
+    /// <summary>The costliest built-ins on this interpreter, worst first.</summary>
+    public string DescribeNativeCallCost(int top = 6)
+    {
+        if (_nativeCallCost.Count == 0) return "none";
+        var freq = System.Diagnostics.Stopwatch.Frequency;
+        var rows = new List<(string Name, long Ticks, long Calls)>();
+        foreach (var (name, entry) in _nativeCallCost) rows.Add((name, entry.Ticks, entry.Calls));
+        rows.Sort(static (a, b) => b.Ticks.CompareTo(a.Ticks));
+        var text = new System.Text.StringBuilder();
+        for (var i = 0; i < rows.Count && i < top; i++)
+        {
+            if (i > 0) text.Append(' ');
+            text.Append(rows[i].Name).Append('=')
+                .Append((rows[i].Ticks * 1000.0 / freq).ToString("F0")).Append("ms/")
+                .Append(rows[i].Calls);
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// The single slowest promise job, and how much work it charged. A job that
+    /// is slow because it runs a lot of bytecode and one that is slow despite
+    /// running almost none are different problems.
+    /// </summary>
+    public long SlowestJobTicks { get; private set; }
+
+    public int SlowestJobInstructions { get; private set; }
+
+    public double SlowestJobMilliseconds =>
+        SlowestJobTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
     public double MicrotaskMilliseconds =>
         _microtaskTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
@@ -1146,7 +1190,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _ = _jobQueue.RunMicrotaskCheckpoint(job =>
             {
                 CheckCheckpointBudget();
-                return RunPromiseJob(job);
+                var jobStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                var jobInstructions = _instructionCount;
+                try
+                {
+                    return RunPromiseJob(job);
+                }
+                finally
+                {
+                    var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - jobStart;
+                    if (elapsed > SlowestJobTicks)
+                    {
+                        SlowestJobTicks = elapsed;
+                        SlowestJobInstructions = _instructionCount - jobInstructions;
+                    }
+                }
             });
         }
     }
