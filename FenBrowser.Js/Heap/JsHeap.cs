@@ -138,6 +138,15 @@ public sealed class JsHeap
         public string Describe() => $"{Collector}:gen{Generation}/{Kind}({PayloadType}) minor#{MinorGc} major#{MajorGc}";
     }
 
+    // Every live heap, for the stale-handle diagnostic below only. Weak so a
+    // heap that goes away is not kept alive by being on this list.
+    private static readonly object LiveHeapsGate = new();
+    private static readonly List<WeakReference<JsHeap>> LiveHeaps = new();
+    private static int _heapIdCounter;
+
+    /// <summary>Identifies this heap in diagnostics. Heaps are per-realm.</summary>
+    public int HeapId { get; }
+
     public JsHeap(
         GcStressMode stressMode = GcStressMode.None,
         bool verifyHeapBeforeGc = false,
@@ -146,6 +155,11 @@ public sealed class JsHeap
         _stressMode = stressMode;
         _verifyHeapBeforeGc = verifyHeapBeforeGc;
         _verifyHeapAfterGc = verifyHeapAfterGc;
+        HeapId = System.Threading.Interlocked.Increment(ref _heapIdCounter);
+        lock (LiveHeapsGate)
+        {
+            LiveHeaps.Add(new WeakReference<JsHeap>(this));
+        }
 
         // Historical barrier edges are diagnostic-only. Avoid retaining every
         // object-to-object store during normal browsing when verification is disabled.
@@ -391,6 +405,50 @@ public sealed class JsHeap
         return ValidateHandle(handle.Index, handle.Generation, HeapCellKind.Symbol);
     }
 
+    /// <summary>
+    /// Names the heap a stale handle actually belongs to, if another live one
+    /// holds that exact (index, generation).
+    ///
+    /// A slot's generation only ever goes up and the cell list never shrinks, so
+    /// a handle wanting a generation *higher* than the cell present cannot have
+    /// come from this heap at all - it came from another realm's. Saying which,
+    /// and where that object was allocated, is the difference between a lost
+    /// afternoon and a fix.
+    /// </summary>
+    private string DescribeHandleOwner(int index, int generation)
+    {
+        List<JsHeap> others = new();
+        lock (LiveHeapsGate)
+        {
+            for (var i = LiveHeaps.Count - 1; i >= 0; i--)
+            {
+                if (!LiveHeaps[i].TryGetTarget(out var heap))
+                {
+                    LiveHeaps.RemoveAt(i);
+                    continue;
+                }
+
+                if (!ReferenceEquals(heap, this))
+                {
+                    others.Add(heap);
+                }
+            }
+        }
+
+        foreach (var heap in others)
+        {
+            if ((uint)index < (uint)heap._cells.Count &&
+                heap._cells[index] is { } candidate &&
+                candidate.Generation == generation)
+            {
+                return $"ownedBy=heap#{heap.HeapId}/{candidate.Kind}/" +
+                    $"{candidate.Payload.GetType().Name}@{heap.GetAllocationSiteForDiagnostics(index)}";
+            }
+        }
+
+        return $"ownedBy=none-of-{others.Count}-other-heaps";
+    }
+
     private HeapCell ValidateHandle(int index, int generation, HeapCellKind expectedKind)
     {
         if ((uint)index >= (uint)_cells.Count)
@@ -404,7 +462,7 @@ public sealed class JsHeap
             var sweepInfo = _sweepLog.TryGetValue(index, out var info) ? info.Describe() : "no-sweep-record";
             var allocSite = GetAllocationSiteForDiagnostics(index);
             throw new JsEngineFatalException(
-                $"Stale heap handle. idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] allocSite={allocSite} rememberedEnvs={_rememberedEnvironments.Count} envRegs={_rememberedEnvironmentRegistrations} envScanMarks={_rememberedEnvironmentScanMarks} minor#{_minorGcCount} major#{_gcCollectionCount}");
+                $"Stale heap handle. heap#{HeapId} idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] allocSite={allocSite} {DescribeHandleOwner(index, generation)} rememberedEnvs={_rememberedEnvironments.Count} envRegs={_rememberedEnvironmentRegistrations} envScanMarks={_rememberedEnvironmentScanMarks} minor#{_minorGcCount} major#{_gcCollectionCount}");
         }
 
         if (cell.Kind != expectedKind)
