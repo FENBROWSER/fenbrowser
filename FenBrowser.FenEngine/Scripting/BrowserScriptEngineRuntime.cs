@@ -4695,6 +4695,31 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             _activeParentBaseUri = null;
             _fenJsDomConstructorsInstalled = false;
 
+            // Every JsValue the host is still holding names a cell in the heap
+            // that is about to be thrown away. Resolving one against the new
+            // heap is a fatal "Stale heap handle": the index is in range and the
+            // generation is not, and no amount of looking at the new heap
+            // explains it, because the object it names was never there.
+            //
+            // The window facades above were already dropped; these were not.
+            // The parent-window proxy is the source of every message a parent
+            // posts into this frame, so a frame that has been reset once -- an
+            // iframe on its second document, which is exactly what reCAPTCHA
+            // builds -- took one and died.
+            _embeddedParentWindowProxy = JsValue.Undefined;
+            _siblingWindowProxies.Clear();
+            _pendingPromiseRejectionDiagnostics.Clear();
+
+            // A worker outlives the document that made it only in the sense
+            // that its thread is still running; the page object it posts to
+            // belongs to the heap going away. Stop them.
+            foreach (var workerId in _dedicatedWorkers.Keys.ToArray())
+            {
+                TerminateDedicatedWorkerById(workerId);
+            }
+
+            _dedicatedWorkers.Clear();
+
             // Close all active WebSocket connections on session reset.
             lock (_webSocketHosts)
             {
