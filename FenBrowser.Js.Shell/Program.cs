@@ -36,7 +36,10 @@ if (args.Length >= 1 && args[0] == "--eval")
     return ExecuteSource(code, "<eval>", gcStressMode, verifyBeforeGc, verifyAfterGc, traceGc);
 }
 
-if (args.Length == 2 && args[0] == "--file")
+// The usage line offers the GC-stress flags alongside --file, but an exact
+// argument count turned every one of those invocations into "Unsupported
+// command."
+if (args.Length >= 2 && args[0] == "--file")
 {
     var path = args[1];
     if (!File.Exists(path))
