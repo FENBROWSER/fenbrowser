@@ -9806,14 +9806,49 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                 (function () {
                     function MessagePort() {
-                        this.onmessage = null;
+                        // Not this.onmessage: that is an accessor on the prototype
+                        // whose setter enables the port, and assigning null here
+                        // would enable every port the moment it is made.
+                        this._fenOnMessage = null;
                         this._fenListeners = [];
                         this._fenPeer = null;
                         this._fenClosed = false;
+                        // HTML 9.4.3: a port's message queue starts disabled, so
+                        // anything that arrives before start() waits instead of
+                        // being thrown away.
+                        this._fenEnabled = false;
+                        this._fenQueue = [];
                         // globalThis, not window: MessageChannel is available to
                         // workers too, and there is no window in one.
                         this._fenWindow = globalThis;
                     }
+
+                    Object.defineProperty(MessagePort.prototype, 'onmessage', {
+                        configurable: true,
+                        get: function () { return this._fenOnMessage; },
+                        set: function (value) {
+                            this._fenOnMessage = value;
+                            // Setting onmessage enables the queue, as if start()
+                            // had been called.
+                            this.start();
+                        }
+                    });
+
+                    MessagePort.prototype._fenDeliver = function (event) {
+                        if (this._fenClosed) return;
+                        if (!this._fenEnabled) { this._fenQueue.push(event); return; }
+                        this._fenDispatch(event);
+                    };
+
+                    MessagePort.prototype._fenDispatch = function (event) {
+                        if (typeof this._fenOnMessage === 'function') {
+                            __fenDispatchMessagePort(this._fenWindow, this._fenOnMessage, this, event);
+                        }
+                        var listeners = this._fenListeners.slice();
+                        for (var i = 0; i < listeners.length; i++) {
+                            __fenDispatchMessagePort(this._fenWindow, listeners[i], this, event);
+                        }
+                    };
 
                     MessagePort.prototype.postMessage = function (data, transfer) {
                         if (typeof __fenPostMessagePort === 'function' &&
@@ -9830,29 +9865,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         var event = new MessageEvent('message', { data: data, source: null, ports: transfer || [] });
                         event.target = target;
                         event.currentTarget = target;
-                        var deliver = function () {
-                            if (target._fenClosed) return;
-                            if (typeof target.onmessage === 'function') {
-                                __fenDispatchMessagePort(target._fenWindow, target.onmessage, target, event);
-                            }
-                            var listeners = target._fenListeners.slice();
-                            for (var i = 0; i < listeners.length; i++) {
-                                __fenDispatchMessagePort(target._fenWindow, listeners[i], target, event);
-                            }
-                        };
+                        var deliver = function () { target._fenDeliver(event); };
                         if (typeof setTimeout === 'function') {
                             setTimeout(deliver, 0);
                         } else {
                             deliver();
                         }
                     };
-                    MessagePort.prototype.start = function () {};
+                    MessagePort.prototype.start = function () {
+                        if (this._fenEnabled || this._fenClosed) return;
+                        this._fenEnabled = true;
+                        var queued = this._fenQueue;
+                        this._fenQueue = [];
+                        for (var i = 0; i < queued.length; i++) {
+                            this._fenDispatch(queued[i]);
+                        }
+                    };
                     MessagePort.prototype.close = function () {
                         if (typeof __fenCloseMessagePort === 'function') {
                             __fenCloseMessagePort(this);
                         }
                         this._fenClosed = true;
                         this._fenListeners.length = 0;
+                        this._fenQueue.length = 0;
                     };
                     MessagePort.prototype.addEventListener = function (type, callback) {
                         if (type !== 'message' || typeof callback !== 'function') return;
@@ -14526,30 +14561,27 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 using (ActivateWindowCallbackContext(_fenJsGlobalThis, _windowEventListeners))
                                 {
                                     SetFenJsWorkerPhase("messageport:dispatching-handler");
-                                    var handler = ReadJsProperty(target.Port, "onmessage");
-                                    if (_interpreter.CanCallValue(handler))
+                                    if (DiagnosticPaths.AppendEnabled)
                                     {
-                                        TryInvokeFenJsEventCallback(handler, target.Port, eventValue, "message");
+                                        var probeHandler = ReadJsProperty(target.Port, "onmessage");
+                                        var probeListeners = ReadJsProperty(target.Port, "_fenListeners");
+                                        DiagnosticPaths.AppendLogText(
+                                            "postmessage_probe.txt",
+                                            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-handlers onmessage=" +
+                                            $"{_interpreter.CanCallValue(probeHandler)} " +
+                                            $"listeners={ReadArrayLikeLength(probeListeners)} " +
+                                            $"enabled={ReadJsBoolProperty(target.Port, "_fenEnabled")}" +
+                                            $"{Environment.NewLine}");
                                     }
 
-                                    var listeners = ReadJsProperty(target.Port, "_fenListeners");
-                                    var listenerCount = ReadArrayLikeLength(listeners);
-                                    // If nothing is listening the message is received
-                                    // and then thrown away, which looks exactly like
-                                    // never having arrived.
-                                    if (DiagnosticPaths.AppendEnabled)
-                                    DiagnosticPaths.AppendLogText(
-                                        "postmessage_probe.txt",
-                                        $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-handlers onmessage=" +
-                                        $"{_interpreter.CanCallValue(handler)} listeners={listenerCount}" +
-                                        $"{Environment.NewLine}");
-                                    for (var index = 0; index < listenerCount; index++)
+                                    // Hand it to the port rather than walking its
+                                    // handlers here: a port that has not been
+                                    // started yet has to keep the message, and
+                                    // only the port knows that.
+                                    var deliverToPort = ReadJsProperty(target.Port, "_fenDeliver");
+                                    if (_interpreter.CanCallValue(deliverToPort))
                                     {
-                                        var listener = ReadJsProperty(listeners, index.ToString(CultureInfo.InvariantCulture));
-                                        if (_interpreter.CanCallValue(listener))
-                                        {
-                                            TryInvokeFenJsEventCallback(listener, target.Port, eventValue, "message");
-                                        }
+                                        _interpreter.InvokeFunction(deliverToPort, new[] { eventValue }, target.Port);
                                     }
                                 }
                                 SetFenJsWorkerPhase("messageport:microtask-checkpoint");
