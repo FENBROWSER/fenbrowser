@@ -1965,6 +1965,7 @@ public Uri LastTextResponseUri { get; private set; }
             try
             {
                 var req = new HttpRequestMessage(HttpMethod.Get, url);
+                HttpClientFactory.ApplyPreferredVersion(req);
                 AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "*/*" : accept);
                 AddHeaderSafe(req, "User-Agent", string.IsNullOrWhiteSpace(userAgentOverride) ? "Mozilla/5.0" : userAgentOverride);
                 AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
@@ -2764,6 +2765,8 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
             }
 
             using var preflight = new HttpRequestMessage(HttpMethod.Options, request.RequestUri);
+            preflight.Version = request.Version;
+            preflight.VersionPolicy = request.VersionPolicy;
             var originHeader = CorsHandler.SerializeOrigin(originUri);
             if (!string.IsNullOrWhiteSpace(originHeader))
             {

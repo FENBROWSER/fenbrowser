@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -483,6 +483,62 @@ public sealed class ResourceManagerFetchContextTests
         Mode = "no-cors",
         CredentialsMode = "include"
     };
+
+    [Fact]
+    public async Task BrowserFetch_RequestsTheConfiguredHttpVersion()
+    {
+        // HttpClient.DefaultRequestVersion only reaches requests HttpClient builds
+        // itself. Every browser fetch constructs its own HttpRequestMessage, which
+        // defaults to HTTP/1.1, so without an explicit assignment the whole engine
+        // silently negotiates 1.1 while advertising a modern Chrome User-Agent.
+        HttpRequestMessage observed = null;
+        using var client = new HttpClient(new StubHandler(request =>
+        {
+            observed = request;
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+        }));
+        var manager = new ResourceManager(client, isPrivate: true);
+
+        var result = await manager.FetchTextDetailedAsync(new FetchContext
+        {
+            RequestUri = new Uri("https://version.example.test/app.js"),
+            InitiatorUri = new Uri("https://version.example.test/page"),
+            FrameDocumentUri = new Uri("https://version.example.test/page"),
+            TopLevelDocumentUri = new Uri("https://version.example.test/page"),
+            Destination = "script",
+            Mode = "no-cors"
+        });
+
+        Assert.Equal(FetchStatus.Success, result.Status);
+        Assert.NotNull(observed);
+        Assert.Equal(NetworkConfiguration.Instance.GetPreferredHttpVersion(), observed.Version);
+
+        // A server without HTTP/2 must still load, so the request negotiates down.
+        Assert.Equal(HttpVersionPolicy.RequestVersionOrLower, observed.VersionPolicy);
+    }
+
+    [Fact]
+    public void ApplyPreferredVersion_TracksTheConfiguredVersion()
+    {
+        var config = NetworkConfiguration.Instance;
+        var previous = config.EnableHttp2;
+        try
+        {
+            config.EnableHttp2 = true;
+            var upgraded = new HttpRequestMessage(HttpMethod.Get, "https://example.test/");
+            HttpClientFactory.ApplyPreferredVersion(upgraded);
+            Assert.Equal(HttpVersion.Version20, upgraded.Version);
+
+            config.EnableHttp2 = false;
+            var legacy = new HttpRequestMessage(HttpMethod.Get, "https://example.test/");
+            HttpClientFactory.ApplyPreferredVersion(legacy);
+            Assert.Equal(HttpVersion.Version11, legacy.Version);
+        }
+        finally
+        {
+            config.EnableHttp2 = previous;
+        }
+    }
 
     private sealed class StubHandler : HttpMessageHandler
     {

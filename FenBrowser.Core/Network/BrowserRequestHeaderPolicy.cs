@@ -21,6 +21,10 @@ internal static class BrowserRequestHeaderPolicy
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(context);
 
+        // Browser fetches build their own HttpRequestMessage, which does not pick up
+        // HttpClient.DefaultRequestVersion, so the configured HTTP version is applied here.
+        HttpClientFactory.ApplyPreferredVersion(request);
+
         FetchContextRequestOptions.Set(request, context);
         CorsHandler.SetCredentialsMode(request, context.CredentialsMode);
 

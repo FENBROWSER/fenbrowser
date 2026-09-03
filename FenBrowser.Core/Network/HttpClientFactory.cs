@@ -178,6 +178,23 @@ namespace FenBrowser.Core.Network
         }
 
         /// <summary>
+        /// Applies the configured HTTP version to a caller-built request.
+        /// <see cref="HttpClient.DefaultRequestVersion"/> only reaches requests the
+        /// client constructs itself; an explicitly constructed <see cref="HttpRequestMessage"/>
+        /// keeps its own HTTP/1.1 default and silently ignores the configured
+        /// preference, so every browser fetch has to set it here.
+        /// </summary>
+        public static void ApplyPreferredVersion(HttpRequestMessage request)
+        {
+            if (request == null) return;
+
+            request.Version = NetworkConfiguration.Instance.GetPreferredHttpVersion();
+
+            // Negotiate down rather than fail: a server without h2 must still load.
+            request.VersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
+        }
+
+        /// <summary>
         /// Creates an HttpClient for private browsing.
         /// </summary>
         public static HttpClient CreatePrivateClient()
