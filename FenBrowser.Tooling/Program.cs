@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -595,6 +595,19 @@ namespace FenBrowser.Tooling
                 "window.location.href",
                 "document.querySelector('meta[name=\"viewport\"]') && document.querySelector('meta[name=\"viewport\"]').getAttribute('content') || 'no-viewport-meta'",
             };
+
+            // Extra probes for a specific investigation, supplied without a rebuild.
+            // FEN_DEBUG_SITE_PROBES holds one expression per ";;"-separated entry.
+            var extraProbes = Environment.GetEnvironmentVariable("FEN_DEBUG_SITE_PROBES");
+            if (!string.IsNullOrWhiteSpace(extraProbes))
+            {
+                probes = probes
+                    .Concat(extraProbes
+                        .Split(new[] { ";;" }, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(entry => entry.Trim())
+                        .Where(entry => entry.Length > 0))
+                    .ToArray();
+            }
 
             var probeResults = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var probe in probes)
@@ -2700,6 +2713,7 @@ namespace FenBrowser.Tooling
                     record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     record.DurationMs = CalculateDurationMs(record.StartedUtc, record.CompletedUtc);
                     record.StatusCode = (int)response.StatusCode;
+                    record.HttpVersion = response.Version?.ToString() ?? string.Empty;
                     record.ReasonPhrase = response.ReasonPhrase ?? string.Empty;
                     record.Success = response.IsSuccessStatusCode;
                     record.ResponseHeaders = CaptureHeaders(response.Headers);
@@ -2818,6 +2832,7 @@ namespace FenBrowser.Tooling
             public Dictionary<string, string> RequestHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
             public int? StatusCode { get; set; }
             public string ReasonPhrase { get; set; }
+            public string HttpVersion { get; set; }
             public bool Success { get; set; }
             public bool Failed { get; set; }
             public string MimeType { get; set; }
@@ -2840,6 +2855,7 @@ namespace FenBrowser.Tooling
                     RequestHeaders = new Dictionary<string, string>(RequestHeaders ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase),
                     StatusCode = StatusCode,
                     ReasonPhrase = ReasonPhrase,
+                    HttpVersion = HttpVersion,
                     Success = Success,
                     Failed = Failed,
                     MimeType = MimeType,
