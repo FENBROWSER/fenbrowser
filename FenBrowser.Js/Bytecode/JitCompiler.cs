@@ -225,6 +225,8 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.EnterScopeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiLeaveScope = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.LeaveScopeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCreatePerIterationEnvironment = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CreatePerIterationEnvironment), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiCreateFunctionFromNested = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.CreateFunctionFromNestedForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiNewRegExp = typeof(BytecodeInterpreter)
@@ -748,6 +750,12 @@ public static class JitCompiler
                 return true;
             case OpCode.LeaveScope:
                 body.Add(Expression.Call(interp, MiLeaveScope, frame));
+                body.Add(refreshSlots());
+                return true;
+            case OpCode.NextIterationEnv:
+                body.Add(Expression.Call(interp, MiCreatePerIterationEnvironment, frame,
+                    Expression.Constant(ins.A)));
+                // Same as EnterScope: the frame stands on different records now.
                 body.Add(refreshSlots());
                 return true;
             case OpCode.CreateFunction:

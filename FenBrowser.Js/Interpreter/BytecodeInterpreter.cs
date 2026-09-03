@@ -531,6 +531,53 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return record;
     }
 
+    /// <summary>
+    /// ECMA-262 14.7.4.9 CreatePerIterationEnvironment.
+    ///
+    /// The compiler gives each `let` name in a for-head its own scope, so
+    /// <paramref name="scopeCount"/> of them make up the head. Rebuild that run
+    /// of environments as copies and stand the frame on the copies; anything
+    /// that closed over the old ones keeps the values this turn had.
+    /// </summary>
+    internal void CreatePerIterationEnvironment(InterpreterFrame frame, int scopeCount)
+    {
+        if (scopeCount <= 0)
+        {
+            return;
+        }
+
+        // chain[0] is innermost. Anything other than the shape the compiler
+        // emits means the environment is not ours to rewrite, so leave it.
+        var chain = new DeclarativeEnvironmentRecord[scopeCount];
+        var cursor = frame.Environment;
+        for (var i = 0; i < scopeCount; i++)
+        {
+            if (cursor is not DeclarativeEnvironmentRecord decl || decl.OuterEnv is null)
+            {
+                return;
+            }
+
+            chain[i] = decl;
+            cursor = decl.OuterEnv;
+        }
+
+        var outer = cursor;
+        for (var i = scopeCount - 1; i >= 0; i--)
+        {
+            var copy = StampEnvironment(chain[i].CloneForNextIteration(outer, out var holdsObject));
+            if (holdsObject)
+            {
+                // The copy is a new record holding references the collector has
+                // not seen stored there; without this it can sweep them.
+                copy.RememberBindingStore();
+            }
+
+            outer = copy;
+        }
+
+        frame.Environment = outer;
+    }
+
     private bool ProxyObjSet(ProxyObject proxy, JsValue receiver, string prop, JsValue value)
         => ProxySet(proxy, receiver, prop, value);
 
@@ -2065,6 +2112,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.LeaveScope:
                 {
                     frame.Environment = frame.Environment.OuterEnv ?? frame.Environment;
+                    break;
+                }
+                case OpCode.NextIterationEnv:
+                {
+                    CreatePerIterationEnvironment(frame, ins.A);
                     break;
                 }
                 case OpCode.PushWithEnvironment:

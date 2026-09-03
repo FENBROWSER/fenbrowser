@@ -244,6 +244,7 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
             case OpCode.LeaveScope:
+            case OpCode.NextIterationEnv:
             case OpCode.EndFinally:
                 break;
             case OpCode.SetHomeObject:

@@ -1588,6 +1588,10 @@ public sealed class BytecodeCompiler
     private void CompileForStatement(ForStatementNode forStmt)
     {
         Dictionary<string, bool>? loopHeaderDecls = null;
+        // ECMA-262 14.7.4.2 step 9: only a `let` head gets per-iteration
+        // bindings. A `const` head cannot be reassigned, so one binding for the
+        // whole loop is indistinguishable from a fresh one each turn.
+        var perIterationScopes = 0;
         if (forStmt.Initializer is VariableDeclarationStatementNode initDecl &&
             (string.Equals(initDecl.Kind, "let", StringComparison.Ordinal) ||
              string.Equals(initDecl.Kind, "const", StringComparison.Ordinal)))
@@ -1604,6 +1608,7 @@ public sealed class BytecodeCompiler
 
             if (loopHeaderDecls.Count > 0)
             {
+                perIterationScopes = isConst ? 0 : loopHeaderDecls.Count;
                 var nameSet = new HashSet<string>(loopHeaderDecls.Keys, StringComparer.Ordinal);
                 _blockScopedNameStack.Push(nameSet);
                 foreach (var kvp in loopHeaderDecls)
@@ -1621,6 +1626,13 @@ public sealed class BytecodeCompiler
             if (forStmt.Initializer is not null)
             {
                 CompileStatement(forStmt.Initializer);
+            }
+
+            if (perIterationScopes > 0)
+            {
+                // 14.7.4.7 ForBodyEvaluation step 2 - the head's initialiser ran
+                // in the loop environment; the first turn already gets its own.
+                _instructions.Add(new Instruction(OpCode.NextIterationEnv, perIterationScopes, 0, 0));
             }
 
             var loopStart = _instructions.Count;
@@ -1650,6 +1662,14 @@ public sealed class BytecodeCompiler
                 CompileStatement(forStmt.Body);
                 var continueTarget = _instructions.Count;
                 ctx.ContinueTarget = continueTarget;
+                if (perIterationScopes > 0)
+                {
+                    // 14.7.4.7 step 3.e, before the increment in step 3.f, so the
+                    // increment moves the next turn's copy and not this turn's.
+                    // `continue` targets this instruction for the same reason.
+                    _instructions.Add(new Instruction(OpCode.NextIterationEnv, perIterationScopes, 0, 0));
+                }
+
                 if (forStmt.Update is not null)
                 {
                     _ = CompileExpression(forStmt.Update);

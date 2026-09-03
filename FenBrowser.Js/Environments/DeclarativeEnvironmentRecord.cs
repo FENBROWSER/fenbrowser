@@ -53,6 +53,50 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     internal bool[]? SlotPresenceFor(object owner) =>
         ReferenceEquals(_slotOwner, owner) ? _slotPresent : null;
 
+    /// <summary>
+    /// ECMA-262 14.7.4.9 CreatePerIterationEnvironment - a fresh record over
+    /// <paramref name="outer"/> holding a copy of this record's bindings.
+    ///
+    /// A `for (let i ...)` head gets one of these per turn of the loop, so a
+    /// function made on one turn keeps the value that turn had instead of
+    /// seeing whatever the counter finished on.
+    /// </summary>
+    internal DeclarativeEnvironmentRecord CloneForNextIteration(EnvironmentRecord outer, out bool holdsObject)
+    {
+        var copy = new DeclarativeEnvironmentRecord(outer);
+        holdsObject = false;
+
+        if (_bindings is { Count: > 0 })
+        {
+            copy._bindings = new Dictionary<string, Binding>(_bindings, StringComparer.Ordinal);
+            foreach (var binding in _bindings.Values)
+            {
+                if (binding.Value.Tag == JsValueTag.Object)
+                {
+                    holdsObject = true;
+                    break;
+                }
+            }
+        }
+
+        if (_slotBindings is not null && _slotPresent is not null)
+        {
+            copy._slotOwner = _slotOwner;
+            copy._slotMap = _slotMap;
+            copy._slotBindings = (Binding[])_slotBindings.Clone();
+            copy._slotPresent = (bool[])_slotPresent.Clone();
+            for (var i = 0; i < _slotBindings.Length && !holdsObject; i++)
+            {
+                if (_slotPresent[i] && _slotBindings[i].Value.Tag == JsValueTag.Object)
+                {
+                    holdsObject = true;
+                }
+            }
+        }
+
+        return copy;
+    }
+
     // Slots are numbered per function, so a slot only means anything to the
     // record built for that function's own call.
     internal bool OwnsSlotsOf(object owner) =>
