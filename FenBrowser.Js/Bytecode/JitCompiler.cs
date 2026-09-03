@@ -244,6 +244,9 @@ public static class JitCompiler
         .GetMethod("FastNumberResult", BindingFlags.Static | BindingFlags.NonPublic,
             null, new[] { typeof(double) }, null)!;
 
+    private static readonly FieldInfo FiThrowRouted =
+        typeof(InterpreterFrame).GetField(nameof(InterpreterFrame.ThrowRoutedToHandler))!;
+
     private static readonly MethodInfo MiEndFinally = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.EndFinallyForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiTypeOfName = typeof(BytecodeInterpreter)
@@ -495,6 +498,10 @@ public static class JitCompiler
         var body = new List<Expression>();
         var dispatchLabel = Expression.Label("dispatch");
         body.Add(Expression.Label(dispatchLabel));
+        // A frame that entered compiled code after the dispatch loop routed a
+        // throw would otherwise see a flag left over from that.
+        body.Add(Expression.Assign(
+            Expression.Field(frameParam, FiThrowRouted), Expression.Constant(false)));
 
         // On every entry, including a re-dispatch after a throw was routed to a
         // handler: the handler restores the environment it was pushed with, so
@@ -560,6 +567,24 @@ public static class JitCompiler
             {
                 NoteRejection(ins.OpCode);
                 return null;
+            }
+
+            // Most of what an opcode delegates to can route a throw to a handler
+            // in this frame rather than raising it: the helper moves the
+            // instruction pointer and returns, and without this the body would
+            // carry on with the next instruction and run the rest of the try
+            // block as though nothing had thrown. Pure emissions -- ones that
+            // touch nothing but registers and constants -- are skipped.
+            if (resumePoints.Count > 0 && CanRouteThrow(ins.OpCode))
+            {
+                body.Add(Expression.IfThen(
+                    Expression.Field(frameParam, FiThrowRouted),
+                    Expression.Block(
+                        Expression.Assign(
+                            Expression.Field(frameParam, FiThrowRouted), Expression.Constant(false)),
+                        Expression.Assign(
+                            resumeIpLocal, Expression.Property(frameParam, PiFrameInstructionPointer)),
+                        Expression.Goto(dispatchLabel))));
             }
         }
 
@@ -794,6 +819,19 @@ public static class JitCompiler
             Expression.Assign(operand, Expression.ArrayAccess(registers, Expression.Constant(ins.B))),
             Expression.IfThenElse(guard, Expression.Assign(dest, fast), slow));
     }
+
+    /// <summary>
+    /// Whether an opcode's compiled form can reach code that routes a throw to
+    /// one of this frame's handlers. Only the emissions that touch nothing but
+    /// registers, constants and labels are exempt.
+    /// </summary>
+    private static bool CanRouteThrow(OpCode op) => op switch
+    {
+        OpCode.LoadConst or OpCode.Move or OpCode.Jump or OpCode.JumpIfFalse or
+        OpCode.Nop or OpCode.Return or OpCode.Throw or
+        OpCode.PushHandler or OpCode.PopHandler => false,
+        _ => true
+    };
 
     private static HashSet<int> CollectHandlerTargets(BytecodeFunction function)
     {

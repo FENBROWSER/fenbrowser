@@ -42,6 +42,14 @@ public sealed class InterpreterFrame
 
 	public JsValue? PendingException { get; set; }
 
+	/// <summary>
+	/// Set when ThrowOrHandle moved this frame's instruction pointer to a
+	/// handler instead of raising. The dispatch loop reads the pointer every
+	/// step and needs no telling; compiled code has to be told, or it carries on
+	/// with the instruction after the one that threw.
+	/// </summary>
+	public bool ThrowRoutedToHandler;
+
 	// A return completion travelling through finally blocks (generator .return()
 	// injected at a yield, ECMA-262 27.5.3.3 GeneratorResumeAbrupt). Unlike
 	// PendingException it is not observable by catch handlers; EndFinally either

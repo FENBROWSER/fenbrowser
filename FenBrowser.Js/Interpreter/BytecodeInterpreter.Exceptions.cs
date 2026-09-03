@@ -133,6 +133,12 @@ public sealed partial class BytecodeInterpreter
             if (catchIp >= 0)
             {
                 frame.InstructionPointer = catchIp;
+                // The dispatch loop reads the instruction pointer every step and
+                // so needs no telling. Compiled code does not: it would carry on
+                // with the instruction after the one that threw, running the rest
+                // of the try block as though nothing had happened. Say that the
+                // pointer moved.
+                frame.ThrowRoutedToHandler = true;
                 _heap.PopRootsTo(rootMark);
                 return;
             }
@@ -141,6 +147,7 @@ public sealed partial class BytecodeInterpreter
             {
                 frame.PendingException = value;
                 frame.InstructionPointer = finallyIp;
+                frame.ThrowRoutedToHandler = true;
                 _heap.PopRootsTo(rootMark);
                 return;
             }
