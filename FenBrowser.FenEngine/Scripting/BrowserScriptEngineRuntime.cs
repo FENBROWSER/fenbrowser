@@ -513,30 +513,42 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private Task _windowMessageDeliveryTail = Task.CompletedTask;
 
     /// <summary>
-    /// Holds window-message delivery behind the document's own scripts.
+    /// Completes when this document's own scripts have finished running.
     ///
     /// A message posted into a frame is a task, and a task does not run in the
-    /// middle of another one. The script batch awaits between scripts, though,
-    /// which let a delivery slip into the gap -- reCAPTCHA's challenge frame was
-    /// handed the page's set-up message 1.5ms before the inline script that
-    /// registers its listener ran, so the message was delivered to nobody and
-    /// the frame waited for it forever.
+    /// middle of another one. The script batch releases the interpreter lock
+    /// between scripts, though, so a delivery waiting on that lock takes the
+    /// gap -- reCAPTCHA's challenge frame was handed the page's set-up message
+    /// 1.5ms before the inline script that registers its listener ran, and then
+    /// waited forever for a message it had already been given.
+    ///
+    /// Chaining a barrier onto the delivery queue was not enough: a message
+    /// queued before the batch began sits ahead of the barrier. Every delivery
+    /// waits on this instead, whenever it was queued.
     /// </summary>
-    private void HoldWindowMessagesUntil(Task scriptBatch)
+    private volatile Task _pageScriptsFinished = Task.CompletedTask;
+
+    private void WaitForPageScripts()
     {
-        if (scriptBatch is null || scriptBatch.IsCompleted)
+        var gate = _pageScriptsFinished;
+        if (gate.IsCompleted)
         {
             return;
         }
 
-        lock (_windowMessageQueueLock)
+        try
         {
-            _windowMessageDeliveryTail = _windowMessageDeliveryTail
-                .ContinueWith(_ => scriptBatch, CancellationToken.None,
-                    TaskContinuationOptions.None, TaskScheduler.Default)
-                .Unwrap();
+            // Bounded: a batch that never finishes must not wedge messaging for
+            // the life of the page.
+            gate.Wait(PageScriptGateTimeoutMs);
+        }
+        catch
+        {
+            // A failed batch is still a finished one as far as delivery goes.
         }
     }
+
+    private const int PageScriptGateTimeoutMs = 10_000;
     private readonly ConcurrentDictionary<long, FenJsTimerRegistration> _fenJsTimers = new();
     // JsValues held only by C# locals across a worker-thread marshal (event
     // facades, queued message payloads, restored window.event values) are
@@ -2761,10 +2773,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private async Task ExecutePageScriptsWithFenJsAsync(Node domRoot, Uri baseUri)
     {
-        // Anything the parent posts at us while these run waits for them.
+        // Anything the parent posts at us waits for these, however early it
+        // was posted.
         var batchDone = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        HoldWindowMessagesUntil(batchDone.Task);
+        _pageScriptsFinished = batchDone.Task;
         try
         {
             await ExecutePageScriptsCoreAsync(domRoot, baseUri).ConfigureAwait(false);
@@ -4753,6 +4766,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             if (_currentDomRoot != null)
             {
                 InstallFenJsDomGlobals(_currentDomRoot, _currentBaseUri);
+            }
+
+            // The parent-window proxy was dropped above with the rest of the old
+            // heap's handles, and it is what `event.source` names for every
+            // message the parent posts in. Left undefined, the source came back
+            // as the frame's own window, so a reply sent to event.source went to
+            // the frame itself and the parent never heard it. Rebuild it here so
+            // it exists no matter which path reset the session.
+            if (_parentRealmOwner != null && _embeddingFrameElement != null)
+            {
+                ConfigureEmbeddedRealmGlobals();
             }
 
             // Bump the generation so any in-flight work lambdas from the
@@ -15723,6 +15747,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 {
                     try
                     {
+                        if (sessionGeneration != _fenJsSessionGeneration)
+                        {
+                            return;
+                        }
+
+                        // Never in the middle of the document's own scripts.
+                        WaitForPageScripts();
                         if (sessionGeneration != _fenJsSessionGeneration)
                         {
                             return;
