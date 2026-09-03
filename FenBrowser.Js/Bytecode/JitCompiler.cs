@@ -346,6 +346,24 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperElement), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiHandleLoadSuperConstructor = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperConstructor), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiSlotBindingsFor =
+        typeof(FenBrowser.Js.Environments.DeclarativeEnvironmentRecord)
+            .GetMethod("SlotBindingsFor", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    private static readonly MethodInfo MiSlotPresenceFor =
+        typeof(FenBrowser.Js.Environments.DeclarativeEnvironmentRecord)
+            .GetMethod("SlotPresenceFor", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    private static readonly Type BindingArrayType =
+        typeof(FenBrowser.Js.Environments.DeclarativeEnvironmentRecord)
+            .GetMethod("SlotBindingsFor", BindingFlags.Instance | BindingFlags.NonPublic)!.ReturnType;
+
+    private static readonly PropertyInfo PiBindingValue =
+        BindingArrayType.GetElementType()!.GetProperty("Value")!;
+
+    private static readonly PropertyInfo PiBindingInitialized =
+        BindingArrayType.GetElementType()!.GetProperty("IsInitialized")!;
+
     private static readonly MethodInfo MiLoadSlotFast = typeof(BytecodeInterpreter)
         .GetMethod("LoadSlotFast", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
@@ -414,6 +432,33 @@ public static class JitCompiler
         }
 
         var resumeIpLocal = Expression.Variable(typeof(int), "resumeIp");
+        var slotBindingsLocal = Expression.Variable(BindingArrayType, "slotBindings");
+        var slotPresentLocal = Expression.Variable(typeof(bool[]), "slotPresent");
+
+        // Deriving the frame's slot storage costs a cast, an identity check and
+        // a call. None of it changes while the environment does not, so do it
+        // once here and again only where the environment is replaced.
+        Expression RefreshSlots()
+        {
+            var envLocal = Expression.Variable(
+                typeof(FenBrowser.Js.Environments.DeclarativeEnvironmentRecord), "ownEnv");
+            return Expression.Block(
+                new[] { envLocal },
+                Expression.Assign(envLocal, Expression.TypeAs(
+                    Expression.Property(frameParam, PiFrameEnvironment),
+                    typeof(FenBrowser.Js.Environments.DeclarativeEnvironmentRecord))),
+                Expression.IfThenElse(
+                    Expression.Equal(envLocal, Expression.Constant(null, envLocal.Type)),
+                    Expression.Block(
+                        Expression.Assign(slotBindingsLocal, Expression.Constant(null, BindingArrayType)),
+                        Expression.Assign(slotPresentLocal, Expression.Constant(null, typeof(bool[])))),
+                    Expression.Block(
+                        Expression.Assign(slotBindingsLocal, Expression.Call(
+                            envLocal, MiSlotBindingsFor, Expression.Property(frameParam, PiFunction))),
+                        Expression.Assign(slotPresentLocal, Expression.Call(
+                            envLocal, MiSlotPresenceFor, Expression.Property(frameParam, PiFunction))))));
+        }
+
         var body = new List<Expression>();
 
         if (resumePoints.Count > 0)
@@ -469,7 +514,8 @@ public static class JitCompiler
             }
 
             var ins = function.Instructions[i];
-            if (!TryEmitOpcode(function, ins, i, interpParam, frameParam, registersLocal, constantsLocal, instructionLabels, returnLabel, body))
+            if (!TryEmitOpcode(function, ins, i, interpParam, frameParam, registersLocal, constantsLocal,
+                    slotBindingsLocal, slotPresentLocal, RefreshSlots, instructionLabels, returnLabel, body))
             {
                 NoteRejection(ins.OpCode);
                 return null;
@@ -503,10 +549,11 @@ public static class JitCompiler
 
         var full = Expression.Block(
             typeof(JsValue),
-            new[] { registersLocal, constantsLocal, resumeIpLocal },
+            new[] { registersLocal, constantsLocal, resumeIpLocal, slotBindingsLocal, slotPresentLocal },
             Expression.Assign(registersLocal, Expression.Property(frameParam, PiRegisters)),
             Expression.Assign(constantsLocal, Expression.Property(Expression.Property(frameParam, PiFunction), PiConstants)),
             Expression.Assign(resumeIpLocal, startIpParam),
+            RefreshSlots(),
             // The loop only ever repeats when a throw was routed back into the
             // body; every other way out of it goes through the return label.
             Expression.Loop(guarded),
@@ -579,6 +626,7 @@ public static class JitCompiler
         BytecodeFunction function, Instruction ins, int ip,
         ParameterExpression interp, ParameterExpression frame,
         ParameterExpression registers, ParameterExpression constants,
+        ParameterExpression slotBindings, ParameterExpression slotPresent, Func<Expression> refreshSlots,
         LabelTarget[] labels, LabelTarget returnLabel, List<Expression> body)
     {
         switch (ins.OpCode)
@@ -598,13 +646,35 @@ public static class JitCompiler
                     Expression.ArrayAccess(registers, Expression.Constant(ins.B))));
                 return true;
             case OpCode.LoadVar:
+            {
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                // The inline read below indexes two arrays with this slot;
+                // only the upper bound is checked at run time, so a negative
+                // slot has to be turned away here.
+                if (ins.B < 0) return false;
+                var slotIndex = Expression.Constant(ins.B);
+                var element = Expression.ArrayAccess(slotBindings, slotIndex);
+                // bindings != null && (uint)slot < length && present[slot] && initialized
+                var usable = Expression.AndAlso(
+                    Expression.AndAlso(
+                        Expression.NotEqual(slotBindings, Expression.Constant(null, slotBindings.Type)),
+                        Expression.LessThan(slotIndex, Expression.ArrayLength(slotBindings))),
+                    Expression.AndAlso(
+                        Expression.ArrayIndex(slotPresent, slotIndex),
+                        Expression.Property(element, PiBindingInitialized)));
                 body.Add(Expression.Assign(
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
-                    Expression.Call(interp, MiLoadSlotFast, frame, Expression.Constant(ins.B))));
+                    Expression.Condition(
+                        usable,
+                        Expression.Property(element, PiBindingValue),
+                        Expression.Call(interp, MiLoadSlotFast, frame, slotIndex))));
                 return true;
+            }
             case OpCode.StoreVar:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                // Writing keeps going through the interpreter: a store has a
+                // write barrier and mutability rules attached to it, and getting
+                // those subtly wrong costs correctness rather than speed.
                 body.Add(Expression.Call(interp, MiStoreSlotFast, frame, Expression.Constant(ins.B),
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
                 return true;
@@ -672,9 +742,13 @@ public static class JitCompiler
             case OpCode.EnterScope:
                 body.Add(Expression.Call(interp, MiEnterScope, frame,
                     Expression.Constant(ins.A), Expression.Constant(ins.B)));
+                // The frame sits on a different environment now, so the slot
+                // storage hoisted at entry no longer describes it.
+                body.Add(refreshSlots());
                 return true;
             case OpCode.LeaveScope:
                 body.Add(Expression.Call(interp, MiLeaveScope, frame));
+                body.Add(refreshSlots());
                 return true;
             case OpCode.CreateFunction:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;

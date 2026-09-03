@@ -40,6 +40,19 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         _slotPresent = new bool[slotCount];
     }
 
+    /// <summary>
+    /// The slot array itself, when this record holds it for
+    /// <paramref name="owner"/>. Compiled code hoists this once per loop rather
+    /// than re-deriving it — a cast, an identity check and a call — on every
+    /// variable it reads.
+    /// </summary>
+    internal Binding[]? SlotBindingsFor(object owner) =>
+        ReferenceEquals(_slotOwner, owner) ? _slotBindings : null;
+
+    /// <summary>Companion to <see cref="SlotBindingsFor"/>.</summary>
+    internal bool[]? SlotPresenceFor(object owner) =>
+        ReferenceEquals(_slotOwner, owner) ? _slotPresent : null;
+
     // Slots are numbered per function, so a slot only means anything to the
     // record built for that function's own call.
     internal bool OwnsSlotsOf(object owner) =>
@@ -562,7 +575,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         }
     }
 
-    private readonly record struct Binding(
+    internal readonly record struct Binding(
         JsValue Value,
         bool IsMutable,
         bool IsInitialized,
