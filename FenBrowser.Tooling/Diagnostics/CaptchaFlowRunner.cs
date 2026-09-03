@@ -102,6 +102,14 @@ internal static class CaptchaFlowRunner
         "r+=' api='+(typeof window['__recaptcha_api']);" +
         "var ss=document.getElementsByTagName('script');r+=' scripts='+ss.length;" +
         "var inl=0;for(var i=0;i<ss.length;i++){if(!ss[i].src)inl++;}r+=' inline='+inl;" +
+        // A frame that cannot reach its parent cannot open the channel the
+        // whole protocol runs over, and that looks identical from outside to a
+        // frame that simply chose not to.
+        "try{r+=' parentIsSelf='+(window.parent===window);" +
+        "r+=' topIsSelf='+(window.top===window);" +
+        "r+=' parentPost='+(window.parent?typeof window.parent.postMessage:'-');" +
+        "r+=' parentOrigin='+((function(){try{return window.parent.location.origin;}catch(e){return 'blocked';}})());" +
+        "}catch(e){r+=' parentProbeThrew='+e;}" +
         "}catch(e){r+=' frameProbeThrew='+e;}" +
         "return r;})()";
 
