@@ -233,6 +233,14 @@ public sealed class JsHeap
     public int WriteBarrierCount => _writeBarrierCount;
     public int GcCollectionCount => _gcCollectionCount;
     public int MinorCollectionCount => _minorGcCount;
+
+    // Collection time, so "the page spent twenty seconds in one callback" can
+    // be attributed rather than guessed at.
+    private long _majorGcTicks;
+    private long _minorGcTicks;
+
+    public double MajorGcMilliseconds => _majorGcTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+    public double MinorGcMilliseconds => _minorGcTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
     public int LastGcMarkedCells => _lastGcMarkedCells;
     public int LastGcSweptCells => _lastGcSweptCells;
     public int LastMinorMarked => _lastMinorMarked;
@@ -486,6 +494,19 @@ public sealed class JsHeap
     }
 
     public void MinorCollect()
+    {
+        var minorStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            MinorCollectCore();
+        }
+        finally
+        {
+            _minorGcTicks += System.Diagnostics.Stopwatch.GetTimestamp() - minorStart;
+        }
+    }
+
+    private void MinorCollectCore()
     {
         if (_verifyHeapBeforeGc) _verifier.Verify(this);
 
@@ -836,6 +857,19 @@ public sealed class JsHeap
     }
 
     public void CollectGarbage()
+    {
+        var majorStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            CollectGarbageCore();
+        }
+        finally
+        {
+            _majorGcTicks += System.Diagnostics.Stopwatch.GetTimestamp() - majorStart;
+        }
+    }
+
+    private void CollectGarbageCore()
     {
         // Full GC must traverse old-generation cells even if a previous minor
         // collection was interrupted before it could clear its traversal mode.

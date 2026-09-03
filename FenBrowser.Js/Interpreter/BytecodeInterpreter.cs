@@ -403,6 +403,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // path leaves InstructionBudget at zero and therefore does not increment
     // this counter in the dispatch loop.
     public int InstructionsExecuted => System.Threading.Volatile.Read(ref _instructionCount);
+
+    /// <summary>Instructions charged across every execution scope on this
+    /// interpreter, interpreted and compiled alike.</summary>
+    public long TotalInstructionsExecuted { get; private set; }
     public int LastExecutionInstructions { get; private set; }
 
     // Tier 5 #27: wall-clock execution deadline in milliseconds. Zero = no
@@ -445,6 +449,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         finally
         {
             LastExecutionInstructions = _instructionCount;
+            // Accumulated here rather than in the dispatch loop: the loop is the
+            // hottest code in the engine and does not need a second counter.
+            // This covers compiled bodies too, which charge the same budget.
+            TotalInstructionsExecuted += _instructionCount;
             InstructionBudget = previousInstructionBudget;
             _instructionCount = previousInstructionCount;
             _wallClockDeadlineTicks = previousDeadlineTicks;
@@ -1022,7 +1030,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         DrainPendingMicrotasks(onQueueMicrotaskFailure);
     }
 
+    /// <summary>
+    /// Jobs drained and time spent draining, across every checkpoint on this
+    /// interpreter. A callback that reports twenty seconds in
+    /// "microtask-checkpoint" is either running a great many jobs or a few very
+    /// slow ones, and those want different fixes.
+    /// </summary>
+    public long MicrotaskJobsRun { get; private set; }
+
+    private long _microtaskTicks;
+
+    public double MicrotaskMilliseconds =>
+        _microtaskTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
     private void DrainPendingMicrotasks(Action<JsValue, Exception>? onQueueMicrotaskFailure = null)
+    {
+        var drainStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            DrainPendingMicrotasksCore(onQueueMicrotaskFailure);
+        }
+        finally
+        {
+            _microtaskTicks += System.Diagnostics.Stopwatch.GetTimestamp() - drainStart;
+        }
+    }
+
+    private void DrainPendingMicrotasksCore(Action<JsValue, Exception>? onQueueMicrotaskFailure)
     {
         var checkpointDeadlineTicks = WallClockTimeoutMs > 0
             ? Environment.TickCount64 + WallClockTimeoutMs
@@ -1031,6 +1065,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         void CheckCheckpointBudget()
         {
+            MicrotaskJobsRun++;
             if (MicrotaskCheckpointJobBudget > 0 && ++checkpointJobs > MicrotaskCheckpointJobBudget)
                 throw new JsThrownException(CreateRangeError("Maximum microtask checkpoint budget exceeded."));
             if (checkpointDeadlineTicks != 0 && Environment.TickCount64 >= checkpointDeadlineTicks)

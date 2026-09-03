@@ -1872,6 +1872,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         heap.CollectGarbage();
         _fenJsAllocationCountAtLastBoundaryGc = heap.AllocationCount;
+
+        // Attributing a slow callback needs to distinguish script from
+        // collection, and there was no way to tell them apart.
+        if (heap.GcCollectionCount <= 2 || heap.GcCollectionCount % 10 == 0)
+        {
+            FenBrowser.Core.EngineLogCompat.Info(
+                $"[FenJsGc] major={heap.GcCollectionCount} ({heap.MajorGcMilliseconds:F0}ms) " +
+                $"minor={heap.MinorCollectionCount} ({heap.MinorGcMilliseconds:F0}ms) " +
+                $"allocs={heap.AllocationCount} " +
+                $"microtasks={_interpreter.MicrotaskJobsRun} ({_interpreter.MicrotaskMilliseconds:F0}ms) " +
+                $"instructions={_interpreter.TotalInstructionsExecuted}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
     }
 
     // Persistent large-stack worker thread â€” created once per engine instance
