@@ -2371,6 +2371,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         break;
                     }
 
+                    // ECMA-262 6.2.5.5 PutValue: ToObject on the base, which is a
+                    // TypeError for null and undefined -- and a catchable one.
+                    // ResolveObjectHandle raises it from outside every try below,
+                    // so it escaped the frame entirely and no handler ever saw it.
+                    if (receiverValue.Tag is JsValueTag.Null or JsValueTag.Undefined)
+                    {
+                        var unsettableKind = receiverValue.Tag == JsValueTag.Null ? "null" : "undefined";
+                        ThrowOrHandle(frame, CreateTypeError(
+                            $"Cannot set properties of {unsettableKind} (setting '{prop}')."));
+                        break;
+                    }
+
                     var ownerHandle = ResolveObjectHandle(receiverValue);
                     var icOffsetStore = frame.InstructionPointer - 1;
                     if (receiverValue.Tag == JsValueTag.Object &&
@@ -22193,6 +22205,16 @@ fallbackArraySpecies:
                 ThrowOrHandle(frame, ex.Value);
             }
 
+            return;
+        }
+
+        // Same as the named form: ToObject on the base is a catchable TypeError
+        // for null and undefined, and raising it from ResolveObjectHandle put it
+        // outside every try below.
+        if (receiverValue.Tag is JsValueTag.Null or JsValueTag.Undefined)
+        {
+            var unsettableKind = receiverValue.Tag == JsValueTag.Null ? "null" : "undefined";
+            ThrowOrHandle(frame, CreateTypeError($"Cannot set properties of {unsettableKind}."));
             return;
         }
 
