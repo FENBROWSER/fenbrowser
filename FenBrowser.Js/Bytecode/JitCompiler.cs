@@ -236,6 +236,10 @@ public static class JitCompiler
         typeof(JsValue).GetMethod(nameof(JsValue.FromBoolean), new[] { typeof(bool) })!;
     private static readonly MethodInfo MiFromInt32 =
         typeof(JsValue).GetMethod(nameof(JsValue.FromInt32), new[] { typeof(int) })!;
+    private static readonly MethodInfo MiFromNumber =
+        typeof(JsValue).GetMethod(nameof(JsValue.FromNumber), new[] { typeof(double) })!;
+    private static readonly MethodInfo MiAsBoolean =
+        typeof(JsValue).GetMethod(nameof(JsValue.AsBoolean), Type.EmptyTypes)!;
     private static readonly MethodInfo MiFastNumberResult = typeof(BytecodeInterpreter)
         .GetMethod("FastNumberResult", BindingFlags.Static | BindingFlags.NonPublic,
             null, new[] { typeof(double) }, null)!;
@@ -384,6 +388,14 @@ public static class JitCompiler
 
     private static readonly PropertyInfo PiBindingInitialized =
         BindingArrayType.GetElementType()!.GetProperty("IsInitialized")!;
+    private static readonly ConstructorInfo CiBinding =
+        BindingArrayType.GetElementType()!.GetConstructors()[0]!;
+    private static readonly PropertyInfo PiBindingMutable =
+        BindingArrayType.GetElementType()!.GetProperty("IsMutable")!;
+    private static readonly PropertyInfo PiBindingStrict =
+        BindingArrayType.GetElementType()!.GetProperty("IsStrict")!;
+    private static readonly PropertyInfo PiBindingDeletable =
+        BindingArrayType.GetElementType()!.GetProperty("IsDeletable")!;
 
     private static readonly MethodInfo MiLoadSlotFast = typeof(BytecodeInterpreter)
         .GetMethod("LoadSlotFast", BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -717,6 +729,72 @@ public static class JitCompiler
                 slow));
     }
 
+    /// <summary>
+    /// A unary operator, with the numeric case written out in line. Same
+    /// reasoning as <see cref="EmitBinop"/>: the operator is a constant here,
+    /// so the run-time switch behind ApplyUnaryOpForJit is avoidable.
+    /// </summary>
+    private static Expression EmitUnaryOp(
+        Instruction ins, ParameterExpression interp, ParameterExpression frame, ParameterExpression registers)
+    {
+        var slow = Expression.Call(interp, MiApplyUnaryOp, frame,
+            Expression.Constant((int)ins.OpCode),
+            Expression.Constant(ins.A), Expression.Constant(ins.B));
+
+        var operand = Expression.Variable(typeof(JsValue), "unOperand");
+        var dest = Expression.ArrayAccess(registers, Expression.Constant(ins.A));
+        var tag = Expression.Field(operand, FiValueTag);
+        var isNumeric = Expression.OrElse(
+            Expression.Equal(tag, Expression.Constant(JsValueTag.Int32)),
+            Expression.Equal(tag, Expression.Constant(JsValueTag.Number)));
+
+        Expression asNumber = Expression.Call(operand, MiAsNumber);
+        Expression? fast = null;
+        Expression? guard = null;
+
+        switch (ins.OpCode)
+        {
+            // StepNumeric yields a Number for anything that is not a BigInt,
+            // including an Int32 input; keep that exactly, because the tag
+            // decides which fast paths downstream operators can take.
+            case OpCode.Increment:
+                guard = isNumeric;
+                fast = Expression.Call(MiFromNumber, Expression.Add(asNumber, Expression.Constant(1.0)));
+                break;
+            case OpCode.Decrement:
+                guard = isNumeric;
+                fast = Expression.Call(MiFromNumber, Expression.Subtract(asNumber, Expression.Constant(1.0)));
+                break;
+            case OpCode.Neg:
+                guard = isNumeric;
+                fast = Expression.Call(MiFromNumber, Expression.Negate(asNumber));
+                break;
+            case OpCode.Pos:
+                guard = isNumeric;
+                fast = Expression.Call(MiFromNumber, asNumber);
+                break;
+            case OpCode.ToNumeric:
+                // Already numeric: ToNumeric is the identity on it.
+                guard = isNumeric;
+                fast = operand;
+                break;
+            case OpCode.Not:
+                guard = Expression.Equal(tag, Expression.Constant(JsValueTag.Boolean));
+                fast = Expression.Call(MiFromBoolean, Expression.Not(Expression.Call(operand, MiAsBoolean)));
+                break;
+        }
+
+        if (fast is null || guard is null)
+        {
+            return slow;
+        }
+
+        return Expression.Block(
+            new[] { operand },
+            Expression.Assign(operand, Expression.ArrayAccess(registers, Expression.Constant(ins.B))),
+            Expression.IfThenElse(guard, Expression.Assign(dest, fast), slow));
+    }
+
     private static HashSet<int> CollectHandlerTargets(BytecodeFunction function)
     {
         var targets = new HashSet<int>();
@@ -794,6 +872,9 @@ public static class JitCompiler
                 // slot has to be turned away here.
                 if (ins.B < 0) return false;
                 var slotIndex = Expression.Constant(ins.B);
+                // Read the flags and the value off the array access rather than
+                // copying the binding out: a property read there takes the
+                // element's address, and the copy costs more than re-indexing.
                 var element = Expression.ArrayAccess(slotBindings, slotIndex);
                 // bindings != null && (uint)slot < length && present[slot] && initialized
                 var usable = Expression.AndAlso(
@@ -812,13 +893,45 @@ public static class JitCompiler
                 return true;
             }
             case OpCode.StoreVar:
+            {
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
-                // Writing keeps going through the interpreter: a store has a
-                // write barrier and mutability rules attached to it, and getting
-                // those subtly wrong costs correctness rather than speed.
-                body.Add(Expression.Call(interp, MiStoreSlotFast, frame, Expression.Constant(ins.B),
-                    Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
+                if (ins.B < 0) return false;
+                var storeSlot = Expression.Constant(ins.B);
+                var storeValue = Expression.Variable(typeof(JsValue), "storeValue");
+                var storeElement = Expression.ArrayAccess(slotBindings, storeSlot);
+                // The same conditions TryWriteOwnSlot checks, plus one more: a
+                // non-object value needs no write barrier, and the barrier is
+                // the only reason this had to be a call.
+                var storable = Expression.AndAlso(
+                    Expression.AndAlso(
+                        Expression.AndAlso(
+                            Expression.NotEqual(slotBindings, Expression.Constant(null, slotBindings.Type)),
+                            Expression.LessThan(storeSlot, Expression.ArrayLength(slotBindings))),
+                        Expression.AndAlso(
+                            Expression.ArrayIndex(slotPresent, storeSlot),
+                            Expression.NotEqual(
+                                Expression.Field(storeValue, FiValueTag),
+                                Expression.Constant(JsValueTag.Object)))),
+                    Expression.AndAlso(
+                        Expression.Property(storeElement, PiBindingInitialized),
+                        Expression.Property(storeElement, PiBindingMutable)));
+                body.Add(Expression.Block(
+                    new[] { storeValue },
+                    Expression.Assign(storeValue, Expression.ArrayAccess(registers, Expression.Constant(ins.A))),
+                    Expression.IfThenElse(
+                        storable,
+                        Expression.Assign(
+                            storeElement,
+                            Expression.New(
+                                CiBinding,
+                                storeValue,
+                                Expression.Property(storeElement, PiBindingMutable),
+                                Expression.Property(storeElement, PiBindingInitialized),
+                                Expression.Property(storeElement, PiBindingStrict),
+                                Expression.Property(storeElement, PiBindingDeletable))),
+                        Expression.Call(interp, MiStoreSlotFast, frame, storeSlot, storeValue))));
                 return true;
+            }
             case OpCode.InitVar:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 body.Add(Expression.Call(interp, MiInitializeName, frame, Expression.Constant(ins.B),
@@ -1124,9 +1237,7 @@ public static class JitCompiler
             case OpCode.Decrement:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
-                body.Add(Expression.Call(interp, MiApplyUnaryOp, frame,
-                    Expression.Constant((int)ins.OpCode),
-                    Expression.Constant(ins.A), Expression.Constant(ins.B)));
+                body.Add(EmitUnaryOp(ins, interp, frame, registers));
                 return true;
             case OpCode.In:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
