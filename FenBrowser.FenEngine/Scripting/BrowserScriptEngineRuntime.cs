@@ -4341,6 +4341,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
     }
 
+    /// <summary>
+    /// Which frame a diagnostic line came from. The postMessage probe pools
+    /// every realm into one file, and reCAPTCHA runs the same code in the page,
+    /// the anchor and the challenge frame -- without this the three are
+    /// indistinguishable.
+    /// </summary>
+    private string ProbeFrame() => _currentBaseUri?.AbsolutePath ?? "?";
+
     private JsValue ImportWorkerScript(int workerId, IReadOnlyList<JsValue> args)
     {
         // Every way out of here that isn't the script itself used to be an empty
@@ -14324,7 +14332,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         DiagnosticPaths.AppendLogText(
             "postmessage_probe.txt",
-            $"{DateTimeOffset.UtcNow:O} port-send data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)} " +
+            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-send data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)} " +
             $"transferCount={(args.Count > 2 ? ReadArrayLikeLength(args[2]) : 0)}{Environment.NewLine}");
         var data = args.Count > 1 ? ConvertJsValueToObject(args[1]) : null;
         var transferredPorts = args.Count > 2
@@ -14438,7 +14446,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         if (DiagnosticPaths.AppendEnabled)
                         DiagnosticPaths.AppendLogText(
                             "postmessage_probe.txt",
-                            $"{DateTimeOffset.UtcNow:O} port-DROPPED " +
+                            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-DROPPED " +
                             $"staleSession={sessionGeneration != _fenJsSessionGeneration} " +
                             $"wrongOwner={target.Owner != this} closed={target.Closed} " +
                             $"portTag={target.Port.Tag}{Environment.NewLine}");
@@ -14448,7 +14456,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     if (DiagnosticPaths.AppendEnabled)
                     DiagnosticPaths.AppendLogText(
                         "postmessage_probe.txt",
-                        $"{DateTimeOffset.UtcNow:O} port-deliver{Environment.NewLine}");
+                        $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-deliver{Environment.NewLine}");
 
                     try
                     {
@@ -14490,7 +14498,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                     if (DiagnosticPaths.AppendEnabled)
                                     DiagnosticPaths.AppendLogText(
                                         "postmessage_probe.txt",
-                                        $"{DateTimeOffset.UtcNow:O} port-handlers onmessage=" +
+                                        $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-handlers onmessage=" +
                                         $"{_interpreter.CanCallValue(handler)} listeners={listenerCount}" +
                                         $"{Environment.NewLine}");
                                     for (var index = 0; index < listenerCount; index++)
@@ -14594,7 +14602,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 {
                     DiagnosticPaths.AppendLogText(
                         "postmessage_probe.txt",
-                        $"{DateTimeOffset.UtcNow:O} frame-to-parent data={DescribePostMessageValue(args.Count > 0 ? args[0] : JsValue.Undefined)} " +
+                        $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] frame-to-parent data={DescribePostMessageValue(args.Count > 0 ? args[0] : JsValue.Undefined)} " +
                         $"targetOrigin={(args.Count > 1 ? CoerceToHostString(args[1]) : "*")} " +
                         $"transferCount={(args.Count > 2 ? ReadArrayLikeLength(args[2]) : 0)}{Environment.NewLine}");
                     var data = args.Count > 0 ? ConvertJsValueToObject(args[0]) : null;
@@ -15570,7 +15578,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             if (DiagnosticPaths.AppendEnabled)
             DiagnosticPaths.AppendLogText(
                 "postmessage_probe.txt",
-                $"{DateTimeOffset.UtcNow:O} DROPPED wanted='{NormalizePostMessageOrigin(targetOrigin)}' " +
+                $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] DROPPED wanted='{NormalizePostMessageOrigin(targetOrigin)}' " +
                 $"raw='{targetOrigin}' actual='{targetWindowOriginOverride ?? ReadWindowOrigin(targetWindow)}' " +
                 $"override='{targetWindowOriginOverride ?? "<null>"}' " +
                 $"readWindow='{ReadWindowOrigin(targetWindow)}' " +
@@ -15582,7 +15590,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         if (DiagnosticPaths.AppendEnabled)
         DiagnosticPaths.AppendLogText(
             "postmessage_probe.txt",
-            $"{DateTimeOffset.UtcNow:O} deliver listeners={listeners?.Count ?? 0} " +
+            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] deliver listeners={listeners?.Count ?? 0} " +
             $"fromOrigin={origin} targetOrigin={targetOrigin} " +
             $"ports={(ports.Tag == JsValueTag.Object ? ReadArrayLikeLength(ports) : -1)} " +
             $"data={DescribePostMessageValue(data)}{Environment.NewLine}");

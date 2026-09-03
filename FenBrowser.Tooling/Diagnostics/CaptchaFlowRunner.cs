@@ -92,6 +92,17 @@ internal static class CaptchaFlowRunner
         "catch(e){r+=' asyncProbeThrew='+e;}" +
         "r+=' readyState='+document.readyState+' recaptcha='+(typeof recaptcha);" +
         "try{r+=' rcKeys='+(typeof recaptcha==='object'?Object.keys(recaptcha).join('|'):'-');}catch(e){}" +
+        // The challenge frame's whole job starts with one inline call to
+        // recaptcha.frame.Main.init. When it never opens a channel to the page,
+        // the first thing to know is whether that entry point is even there and
+        // whether the inline script that calls it ran.
+        "try{r+=' frameMain='+(typeof recaptcha==='object'&&recaptcha.frame?typeof recaptcha.frame.Main:'-');" +
+        "r+=' frameInit='+(typeof recaptcha==='object'&&recaptcha.frame&&recaptcha.frame.Main?" +
+        "typeof recaptcha.frame.Main.init:'-');" +
+        "r+=' api='+(typeof window['__recaptcha_api']);" +
+        "var ss=document.getElementsByTagName('script');r+=' scripts='+ss.length;" +
+        "var inl=0;for(var i=0;i<ss.length;i++){if(!ss[i].src)inl++;}r+=' inline='+inl;" +
+        "}catch(e){r+=' frameProbeThrew='+e;}" +
         "return r;})()";
 
     // The verification call never reaches the network, and nothing throws. That
