@@ -80,8 +80,56 @@ public readonly struct JsValue : IEquatable<JsValue>
     {
         if (Tag != JsValueTag.String)
             throw new InvalidOperationException($"Value is not a string (tag={Tag}).");
-        return _reference as string
+        return StringPayload()
             ?? throw new InvalidOperationException("String value has no backing payload.");
+    }
+
+    // A string value carries either the characters or, when it was built by
+    // concatenation, the halves it was built from. Everything that wants the
+    // characters comes through here and pays for flattening once.
+    private string? StringPayload() => _reference switch
+    {
+        string text => text,
+        ConsString cons => cons.Flatten(),
+        _ => null
+    };
+
+    /// <summary>
+    /// The character count, without flattening a concatenation that has not
+    /// been read yet. `s.length` inside the loop that builds `s` would
+    /// otherwise flatten on every turn and put the quadratic cost right back.
+    /// </summary>
+    internal int StringLength => _reference switch
+    {
+        string text => text.Length,
+        ConsString cons => cons.Length,
+        _ => 0
+    };
+
+    /// <summary>
+    /// ECMA-262 13.15.3 string concatenation, kept lazily. Short results are
+    /// joined outright: a rope node costs more than copying a few characters,
+    /// and most concatenations in real code are short.
+    /// </summary>
+    internal static JsValue Concat(in JsValue left, in JsValue right)
+    {
+        var leftPart = left._reference;
+        var rightPart = right._reference;
+        if (leftPart is null) return right;
+        if (rightPart is null) return left;
+
+        var leftLength = left.StringLength;
+        if (leftLength == 0) return right;
+        var rightLength = right.StringLength;
+        if (rightLength == 0) return left;
+
+        var total = leftLength + rightLength;
+        if (total < 32)
+        {
+            return FromString(left.AsString() + right.AsString());
+        }
+
+        return new JsValue(JsValueTag.String, 0, 0, new ConsString(leftPart, rightPart, total));
     }
 
     // Symbol identity remains a unique scalar. The optional description is carried by
@@ -133,8 +181,8 @@ public readonly struct JsValue : IEquatable<JsValue>
             JsValueTag.HostObject or JsValueTag.Symbol => _payload == other._payload,
             JsValueTag.Number => _number.Equals(other._number),
             JsValueTag.String => string.Equals(
-                _reference as string,
-                other._reference as string,
+                StringPayload(),
+                other.StringPayload(),
                 StringComparison.Ordinal),
             JsValueTag.BigInt => AsBigInt().Equals(other.AsBigInt()),
             _ => false
@@ -149,7 +197,7 @@ public readonly struct JsValue : IEquatable<JsValue>
         JsValueTag.Boolean or JsValueTag.Int32 or JsValueTag.Object or
         JsValueTag.HostObject or JsValueTag.Symbol => HashCode.Combine(Tag, _payload),
         JsValueTag.Number => HashCode.Combine(Tag, _number),
-        JsValueTag.String => HashCode.Combine(Tag, _reference as string),
+        JsValueTag.String => HashCode.Combine(Tag, StringPayload()),
         JsValueTag.BigInt => HashCode.Combine(Tag, AsBigInt()),
         _ => HashCode.Combine(Tag)
     };

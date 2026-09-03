@@ -57,11 +57,15 @@ public sealed partial class BytecodeInterpreter
                 return GetHostObjectProperty(target, key);
             case JsValueTag.String:
             {
-                var s = target.AsString();
+                // Before AsString: reading `.length` must not flatten a
+                // concatenation, or `s.length` inside the loop that builds `s`
+                // puts the quadratic cost straight back.
                 if (key == "length")
                 {
-                    return JsValue.FromNumber(s.Length);
+                    return JsValue.FromNumber(target.StringLength);
                 }
+
+                var s = target.AsString();
 
                 // Integer index access ("abc"[1] == "b"). Out-of-range returns undefined
                 // per 22.1.4.1; the spec uses an exotic-object [[GetOwnProperty]] but the

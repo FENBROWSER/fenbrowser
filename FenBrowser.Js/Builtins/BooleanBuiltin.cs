@@ -78,7 +78,7 @@ public sealed class BooleanBuiltin : IBuiltinModule
             JsValueTag.Int32 => value.AsInt32() != 0,
             JsValueTag.Number => !double.IsNaN(value.AsNumber()) && value.AsNumber() != 0d,
             JsValueTag.BigInt => value.AsBigInt() != System.Numerics.BigInteger.Zero,
-            JsValueTag.String => value.AsString().Length > 0,
+            JsValueTag.String => value.StringLength > 0,
             JsValueTag.Object => !context.Heap.GetObject(value.AsObjectHandle()).IsHtmlDda,
             _ => true // Symbols are always truthy.
         };

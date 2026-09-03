@@ -85,7 +85,17 @@ public sealed partial class BytecodeInterpreter
 
         if (leftPrimitive.Tag == JsValueTag.String || rightPrimitive.Tag == JsValueTag.String)
         {
-            return JsValue.FromString(ToStringForAddition(leftPrimitive) + ToStringForAddition(rightPrimitive));
+            // Keep an operand that is already a string as it is. Running it
+            // through ToStringForAddition would flatten a concatenation built
+            // on an earlier turn of the loop, which is the whole cost Concat
+            // exists to avoid.
+            var leftText = leftPrimitive.Tag == JsValueTag.String
+                ? leftPrimitive
+                : JsValue.FromString(ToStringForAddition(leftPrimitive));
+            var rightText = rightPrimitive.Tag == JsValueTag.String
+                ? rightPrimitive
+                : JsValue.FromString(ToStringForAddition(rightPrimitive));
+            return JsValue.Concat(leftText, rightText);
         }
 
         if (leftPrimitive.Tag == JsValueTag.BigInt && rightPrimitive.Tag == JsValueTag.BigInt)

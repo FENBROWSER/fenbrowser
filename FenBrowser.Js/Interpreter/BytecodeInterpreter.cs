@@ -22616,7 +22616,7 @@ fallbackArraySpecies:
             JsValueTag.Int32 => value.AsInt32() != 0,
             JsValueTag.Number => value.AsNumber() != 0 && !double.IsNaN(value.AsNumber()),
             JsValueTag.BigInt => value.AsBigInt() != BigInteger.Zero,
-            JsValueTag.String => value.AsString().Length != 0,
+            JsValueTag.String => value.StringLength != 0,
             _ => true
         };
     }

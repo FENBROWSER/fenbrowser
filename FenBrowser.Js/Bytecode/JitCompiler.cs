@@ -1518,7 +1518,7 @@ public static class JitCompiler
         JsValueTag.Boolean => v.AsBoolean(),
         JsValueTag.Int32 => v.AsInt32() != 0,
         JsValueTag.Number => v.AsNumber() != 0 && !double.IsNaN(v.AsNumber()),
-        JsValueTag.String => v.AsString().Length > 0,
+        JsValueTag.String => v.StringLength > 0,
         _ => true,
     };
 
