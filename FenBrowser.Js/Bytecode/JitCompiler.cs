@@ -227,6 +227,10 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.LeaveScopeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiCreatePerIterationEnvironment = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.CreatePerIterationEnvironment), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiTypeOfName = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.TypeOfName), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiJsValueFromString = typeof(JsValue)
+        .GetMethod(nameof(JsValue.FromString), BindingFlags.Public | BindingFlags.Static, new[] { typeof(string) })!;
     private static readonly MethodInfo MiCreateFunctionFromNested = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.CreateFunctionFromNestedForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiNewRegExp = typeof(BytecodeInterpreter)
@@ -753,6 +757,18 @@ public static class JitCompiler
                 body.Add(refreshSlots());
                 return true;
             case OpCode.Nop:
+                return true;
+            case OpCode.TypeOfName:
+                // `typeof someIdentifier`. Minified bundles are full of these as
+                // feature guards, and refusing the opcode meant refusing every
+                // function that contained one -- which was most of the hot ones
+                // in Google's robot check.
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Call(
+                        MiJsValueFromString,
+                        Expression.Call(interp, MiTypeOfName, frame, Expression.Constant(ins.B)))));
                 return true;
             case OpCode.NextIterationEnv:
                 body.Add(Expression.Call(interp, MiCreatePerIterationEnvironment, frame,
