@@ -17169,14 +17169,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 "[FenJsBridge] Dynamic external script fetch started",
                 fetchStartedFields);
 
-            string code;
+            Task<string> fetch;
             if (ExternalScriptFetcher != null)
             {
-                code = ExternalScriptFetcher(scriptUri, baseUri).GetAwaiter().GetResult();
+                fetch = ExternalScriptFetcher(scriptUri, baseUri);
             }
             else if (FetchOverride != null)
             {
-                code = FetchOverride(scriptUri).GetAwaiter().GetResult();
+                fetch = FetchOverride(scriptUri);
             }
             else
             {
@@ -17185,6 +17185,53 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 return ToHostNodeOrNull(scriptElement);
             }
 
+            // HTML 4.12.1 "prepare the script": an external script inserted by
+            // script is async. Inserting one starts a fetch and the insertion
+            // returns; the script runs later, as its own task.
+            //
+            // Doing it inline meant appendChild ran the whole thing: reCAPTCHA's
+            // loader inserts an 853KB bundle, and the insertion sat there for
+            // 3.8 seconds fetching, compiling and executing it, inside the
+            // caller's own time budget.
+            _ = fetch.ContinueWith(
+                completed => QueueOnDeliveryTail(
+                    () => FinishDynamicExternalScript(scriptElement, scriptRecord, scriptUri, completed),
+                    "[FenJsBridge] dynamic script completion failed"),
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
+
+            return ToHostNodeOrNull(scriptElement);
+        }
+        catch (Exception ex)
+        {
+            RecordDynamicScriptFailure(scriptRecord, scriptElement, scriptUri, ex);
+        }
+
+        return ToHostNodeOrNull(scriptElement);
+    }
+
+    /// <summary>
+    /// Runs an external script that was inserted by script, once its fetch has
+    /// finished. Reached from the JS task chain, never from the insertion.
+    /// </summary>
+    private void FinishDynamicExternalScript(
+        Element scriptElement,
+        BrowserScriptLoadingRecord scriptRecord,
+        Uri scriptUri,
+        Task<string> fetch)
+    {
+        try
+        {
+            if (!fetch.IsCompletedSuccessfully)
+            {
+                RecordDynamicScriptFailure(
+                    scriptRecord, scriptElement, scriptUri,
+                    fetch.Exception?.GetBaseException() ?? new InvalidOperationException("fetch did not complete"));
+                return;
+            }
+
+            var code = fetch.Result;
             UpdateScriptLoadingSnapshot(snapshot => snapshot.FetchCompleted++);
             UpdateScriptLoadingRecord(scriptRecord, record =>
             {
@@ -17207,7 +17254,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 if (!ExecuteDynamicScriptCode(scriptElement, scriptRecord, code, "dynamic", scriptUri))
                 {
                     DispatchScriptElementEvent(scriptElement, "error");
-                    return ToHostNodeOrNull(scriptElement);
+                    return;
                 }
             }
             else
@@ -17219,27 +17266,31 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
         catch (Exception ex)
         {
-            UpdateScriptLoadingSnapshot(snapshot => snapshot.FetchFailed++);
-            UpdateScriptLoadingRecord(scriptRecord, record =>
-            {
-                record.Status = "fetch-failed";
-                record.Failure = ex.GetType().Name + ": " + ex.Message;
-                record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
-            });
-            var fetchFailedFields = CreateScriptRecordFields(scriptRecord);
-            fetchFailedFields["url"] = scriptUri.AbsoluteUri;
-            fetchFailedFields["batch"] = "dynamic";
-            fetchFailedFields["errorType"] = ex.GetType().Name;
-            fetchFailedFields["error"] = ex.Message;
-            LogScriptLoading(
-                "ScriptFetchFailed",
-                LogSeverity.Warn,
-                "[FenJsBridge] Dynamic script fetch failed",
-                fetchFailedFields);
-            DispatchScriptElementEvent(scriptElement, "error");
+            RecordDynamicScriptFailure(scriptRecord, scriptElement, scriptUri, ex);
         }
+    }
 
-        return ToHostNodeOrNull(scriptElement);
+    private void RecordDynamicScriptFailure(
+        BrowserScriptLoadingRecord scriptRecord, Element scriptElement, Uri scriptUri, Exception ex)
+    {
+        UpdateScriptLoadingSnapshot(snapshot => snapshot.FetchFailed++);
+        UpdateScriptLoadingRecord(scriptRecord, record =>
+        {
+            record.Status = "fetch-failed";
+            record.Failure = ex.GetType().Name + ": " + ex.Message;
+            record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        });
+        var fetchFailedFields = CreateScriptRecordFields(scriptRecord);
+        fetchFailedFields["url"] = scriptUri.AbsoluteUri;
+        fetchFailedFields["batch"] = "dynamic";
+        fetchFailedFields["errorType"] = ex.GetType().Name;
+        fetchFailedFields["error"] = ex.Message;
+        LogScriptLoading(
+            "ScriptFetchFailed",
+            LogSeverity.Warn,
+            "[FenJsBridge] Dynamic script fetch failed",
+            fetchFailedFields);
+        DispatchScriptElementEvent(scriptElement, "error");
     }
 
     private void TraceScriptReady(BrowserScriptLoadingRecord scriptRecord, int codeLength, string batchLabel)
