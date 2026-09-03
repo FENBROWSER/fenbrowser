@@ -14319,9 +14319,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 {
                     var data = args.Count > 0 ? args[0] : JsValue.Undefined;
                     ReadPostMessageTarget(args, out var targetOrigin, out var ports);
-                    if (_iframeRealms.TryGetValue(iframe, out var frameRealm))
+                    var hasRealm = _iframeRealms.TryGetValue(iframe, out var frameRealm);
+                    if (DiagnosticPaths.AppendEnabled)
                     {
-                        frameRealm.QueueMessageFromParent(
+                        DiagnosticPaths.AppendLogText(
+                            "postmessage_probe.txt",
+                            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] parent-to-child " +
+                            $"frame={iframe.GetAttribute("name") ?? "?"} ownRealm={hasRealm} " +
+                            $"data={DescribePostMessageValue(data)}{Environment.NewLine}");
+                    }
+
+                    if (hasRealm)
+                    {
+                        frameRealm!.QueueMessageFromParent(
                             ConvertJsValueToObject(data),
                             GetCurrentWindowOrigin(),
                             targetOrigin,
@@ -15471,12 +15481,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 {
                     var data = args.Count > 0 ? args[0] : JsValue.Undefined;
                     ReadPostMessageTarget(args, out var targetOrigin, out var ports);
-                    if (_iframeRealms.TryGetValue(iframe, out var frameRealm))
+                    var facadeHasRealm = _iframeRealms.TryGetValue(iframe, out var frameRealm);
+                    if (DiagnosticPaths.AppendEnabled)
+                    {
+                        DiagnosticPaths.AppendLogText(
+                            "postmessage_probe.txt",
+                            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] parent-to-child(facade) " +
+                            $"frame={iframe.GetAttribute("name") ?? "?"} ownRealm={facadeHasRealm} " +
+                            $"data={DescribePostMessageValue(data)}{Environment.NewLine}");
+                    }
+
+                    if (facadeHasRealm)
                     {
                         var messageData = ConvertJsValueToObject(data);
                         var sourceOrigin = GetCurrentWindowOrigin();
                         var transferredPorts = ExtractTransferredMessagePorts(ports);
-                        frameRealm.QueueCrossRealmMessage(() => frameRealm.QueueMessageFromParent(
+                        frameRealm!.QueueCrossRealmMessage(() => frameRealm.QueueMessageFromParent(
                             messageData,
                             sourceOrigin,
                             targetOrigin,
@@ -15757,6 +15777,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         if (sessionGeneration != _fenJsSessionGeneration)
                         {
                             return;
+                        }
+
+                        if (DiagnosticPaths.AppendEnabled)
+                        {
+                            // The line above is written when the message is
+                            // queued, not when it runs. Reading it as delivery
+                            // cost me an afternoon; this one is the dispatch.
+                            // Whether `event.source` is the same object the frame
+                            // sees as window.parent decides whether a reply sent
+                            // to it reaches the parent at all.
+                            DiagnosticPaths.AppendLogText(
+                                "postmessage_probe.txt",
+                                $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] deliver-run " +
+                                $"listeners={listeners?.Count ?? 0} " +
+                                $"srcIsParent={exposedSourceWindow.Equals(ReadGlobalValueOrUndefined("parent"))} " +
+                                $"srcIsSelf={exposedSourceWindow.Equals(_fenJsGlobalThis)} " +
+                                $"srcTag={exposedSourceWindow.Tag}{Environment.NewLine}");
                         }
 
                         try
