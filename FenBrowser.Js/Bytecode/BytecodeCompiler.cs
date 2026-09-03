@@ -121,15 +121,21 @@ public sealed class BytecodeCompiler
 
     public BytecodeFunction CompileScript(SourceText source)
     {
-        var program = JsParser.ParseScript(source!, inheritedStrictMode: false, ParserMaxRecursionDepth);
-        _rawSource = source?.Text;
-        // ECMA-262 Static Semantics: Early Error validation.
-        new AstValidator().Validate(program, new Diagnostics.DiagnosticBag());
-
+        // Ask the cache before parsing, not after. A source only reaches the
+        // cache once it has parsed and passed early-error validation, so a hit
+        // is proof both would succeed again -- and running them anyway was
+        // paying for the expensive half of compilation to then throw it away.
+        // The 850KB script a page loads into three frames was parsed three
+        // times, a second each.
         if (source is not null && BytecodeCache.TryGet(source.Text, strictMode: false, out var cached))
         {
             return cached;
         }
+
+        var program = JsParser.ParseScript(source!, inheritedStrictMode: false, ParserMaxRecursionDepth);
+        _rawSource = source?.Text;
+        // ECMA-262 Static Semantics: Early Error validation.
+        new AstValidator().Validate(program, new Diagnostics.DiagnosticBag());
 
         var compiled = CompileProgram(program);
         if (source is not null)
