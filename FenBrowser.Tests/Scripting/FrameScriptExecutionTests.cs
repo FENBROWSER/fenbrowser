@@ -56,6 +56,27 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("https://parent.test/second", InFrame(world, "second", "location.href"));
         }
 
+        // HTML 3.1.5 document.referrer: a framed document reports the document
+        // that embedded it. We reported the empty string, which leaves a frame
+        // whose own URL carries no origin -- reCAPTCHA's challenge frame, for
+        // one -- with no way to learn where it is embedded.
+        [Fact]
+        public async Task AFramedDocumentReportsTheEmbeddingDocument()
+        {
+            var world = await CreateTwoFrameWorldAsync();
+
+            Assert.Equal("https://parent.test/page", InFrame(world, "first", "document.referrer"));
+            Assert.Equal("https://parent.test/page", InFrame(world, "second", "document.referrer"));
+        }
+
+        [Fact]
+        public async Task ATopLevelDocumentReportsNoReferrer()
+        {
+            var world = await CreateTwoFrameWorldAsync();
+
+            Assert.Equal(string.Empty, world.Engine.Evaluate("document.referrer")?.ToString() ?? string.Empty);
+        }
+
         // A global belongs to one realm. Reading the top realm's global from a
         // frame - or the frame's from the top - is how the old routing showed up
         // as "the state I just set is missing".

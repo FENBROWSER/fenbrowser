@@ -97,6 +97,64 @@ internal static class CaptchaScriptInstrumentation
                     return send.apply(this, arguments);
                 };
             } catch (e) { note('xhr-hook-threw:' + e); }
+            // Whether a frame that goes quiet asked to speak and was not
+            // heard, or never asked, is the whole question -- and from outside
+            // the two look the same. Record the calls as the bundle makes them.
+            window.__fenPostLog = [];
+            var logPost = function (kind, data, origin, transfer) {
+                try {
+                    if (window.__fenPostLog.length >= 60) { return; }
+                    window.__fenPostLog.push(stamp() + ' ' + kind +
+                        ' data=' + (typeof data === 'string'
+                            ? JSON.stringify(data.slice(0, 40))
+                            : (data && typeof data === 'object' ? 'object' : typeof data)) +
+                        ' origin=' + String(origin) +
+                        ' transfer=' + ((transfer && transfer.length) || 0));
+                } catch (e) { }
+            };
+            try {
+                var selfPost = window.postMessage;
+                if (typeof selfPost === 'function') {
+                    window.postMessage = function (d, o, t) {
+                        logPost('self', d, o, t);
+                        return selfPost.apply(this, arguments);
+                    };
+                }
+            } catch (e) { note('selfpost-hook-threw:' + e); }
+            try {
+                var up = window.parent;
+                if (up && up !== window && typeof up.postMessage === 'function') {
+                    var upPost = up.postMessage;
+                    up.postMessage = function (d, o, t) {
+                        logPost('parent', d, o, t);
+                        return upPost.apply(this, arguments);
+                    };
+                }
+            } catch (e) { note('parentpost-hook-threw:' + e); }
+            try {
+                if (typeof MessagePort === 'function' && MessagePort.prototype) {
+                    var portPost = MessagePort.prototype.postMessage;
+                    MessagePort.prototype.postMessage = function (d, t) {
+                        logPost('port', d, '-', t);
+                        return portPost.apply(this, arguments);
+                    };
+                    var portStart = MessagePort.prototype.start;
+                    MessagePort.prototype.start = function () {
+                        logPost('port-start', '', '-', null);
+                        return portStart.apply(this, arguments);
+                    };
+                }
+            } catch (e) { note('portpost-hook-threw:' + e); }
+            try {
+                if (typeof MessageChannel === 'function') {
+                    var realChannel = MessageChannel;
+                    window.MessageChannel = function () {
+                        logPost('new-MessageChannel', '', '-', null);
+                        return new realChannel();
+                    };
+                }
+            } catch (e) { note('channel-hook-threw:' + e); }
+
             try {
                 if (typeof window.fetch === 'function') {
                     var realFetch = window.fetch;

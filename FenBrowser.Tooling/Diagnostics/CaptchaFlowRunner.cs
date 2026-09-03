@@ -105,6 +105,17 @@ internal static class CaptchaFlowRunner
         // A frame that cannot reach its parent cannot open the channel the
         // whole protocol runs over, and that looks identical from outside to a
         // frame that simply chose not to.
+        // The challenge frame creates its channel and then never hands the port
+        // to anyone, so it cannot resolve a target. These are what that
+        // resolution is built from.
+        "try{r+=' name='+JSON.stringify(String(window.name||''));" +
+        "r+=' referrer='+JSON.stringify(String(document.referrer||'').slice(0,60));" +
+        "r+=' href='+JSON.stringify(String(location.href).slice(0,70));" +
+        "r+=' parentFrames='+((function(){try{return window.parent.frames.length;}catch(e){return 'threw';}})());" +
+        "r+=' parentFramesType='+((function(){try{return typeof window.parent.frames;}catch(e){return 'threw';}})());" +
+        "r+=' siblingByName='+((function(){try{var n=String(window.name||'').replace(/^c-/,'a-');" +
+        "return typeof window.parent.frames[n];}catch(e){return 'threw';}})());" +
+        "}catch(e){r+=' targetProbeThrew='+e;}" +
         "try{r+=' parentIsSelf='+(window.parent===window);" +
         "r+=' topIsSelf='+(window.top===window);" +
         "r+=' parentPost='+(window.parent?typeof window.parent.postMessage:'-');" +
@@ -211,6 +222,14 @@ internal static class CaptchaFlowRunner
         "if(!l)return 'prologue not installed in this realm';" +
         "if(!l.length)return 'no errors recorded';" +
         "return l.length+' entries: '+l.join(' | ');})()";
+
+    // Says whether a silent frame tried to open its channel and was not
+    // heard, or never tried at all.
+    private const string ReadPostLogScript =
+        "(function(){var l=window.__fenPostLog;" +
+        "if(!l)return 'prologue not installed in this realm';" +
+        "if(!l.length)return 'the bundle posted nothing';" +
+        "return l.length+' posts: '+l.join(' | ');})()";
 
     private const string ReadPrologueNetLogScript =
         "(function(){var l=window.__fenNetLog;" +
@@ -448,6 +467,7 @@ internal static class CaptchaFlowRunner
         await RunInFrameAsync(host, anchorFrameId, ReadClickRecorderScript, "clicks seen").ConfigureAwait(false);
         await RunInFrameAsync(host, anchorFrameId, ReadListenerLogScript, "listeners registered").ConfigureAwait(false);
         await RunInFrameAsync(host, anchorFrameId, ReadErrorLogScript, "errors on anchor").ConfigureAwait(false);
+        await RunInFrameAsync(host, anchorFrameId, ReadPostLogScript, "posts on anchor").ConfigureAwait(false);
         await RunInFrameAsync(host, anchorFrameId, ReadPrologueNetLogScript, "bundle-net on anchor").ConfigureAwait(false);
         var dumped = new HashSet<string>(StringComparer.Ordinal);
         await DumpFramesAsync(host, "click", dumped).ConfigureAwait(false);
@@ -595,6 +615,7 @@ internal static class CaptchaFlowRunner
             await RunInFrameAsync(host, frameId, ReadNetworkRecorderScript, "netlog " + kind).ConfigureAwait(false);
             await RunInFrameAsync(host, frameId, ReadListenerLogScript, "listeners " + kind).ConfigureAwait(false);
             await RunInFrameAsync(host, frameId, ReadErrorLogScript, "errors " + kind).ConfigureAwait(false);
+            await RunInFrameAsync(host, frameId, ReadPostLogScript, "posts " + kind).ConfigureAwait(false);
             await RunInFrameAsync(host, frameId, ReadPrologueNetLogScript, "bundle-net " + kind).ConfigureAwait(false);
         }
     }

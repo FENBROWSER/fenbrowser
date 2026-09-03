@@ -14682,6 +14682,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
     }
 
+    /// <summary>
+    /// The referrer this document reports. A framed document reports the
+    /// document that embedded it; a top-level one reports what it was navigated
+    /// from, which for a fresh load is nothing.
+    /// </summary>
+    private string ResolveDocumentReferrer()
+    {
+        if (_embeddingFrameElement == null)
+        {
+            // A top-level document reports what it was navigated from, and a
+            // fresh load has nothing to report.
+            return string.Empty;
+        }
+
+        return GetParentDocumentUri(_embeddingFrameElement)?.AbsoluteUri ?? string.Empty;
+    }
+
     private void ConfigureEmbeddedRealmGlobals()
     {
         var embeddingFrame = _embeddingFrameElement;
@@ -19659,6 +19676,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case "URL":
                 case "documentURI":
                     value = JsValue.FromString(document.URL ?? string.Empty);
+                    return true;
+                case "referrer":
+                    // HTML 3.1.5: the address of the document that navigated
+                    // here. For a frame that is its parent's, and a frame with
+                    // no other way to learn where it is embedded has to read it
+                    // from here -- reCAPTCHA's challenge frame carries no origin
+                    // in its own URL and derives the one it must post to from
+                    // this. Returning the empty string left it unable to name a
+                    // target and it never opened its channel.
+                    value = JsValue.FromString(_owner.ResolveDocumentReferrer());
                     return true;
                 case "baseURI":
                     value = JsValue.FromString(
