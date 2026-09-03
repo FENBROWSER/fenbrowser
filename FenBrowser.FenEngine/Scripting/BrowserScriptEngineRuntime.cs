@@ -4045,6 +4045,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         /// </summary>
         public Task Tail = Task.CompletedTask;
         public readonly object TailGate = new();
+
+        /// <summary>
+        /// Worker script runs on its own large-stack thread, and a log call made
+        /// from there does not reach the sink. Anything the worker has to say
+        /// waits here until the worker's task drains it.
+        /// </summary>
+        public readonly ConcurrentQueue<string> Diagnostics = new();
     }
 
     private readonly ConcurrentDictionary<int, DedicatedWorkerInstance> _dedicatedWorkers = new();
@@ -4089,9 +4096,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             };
             globalThis.importScripts = function () {
                 for (var i = 0; i < arguments.length; i++) {
-                    var code = __fenWorkerImportScript(String(arguments[i]));
-                    if (typeof code === 'string' && code.length) {
+                    var url = String(arguments[i]);
+                    var code = __fenWorkerImportScript(url);
+                    if (typeof code !== 'string' || !code.length) {
+                        // HTML 10.2.2 importScripts(): a script that cannot be
+                        // fetched is a NetworkError, not a no-op.
+                        throw new Error('importScripts(' + url + '): nothing to run');
+                    }
+                    try {
                         (0, eval)(code);
+                    } catch (err) {
+                        __fenWorkerReportError('importScripts(' + url + '): ' + err);
+                        throw err;
                     }
                 }
             };
@@ -4184,12 +4200,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 worker.Realm = CreateWorkerRealm(scriptUri, id);
                 worker.Realm.EvaluateWithFenJsRaw(DedicatedWorkerBootstrapScript);
                 worker.Realm.EvaluateWithFenJsRaw(source);
+                DrainWorkerDiagnostics(worker);
             }
             catch (Exception ex)
             {
                 FenBrowser.Core.EngineLogCompat.Warn(
                     $"[FenJsBridge] Worker script threw while starting ({scriptUri}): {ex.GetType().Name}: {ex.Message}",
                     FenBrowser.Core.Logging.LogCategory.JavaScript);
+                DrainWorkerDiagnostics(worker);
                 _dedicatedWorkers.TryRemove(id, out _);
                 worker.Realm?.AbandonRealm();
                 return;
@@ -4290,35 +4308,76 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             realm._interpreter.AllocateNativeFunction(
                 "__fenWorkerImportScript",
                 (_, importArgs) => ImportWorkerScript(workerId, importArgs)));
+        realm._interpreter.RegisterGlobalValue(
+            "__fenWorkerReportError",
+            realm._interpreter.AllocateNativeFunction(
+                "__fenWorkerReportError",
+                (_, errorArgs) =>
+                {
+                    NoteWorkerDiagnostic(
+                        workerId,
+                        errorArgs is { Count: > 0 } ? CoerceToHostString(errorArgs[0]) : "(no detail)");
+                    return JsValue.Undefined;
+                }));
         return realm;
+    }
+
+    /// <summary>Records a line for <see cref="DrainWorkerDiagnostics"/> to log.</summary>
+    private void NoteWorkerDiagnostic(int workerId, string message)
+    {
+        if (_dedicatedWorkers.TryGetValue(workerId, out var worker))
+        {
+            worker.Diagnostics.Enqueue(message);
+        }
+    }
+
+    private void DrainWorkerDiagnostics(DedicatedWorkerInstance worker)
+    {
+        while (worker.Diagnostics.TryDequeue(out var line))
+        {
+            FenBrowser.Core.EngineLogCompat.Info(
+                $"[FenJsBridge] Worker {worker.Id}: {line}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
     }
 
     private JsValue ImportWorkerScript(int workerId, IReadOnlyList<JsValue> args)
     {
-        if (args == null || args.Count == 0 ||
-            !_dedicatedWorkers.TryGetValue(workerId, out var worker) || worker.Terminated)
+        // Every way out of here that isn't the script itself used to be an empty
+        // string, and the caller ran on as though the import had happened. A
+        // worker whose whole body is one importScripts() then sat there doing
+        // nothing, with not a line in the log to say why. Say what went wrong.
+        if (args == null || args.Count == 0)
         {
             return JsValue.FromString(string.Empty);
         }
 
         var raw = CoerceToHostString(args[0]);
-        if (string.IsNullOrWhiteSpace(raw) || !Uri.TryCreate(worker.ScriptUri, raw, out var uri))
+        if (!_dedicatedWorkers.TryGetValue(workerId, out var worker) || worker.Terminated)
         {
+            NoteWorkerDiagnostic(workerId, $"importScripts('{raw}') arrived after the worker was gone.");
             return JsValue.FromString(string.Empty);
         }
 
+        if (string.IsNullOrWhiteSpace(raw) || !Uri.TryCreate(worker.ScriptUri, raw, out var uri))
+        {
+            NoteWorkerDiagnostic(workerId, $"importScripts('{raw}') does not resolve against {worker.ScriptUri}.");
+            return JsValue.FromString(string.Empty);
+        }
+
+        string? code;
         try
         {
-            return JsValue.FromString(
-                FetchWorkerScriptAsync(uri, worker.ScriptUri).GetAwaiter().GetResult() ?? string.Empty);
+            code = FetchWorkerScriptAsync(uri, worker.ScriptUri).GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
-            FenBrowser.Core.EngineLogCompat.Warn(
-                $"[FenJsBridge] Worker {workerId} importScripts({uri}) failed: {ex.GetType().Name}: {ex.Message}",
-                FenBrowser.Core.Logging.LogCategory.JavaScript);
+            NoteWorkerDiagnostic(workerId, $"importScripts({uri}) failed: {ex.GetType().Name}: {ex.Message}");
             return JsValue.FromString(string.Empty);
         }
+
+        NoteWorkerDiagnostic(workerId, $"importScripts({uri}) -> {code?.Length ?? -1} chars");
+        return JsValue.FromString(code ?? string.Empty);
     }
 
     /// <summary>The page called worker.postMessage(data).</summary>
