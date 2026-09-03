@@ -1598,6 +1598,8 @@ public sealed class BytecodeCompiler
         // bindings. A `const` head cannot be reassigned, so one binding for the
         // whole loop is indistinguishable from a fresh one each turn.
         var perIterationScopes = 0;
+        var preLoopCopyIndex = -1;
+        var perTurnCopyIndex = -1;
         if (forStmt.Initializer is VariableDeclarationStatementNode initDecl &&
             (string.Equals(initDecl.Kind, "let", StringComparison.Ordinal) ||
              string.Equals(initDecl.Kind, "const", StringComparison.Ordinal)))
@@ -1629,6 +1631,10 @@ public sealed class BytecodeCompiler
 
         try
         {
+            // The head is part of the loop for this purpose: `for (let i = 0,
+            // f = function () { return i; }; ...)` closes over the loop
+            // environment before the first copy is made.
+            var loopRegionStart = _instructions.Count;
             if (forStmt.Initializer is not null)
             {
                 CompileStatement(forStmt.Initializer);
@@ -1638,6 +1644,7 @@ public sealed class BytecodeCompiler
             {
                 // 14.7.4.7 ForBodyEvaluation step 2 - the head's initialiser ran
                 // in the loop environment; the first turn already gets its own.
+                preLoopCopyIndex = _instructions.Count;
                 _instructions.Add(new Instruction(OpCode.NextIterationEnv, perIterationScopes, 0, 0));
             }
 
@@ -1673,6 +1680,7 @@ public sealed class BytecodeCompiler
                     // 14.7.4.7 step 3.e, before the increment in step 3.f, so the
                     // increment moves the next turn's copy and not this turn's.
                     // `continue` targets this instruction for the same reason.
+                    perTurnCopyIndex = _instructions.Count;
                     _instructions.Add(new Instruction(OpCode.NextIterationEnv, perIterationScopes, 0, 0));
                 }
 
@@ -1697,6 +1705,18 @@ public sealed class BytecodeCompiler
                 {
                     PatchJump(continueJump, continueTarget);
                 }
+
+                // A fresh binding per turn is only observable if something in
+                // the loop kept a reference to the environment. When nothing
+                // does, the copies are two allocations per turn that no code
+                // can tell apart from not making them -- and a tight loop makes
+                // tens of thousands of them.
+                if (perIterationScopes > 0 &&
+                    !LoopCanCaptureEnvironment(loopRegionStart, _instructions.Count))
+                {
+                    RetractInstruction(preLoopCopyIndex);
+                    RetractInstruction(perTurnCopyIndex);
+                }
             }
             finally
             {
@@ -1715,6 +1735,44 @@ public sealed class BytecodeCompiler
 
                 _blockScopedNameStack.Pop();
             }
+        }
+    }
+
+    /// <summary>
+    /// Whether anything between <paramref name="start"/> and <paramref name="end"/>
+    /// could outlive the iteration holding the environment: a closure, or a
+    /// direct eval, which can make one out of source we cannot see here.
+    /// </summary>
+    private bool LoopCanCaptureEnvironment(int start, int end)
+    {
+        for (var i = start; i < end && i < _instructions.Count; i++)
+        {
+            var ins = _instructions[i];
+            if (ins.OpCode == OpCode.CreateFunction)
+            {
+                return true;
+            }
+
+            if (ins.E == DirectEvalCallFlag &&
+                ins.OpCode is OpCode.Call0 or OpCode.Call1 or OpCode.CallN or OpCode.CallSpread)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Turns an already-emitted instruction into a no-op. Removing it outright
+    /// would move every instruction after it and invalidate the jump targets
+    /// already patched against them.
+    /// </summary>
+    private void RetractInstruction(int index)
+    {
+        if (index >= 0 && index < _instructions.Count)
+        {
+            _instructions[index] = new Instruction(OpCode.Nop, 0, 0, 0);
         }
     }
 

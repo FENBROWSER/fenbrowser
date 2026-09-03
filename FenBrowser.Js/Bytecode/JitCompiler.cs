@@ -752,6 +752,8 @@ public static class JitCompiler
                 body.Add(Expression.Call(interp, MiLeaveScope, frame));
                 body.Add(refreshSlots());
                 return true;
+            case OpCode.Nop:
+                return true;
             case OpCode.NextIterationEnv:
                 body.Add(Expression.Call(interp, MiCreatePerIterationEnvironment, frame,
                     Expression.Constant(ins.A)));

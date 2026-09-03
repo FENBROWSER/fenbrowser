@@ -91,6 +91,40 @@ public sealed class ForLetPerIterationTests
     }
 
     [Fact]
+    public void ClosureInTheHeadKeepsTheLoopEnvironment()
+    {
+        // test262 language/statements/let/syntax/let-closure-inside-initialization.js
+        // The copy is elided when nothing in the loop can capture the
+        // environment, and the head counts: this function is made before the
+        // first copy and holds the loop's own binding, so it reads 0 forever.
+        Assert.Equal(
+            "0,0,0",
+            Run("var a = []; for (let i = 0, f = function () { return i; }; i < 3; ++i) { a.push(f); }" +
+                "a[0]() + ',' + a[1]() + ',' + a[2]();").AsString());
+    }
+
+    [Fact]
+    public void DirectEvalInTheBodyStillGetsAFreshBinding()
+    {
+        // eval can build a closure out of source the compiler never sees, so a
+        // loop containing one keeps its per-iteration copies.
+        Assert.Equal(
+            "0,1,2",
+            Run("var f = []; for (let i = 0; i < 3; i++) { eval('f.push(function () { return i; })'); }" +
+                "f[0]() + ',' + f[1]() + ',' + f[2]();").AsString());
+    }
+
+    [Fact]
+    public void NestedLoopsEachKeepTheirOwnBinding()
+    {
+        Assert.Equal(
+            "00,01,10,11",
+            Run("var f = []; for (let i = 0; i < 2; i++) { for (let j = 0; j < 2; j++) " +
+                "{ f.push(function () { return '' + i + j; }); } }" +
+                "f.map(function (g) { return g(); }).join(',');").AsString());
+    }
+
+    [Fact]
     public void ClosuresSeeLaterWritesToTheirOwnIteration()
     {
         // test262 language/statements/for/scope-body-lex-boundary.js

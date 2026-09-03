@@ -251,6 +251,11 @@ public enum OpCode : byte
     // frame.Environment to its outer (parent) record.
     LeaveScope,
 
+    // Does nothing. The compiler retracts an instruction it has already emitted
+    // by overwriting it with this: deleting it outright would shift everything
+    // after it and invalidate jump targets already patched against them.
+    Nop,
+
     // ECMA-262 14.7.4.9 CreatePerIterationEnvironment — replace the innermost
     // A lexical environments with copies of themselves, so each turn of a
     // `for (let ...)` loop binds its own copy of the head variables and a

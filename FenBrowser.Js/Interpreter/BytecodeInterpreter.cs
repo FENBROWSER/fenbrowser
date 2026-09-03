@@ -2114,6 +2114,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     frame.Environment = frame.Environment.OuterEnv ?? frame.Environment;
                     break;
                 }
+                case OpCode.Nop:
+                    break;
                 case OpCode.NextIterationEnv:
                 {
                     CreatePerIterationEnvironment(frame, ins.A);
