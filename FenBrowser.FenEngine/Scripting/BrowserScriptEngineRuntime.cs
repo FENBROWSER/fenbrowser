@@ -511,6 +511,32 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private readonly object _fenJsLock = new();
     private readonly object _windowMessageQueueLock = new();
     private Task _windowMessageDeliveryTail = Task.CompletedTask;
+
+    /// <summary>
+    /// Holds window-message delivery behind the document's own scripts.
+    ///
+    /// A message posted into a frame is a task, and a task does not run in the
+    /// middle of another one. The script batch awaits between scripts, though,
+    /// which let a delivery slip into the gap -- reCAPTCHA's challenge frame was
+    /// handed the page's set-up message 1.5ms before the inline script that
+    /// registers its listener ran, so the message was delivered to nobody and
+    /// the frame waited for it forever.
+    /// </summary>
+    private void HoldWindowMessagesUntil(Task scriptBatch)
+    {
+        if (scriptBatch is null || scriptBatch.IsCompleted)
+        {
+            return;
+        }
+
+        lock (_windowMessageQueueLock)
+        {
+            _windowMessageDeliveryTail = _windowMessageDeliveryTail
+                .ContinueWith(_ => scriptBatch, CancellationToken.None,
+                    TaskContinuationOptions.None, TaskScheduler.Default)
+                .Unwrap();
+        }
+    }
     private readonly ConcurrentDictionary<long, FenJsTimerRegistration> _fenJsTimers = new();
     // JsValues held only by C# locals across a worker-thread marshal (event
     // facades, queued message payloads, restored window.event values) are
@@ -2717,6 +2743,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     }
 
     private async Task ExecutePageScriptsWithFenJsAsync(Node domRoot, Uri baseUri)
+    {
+        // Anything the parent posts at us while these run waits for them.
+        var batchDone = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        HoldWindowMessagesUntil(batchDone.Task);
+        try
+        {
+            await ExecutePageScriptsCoreAsync(domRoot, baseUri).ConfigureAwait(false);
+        }
+        finally
+        {
+            batchDone.TrySetResult(true);
+        }
+    }
+
+    private async Task ExecutePageScriptsCoreAsync(Node domRoot, Uri baseUri)
     {
         LogScriptLoading(
             "ScriptLoadingStarted",
