@@ -227,6 +227,8 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.LeaveScopeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiCreatePerIterationEnvironment = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.CreatePerIterationEnvironment), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiEndFinally = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.EndFinallyForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiTypeOfName = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.TypeOfName), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiJsValueFromString = typeof(JsValue)
@@ -466,6 +468,13 @@ public static class JitCompiler
         }
 
         var body = new List<Expression>();
+        var dispatchLabel = Expression.Label("dispatch");
+        body.Add(Expression.Label(dispatchLabel));
+
+        // On every entry, including a re-dispatch after a throw was routed to a
+        // handler: the handler restores the environment it was pushed with, so
+        // slot storage derived before the throw no longer describes the frame.
+        body.Add(RefreshSlots());
 
         if (resumePoints.Count > 0)
         {
@@ -521,7 +530,8 @@ public static class JitCompiler
 
             var ins = function.Instructions[i];
             if (!TryEmitOpcode(function, ins, i, interpParam, frameParam, registersLocal, constantsLocal,
-                    slotBindingsLocal, slotPresentLocal, RefreshSlots, instructionLabels, returnLabel, body))
+                    slotBindingsLocal, slotPresentLocal, RefreshSlots, resumeIpLocal, dispatchLabel,
+                    resumePoints.Count > 0, instructionLabels, returnLabel, body))
             {
                 NoteRejection(ins.OpCode);
                 return null;
@@ -559,7 +569,6 @@ public static class JitCompiler
             Expression.Assign(registersLocal, Expression.Property(frameParam, PiRegisters)),
             Expression.Assign(constantsLocal, Expression.Property(Expression.Property(frameParam, PiFunction), PiConstants)),
             Expression.Assign(resumeIpLocal, startIpParam),
-            RefreshSlots(),
             // The loop only ever repeats when a throw was routed back into the
             // body; every other way out of it goes through the return label.
             Expression.Loop(guarded),
@@ -633,6 +642,7 @@ public static class JitCompiler
         ParameterExpression interp, ParameterExpression frame,
         ParameterExpression registers, ParameterExpression constants,
         ParameterExpression slotBindings, ParameterExpression slotPresent, Func<Expression> refreshSlots,
+        ParameterExpression resumeIp, LabelTarget dispatchLabel, bool hasResumePoints,
         LabelTarget[] labels, LabelTarget returnLabel, List<Expression> body)
     {
         switch (ins.OpCode)
@@ -758,6 +768,29 @@ public static class JitCompiler
                 return true;
             case OpCode.Nop:
                 return true;
+            case OpCode.EndFinally:
+            {
+                // Re-dispatching needs the entry switch; without one the goto
+                // would land on the first instruction instead of the handler.
+                if (!hasResumePoints) return false;
+                var endFinallyAction = Expression.Variable(typeof(int), "endFinallyAction");
+                var endFinallyReturn = Expression.Variable(typeof(JsValue), "endFinallyReturn");
+                body.Add(Expression.Block(
+                    new[] { endFinallyAction, endFinallyReturn },
+                    Expression.Assign(
+                        endFinallyAction,
+                        Expression.Call(interp, MiEndFinally, frame, endFinallyReturn)),
+                    Expression.IfThen(
+                        Expression.Equal(endFinallyAction, Expression.Constant(2)),
+                        Expression.Goto(returnLabel, endFinallyReturn)),
+                    Expression.IfThen(
+                        Expression.Equal(endFinallyAction, Expression.Constant(1)),
+                        Expression.Block(
+                            Expression.Assign(
+                                resumeIp, Expression.Property(frame, PiFrameInstructionPointer)),
+                            Expression.Goto(dispatchLabel)))));
+                return true;
+            }
             case OpCode.TypeOfName:
                 // `typeof someIdentifier`. Minified bundles are full of these as
                 // feature guards, and refusing the opcode meant refusing every

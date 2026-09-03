@@ -539,6 +539,40 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     /// of environments as copies and stand the frame on the copies; anything
     /// that closed over the old ones keeps the values this turn had.
     /// </summary>
+    /// <summary>
+    /// EndFinally for compiled code. Returns 0 to carry on with the next
+    /// instruction, 1 to re-dispatch at the frame's instruction pointer, and 2
+    /// to return <paramref name="returnValue"/> from the function.
+    /// </summary>
+    internal int EndFinallyForJit(InterpreterFrame frame, out JsValue returnValue)
+    {
+        returnValue = JsValue.Undefined;
+        if (frame.PendingException is { } pending)
+        {
+            frame.PendingException = null;
+            // Either a handler in this frame takes it -- and ThrowOrHandle has
+            // already moved the instruction pointer there -- or it throws, and
+            // compiled code catches it in the same place it catches any other.
+            ThrowOrHandle(frame, pending);
+            return 1;
+        }
+
+        if (frame.PendingReturn is { } pendingReturn)
+        {
+            frame.PendingReturn = null;
+            if (TryRouteReturnThroughFinally(frame, pendingReturn))
+            {
+                // Handed on to the next enclosing finally block.
+                return 1;
+            }
+
+            returnValue = pendingReturn;
+            return 2;
+        }
+
+        return 0;
+    }
+
     internal void CreatePerIterationEnvironment(InterpreterFrame frame, int scopeCount)
     {
         if (scopeCount <= 0)
