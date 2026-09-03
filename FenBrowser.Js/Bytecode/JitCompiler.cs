@@ -227,6 +227,19 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.LeaveScopeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiCreatePerIterationEnvironment = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.CreatePerIterationEnvironment), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo FiValueTag = typeof(JsValue).GetField(nameof(JsValue.Tag))!;
+    private static readonly MethodInfo MiAsNumber =
+        typeof(JsValue).GetMethod(nameof(JsValue.AsNumber), Type.EmptyTypes)!;
+    private static readonly MethodInfo MiAsInt32 =
+        typeof(JsValue).GetMethod(nameof(JsValue.AsInt32), Type.EmptyTypes)!;
+    private static readonly MethodInfo MiFromBoolean =
+        typeof(JsValue).GetMethod(nameof(JsValue.FromBoolean), new[] { typeof(bool) })!;
+    private static readonly MethodInfo MiFromInt32 =
+        typeof(JsValue).GetMethod(nameof(JsValue.FromInt32), new[] { typeof(int) })!;
+    private static readonly MethodInfo MiFastNumberResult = typeof(BytecodeInterpreter)
+        .GetMethod("FastNumberResult", BindingFlags.Static | BindingFlags.NonPublic,
+            null, new[] { typeof(double) }, null)!;
+
     private static readonly MethodInfo MiEndFinally = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.EndFinallyForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiTypeOfName = typeof(BytecodeInterpreter)
@@ -592,6 +605,118 @@ public static class JitCompiler
     /// Catch offsets named by the function's handler pushes. A throw routed to
     /// one of these has to be resumable, so each needs a dispatch entry.
     /// </summary>
+    /// <summary>
+    /// A binary operator, with the numeric case written out in line.
+    ///
+    /// Every one of these used to be a call into ApplyBinopForJit, which takes
+    /// the operator as an argument and switches on it at run time. The operator
+    /// is a constant here, so the switch, the call and the argument shuffling
+    /// are all avoidable: emit the tag test and the arithmetic directly and let
+    /// the host JIT keep the operands in registers. Anything the fast form does
+    /// not cover -- strings, BigInt, objects with valueOf -- still goes to the
+    /// interpreter, which is the only thing that knows those rules.
+    /// </summary>
+    private static Expression EmitBinop(
+        Instruction ins, ParameterExpression interp, ParameterExpression frame, ParameterExpression registers)
+    {
+        var slow = Expression.Call(interp, MiApplyBinop, frame,
+            Expression.Constant((int)ins.OpCode),
+            Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C));
+
+        var left = Expression.Variable(typeof(JsValue), "binL");
+        var right = Expression.Variable(typeof(JsValue), "binR");
+        var dest = Expression.ArrayAccess(registers, Expression.Constant(ins.A));
+
+        static Expression IsNumeric(Expression value) =>
+            Expression.OrElse(
+                Expression.Equal(Expression.Field(value, FiValueTag),
+                    Expression.Constant(JsValueTag.Int32)),
+                Expression.Equal(Expression.Field(value, FiValueTag),
+                    Expression.Constant(JsValueTag.Number)));
+
+        static Expression IsInt32(Expression value) =>
+            Expression.Equal(Expression.Field(value, FiValueTag), Expression.Constant(JsValueTag.Int32));
+
+        Expression AsDouble(ParameterExpression value) => Expression.Call(value, MiAsNumber);
+        Expression AsInt(ParameterExpression value) => Expression.Call(value, MiAsInt32);
+
+        // ToInt32 shift counts are taken modulo 32 (ECMA-262 13.9).
+        Expression ShiftCount() => Expression.And(AsInt(right), Expression.Constant(31));
+
+        Expression? fast = null;
+        Expression? guard = null;
+
+        Expression Number(Expression d) => Expression.Call(MiFastNumberResult, d);
+        Expression Bool(Expression b) => Expression.Call(MiFromBoolean, b);
+        Expression Int(Expression i) => Expression.Call(MiFromInt32, i);
+
+        switch (ins.OpCode)
+        {
+            case OpCode.Add:
+                guard = IsNumeric(left); fast = Number(Expression.Add(AsDouble(left), AsDouble(right))); break;
+            case OpCode.Sub:
+                guard = IsNumeric(left); fast = Number(Expression.Subtract(AsDouble(left), AsDouble(right))); break;
+            case OpCode.Mul:
+                guard = IsNumeric(left); fast = Number(Expression.Multiply(AsDouble(left), AsDouble(right))); break;
+            case OpCode.Lt:
+                guard = IsNumeric(left); fast = Bool(Expression.LessThan(AsDouble(left), AsDouble(right))); break;
+            case OpCode.Gt:
+                guard = IsNumeric(left); fast = Bool(Expression.GreaterThan(AsDouble(left), AsDouble(right))); break;
+            case OpCode.Le:
+                guard = IsNumeric(left); fast = Bool(Expression.LessThanOrEqual(AsDouble(left), AsDouble(right))); break;
+            case OpCode.Ge:
+                guard = IsNumeric(left); fast = Bool(Expression.GreaterThanOrEqual(AsDouble(left), AsDouble(right))); break;
+            case OpCode.Eq:
+            case OpCode.StrictEq:
+                guard = IsNumeric(left); fast = Bool(Expression.Equal(AsDouble(left), AsDouble(right))); break;
+            case OpCode.Neq:
+            case OpCode.StrictNeq:
+                guard = IsNumeric(left); fast = Bool(Expression.NotEqual(AsDouble(left), AsDouble(right))); break;
+
+            // The bitwise operators coerce through ToInt32, so an operand that
+            // already is one needs no coercion at all. Anything else -- a
+            // double, a string, a BigInt -- takes the interpreter's path.
+            case OpCode.BitAnd:
+                guard = IsInt32(left); fast = Int(Expression.And(AsInt(left), AsInt(right))); break;
+            case OpCode.BitOr:
+                guard = IsInt32(left); fast = Int(Expression.Or(AsInt(left), AsInt(right))); break;
+            case OpCode.BitXor:
+                guard = IsInt32(left); fast = Int(Expression.ExclusiveOr(AsInt(left), AsInt(right))); break;
+            case OpCode.ShiftLeft:
+                guard = IsInt32(left); fast = Int(Expression.LeftShift(AsInt(left), ShiftCount())); break;
+            case OpCode.ShiftRight:
+                guard = IsInt32(left); fast = Int(Expression.RightShift(AsInt(left), ShiftCount())); break;
+            case OpCode.UnsignedShiftRight:
+                guard = IsInt32(left);
+                fast = Number(Expression.Convert(
+                    Expression.RightShift(
+                        Expression.Convert(AsInt(left), typeof(uint)), ShiftCount()),
+                    typeof(double)));
+                break;
+        }
+
+        if (fast is null || guard is null)
+        {
+            // And, Or and anything else not listed: no numeric shortcut.
+            return slow;
+        }
+
+        // The right operand's guard is the same shape as the left's.
+        var rightGuard = ins.OpCode is OpCode.BitAnd or OpCode.BitOr or OpCode.BitXor
+            or OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.UnsignedShiftRight
+            ? IsInt32(right)
+            : IsNumeric(right);
+
+        return Expression.Block(
+            new[] { left, right },
+            Expression.Assign(left, Expression.ArrayAccess(registers, Expression.Constant(ins.B))),
+            Expression.Assign(right, Expression.ArrayAccess(registers, Expression.Constant(ins.C))),
+            Expression.IfThenElse(
+                Expression.AndAlso(guard, rightGuard),
+                Expression.Assign(dest, fast),
+                slow));
+    }
+
     private static HashSet<int> CollectHandlerTargets(BytecodeFunction function)
     {
         var targets = new HashSet<int>();
@@ -986,9 +1111,7 @@ public static class JitCompiler
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
                 if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
-                body.Add(Expression.Call(interp, MiApplyBinop, frame,
-                    Expression.Constant((int)ins.OpCode),
-                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
+                body.Add(EmitBinop(ins, interp, frame, registers));
                 return true;
             case OpCode.Not:
             case OpCode.Pos:
