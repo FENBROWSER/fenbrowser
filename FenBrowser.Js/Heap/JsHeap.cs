@@ -258,6 +258,11 @@ public sealed class JsHeap
     /// <summary>Slots the heap has ever grown to, live or free.</summary>
     public int CellSlotCount => _cells.Count;
 
+    private long _lastGcPropertySlots;
+
+    /// <summary>Property slots walked by the last collection's marking phase.</summary>
+    public long LastGcPropertySlots => _lastGcPropertySlots;
+
     public int LastGcMarkedCells => _lastGcMarkedCells;
     public int LastGcSweptCells => _lastGcSweptCells;
     public int LastMinorMarked => _lastMinorMarked;
@@ -534,6 +539,7 @@ public sealed class JsHeap
         _lastMinorSwept = 0;
         _lastMinorPromoted = 0;
         _lastMinorScannedOldCells = 0;
+        _sharedMarkingTracer?.ForgetTracedEnvironments();
 
         foreach (var (index, generation) in _nursery)
         {
@@ -908,6 +914,8 @@ public sealed class JsHeap
         _gcCollectionCount++;
         _lastGcMarkedCells = 0;
         _lastGcSweptCells = 0;
+        _lastGcPropertySlots = 0;
+        _sharedMarkingTracer?.ForgetTracedEnvironments();
 
         // Clear old mark bits.
         for (var i = 0; i < _cells.Count; i++)
@@ -1204,6 +1212,11 @@ public sealed class JsHeap
                 cell.Marked = true;
                 if (_currentMarkMinorMode) _lastMinorMarked++;
                 else _lastGcMarkedCells++;
+                if (cell.Payload is FenBrowser.Js.Objects.JsObject marked)
+                {
+                    _lastGcPropertySlots += marked.PropertySlotCount;
+                }
+
                 cell.Payload.Trace(GetMarkingTracer());
             }
         }
@@ -1352,12 +1365,24 @@ public sealed class JsHeap
 
         private readonly bool _minorMode;
 
+        // Reference identity: two distinct records are never interchangeable,
+        // and a record has no value equality to fall back on.
+        private readonly HashSet<FenBrowser.Js.Environments.EnvironmentRecord> _tracedEnvironments =
+            new(ReferenceEqualityComparer.Instance);
+
         public MarkingTracer(JsHeap heap, bool minorMode = false)
         {
             _heap = heap;
             _minorMode = minorMode;
             _ = _minorMode;
         }
+
+        public bool BeginEnvironment(FenBrowser.Js.Environments.EnvironmentRecord record) =>
+            _tracedEnvironments.Add(record);
+
+        // Must run at the start of every collection. A record left in the set
+        // would be skipped next time and its objects swept while still live.
+        internal void ForgetTracedEnvironments() => _tracedEnvironments.Clear();
 
         public void Trace(ObjectHandle handle)
         {

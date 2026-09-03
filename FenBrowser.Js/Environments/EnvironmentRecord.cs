@@ -168,6 +168,13 @@ public abstract class EnvironmentRecord
         ArgumentNullException.ThrowIfNull(tracer);
         for (var current = this; current is not null; current = current.OuterEnv)
         {
+            if (!tracer.BeginEnvironment(current))
+            {
+                // Already traced this collection, and so was the rest of the
+                // chain beyond it.
+                return;
+            }
+
             current.TraceOwnEdges(tracer);
         }
     }

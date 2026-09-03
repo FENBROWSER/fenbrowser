@@ -1882,6 +1882,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 $"minor={heap.MinorCollectionCount} ({heap.MinorGcMilliseconds:F0}ms) " +
                 $"allocs={heap.AllocationCount} slots={heap.CellSlotCount} " +
                 $"marked={heap.LastGcMarkedCells} swept={heap.LastGcSweptCells} " +
+                $"propSlots={heap.LastGcPropertySlots} " +
                 $"microtasks={_interpreter.MicrotaskJobsRun} ({_interpreter.MicrotaskMilliseconds:F0}ms) " +
                 $"instructions={_interpreter.TotalInstructionsExecuted} " +
                 $"slowestJob={_interpreter.SlowestJobMilliseconds:F0}ms/{_interpreter.SlowestJobInstructions}instr " +

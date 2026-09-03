@@ -463,6 +463,12 @@ public class JsObject : ITraceable
         }
     }
 
+    /// <summary>
+    /// Property slots this object carries, live or emptied. The collector walks
+    /// every one of them, so this is what marking actually costs.
+    /// </summary>
+    internal int PropertySlotCount => _properties.Length;
+
     public virtual void Trace(IHeapTracer tracer)
     {
         if (PrototypeHandle is { } proto)
