@@ -9,6 +9,7 @@ using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Typography;
 using System.Globalization;
+using System.Text;
 
 namespace FenBrowser.FenEngine.Layout.Contexts
 {
@@ -1762,6 +1763,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             var metrics = MeasureTextMetrics(text, textBox.ComputedStyle);
+
+            // A leaf text run laid out as a box in its own right -- a bare text node
+            // that became a flex or grid item -- still has to break at its available
+            // width; CSS Display 3 wraps such a run in an anonymous block container.
+            // Measuring the whole run as one line is only correct when nothing
+            // constrains it, as in a shrink-to-fit probe.
+            float wrapWidth = ResolveLeafTextWrapWidth(textBox, state);
+            var wrappedLines = wrapWidth > 0 && metrics.Width > wrapWidth && AllowsLeafTextWrapping(textBox)
+                ? WrapLeafText(text, textBox.ComputedStyle, wrapWidth)
+                : null;
+
+            if (wrappedLines != null && wrappedLines.Count > 1)
+            {
+                LayoutWrappedLeafTextBox(textBox, state, wrappedLines, metrics);
+                return;
+            }
+
             float contentWidth = metrics.Width;
             float contentHeight = metrics.LineHeight;
             ApplyMinMaxConstraints(textBox.ComputedStyle, state, ref contentWidth, ref contentHeight);
@@ -1788,6 +1806,133 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             textBox.Geometry.Descent = Math.Max(0f, contentHeight - textBox.Geometry.Baseline);
 
             LayoutBoxOps.SyncBoxes(textBox.Geometry);
+        }
+
+        /// <summary>
+        /// Stacks pre-broken lines into a leaf text box, following the same origin
+        /// convention as the in-flow path: every line origin is relative to the box
+        /// content box and advances by one line height.
+        /// </summary>
+        private void LayoutWrappedLeafTextBox(
+            TextLayoutBox textBox,
+            LayoutState state,
+            List<string> lineTexts,
+            InlineTextMetrics metrics)
+        {
+            float lineHeight = metrics.LineHeight;
+            float baseline = Math.Min(lineHeight, Math.Max(0f, metrics.Baseline));
+
+            var lines = new List<ComputedTextLine>(lineTexts.Count);
+            float widest = 0f;
+            for (int i = 0; i < lineTexts.Count; i++)
+            {
+                float lineWidth = MeasureTextMetrics(lineTexts[i], textBox.ComputedStyle).Width;
+                widest = Math.Max(widest, lineWidth);
+                lines.Add(new ComputedTextLine
+                {
+                    Text = lineTexts[i],
+                    Origin = new SKPoint(0, i * lineHeight),
+                    Width = lineWidth,
+                    Height = lineHeight,
+                    Baseline = baseline
+                });
+            }
+
+            float contentWidth = widest;
+            float contentHeight = lineHeight * lineTexts.Count;
+            ApplyMinMaxConstraints(textBox.ComputedStyle, state, ref contentWidth, ref contentHeight);
+
+            textBox.Geometry.ContentBox = new SKRect(0, 0, contentWidth, contentHeight);
+            textBox.Geometry.Padding = new Thickness();
+            textBox.Geometry.Border = new Thickness();
+            textBox.Geometry.Margin = new Thickness();
+            textBox.Geometry.Lines = lines;
+
+            textBox.Geometry.LineHeight = lineHeight;
+            textBox.Geometry.Baseline = baseline;
+            textBox.Geometry.Ascent = baseline;
+            textBox.Geometry.Descent = Math.Max(0f, lineHeight - baseline);
+
+            LayoutBoxOps.SyncBoxes(textBox.Geometry);
+        }
+
+        /// <summary>
+        /// The width a standalone leaf text run must break at, or 0 when nothing
+        /// constrains it. An explicit width wins, because that is how a flex
+        /// container hands a shrunk item its resolved main size.
+        /// </summary>
+        private static float ResolveLeafTextWrapWidth(TextLayoutBox textBox, LayoutState state)
+        {
+            var style = textBox.ComputedStyle;
+            if (style?.Width.HasValue == true)
+            {
+                float explicitWidth = (float)style.Width.Value;
+                if (float.IsFinite(explicitWidth) && explicitWidth > 0)
+                {
+                    return explicitWidth;
+                }
+            }
+
+            float available = state.AvailableSize.Width;
+            if (float.IsFinite(available) && available > 0)
+            {
+                return available;
+            }
+
+            float containing = state.ContainingBlockWidth;
+            return float.IsFinite(containing) && containing > 0 ? containing : 0f;
+        }
+
+        /// <summary>
+        /// CSS Text 3: only the wrapping white-space modes break lines.
+        /// </summary>
+        private static bool AllowsLeafTextWrapping(TextLayoutBox textBox)
+        {
+            string mode = (textBox.ComputedStyle?.WhiteSpace ?? "normal").Trim().ToLowerInvariant();
+            return mode != "nowrap" && mode != "pre";
+        }
+
+        /// <summary>
+        /// Greedy word wrap using the same measurement as the rest of this context,
+        /// so a standalone run breaks where the in-flow path would break it. A single
+        /// word wider than the line overflows rather than splitting, which is what
+        /// <c>overflow-wrap: normal</c> requires.
+        /// </summary>
+        private List<string> WrapLeafText(string text, CssComputed style, float maxWidth)
+        {
+            var lines = new List<string>();
+            var current = new StringBuilder();
+
+            foreach (var word in text.Split(' '))
+            {
+                if (word.Length == 0)
+                {
+                    continue;
+                }
+
+                if (current.Length == 0)
+                {
+                    current.Append(word);
+                    continue;
+                }
+
+                int lengthBeforeWord = current.Length;
+                current.Append(' ').Append(word);
+                if (MeasureTextMetrics(current.ToString(), style).Width > maxWidth)
+                {
+                    current.Length = lengthBeforeWord;
+                    lines.Add(current.ToString());
+                    current.Clear();
+                    current.Append(word);
+                }
+            }
+
+            if (current.Length > 0)
+            {
+                lines.Add(current.ToString());
+            }
+
+            return lines;
         }
 
         private SKSize MeasureInlineChild(LayoutBox child, LayoutState state)
