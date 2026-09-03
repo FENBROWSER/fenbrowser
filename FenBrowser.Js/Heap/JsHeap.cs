@@ -82,6 +82,11 @@ public sealed class JsHeap
     private bool _minorCollectionPending;
     private readonly bool _verifyHeapBeforeGc;
     private readonly bool _verifyHeapAfterGc;
+    private static readonly bool SweepLogRequested = string.Equals(
+        Environment.GetEnvironmentVariable("FEN_FENJS_GC_SWEEPLOG"),
+        "1",
+        StringComparison.Ordinal);
+
     private readonly bool _auditRememberedSet = string.Equals(
         Environment.GetEnvironmentVariable("FEN_FENJS_GC_AUDIT_REMEMBERED"),
         "1",
@@ -92,7 +97,11 @@ public sealed class JsHeap
     // Stored as a compact struct and formatted only when a stale-handle error
     // actually needs it — eager string formatting here used to dominate
     // collection cost in allocation-heavy workloads.
-    private readonly Dictionary<int, SweepRecord> _sweepLog = new();
+    // What was last swept from each slot, for the stale-handle message. One
+    // dictionary write and one GetType().Name per swept cell is far too much to
+    // pay on every collection of every page -- and nothing ever cleared it, so
+    // it grew a string per slot for the life of the heap. Off unless asked for.
+    private readonly Dictionary<int, SweepRecord>? _sweepLog;
     // Diagnostic: last allocation site per cell index, so a stale-handle fatal
     // can name the payload's producer. Rewritten on slot reuse.
     private string[] _allocationSites = Array.Empty<string>();
@@ -166,6 +175,11 @@ public sealed class JsHeap
         if (_verifyHeapBeforeGc || _verifyHeapAfterGc)
         {
             _writeBarrierEdges = new List<(ObjectHandle Owner, ObjectHandle Child)>();
+        }
+
+        if (SweepLogRequested || _verifyHeapBeforeGc || _verifyHeapAfterGc)
+        {
+            _sweepLog = new Dictionary<int, SweepRecord>();
         }
         if (_auditRememberedSet)
         {
@@ -241,6 +255,9 @@ public sealed class JsHeap
 
     public double MajorGcMilliseconds => _majorGcTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
     public double MinorGcMilliseconds => _minorGcTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+    /// <summary>Slots the heap has ever grown to, live or free.</summary>
+    public int CellSlotCount => _cells.Count;
+
     public int LastGcMarkedCells => _lastGcMarkedCells;
     public int LastGcSweptCells => _lastGcSweptCells;
     public int LastMinorMarked => _lastMinorMarked;
@@ -467,7 +484,9 @@ public sealed class JsHeap
         var cell = _cells[index];
         if (cell is null || cell.Generation != generation)
         {
-            var sweepInfo = _sweepLog.TryGetValue(index, out var info) ? info.Describe() : "no-sweep-record";
+            var sweepInfo = _sweepLog is null
+                ? "sweep-log-off (set FEN_FENJS_GC_SWEEPLOG=1)"
+                : _sweepLog.TryGetValue(index, out var info) ? info.Describe() : "no-sweep-record";
             var allocSite = GetAllocationSiteForDiagnostics(index);
             throw new JsEngineFatalException(
                 $"Stale heap handle. heap#{HeapId} idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] allocSite={allocSite} {DescribeHandleOwner(index, generation)} rememberedEnvs={_rememberedEnvironments.Count} envRegs={_rememberedEnvironmentRegistrations} envScanMarks={_rememberedEnvironmentScanMarks} minor#{_minorGcCount} major#{_gcCollectionCount}");
@@ -588,7 +607,13 @@ public sealed class JsHeap
                             $"allocSite={GetAllocationSiteForDiagnostics(i)} " +
                             $"minor#{_minorGcCount} major#{_gcCollectionCount}");
                     }
-                    _sweepLog[i] = new SweepRecord(cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount, cell.Payload.GetType().Name, "minor");
+                    if (_sweepLog is not null)
+                    {
+                        _sweepLog[i] = new SweepRecord(
+                            cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount,
+                            cell.Payload.GetType().Name, "minor");
+                    }
+
                     _cells[i] = null;
                     _lastMinorSwept++;
                     if (!_isFree[i])
@@ -945,7 +970,13 @@ public sealed class JsHeap
                     $"minorMode={_currentMarkMinorMode} minor#{_minorGcCount} major#{_gcCollectionCount}");
             }
 
-            _sweepLog[i] = new SweepRecord(cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount, cell.Payload.GetType().Name, "major");
+            if (_sweepLog is not null)
+            {
+                _sweepLog[i] = new SweepRecord(
+                    cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount,
+                    cell.Payload.GetType().Name, "major");
+            }
+
             _cells[i] = null;
             _lastGcSweptCells++;
             if (!_isFree[i])

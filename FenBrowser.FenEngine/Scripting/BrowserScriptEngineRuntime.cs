@@ -1880,7 +1880,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             FenBrowser.Core.EngineLogCompat.Info(
                 $"[FenJsGc] major={heap.GcCollectionCount} ({heap.MajorGcMilliseconds:F0}ms) " +
                 $"minor={heap.MinorCollectionCount} ({heap.MinorGcMilliseconds:F0}ms) " +
-                $"allocs={heap.AllocationCount} " +
+                $"allocs={heap.AllocationCount} slots={heap.CellSlotCount} " +
+                $"marked={heap.LastGcMarkedCells} swept={heap.LastGcSweptCells} " +
                 $"microtasks={_interpreter.MicrotaskJobsRun} ({_interpreter.MicrotaskMilliseconds:F0}ms) " +
                 $"instructions={_interpreter.TotalInstructionsExecuted} " +
                 $"slowestJob={_interpreter.SlowestJobMilliseconds:F0}ms/{_interpreter.SlowestJobInstructions}instr " +
