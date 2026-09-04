@@ -20340,6 +20340,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case CharacterData characterData when string.Equals(property, "textContent", StringComparison.Ordinal):
                     characterData.TextContent = CoerceToHostString(value);
                     return true;
+                // DOM 4.4: the textContent setter is "string replace all" for
+                // DocumentFragment exactly as it is for Element. The read side
+                // already exposed it (TryGetDocumentFragmentProperty), so without
+                // this case the write fell through to `default: return false` and
+                // the interpreter raised "refused by embedder" - a TypeError on a
+                // perfectly ordinary assignment. ContainerNode.TextContent
+                // implements the replace-all, and ShadowRoot inherits this path.
+                case DocumentFragment documentFragment when
+                    string.Equals(property, "textContent", StringComparison.Ordinal):
+                    documentFragment.TextContent = CoerceToHostString(value);
+                    return true;
                 case FenJsDomStringMapHost domStringMap:
                     domStringMap.Element.SetAttribute(PropertyNameToDatasetAttribute(property), CoerceToHostString(value));
                     return true;
