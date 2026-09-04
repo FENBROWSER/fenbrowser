@@ -52,7 +52,14 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             // ServerRef
-            var shader = BuildServerShader(spec.Fragment, path, fallbackText: spec.Fallback, style);
+            var shader = BuildServerShader(
+                spec.Fragment, path, fallbackText: spec.Fallback, style, out var fallbackColor);
+            if (fallbackColor.HasValue)
+            {
+                var c = fallbackColor.Value;
+                paint.Color = new SKColor(c.Red, c.Green, c.Blue, (byte)(c.Alpha * opacity));
+                return paint;
+            }
             if (shader == null)
             {
                 paint.Dispose();
@@ -140,7 +147,14 @@ namespace FenBrowser.FenEngine.Svg
                 return paint;
             }
 
-            var shader = BuildServerShader(spec.Fragment, path: null, fallbackText: spec.Fallback, style);
+            var shader = BuildServerShader(
+                spec.Fragment, path: null, fallbackText: spec.Fallback, style, out var fallbackColor);
+            if (fallbackColor.HasValue)
+            {
+                var c = fallbackColor.Value;
+                paint.Color = new SKColor(c.Red, c.Green, c.Blue, (byte)(c.Alpha * opacity));
+                return paint;
+            }
             if (shader == null)
             {
                 paint.Dispose();
@@ -312,8 +326,14 @@ namespace FenBrowser.FenEngine.Svg
             return focus;
         }
 
-        private SKShader BuildServerShader(string fragment, SKPath path, string fallbackText, InheritedStyle style)
+        private SKShader BuildServerShader(
+            string fragment,
+            SKPath path,
+            string fallbackText,
+            InheritedStyle style,
+            out SKColor? fallbackColor)
         {
+            fallbackColor = null;
             CachedGradient g = null;
             if (fragment != null && _doc.ElementsById.TryGetValue(fragment, out var server))
             {
@@ -331,10 +351,9 @@ namespace FenBrowser.FenEngine.Svg
             if (g == null || !g.IsValid)
             {
                 // Invalid/degenerate reference: spec fallback color, else none.
-                if (!string.IsNullOrEmpty(fallbackText) &&
-                    SvgValues.TryParseColor(fallbackText.AsSpan(), out var fc))
+                if (TryResolvePaintFallbackColor(fallbackText, style, out var color))
                 {
-                    return SKShader.CreateColor(fc);
+                    fallbackColor = color;
                 }
                 return null;
             }
@@ -347,12 +366,11 @@ namespace FenBrowser.FenEngine.Svg
             var (matrix, degenerate) = ObjectBoundingBoxMatrix(path, SKMatrix.Identity);
             if (degenerate)
             {
-                if (!string.IsNullOrEmpty(fallbackText) &&
-                    SvgValues.TryParseColor(fallbackText.AsSpan(), out var fc2))
+                if (TryResolvePaintFallbackColor(fallbackText, style, out var color))
                 {
-                    return SKShader.CreateColor(fc2);
+                    fallbackColor = color;
                 }
-                return null; // Zero-area bbox disables gradient (spec).
+                return null;
             }
 
             SKShader baseShader = g.IsRadial
@@ -372,6 +390,21 @@ namespace FenBrowser.FenEngine.Svg
 
             var finalMatrix = SKMatrix.Concat(matrix, extra);
             return baseShader.WithLocalMatrix(finalMatrix);
+        }
+
+        private static bool TryResolvePaintFallbackColor(
+            string fallbackText,
+            InheritedStyle style,
+            out SKColor color)
+        {
+            color = default;
+            if (string.Equals(fallbackText, "currentColor", System.StringComparison.OrdinalIgnoreCase))
+            {
+                color = style.CurrentColor;
+                return true;
+            }
+            return !string.IsNullOrEmpty(fallbackText) &&
+                   SvgValues.TryParseColor(fallbackText.AsSpan(), out color);
         }
 
         private (SKMatrix matrix, bool degenerate) ObjectBoundingBoxMatrix(SKPath path, SKMatrix extra)

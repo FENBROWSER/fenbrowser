@@ -57,6 +57,22 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void MissingPaintServer_CurrentColorFallbackResolvesAtPaintedElement()
+        {
+            using var result = _renderer.Render(
+                "<svg width='30' height='20'><g fill='url(#missing) currentColor' " +
+                "stroke='url(#missing) currentColor' color='red'>" +
+                "<rect width='10' height='20' color='lime' stroke='none'/>" +
+                "<rect x='15' y='3' width='12' height='14' color='blue' fill='none' stroke-width='4'/>" +
+                "</g></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(5, 10));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(16, 10));
+        }
+
+        [Fact]
         public void Use_InstantiatesDefContent_WithOffset()
         {
             var result = _renderer.Render(

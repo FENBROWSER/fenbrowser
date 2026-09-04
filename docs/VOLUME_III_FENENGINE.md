@@ -11516,6 +11516,19 @@ Verification:
 - The sole complete-corpus Windows worker timeout,
   `import/paths-data-18-f-manual.svg`, now completes first-party in 266 ms without
   fallback or failure. First-party SVG remains opt-in.
+
+## 2.158 Paint-Server currentColor Fallbacks (2026-09-04)
+
+- A missing or degenerate local paint-server reference now resolves a
+  `currentColor` fallback when the painted element is reached. This preserves
+  late binding through inheritance, so a child `color` overrides the color on
+  the ancestor that supplied the inherited `fill` or `stroke` declaration.
+- Paint-server fallback colors are applied as solid paint colors rather than
+  constant-color shaders. This keeps antialiased geometry byte-identical to the
+  equivalent direct-color rendering while retaining fill/stroke opacity.
+- Unsupported paint-server element types remain explicit compatibility
+  fallbacks. The first-party SVG backend remains non-default.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

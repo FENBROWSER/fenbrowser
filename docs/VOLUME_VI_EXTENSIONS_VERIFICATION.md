@@ -4999,6 +4999,18 @@ Verification:
 - Focused parser coverage asserts that malformed data stops at the last valid path
   point; existing maximal-munch, exponent, command-repeat, and segment-budget
   cases remain in the full SVG test namespace.
+
+## 6.223 SVG Paint-Server currentColor Fallback Conformance (2026-09-04)
+
+- The exact local Windows WPT references
+  `painting/currentColor-override-pserver-fallback.svg` and
+  `pservers/reftests/fill-fallback-currentcolor-2.svg` now pass at exact pixel
+  equality. Both route first-party with no fallback, rejection, renderer or
+  worker failure, or timeout.
+- Focused coverage verifies that an inherited `url(#missing) currentColor` paint
+  binds to the painted child's `color`, not the ancestor's color. The complete
+  SVG test namespace passes 391/391.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
