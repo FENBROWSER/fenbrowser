@@ -73,6 +73,18 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void InheritedCurrentColorPaint_ResolvesAtPaintedElement()
+        {
+            using var result = _renderer.Render(
+                "<svg width='10' height='10'><g fill='currentColor' color='red'>" +
+                "<rect width='10' height='10' color='lime'/></g></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(5, 5));
+        }
+
+        [Fact]
         public void Use_InstantiatesDefContent_WithOffset()
         {
             var result = _renderer.Render(
@@ -83,6 +95,35 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.Success, result.ErrorMessage);
             Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(4, 5));
             Assert.Equal(0, result.Bitmap.GetPixel(10, 5).Alpha);
+        }
+
+        [Fact]
+        public void UseContextPaint_UsesInstanceFillAndStroke()
+        {
+            using var result = _renderer.Render(
+                "<svg width='25' height='10'><defs><g id='s'>" +
+                "<rect width='10' height='10' fill='context-fill'/>" +
+                "<rect x='10' width='10' height='10' fill='context-stroke'/>" +
+                "</g></defs><use href='#s' x='2' fill='red' stroke='blue'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(5, 5));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(15, 5));
+        }
+
+        [Fact]
+        public void UseContextPaintServer_RemainsExplicitFallback()
+        {
+            using var result = _renderer.Render(
+                "<svg width='10' height='10'><defs>" +
+                "<linearGradient id='g'><stop stop-color='red'/></linearGradient>" +
+                "<rect id='s' width='10' height='10' fill='context-fill'/>" +
+                "</defs><use href='#s' fill='url(#g)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("context paint"));
         }
 
         [Theory]

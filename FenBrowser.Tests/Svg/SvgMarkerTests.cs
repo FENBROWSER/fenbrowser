@@ -24,6 +24,24 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void MarkerContextPaint_UsesReferencingElementFillAndStroke()
+        {
+            const string svg =
+                "<svg width='40' height='20'><defs><marker id='m' markerWidth='20' markerHeight='20' " +
+                "refX='0' refY='10' markerUnits='userSpaceOnUse' fill='context-fill'>" +
+                "<rect width='10' height='20'/><rect x='10' width='10' height='20' fill='context-stroke'/>" +
+                "</marker></defs><line x1='0' y1='10' x2='20' y2='10' fill='red' stroke='blue' " +
+                "marker-end='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(25, 10));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(35, 10));
+        }
+
+        [Fact]
         public void MarkerShorthand_PaintsStartMiddleAndEndForPolyline()
         {
             const string svg =

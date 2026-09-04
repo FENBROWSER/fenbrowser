@@ -76,6 +76,8 @@ namespace FenBrowser.FenEngine.Svg
             public float[] Dash;
             public float DashOffset;
             public SKColor CurrentColor = SKColors.Black;
+            public PaintSpec? ContextFill;
+            public PaintSpec? ContextStroke;
             public bool Visibility = true;
             public float FontSize = DefaultFontSize;
             public float RootFontSize = DefaultFontSize;
@@ -109,8 +111,10 @@ namespace FenBrowser.FenEngine.Svg
                 var s = new InheritedStyle
                 {
                     CurrentColor = currentColor,
-                    Fill = ParsePaintSpec(Attr("fill"), this, currentColor) ?? Fill,
-                    Stroke = ParsePaintSpec(Attr("stroke"), this, currentColor) ?? Stroke,
+                    ContextFill = ContextFill,
+                    ContextStroke = ContextStroke,
+                    Fill = ParsePaintSpec(Attr("fill"), this, report) ?? Fill,
+                    Stroke = ParsePaintSpec(Attr("stroke"), this, report) ?? Stroke,
                     StrokeWidth = StrokeWidth,
                     Cap = Cap,
                     Join = Join,
@@ -294,11 +298,21 @@ namespace FenBrowser.FenEngine.Svg
             private static PaintSpec? ParsePaintSpec(
                 string raw,
                 InheritedStyle inherited,
-                SKColor currentColor)
+                SvgParseReport report)
             {
                 if (raw == null)
                 {
                     return null; // Not specified: inherit.
+                }
+
+                ReadOnlySpan<char> value = raw.AsSpan().Trim();
+                if (value.Equals("context-fill", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    return ResolveContextPaint(inherited.ContextFill, report);
+                }
+                if (value.Equals("context-stroke", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    return ResolveContextPaint(inherited.ContextStroke, report);
                 }
 
                 if (!SvgValues.TryParsePaint(
@@ -316,7 +330,7 @@ namespace FenBrowser.FenEngine.Svg
                     case SvgValues.PaintKind.None:
                         return PaintSpec.None;
                     case SvgValues.PaintKind.CurrentColor:
-                        return new PaintSpec(SvgValues.PaintKind.Color, currentColor, null, null);
+                        return new PaintSpec(SvgValues.PaintKind.CurrentColor, default, null, null);
                     case SvgValues.PaintKind.Color:
                         return new PaintSpec(SvgValues.PaintKind.Color, color, null, null);
                     case SvgValues.PaintKind.ServerRef:
@@ -324,6 +338,20 @@ namespace FenBrowser.FenEngine.Svg
                     default:
                         return null; // inherit / unspecified
                 }
+            }
+
+            private static PaintSpec ResolveContextPaint(
+                PaintSpec? contextPaint,
+                SvgParseReport report)
+            {
+                if (!contextPaint.HasValue) return PaintSpec.None;
+                PaintSpec paint = contextPaint.Value;
+                if (paint.Kind == SvgValues.PaintKind.ServerRef)
+                {
+                    report.RequireFallback("paint-server context paint requires compatibility fallback");
+                    return PaintSpec.None;
+                }
+                return paint;
             }
         }
 

@@ -38,9 +38,12 @@ namespace FenBrowser.FenEngine.Svg
 
             var paint = new SKPaint { IsStroke = false, IsAntialias = true };
 
-            if (spec.Kind == SvgValues.PaintKind.Color)
+            if (spec.Kind == SvgValues.PaintKind.Color ||
+                spec.Kind == SvgValues.PaintKind.CurrentColor)
             {
-                var c = spec.Color;
+                var c = spec.Kind == SvgValues.PaintKind.CurrentColor
+                    ? style.CurrentColor
+                    : spec.Color;
                 byte alpha = (byte)(c.Alpha * opacity);
                 if (alpha == 0)
                 {
@@ -134,9 +137,12 @@ namespace FenBrowser.FenEngine.Svg
                 }
             }
 
-            if (spec.Kind == SvgValues.PaintKind.Color)
+            if (spec.Kind == SvgValues.PaintKind.Color ||
+                spec.Kind == SvgValues.PaintKind.CurrentColor)
             {
-                var c = spec.Color;
+                var c = spec.Kind == SvgValues.PaintKind.CurrentColor
+                    ? style.CurrentColor
+                    : spec.Color;
                 byte alpha = (byte)(c.Alpha * opacity);
                 if (alpha == 0)
                 {

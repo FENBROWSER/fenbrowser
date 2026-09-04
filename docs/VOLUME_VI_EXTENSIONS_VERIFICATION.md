@@ -5020,6 +5020,20 @@ Verification:
   non-breaking spaces and requires byte-identical output. The complete SVG test
   namespace passes 392/392.
 
+## 6.225 SVG Context-Paint Conformance (2026-09-04)
+
+- Exact local Windows verification covers the eight `paint-context-001` through
+  `paint-context-008` WPT files plus `text-context-fill.svg`. The solid-color
+  marker/use cases `001`, `002`, `003`, and the text case pass their declared
+  references at exact pixel equality.
+- The slice reports five first-party files and four explicit compatibility
+  fallbacks, with no resource rejection, renderer/worker failure, or timeout.
+  The four blocked references use gradient or pattern context paint and are not
+  claimed as supported.
+- Focused tests cover marker fill/stroke context, `use` fill/stroke context,
+  late-bound inherited `currentColor`, and explicit fallback for paint-server
+  context values. The complete SVG test namespace passes 396/396.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

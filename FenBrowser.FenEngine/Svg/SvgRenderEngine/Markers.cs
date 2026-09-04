@@ -150,7 +150,10 @@ namespace FenBrowser.FenEngine.Svg
                     ApplyViewportTransform(canvas, markerViewport, true, vbX, vbY, vbW, vbH,
                         marker.GetAttribute("preserveAspectRatio"));
 
-                var markerStyle = ResolveMarkerStyle(marker);
+                var markerStyle = ResolveMarkerInheritedStyle(marker).Clone();
+                markerStyle.ContextFill = sourceStyle.Fill;
+                markerStyle.ContextStroke = sourceStyle.Stroke;
+                markerStyle = markerStyle.ResolveOverrides(marker, _report);
                 DrawChildren(marker, canvas,
                     hasViewBox ? new ViewportContext(vbW, vbH) : markerViewport,
                     markerStyle);
@@ -255,13 +258,13 @@ namespace FenBrowser.FenEngine.Svg
             return tangent.X == 0f && tangent.Y == 0f ? outgoing : tangent;
         }
 
-        private InheritedStyle ResolveMarkerStyle(SvgElement marker)
+        private InheritedStyle ResolveMarkerInheritedStyle(SvgElement marker)
         {
             _markerStyleCache ??= new Dictionary<SvgElement, InheritedStyle>();
             if (_markerStyleCache.TryGetValue(marker, out var cached)) return cached;
 
             var ancestry = new List<SvgElement>();
-            for (SvgElement current = marker; current != null; current = current.Parent)
+            for (SvgElement current = marker.Parent; current != null; current = current.Parent)
                 ancestry.Add(current);
             var resolved = new InheritedStyle();
             for (int i = ancestry.Count - 1; i >= 0; i--)

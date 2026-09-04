@@ -440,6 +440,9 @@ namespace FenBrowser.FenEngine.Svg
             try
             {
                 var next = inherited.ResolveOverrides(el, _report);
+                next = next.Clone();
+                next.ContextFill = next.Fill;
+                next.ContextStroke = next.Stroke;
 
                 // S8/F8: opacity on <use> composites the instantiated subtree.
                 bool layered = TryBeginGroupOpacity(el, canvas, out var useLayer);

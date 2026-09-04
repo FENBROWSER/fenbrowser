@@ -11539,6 +11539,19 @@ Verification:
 - The first-party SVG backend remains non-default while broader text conformance
   gaps are open.
 
+## 2.160 SVG Marker And Use Context Paint (2026-09-04)
+
+- Marker instances and `use` shadow-tree instances now carry the referencing
+  element's fill and stroke as explicit context paint. Solid colors and `none`
+  resolve for `context-fill` and `context-stroke` on the referenced root or any
+  descendant without sharing source-specific state through marker caches.
+- `currentColor` remains a late-bound paint kind through inheritance and context
+  propagation. It resolves against the computed color of the element being
+  painted, rather than being frozen on the referencing ancestor.
+- Gradient and pattern context paint still request compatibility fallback because
+  their coordinate-space semantics are not implemented. The first-party SVG
+  backend remains non-default.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.
