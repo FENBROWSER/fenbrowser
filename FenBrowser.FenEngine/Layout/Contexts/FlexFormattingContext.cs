@@ -1196,43 +1196,48 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private void ResolveContainerDimensions(LayoutBox box, LayoutState state)
         {
+            // Snapshot the style once: LayoutBox.ComputedStyle re-reads the box store on
+            // every access, and LayoutWithForcedWidth/Height swap Width/Height on a style
+            // in place around a nested Layout call, so a HasValue check and the matching
+            // .Value read can land on two different styles and throw.
+            var boxStyle = box.ComputedStyle;
             // Similar to ResolveWidth/Height in BlockContext
             var widthResolution = LayoutConstraintResolver.ResolveWidth(state, "Flex.ResolveContainerDimensions");
             float rawAvailable = widthResolution.RawAvailable;
             bool widthUnconstrained = widthResolution.IsUnconstrained;
             float available = widthResolution.ResolvedAvailable;
             
-            var padding = box.ComputedStyle?.Padding ?? new FenBrowser.Core.Thickness();
-            var border = box.ComputedStyle?.BorderThickness ?? new FenBrowser.Core.Thickness();
-            var margin = box.ComputedStyle?.Margin ?? new FenBrowser.Core.Thickness();
+            var padding = boxStyle?.Padding ?? new FenBrowser.Core.Thickness();
+            var border = boxStyle?.BorderThickness ?? new FenBrowser.Core.Thickness();
+            var margin = boxStyle?.Margin ?? new FenBrowser.Core.Thickness();
             float horizontalChrome = (float)(padding.Left + padding.Right + border.Left + border.Right);
             float verticalChrome = (float)(padding.Top + padding.Bottom + border.Top + border.Bottom);
-            bool isBorderBox = string.Equals(box.ComputedStyle?.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
+            bool isBorderBox = string.Equals(boxStyle?.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
 
             // Width
             float width = 0;
-            bool hasExplicitWidthFromMap = box.ComputedStyle?.Map != null &&
-                                           box.ComputedStyle.Map.TryGetValue("width", out var rawWidthFromMap) &&
+            bool hasExplicitWidthFromMap = boxStyle?.Map != null &&
+                                           boxStyle.Map.TryGetValue("width", out var rawWidthFromMap) &&
                                            !string.IsNullOrWhiteSpace(rawWidthFromMap) &&
                                            !string.Equals(rawWidthFromMap.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
-            bool hasExplicitWidth = box.ComputedStyle?.Width.HasValue == true ||
-                                    box.ComputedStyle?.WidthPercent.HasValue == true ||
-                                    !string.IsNullOrEmpty(box.ComputedStyle?.WidthExpression) ||
+            bool hasExplicitWidth = boxStyle?.Width.HasValue == true ||
+                                    boxStyle?.WidthPercent.HasValue == true ||
+                                    !string.IsNullOrEmpty(boxStyle?.WidthExpression) ||
                                     hasExplicitWidthFromMap;
             bool resolvedDefiniteWidth = false;
-            if (box.ComputedStyle?.Width.HasValue == true)
+            if (boxStyle?.Width.HasValue == true)
             {
-                width = (float)box.ComputedStyle.Width.Value;
+                width = (float)boxStyle.Width.Value;
                 resolvedDefiniteWidth = true;
             }
-            else if (box.ComputedStyle?.WidthPercent.HasValue == true)
+            else if (boxStyle?.WidthPercent.HasValue == true)
             {
                 float parentWidth = state.AvailableSize.Width;
                 if (float.IsInfinity(parentWidth) || parentWidth <= 0)
                     parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
                 if (!float.IsInfinity(parentWidth) && parentWidth > 0)
                 {
-                    width = (float)(box.ComputedStyle.WidthPercent.Value / 100.0 * parentWidth);
+                    width = (float)(boxStyle.WidthPercent.Value / 100.0 * parentWidth);
                     resolvedDefiniteWidth = true;
                 }
             }
@@ -1259,9 +1264,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // Height
             float height = 0;
-            if (box.ComputedStyle?.Height.HasValue == true) 
+            if (boxStyle?.Height.HasValue == true)
             {
-                height = (float)box.ComputedStyle.Height.Value;
+                height = (float)boxStyle.Height.Value;
                 if (isBorderBox)
                 {
                     height = Math.Max(0f, height - verticalChrome);
@@ -1270,12 +1275,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             else
             {
                 bool resolvedPercentHeight = false;
-                if (box.ComputedStyle?.HeightPercent.HasValue == true)
+                if (boxStyle?.HeightPercent.HasValue == true)
                 {
                     float parentHeight = ResolveDefinitePercentageHeightBasis(box, state);
                     if (!float.IsInfinity(parentHeight) && parentHeight > 0)
                     {
-                        height = (float)(box.ComputedStyle.HeightPercent.Value / 100.0 * parentHeight);
+                        height = (float)(boxStyle.HeightPercent.Value / 100.0 * parentHeight);
                         resolvedPercentHeight = true;
                     }
                 }
@@ -1294,19 +1299,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             0f,
                             state.AvailableSize.Height - (float)margin.Vertical - verticalChrome);
                     }
-                    else if (!string.IsNullOrEmpty(box.ComputedStyle?.HeightExpression))
+                    else if (!string.IsNullOrEmpty(boxStyle?.HeightExpression))
                     {
                         float parentHeight = state.AvailableSize.Height;
                         if (float.IsInfinity(parentHeight) || parentHeight <= 0)
                             parentHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
                         height = LayoutHelper.EvaluateCssExpression(
-                            box.ComputedStyle.HeightExpression,
+                            boxStyle.HeightExpression,
                             parentHeight,
                             state.ViewportWidth,
                             state.ViewportHeight);
                     }
                     else if (TryResolveAspectRatioAutoHeight(
-                                 box.ComputedStyle,
+                                 boxStyle,
                                  width,
                                  horizontalChrome,
                                  verticalChrome,
@@ -1323,7 +1328,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             child.ComputedStyle?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) != true &&
                             !IsIgnorableFlexItem(child));
                         if (!hasInFlowChildren &&
-                            LayoutHelper.TryResolveLineHeight(box.ComputedStyle, out var resolvedLineHeight) &&
+                            LayoutHelper.TryResolveLineHeight(boxStyle, out var resolvedLineHeight) &&
                             resolvedLineHeight > 0f)
                         {
                             // Empty/leaf flex wrappers can still rely on line-height when height is auto.
@@ -1338,58 +1343,58 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float maxW = float.PositiveInfinity;
             float minH = 0f;
             float maxH = float.PositiveInfinity;
-            if (box.ComputedStyle != null)
+            if (boxStyle != null)
             {
-                if (box.ComputedStyle.MinWidth.HasValue) minW = (float)box.ComputedStyle.MinWidth.Value;
-                else if (box.ComputedStyle.MinWidthPercent.HasValue == true)
+                if (boxStyle.MinWidth.HasValue) minW = (float)boxStyle.MinWidth.Value;
+                else if (boxStyle.MinWidthPercent.HasValue == true)
                 {
                     float parentWidth = state.AvailableSize.Width;
                     if (float.IsInfinity(parentWidth) || parentWidth <= 0) parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
-                    if (parentWidth > 0) minW = (float)(box.ComputedStyle.MinWidthPercent.Value / 100.0 * parentWidth);
+                    if (parentWidth > 0) minW = (float)(boxStyle.MinWidthPercent.Value / 100.0 * parentWidth);
                 }
-                else if (!string.IsNullOrEmpty(box.ComputedStyle.MinWidthExpression))
+                else if (!string.IsNullOrEmpty(boxStyle.MinWidthExpression))
                 {
                     float parentWidth = state.AvailableSize.Width;
                     if (float.IsInfinity(parentWidth) || parentWidth <= 0) parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
-                    minW = LayoutHelper.EvaluateCssExpression(box.ComputedStyle.MinWidthExpression, parentWidth, state.ViewportWidth, state.ViewportHeight);
+                    minW = LayoutHelper.EvaluateCssExpression(boxStyle.MinWidthExpression, parentWidth, state.ViewportWidth, state.ViewportHeight);
                 }
                 if (isBorderBox)
                 {
                     minW = Math.Max(0f, minW - horizontalChrome);
                 }
 
-                if (box.ComputedStyle.MaxWidth.HasValue) maxW = (float)box.ComputedStyle.MaxWidth.Value;
-                else if (box.ComputedStyle.MaxWidthPercent.HasValue == true)
+                if (boxStyle.MaxWidth.HasValue) maxW = (float)boxStyle.MaxWidth.Value;
+                else if (boxStyle.MaxWidthPercent.HasValue == true)
                 {
                     float parentWidth = state.AvailableSize.Width;
                     if (float.IsInfinity(parentWidth) || parentWidth <= 0) parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
-                    if (parentWidth > 0) maxW = (float)(box.ComputedStyle.MaxWidthPercent.Value / 100.0 * parentWidth);
+                    if (parentWidth > 0) maxW = (float)(boxStyle.MaxWidthPercent.Value / 100.0 * parentWidth);
                 }
-                else if (!string.IsNullOrEmpty(box.ComputedStyle.MaxWidthExpression))
+                else if (!string.IsNullOrEmpty(boxStyle.MaxWidthExpression))
                 {
                     float parentWidth = state.AvailableSize.Width;
                     if (float.IsInfinity(parentWidth) || parentWidth <= 0) parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
-                    maxW = LayoutHelper.EvaluateCssExpression(box.ComputedStyle.MaxWidthExpression, parentWidth, state.ViewportWidth, state.ViewportHeight);
+                    maxW = LayoutHelper.EvaluateCssExpression(boxStyle.MaxWidthExpression, parentWidth, state.ViewportWidth, state.ViewportHeight);
                 }
                 if (isBorderBox && float.IsFinite(maxW))
                 {
                     maxW = Math.Max(0f, maxW - horizontalChrome);
                 }
 
-                if (box.ComputedStyle.MinHeight.HasValue) minH = (float)box.ComputedStyle.MinHeight.Value;
-                else if (box.ComputedStyle.MinHeightPercent.HasValue == true)
+                if (boxStyle.MinHeight.HasValue) minH = (float)boxStyle.MinHeight.Value;
+                else if (boxStyle.MinHeightPercent.HasValue == true)
                 {
                     float parentHeight = ResolveDefinitePercentageHeightBasis(box, state);
-                    if (parentHeight > 0) minH = (float)(box.ComputedStyle.MinHeightPercent.Value / 100.0 * parentHeight);
+                    if (parentHeight > 0) minH = (float)(boxStyle.MinHeightPercent.Value / 100.0 * parentHeight);
                 }
-                else if (!string.IsNullOrEmpty(box.ComputedStyle.MinHeightExpression))
+                else if (!string.IsNullOrEmpty(boxStyle.MinHeightExpression))
                 {
                     float parentHeight = state.AvailableSize.Height;
                     if (float.IsInfinity(parentHeight) || parentHeight <= 0) parentHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
-                    minH = LayoutHelper.EvaluateCssExpression(box.ComputedStyle.MinHeightExpression, parentHeight, state.ViewportWidth, state.ViewportHeight);
+                    minH = LayoutHelper.EvaluateCssExpression(boxStyle.MinHeightExpression, parentHeight, state.ViewportWidth, state.ViewportHeight);
                 }
-                else if (box.ComputedStyle.Map != null &&
-                         box.ComputedStyle.Map.TryGetValue("min-height", out var rawMinHeight) &&
+                else if (boxStyle.Map != null &&
+                         boxStyle.Map.TryGetValue("min-height", out var rawMinHeight) &&
                          !string.IsNullOrWhiteSpace(rawMinHeight))
                 {
                     float parentHeight = state.AvailableSize.Height;
@@ -1436,17 +1441,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     minH = Math.Max(0f, minH - verticalChrome);
                 }
 
-                if (box.ComputedStyle.MaxHeight.HasValue) maxH = (float)box.ComputedStyle.MaxHeight.Value;
-                else if (box.ComputedStyle.MaxHeightPercent.HasValue == true)
+                if (boxStyle.MaxHeight.HasValue) maxH = (float)boxStyle.MaxHeight.Value;
+                else if (boxStyle.MaxHeightPercent.HasValue == true)
                 {
                     float parentHeight = ResolveDefinitePercentageHeightBasis(box, state);
-                    if (parentHeight > 0) maxH = (float)(box.ComputedStyle.MaxHeightPercent.Value / 100.0 * parentHeight);
+                    if (parentHeight > 0) maxH = (float)(boxStyle.MaxHeightPercent.Value / 100.0 * parentHeight);
                 }
-                else if (!string.IsNullOrEmpty(box.ComputedStyle.MaxHeightExpression))
+                else if (!string.IsNullOrEmpty(boxStyle.MaxHeightExpression))
                 {
                     float parentHeight = state.AvailableSize.Height;
                     if (float.IsInfinity(parentHeight) || parentHeight <= 0) parentHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
-                    maxH = LayoutHelper.EvaluateCssExpression(box.ComputedStyle.MaxHeightExpression, parentHeight, state.ViewportWidth, state.ViewportHeight);
+                    maxH = LayoutHelper.EvaluateCssExpression(boxStyle.MaxHeightExpression, parentHeight, state.ViewportWidth, state.ViewportHeight);
                 }
                 if (isBorderBox && float.IsFinite(maxH))
                 {
@@ -1461,8 +1466,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             float marginLeft = (float)margin.Left;
             float marginRight = (float)margin.Right;
-            bool leftAuto = box.ComputedStyle?.MarginLeftAuto ?? false;
-            bool rightAuto = box.ComputedStyle?.MarginRightAuto ?? false;
+            bool leftAuto = boxStyle?.MarginLeftAuto ?? false;
+            bool rightAuto = boxStyle?.MarginRightAuto ?? false;
 
             if (!widthUnconstrained && (leftAuto || rightAuto))
             {
@@ -1552,7 +1557,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         string label = LayoutHelper.GetRenderableTextContentTrimmed(el);
                         height = string.IsNullOrWhiteSpace(label)
                             ? 44f
-                            : ResolveTextControlContentHeight(box.ComputedStyle);
+                            : ResolveTextControlContentHeight(boxStyle);
                     }
                     else if (tag == "SELECT")
                     {
@@ -1576,7 +1581,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     var resolved = ReplacedElementSizing.ResolveReplacedSize(
                         tag,
-                        box.ComputedStyle,
+                        boxStyle,
                         new SKSize(box.Geometry.ContentBox.Width, box.Geometry.ContentBox.Height),
                         intrinsicW,
                         intrinsicH,
@@ -1592,7 +1597,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // If a flex wrapper has a single replaced child and unresolved size,
             // use a small non-zero fallback to prevent collapse.
             if ((width <= 0 || height <= 0) &&
-                string.Equals(box.ComputedStyle?.Display, "flex", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(boxStyle?.Display, "flex", StringComparison.OrdinalIgnoreCase) &&
                 box.Children.Count == 1 &&
                 box.Children[0].SourceNode is Element iconChild)
             {

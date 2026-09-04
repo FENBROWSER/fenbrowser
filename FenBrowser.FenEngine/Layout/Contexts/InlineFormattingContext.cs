@@ -3086,32 +3086,43 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float available = widthResolution.ResolvedAvailable;
 
             float finalW = available;
-            
+
             bool isAnonymousBlock = box is AnonymousBlockBox;
-            var p = isAnonymousBlock ? new Thickness() : box.ComputedStyle?.Padding ?? new Thickness();
-            var b = isAnonymousBlock ? new Thickness() : box.ComputedStyle?.BorderThickness ?? new Thickness();
-            var m = isAnonymousBlock ? new Thickness() : box.ComputedStyle?.Margin ?? new Thickness();
+
+            // Snapshot the style once. LayoutBox.ComputedStyle re-reads the box store on
+            // every access, and flex sizing swaps Width/WidthPercent/WidthExpression on a
+            // style in place while it lays a forced-size item out, so re-reading the
+            // property between a HasValue check and the matching .Value read can observe
+            // two different styles and throw.
+            var style = isAnonymousBlock ? null : box.ComputedStyle;
+            var p = style?.Padding ?? new Thickness();
+            var b = style?.BorderThickness ?? new Thickness();
+            var m = style?.Margin ?? new Thickness();
 
             float used = (float)(p.Left + p.Right + b.Left + b.Right + m.Left + m.Right);
             finalW = widthUnconstrained ? Math.Max(0f, available - used) : Math.Max(0f, rawAvailable - used);
 
-            if (!isAnonymousBlock && box.ComputedStyle != null && box.ComputedStyle.Width.HasValue)
+            double? specifiedWidth = style?.Width;
+            double? specifiedWidthPercent = style?.WidthPercent;
+            string specifiedWidthExpression = style?.WidthExpression;
+
+            if (specifiedWidth.HasValue)
             {
-                finalW = (float)box.ComputedStyle.Width.Value;
+                finalW = (float)specifiedWidth.Value;
             }
-            else if (!isAnonymousBlock && box.ComputedStyle != null && box.ComputedStyle.WidthPercent.HasValue)
+            else if (specifiedWidthPercent.HasValue)
             {
                 float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
                 if (cbWidth > 0f)
                 {
-                    finalW = (float)(box.ComputedStyle.WidthPercent.Value / 100.0 * cbWidth);
+                    finalW = (float)(specifiedWidthPercent.Value / 100.0 * cbWidth);
                 }
             }
-            else if (!isAnonymousBlock && box.ComputedStyle != null && !string.IsNullOrEmpty(box.ComputedStyle.WidthExpression))
+            else if (!string.IsNullOrEmpty(specifiedWidthExpression))
             {
                 float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
                 finalW = LayoutHelper.EvaluateCssExpression(
-                    box.ComputedStyle.WidthExpression,
+                    specifiedWidthExpression,
                     cbWidth,
                     state.ViewportWidth,
                     state.ViewportHeight);
@@ -3119,11 +3130,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // box-sizing: border-box — the specified width includes padding+border,
             // so subtract them to get the content width.
-            if (!isAnonymousBlock &&
-                box.ComputedStyle != null &&
-                string.Equals(box.ComputedStyle.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase) &&
-                (box.ComputedStyle.Width.HasValue || box.ComputedStyle.WidthPercent.HasValue ||
-                 !string.IsNullOrEmpty(box.ComputedStyle.WidthExpression)))
+            if (style != null &&
+                string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase) &&
+                (specifiedWidth.HasValue || specifiedWidthPercent.HasValue ||
+                 !string.IsNullOrEmpty(specifiedWidthExpression)))
             {
                 float horizontalChrome = (float)(p.Left + p.Right + b.Left + b.Right);
                 finalW = Math.Max(0f, finalW - horizontalChrome);
