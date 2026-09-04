@@ -3468,6 +3468,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     scriptFailedFields["origin"] = origin;
                     scriptFailedFields["errorType"] = ex.GetType().Name;
                     scriptFailedFields["error"] = ex.Message;
+                    // A JsEngineFatalException is an engine defect, not a page
+                    // error, and its message names the broken cell but never the
+                    // code that touched it. The managed stack is the only record
+                    // of which call dereferenced the handle, and it is gone the
+                    // moment this catch returns.
+                    if (ex is FenBrowser.Js.Heap.JsEngineFatalException)
+                    {
+                        scriptFailedFields["engineFatalStack"] = ex.StackTrace ?? "<none>";
+                    }
                     LogScriptLoading(
                         "ScriptExecutionFailed",
                         LogSeverity.Error,
