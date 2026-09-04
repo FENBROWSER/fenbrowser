@@ -82,5 +82,22 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.RequiresFallback);
             Assert.Contains("unsupported-element", result.FallbackReasonCodes);
         }
+
+        [Theory]
+        [InlineData("script")]
+        [InlineData("h:script")]
+        [InlineData("html:script")]
+        public void SvgImageScripts_AreInertNonRenderingContent(string elementName)
+        {
+            using var result = new FenSvgRenderer().Render(
+                $"<svg width='10' height='10' xmlns:h='http://www.w3.org/1999/xhtml' " +
+                $"xmlns:html='http://www.w3.org/1999/xhtml'>" +
+                $"<{elementName}>if (1 &lt; 2) window.test = '&lt;rect/&gt;';</{elementName}>" +
+                "<rect width='10' height='10' fill='green'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal((byte)255, result.Bitmap.GetPixel(5, 5).Alpha);
+        }
     }
 }

@@ -11408,6 +11408,21 @@ Verification:
 - Windows is the current production-parity target. Cross-platform validation is
   deferred, but first-party SVG remains non-default until the remaining Windows
   feature, pixel-reference, browser-integration, and stability gates close.
+
+## 2.151 Inert Script Content In SVG Images (2026-09-04)
+
+- The isolated `ISvgRenderer` image pipeline treats `script`, `h:script`, and
+  `html:script` subtrees as inert, non-rendering content. Their bodies are skipped
+  raw by the bounded SVG parser and no longer request Svg.Skia compatibility.
+- This does not disable SVG document scripting. Top-level `image/svg+xml`
+  navigation continues through the namespace-aware XML DOM and the browser's
+  bounded script pipeline; the image renderer still has no script runtime, DOM,
+  clock, ambient fetch, or mutation surface.
+- The exact local WPT `geometry/parsing/cx-valid.svg` is first-party with direct
+  legacy pixel parity. Across all 47 local `svg/geometry/parsing` files, 45 render
+  first-party with 45/45 legacy pixel parity; two independent CSS fallbacks remain.
+- First-party SVG remains non-default while actual dynamic SVG document WPT and
+  the remaining static Windows feature/reference gates are incomplete.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

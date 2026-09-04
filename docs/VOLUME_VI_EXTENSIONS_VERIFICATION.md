@@ -4896,6 +4896,19 @@ Verification:
   justifying every Windows compatibility fallback, closing comparable reference
   failures, exercising real browser integration, and completing repeat/soak
   evidence without weakening sandbox limits.
+
+## 6.216 SVG-Image Script Inertness Classification (2026-09-04)
+
+- Three focused regressions cover unprefixed and WPT-used HTML-prefixed script
+  forms. Each parser path discards raw script text, produces the expected image,
+  and reports no compatibility fallback.
+- Local `svg/geometry/parsing` verification evaluates all 47 files: 45 are clean
+  first-party renders and all 45 directly comparable outputs match Svg.Skia; two
+  retain independent CSS fallbacks. There are no resource rejections, renderer
+  or worker failures, timeouts, or first-party/hybrid pixel failures.
+- These static-image results do not count testharness assertions as passing and
+  do not replace top-level SVG document WPT. Script execution and DOM mutation
+  remain browser-runtime responsibilities and must be verified through that path.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

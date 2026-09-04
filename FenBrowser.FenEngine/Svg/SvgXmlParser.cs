@@ -35,7 +35,7 @@ namespace FenBrowser.FenEngine.Svg
         // script/title/desc/metadata content remains discarded.
         private static readonly HashSet<string> IgnoredSubtrees = new HashSet<string>
         {
-            "style", "script", "title", "desc", "metadata"
+            "style", "script", "h:script", "html:script", "title", "desc", "metadata"
         };
 
         public static bool TryParse(

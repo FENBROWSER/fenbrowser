@@ -108,6 +108,9 @@ namespace FenBrowser.FenEngine.Svg
                 case "h:meta":
                 case "html:link":
                 case "html:meta":
+                case "script":
+                case "h:script":
+                case "html:script":
                 case "symbol":
                 case "marker":
                 case "pattern":
