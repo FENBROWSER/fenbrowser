@@ -113,16 +113,121 @@ public sealed partial class BytecodeInterpreter
     // sweep the result before the caller roots it. A bounded FIFO of recent
     // returns keeps such results reachable far longer than any native body
     // needs; slots are simply overwritten as new calls return.
-    private void PinReturnValue(JsValue value)
+    private void PinReturnValue(JsValue value, JsValue callee)
     {
+        // The ring is a GC root, so whatever lands here is dereferenced by
+        // every later collection. A handle this heap cannot resolve therefore
+        // does not merely fail to keep anything alive — it kills the collector
+        // from inside its own mark phase, on every collection from here on,
+        // long after the call that produced it returned. Screen it at the
+        // door: the heap's own allocation pin ring has guarded its entries
+        // this way from the start (JsHeap.TraceAllocationPinRing), and this
+        // ring, built to the same design, never did.
+        if (value.Tag == JsValueTag.Object &&
+            !_heap.IsLiveObjectHandle(value.AsObjectHandle()))
+        {
+            ReportUnresolvableReturnPin(value, callee);
+            return;
+        }
+
         _returnPinRing[_returnPinIndex] = value;
+        _returnPinProvenance[_returnPinIndex] = ReturnPinAuditEnabled
+            ? DescribeReturnPin(value, callee)
+            : null;
         _returnPinIndex = (_returnPinIndex + 1) & ReturnPinRingMask;
+    }
+
+    // A pinned return whose handle does not resolve in this heap is the moment
+    // the root set would have been poisoned, and it is the only moment at
+    // which the producing call is still on the stack. Report it here, with the
+    // callee's structural signature, rather than at the next collection where
+    // all that survives is an index.
+    private void ReportUnresolvableReturnPin(JsValue value, JsValue callee)
+    {
+        var handle = value.AsObjectHandle();
+        var key = $"{handle.Index}/{handle.Generation}";
+        if (!_reportedReturnPinFailures.Add(key))
+        {
+            return;
+        }
+
+        var report =
+            "Unresolvable return pin (not stored as a GC root). " +
+            _heap.DescribeHandleForDiagnostics(handle) +
+            " callee=" + DescribeCalleeForDiagnostics(callee) +
+            " jsStack=" + FormatCallStackForDiagnostics();
+        _returnPinFailureReports.Add(report);
+        FenBrowser.Js.Heap.JsHeap.DiagnosticSink?.Invoke(report);
+    }
+
+    private string DescribeReturnPin(JsValue value, JsValue callee)
+    {
+        var payload = "?";
+        if (value.Tag == JsValueTag.Object)
+        {
+            try
+            {
+                var obj = _heap.GetObject(value.AsObjectHandle());
+                payload = obj is JsFunctionObject fn
+                    ? FenBrowser.Js.Bytecode.BytecodeFunctionSignature.Describe(fn.Function)
+                    : obj.GetType().Name;
+            }
+            catch (JsEngineFatalException)
+            {
+                payload = "<unresolvable>";
+            }
+        }
+        else
+        {
+            payload = value.Tag.ToString();
+        }
+
+        return $"value={payload} callee={DescribeCalleeForDiagnostics(callee)}";
+    }
+
+    // Names the function whose return was pinned. Minified bundles are almost
+    // all anonymous, so a name alone identifies nothing; the structural
+    // signature does.
+    private string DescribeCalleeForDiagnostics(JsValue callee)
+    {
+        if (callee.Tag != JsValueTag.Object)
+        {
+            return callee.Tag.ToString();
+        }
+
+        try
+        {
+            return _heap.GetObject(callee.AsObjectHandle()) switch
+            {
+                JsFunctionObject fn =>
+                    FenBrowser.Js.Bytecode.BytecodeFunctionSignature.Describe(fn.Function),
+                NativeFunctionObject native => $"native:{native.Name}",
+                { } other => other.GetType().Name,
+                _ => "<null>"
+            };
+        }
+        catch (JsEngineFatalException)
+        {
+            return "<unresolvable-callee>";
+        }
+    }
+
+    private string FormatCallStackForDiagnostics()
+    {
+        try
+        {
+            return FormatCallStack("ReturnPin", "unresolvable");
+        }
+        catch (JsEngineFatalException)
+        {
+            return "<unavailable>";
+        }
     }
 
     private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
         var result = CallFunctionCore(value, args, thisValue);
-        PinReturnValue(result);
+        PinReturnValue(result, value);
         return result;
     }
 
