@@ -75,6 +75,22 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void UseFilter_CompositesAndFiltersTheInstantiatedSubtree()
+        {
+            const string svg =
+                "<svg width='60' height='30'><defs><g id='box'><rect width='10' height='10' fill='red'/></g>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='60' height='30'>" +
+                "<feOffset dx='20'/></filter></defs><use href='#box' x='5' y='5' filter='url(#f)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(0, result.Bitmap.GetPixel(8, 8).Alpha);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(28, 8));
+        }
+
+        [Fact]
         public void Flood_ReplacesSourceInsideItsPrimitiveRegion()
         {
             using var result = new FenSvgRenderer().Render(

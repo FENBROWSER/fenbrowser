@@ -5153,6 +5153,19 @@ Verification:
   in both user-space and object-bounding-box regions. The complete focused SVG
   namespace passes 427/427.
 
+## 6.233 SVG Use-Instance Effects Verification (2026-09-05)
+
+- A focused regression proves that an offset filter on `use` removes the
+  unfiltered instance pixels and paints the translated instantiated subtree at
+  the filtered location without fallback.
+- Re-running local `filters-conv-05-f-manual.svg` changes its classification
+  from a false first-party pixel-parity pass to an explicit filter fallback.
+  This is intentional evidence correction: the file's filters are now executed,
+  exposing the genuinely unsupported `feConvolveMatrix` primitive instead of
+  silently bypassing it.
+- The complete focused SVG namespace passes 428/428, with no renderer or worker
+  failure in the corrected local WPT run.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

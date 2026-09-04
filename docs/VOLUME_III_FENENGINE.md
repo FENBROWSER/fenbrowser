@@ -11651,6 +11651,19 @@ Verification:
   object-bounding-box scale mappings therefore remain explicit compatibility
   fallback instead of silently averaging the X and Y dimensions.
 
+## 2.167 SVG Effects On Use Instances (2026-09-05)
+
+- Filter, mask, and blend effects declared on a `use` element now wrap the
+  instantiated subtree after the referencing element's transform and x/y
+  placement. Instance opacity remains a subtree composite inside that effects
+  boundary.
+- Object bounds for a used non-viewport element are resolved from the referenced
+  geometry, including supported target transforms, so object-bounding-box filter
+  and mask units operate on the instance rather than being silently skipped.
+  Used `svg` and `symbol` viewport bounds remain separate open work.
+- Reference-cycle and native layer budgets are unchanged, and all instance
+  effect state remains scoped to the current render.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

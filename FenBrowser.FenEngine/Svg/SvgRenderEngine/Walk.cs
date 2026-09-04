@@ -454,34 +454,37 @@ namespace FenBrowser.FenEngine.Svg
                 next.ContextFill = next.Fill;
                 next.ContextStroke = next.Stroke;
 
-                // S8/F8: opacity on <use> composites the instantiated subtree.
-                bool layered = TryBeginGroupOpacity(el, canvas, out var useLayer);
-                try
+                DrawWithEffects(el, canvas, viewport, () =>
                 {
-                    if (target.Name == "svg")
+                    // S8/F8: opacity on <use> composites the instantiated subtree.
+                    bool layered = TryBeginGroupOpacity(el, canvas, out var useLayer);
+                    try
                     {
-                        DrawNestedSvg(target, canvas, viewport, next, el);
+                        if (target.Name == "svg")
+                        {
+                            DrawNestedSvg(target, canvas, viewport, next, el);
+                        }
+                        else if (target.Name == "symbol")
+                        {
+                            // A used symbol establishes an svg-equivalent viewport whose
+                            // default width/height is 100% of the referencing viewport.
+                            DrawSymbolInstance(target, canvas, viewport, next, el);
+                        }
+                        else
+                        {
+                            DrawElement(target, canvas, viewport, next);
+                        }
                     }
-                    else if (target.Name == "symbol")
+                    finally
                     {
-                        // A used symbol establishes an svg-equivalent viewport whose
-                        // default width/height is 100% of the referencing viewport.
-                        DrawSymbolInstance(target, canvas, viewport, next, el);
+                        if (layered)
+                        {
+                            canvas.Restore();
+                            _activeLayers--;
+                            useLayer.Dispose();
+                        }
                     }
-                    else
-                    {
-                        DrawElement(target, canvas, viewport, next);
-                    }
-                }
-                finally
-                {
-                    if (layered)
-                    {
-                        canvas.Restore();
-                        _activeLayers--;
-                        useLayer.Dispose();
-                    }
-                }
+                });
             }
             finally
             {
@@ -920,6 +923,27 @@ namespace FenBrowser.FenEngine.Svg
                 case "svg":
                     bounds = new SKRect(0f, 0f, viewport.Width, viewport.Height);
                     return true;
+                case "use":
+                    string href = element.GetAttribute("href") ?? element.GetLookup("xlink:href");
+                    if (SvgValues.TryParseLocalReference(href, out string useId) &&
+                        _doc.ElementsById.TryGetValue(useId, out var useTarget) &&
+                        useTarget.Name is not ("svg" or "symbol") &&
+                        TryResolveObjectBounds(useTarget, viewport, out bounds))
+                    {
+                        string targetTransform = useTarget.GetPresentationProperty("transform");
+                        if (!string.IsNullOrWhiteSpace(targetTransform))
+                        {
+                            if (!SvgValues.TryParseTransformList(
+                                    targetTransform.AsSpan(), out var matrix))
+                            {
+                                bounds = default;
+                                return false;
+                            }
+                            bounds = matrix.MapRect(bounds);
+                        }
+                        return bounds.Width > 0f && bounds.Height > 0f;
+                    }
+                    break;
                 case "g":
                 case "a":
                     bool hasBounds = false;

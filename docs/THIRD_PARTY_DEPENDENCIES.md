@@ -66,7 +66,7 @@ resources, blend modes, and the genuine captured-site gate are implemented. The
 failure, timeout, rejection, or truncation. SMIL, remaining cascade and filter
 gaps, vertical/per-glyph text, scripted pattern mutation, unsupported properties
 and elements, and unresolved local WPT failures remain open compatibility gates
-(see VOLUME_III 2.121-2.166 and VOLUME_VI 6.193-6.232 for the matrix and current
+(see VOLUME_III 2.121-2.167 and VOLUME_VI 6.193-6.233 for the matrix and current
 evidence).
 Removal from this inventory happens only after the documented gate closes.
 
