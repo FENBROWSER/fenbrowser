@@ -145,6 +145,31 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
+        [InlineData("")]
+        [InlineData("https://example.test/unsupported-extension")]
+        public void RequiredExtensions_UnsupportedOrEmptySuppressesElement(string extensions)
+        {
+            using var result = _renderer.Render(
+                $"<svg width='10' height='10'><rect width='10' height='10' fill='red' " +
+                $"requiredExtensions='{extensions}'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(0, result.Bitmap.GetPixel(5, 5).Alpha);
+        }
+
+        [Fact]
+        public void RequiredExtensions_OnRootSuppressesDocument()
+        {
+            using var result = _renderer.Render(
+                "<svg width='10' height='10' requiredExtensions=''>" +
+                "<rect width='10' height='10' fill='red'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(0, result.Bitmap.GetPixel(5, 5).Alpha);
+        }
+
+        [Theory]
         [InlineData("svg")]
         [InlineData("symbol")]
         public void UseDimensions_OverrideReferencedViewport(string viewportElement)

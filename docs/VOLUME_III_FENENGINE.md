@@ -11564,6 +11564,18 @@ Verification:
 - Resource policy is unchanged: non-fragment references on local-only surfaces
   remain rejected. The first-party SVG backend remains non-default.
 
+## 2.162 SVG requiredExtensions Conditional Rendering (2026-09-04)
+
+- The isolated SVG renderer now suppresses an element whenever the
+  `requiredExtensions` attribute is present, including an empty value. This
+  reflects its actual extension capability set: it claims no extension
+  namespaces.
+- `switch` selection skips children whose extension condition fails before
+  choosing the first supported rendering child. Preflight remains conservative
+  for unsupported content inside conditional branches.
+- `requiredFeatures` and locale-dependent `systemLanguage` negotiation remain
+  separate open work. The first-party SVG backend remains non-default.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

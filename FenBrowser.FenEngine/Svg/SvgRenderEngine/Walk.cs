@@ -14,6 +14,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private void DrawChildren(SvgElement container, SKCanvas canvas, ViewportContext viewport, InheritedStyle inherited)
         {
+            if (!PassesRequiredExtensions(container)) return;
             var children = container.Children;
             for (int i = 0; i < children.Count; i++)
             {
@@ -57,6 +58,8 @@ namespace FenBrowser.FenEngine.Svg
             ViewportContext viewport,
             InheritedStyle inherited)
         {
+            if (!PassesRequiredExtensions(el)) return;
+
             switch (el.Name)
             {
                 case "g":
@@ -369,6 +372,7 @@ namespace FenBrowser.FenEngine.Svg
             for (int i = 0; i < children.Count; i++)
             {
                 var child = children[i];
+                if (!PassesRequiredExtensions(child)) continue;
                 switch (child.Name)
                 {
                     case "title":
@@ -393,6 +397,13 @@ namespace FenBrowser.FenEngine.Svg
                         continue;
                 }
             }
+        }
+
+        private static bool PassesRequiredExtensions(SvgElement element)
+        {
+            // The isolated renderer does not implement any extension namespace.
+            // Presence therefore fails the conditional, including an empty list.
+            return element.GetAttribute("requiredExtensions") == null;
         }
 
         // ------------------------------------------------------------------ use

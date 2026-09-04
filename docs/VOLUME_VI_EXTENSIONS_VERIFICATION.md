@@ -5045,6 +5045,16 @@ Verification:
   internal fragment whitespace, quoted paint URLs, gradient template links, and
   `use` links. The complete SVG test namespace passes 398/398.
 
+## 6.227 SVG requiredExtensions Conformance (2026-09-04)
+
+- The exact local Windows WPT
+  `struct/reftests/requiredextensions-empty-string.svg` moves from a fully
+  painted mismatch to an exact transparent reference pass. It routes first-party
+  with no fallback, rejection, failure, or timeout.
+- Focused coverage asserts suppression for both empty and unsupported nonempty
+  extension requirements, including a condition on the root SVG element. The
+  complete SVG test namespace passes 401/401.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
