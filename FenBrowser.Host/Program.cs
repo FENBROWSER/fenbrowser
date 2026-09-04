@@ -82,6 +82,47 @@ namespace FenBrowser.Host
         /// comparisons against another browser need, and `--window-size WxH`
         /// picks that size (implying windowed).
         /// </summary>
+        // The URL is positional, but it used to be read only at args[0], so
+        // "--windowed https://example.com" silently opened the home page instead.
+        // Take the first argument that is neither a flag nor a flag's value.
+        internal static string ResolveInitialUrl(string[] args)
+        {
+            if (args == null)
+            {
+                return null;
+            }
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                var arg = args[i];
+                if (string.IsNullOrWhiteSpace(arg))
+                {
+                    continue;
+                }
+
+                if (arg.StartsWith("--", StringComparison.Ordinal))
+                {
+                    // Skip the value of a flag that takes one, unless it was
+                    // given as --flag=value.
+                    if (FlagTakesValue(arg) && !arg.Contains('=') && i + 1 < args.Length)
+                    {
+                        i++;
+                    }
+                    continue;
+                }
+
+                return arg;
+            }
+
+            return null;
+        }
+
+        private static bool FlagTakesValue(string flag)
+        {
+            return string.Equals(flag, "--window-size", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(flag, "--log-level", StringComparison.OrdinalIgnoreCase);
+        }
+
         internal static (Platform.WindowState State, Platform.Size Size) ResolveWindowLayout(string[] args)
         {
             var size = new Platform.Size(1280, 800);
@@ -223,7 +264,7 @@ namespace FenBrowser.Host
                     }
                 }
 
-                string initialUrl = args.Length > 0 && !args[0].StartsWith("--") ? args[0] : "https://www.google.com";
+                string initialUrl = ResolveInitialUrl(args) ?? "https://www.google.com";
                 EngineLog.Write(LogSubsystem.General, LogSeverity.Info, $"[Host] Starting FenBrowser with URL: {initialUrl}");
 
                 // 2. Engine Config
@@ -434,6 +475,10 @@ namespace FenBrowser.Host
 
             bool handshakeComplete = false;
             bool running = true;
+            // Last cursor/href published to the broker, so a move that does not
+            // change either sends nothing. A pointer move fires per frame.
+            string lastPublishedCursor = null;
+            string lastPublishedHref = null;
             bool hasFrameViewport = false;
             float lastFrameViewportWidth = 1280f;
             float lastFrameViewportHeight = 720f;
@@ -636,6 +681,17 @@ namespace FenBrowser.Host
 
             void DrainPendingRendererRepaintFrame()
             {
+                // Check readiness BEFORE consuming the pending flags. Taking them
+                // first and then bailing out threw the request away: an image that
+                // finished decoding before the first frame viewport arrived lost its
+                // repaint entirely, and the decoded bitmap was not drawn until some
+                // unrelated event rebuilt the paint tree - which is why Hacker News's
+                // upvote arrows only appeared once the pointer moved.
+                if (!handshakeComplete || !hasFrameViewport)
+                {
+                    return;
+                }
+
                 bool animationDriven = Interlocked.Exchange(ref pendingAnimationRepaintFrame, 0) == 1;
                 bool domRepaint = Interlocked.Exchange(ref pendingRendererRepaintFrame, 0) == 1;
                 // A DOM-change frame may toggle animation applicability (class flips
@@ -643,11 +699,6 @@ namespace FenBrowser.Host
                 // and re-run the renderer's new-animation registration scan.
                 bool needsStyleScan = domRepaint && Interlocked.Exchange(ref pendingRepaintNeedsStyleScan, 0) == 1;
                 if (!animationDriven && !domRepaint)
-                {
-                    return;
-                }
-
-                if (!handshakeComplete || !hasFrameViewport)
                 {
                     return;
                 }
@@ -832,11 +883,9 @@ namespace FenBrowser.Host
             };
             browser.RepaintReady += (_, __) =>
             {
-                if (!handshakeComplete || !hasFrameViewport)
-                {
-                    return;
-                }
-
+                // Remember the request even if the viewport is not known yet - the
+                // first frame viewport can arrive after an image has already decoded,
+                // and dropping the signal here left that image unpainted.
                 Interlocked.Exchange(ref pendingRendererRepaintFrame, 1);
             };
 
@@ -979,6 +1028,17 @@ namespace FenBrowser.Host
                         if (input != null && input.IsMeaningful)
                         {
                             await DispatchRendererInputAsync(browser, input).ConfigureAwait(false);
+
+                            // Only this process can answer "what is under the
+                            // pointer" - the broker has no document in brokered
+                            // mode, so its own hit test comes back empty and the
+                            // cursor stayed an arrow over every link. Resolve it
+                            // here and tell the broker when it changes.
+                            if (input.Type == RendererInputEventType.MouseMove)
+                            {
+                                PublishRendererCursor(writer, tabId, childRenderer, input.X, input.Y,
+                                    ref lastPublishedCursor, ref lastPublishedHref);
+                            }
                         }
 
                         SendRendererEnvelope(writer, new RendererIpcEnvelope
@@ -2259,6 +2319,74 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
             }
 
             return clone;
+        }
+
+        // Resolve what the pointer is over and forward it to the broker, but only
+        // when it differs from what was sent last: a mouse move arrives per
+        // frame, and an unchanged cursor is not worth an envelope.
+        private static void PublishRendererCursor(
+            StreamWriter writer,
+            int tabId,
+            FenBrowser.FenEngine.Rendering.SkiaDomRenderer renderer,
+            float x,
+            float y,
+            ref string lastCursor,
+            ref string lastHref)
+        {
+            if (writer == null || renderer == null)
+            {
+                return;
+            }
+
+            string cursor;
+            string href;
+            string tagName;
+            try
+            {
+                if (renderer.HitTest(x, y, out var hit))
+                {
+                    cursor = hit.Cursor.ToString();
+                    href = hit.Href ?? string.Empty;
+                    tagName = hit.TagName ?? string.Empty;
+                }
+                else
+                {
+                    cursor = FenBrowser.FenEngine.Interaction.CursorType.Default.ToString();
+                    href = string.Empty;
+                    tagName = string.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                // A hit test racing a layout pass must never take the child down.
+                EngineLog.Write(
+                    LogSubsystem.ProcessIsolation,
+                    LogSeverity.Debug,
+                    $"[RendererChild] Cursor hit test failed for tab={tabId}: {ex.Message}");
+                return;
+            }
+
+            if (string.Equals(cursor, lastCursor, StringComparison.Ordinal) &&
+                string.Equals(href, lastHref, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            lastCursor = cursor;
+            lastHref = href;
+
+            SendRendererEnvelope(writer, new RendererIpcEnvelope
+            {
+                Type = RendererIpcMessageType.CursorChanged.ToString(),
+                TabId = tabId,
+                CorrelationId = Guid.NewGuid().ToString("N"),
+                Payload = RendererIpc.SerializePayload(new RendererCursorChangedPayload
+                {
+                    Cursor = cursor,
+                    Href = href,
+                    TagName = tagName
+                })
+            });
         }
 
         internal static async Task DispatchRendererInputAsync(BrowserHost browser, RendererInputEvent input)
