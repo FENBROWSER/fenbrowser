@@ -563,7 +563,10 @@ public sealed partial class BytecodeInterpreter
 
         var function = new NativeFunctionObject(name, call, construct, length: length);
         function.SetPrototype(EnsureFunctionPrototype());
-        var handle = _heap.AllocateObject(function, AllocationSite.Current());
+        var site = AllocationSite.Current();
+        var handle = _heap.AllocateObject(
+            function,
+            site with { MemberName = $"{site.MemberName}:{name}" });
         return JsValue.FromObject(handle);
     }
 
