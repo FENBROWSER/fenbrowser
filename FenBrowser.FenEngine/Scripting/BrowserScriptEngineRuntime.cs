@@ -20401,6 +20401,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                          string.Equals(property, "replaceState", StringComparison.Ordinal):
                     _owner.SetStoredHostProperty(history, property, value);
                     return true;
+                case FenJsHistoryHost history
+                    when string.Equals(property, "scrollRestoration", StringComparison.Ordinal):
+                    // HTML 7.10.3: the setter takes a ScrollRestoration enum, and
+                    // WebIDL enum conversion means anything outside the enumeration
+                    // leaves the current value alone rather than storing garbage.
+                    var restoration = CoerceToHostString(value);
+                    if (string.Equals(restoration, "auto", StringComparison.Ordinal) ||
+                        string.Equals(restoration, "manual", StringComparison.Ordinal))
+                    {
+                        _owner.SetStoredHostProperty(history, "scrollRestoration", JsValue.FromString(restoration));
+                    }
+
+                    return true;
                 case BrowserSurfaceProfile navigator:
                     // Allow scripts to set arbitrary properties on navigator (e.g.
                     // Google stubs navigator.sendBeacon). Store for later retrieval.
@@ -23779,6 +23792,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case "userAgent":
                     value = JsValue.FromString(navigator.UserAgent ?? string.Empty);
                     return true;
+                case "doNotTrack":
+                    // HTML dom-navigator-donottrack: "1" when the preference is
+                    // enabled, otherwise null. The profile stores "0" for the
+                    // disabled case, but exposing that string would read as
+                    // enabled-with-value-0 to feature detection; Chrome returns
+                    // null here, and the surface profile is the source of truth
+                    // for the SendDoNotTrack policy toggle.
+                    value = string.Equals(navigator.DoNotTrack, "1", StringComparison.Ordinal)
+                        ? JsValue.FromString("1")
+                        : JsValue.Null;
+                    return true;
                 case "platform":
                     value = JsValue.FromString(navigator.PlatformToken ?? string.Empty);
                     return true;
@@ -24585,6 +24609,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         ? CoerceBridgeHistoryState(_owner._historyBridge.State)
                         : history.State;
                     return true;
+                case "scrollRestoration":
+                    // HTML 7.10.3: a ScrollRestoration enum, "auto" by default.
+                    // Frameworks read it to decide whether to manage scroll
+                    // position themselves (Next.js does on every route change).
+                    value = _owner.GetStoredHostPropertyOrUndefined(history, "scrollRestoration");
+                    if (value.Tag != JsValueTag.String)
+                    {
+                        value = JsValue.FromString("auto");
+                    }
+
+                    return true;
                 case "pushState":
                     value = _owner.GetOrCreateHostCallable(
                         history,
@@ -24747,6 +24782,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "hash":
                     value = JsValue.FromString(uri?.Fragment ?? string.Empty);
+                    return true;
+                case "port":
+                    // HTML 7.10.5 dom-location-port: the URL's port, serialized
+                    // empty when the scheme's default port is in use - which is
+                    // why `host` above only appends it when IsDefaultPort is false.
+                    value = JsValue.FromString(
+                        uri == null || uri.IsDefaultPort
+                            ? string.Empty
+                            : uri.Port.ToString(CultureInfo.InvariantCulture));
                     return true;
                 case "toString":
                     value = _owner.GetOrCreateHostCallable(
