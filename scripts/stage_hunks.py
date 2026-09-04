@@ -9,11 +9,14 @@ just those, and applies it to the index.
 
 Usage:
     python scripts/stage_hunks.py <file> --contains "<text>" [--contains ...]
+    python scripts/stage_hunks.py <file> --not-contains "<text>"
     python scripts/stage_hunks.py <file> --list
 """
 
+import os
 import subprocess
 import sys
+import tempfile
 
 
 def run(args):
@@ -63,16 +66,24 @@ def main():
         return
 
     wanted = [argv[i + 1] for i, a in enumerate(argv) if a == "--contains"]
-    if not wanted:
-        raise SystemExit("give at least one --contains <text>")
+    excluded = [argv[i + 1] for i, a in enumerate(argv) if a == "--not-contains"]
+    if not wanted and not excluded:
+        raise SystemExit("give at least one --contains or --not-contains <text>")
 
-    keep = [h for h in hunks if any(w in "".join(h) for w in wanted)]
+    def matches(h):
+        text = "".join(h)
+        if excluded and any(e in text for e in excluded):
+            return False
+        return not wanted or any(w in text for w in wanted)
+
+    keep = [h for h in hunks if matches(h)]
     if not keep:
         raise SystemExit("no hunk matched")
 
     patch = header + "".join("".join(h) for h in keep)
-    tmp = ".git/stage_hunks.patch"
-    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+    # Not .git/: inside a worktree that is a file, not a directory.
+    fd, tmp = tempfile.mkstemp(prefix="stage_hunks_", suffix=".patch")
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
         fh.write(patch)
 
     p = subprocess.run(["git", "apply", "--cached", "--unidiff-zero", tmp],
@@ -80,6 +91,7 @@ def main():
     if p.returncode != 0:
         print(p.stderr.strip(), file=sys.stderr)
         raise SystemExit("failed to apply patch to index")
+    os.unlink(tmp)
     print(f"staged {len(keep)} of {len(hunks)} hunk(s) from {path}")
 
 
