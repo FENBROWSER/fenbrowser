@@ -38,6 +38,22 @@ using DomRange = FenBrowser.Core.Dom.V2.Range;
 
 namespace FenBrowser.FenEngine.Scripting;
 
+internal sealed record FenJsMessageTransportTraceEvent(
+    string Stage,
+    long MessageId,
+    long SourcePortId,
+    long TargetPortId,
+    string SourceFrame,
+    string TargetFrame,
+    string Payload,
+    int TransferredPortCount,
+    double QueueDelayMilliseconds,
+    bool TargetClosed,
+    bool HandlerCallable,
+    int ListenerCount,
+    bool PortEnabled,
+    string Detail);
+
 public sealed record BrowserFrameExecutionOptions
 {
     public Func<Uri, string, bool> SubresourceAllowed { get; init; }
@@ -430,6 +446,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 {
     private sealed class MessagePortEndpoint
     {
+        public long TraceId { get; init; }
         public MessagePortEndpoint Peer { get; set; }
         public FenJsBrowserScriptEngine Owner { get; set; }
         public JsValue Port { get; set; } = JsValue.Undefined;
@@ -596,6 +613,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private readonly ConditionalWeakTable<Element, FenJsCanvasRenderingContext2DHost> _canvasRenderingContexts =
         new();
     private readonly Dictionary<long, MessagePortEndpoint> _messagePortEndpoints = new();
+    private static long _messagePortEndpointTraceSequence;
+    private static long _messageTransportTraceSequence;
     private FenJsBrowserScriptEngine _parentRealmOwner;
     private Element _embeddingFrameElement;
     private JsValue _embeddedParentWindowProxy = JsValue.Undefined;
@@ -1702,6 +1721,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         return defaultTimeoutMs;
     }
 
+    private static int ResolveFenJsMicrotaskTraceSetting(
+        string variableName,
+        int defaultValue,
+        int minimumValue)
+    {
+        var raw = Environment.GetEnvironmentVariable(variableName);
+        if (!string.IsNullOrWhiteSpace(raw) &&
+            int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) &&
+            parsed >= minimumValue)
+        {
+            return parsed;
+        }
+
+        return defaultValue;
+    }
+
     private static int ResolveFenJsTaskInstructionBudget()
     {
         var raw = Environment.GetEnvironmentVariable("FEN_FENJS_TASK_INSTRUCTION_BUDGET");
@@ -1884,6 +1919,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         heap.CollectGarbage();
         _fenJsAllocationCountAtLastBoundaryGc = heap.AllocationCount;
+        ReportFenJsRootAudit(heap);
 
         // Attributing a slow callback needs to distinguish script from
         // collection, and there was no way to tell them apart.
@@ -4691,6 +4727,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             };
             _fenJsAllocationCountAtLastBoundaryGc = 0;
             _interpreter.Heap.AddRootSource(this);
+            EnsureFenJsHeapDiagnosticSink();
+            ConfigureFenJsMicrotaskTracing(_interpreter);
 
             // Wire a diagnostic Promise rejection tracker so unhandled rejections
             // surface in engine logs with the rejection reason and source ownership.
@@ -5255,7 +5293,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         _interpreter.RegisterGlobalHostObject("document", RegisterHostObject(document, HostObjectKind.DomDocument));
         _interpreter.RegisterGlobalHostObject("navigator", RegisterHostObject(navigator, HostObjectKind.Other));
-        InstallFenJsNativeRangeConstructor(document);
         _interpreter.RegisterGlobalValue(
             "__fenDispatchMessagePort",
             _interpreter.AllocateNativeFunction(
@@ -5878,6 +5915,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         InstallFenJsPerformance();
         InstallFenJsTimers();
         InstallFenJsBrowserConstructors();
+        InstallFenJsNativeRangeConstructor(document);
         InstallFenJsEventTarget();
         InstallFenJsNativeBrowserConstructors();
         _fenJsDomConstructorsInstalled = true;
@@ -7529,6 +7567,206 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         };
     }
 
+    // GC diagnostics are raised inside FenBrowser.Js, which cannot reach the
+    // engine log. Point them at it once per process.
+    private static int _fenJsHeapDiagnosticSinkInstalled;
+
+    private static void EnsureFenJsHeapDiagnosticSink()
+    {
+        if (Interlocked.Exchange(ref _fenJsHeapDiagnosticSinkInstalled, 1) != 0)
+        {
+            return;
+        }
+
+        JsHeap.DiagnosticSink = message => FenBrowser.Core.EngineLogCompat.Warn(
+            "[FenJsGc] " + message,
+            FenBrowser.Core.Logging.LogCategory.JavaScript);
+    }
+
+    // Detailed callback/microtask diagnostics are deliberately opt-in because
+    // a real page can execute thousands of promise jobs in one checkpoint.
+    // FEN_FENJS_MICROTASK_TRACE=1 enables the stage stream; the remaining knobs
+    // bound per-job detail while retaining periodic execution samples.
+    private void ConfigureFenJsMicrotaskTracing(BytecodeInterpreter interpreter)
+    {
+        if (!string.Equals(
+                Environment.GetEnvironmentVariable("FEN_FENJS_MICROTASK_TRACE"),
+                "1",
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        interpreter.MicrotaskTraceDetailedJobLimit = ResolveFenJsMicrotaskTraceSetting(
+            "FEN_FENJS_MICROTASK_TRACE_JOB_LIMIT",
+            defaultValue: 2_000,
+            minimumValue: 0);
+        interpreter.MicrotaskTraceJobSampleInterval = ResolveFenJsMicrotaskTraceSetting(
+            "FEN_FENJS_MICROTASK_TRACE_JOB_SAMPLE_INTERVAL",
+            defaultValue: 250,
+            minimumValue: 0);
+        interpreter.MicrotaskTraceExecutionSampleIntervalMs = ResolveFenJsMicrotaskTraceSetting(
+            "FEN_FENJS_MICROTASK_TRACE_SAMPLE_MS",
+            defaultValue: 500,
+            minimumValue: 100);
+        interpreter.MicrotaskTraceSink = trace =>
+        {
+            var workItem = Volatile.Read(ref _activeFenJsWorkItem);
+            LogEventLoop(
+                "FenJsMicrotaskTrace",
+                LogSeverity.Info,
+                "[FenJsMicrotaskTrace] " + trace.Stage,
+                new Dictionary<string, object>
+                {
+                    ["stage"] = trace.Stage,
+                    ["checkpointId"] = trace.CheckpointId,
+                    ["checkpointDepth"] = trace.CheckpointDepth,
+                    ["sequence"] = trace.Sequence,
+                    ["pass"] = trace.Pass,
+                    ["jobIndex"] = trace.JobIndex,
+                    ["jobKind"] = trace.JobKind,
+                    ["detail"] = trace.Detail,
+                    ["pendingQueueMicrotasks"] = trace.PendingQueueMicrotasks,
+                    ["pendingPromiseJobs"] = trace.PendingPromiseJobs,
+                    ["pendingCleanupJobs"] = trace.PendingCleanupJobs,
+                    ["instructions"] = trace.InstructionCount,
+                    ["elapsedMs"] = trace.ElapsedMilliseconds,
+                    ["activeFrame"] = trace.ActiveFrame,
+                    ["workId"] = workItem?.Sequence ?? 0,
+                    ["workKind"] = workItem?.Kind ?? string.Empty,
+                    ["taskId"] = workItem?.Sequence.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                    ["url"] = workItem?.Url ?? _currentBaseUri?.AbsoluteUri ?? string.Empty,
+                    ["documentId"] = workItem?.DocumentId ?? _currentDocumentId ?? string.Empty
+                });
+        };
+    }
+
+    private void TraceFenJsCallbackStage(
+        string stage,
+        string origin,
+        long callbackId,
+        CallbackSourceProvenance provenance,
+        string detail = "")
+    {
+        if (_interpreter?.MicrotaskTraceSink == null)
+        {
+            return;
+        }
+
+        var workItem = Volatile.Read(ref _activeFenJsWorkItem);
+        LogEventLoop(
+            "FenJsCallbackStage",
+            LogSeverity.Info,
+            "[FenJsCallbackTrace] " + stage,
+            new Dictionary<string, object>
+            {
+                ["stage"] = stage ?? string.Empty,
+                ["origin"] = origin ?? string.Empty,
+                ["callbackId"] = callbackId,
+                ["callbackFunctionName"] = provenance?.CallbackFunctionName ?? string.Empty,
+                ["scriptId"] = provenance?.ScriptId ?? string.Empty,
+                ["scriptUrl"] = provenance?.ScriptUrl ?? string.Empty,
+                ["scriptSourceLabel"] = provenance?.ScriptSourceLabel ?? string.Empty,
+                ["scriptSourceLine"] = provenance?.SourceLine ?? 0,
+                ["scriptSourceColumn"] = provenance?.SourceColumn ?? 0,
+                ["detail"] = detail ?? string.Empty,
+                ["workId"] = workItem?.Sequence ?? 0,
+                ["workKind"] = workItem?.Kind ?? string.Empty,
+                ["taskId"] = workItem?.Sequence.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                ["url"] = workItem?.Url ?? _currentBaseUri?.AbsoluteUri ?? string.Empty,
+                ["documentId"] = workItem?.DocumentId ?? _currentDocumentId ?? string.Empty
+            });
+    }
+
+    internal Action<FenJsMessageTransportTraceEvent> MessageTransportTraceSink { get; set; }
+
+    private bool IsFenJsMessageTransportTraceEnabled =>
+        MessageTransportTraceSink != null || _interpreter?.MicrotaskTraceSink != null;
+
+    private void TraceFenJsMessageTransport(FenJsMessageTransportTraceEvent trace)
+    {
+        if (trace == null || !IsFenJsMessageTransportTraceEnabled)
+        {
+            return;
+        }
+
+        try
+        {
+            MessageTransportTraceSink?.Invoke(trace);
+            if (_interpreter?.MicrotaskTraceSink == null)
+            {
+                return;
+            }
+
+            var workItem = Volatile.Read(ref _activeFenJsWorkItem);
+            LogEventLoop(
+                "FenJsMessageTransport",
+                LogSeverity.Info,
+                "[FenJsMessageTransport] " + trace.Stage,
+                new Dictionary<string, object>
+                {
+                    ["stage"] = trace.Stage ?? string.Empty,
+                    ["messageId"] = trace.MessageId,
+                    ["sourcePortId"] = trace.SourcePortId,
+                    ["targetPortId"] = trace.TargetPortId,
+                    ["sourceFrame"] = trace.SourceFrame ?? string.Empty,
+                    ["targetFrame"] = trace.TargetFrame ?? string.Empty,
+                    ["payload"] = trace.Payload ?? string.Empty,
+                    ["transferredPortCount"] = trace.TransferredPortCount,
+                    ["queueDelayMs"] = trace.QueueDelayMilliseconds,
+                    ["targetClosed"] = trace.TargetClosed,
+                    ["handlerCallable"] = trace.HandlerCallable,
+                    ["listenerCount"] = trace.ListenerCount,
+                    ["portEnabled"] = trace.PortEnabled,
+                    ["detail"] = trace.Detail ?? string.Empty,
+                    ["workId"] = workItem?.Sequence ?? 0,
+                    ["workKind"] = workItem?.Kind ?? string.Empty,
+                    ["taskId"] = workItem?.Sequence.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+                    ["url"] = workItem?.Url ?? _currentBaseUri?.AbsoluteUri ?? string.Empty,
+                    ["documentId"] = workItem?.DocumentId ?? _currentDocumentId ?? string.Empty
+                });
+        }
+        catch
+        {
+            // Diagnostics must never change page-visible message delivery.
+        }
+    }
+
+    // Under FEN_FENJS_GC_ROOT_AUDIT=1 a root the collector cannot resolve is
+    // reported and skipped instead of thrown on, so one page load enumerates
+    // every bad root instead of ending at the first. Surface the running count
+    // with the collection that produced it.
+    private int _fenJsRootAuditReportsSeen;
+    private int _fenJsReturnPinFailuresSeen;
+
+    private void ReportFenJsRootAudit(JsHeap heap)
+    {
+        var reports = heap.RootAuditReports;
+        for (var i = _fenJsRootAuditReportsSeen; i < reports.Count; i++)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                "[FenJsGc] " + reports[i],
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+
+        _fenJsRootAuditReportsSeen = reports.Count;
+
+        var pinFailures = _interpreter?.ReturnPinFailureReports;
+        if (pinFailures == null)
+        {
+            return;
+        }
+
+        for (var i = _fenJsReturnPinFailuresSeen; i < pinFailures.Count; i++)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                "[FenJsGc] " + pinFailures[i],
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+
+        _fenJsReturnPinFailuresSeen = pinFailures.Count;
+    }
+
     private CallbackSourceProvenance CaptureCallbackProvenance(JsValue callback)
     {
         if (callback.Tag == JsValueTag.Object)
@@ -7969,6 +8207,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         var callbackThis = windowContext?.WindowTarget ?? _fenJsGlobalThis;
         callbackProvenance ??= CaptureCallbackProvenance(callback);
+        TraceFenJsCallbackStage("stage-1-marshalling", origin, callbackId, callbackProvenance);
 
         // Keep the callback, receiver, and arguments traced across the worker
         // marshal; freshly allocated argument facades (timer payloads, Mutation
@@ -7990,15 +8229,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 lock (_fenJsLock)
                 {
                     SetFenJsWorkerPhase("callback:validating-context");
+                    TraceFenJsCallbackStage("stage-2-validating-context", origin, callbackId, callbackProvenance);
                     if ((expectedSessionGeneration >= 0 &&
                          expectedSessionGeneration != _fenJsSessionGeneration) ||
                         (expectedDocumentId != null &&
                          !string.Equals(expectedDocumentId, _currentDocumentId, StringComparison.Ordinal)))
                     {
+                        TraceFenJsCallbackStage(
+                            "stage-2-context-rejected",
+                            origin,
+                            callbackId,
+                            callbackProvenance,
+                            $"expectedGeneration={expectedSessionGeneration}; actualGeneration={_fenJsSessionGeneration}; " +
+                            $"expectedDocument={expectedDocumentId ?? string.Empty}; actualDocument={_currentDocumentId ?? string.Empty}");
                         return null;
                     }
 
                     onValidated?.Invoke();
+                    TraceFenJsCallbackStage("stage-2-context-valid", origin, callbackId, callbackProvenance);
                     Exception attributedMicrotaskFailure = null;
                     try
                     {
@@ -8006,6 +8254,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         var rootMark = heap.RootCount;
                         try
                         {
+                            TraceFenJsCallbackStage("stage-3-boundary-gc-enter", origin, callbackId, callbackProvenance);
                             if (callback.Tag == JsValueTag.Object)
                             {
                                 heap.PushRoot(callback.AsObjectHandle());
@@ -8022,6 +8271,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 }
                             }
                             CollectFenJsHeapAtSafeBoundary();
+                            TraceFenJsCallbackStage("stage-3-boundary-gc-complete", origin, callbackId, callbackProvenance);
                         }
                         finally
                         {
@@ -8045,7 +8295,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         if (_interpreter.CanCallValue(callback))
                         {
                             SetFenJsWorkerPhase("callback:invoking");
+                            TraceFenJsCallbackStage("stage-4-callback-enter", origin, callbackId, callbackProvenance);
                             _interpreter.InvokeFunction(callback, args ?? Array.Empty<JsValue>(), callbackThis);
+                            TraceFenJsCallbackStage("stage-4-callback-complete", origin, callbackId, callbackProvenance);
                             invoked = true;
                         }
 
@@ -8114,6 +8366,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         }
 
                         SetFenJsWorkerPhase("callback:microtask-checkpoint");
+                        TraceFenJsCallbackStage("stage-5-microtask-checkpoint-enter", origin, callbackId, callbackProvenance);
                         _interpreter.PumpMicrotasks((microtaskCallback, exception) =>
                         {
                             RecordDiagnosticCallbackFailure(
@@ -8125,11 +8378,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 exception);
                             attributedMicrotaskFailure = exception;
                         });
+                        TraceFenJsCallbackStage("stage-5-microtask-checkpoint-complete", origin, callbackId, callbackProvenance);
                         SetFenJsWorkerPhase("callback:checkpoint-complete");
                         RecordMicrotaskCheckpoint(origin);
                     }
                     catch (Exception ex)
                     {
+                        TraceFenJsCallbackStage(
+                            "stage-failed",
+                            origin,
+                            callbackId,
+                            callbackProvenance,
+                            ex.GetType().Name + ": " + ex.Message);
                         if (ReferenceEquals(ex, attributedMicrotaskFailure))
                         {
                             return null;
@@ -14460,8 +14720,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return JsValue.FromBoolean(false);
         }
 
-        var first = new MessagePortEndpoint();
-        var second = new MessagePortEndpoint();
+        var first = new MessagePortEndpoint
+        {
+            TraceId = Interlocked.Increment(ref _messagePortEndpointTraceSequence)
+        };
+        var second = new MessagePortEndpoint
+        {
+            TraceId = Interlocked.Increment(ref _messagePortEndpointTraceSequence)
+        };
         first.Peer = second;
         second.Peer = first;
         BindMessagePort(first, args[0]);
@@ -14478,8 +14744,54 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         var target = source.Peer;
+        var traceEnabled = IsFenJsMessageTransportTraceEnabled;
+        var messageId = traceEnabled ? Interlocked.Increment(ref _messageTransportTraceSequence) : 0;
+        var sourceFrame = traceEnabled ? ProbeFrame() : string.Empty;
+        var targetFrame = traceEnabled ? target?.Owner?.ProbeFrame() ?? "<unowned>" : string.Empty;
+        var payload = traceEnabled
+            ? args.Count > 1
+                ? DescribePostMessageValue(args[1])
+                : JsValueTag.Undefined.ToString()
+            : string.Empty;
+        var transferredPortCount = traceEnabled && args.Count > 2 ? ReadArrayLikeLength(args[2]) : 0;
+        if (traceEnabled)
+        {
+            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                "port-send-enter",
+                messageId,
+                source.TraceId,
+                target?.TraceId ?? 0,
+                sourceFrame,
+                targetFrame,
+                payload,
+                transferredPortCount,
+                0,
+                target?.Closed ?? true,
+                false,
+                0,
+                false,
+                string.Empty));
+        }
         if (source.Closed || target == null || target.Closed || target.Owner == null)
         {
+            if (traceEnabled)
+            {
+                TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                    "port-send-dropped",
+                    messageId,
+                    source.TraceId,
+                    target?.TraceId ?? 0,
+                    sourceFrame,
+                    targetFrame,
+                    payload,
+                    transferredPortCount,
+                    0,
+                    target?.Closed ?? true,
+                    false,
+                    0,
+                    false,
+                    $"sourceClosed={source.Closed}; targetMissing={target == null}; targetOwnerMissing={target?.Owner == null}"));
+            }
             return JsValue.FromBoolean(true);
         }
 
@@ -14491,7 +14803,33 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         var transferredPorts = args.Count > 2
             ? ExtractTransferredMessagePorts(args[2])
             : Array.Empty<MessagePortEndpoint>();
-        target.Owner.QueueMessagePort(target, data, transferredPorts);
+        target.Owner.QueueMessagePort(
+            target,
+            data,
+            transferredPorts,
+            messageId,
+            source.TraceId,
+            sourceFrame,
+            targetFrame,
+            payload);
+        if (traceEnabled)
+        {
+            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                "port-send-enqueued",
+                messageId,
+                source.TraceId,
+                target.TraceId,
+                sourceFrame,
+                targetFrame,
+                payload,
+                transferredPorts.Count,
+                0,
+                false,
+                false,
+                0,
+                false,
+                string.Empty));
+        }
         return JsValue.FromBoolean(true);
     }
 
@@ -14583,17 +14921,82 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private void QueueMessagePort(
         MessagePortEndpoint target,
         object data,
-        IReadOnlyList<MessagePortEndpoint> transferredEndpoints)
+        IReadOnlyList<MessagePortEndpoint> transferredEndpoints,
+        long messageId,
+        long sourcePortId,
+        string sourceFrame,
+        string targetFrame,
+        string payload)
     {
         var sessionGeneration = _fenJsSessionGeneration;
+        var traceEnabled = IsFenJsMessageTransportTraceEnabled;
+        var queuedAt = traceEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        var transferCount = traceEnabled ? transferredEndpoints?.Count ?? 0 : 0;
+        if (traceEnabled)
+        {
+            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                "port-enqueued",
+                messageId,
+                sourcePortId,
+                target.TraceId,
+                sourceFrame,
+                targetFrame,
+                payload,
+                transferCount,
+                0,
+                target.Closed,
+                false,
+                0,
+                false,
+                string.Empty));
+        }
         lock (_windowMessageQueueLock)
         {
             _windowMessageDeliveryTail = _windowMessageDeliveryTail.ContinueWith(
                 _ =>
                 {
+                    var queueDelayMs = traceEnabled
+                        ? System.Diagnostics.Stopwatch.GetElapsedTime(queuedAt).TotalMilliseconds
+                        : 0;
+                    if (traceEnabled)
+                    {
+                        TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                            "port-dequeued",
+                            messageId,
+                            sourcePortId,
+                            target.TraceId,
+                            sourceFrame,
+                            targetFrame,
+                            payload,
+                            transferCount,
+                            queueDelayMs,
+                            target.Closed,
+                            false,
+                            0,
+                            false,
+                            string.Empty));
+                    }
                     if (sessionGeneration != _fenJsSessionGeneration ||
                         target.Owner != this || target.Closed || target.Port.Tag != JsValueTag.Object)
                     {
+                        if (traceEnabled)
+                        {
+                            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                "port-delivery-dropped",
+                                messageId,
+                                sourcePortId,
+                                target.TraceId,
+                                sourceFrame,
+                                targetFrame,
+                                payload,
+                                transferCount,
+                                queueDelayMs,
+                                target.Closed,
+                                false,
+                                0,
+                                false,
+                                $"staleSession={sessionGeneration != _fenJsSessionGeneration}; wrongOwner={target.Owner != this}; portTag={target.Port.Tag}"));
+                        }
                         // The send side already logged; without this the message
                         // just disappears between the two realms.
                         if (DiagnosticPaths.AppendEnabled)
@@ -14613,6 +15016,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                     try
                     {
+                        if (traceEnabled)
+                        {
+                            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                "port-worker-enter",
+                                messageId,
+                                sourcePortId,
+                                target.TraceId,
+                                sourceFrame,
+                                targetFrame,
+                                payload,
+                                transferCount,
+                                queueDelayMs,
+                                false,
+                                false,
+                                0,
+                                false,
+                                string.Empty));
+                        }
                         RunFenJsWithLargeStack<object>(() =>
                         {
                             SetFenJsWorkerPhase("messageport:waiting-interpreter-lock");
@@ -14637,16 +15058,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 using (ActivateWindowCallbackContext(_fenJsGlobalThis, _windowEventListeners))
                                 {
                                     SetFenJsWorkerPhase("messageport:dispatching-handler");
+                                    var probeHandler = ReadJsProperty(target.Port, "onmessage");
+                                    var probeListeners = ReadJsProperty(target.Port, "_fenListeners");
+                                    var handlerCallable = _interpreter.CanCallValue(probeHandler);
+                                    var listenerCount = ReadArrayLikeLength(probeListeners);
+                                    var portEnabled = ReadJsBoolProperty(target.Port, "_fenEnabled");
                                     if (DiagnosticPaths.AppendEnabled)
                                     {
-                                        var probeHandler = ReadJsProperty(target.Port, "onmessage");
-                                        var probeListeners = ReadJsProperty(target.Port, "_fenListeners");
                                         DiagnosticPaths.AppendLogText(
                                             "postmessage_probe.txt",
                                             $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-handlers onmessage=" +
-                                            $"{_interpreter.CanCallValue(probeHandler)} " +
-                                            $"listeners={ReadArrayLikeLength(probeListeners)} " +
-                                            $"enabled={ReadJsBoolProperty(target.Port, "_fenEnabled")}" +
+                                            $"{handlerCallable} " +
+                                            $"listeners={listenerCount} " +
+                                            $"enabled={portEnabled}" +
                                             $"{Environment.NewLine}");
                                     }
 
@@ -14655,20 +15079,165 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                     // started yet has to keep the message, and
                                     // only the port knows that.
                                     var deliverToPort = ReadJsProperty(target.Port, "_fenDeliver");
-                                    if (_interpreter.CanCallValue(deliverToPort))
+                                    var deliverCallable = _interpreter.CanCallValue(deliverToPort);
+                                    if (traceEnabled)
                                     {
+                                        TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                            "port-handler-state",
+                                            messageId,
+                                            sourcePortId,
+                                            target.TraceId,
+                                            sourceFrame,
+                                            targetFrame,
+                                            payload,
+                                            transferCount,
+                                            queueDelayMs,
+                                            false,
+                                            handlerCallable,
+                                            listenerCount,
+                                            portEnabled,
+                                            $"deliverCallable={deliverCallable}"));
+                                    }
+                                    if (deliverCallable)
+                                    {
+                                        if (traceEnabled)
+                                        {
+                                            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                                "port-handler-enter",
+                                                messageId,
+                                                sourcePortId,
+                                                target.TraceId,
+                                                sourceFrame,
+                                                targetFrame,
+                                                payload,
+                                                transferCount,
+                                                queueDelayMs,
+                                                false,
+                                                handlerCallable,
+                                                listenerCount,
+                                                portEnabled,
+                                                string.Empty));
+                                        }
                                         _interpreter.InvokeFunction(deliverToPort, new[] { eventValue }, target.Port);
+                                        if (traceEnabled)
+                                        {
+                                            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                                "port-handler-complete",
+                                                messageId,
+                                                sourcePortId,
+                                                target.TraceId,
+                                                sourceFrame,
+                                                targetFrame,
+                                                payload,
+                                                transferCount,
+                                                queueDelayMs,
+                                                false,
+                                                handlerCallable,
+                                                listenerCount,
+                                                portEnabled,
+                                                string.Empty));
+                                        }
+                                    }
+                                    else if (traceEnabled)
+                                    {
+                                        TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                            "port-handler-missing",
+                                            messageId,
+                                            sourcePortId,
+                                            target.TraceId,
+                                            sourceFrame,
+                                            targetFrame,
+                                            payload,
+                                            transferCount,
+                                            queueDelayMs,
+                                            false,
+                                            handlerCallable,
+                                            listenerCount,
+                                            portEnabled,
+                                            string.Empty));
                                     }
                                 }
                                 SetFenJsWorkerPhase("messageport:microtask-checkpoint");
+                                if (traceEnabled)
+                                {
+                                    TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                        "port-checkpoint-enter",
+                                        messageId,
+                                        sourcePortId,
+                                        target.TraceId,
+                                        sourceFrame,
+                                        targetFrame,
+                                        payload,
+                                        transferCount,
+                                        queueDelayMs,
+                                        false,
+                                        false,
+                                        0,
+                                        false,
+                                        string.Empty));
+                                }
                                 _interpreter.PumpMicrotasks();
                                 SetFenJsWorkerPhase("messageport:checkpoint-complete");
+                                if (traceEnabled)
+                                {
+                                    TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                        "port-checkpoint-complete",
+                                        messageId,
+                                        sourcePortId,
+                                        target.TraceId,
+                                        sourceFrame,
+                                        targetFrame,
+                                        payload,
+                                        transferCount,
+                                        queueDelayMs,
+                                        false,
+                                        false,
+                                        0,
+                                        false,
+                                        string.Empty));
+                                }
                             }
                             return null;
                         }, waitForWorkerMs: -1, instructionBudget: ResolveFenJsTaskInstructionBudget());
+                        if (traceEnabled)
+                        {
+                            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                "port-delivery-complete",
+                                messageId,
+                                sourcePortId,
+                                target.TraceId,
+                                sourceFrame,
+                                targetFrame,
+                                payload,
+                                transferCount,
+                                queueDelayMs,
+                                false,
+                                false,
+                                0,
+                                false,
+                                string.Empty));
+                        }
                     }
                     catch (Exception ex)
                     {
+                        if (traceEnabled)
+                        {
+                            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                "port-delivery-failed",
+                                messageId,
+                                sourcePortId,
+                                target.TraceId,
+                                sourceFrame,
+                                targetFrame,
+                                payload,
+                                transferCount,
+                                queueDelayMs,
+                                target.Closed,
+                                false,
+                                0,
+                                false,
+                                $"{ex.GetType().Name}: {ex.Message}"));
+                        }
                         FenBrowser.Core.EngineLogCompat.Warn(
                             $"[FenJsBridge] MessagePort delivery failed: {ex}",
                             FenBrowser.Core.Logging.LogCategory.JavaScript);
@@ -15748,8 +16317,54 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         string targetWindowOriginOverride = null,
         string sourceOriginOverride = null)
     {
+        var traceEnabled = IsFenJsMessageTransportTraceEnabled;
+        var messageId = traceEnabled ? Interlocked.Increment(ref _messageTransportTraceSequence) : 0;
+        var sourceFrame = traceEnabled
+            ? sourceOriginOverride ?? GetMessageSourceOrigin(sourceWindow)
+            : string.Empty;
+        var targetFrame = traceEnabled ? ProbeFrame() : string.Empty;
+        var payload = traceEnabled ? DescribePostMessageValue(data) : string.Empty;
+        var transferCount = traceEnabled && ports.Tag == JsValueTag.Object
+            ? ReadArrayLikeLength(ports)
+            : 0;
+        if (traceEnabled)
+        {
+            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                "window-route-enter",
+                messageId,
+                0,
+                0,
+                sourceFrame,
+                targetFrame,
+                payload,
+                transferCount,
+                0,
+                false,
+                false,
+                listeners?.Count ?? 0,
+                false,
+                $"targetOrigin={targetOrigin ?? string.Empty}; targetWindowOrigin={targetWindowOriginOverride ?? string.Empty}"));
+        }
         if (!ShouldDeliverWindowMessage(targetWindow, targetOrigin, targetWindowOriginOverride))
         {
+            if (traceEnabled)
+            {
+                TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                    "window-route-dropped",
+                    messageId,
+                    0,
+                    0,
+                    sourceFrame,
+                    targetFrame,
+                    payload,
+                    transferCount,
+                    0,
+                    false,
+                    false,
+                    listeners?.Count ?? 0,
+                    false,
+                    $"targetOrigin={targetOrigin ?? string.Empty}; actualOrigin={targetWindowOriginOverride ?? ReadWindowOrigin(targetWindow)}"));
+            }
             // A dropped message is invisible from script: the sender sees a
             // successful postMessage and the receiver simply never hears. Say so.
             if (DiagnosticPaths.AppendEnabled)
@@ -15773,6 +16388,25 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             $"data={DescribePostMessageValue(data)}{Environment.NewLine}");
         var exposedSourceWindow = GetMessageSourceForTarget(sourceWindow, targetWindow);
         var sessionGeneration = _fenJsSessionGeneration;
+        var queuedAt = traceEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        if (traceEnabled)
+        {
+            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                "window-enqueued",
+                messageId,
+                0,
+                0,
+                sourceFrame,
+                targetFrame,
+                payload,
+                transferCount,
+                0,
+                false,
+                false,
+                listeners?.Count ?? 0,
+                false,
+                $"origin={origin}"));
+        }
         // The payload values are captured by the delivery continuation, which
         // may sit queued across arbitrary engine activity; without a pin a
         // collection can sweep them before delivery runs.
@@ -15782,10 +16416,49 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             _windowMessageDeliveryTail = _windowMessageDeliveryTail.ContinueWith(
                 _ =>
                 {
+                    var queueDelayMs = traceEnabled
+                        ? System.Diagnostics.Stopwatch.GetElapsedTime(queuedAt).TotalMilliseconds
+                        : 0;
+                    if (traceEnabled)
+                    {
+                        TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                            "window-dequeued",
+                            messageId,
+                            0,
+                            0,
+                            sourceFrame,
+                            targetFrame,
+                            payload,
+                            transferCount,
+                            queueDelayMs,
+                            false,
+                            false,
+                            listeners?.Count ?? 0,
+                            false,
+                            string.Empty));
+                    }
                     try
                     {
                         if (sessionGeneration != _fenJsSessionGeneration)
                         {
+                            if (traceEnabled)
+                            {
+                                TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                    "window-delivery-dropped",
+                                    messageId,
+                                    0,
+                                    0,
+                                    sourceFrame,
+                                    targetFrame,
+                                    payload,
+                                    transferCount,
+                                    queueDelayMs,
+                                    false,
+                                    false,
+                                    listeners?.Count ?? 0,
+                                    false,
+                                    "session-changed-before-page-script-gate"));
+                            }
                             return;
                         }
 
@@ -15793,7 +16466,44 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         WaitForPageScripts();
                         if (sessionGeneration != _fenJsSessionGeneration)
                         {
+                            if (traceEnabled)
+                            {
+                                TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                    "window-delivery-dropped",
+                                    messageId,
+                                    0,
+                                    0,
+                                    sourceFrame,
+                                    targetFrame,
+                                    payload,
+                                    transferCount,
+                                    queueDelayMs,
+                                    false,
+                                    false,
+                                    listeners?.Count ?? 0,
+                                    false,
+                                    "session-changed-after-page-script-gate"));
+                            }
                             return;
+                        }
+
+                        if (traceEnabled)
+                        {
+                            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                "window-page-scripts-ready",
+                                messageId,
+                                0,
+                                0,
+                                sourceFrame,
+                                targetFrame,
+                                payload,
+                                transferCount,
+                                queueDelayMs,
+                                false,
+                                false,
+                                listeners?.Count ?? 0,
+                                false,
+                                string.Empty));
                         }
 
                         if (DiagnosticPaths.AppendEnabled)
@@ -15823,7 +16533,42 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 {
                                     var eventValue = CreateMessageEventValue(data, origin, exposedSourceWindow, targetWindow, ports);
                                     var handler = ReadJsProperty(targetWindow, "onmessage");
-                                    if (_interpreter.CanCallValue(handler))
+                                    var handlerCallable = _interpreter.CanCallValue(handler);
+                                    var listenerCount = listeners?.Count ?? 0;
+                                    if (traceEnabled)
+                                    {
+                                        TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                            "window-handler-state",
+                                            messageId,
+                                            0,
+                                            0,
+                                            sourceFrame,
+                                            targetFrame,
+                                            payload,
+                                            transferCount,
+                                            queueDelayMs,
+                                            false,
+                                            handlerCallable,
+                                            listenerCount,
+                                            false,
+                                            $"srcIsParent={exposedSourceWindow.Equals(ReadGlobalValueOrUndefined("parent"))}; srcIsSelf={exposedSourceWindow.Equals(_fenJsGlobalThis)}"));
+                                        TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                            "window-handler-enter",
+                                            messageId,
+                                            0,
+                                            0,
+                                            sourceFrame,
+                                            targetFrame,
+                                            payload,
+                                            transferCount,
+                                            queueDelayMs,
+                                            false,
+                                            handlerCallable,
+                                            listenerCount,
+                                            false,
+                                            string.Empty));
+                                    }
+                                    if (handlerCallable)
                                     {
                                         TryInvokeFenJsEventCallback(handler, targetWindow, eventValue, "message");
                                     }
@@ -15833,16 +16578,103 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                     {
                                         NotifyEmbeddedFramesOfParentWindowEvent("message", eventValue);
                                     }
+                                    if (traceEnabled)
+                                    {
+                                        TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                            "window-handler-complete",
+                                            messageId,
+                                            0,
+                                            0,
+                                            sourceFrame,
+                                            targetFrame,
+                                            payload,
+                                            transferCount,
+                                            queueDelayMs,
+                                            false,
+                                            handlerCallable,
+                                            listenerCount,
+                                            false,
+                                            string.Empty));
+                                        TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                            "window-checkpoint-enter",
+                                            messageId,
+                                            0,
+                                            0,
+                                            sourceFrame,
+                                            targetFrame,
+                                            payload,
+                                            transferCount,
+                                            queueDelayMs,
+                                            false,
+                                            false,
+                                            0,
+                                            false,
+                                            string.Empty));
+                                    }
                                     _interpreter.PumpMicrotasks();
                                     RecordMicrotaskCheckpoint("postMessage");
+                                    if (traceEnabled)
+                                    {
+                                        TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                            "window-checkpoint-complete",
+                                            messageId,
+                                            0,
+                                            0,
+                                            sourceFrame,
+                                            targetFrame,
+                                            payload,
+                                            transferCount,
+                                            queueDelayMs,
+                                            false,
+                                            false,
+                                            0,
+                                            false,
+                                            string.Empty));
+                                    }
                                 }
                             }
 
                 return null;
             }, waitForWorkerMs: -1, instructionBudget: ResolveFenJsTaskInstructionBudget());
+                        if (traceEnabled)
+                        {
+                            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                "window-delivery-complete",
+                                messageId,
+                                0,
+                                0,
+                                sourceFrame,
+                                targetFrame,
+                                payload,
+                                transferCount,
+                                queueDelayMs,
+                                false,
+                                false,
+                                0,
+                                false,
+                                string.Empty));
+                        }
                     }
                     catch (Exception ex)
                     {
+                        if (traceEnabled)
+                        {
+                            TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
+                                "window-delivery-failed",
+                                messageId,
+                                0,
+                                0,
+                                sourceFrame,
+                                targetFrame,
+                                payload,
+                                transferCount,
+                                queueDelayMs,
+                                false,
+                                false,
+                                listeners?.Count ?? 0,
+                                false,
+                                $"{ex.GetType().Name}: {ex.Message}"));
+                        }
                         FenBrowser.Core.EngineLogCompat.Warn(
                             $"[FenJsBridge] postMessage delivery failed: {ex.Message}",
                             FenBrowser.Core.Logging.LogCategory.JavaScript);
