@@ -2302,6 +2302,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             state.IsForced = true;
+            state.ForcedWidth = Math.Max(0, forcedWidth);
 
             var style = item.ComputedStyle;
             if (style == null)
@@ -2333,6 +2334,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             state.IsForced = true;
+            state.ForcedHeight = Math.Max(0, forcedHeight);
 
             var style = item.ComputedStyle;
             if (style == null)

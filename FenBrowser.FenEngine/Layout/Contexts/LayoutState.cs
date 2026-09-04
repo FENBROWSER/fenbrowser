@@ -90,6 +90,20 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// </summary>
         public bool IsForced;
 
+        /// <summary>
+        /// The width/height the flex forced-size passes write onto the box's style
+        /// before laying it out, or NaN when this pass forces nothing.
+        /// </summary>
+        /// <remarks>
+        /// These belong in the layout key. LayoutWithForcedWidth/Height change the
+        /// box's specified size in place and then lay it out, so two passes that
+        /// force different sizes are genuinely different layouts even when every
+        /// other constraint matches — without this the memo would answer the second
+        /// one with the first one's geometry.
+        /// </remarks>
+        public float ForcedWidth = float.NaN;
+        public float ForcedHeight = float.NaN;
+
         public LayoutState(SKSize available, float cbWidth, float cbHeight, float vpWidth, float vpHeight, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             AvailableSize = available;
@@ -106,6 +120,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             ScrollContainer = null;
             SubgridContext = null;
             IsForced = false;
+            ForcedWidth = float.NaN;
+            ForcedHeight = float.NaN;
         }
 
         public LayoutState Clone()
@@ -124,13 +140,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 ScrollOffsetY = this.ScrollOffsetY,
                 ScrollContainer = this.ScrollContainer,
                 SubgridContext = this.SubgridContext,
-                IsForced = this.IsForced
+                IsForced = this.IsForced,
+                ForcedWidth = this.ForcedWidth,
+                ForcedHeight = this.ForcedHeight
             };
         }
 
         public bool Equals(LayoutState other)
         {
             return this.IsForced == other.IsForced &&
+                   SameForcedSize(this.ForcedWidth, other.ForcedWidth) &&
+                   SameForcedSize(this.ForcedHeight, other.ForcedHeight) &&
                    this.AvailableSize == other.AvailableSize &&
                    this.ContainingBlockWidth == other.ContainingBlockWidth &&
                    this.ContainingBlockHeight == other.ContainingBlockHeight &&
@@ -149,7 +169,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         public override int GetHashCode()
         {
-            return HashCode.Combine(AvailableSize, ContainingBlockWidth, ContainingBlockHeight, IsForced);
+            return HashCode.Combine(AvailableSize, ContainingBlockWidth, ContainingBlockHeight, IsForced,
+                                    ForcedWidth, ForcedHeight);
+        }
+
+        /// <summary>NaN means "nothing forced", and NaN != NaN, so compare it explicitly.</summary>
+        private static bool SameForcedSize(float left, float right)
+        {
+            return float.IsNaN(left) ? float.IsNaN(right) : left == right;
         }
 
         public static bool operator ==(LayoutState left, LayoutState right) => left.Equals(right);
