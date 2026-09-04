@@ -2124,11 +2124,27 @@ public void Dispose()
 
             // Fallback: if >60% dirty, full recascade is cheaper than incremental.
             // Most JS-driven DOM mutations affect <5% of elements (class toggle, style
-            // change on a single element).  The old 30% threshold was too conservative
-            // and caused full recascades for small mutations on medium pages.
-            if (totalElements > 0 && dirtyRoots.Count > totalElements * 0.6)
+            // change on a single element).
+            //
+            // The denominator has to be the document, not the walk. CollectDirtySubtrees
+            // prunes every branch with no dirty descendant, so totalElements counts only
+            // the elements it visited - the dirty path itself. Hovering one link gives
+            // dirtyRoots=1 and totalElements=1, the ratio is 1.0, and every single-element
+            // change took the full-recascade path: :hover on a link re-cascaded the whole
+            // page, which is what made hover underlines lag by seconds.
+            //
+            // LastComputedStyles is the styled-element count for the document and is
+            // already maintained, so it is the denominator the ratio was always meant to
+            // use. Without it, fall back to the walk count rather than guessing.
+            int documentElements = LastComputedStyles?.Count ?? 0;
+            if (documentElements <= 0)
             {
-                EngineLogCompat.Info($"[CustomHtmlEngine] Incremental too broad ({dirtyRoots.Count}/{totalElements} dirty) — falling back to full recascade", LogCategory.CSS);
+                documentElements = totalElements;
+            }
+
+            if (documentElements > 0 && dirtyRoots.Count > documentElements * 0.6)
+            {
+                EngineLogCompat.Info($"[CustomHtmlEngine] Incremental too broad ({dirtyRoots.Count}/{documentElements} dirty) — falling back to full recascade", LogCategory.CSS);
                 await RecascadeAsync().ConfigureAwait(false);
                 return;
             }
