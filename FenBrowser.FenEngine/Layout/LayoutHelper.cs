@@ -224,6 +224,23 @@ namespace FenBrowser.FenEngine.Layout
                    tag == "TEMPLATE";
         }
 
+        /// <summary>
+        /// True when a specified size is one of the content-based sizing keywords
+        /// (CSS Sizing 3 §5: <c>min-content</c>, <c>max-content</c>, <c>fit-content</c>,
+        /// <c>fit-content(&lt;length-percentage&gt;)</c>).
+        /// </summary>
+        public static bool IsContentBasedSizeKeyword(string rawSize)
+        {
+            if (string.IsNullOrWhiteSpace(rawSize)) return false;
+
+            var value = rawSize.Trim();
+            return value.Equals("min-content", StringComparison.OrdinalIgnoreCase) ||
+                   value.Equals("max-content", StringComparison.OrdinalIgnoreCase) ||
+                   value.Equals("fit-content", StringComparison.OrdinalIgnoreCase) ||
+                   (value.StartsWith("fit-content(", StringComparison.OrdinalIgnoreCase) &&
+                    value.EndsWith(")", StringComparison.Ordinal));
+        }
+
         public static float EvaluateCssExpression(
             string expression,
             float parentSize,
