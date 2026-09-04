@@ -1349,15 +1349,21 @@ public sealed partial class BytecodeInterpreter
         {
             try
             {
+                TraceMicrotaskStage("promise-reaction-handler-enter");
                 handlerResult = CallFunction(reaction.Handler, new[] { job.Argument }, JsValue.Undefined);
+                TraceMicrotaskStage("promise-reaction-handler-complete");
             }
             catch (JsThrownException ex)
             {
+                TraceMicrotaskStage(
+                    "promise-reaction-handler-threw",
+                    DescribeMicrotaskTraceException(ex));
                 handlerResult = ex.Value;
                 threw = true;
             }
         }
 
+        TraceMicrotaskStage(threw ? "promise-reaction-reject-enter" : "promise-reaction-resolve-enter");
         if (threw)
         {
             _ = CallFunction(capability.Reject, new[] { handlerResult }, JsValue.Undefined);
@@ -1366,6 +1372,7 @@ public sealed partial class BytecodeInterpreter
         {
             _ = CallFunction(capability.Resolve, new[] { handlerResult }, JsValue.Undefined);
         }
+        TraceMicrotaskStage(threw ? "promise-reaction-reject-complete" : "promise-reaction-resolve-complete");
     }
 
     // 27.2.2.2 NewPromiseResolveThenableJob - thenable.then(resolve, reject).
@@ -1378,11 +1385,15 @@ public sealed partial class BytecodeInterpreter
         var (resolveFn, rejectFn) = CreateResolvingFunctions(promiseHandle);
         try
         {
+            TraceMicrotaskStage("promise-thenable-call-enter");
             _ = CallFunction(job.Then, new[] { resolveFn, rejectFn }, job.Thenable);
+            TraceMicrotaskStage("promise-thenable-call-complete");
         }
         catch (JsThrownException ex)
         {
+            TraceMicrotaskStage("promise-thenable-call-threw", DescribeMicrotaskTraceException(ex));
             _ = CallFunction(rejectFn, new[] { ex.Value }, JsValue.Undefined);
+            TraceMicrotaskStage("promise-thenable-reject-complete");
         }
     }
 }
