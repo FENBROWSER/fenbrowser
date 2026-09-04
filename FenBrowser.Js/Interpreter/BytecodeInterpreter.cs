@@ -792,6 +792,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     ThisValue = JsValue.FromObject(globalHandle)
                 };
                 var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
+                // The frame roots its async context through SelfHandle and
+                // nothing else, so leaving it unset means the context - and the
+                // capability handles below with it - is traced by nobody while
+                // the body runs. See ExecuteWithEnvironment for the failure that
+                // produced.
+                asyncCtx.SelfHandle = ctxHandle;
                 asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
                     ? capability.Promise.AsObjectHandle() : null;
                 asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
@@ -1042,7 +1048,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 ThisValue = JsValue.FromObject(globalHandle)
             };
-            _ = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
+            // SelfHandle is what roots this context: TraceRoots only reaches an
+            // async context via frame.AsyncContext?.SelfHandle. Discarding the
+            // handle here left the context untraced for the whole module body,
+            // so a minor collection swept the capability's resolve function -
+            // and settling the module at the end then dereferenced a freed cell
+            // ("Stale heap handle ... allocSite=CreateResolvingFunctions").
+            // github.com reproduced it on every load.
+            var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
+            asyncCtx.SelfHandle = ctxHandle;
             asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
                 ? capability.Promise.AsObjectHandle() : null;
             asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
