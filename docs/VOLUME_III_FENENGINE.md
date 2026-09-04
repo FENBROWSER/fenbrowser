@@ -11334,6 +11334,23 @@ Verification:
   first-party documents, 52 compatibility fallbacks, one resource rejection,
   and 82/93 declared-reference passes with no comparable reference failures or
   renderer/worker failures.
+
+## 2.147 Bounded SVG Paint Ordering (2026-09-04)
+
+- The first-party SVG cascade accepts inherited `paint-order` values and resolves
+  the bounded `fill`, `stroke`, and `markers` grammar. Duplicate or unknown tokens
+  leave the inherited value unchanged; omitted phases are appended in normal
+  fill/stroke/markers order without adding an unbounded collection.
+- Shape rendering applies the resolved order across fill, stroke, and marker
+  painting. Text rendering applies the same inherited order to fill and stroke;
+  its markers phase is inert because marker properties do not apply to text.
+- The complete 26-file Release SVG test namespace passes 361/361. Exact local WPT
+  reftests `painting/reftests/paint-order-002.svg` and `paint-order-003.svg` now
+  render first-party and match their declared references with zero differing
+  pixels. `paint-order-001.svg` remains an explicit compatibility fallback only
+  for marker `overflow:visible`, which is a separate clipping-semantics unit.
+- `Svg.Skia` remains the default while the wider dynamic, resource, cross-platform,
+  and soak gates remain open.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

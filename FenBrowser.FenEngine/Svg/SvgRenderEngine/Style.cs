@@ -34,6 +34,37 @@ namespace FenBrowser.FenEngine.Svg
                 new(SvgValues.PaintKind.None, default, null, null);
         }
 
+        private enum PaintPhase : byte
+        {
+            Fill,
+            Stroke,
+            Markers
+        }
+
+        private readonly struct SvgPaintOrder
+        {
+            public SvgPaintOrder(PaintPhase first, PaintPhase second, PaintPhase third)
+            {
+                First = first;
+                Second = second;
+                Third = third;
+            }
+
+            public PaintPhase First { get; }
+            public PaintPhase Second { get; }
+            public PaintPhase Third { get; }
+
+            public PaintPhase At(int index) => index switch
+            {
+                0 => First,
+                1 => Second,
+                _ => Third
+            };
+
+            public static SvgPaintOrder Normal { get; } =
+                new(PaintPhase.Fill, PaintPhase.Stroke, PaintPhase.Markers);
+        }
+
         private sealed class InheritedStyle
         {
             public PaintSpec Fill = PaintSpec.Black;      // spec default: black
@@ -48,6 +79,7 @@ namespace FenBrowser.FenEngine.Svg
             public bool Visibility = true;
             public float FontSize = DefaultFontSize;
             public float RootFontSize = DefaultFontSize;
+            public SvgPaintOrder PaintOrder = SvgPaintOrder.Normal;
 
             public InheritedStyle Clone() => (InheritedStyle)MemberwiseClone();
 
@@ -87,7 +119,8 @@ namespace FenBrowser.FenEngine.Svg
                     DashOffset = DashOffset,
                     Visibility = Visibility,
                     FontSize = ResolveFontSize(Attr("font-size"), FontSize),
-                    RootFontSize = RootFontSize
+                    RootFontSize = RootFontSize,
+                    PaintOrder = ResolvePaintOrder(Attr("paint-order"), PaintOrder)
                 };
 
                 if (el.Parent == null) s.RootFontSize = s.FontSize;
@@ -96,7 +129,8 @@ namespace FenBrowser.FenEngine.Svg
                                !s.Fill.Equals(Fill) ||
                                !s.Stroke.Equals(Stroke) ||
                                s.FontSize != FontSize ||
-                               s.RootFontSize != RootFontSize;
+                               s.RootFontSize != RootFontSize ||
+                               !s.PaintOrder.Equals(PaintOrder);
 
                 var swRaw = Attr("stroke-width");
                 if (!string.IsNullOrWhiteSpace(swRaw) &&
@@ -172,6 +206,54 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             private static readonly float[] InvalidDash = System.Array.Empty<float>();
+
+            private static SvgPaintOrder ResolvePaintOrder(string raw, SvgPaintOrder inherited)
+            {
+                if (string.IsNullOrWhiteSpace(raw)) return inherited;
+                ReadOnlySpan<char> value = raw.AsSpan().Trim();
+                if (value.Equals("normal", System.StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("initial", System.StringComparison.OrdinalIgnoreCase))
+                    return SvgPaintOrder.Normal;
+                if (value.Equals("inherit", System.StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("unset", System.StringComparison.OrdinalIgnoreCase))
+                    return inherited;
+
+                Span<PaintPhase> phases = stackalloc PaintPhase[3];
+                int count = 0;
+                int offset = 0;
+                while (offset < value.Length)
+                {
+                    while (offset < value.Length && char.IsWhiteSpace(value[offset])) offset++;
+                    if (offset == value.Length) break;
+                    int start = offset;
+                    while (offset < value.Length && !char.IsWhiteSpace(value[offset])) offset++;
+                    ReadOnlySpan<char> token = value.Slice(start, offset - start);
+                    PaintPhase phase;
+                    if (token.Equals("fill", System.StringComparison.OrdinalIgnoreCase))
+                        phase = PaintPhase.Fill;
+                    else if (token.Equals("stroke", System.StringComparison.OrdinalIgnoreCase))
+                        phase = PaintPhase.Stroke;
+                    else if (token.Equals("markers", System.StringComparison.OrdinalIgnoreCase))
+                        phase = PaintPhase.Markers;
+                    else
+                        return inherited;
+
+                    for (int i = 0; i < count; i++)
+                        if (phases[i] == phase) return inherited;
+                    if (count == phases.Length) return inherited;
+                    phases[count++] = phase;
+                }
+                if (count == 0) return inherited;
+
+                for (int n = 0; n < 3; n++)
+                {
+                    PaintPhase normal = (PaintPhase)n;
+                    bool present = false;
+                    for (int i = 0; i < count; i++) present |= phases[i] == normal;
+                    if (!present) phases[count++] = normal;
+                }
+                return new SvgPaintOrder(phases[0], phases[1], phases[2]);
+            }
 
             private static float[] ParseDashArray(string raw)
             {

@@ -4816,6 +4816,25 @@ Verification:
 - General timeline advancement, event timing, animation composition, and
   non-geometry motion targets remain explicit browser/runtime work; first-party
   remains non-default.
+
+## 6.212 SVG Paint-Order Conformance (2026-09-04)
+
+- The local WPT reproduction used only
+  `painting/reftests/paint-order-001.svg`, `paint-order-002.svg`, and
+  `paint-order-003.svg`. Before the fix all three were `css-cascade`
+  compatibility fallbacks and none reached the declared-reference oracle.
+- After bounded inherited paint-order support, `paint-order-002.svg` and
+  `paint-order-003.svg` route first-party and both match their declared SVG
+  references exactly: maximum channel difference 0 and differing pixels 0.
+  There are no renderer failures, worker failures, resource rejections, or
+  timeouts. `paint-order-001.svg` still routes to compatibility solely because
+  its marker requires unsupported `overflow:visible` clipping behavior.
+- Four focused paint-order pixel regressions pass, and the complete 26-file
+  Release SVG test namespace passes 361/361. The Release FenEngine and BenchSvg
+  builds complete with zero warnings and zero errors.
+- This closes static fill/stroke/marker ordering only. It does not close marker
+  overflow, text-decoration ordering, CSSOM parsing tests, or the default-switch
+  gate.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

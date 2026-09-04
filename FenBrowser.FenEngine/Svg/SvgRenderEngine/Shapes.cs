@@ -37,16 +37,21 @@ namespace FenBrowser.FenEngine.Svg
                     using var fillPaint = BuildFillPaint(el, style, path);
                     using var strokePaint = BuildStrokePaint(el, style, path);
 
-                    // Spec paint order: fill first, then stroke.
-                    if (fillPaint != null)
+                    for (int i = 0; i < 3; i++)
                     {
-                        canvas.DrawPath(path, fillPaint);
+                        switch (style.PaintOrder.At(i))
+                        {
+                            case PaintPhase.Fill when fillPaint != null:
+                                canvas.DrawPath(path, fillPaint);
+                                break;
+                            case PaintPhase.Stroke when strokePaint != null:
+                                canvas.DrawPath(path, strokePaint);
+                                break;
+                            case PaintPhase.Markers:
+                                DrawMarkers(el, canvas, viewport, style, path);
+                                break;
+                        }
                     }
-                    if (strokePaint != null)
-                    {
-                        canvas.DrawPath(path, strokePaint);
-                    }
-                    DrawMarkers(el, canvas, viewport, style, path);
                 }
                 finally
                 {

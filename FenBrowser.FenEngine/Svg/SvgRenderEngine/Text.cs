@@ -337,8 +337,18 @@ namespace FenBrowser.FenEngine.Svg
                     }
                 }
                 using var blob = blobBuilder.Build();
-                if (fillPaint != null) canvas.DrawText(blob, 0f, 0f, fillPaint);
-                if (strokePaint != null) canvas.DrawText(blob, 0f, 0f, strokePaint);
+                for (int i = 0; i < 3; i++)
+                {
+                    switch (run.PaintStyle.PaintOrder.At(i))
+                    {
+                        case PaintPhase.Fill when fillPaint != null:
+                            canvas.DrawText(blob, 0f, 0f, fillPaint);
+                            break;
+                        case PaintPhase.Stroke when strokePaint != null:
+                            canvas.DrawText(blob, 0f, 0f, strokePaint);
+                            break;
+                    }
+                }
             }
             finally
             {

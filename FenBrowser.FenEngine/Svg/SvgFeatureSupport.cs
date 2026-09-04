@@ -17,7 +17,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private static readonly HashSet<string> FallbackProperties = new(StringComparer.OrdinalIgnoreCase)
         {
-            "paint-order", "vector-effect"
+            "vector-effect"
         };
 
         private static readonly HashSet<string> AdvancedTextAttributes = new(StringComparer.OrdinalIgnoreCase)
