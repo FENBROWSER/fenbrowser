@@ -4595,6 +4595,27 @@ public sealed class JsParser
     {
         if (TryParseArrowFunction(out var arrow))
         {
+            // ECMA-262 13.16: Expression : Expression , AssignmentExpression, and
+            // an ArrowFunction *is* an AssignmentExpression - so an arrow is legal
+            // as a non-final operand of a comma expression, as in
+            // `((e,t) => {...}, next(...))`. Returning unconditionally here made
+            // every such sequence a parse error, which rejected whole minified
+            // bundles (react.dev ships one).
+            //
+            // Only the comma continues. An arrow may not be the operand of any
+            // tighter binary operator - `x => x + 1` parses `+ 1` into the concise
+            // body, and a block-bodied arrow is not a valid left operand at all -
+            // so resuming the general infix loop would accept invalid syntax. The
+            // minBindingPower guard matches the comma's leftBp of 1, which keeps
+            // contexts parsed at bp 2 (argument lists, array and object elements,
+            // variable declarators) from swallowing their own separators.
+            while (minBindingPower <= 1 && IsPunctuator(","))
+            {
+                Advance();
+                var tail = ParseExpression(2);
+                arrow = new BinaryExpressionNode(",", arrow, tail, MergeSpan(arrow.Span, tail.Span));
+            }
+
             return arrow;
         }
 
