@@ -231,7 +231,8 @@ namespace FenBrowser.FenEngine.Svg
 
             bool hasViewBox = TryParseViewBox(
                 root.GetAttribute("viewBox"),
-                out float vbX, out float vbY, out float vbW, out float vbH);
+                out float vbX, out float vbY, out float vbW, out float vbH,
+                out bool viewBoxDisablesRendering);
 
             // Intrinsic sizing: explicit px-ish lengths win; otherwise derive from
             // viewBox (legacy adapter parity); otherwise CSS replaced-element
@@ -271,6 +272,11 @@ namespace FenBrowser.FenEngine.Svg
                 // transform the clip rectangle too (e.g. a large-negative
                 // vbY would push the clip entirely off-content).
                 canvas.ClipRect(new SKRect(0f, 0f, width, height));
+                if (viewBoxDisablesRendering)
+                {
+                    picture = recorder.EndRecording();
+                    return;
+                }
                 ApplyViewportTransform(canvas, viewport, hasViewBox, vbX, vbY, vbW, vbH, root.GetAttribute("preserveAspectRatio"));
                 ApplyCssZoom(root, canvas);
                 if (!rootStyle.Visibility)

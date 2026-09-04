@@ -244,7 +244,13 @@ namespace FenBrowser.FenEngine.Svg
             var inner = new ViewportContext(w, h);
             bool hasViewBox = TryParseViewBox(
                 el.GetAttribute("viewBox"),
-                out float vbX, out float vbY, out float vbW, out float vbH);
+                out float vbX, out float vbY, out float vbW, out float vbH,
+                out bool viewBoxDisablesRendering);
+
+            if (viewBoxDisablesRendering)
+            {
+                return;
+            }
 
             using var scope = new CanvasState(canvas);
             ApplyElementTransform(el, canvas, outer, inherited);
@@ -472,7 +478,13 @@ namespace FenBrowser.FenEngine.Svg
             var inner = new ViewportContext(w, h);
             bool hasViewBox = TryParseViewBox(
                 symbol.GetAttribute("viewBox"),
-                out float vbX, out float vbY, out float vbW, out float vbH);
+                out float vbX, out float vbY, out float vbW, out float vbH,
+                out bool viewBoxDisablesRendering);
+
+            if (viewBoxDisablesRendering)
+            {
+                return;
+            }
 
             using var scope = new CanvasState(canvas);
             DrawNestedSvgBody(symbol, canvas, inner, inherited, hasViewBox, vbX, vbY, vbW, vbH);

@@ -106,13 +106,42 @@ namespace FenBrowser.Tests.Svg
             }
         }
 
-        [Fact]
-        public void ZeroAreaViewBox_RendersNothingButSucceeds()
+        [Theory]
+        [InlineData("0 0 0 10")]
+        [InlineData("0 0 10 0")]
+        public void ZeroAreaRootViewBox_RendersNothingButSucceeds(string viewBox)
         {
-            var result = _renderer.Render(
-                "<svg width=\"10\" height=\"10\" viewBox=\"0 0 0 10\"><rect width=\"5\" height=\"5\" fill=\"red\"/></svg>");
+            using var result = _renderer.Render(
+                $"<svg width='10' height='10' viewBox='{viewBox}'>" +
+                "<rect width='10' height='10' fill='red'/></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(10f, result.Width);
+            Assert.Equal(10f, result.Height);
+            Assert.False(HasVisiblePixels(result.Bitmap));
+        }
+
+        [Fact]
+        public void ZeroAreaNestedViewBox_RendersNothing()
+        {
+            using var result = _renderer.Render(
+                "<svg width='20' height='20'><svg width='20' height='20' viewBox='0 0 0 10'>" +
+                "<rect width='20' height='20' fill='red'/></svg></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(HasVisiblePixels(result.Bitmap));
+        }
+
+        [Fact]
+        public void ZeroAreaSymbolViewBox_RendersNothing()
+        {
+            using var result = _renderer.Render(
+                "<svg width='20' height='20'><defs><symbol id='s' viewBox='0 0 0 10'>" +
+                "<rect width='20' height='20' fill='red'/></symbol></defs>" +
+                "<use href='#s' width='20' height='20'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(HasVisiblePixels(result.Bitmap));
         }
 
         private static bool HasVisiblePixels(FenBrowser.FenEngine.Adapters.SvgRenderResult r)

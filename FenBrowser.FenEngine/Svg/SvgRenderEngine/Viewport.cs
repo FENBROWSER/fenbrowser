@@ -145,9 +145,16 @@ namespace FenBrowser.FenEngine.Svg
             return false;
         }
 
-        private static bool TryParseViewBox(string text, out float x, out float y, out float w, out float h)
+        private static bool TryParseViewBox(
+            string text,
+            out float x,
+            out float y,
+            out float w,
+            out float h,
+            out bool disablesRendering)
         {
             x = y = w = h = 0f;
+            disablesRendering = false;
             if (string.IsNullOrWhiteSpace(text))
             {
                 return false;
@@ -174,12 +181,19 @@ namespace FenBrowser.FenEngine.Svg
             w = vb[2];
             h = vb[3];
 
-            // Non-positive dimensions disable the viewport scaling entirely
-            // (spec: element renders nothing scaled; never divide by zero).
-            if (w <= 0f || h <= 0f || !SvgValues.IsFinite(w) || !SvgValues.IsFinite(h))
+            if (!SvgValues.IsFinite(x) || !SvgValues.IsFinite(y) ||
+                !SvgValues.IsFinite(w) || !SvgValues.IsFinite(h))
             {
                 return false;
             }
+            // A parsed zero viewBox dimension is not equivalent to an absent or
+            // malformed viewBox: it disables rendering for this viewport.
+            if (w == 0f || h == 0f)
+            {
+                disablesRendering = true;
+                return false;
+            }
+            if (w < 0f || h < 0f) return false;
             return true;
         }
 

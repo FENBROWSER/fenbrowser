@@ -11465,6 +11465,19 @@ Verification:
   fallbacks, and 19 to 22 reference passes without worker failure or timeout.
 - `marker-006.svg` remains the sole targeted marker mismatch at 103 differing edge
   pixels; it is not waived. First-party SVG remains non-default.
+
+## 2.154 Zero-Area SVG ViewBox Rendering (2026-09-04)
+
+- ViewBox parsing now distinguishes an absent/malformed value from a parsed
+  zero width or height. The latter suppresses the viewport's descendants
+  instead of being treated as an unscaled SVG coordinate system.
+- The suppression applies to root and nested SVG viewports, used symbols, and
+  marker viewports. Root intrinsic dimensions remain intact; a transparent
+  200-by-200 document is not collapsed to a one-pixel raster.
+- Local Windows WPT artifacts for zero-width, zero-height, zero-area, symbol, and
+  marker viewBoxes are byte-identical to their checked-in expected images. The
+  Svg.Skia compatibility renderer paints content in these cases, so legacy pixel
+  parity is deliberately not used as the correctness oracle.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

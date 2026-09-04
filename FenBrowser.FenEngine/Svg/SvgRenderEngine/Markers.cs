@@ -130,7 +130,9 @@ namespace FenBrowser.FenEngine.Svg
                 canvas.Scale(unitScale, unitScale);
 
                 bool hasViewBox = TryParseViewBox(marker.GetAttribute("viewBox"),
-                    out float vbX, out float vbY, out float vbW, out float vbH);
+                    out float vbX, out float vbY, out float vbW, out float vbH,
+                    out bool viewBoxDisablesRendering);
+                if (viewBoxDisablesRendering) return;
                 var markerViewport = new ViewportContext(markerWidth, markerHeight);
                 SKPoint mappedRef = hasViewBox
                     ? MapMarkerReference(refX, refY, markerViewport, vbX, vbY, vbW, vbH,

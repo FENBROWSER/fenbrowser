@@ -4951,6 +4951,19 @@ Verification:
   repeated smooth-command groups, default orientation, path-wide subpath roles,
   and the 4,096-point cap. Bearing commands and the retained marker-viewBox raster
   difference remain open.
+
+## 6.219 SVG Zero-Area ViewBox Conformance (2026-09-04)
+
+- Focused tests assert preserved raster dimensions and no visible descendants for
+  zero-width/height root viewBoxes, nested SVG viewports, used symbols, and marker
+  viewports. Marker verification also proves the referencing path remains painted.
+- The 16-file local Windows `svg/coordinate-systems` slice completes without a
+  first-party failure, worker failure, or timeout. Four transparent viewport cases
+  and the marker case are byte-identical to their checked-in expected PNG outputs.
+- Direct Svg.Skia comparisons fail for those targets because the compatibility
+  backend paints the suppressed descendants. The expected WPT artifacts are the
+  acceptance source. Pattern viewBox behavior remains behind the explicit pattern
+  paint-server fallback and is not claimed by this unit.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

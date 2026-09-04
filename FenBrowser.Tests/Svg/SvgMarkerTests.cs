@@ -227,6 +227,23 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void ZeroAreaMarkerViewBox_SuppressesMarkerContent()
+        {
+            const string svg =
+                "<svg width='40' height='20'><defs><marker id='m' viewBox='0 0 0 10' " +
+                "markerWidth='10' markerHeight='10' markerUnits='userSpaceOnUse'>" +
+                "<rect width='10' height='10' fill='red'/></marker></defs>" +
+                "<line x1='5' y1='10' x2='30' y2='10' stroke='black' marker-end='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.False(HasRed(result.Bitmap, 0, 0, result.Bitmap.Width, result.Bitmap.Height));
+            Assert.True(result.Bitmap.GetPixel(15, 10).Alpha > 0);
+        }
+
+        [Fact]
         public void NestedSvgOverflowVisible_RemainsExplicitFallback()
         {
             const string svg =
