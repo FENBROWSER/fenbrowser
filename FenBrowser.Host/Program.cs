@@ -75,6 +75,48 @@ namespace FenBrowser.Host
             return StartupMode.Browser;
         }
 
+        /// <summary>
+        /// Resolves the startup window geometry from the command line.
+        /// The browser opens maximized so a real session uses the whole screen;
+        /// `--windowed` opens at a fixed size instead, which is what screenshot
+        /// comparisons against another browser need, and `--window-size WxH`
+        /// picks that size (implying windowed).
+        /// </summary>
+        internal static (Platform.WindowState State, Platform.Size Size) ResolveWindowLayout(string[] args)
+        {
+            var size = new Platform.Size(1280, 800);
+            var state = Platform.WindowState.Maximized;
+
+            if (args == null || args.Length == 0)
+            {
+                return (state, size);
+            }
+
+            if (args.Any(a => string.Equals(a, "--windowed", StringComparison.OrdinalIgnoreCase)))
+            {
+                state = Platform.WindowState.Normal;
+            }
+
+            int sizeIndex = Array.FindIndex(
+                args,
+                a => string.Equals(a, "--window-size", StringComparison.OrdinalIgnoreCase));
+            if (sizeIndex >= 0 && sizeIndex + 1 < args.Length)
+            {
+                var parts = args[sizeIndex + 1].Split('x', 'X');
+                if (parts.Length == 2 &&
+                    int.TryParse(parts[0], out var width) &&
+                    int.TryParse(parts[1], out var height) &&
+                    width > 0 && height > 0)
+                {
+                    size = new Platform.Size(width, height);
+                    // An explicit size is meaningless while maximized.
+                    state = Platform.WindowState.Normal;
+                }
+            }
+
+            return (state, size);
+        }
+
         internal const float BrokeredFrameScrollOverdrawFraction = 0.5f;
         internal const float BrokeredFrameScrollOverdrawMinPixels = 128f;
         internal const float BrokeredFrameScrollOverdrawMaxPixels = 512f;
@@ -196,11 +238,14 @@ namespace FenBrowser.Host
                 platformHost.EnableHighDpiAwareness();
 
                 // 3. Initialize Window Manager via Platform Host
+                var (windowState, windowSize) = ResolveWindowLayout(args);
+                EngineLog.Write(LogSubsystem.General, LogSeverity.Info,
+                    $"[Host] Window layout: {windowState} {windowSize.Width}x{windowSize.Height}");
                 var windowOptions = new FenBrowser.Host.Platform.WindowOptions
                 {
                     Title = "FenBrowser",
-                    Size = new FenBrowser.Host.Platform.Size(1280, 800),
-                    State = FenBrowser.Host.Platform.WindowState.Maximized,
+                    Size = windowSize,
+                    State = windowState,
                     VSync = true,
                     Border = FenBrowser.Host.Platform.WindowBorder.Hidden
                 };

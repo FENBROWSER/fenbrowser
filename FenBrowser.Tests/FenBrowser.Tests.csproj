@@ -72,6 +72,8 @@
     <!-- Active renderer-child stdin polling contract; keep Architecture legacy
          and policy tests excluded until they are reviewed independently. -->
     <Compile Include="Architecture\RendererChildLoopIoTests.cs" />
+    <!-- Startup window geometry contract for the windowed-mode flags. -->
+    <Compile Include="Host\ProgramWindowLayoutTests.cs" />
     <!-- Phase 1 animation-scoping regression (BrowserIntegration is in Host,
          which is otherwise excluded). -->
     <Compile Include="Host\Phase1AnimationScopingTests.cs" />
