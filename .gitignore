@@ -113,3 +113,6 @@ FenBrowser.FenEngine/Core/graphify-out/
 real_site_render*
 multi_page_profile*.log
 .fenjs-progress.md
+
+# Python bytecode from scripts/ helpers importing each other
+scripts/__pycache__/
