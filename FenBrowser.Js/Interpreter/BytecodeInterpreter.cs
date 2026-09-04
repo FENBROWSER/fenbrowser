@@ -1010,6 +1010,56 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         ArgumentNullException.ThrowIfNull(environment);
         var globalHandle = EnsureGlobalObject();
+
+        // Modules always compile as FunctionKind.Async (top-level await is legal
+        // in one), so the body needs an AsyncContext to suspend into exactly as
+        // it does in Execute. This entry point is the one ModuleEvaluator uses,
+        // and without the context every top-level await threw "Pending await is
+        // not supported in this execution context" - which is what x.com's
+        // entry-client module died on. The environment is the module's own, not
+        // the global one.
+        if (function.Kind == FunctionKind.Async)
+        {
+            var capability = NewPromiseCapability();
+            var registers = new JsValue[function.RegisterCount];
+            for (var i = 0; i < registers.Length; i++)
+            {
+                registers[i] = JsValue.Undefined;
+            }
+
+            var asyncCtx = new AsyncContext(function, registers, environment)
+            {
+                ThisValue = JsValue.FromObject(globalHandle)
+            };
+            _ = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
+            asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
+                ? capability.Promise.AsObjectHandle() : null;
+            asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
+                ? capability.Resolve.AsObjectHandle() : null;
+            asyncCtx.CapabilityReject = capability.Reject.Tag == JsValueTag.Object
+                ? capability.Reject.AsObjectHandle() : null;
+
+            var asyncResult = ExecuteInternal(
+                function,
+                Array.Empty<JsValue>(),
+                JsValue.FromObject(globalHandle),
+                frameEnvironment: environment,
+                asyncContext: asyncCtx);
+
+            // A body that never suspended settles its capability synchronously,
+            // and its completion value is the module's evaluation result - the
+            // caller reads exports out of the environment either way.
+            if (!asyncCtx.IsSuspended)
+            {
+                _ = CallFunction(capability.Resolve, new[] { asyncResult }, JsValue.Undefined);
+                DrainPendingMicrotasks();
+                return asyncResult;
+            }
+
+            DrainPendingMicrotasks();
+            return capability.Promise;
+        }
+
         var result = ExecuteInternal(
             function,
             Array.Empty<JsValue>(),
