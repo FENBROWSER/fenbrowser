@@ -5073,6 +5073,34 @@ Verification:
   first-party SVG backend non-default. This snapshot is a Windows conformance
   checkpoint, not a replacement-readiness claim.
 
+## 6.229 SVG Pattern Paint-Server Conformance (2026-09-05)
+
+- The complete local Windows `svg/pservers` slice was run before and after the
+  implementation. Across all 42 files, first-party routing moves from 29 to 38,
+  compatibility fallbacks fall from 11 to 2, declared-reference passes improve
+  from 9/23 to 13/23, and blocked references fall from 9 to 3. Both runs have
+  zero first-party failure, worker failure, or timeout; the two unchanged hybrid
+  failures are the 5669-by-5669 source/reference pair rejected by the existing
+  16,777,216-pixel document raster limit.
+- The four newly passing declared references exercise pattern opacity, pattern
+  content on text, translated pattern tiles, and fallback paint for two distinct
+  non-invertible transforms. The broader 168-file `coordinate-systems` plus
+  `painting` slice adds exact reference passes for currentColor pattern fill and
+  stroke and completes with zero worker failure or timeout.
+- All eight pattern files that carried `paint-server` fallback in the imported
+  SVG 1.1 set now route first-party. They cover fill, stroke, text, user-space
+  and object-bounding-box units, transforms, viewBox mapping, invalid servers,
+  and multi-level pattern inheritance.
+- Eleven focused regressions cover fill/stroke repeat tiling,
+  object-bounding-box content and opacity, inherited geometry/content,
+  definition-tree currentColor, viewBox mapping, non-invertible fallback,
+  zero-area viewBox suppression, recursion, and invalid-context isolation. The
+  complete focused SVG namespace passes 411/411 after the change.
+- `pattern-transform-03.svg` remains an explicit paint-server fallback because
+  its static object-bounding-box tile maps to 10,000 by 10,000 pixels, beyond the
+  native-work admission budget. Scripted pattern changes are not claimed by this
+  static-image gate. First-party SVG remains non-default.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

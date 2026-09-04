@@ -93,7 +93,9 @@ namespace FenBrowser.FenEngine.Svg
 
             if (element.Content.Count == 0 && !string.IsNullOrEmpty(element.TextContent))
             {
-                ShapeTextPart(element.TextContent, element, paintStyle, textStyle, state, runs, !isRoot);
+                ShapeTextPart(
+                    element.TextContent, element, paintStyle, textStyle, viewport,
+                    state, runs, !isRoot);
                 return;
             }
 
@@ -101,7 +103,9 @@ namespace FenBrowser.FenEngine.Svg
             {
                 if (part.IsText)
                 {
-                    ShapeTextPart(part.Text, element, paintStyle, textStyle, state, runs, !isRoot);
+                    ShapeTextPart(
+                        part.Text, element, paintStyle, textStyle, viewport,
+                        state, runs, !isRoot);
                 }
                 else if (part.Element?.Name == "tspan")
                 {
@@ -169,7 +173,8 @@ namespace FenBrowser.FenEngine.Svg
                 : string.Concat(element.Content.Where(part => part.IsText).Select(part => part.Text));
             int runIndex = runs.Count;
             TextPaintRun run = ShapeTextPart(
-                rawText, element, paintStyle, textStyle, state, runs, applyOwnOpacity: true);
+                rawText, element, paintStyle, textStyle, viewport,
+                state, runs, applyOwnOpacity: true);
             if (run == null) return;
 
             float offset = ResolveTextPathOffset(element, target, pathLength, textStyle.FontSize);
@@ -253,6 +258,7 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement element,
             InheritedStyle paintStyle,
             TextStyle textStyle,
+            ViewportContext viewport,
             TextLayoutState state,
             List<TextPaintRun> runs,
             bool applyOwnOpacity)
@@ -290,7 +296,9 @@ namespace FenBrowser.FenEngine.Svg
                 glyphRun.Width += textStyle.LetterSpacing * (glyphRun.Count - 1);
             }
 
-            var run = new TextPaintRun(element, paintStyle, glyphRun, state.X, state.Y, state.CurrentChunk, applyOwnOpacity);
+            var run = new TextPaintRun(
+                element, paintStyle, glyphRun, viewport, state.X, state.Y,
+                state.CurrentChunk, applyOwnOpacity);
             runs.Add(run);
             state.X += glyphRun.Width;
             state.GlyphCount += glyphRun.Count;
@@ -315,8 +323,10 @@ namespace FenBrowser.FenEngine.Svg
                     ? new SKRect(run.X, run.Y + metrics.Ascent, run.X + Math.Max(1f, run.GlyphRun.Width), run.Y + metrics.Descent)
                     : run.PathBounds);
                 using var boundsPath = boundsBuilder.Detach();
-                using var fillPaint = BuildFillPaint(run.Element, run.PaintStyle, boundsPath);
-                using var strokePaint = BuildStrokePaint(run.Element, run.PaintStyle);
+                using var fillPaint = BuildFillPaint(
+                    run.Element, run.PaintStyle, boundsPath, run.Viewport);
+                using var strokePaint = BuildStrokePaint(
+                    run.Element, run.PaintStyle, boundsPath, run.Viewport);
                 using var blobBuilder = new SKTextBlobBuilder();
                 if (run.PathTransforms != null)
                 {
@@ -527,11 +537,20 @@ namespace FenBrowser.FenEngine.Svg
 
         private sealed class TextPaintRun
         {
-            public TextPaintRun(SvgElement element, InheritedStyle paintStyle, GlyphRun glyphRun, float x, float y, int chunk, bool applyOwnOpacity)
+            public TextPaintRun(
+                SvgElement element,
+                InheritedStyle paintStyle,
+                GlyphRun glyphRun,
+                ViewportContext viewport,
+                float x,
+                float y,
+                int chunk,
+                bool applyOwnOpacity)
             {
                 Element = element;
                 PaintStyle = paintStyle;
                 GlyphRun = glyphRun;
+                Viewport = viewport;
                 X = x;
                 Y = y;
                 Chunk = chunk;
@@ -540,6 +559,7 @@ namespace FenBrowser.FenEngine.Svg
             public SvgElement Element { get; }
             public InheritedStyle PaintStyle { get; }
             public GlyphRun GlyphRun { get; }
+            public ViewportContext Viewport { get; }
             public float X { get; set; }
             public float Y { get; }
             public int Chunk { get; set; }

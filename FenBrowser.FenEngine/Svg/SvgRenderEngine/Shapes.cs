@@ -34,8 +34,8 @@ namespace FenBrowser.FenEngine.Svg
                 bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
                 try
                 {
-                    using var fillPaint = BuildFillPaint(el, style, path);
-                    using var strokePaint = BuildStrokePaint(el, style, path);
+                    using var fillPaint = BuildFillPaint(el, style, path, viewport);
+                    using var strokePaint = BuildStrokePaint(el, style, path, viewport);
                     bool nonScalingStroke =
                         SvgFeatureSupport.SupportsNonScalingStroke(
                             el, el.GetPresentationProperty("vector-effect"));

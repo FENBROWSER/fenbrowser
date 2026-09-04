@@ -11576,6 +11576,30 @@ Verification:
 - `requiredFeatures` and locale-dependent `systemLanguage` negotiation remain
   separate open work. The first-party SVG backend remains non-default.
 
+## 2.163 First-Party SVG Pattern Paint Servers (2026-09-05)
+
+- The first-party paint pipeline now renders local `pattern` servers through
+  repeat-tiled `SKPicture` shaders. Pattern content remains vector draw work;
+  the renderer does not pre-rasterize a tile or delegate SVG semantics to
+  Svg.Skia.
+- Static pattern geometry supports `patternUnits` and `patternContentUnits` in
+  user-space and object-bounding-box coordinate systems, percentage tile
+  lengths, `patternTransform`, `viewBox`, `preserveAspectRatio`, patterned fill
+  and stroke, patterned text, fill/stroke opacity, and definition-tree style
+  inheritance including `currentColor`.
+- Local `href`/`xlink:href` chains inherit missing geometry, transforms,
+  viewBox state, and the first available content tree. Reference depth and
+  active pattern recursion are bounded; patterns in invalid text contexts do
+  not leak content into a valid template.
+- Zero-area pattern viewBoxes produce an empty paint without compatibility
+  fallback. Missing content, non-positive tile dimensions, malformed or
+  non-invertible transforms, and unusable references select the optional
+  `url(...)` fallback paint. A transformed tile that exceeds the configured
+  raster dimensions or pixel budget remains explicit compatibility fallback.
+- Scripted pattern mutation remains a browser-runtime concern, and the
+  first-party SVG backend remains non-default while the other Windows
+  conformance gaps are open.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

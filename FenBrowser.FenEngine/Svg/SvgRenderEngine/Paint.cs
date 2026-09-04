@@ -22,7 +22,11 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
-        private SKPaint BuildFillPaint(SvgElement el, InheritedStyle style, SKPath path)
+        private SKPaint BuildFillPaint(
+            SvgElement el,
+            InheritedStyle style,
+            SKPath path,
+            ViewportContext viewport)
         {
             var spec = style.Fill;
             if (spec.Kind == SvgValues.PaintKind.None)
@@ -56,7 +60,8 @@ namespace FenBrowser.FenEngine.Svg
 
             // ServerRef
             var shader = BuildServerShader(
-                spec.Fragment, path, fallbackText: spec.Fallback, style, out var fallbackColor);
+                spec.Fragment, path, fallbackText: spec.Fallback, style, viewport,
+                out var fallbackColor, out bool disposeShaderAfterAssignment);
             if (fallbackColor.HasValue)
             {
                 var c = fallbackColor.Value;
@@ -68,7 +73,19 @@ namespace FenBrowser.FenEngine.Svg
                 paint.Dispose();
                 return null;
             }
-            paint.Shader = shader;
+            try
+            {
+                paint.Shader = shader;
+            }
+            finally
+            {
+                if (disposeShaderAfterAssignment)
+                {
+                    // SKPaint retains its own native reference. Release the managed
+                    // shader handle created for this geometry immediately.
+                    shader.Dispose();
+                }
+            }
             paint.Color = SKColors.White.WithAlpha((byte)(255 * opacity));
             return paint;
         }
@@ -76,7 +93,8 @@ namespace FenBrowser.FenEngine.Svg
         private SKPaint BuildStrokePaint(
             SvgElement el,
             InheritedStyle style,
-            SKPath geometry = null)
+            SKPath geometry,
+            ViewportContext viewport)
         {
             var spec = style.Stroke;
             if (spec.Kind == SvgValues.PaintKind.None)
@@ -154,7 +172,8 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             var shader = BuildServerShader(
-                spec.Fragment, path: null, fallbackText: spec.Fallback, style, out var fallbackColor);
+                spec.Fragment, geometry, fallbackText: spec.Fallback, style, viewport,
+                out var fallbackColor, out bool disposeShaderAfterAssignment);
             if (fallbackColor.HasValue)
             {
                 var c = fallbackColor.Value;
@@ -166,7 +185,17 @@ namespace FenBrowser.FenEngine.Svg
                 paint.Dispose();
                 return null;
             }
-            paint.Shader = shader;
+            try
+            {
+                paint.Shader = shader;
+            }
+            finally
+            {
+                if (disposeShaderAfterAssignment)
+                {
+                    shader.Dispose();
+                }
+            }
             paint.Color = SKColors.White.WithAlpha((byte)(255 * opacity));
             return paint;
         }
@@ -337,15 +366,27 @@ namespace FenBrowser.FenEngine.Svg
             SKPath path,
             string fallbackText,
             InheritedStyle style,
-            out SKColor? fallbackColor)
+            ViewportContext viewport,
+            out SKColor? fallbackColor,
+            out bool disposeShaderAfterAssignment)
         {
             fallbackColor = null;
+            disposeShaderAfterAssignment = false;
             CachedGradient g = null;
             if (fragment != null && _doc.ElementsById.TryGetValue(fragment, out var server))
             {
                 if (server.Name == "linearGradient" || server.Name == "radialGradient")
                 {
                     g = GetCachedGradient(server, style);
+                }
+                else if (server.Name == "pattern")
+                {
+                    var patternShader = BuildPatternShader(server, path, style, viewport);
+                    if (patternShader != null)
+                    {
+                        disposeShaderAfterAssignment = true;
+                        return patternShader;
+                    }
                 }
                 else
                 {
@@ -395,7 +436,13 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             var finalMatrix = SKMatrix.Concat(matrix, extra);
-            return baseShader.WithLocalMatrix(finalMatrix);
+            var shader = baseShader.WithLocalMatrix(finalMatrix);
+            if (!ReferenceEquals(shader, baseShader))
+            {
+                baseShader.Dispose();
+            }
+            disposeShaderAfterAssignment = shader != null;
+            return shader;
         }
 
         private static bool TryResolvePaintFallbackColor(

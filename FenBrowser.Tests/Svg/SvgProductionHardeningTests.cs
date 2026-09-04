@@ -331,7 +331,6 @@ namespace FenBrowser.Tests.Svg
 
         [Theory]
         [InlineData("<style>rect{filter:blur(2px)}</style><rect width='10' height='10'/>")]
-        [InlineData("<defs><pattern id='p'/></defs><rect width='10' height='10' fill='url(#p)'/>")]
         [InlineData("<rect width='10' height='10' style='mask:url(#m)'/>")]
         [InlineData("<path d='M0 0L10 10' marker-end='url(#m)'/>")]
         public void FirstParty_CompatibilityFeaturesAreNeverSilentlyDropped(string content)
