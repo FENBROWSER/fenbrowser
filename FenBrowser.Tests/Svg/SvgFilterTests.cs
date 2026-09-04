@@ -204,9 +204,72 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal((byte)255, center.Alpha);
         }
 
+        [Fact]
+        public void ComponentTransfer_UsesLastFunctionAndIdentityForMissingChannels()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs><filter id='f' color-interpolation-filters='sRGB'><feComponentTransfer>" +
+                "<feFuncR type='linear' slope='0' intercept='1'/>" +
+                "<feFuncR type='linear' slope='0' intercept='0'/>" +
+                "</feComponentTransfer></filter></defs>" +
+                "<rect width='20' height='20' fill='#804020' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            SKColor center = result.Bitmap.GetPixel(10, 10);
+            Assert.Equal((byte)0, center.Red);
+            Assert.Equal((byte)64, center.Green);
+            Assert.Equal((byte)32, center.Blue);
+            Assert.Equal((byte)255, center.Alpha);
+        }
+
+        [Fact]
+        public void ComponentTransfer_ImplementsTableDiscreteLinearAndGammaFunctions()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs><filter id='f' color-interpolation-filters='sRGB'><feComponentTransfer>" +
+                "<feFuncR type='table' tableValues='1 0'/>" +
+                "<feFuncG type='discrete' tableValues='0 1'/>" +
+                "<feFuncB type='gamma' amplitude='1' exponent='2' offset='0'/>" +
+                "</feComponentTransfer></filter></defs>" +
+                "<rect width='20' height='20' fill='#404080' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            SKColor center = result.Bitmap.GetPixel(10, 10);
+            Assert.InRange(center.Red, (byte)190, (byte)192);
+            Assert.Equal((byte)0, center.Green);
+            Assert.InRange(center.Blue, (byte)63, (byte)65);
+            Assert.Equal((byte)255, center.Alpha);
+
+            using var linear = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs><filter id='f' color-interpolation-filters='sRGB'><feComponentTransfer>" +
+                "<feFuncB type='linear' slope='.5' intercept='.25'/>" +
+                "</feComponentTransfer></filter></defs>" +
+                "<rect width='20' height='20' fill='#000080' filter='url(#f)'/></svg>");
+            Assert.True(linear.Success, linear.ErrorMessage);
+            Assert.False(linear.RequiresFallback, string.Join("; ", linear.Warnings));
+            Assert.InRange(linear.Bitmap.GetPixel(10, 10).Blue, (byte)127, (byte)129);
+        }
+
+        [Fact]
+        public void ComponentTransfer_DefaultsToLinearRgbChannels()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs><filter id='f'><feComponentTransfer>" +
+                "<feFuncR type='linear' slope='0' intercept='.5'/>" +
+                "</feComponentTransfer></filter></defs>" +
+                "<rect width='20' height='20' fill='black' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.InRange(result.Bitmap.GetPixel(10, 10).Red, (byte)187, (byte)189);
+        }
+
         [Theory]
         [InlineData("<feGaussianBlur stdDeviation='999'/>")]
         [InlineData("<feTurbulence/>")]
+        [InlineData("<feComponentTransfer><feFuncR type='unknown'/></feComponentTransfer>")]
         public void UnsupportedOrUnboundedPrimitive_RemainsExplicitFallback(string primitive)
         {
             using var result = new FenSvgRenderer().Render(

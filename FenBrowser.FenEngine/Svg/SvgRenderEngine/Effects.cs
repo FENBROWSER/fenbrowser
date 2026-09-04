@@ -368,6 +368,7 @@ namespace FenBrowser.FenEngine.Svg
                         "feDropShadow" => BuildDropShadow(
                             primitive, input, primitiveScaleX, primitiveScaleY),
                         "feColorMatrix" => BuildColorMatrix(primitive, input),
+                        "feComponentTransfer" => BuildComponentTransfer(primitive, input),
                         "feMorphology" => BuildMorphology(
                             primitive, input, primitiveScaleX, primitiveScaleY),
                         _ => null
@@ -745,6 +746,175 @@ namespace FenBrowser.FenEngine.Svg
             matrix[19] *= 255f;
             using var colorFilter = SKColorFilter.CreateColorMatrix(matrix);
             return SKImageFilter.CreateColorFilter(colorFilter, input);
+        }
+
+        private SKImageFilter BuildComponentTransfer(SvgElement element, SKImageFilter input)
+        {
+            byte[] alpha = CreateIdentityTransferTable();
+            byte[] red = CreateIdentityTransferTable();
+            byte[] green = CreateIdentityTransferTable();
+            byte[] blue = CreateIdentityTransferTable();
+
+            foreach (var function in element.Children)
+            {
+                if (function.Name is "title" or "desc" or "metadata") continue;
+                byte[] table = function.Name switch
+                {
+                    "feFuncA" or "feFuncR" or "feFuncG" or "feFuncB" =>
+                        BuildComponentTransferTable(function),
+                    _ => null
+                };
+                if (table == null) return null;
+
+                // SVG applies the last function for a duplicated channel.
+                switch (function.Name)
+                {
+                    case "feFuncA": alpha = table; break;
+                    case "feFuncR": red = table; break;
+                    case "feFuncG": green = table; break;
+                    case "feFuncB": blue = table; break;
+                }
+            }
+
+            using var colorFilter = SKColorFilter.CreateTable(alpha, red, green, blue);
+            return BuildColorImageFilter(element, colorFilter, input);
+        }
+
+        private SKImageFilter BuildColorImageFilter(
+            SvgElement element,
+            SKColorFilter operation,
+            SKImageFilter input)
+        {
+            string interpolation = null;
+            for (SvgElement current = element; current != null; current = current.Parent)
+            {
+                interpolation = current.GetPresentationProperty("color-interpolation-filters")?.Trim();
+                if (!string.IsNullOrEmpty(interpolation)) break;
+            }
+
+            if (string.Equals(interpolation, "sRGB", StringComparison.OrdinalIgnoreCase))
+                return SKImageFilter.CreateColorFilter(operation, input);
+            if (!string.IsNullOrEmpty(interpolation) &&
+                !string.Equals(interpolation, "linearRGB", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(interpolation, "auto", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            // Filter color operations default to linear-light channels. Compose
+            // explicit transfer functions around Skia's channel operation so the
+            // backing surface can remain sRGB.
+            using var toLinear = SKColorFilter.CreateSrgbToLinearGamma();
+            using var operationInLinear = SKColorFilter.CreateCompose(operation, toLinear);
+            using var toSrgb = SKColorFilter.CreateLinearToSrgbGamma();
+            using var composed = SKColorFilter.CreateCompose(toSrgb, operationInLinear);
+            return SKImageFilter.CreateColorFilter(composed, input);
+        }
+
+        private static byte[] BuildComponentTransferTable(SvgElement function)
+        {
+            string type = (function.GetAttribute("type") ?? "identity").Trim();
+            if (type.Equals("identity", StringComparison.OrdinalIgnoreCase))
+                return CreateIdentityTransferTable();
+
+            float[] values = null;
+            if (type.Equals("table", StringComparison.OrdinalIgnoreCase) ||
+                type.Equals("discrete", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryReadTransferValues(function.GetAttribute("tableValues"), out values))
+                    return null;
+                if (values.Length == 0) return CreateIdentityTransferTable();
+            }
+
+            float slope = 1f;
+            float intercept = 0f;
+            float amplitude = 1f;
+            float exponent = 1f;
+            float offset = 0f;
+            if (type.Equals("linear", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryReadSingleNumber(function.GetAttribute("slope"), 1f, out slope) ||
+                    !TryReadSingleNumber(function.GetAttribute("intercept"), 0f, out intercept))
+                    return null;
+            }
+            else if (type.Equals("gamma", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryReadSingleNumber(function.GetAttribute("amplitude"), 1f, out amplitude) ||
+                    !TryReadSingleNumber(function.GetAttribute("exponent"), 1f, out exponent) ||
+                    !TryReadSingleNumber(function.GetAttribute("offset"), 0f, out offset))
+                    return null;
+            }
+            else if (!type.Equals("table", StringComparison.OrdinalIgnoreCase) &&
+                     !type.Equals("discrete", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var table = new byte[256];
+            for (int i = 0; i < table.Length; i++)
+            {
+                float input = i / 255f;
+                float output;
+                if (type.Equals("table", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (values.Length == 1)
+                    {
+                        output = values[0];
+                    }
+                    else
+                    {
+                        float position = input * (values.Length - 1);
+                        int lower = Math.Min((int)MathF.Floor(position), values.Length - 2);
+                        float fraction = position - lower;
+                        output = values[lower] +
+                            fraction * (values[lower + 1] - values[lower]);
+                    }
+                }
+                else if (type.Equals("discrete", StringComparison.OrdinalIgnoreCase))
+                {
+                    int index = Math.Min((int)MathF.Floor(input * values.Length), values.Length - 1);
+                    output = values[index];
+                }
+                else if (type.Equals("linear", StringComparison.OrdinalIgnoreCase))
+                {
+                    output = slope * input + intercept;
+                }
+                else output = amplitude * MathF.Pow(input, exponent) + offset;
+
+                table[i] = ToTransferByte(output);
+            }
+            return table;
+        }
+
+        private static byte[] CreateIdentityTransferTable()
+        {
+            var table = new byte[256];
+            for (int i = 0; i < table.Length; i++) table[i] = (byte)i;
+            return table;
+        }
+
+        private static byte ToTransferByte(float value)
+        {
+            if (float.IsNaN(value)) return 0;
+            if (value <= 0f) return 0;
+            if (value >= 1f) return 255;
+            return (byte)MathF.Round(value * 255f);
+        }
+
+        private static bool TryReadTransferValues(string raw, out float[] values)
+        {
+            values = Array.Empty<float>();
+            if (string.IsNullOrWhiteSpace(raw)) return true;
+            var parsed = new List<float>();
+            var tokenizer = SvgValues.CreateTokenizer(raw.AsSpan());
+            while (tokenizer.Next(out var token))
+            {
+                if (parsed.Count >= 1024 ||
+                    !SvgValues.TryParseNumber(token, out float value) ||
+                    !float.IsFinite(value))
+                    return false;
+                parsed.Add(value);
+            }
+            values = parsed.ToArray();
+            return true;
         }
 
         private static bool TryReadMatrix(string raw, out float[] matrix)

@@ -11620,6 +11620,21 @@ Verification:
   request compatibility fallback, so the first-party SVG backend remains
   non-default.
 
+## 2.165 SVG Component-Transfer Filters (2026-09-05)
+
+- `feComponentTransfer` now compiles independent alpha, red, green, and blue
+  functions into render-local 256-entry channel tables. Omitted functions are
+  identity, and the last function wins when a channel is repeated.
+- Identity, interpolated `table`, stepped `discrete`, `linear`, and `gamma`
+  functions are implemented with finite-number validation, output clamping, and
+  a 1,024-value input-table admission bound.
+- Filter channel operations default to linear-light RGB by composing explicit
+  sRGB/linear transfer functions around the native color filter. An inherited
+  `color-interpolation-filters="sRGB"` selects direct sRGB channel operations;
+  unknown interpolation values remain explicit compatibility fallback.
+- Native color and image filters are deterministically disposed with the
+  enclosing render graph. No component-transfer state is shared across renders.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

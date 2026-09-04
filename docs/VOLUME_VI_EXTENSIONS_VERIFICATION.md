@@ -5120,6 +5120,23 @@ Verification:
   regions, color-matrix modes, admission fallback, and concurrent native
   ownership. The complete focused SVG namespace passes 418/418.
 
+## 6.231 SVG Component-Transfer Verification (2026-09-05)
+
+- The exact local Windows files `filters-color-02-b-manual.svg` and
+  `filters-comptran-01-b-manual.svg` move from 0/2 first-party with two filter
+  fallbacks to 2/2 first-party with no fallback, rejection, renderer/worker
+  failure, or timeout.
+- These are manual WPT files with no declared reference, so they are not claimed
+  as exact WPT reference passes. The report remains honest about 0/2 legacy
+  pixel parity; one comparison identifies the existing legacy chromatic-gradient
+  defect, and the other includes broader renderer differences outside the
+  component-transfer primitive.
+- Twenty focused filter regressions exercise identity defaults, last-duplicate
+  selection, table/discrete/linear/gamma functions, default linear-light RGB,
+  explicit sRGB operation, malformed-type fallback, graph behavior, admission,
+  and concurrent native ownership. The complete focused SVG namespace passes
+  422/422 after the change.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
