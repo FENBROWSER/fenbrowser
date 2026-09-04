@@ -181,9 +181,27 @@ namespace FenBrowser.FenEngine.Svg
                     WarnUnsupportedOnce(el.Name);
                     return;
                 default:
+                    if (IsSvgTestSuiteMetadata(el))
+                    {
+                        return;
+                    }
                     WarnUnknownOnce(el.Name);
                     return; // Unknown elements are never rendered; subtree skipped.
             }
+        }
+
+        private static bool IsSvgTestSuiteMetadata(SvgElement element)
+        {
+            // The imported W3C SVG 1.1 tests carry a sibling annotation tree in
+            // this foreign namespace. It is not renderable SVG content, so
+            // skipping it must not force the whole image through the legacy
+            // backend. Match both the qualified name and its declaration: an
+            // arbitrary prefixed element must remain an explicit fallback.
+            return element.Name == "d:SVGTestCase" &&
+                string.Equals(
+                    element.GetAttribute("xmlns:d"),
+                    "http://www.w3.org/2000/02/svg/testsuite/description/",
+                    StringComparison.Ordinal);
         }
 
         private void DrawNestedSvg(

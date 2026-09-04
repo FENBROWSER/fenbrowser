@@ -54,5 +54,33 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.RequiresFallback);
             Assert.All(result.Warnings, warning => Assert.True(warning.Length <= 256));
         }
+
+        [Fact]
+        public void W3cSvgTestSuiteMetadata_DoesNotRequireFallback()
+        {
+            const string metadata =
+                "<d:SVGTestCase xmlns:d='http://www.w3.org/2000/02/svg/testsuite/description/'>" +
+                "<d:testDescription><p>not rendered</p></d:testDescription>" +
+                "</d:SVGTestCase>";
+
+            using var result = new FenSvgRenderer().Render(
+                $"<svg width='10' height='10'>{metadata}<rect width='10' height='10' fill='green'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+        }
+
+        [Fact]
+        public void LookalikePrefixedMetadata_StillRequiresFallback()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='10' height='10'>" +
+                "<d:SVGTestCase xmlns:d='https://example.test/not-w3c'/>" +
+                "<rect width='10' height='10' fill='green'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("unsupported-element", result.FallbackReasonCodes);
+        }
     }
 }

@@ -11390,6 +11390,24 @@ Verification:
   alpha intersection-over-union 1 and zero pixel/channel difference.
 - Dynamic vector-effect behavior, text, paint-server strokes, and browser-level
   HTML reftests remain open. First-party SVG remains non-default.
+
+## 2.150 Non-Rendering SVG Test Metadata (2026-09-04)
+
+- The isolated renderer recognizes the W3C SVG 1.1 test-suite annotation root
+  only when the qualified `d:SVGTestCase` name carries the exact published test
+  description namespace. That foreign annotation subtree is skipped without
+  requiring the legacy renderer because it contributes no rendered SVG content.
+- Lookalike prefixed elements, including the same qualified name with a different
+  namespace declaration, remain explicit `unsupported-element` compatibility
+  fallbacks. The change adds no general namespace trust, resource access, new
+  render path, global state, or platform-specific engine dependency.
+- On Windows, the 513-file local WPT `svg/import` subset changes from 423 to 192
+  legacy fallbacks. It produces 244 clean first-party renders, 237 of which were
+  previously false metadata fallbacks; remaining fallbacks and rejections retain
+  their independent feature/resource reasons.
+- Windows is the current production-parity target. Cross-platform validation is
+  deferred, but first-party SVG remains non-default until the remaining Windows
+  feature, pixel-reference, browser-integration, and stability gates close.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

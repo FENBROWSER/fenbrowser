@@ -4873,6 +4873,29 @@ Verification:
   zero warnings and zero errors.
 - This is a static basic-geometry subset. Broader HTML-hosted non-scaling-stroke,
   dynamic mutation, text, and paint-server coverage remain explicit future gates.
+
+## 6.215 Windows SVG Breadth Baseline And Test-Metadata Classification (2026-09-04)
+
+- The complete local Windows `wpt/svg` inventory evaluates all 1,258 selected
+  files with zero worker failures and one five-second document timeout. Before
+  the metadata fix it reports 367 first-party renders, 749 legacy fallbacks, 68
+  resource rejections, 54 first-party reference failures, and 19 hybrid failures.
+  The complete run is a classification baseline, not a conformance pass claim.
+- The largest false fallback source was the non-rendering W3C SVG 1.1
+  `d:SVGTestCase` annotation. Focused tests prove that the exact test-suite
+  namespace does not require fallback while a lookalike namespace still does.
+  Local `import/painting-fill-01-t-manual.svg` then routes first-party with no
+  fallback, resource rejection, renderer failure, worker failure, or timeout.
+- Re-running all 513 local `svg/import` files changes clean first-party renders
+  from 0 to 244 and legacy fallbacks from 423 to 192; 237 files move directly
+  from legacy fallback to first-party. The run has zero worker failures, while
+  its remaining animation, script, filter, resource, text, admission, pixel, and
+  timeout results stay visible rather than being waived.
+- Windows-only parity is now the active release gate. Linux/macOS evidence is
+  deferred, not claimed. Default-switch readiness still requires eliminating or
+  justifying every Windows compatibility fallback, closing comparable reference
+  failures, exercising real browser integration, and completing repeat/soak
+  evidence without weakening sandbox limits.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
