@@ -5055,6 +5055,24 @@ Verification:
   extension requirements, including a condition on the root SVG element. The
   complete SVG test namespace passes 401/401.
 
+## 6.228 Complete Windows SVG WPT Rebaseline (2026-09-04)
+
+- A fresh untruncated run evaluates all 1,258 local WPT SVG files at commit
+  `cd1a2434`. It reports 892 first-party files, 240 compatibility fallbacks, 66
+  resource rejections, 41 first-party failures, 19 hybrid failures, and zero
+  worker failure or timeout.
+- Against the preceding complete Windows snapshot, declared-reference passes
+  improve from 140/276 to 150/276 and legacy pixel parity improves from 540/864
+  to 548/866. Reference blocking decreases from 84 to 83 and unresolved targets
+  remain 5.
+- Compatibility fallbacks increase from 238 to 240 because gradient/pattern
+  context paint is now classified honestly instead of producing unsupported
+  first-party pixels. Resource rejections decrease from 68 to 66, and the prior
+  malformed-path worker timeout is eliminated.
+- The remaining 41 first-party failures and 19 hybrid failures keep the
+  first-party SVG backend non-default. This snapshot is a Windows conformance
+  checkpoint, not a replacement-readiness claim.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
