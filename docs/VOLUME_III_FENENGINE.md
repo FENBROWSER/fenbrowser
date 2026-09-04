@@ -11529,6 +11529,16 @@ Verification:
 - Unsupported paint-server element types remain explicit compatibility
   fallbacks. The first-party SVG backend remains non-default.
 
+## 2.159 SVG Text XML-Whitespace Normalization (2026-09-04)
+
+- Default SVG text normalization now collapses only the XML whitespace characters
+  space, tab, carriage return, and line feed. Non-breaking spaces and other
+  Unicode spacing characters remain intact for font shaping.
+- `xml:space="preserve"` continues to preserve ordinary spaces while normalizing
+  tab and line endings to spaces. Text length and glyph budgets are unchanged.
+- The first-party SVG backend remains non-default while broader text conformance
+  gaps are open.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

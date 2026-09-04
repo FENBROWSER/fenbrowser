@@ -453,7 +453,7 @@ namespace FenBrowser.FenEngine.Svg
             var result = new StringBuilder(raw.Length);
             foreach (char c in raw)
             {
-                if (char.IsWhiteSpace(c))
+                if (IsXmlWhitespace(c))
                 {
                     if (state.HasRenderedText || result.Length > 0) state.PendingSpace = true;
                 }
@@ -465,6 +465,9 @@ namespace FenBrowser.FenEngine.Svg
             }
             return result.ToString();
         }
+
+        private static bool IsXmlWhitespace(char value) =>
+            value is ' ' or '\t' or '\r' or '\n';
 
         private static bool ContainsComplexText(string text)
         {

@@ -87,6 +87,26 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void DefaultWhitespace_DoesNotCollapseNonBreakingSpaces()
+        {
+            const string preserved =
+                "<svg width='180' height='40'><text x='4' y='30' font-family='monospace' " +
+                "xml:space='preserve'>Some  Text</text></svg>";
+            const string nonBreaking =
+                "<svg width='180' height='40'><text x='4' y='30' font-family='monospace'>" +
+                "Some\u00A0\u00A0Text</text></svg>";
+
+            using var actual = new FenSvgRenderer().Render(preserved);
+            using var expected = new FenSvgRenderer().Render(nonBreaking);
+
+            Assert.True(actual.Success, actual.ErrorMessage);
+            Assert.True(expected.Success, expected.ErrorMessage);
+            for (int y = 0; y < actual.Bitmap.Height; y++)
+            for (int x = 0; x < actual.Bitmap.Width; x++)
+                Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
+        }
+
+        [Fact]
         public void PerGlyphPositionList_RemainsExplicitCompatibilityCase()
         {
             using var result = new FenSvgRenderer().Render(

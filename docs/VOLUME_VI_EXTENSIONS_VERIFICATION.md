@@ -5011,6 +5011,15 @@ Verification:
   binds to the painted child's `color`, not the ancestor's color. The complete
   SVG test namespace passes 391/391.
 
+## 6.224 SVG Text XML-Whitespace Conformance (2026-09-04)
+
+- The exact local Windows WPT `text/reftests/text-xml-space-001.svg` now matches
+  its declared reference at exact pixel equality. It routes first-party with no
+  fallback, rejection, renderer or worker failure, or timeout.
+- Focused coverage compares preserved ordinary spaces with equivalent
+  non-breaking spaces and requires byte-identical output. The complete SVG test
+  namespace passes 392/392.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
