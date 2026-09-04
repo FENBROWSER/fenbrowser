@@ -28,7 +28,8 @@ namespace FenBrowser.Tests.Svg
         public void SequentialBlurAndOffset_UsePreviousPrimitiveOutput()
         {
             const string svg =
-                "<svg width='100' height='50'><defs><filter id='f'>" +
+                "<svg width='100' height='50'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='100' height='50'>" +
                 "<feGaussianBlur stdDeviation='1'/><feOffset dx='30' dy='0'/>" +
                 "</filter></defs><rect x='5' y='15' width='15' height='15' filter='url(#f)'/></svg>";
 
@@ -60,7 +61,8 @@ namespace FenBrowser.Tests.Svg
         public void GroupFilter_CompositesChildrenAsOneSourceGraphic()
         {
             const string svg =
-                "<svg width='80' height='40'><defs><filter id='f'><feOffset dx='20'/></filter></defs>" +
+                "<svg width='80' height='40'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='80' height='40'><feOffset dx='20'/></filter></defs>" +
                 "<g filter='url(#f)'><rect x='2' y='4' width='10' height='10'/>" +
                 "<rect x='2' y='22' width='10' height='10'/></g></svg>";
 
@@ -266,10 +268,67 @@ namespace FenBrowser.Tests.Svg
             Assert.InRange(result.Bitmap.GetPixel(10, 10).Red, (byte)187, (byte)189);
         }
 
+        [Fact]
+        public void DisplacementMap_UsesNamedMapAndSelectedChannels()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='60' height='30'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='60' height='30'><feFlood flood-color='#ff0080' result='map'/>" +
+                "<feDisplacementMap in='SourceGraphic' in2='map' scale='20' " +
+                "xChannelSelector='R' yChannelSelector='B'/></filter></defs>" +
+                "<rect x='20' y='8' width='10' height='10' fill='red' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(12, 12));
+            Assert.Equal(0, result.Bitmap.GetPixel(25, 12).Alpha);
+        }
+
+        [Fact]
+        public void DisplacementMap_AcceptsSourceGraphicAsDisplacementInput()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='30' height='30'><defs><filter id='f'>" +
+                "<feDisplacementMap in='SourceGraphic' in2='SourceGraphic' scale='0'/>" +
+                "</filter></defs><rect x='5' y='5' width='15' height='15' fill='red' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void FilterRegion_ClipsFinalGraphOutput()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='60' height='30'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='30' height='30'><feOffset dx='20'/></filter></defs>" +
+                "<rect x='10' y='5' width='20' height='10' fill='red' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(0, result.Bitmap.GetPixel(35, 10).Alpha);
+        }
+
+        [Fact]
+        public void ObjectBoundingBoxFilterRegion_ClipsFinalGraphOutput()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='480' height='100'><defs><filter id='f' filterUnits='objectBoundingBox' " +
+                "x='-.3' y='0' width='1.3' height='1'><feOffset dx='80'/></filter></defs>" +
+                "<rect x='60' y='10' width='360' height='40' fill='red' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(200, 20));
+            Assert.Equal(0, result.Bitmap.GetPixel(450, 20).Alpha);
+        }
+
         [Theory]
         [InlineData("<feGaussianBlur stdDeviation='999'/>")]
         [InlineData("<feTurbulence/>")]
         [InlineData("<feComponentTransfer><feFuncR type='unknown'/></feComponentTransfer>")]
+        [InlineData("<feDisplacementMap xChannelSelector='Q'/>")]
         public void UnsupportedOrUnboundedPrimitive_RemainsExplicitFallback(string primitive)
         {
             using var result = new FenSvgRenderer().Render(

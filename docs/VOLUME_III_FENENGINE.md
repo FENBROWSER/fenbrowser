@@ -11635,6 +11635,22 @@ Verification:
 - Native color and image filters are deterministically disposed with the
   enclosing render graph. No component-transfer state is shared across renders.
 
+## 2.166 SVG Displacement Maps And Filter Regions (2026-09-05)
+
+- `feDisplacementMap` now resolves independent color and displacement graph
+  inputs, supports the R/G/B/A channel selectors and bounded signed scale, and
+  preserves SVG `in`/`in2` ordering at the native image-filter boundary.
+- A SourceGraphic displacement input is materialized as a render-owned identity
+  filter because the native API requires an explicit displacement object. The
+  ordinary color input remains nullable SourceGraphic as required by Skia.
+- Every completed filter graph is now wrapped in its resolved SVG filter region,
+  so displaced, offset, or blurred output cannot leak beyond the declared
+  object-bounding-box or user-space output region. Primitive-specific flood
+  regions remain independently cropped before graph composition.
+- Skia exposes one device-space displacement scale. Non-uniform
+  object-bounding-box scale mappings therefore remain explicit compatibility
+  fallback instead of silently averaging the X and Y dimensions.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

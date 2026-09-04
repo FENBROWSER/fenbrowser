@@ -304,6 +304,13 @@ namespace FenBrowser.FenEngine.Svg
                 return false;
             }
 
+            if (!TryResolveFilterRegion(filterElement, target, viewport, out var filterRegion))
+            {
+                _report.RequireFallback(
+                    $"SVG filter on '{target.Name}' has an unusable filter region");
+                return false;
+            }
+
             var results = new Dictionary<string, SKImageFilter>(StringComparer.Ordinal);
             foreach (var primitive in filterElement.Children)
             {
@@ -321,7 +328,8 @@ namespace FenBrowser.FenEngine.Svg
                 SKImageFilter next;
                 if (primitive.Name == "feFlood")
                 {
-                    next = BuildFlood(filterElement, primitive, target, viewport);
+                    next = BuildFlood(
+                        filterElement, primitive, target, viewport, filterRegion);
                 }
                 else if (primitive.Name == "feBlend")
                 {
@@ -344,6 +352,24 @@ namespace FenBrowser.FenEngine.Svg
                             current, results, owned, primitive.Name, out var input2))
                         return false;
                     next = BuildComposite(primitive, input, input2);
+                }
+                else if (primitive.Name == "feDisplacementMap")
+                {
+                    if (!TryResolveFilterInput(
+                            primitive.GetAttribute("in"), current, results, owned,
+                            primitive.Name, out var input) ||
+                        !TryResolveFilterInput(
+                            primitive.GetAttribute("in2") ?? "SourceGraphic",
+                            current, results, owned, primitive.Name, out var input2))
+                        return false;
+                    if (input2 == null)
+                    {
+                        input2 = SKImageFilter.CreateOffset(0f, 0f);
+                        if (input2 == null) return false;
+                        owned.Add(input2);
+                    }
+                    next = BuildDisplacementMap(
+                        primitive, input, input2, primitiveScaleX, primitiveScaleY);
                 }
                 else if (primitive.Name == "feMerge")
                 {
@@ -395,7 +421,17 @@ namespace FenBrowser.FenEngine.Svg
                 _report.RequireFallback("empty SVG filter requires compatibility fallback");
                 return false;
             }
-            return current != null;
+            if (current == null) return false;
+
+            var cropped = SKImageFilter.CreateOffset(0f, 0f, current, filterRegion);
+            if (cropped == null)
+            {
+                _report.RequireFallback("SVG filter region crop could not be created");
+                return false;
+            }
+            owned.Add(cropped);
+            current = cropped;
+            return true;
         }
 
         private bool TryResolveFilterInput(
@@ -446,10 +482,10 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement filter,
             SvgElement flood,
             SvgElement target,
-            ViewportContext viewport)
+            ViewportContext viewport,
+            SKRect filterRegion)
         {
-            if (!TryResolveFilterRegion(filter, target, viewport, out var filterRegion) ||
-                !TryResolvePrimitiveRegion(
+            if (!TryResolvePrimitiveRegion(
                     filter, flood, target, viewport, filterRegion, out var primitiveRegion))
                 return null;
 
@@ -509,6 +545,46 @@ namespace FenBrowser.FenEngine.Svg
             };
             if ((int)mode < 0) return null;
             return SKImageFilter.CreateBlendMode(mode, input2, input);
+        }
+
+        private static SKImageFilter BuildDisplacementMap(
+            SvgElement element,
+            SKImageFilter input,
+            SKImageFilter displacement,
+            float scaleX,
+            float scaleY)
+        {
+            if (!TryReadColorChannel(
+                    element.GetAttribute("xChannelSelector"), out var xChannel) ||
+                !TryReadColorChannel(
+                    element.GetAttribute("yChannelSelector"), out var yChannel) ||
+                !TryReadSingleNumber(element.GetAttribute("scale"), 0f, out float scale))
+                return null;
+
+            // Skia's displacement primitive accepts one device-space scale.
+            // A non-uniform object-bounding-box mapping would require separate
+            // X/Y scales and must remain an honest compatibility fallback.
+            if (scale != 0f && MathF.Abs(scaleX - scaleY) > .0001f) return null;
+            scale *= scaleX;
+            if (!float.IsFinite(scale) || MathF.Abs(scale) > 32767f) return null;
+
+            return SKImageFilter.CreateDisplacementMapEffect(
+                xChannel, yChannel, scale, displacement, input);
+        }
+
+        private static bool TryReadColorChannel(string raw, out SKColorChannel channel)
+        {
+            channel = SKColorChannel.A;
+            string value = raw?.Trim();
+            if (string.IsNullOrEmpty(value)) return true;
+            switch (value.ToUpperInvariant())
+            {
+                case "R": channel = SKColorChannel.R; return true;
+                case "G": channel = SKColorChannel.G; return true;
+                case "B": channel = SKColorChannel.B; return true;
+                case "A": channel = SKColorChannel.A; return true;
+                default: return false;
+            }
         }
 
         private SKImageFilter BuildMerge(

@@ -5137,6 +5137,22 @@ Verification:
   and concurrent native ownership. The complete focused SVG namespace passes
   422/422 after the change.
 
+## 6.232 SVG Displacement And Filter-Region Verification (2026-09-05)
+
+- The exact local Windows manual WPT `filters-displace-02-f-manual.svg` moves
+  from filter fallback to first-party with no fallback, rejection,
+  renderer/worker failure, or timeout. It reaches legacy pixel parity with
+  alpha IoU 0.9329 and mean RGB difference 1.9121; the file has no declared WPT
+  reference, so no reference-pass claim is made.
+- The ten-file regression slice combines that displacement case with the prior
+  nine graph/region files. It reports eight first-party files, two honest named
+  input fallbacks, 4/8 legacy parity, and the declared filter/clip ordering
+  reference still passing 1/1, with zero renderer/worker failure or timeout.
+- Focused regressions cover constant-map channel direction, SourceGraphic as a
+  required native displacement input, invalid selectors, and final graph crops
+  in both user-space and object-bounding-box regions. The complete focused SVG
+  namespace passes 427/427.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
