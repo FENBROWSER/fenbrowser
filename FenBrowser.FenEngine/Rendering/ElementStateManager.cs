@@ -1867,7 +1867,13 @@ namespace FenBrowser.FenEngine.Rendering
         public bool ConsumeFullRepaintRequest()
             => Interlocked.Exchange(ref _fullRepaintRequested, 0) != 0;
 
-        private void RequestFullRepaint()
+        /// <summary>
+        /// Ask the renderer to skip the damage diff and repaint everything on the
+        /// next frame. Needed whenever pixels change without geometry changing -
+        /// interaction states, and a late-arriving image whose bitmap simply was
+        /// not available when the area was last rastered.
+        /// </summary>
+        public void RequestFullRepaint()
         {
             Interlocked.Exchange(ref _fullRepaintRequested, 1);
         }

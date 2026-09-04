@@ -1150,7 +1150,16 @@ namespace FenBrowser.FenEngine.Rendering
                     try
                     {
                         EngineLogCompat.Debug("[ImageLoader-Repaint] Triggering repaint after image load", LogCategory.Rendering);
-                        RepaintReady?.Invoke(this, null);
+
+                        // A decoded image changes what the paint tree would produce,
+                        // but nothing in the DOM changed - so the renderer keeps its
+                        // retained paint tree, which still holds the null bitmap from
+                        // when the image had not arrived, and the image never appears
+                        // until some unrelated edit forces a rebuild. Mark the tree
+                        // paint-dirty so this frame actually rebuilds it.
+                        var repaintDom = _engine?.GetActiveDom();
+                        repaintDom?.MarkDirty(InvalidationKind.Paint);
+                        RepaintReady?.Invoke(this, repaintDom);
                     }
                     catch (Exception ex)
                     {

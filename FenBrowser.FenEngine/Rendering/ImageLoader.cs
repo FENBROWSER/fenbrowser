@@ -1048,6 +1048,17 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static void InvokeRepaint(List<ImageLoaderRequestContext> contexts)
         {
+            // A newly decoded bitmap changes pixels without changing any geometry, so
+            // the damage diff cannot see it and the next frame reuses the raster that
+            // was produced while the image was still missing. Backgrounds drawn during
+            // raster (rather than as paint-tree nodes) then stay blank until something
+            // else forces a full repaint - on Hacker News the upvote arrows only
+            // appeared once the pointer moved over the page. Set this here rather than
+            // at decode time so a frame rendered during the debounce window cannot
+            // consume the request before the repaint it belongs to.
+            try { ElementStateManager.Instance.RequestFullRepaint(); }
+            catch { }
+
             // Phase 6: prefer document/browsing-context scoped callbacks. Only fall
             // back to the process-global RequestRepaint when no scoped callback could
             // be invoked, so a single decoded image produces at most one repaint per
@@ -1566,6 +1577,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (TryStoreDecodedBitmap(cacheKey, url, bitmap, isLazy))
                     {
                         RecordLoadResult(url, cacheKey, fetchResult with { DecodeFormat = decodeFormat });
+
                         RequestDebouncedRepaint(cacheKey, context);
                         RequestDebouncedRelayout(cacheKey, context);
                     }
