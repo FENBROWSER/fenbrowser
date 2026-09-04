@@ -11423,6 +11423,25 @@ Verification:
   first-party with 45/45 legacy pixel parity; two independent CSS fallbacks remain.
 - First-party SVG remains non-default while actual dynamic SVG document WPT and
   the remaining static Windows feature/reference gates are incomplete.
+
+## 2.152 Bounded Linear-Path Markers (2026-09-04)
+
+- Path marker extraction supports absolute/relative `M`, `L`, `H`, `V`, and `Z`
+  commands, implicit line pairs, closed paths, and multiple subpaths. Extraction
+  shares the render deadline and stops at 4,096 points with an explicit fallback.
+  Curves, arcs, and bearing commands retain the existing compatibility route.
+- `marker-start` and `marker-end` apply to the first and last vertex of the whole
+  path. Every intervening vertex, including internal subpath boundaries, receives
+  `marker-mid`; markers paint globally in start/middle/end order. Closed vertices
+  bisect their incoming closing and outgoing tangents.
+- Omitted marker `orient` now resolves to zero degrees rather than `auto`, and a
+  line's empty middle-vertex set no longer triggers fallback. Existing transform,
+  viewBox, overflow, definition inheritance, and non-scaling-stroke behavior is
+  preserved.
+- All 12 focused marker tests pass. Six exact local Windows marker reftests route
+  first-party; five match their declared references exactly. `marker-006.svg`
+  remains a visible near-exact marker-viewBox raster mismatch rather than being
+  waived, and broader curved-path marker support remains open.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

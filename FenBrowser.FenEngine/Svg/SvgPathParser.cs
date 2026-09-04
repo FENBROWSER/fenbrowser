@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Svg
@@ -384,6 +385,127 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             return true;
+        }
+
+        internal static bool TryReadLinearMarkerSubpaths(
+            ReadOnlySpan<char> d,
+            int maxPoints,
+            out List<List<SKPoint>> subpaths,
+            SvgParseReport report,
+            System.Action budgetCheck = null)
+        {
+            subpaths = new List<List<SKPoint>>();
+            if (maxPoints <= 0) return false;
+
+            var scan = new Scanner(d);
+            List<SKPoint> current = null;
+            float curX = 0f, curY = 0f;
+            float startX = 0f, startY = 0f;
+            char previous = '\0';
+            int pointCount = 0;
+
+            bool AddPoint(float x, float y)
+            {
+                if (++pointCount > maxPoints)
+                {
+                    report.RequireFallback("SVG marker instance budget exceeded");
+                    return false;
+                }
+                if ((pointCount & 0xFF) == 0) budgetCheck?.Invoke();
+                current.Add(new SKPoint(Clamp(x), Clamp(y)));
+                return true;
+            }
+
+            while (!scan.Eof)
+            {
+                scan.SkipWsp();
+                if (scan.Eof) break;
+
+                char command;
+                if (IsVerb(scan.Peek))
+                {
+                    command = scan.Take();
+                    scan.SkipWsp();
+                }
+                else
+                {
+                    if (previous == '\0' || previous is 'Z' or 'z') return false;
+                    command = previous switch
+                    {
+                        'M' => 'L',
+                        'm' => 'l',
+                        _ => previous
+                    };
+                }
+
+                bool relative = char.IsLower(command);
+                switch (char.ToUpperInvariant(command))
+                {
+                    case 'M':
+                    case 'L':
+                        {
+                            bool move = char.ToUpperInvariant(command) == 'M';
+                            bool firstPair = true;
+                            do
+                            {
+                                if (!scan.TryReadNumber(out float x) ||
+                                    !scan.TryReadNumber(out float y)) return false;
+                                if (relative) { x += curX; y += curY; }
+                                x = Clamp(x);
+                                y = Clamp(y);
+                                if (move && firstPair)
+                                {
+                                    current = new List<SKPoint>();
+                                    subpaths.Add(current);
+                                    startX = x;
+                                    startY = y;
+                                }
+                                else if (current == null)
+                                {
+                                    return false;
+                                }
+                                if (!AddPoint(x, y)) return false;
+                                curX = x;
+                                curY = y;
+                                firstPair = false;
+                            }
+                            while (scan.MoreNumbersAhead());
+                            previous = relative ? 'l' : 'L';
+                            break;
+                        }
+                    case 'H':
+                        if (current == null) return false;
+                        while (scan.TryReadNumber(out float x))
+                        {
+                            x = Clamp(relative ? curX + x : x);
+                            if (!AddPoint(x, curY)) return false;
+                            curX = x;
+                        }
+                        previous = relative ? 'h' : 'H';
+                        break;
+                    case 'V':
+                        if (current == null) return false;
+                        while (scan.TryReadNumber(out float y))
+                        {
+                            y = Clamp(relative ? curY + y : y);
+                            if (!AddPoint(curX, y)) return false;
+                            curY = y;
+                        }
+                        previous = relative ? 'v' : 'V';
+                        break;
+                    case 'Z':
+                        if (current == null || current.Count == 0) return false;
+                        if (!AddPoint(startX, startY)) return false;
+                        curX = startX;
+                        curY = startY;
+                        previous = command;
+                        break;
+                    default:
+                        return false;
+                }
+            }
+
+            return subpaths.Count > 0;
         }
 
         private static void Truncate(SvgParseReport report)

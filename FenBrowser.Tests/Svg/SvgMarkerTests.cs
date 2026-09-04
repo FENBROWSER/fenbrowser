@@ -1,3 +1,4 @@
+using System.Text;
 using FenBrowser.FenEngine.Adapters;
 using SkiaSharp;
 using Xunit;
@@ -65,6 +66,96 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.Success, result.ErrorMessage);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("marker-mid"));
+        }
+
+        [Fact]
+        public void MarkerMidOnLinearPath_PaintsEveryVertex()
+        {
+            const string svg =
+                "<svg width='60' height='50'><defs><marker id='m' markerWidth='6' markerHeight='6' " +
+                "refX='3' refY='3' markerUnits='userSpaceOnUse' overflow='visible'>" +
+                "<circle cx='3' cy='3' r='3' fill='blue'/></marker></defs>" +
+                "<path d='M5 40 H30 V10' fill='none' stroke='black' marker-mid='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(HasBlue(result.Bitmap, 27, 37, 34, 44));
+        }
+
+        [Fact]
+        public void LinearPathMarkerRoles_SpanAllSubpaths()
+        {
+            const string svg =
+                "<svg width='60' height='30'><defs>" +
+                "<marker id='start' refX='2' refY='2' markerUnits='userSpaceOnUse' overflow='visible'>" +
+                "<circle cx='2' cy='2' r='2' fill='red'/></marker>" +
+                "<marker id='mid' refX='2' refY='2' markerUnits='userSpaceOnUse' overflow='visible'>" +
+                "<circle cx='2' cy='2' r='2' fill='blue'/></marker>" +
+                "<marker id='end' refX='2' refY='2' markerUnits='userSpaceOnUse' overflow='visible'>" +
+                "<circle cx='2' cy='2' r='2' fill='green'/></marker></defs>" +
+                "<path d='M5 5 l10 0 M35 20 h10' fill='none' stroke='black' " +
+                "marker-start='url(#start)' marker-mid='url(#mid)' marker-end='url(#end)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(result.Bitmap.GetPixel(5, 5).Red > 200);
+            Assert.True(result.Bitmap.GetPixel(15, 5).Blue > 200);
+            Assert.True(result.Bitmap.GetPixel(35, 20).Blue > 200);
+            Assert.True(result.Bitmap.GetPixel(45, 20).Green > 100);
+        }
+
+        [Fact]
+        public void MarkerDefaultOrient_IsZeroDegrees()
+        {
+            const string svg =
+                "<svg width='40' height='40'><defs><marker id='m' markerWidth='10' markerHeight='2' " +
+                "refX='5' refY='1' markerUnits='userSpaceOnUse' overflow='visible'>" +
+                "<rect width='10' height='2' fill='red'/></marker></defs>" +
+                "<path d='M5 20 H20 V35' fill='none' stroke='black' marker-mid='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(result.Bitmap.GetPixel(24, 20).Red > 200);
+            Assert.Equal(0, result.Bitmap.GetPixel(16, 24).Alpha);
+        }
+
+        [Fact]
+        public void ClosedPathStartMarker_AveragesClosingAndOutgoingTangents()
+        {
+            const string svg =
+                "<svg width='40' height='40'><defs><marker id='m' refX='0' refY='2' " +
+                "markerWidth='8' markerHeight='4' markerUnits='userSpaceOnUse' overflow='visible' orient='auto'>" +
+                "<path d='M0 0 L8 2 L0 4 Z' fill='red'/></marker></defs>" +
+                "<path d='M20 10 L10 20 L20 30 L30 20 Z' fill='none' stroke='black' " +
+                "marker-start='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(result.Bitmap.GetPixel(14, 10).Red > 200);
+        }
+
+        [Fact]
+        public void LinearPathMarkerVertices_RespectInstanceBudget()
+        {
+            var data = new StringBuilder("M0 0");
+            for (int i = 1; i <= 4096; i++) data.Append(" L").Append(i).Append(" 0");
+            string svg =
+                "<svg width='20' height='20'><defs><marker id='m'><circle r='1'/></marker></defs>" +
+                $"<path d='{data}' marker-mid='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("marker instance budget"));
         }
 
         [Fact]

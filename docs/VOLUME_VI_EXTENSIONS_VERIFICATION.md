@@ -4909,6 +4909,28 @@ Verification:
 - These static-image results do not count testharness assertions as passing and
   do not replace top-level SVG document WPT. Script execution and DOM mutation
   remain browser-runtime responsibilities and must be verified through that path.
+
+## 6.217 Post-Classification Windows SVG Baseline And Linear Markers (2026-09-04)
+
+- After the test-metadata and inert-image-script corrections, a fresh complete
+  local Windows `wpt/svg` run evaluates all 1,258 files in 628 seconds. It reports
+  878 first-party renders, 249 legacy fallbacks, 68 resource rejections, 43
+  first-party reference failures, 19 hybrid failures, one timeout, and zero
+  worker failures. Direct Svg.Skia parity is 523/848; declared-reference passes
+  are 125/276, with 95 blocked references and six unresolved targets.
+- Path marker work was then verified against exactly
+  `painting/marker-001.svg`, `marker-002.svg`, `marker-006.svg`, `marker-008.svg`,
+  `marker-009.svg`, and `painting/reftests/marker-path-021.svg`. Before the fix all
+  six were marker compatibility fallbacks; afterward all six route first-party
+  with zero fallback, rejection, renderer/worker failure, or timeout.
+- Five of the six declared references pass exactly with alpha intersection-over-
+  union 1 and zero differing pixels. `marker-006.svg` remains open at alpha IoU
+  0.9993, mean RGB difference 0.1081, maximum channel difference 71, and 103
+  differing pixels. The oracle was not relaxed and the case is not counted green.
+- This closes bounded linear path vertices, whole-path subpath roles, default
+  orientation, and line middle-marker handling. Curved/arc marker tangents and the
+  remaining marker-viewBox pixel mismatch are still Windows parity work; the
+  first-party backend remains non-default.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

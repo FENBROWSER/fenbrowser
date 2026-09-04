@@ -23,6 +23,22 @@ namespace FenBrowser.FenEngine.Svg
             string end = element.GetPresentationProperty("marker-end") ?? shorthand;
             if (!HasEffectValue(start) && !HasEffectValue(middle) && !HasEffectValue(end)) return;
 
+            if (element.Name == "path")
+            {
+                string data = ResolvePathData(element);
+                if (SvgPathParser.TryReadLinearMarkerSubpaths(
+                        (data ?? string.Empty).AsSpan(),
+                        MaxMarkersPerElement,
+                        out var subpaths,
+                        _report,
+                        CheckTime))
+                {
+                    DrawLinearPathMarkers(
+                        element, canvas, viewport, style, subpaths, start, middle, end);
+                    return;
+                }
+            }
+
             var vertices = ReadMarkerVertices(element, path);
             if (vertices.Count < 2) return;
 
@@ -32,11 +48,11 @@ namespace FenBrowser.FenEngine.Svg
 
             if (HasEffectValue(middle))
             {
-                if (element.Name != "polyline" && element.Name != "polygon")
+                if (element.Name == "path")
                 {
                     _report.RequireFallback("marker-mid on non-polyline geometry requires compatibility fallback");
                 }
-                else
+                else if (element.Name == "polyline" || element.Name == "polygon")
                 {
                     int limit = Math.Min(vertices.Count - 1, MaxMarkersPerElement);
                     for (int i = 1; i < limit; i++)
@@ -143,6 +159,78 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
+        private void DrawLinearPathMarkers(
+            SvgElement element,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle style,
+            List<List<SKPoint>> subpaths,
+            string start,
+            string middle,
+            string end)
+        {
+            int firstSubpath = -1;
+            int lastSubpath = -1;
+            for (int i = 0; i < subpaths.Count; i++)
+            {
+                if (subpaths[i].Count < 2) continue;
+                if (firstSubpath < 0) firstSubpath = i;
+                lastSubpath = i;
+            }
+            if (firstSubpath < 0) return;
+
+            List<SKPoint> first = subpaths[firstSubpath];
+            if (HasEffectValue(start))
+                DrawMarkerInstance(start, element, canvas, viewport, style, first[0],
+                    MarkerVertexDirection(first, 0), isStart: true);
+
+            if (HasEffectValue(middle))
+            {
+                for (int subpathIndex = firstSubpath; subpathIndex <= lastSubpath; subpathIndex++)
+                {
+                    List<SKPoint> points = subpaths[subpathIndex];
+                    if (points.Count < 2) continue;
+                    int firstMiddle = subpathIndex == firstSubpath ? 1 : 0;
+                    int middleEnd = subpathIndex == lastSubpath ? points.Count - 1 : points.Count;
+                    for (int i = firstMiddle; i < middleEnd; i++)
+                    {
+                        DrawMarkerInstance(
+                            middle, element, canvas, viewport, style, points[i],
+                            MarkerVertexDirection(points, i), false);
+                    }
+                }
+            }
+
+            List<SKPoint> last = subpaths[lastSubpath];
+            if (HasEffectValue(end))
+            {
+                int endIndex = last.Count - 1;
+                DrawMarkerInstance(end, element, canvas, viewport, style, last[endIndex],
+                    MarkerVertexDirection(last, endIndex), isStart: false);
+            }
+        }
+
+        private static SKPoint MarkerVertexDirection(List<SKPoint> points, int index)
+        {
+            bool closed = points.Count >= 3 && points[0] == points[^1];
+            if (closed && (index == 0 || index == points.Count - 1))
+                return BisectDirections(
+                    Direction(points[^2], points[0]),
+                    Direction(points[0], points[1]));
+            if (index <= 0) return Direction(points[0], points[1]);
+            if (index >= points.Count - 1)
+                return Direction(points[^2], points[^1]);
+            return BisectDirections(
+                Direction(points[index - 1], points[index]),
+                Direction(points[index], points[index + 1]));
+        }
+
+        private static SKPoint BisectDirections(SKPoint incoming, SKPoint outgoing)
+        {
+            var tangent = new SKPoint(incoming.X + outgoing.X, incoming.Y + outgoing.Y);
+            return tangent.X == 0f && tangent.Y == 0f ? outgoing : tangent;
+        }
+
         private InheritedStyle ResolveMarkerStyle(SvgElement marker)
         {
             _markerStyleCache ??= new Dictionary<SvgElement, InheritedStyle>();
@@ -192,7 +280,8 @@ namespace FenBrowser.FenEngine.Svg
         private static float ResolveMarkerAngle(string raw, SKPoint tangent, bool isStart)
         {
             float auto = MathF.Atan2(tangent.Y, tangent.X) * 180f / MathF.PI;
-            if (string.IsNullOrWhiteSpace(raw) || raw.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase)) return auto;
+            if (string.IsNullOrWhiteSpace(raw)) return 0f;
+            if (raw.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase)) return auto;
             if (raw.Trim().Equals("auto-start-reverse", StringComparison.OrdinalIgnoreCase)) return auto + (isStart ? 180f : 0f);
             string value = raw.Trim();
             if (value.EndsWith("deg", StringComparison.OrdinalIgnoreCase)) value = value[..^3].Trim();
