@@ -1467,7 +1467,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // in scope of its body so it can reference itself (e.g. for recursion).
             var nameSelfHandle = callee?.SelfHandle ?? ownerGenerator?.SelfHandle;
             if (function.BindsOwnNameInBody && function.Name is { Length: > 0 } selfName
-                && nameSelfHandle is { } selfHandle)
+                && nameSelfHandle is { } selfHandle
+                && !BodyShadowsOwnName(function, selfName))
             {
                 _ = functionEnv.CreateImmutableBinding(selfName, strict: function.IsStrictMode);
                 _ = functionEnv.InitializeBinding(selfName, JsValue.FromObject(selfHandle));
@@ -13827,6 +13828,44 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _heap.PushRoot(callHandle);
         _functionCallMethodHandle = callHandle;
         return callHandle;
+    }
+
+    // ECMA-262 15.2.5 InstantiateOrdinaryFunctionExpression: a named function
+    // expression's own name is bound in a dedicated funcEnv, and the environment
+    // created for each call is a *child* of it. A parameter or a var/let/const/
+    // class declaration in the body therefore shadows the name legally:
+    //
+    //     var f = function b() { let b = 1; return b; };   // 1, not an error
+    //
+    // This interpreter binds the name directly in the call-time function
+    // environment, which cannot represent that nesting - so creating it
+    // unconditionally made the body's own declaration collide ("Cannot declare
+    // lexical binding 'b'") and left assignments landing on the immutable name
+    // binding ("Assignment to constant variable 'c'"). Both were thrown by
+    // GitHub's minified ES modules.
+    //
+    // The name binding is reachable only from inside the body, so when the body
+    // declares that name the spec's binding is shadowed and unobservable.
+    // Skipping it is then exactly what the separate environment would produce.
+    private static bool BodyShadowsOwnName(BytecodeFunction function, string selfName)
+    {
+        static bool Contains(IReadOnlyList<string> names, string selfName)
+        {
+            for (var i = 0; i < names.Count; i++)
+            {
+                if (string.Equals(names[i], selfName, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return Contains(function.ParameterNames, selfName)
+            || Contains(function.VarDeclarationNames, selfName)
+            || Contains(function.LexicalDeclarationNames, selfName)
+            || Contains(function.ConstDeclarationNames, selfName);
     }
 
     // ECMA-262 20.2.3.1 Function.prototype.apply. Distinct from .call in that the
