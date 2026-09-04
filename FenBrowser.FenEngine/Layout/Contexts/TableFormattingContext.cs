@@ -151,6 +151,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float measuredWidth = Math.Max(contentWidth, Math.Max(0f, maxRight - contentLeft));
             float measuredHeight = Math.Max(specifiedHeight, Math.Max(0f, currentY - tableBox.Geometry.ContentBox.Top));
             SetContentSize(tableBox, measuredWidth, measuredHeight);
+            ApplyAutoInlineMargins(tableBox, state);
 
             foreach (var group in tableBox.Children.Where(IsRowGroup))
             {
@@ -518,6 +519,62 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             box.Geometry.ContentBox = new SKRect(left, top, left, top);
             box.Geometry.Lines = null;
             LayoutBoxOps.SyncBoxes(box.Geometry);
+        }
+
+        // CSS 2.1 10.3.3: auto left and right margins on a block-level table
+        // centre it in its containing block. The block formatting context
+        // resolves this for ordinary blocks, but a display:table box is laid out
+        // here instead and nothing applied it - so <center><table> and
+        // <table align=center>, which is how most legacy pages centre their
+        // layout, stayed hard against the left edge.
+        //
+        // It runs after SetContentSize because a table's used width is only
+        // known once its columns have been measured, unlike a block whose width
+        // is resolved up front.
+        private static void ApplyAutoInlineMargins(LayoutBox tableBox, LayoutState state)
+        {
+            var style = tableBox?.ComputedStyle;
+            if (style == null)
+            {
+                return;
+            }
+
+            bool leftAuto = style.MarginLeftAuto;
+            bool rightAuto = style.MarginRightAuto;
+            if (!leftAuto && !rightAuto)
+            {
+                return;
+            }
+
+            float available = state.ContainingBlockWidth;
+            float used = tableBox.Geometry.MarginBox.Width;
+            if (!float.IsFinite(available) || !float.IsFinite(used))
+            {
+                return;
+            }
+
+            float free = available - used;
+            if (free <= 0f)
+            {
+                return;
+            }
+
+            // Both auto centres; a single auto pushes the box to that side.
+            float shift = leftAuto && rightAuto ? free / 2f : (leftAuto ? free : 0f);
+            if (shift <= 0f)
+            {
+                return;
+            }
+
+            // Record it as the used left margin rather than translating the
+            // subtree: the parent positions this box's *margin* box afterwards,
+            // so a translation here would simply be overwritten, while a margin
+            // is what the parent's placement then honours.
+            var margin = tableBox.Geometry.Margin;
+            margin.Left = shift;
+            margin.Right = Math.Max(0f, free - shift);
+            tableBox.Geometry.Margin = margin;
+            LayoutBoxOps.SyncBoxes(tableBox.Geometry);
         }
 
         private static void SetContentSize(LayoutBox box, float width, float height)

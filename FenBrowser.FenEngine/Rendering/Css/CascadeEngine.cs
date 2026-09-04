@@ -378,6 +378,7 @@ _processedRules.Clear();
 
 // 1. Gather all declarations from matching rules (priority order: ID > Classes > Tag > Universal)
 CollectMatches(element, results, pseudoElement);
+CollectPresentationalHintMatches(element, results, pseudoElement);
 CollectInlineStyleMatches(element, results, pseudoElement);
 
             /*
@@ -464,6 +465,151 @@ return computed;
                     _inlineStyleCache.Count,
                     InlineStyleCacheCapacity);
             }
+        }
+
+        // HTML 15.3 presentational hints: legacy attributes that map into the
+        // cascade as style. They are emitted at User origin, which is exactly the
+        // precedence the cascade gives them - above the UA sheet, below any
+        // author rule, so a stylesheet always wins.
+        //
+        // Hacker News is built out of these: <table width="85%" bgcolor="#f6f6ef">
+        // for the page body and <td bgcolor="#ff6600"> for the orange bar. With
+        // none of them mapped the page rendered unstyled and left-aligned.
+        private void CollectPresentationalHintMatches(
+            Element element,
+            List<MatchedDeclaration> results,
+            string pseudoElement)
+        {
+            if (element == null || results == null || !string.IsNullOrWhiteSpace(pseudoElement))
+            {
+                return;
+            }
+
+            var tag = element.TagName?.ToUpperInvariant();
+            if (string.IsNullOrEmpty(tag))
+            {
+                return;
+            }
+
+            var hintIndex = 0;
+
+            void Emit(string property, string value)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    return;
+                }
+
+                results.Add(new MatchedDeclaration
+                {
+                    Declaration = new CssDeclaration
+                    {
+                        Property = property,
+                        Value = value,
+                        IsImportant = false,
+                    },
+                    Key = new CascadeKey(
+                        CssOrigin.User,
+                        false,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        int.MaxValue,
+                        int.MaxValue - 2,
+                        hintIndex++),
+                    SelectorText = "[presentational-hint]",
+                });
+            }
+
+            // bgcolor -> background-color, on the elements HTML allows it on.
+            if (tag is "BODY" or "TABLE" or "THEAD" or "TBODY" or "TFOOT" or "TR" or "TD" or "TH")
+            {
+                Emit("background-color", ParseLegacyColor(element.GetAttribute("bgcolor")));
+            }
+
+            if (tag == "BODY")
+            {
+                Emit("color", ParseLegacyColor(element.GetAttribute("text")));
+            }
+
+            // width/height -> the corresponding property. A bare number is
+            // pixels; a trailing % stays a percentage.
+            if (tag is "TABLE" or "TD" or "TH" or "COL" or "COLGROUP" or "IMG" or
+                "HR" or "IFRAME" or "OBJECT" or "VIDEO" or "CANVAS" or "EMBED")
+            {
+                Emit("width", ParseLegacyLength(element.GetAttribute("width")));
+                Emit("height", ParseLegacyLength(element.GetAttribute("height")));
+            }
+
+            // <table align=center|left|right> is a float/margin hint, not
+            // text-align: center gives the table auto inline margins.
+            if (tag == "TABLE")
+            {
+                var align = element.GetAttribute("align")?.Trim().ToLowerInvariant();
+                if (align == "center")
+                {
+                    Emit("margin-left", "auto");
+                    Emit("margin-right", "auto");
+                }
+                else if (align is "left" or "right")
+                {
+                    Emit("float", align);
+                }
+            }
+        }
+
+        // HTML "rules for parsing a legacy colour value", reduced to the forms
+        // that actually appear: a named colour, #rgb, or #rrggbb with or without
+        // the hash. Anything else is dropped rather than guessed at.
+        private static string ParseLegacyColor(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return null;
+            }
+
+            var value = raw.Trim();
+            if (value.StartsWith("#", StringComparison.Ordinal))
+            {
+                var digits = value.Substring(1);
+                return (digits.Length == 3 || digits.Length == 6) && IsHex(digits) ? value : null;
+            }
+
+            if ((value.Length == 3 || value.Length == 6) && IsHex(value))
+            {
+                return "#" + value;
+            }
+
+            // A colour keyword: let the normal colour parser judge it.
+            return System.Linq.Enumerable.All(value, c => char.IsLetter(c)) ? value : null;
+
+            static bool IsHex(string s) =>
+                System.Linq.Enumerable.All(s, c => System.Uri.IsHexDigit(c));
+        }
+
+        private static string ParseLegacyLength(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return null;
+            }
+
+            var value = raw.Trim();
+            if (value.EndsWith("%", StringComparison.Ordinal))
+            {
+                var number = value.Substring(0, value.Length - 1).Trim();
+                return double.TryParse(number, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var pct)
+                    ? pct.ToString(System.Globalization.CultureInfo.InvariantCulture) + "%"
+                    : null;
+            }
+
+            return double.TryParse(value, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var px)
+                ? px.ToString(System.Globalization.CultureInfo.InvariantCulture) + "px"
+                : null;
         }
 
         private void CollectInlineStyleMatches(Element element, List<MatchedDeclaration> results, string pseudoElement)

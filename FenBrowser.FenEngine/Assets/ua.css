@@ -80,6 +80,11 @@ ul ul, ol ol    { margin-top: 0; margin-bottom: 0 }
 u, ins          { text-decoration: underline }
 br:before       { content: "\A"; white-space: pre-line }
 center          { text-align: center }
+/* <center> centres block-level children too, not just inline content. Chrome
+   spells that text-align:-webkit-center; auto inline margins give the same
+   geometry for the case that matters, a table wrapped in <center> - which is
+   how Hacker News and most legacy pages centre their layout. */
+center > table  { margin-left: auto; margin-right: auto }
 :link           { color: #0000ee; text-decoration: underline }
 :visited        { color: #551a8b; text-decoration: underline }
 :focus          { outline: thin dotted invert }
