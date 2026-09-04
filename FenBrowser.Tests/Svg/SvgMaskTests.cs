@@ -83,7 +83,7 @@ namespace FenBrowser.Tests.Svg
         {
             using var result = new FenSvgRenderer().Render(
                 "<svg width='40' height='30'><defs><mask id='m'><rect width='1' height='1' fill='white'/></mask></defs>" +
-                "<g mask='url(#m)'><rect width='20' height='20'/></g></svg>");
+                "<text x='2' y='18' font-size='12' mask='url(#m)'>masked</text></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
             Assert.True(result.RequiresFallback);

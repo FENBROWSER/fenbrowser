@@ -11600,6 +11600,26 @@ Verification:
   first-party SVG backend remains non-default while the other Windows
   conformance gaps are open.
 
+## 2.164 First-Party SVG Filter Graphs (2026-09-05)
+
+- The first-party effects pipeline now builds bounded filter graphs instead of
+  accepting only a linear primitive chain. Named `result` outputs can feed
+  later `in` and `in2` inputs, and `SourceGraphic` and `SourceAlpha` are
+  resolved without delegating SVG semantics to Svg.Skia.
+- `feFlood`, `feBlend`, Porter-Duff `feComposite`, and ordered `feMerge` nodes
+  join the existing blur, offset, drop-shadow, color-matrix, and morphology
+  primitives. Color matrices additionally implement `saturate` and degree-based
+  `hueRotate`; arithmetic composite remains an explicit compatibility fallback.
+- Generated `feFlood` inputs honor user-space and object-bounding-box filter and
+  primitive regions. Object-bounding-box primitive distances scale independently
+  by target width and height, and group/link target bounds are the
+  transform-aware union of their supported descendants.
+- Filter graph state and native image-filter ownership remain local to one
+  render. Primitive and layer budgets still bound native work. Background,
+  fill/stroke-paint inputs and the remaining unsupported primitives continue to
+  request compatibility fallback, so the first-party SVG backend remains
+  non-default.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

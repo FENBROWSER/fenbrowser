@@ -5101,6 +5101,25 @@ Verification:
   native-work admission budget. Scripted pattern changes are not claimed by this
   static-image gate. First-party SVG remains non-default.
 
+## 6.230 SVG Filter-Graph Conformance (2026-09-05)
+
+- An exact nine-file local Windows WPT slice was run before and after the graph
+  implementation. First-party routing improves from 5 to 7 files and
+  compatibility fallbacks fall from 4 to 2, with zero resource rejection,
+  renderer/worker failure, or timeout in either result.
+- `filters-blend-01-b-manual.svg` and `filters-color-01-b-manual.svg` now route
+  first-party. Correct object-bounding-box distance scaling also moves
+  `filters-offset-02-b-manual.svg` from pixel mismatch to legacy-parity pass;
+  the declared `clip-path-filter-order.svg` reference remains 1/1 passing.
+- The two retained fallbacks expose the next real boundaries:
+  `BackgroundImage` input in `filters-background-01-f-manual.svg` and
+  `FillPaint` input in `filters-composite-03-f-manual.svg`. They are not counted
+  as first-party support.
+- Sixteen focused filter regressions cover named and branched inputs,
+  SourceAlpha, flood/blend/composite/merge, object-bounding-box scaling and group
+  regions, color-matrix modes, admission fallback, and concurrent native
+  ownership. The complete focused SVG namespace passes 418/418.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

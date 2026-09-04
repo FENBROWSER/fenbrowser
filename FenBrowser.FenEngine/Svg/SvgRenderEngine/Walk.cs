@@ -920,6 +920,36 @@ namespace FenBrowser.FenEngine.Svg
                 case "svg":
                     bounds = new SKRect(0f, 0f, viewport.Width, viewport.Height);
                     return true;
+                case "g":
+                case "a":
+                    bool hasBounds = false;
+                    SKRect combined = default;
+                    foreach (var child in element.Children)
+                    {
+                        if (!TryResolveObjectBounds(child, viewport, out var childBounds))
+                            continue;
+
+                        string transformText = child.GetPresentationProperty("transform");
+                        if (!string.IsNullOrWhiteSpace(transformText))
+                        {
+                            if (!SvgValues.TryParseTransformList(
+                                    transformText.AsSpan(), out var childTransform))
+                            {
+                                bounds = default;
+                                return false;
+                            }
+                            childBounds = childTransform.MapRect(childBounds);
+                        }
+
+                        combined = hasBounds ? SKRect.Union(combined, childBounds) : childBounds;
+                        hasBounds = true;
+                    }
+                    if (hasBounds && combined.Width > 0f && combined.Height > 0f)
+                    {
+                        bounds = combined;
+                        return true;
+                    }
+                    break;
             }
 
             bounds = default;
