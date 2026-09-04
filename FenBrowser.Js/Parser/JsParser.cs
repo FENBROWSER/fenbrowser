@@ -2724,8 +2724,15 @@ public sealed class JsParser
                 }
 
                 break;
-            case ParenthesizedExpressionNode parenthesized:
-                return TryGetTopLevelInBinary(parenthesized.Expression, out left, out right);
+
+            // Deliberately no ParenthesizedExpressionNode case. The Annex B
+            // B.3.5 head is `for ( var BindingIdentifier Initializer[~In] in
+            // Expression )`, so the `in` that marks a for-in must be at the top
+            // level of the head. Parentheses restore [+In], which means an `in`
+            // inside them belongs to the initializer expression and the loop is
+            // an ordinary three-part for. Looking through them rewrote
+            // `for (var x = ("a" in b); cond; step)` into a for-in and then
+            // demanded `)` where the `;` was.
         }
 
         left = new IdentifierExpressionNode(string.Empty, expression.Span);
@@ -2745,6 +2752,13 @@ public sealed class JsParser
         // so "use strict" inside a function is recognised by the parser.
         var savedDirectivePrologue = _inDirectivePrologue;
         var savedActiveLabels = _activeLabels;
+        // A FunctionBody carries no [In] parameter - its statements are always
+        // [+In] - so the for-head's [~In] must not leak across the body
+        // boundary. Without this, `for (var f = function () { return "a" in b; };;)`
+        // failed to parse, because the `in` inside the body was still being read
+        // as the for-in marker.
+        var savedNoIn = _noIn;
+        _noIn = false;
         _inDirectivePrologue = true;
         _activeLabels = new HashSet<string>(StringComparer.Ordinal);
         try
@@ -2753,6 +2767,7 @@ public sealed class JsParser
         }
         finally
         {
+            _noIn = savedNoIn;
             _activeLabels = savedActiveLabels;
             _inDirectivePrologue = savedDirectivePrologue;
             _functionBodyDepth--;
