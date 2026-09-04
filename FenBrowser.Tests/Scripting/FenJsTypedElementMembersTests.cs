@@ -189,6 +189,41 @@ public sealed class FenJsTypedElementMembersTests
         Assert.Equal("select-multiple", await EvaluateAsync("document.getElementById('sel-multi').type;"));
     }
 
+    // relList.supports must answer rather than throw: Next.js probes it before
+    // using a resource hint, and a throw reads as "no rel support at all".
+    // Sets verified against Chrome 152.
+    [Fact]
+    public async Task LinkRelListSupports_AnswersForResourceHints()
+    {
+        Assert.Equal(
+            "true|true|true|false",
+            await EvaluateAsync(
+                "var r = document.getElementById('sheet').relList;" +
+                "r.supports('preload') + '|' + r.supports('stylesheet') + '|' +" +
+                "r.supports('modulepreload') + '|' + r.supports('bogus');"));
+    }
+
+    [Fact]
+    public async Task AnchorRelListSupports_AnswersForOpenerKeywords()
+    {
+        Assert.Equal(
+            "true|true|false",
+            await EvaluateAsync(
+                "var r = document.getElementById('anchor').relList;" +
+                "r.supports('noopener') + '|' + r.supports('opener') + '|' + r.supports('preload');"));
+    }
+
+    [Fact]
+    public async Task ClassListSupports_StillThrows()
+    {
+        // Chrome throws here; only rel and sandbox define supported tokens.
+        Assert.Equal(
+            "threw",
+            await EvaluateAsync(
+                "try { document.getElementById('anchor').classList.supports('x'); 'no-throw'; }" +
+                "catch (e) { 'threw'; }"));
+    }
+
     private static async Task<string> EvaluateAsync(string script)
     {
         var baseUri = new Uri("https://fixture.test/typed-members.html");

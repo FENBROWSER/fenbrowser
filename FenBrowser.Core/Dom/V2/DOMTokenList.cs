@@ -174,6 +174,35 @@ namespace FenBrowser.Core.Dom.V2
 
         public bool Supports(string token)
         {
+            // rel defines supported tokens too, and the set differs by element:
+            // link accepts the resource-hint and icon keywords, while a/area
+            // accept only the window-opener ones. Values verified against
+            // Chrome 152. Feature detection asks this before using a hint
+            // (Next.js probes relList.supports on every preload it considers),
+            // so throwing here reads as "no rel support at all".
+            if (string.Equals(_attributeName, "rel", StringComparison.OrdinalIgnoreCase))
+            {
+                var normalized = (token ?? string.Empty).ToLowerInvariant();
+                if (string.Equals(_element.LocalName, "link", StringComparison.OrdinalIgnoreCase))
+                {
+                    return normalized switch
+                    {
+                        "alternate" or "canonical" or "dns-prefetch" or "icon" or "manifest" or
+                        "modulepreload" or "next" or "preconnect" or "prefetch" or "preload" or
+                        "prerender" or "stylesheet" or "apple-touch-icon" => true,
+                        _ => false,
+                    };
+                }
+
+                if (string.Equals(_element.LocalName, "a", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(_element.LocalName, "area", StringComparison.OrdinalIgnoreCase))
+                {
+                    return normalized is "noopener" or "noreferrer" or "opener";
+                }
+
+                throw new DomException("TypeError", "This DOMTokenList does not define supported tokens.");
+            }
+
             if (!string.Equals(_attributeName, "sandbox", StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(_element.LocalName, "iframe", StringComparison.OrdinalIgnoreCase))
             {

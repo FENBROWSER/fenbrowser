@@ -18568,9 +18568,38 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return existing;
         }
 
-        var created = _interpreter.AllocateNativeFunction(name, call, length);
+        // Core throws DomException for the spec's own error cases. Left alone it
+        // unwinds as a CLR exception straight past the interpreter, so a script
+        // that guards the call in try/catch never gets the chance - the whole
+        // script dies instead. WebIDL says these surface as ordinary catchable
+        // JS exceptions, so every bridged method converts here rather than each
+        // one remembering to.
+        var guarded = WrapHostCallable(name, call);
+        var created = _interpreter.AllocateNativeFunction(name, guarded, length);
         methods[name] = created;
         return created;
+    }
+
+    private Func<JsValue, IReadOnlyList<JsValue>, JsValue> WrapHostCallable(
+        string name,
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call)
+    {
+        return (thisValue, args) =>
+        {
+            try
+            {
+                return call(thisValue, args);
+            }
+            catch (DomException domException)
+            {
+                ThrowDomException(
+                    domException.Name,
+                    string.IsNullOrEmpty(domException.Message)
+                        ? $"Failed to execute '{name}'."
+                        : domException.Message);
+                return JsValue.Undefined; // ThrowDomException always throws.
+            }
+        };
     }
 
     private JsValue CreateCompareDocumentPositionCallable(Node node)
