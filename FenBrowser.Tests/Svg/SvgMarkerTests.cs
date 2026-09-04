@@ -67,6 +67,54 @@ namespace FenBrowser.Tests.Svg
             Assert.Contains(result.Warnings, warning => warning.Contains("marker-mid"));
         }
 
+        [Fact]
+        public void MarkerOverflowVisible_PaintsOutsideTheMarkerViewport()
+        {
+            const string svg =
+                "<svg width='40' height='20'><defs><marker id='dot' markerWidth='4' markerHeight='4' " +
+                "refX='2' refY='2' markerUnits='userSpaceOnUse' overflow='visible'>" +
+                "<circle cx='2' cy='2' r='6' fill='red'/></marker></defs>" +
+                "<line x1='5' y1='10' x2='20' y2='10' stroke='none' marker-end='url(#dot)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            SKColor overflowPixel = result.Bitmap.GetPixel(24, 10);
+            Assert.True(overflowPixel.Alpha > 200 && overflowPixel.Red > 200);
+        }
+
+        [Fact]
+        public void MarkerDefaultOverflow_ClipsToTheMarkerViewport()
+        {
+            const string svg =
+                "<svg width='40' height='20'><defs><marker id='dot' markerWidth='4' markerHeight='4' " +
+                "refX='2' refY='2' markerUnits='userSpaceOnUse'>" +
+                "<circle cx='2' cy='2' r='6' fill='red'/></marker></defs>" +
+                "<line x1='5' y1='10' x2='20' y2='10' stroke='none' marker-end='url(#dot)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(0, result.Bitmap.GetPixel(24, 10).Alpha);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(21, 10));
+        }
+
+        [Fact]
+        public void NestedSvgOverflowVisible_RemainsExplicitFallback()
+        {
+            const string svg =
+                "<svg width='20' height='20'><svg width='4' height='4' style='overflow:visible'>" +
+                "<circle cx='2' cy='2' r='6' fill='red'/></svg></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("CSS property 'overflow'"));
+        }
+
         private static bool HasRed(SKBitmap bitmap, int left, int top, int right, int bottom) =>
             HasColor(bitmap, left, top, right, bottom, red: true);
 

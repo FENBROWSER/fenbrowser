@@ -248,6 +248,7 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     var declaration = declarations[d];
                     Consider(
+                        element,
                         ref winners,
                         ref customWinners,
                         declaration,
@@ -280,6 +281,7 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     var declaration = declarations[i];
                     Consider(
+                        element,
                         ref winners,
                         ref customWinners,
                         declaration,
@@ -313,6 +315,7 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private static void Consider(
+            SvgElement element,
             ref Dictionary<string, Winner> winners,
             ref Dictionary<string, Winner> customWinners,
             CssDeclaration declaration,
@@ -325,7 +328,10 @@ namespace FenBrowser.FenEngine.Svg
             if (string.IsNullOrEmpty(value)) return;
 
             bool isCustomProperty = property.StartsWith("--", StringComparison.Ordinal);
-            if (!isCustomProperty && !SupportedProperties.Contains(property))
+            bool supportedMarkerOverflow =
+                element.Name.Equals("marker", StringComparison.Ordinal) &&
+                property.Equals("overflow", StringComparison.OrdinalIgnoreCase);
+            if (!isCustomProperty && !SupportedProperties.Contains(property) && !supportedMarkerOverflow)
             {
                 if (EmbeddingOnlyProperties.Contains(property)) return;
                 if (NoneIsNoEffect.Contains(property) &&

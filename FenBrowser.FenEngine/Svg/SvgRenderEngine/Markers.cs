@@ -107,7 +107,13 @@ namespace FenBrowser.FenEngine.Svg
                         marker.GetAttribute("preserveAspectRatio"))
                     : new SKPoint(refX, refY);
                 canvas.Translate(-mappedRef.X, -mappedRef.Y);
-                canvas.ClipRect(new SKRect(0f, 0f, markerWidth, markerHeight));
+                if (!string.Equals(
+                        marker.GetPresentationProperty("overflow")?.Trim(),
+                        "visible",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    canvas.ClipRect(new SKRect(0f, 0f, markerWidth, markerHeight));
+                }
                 if (hasViewBox)
                     ApplyViewportTransform(canvas, markerViewport, true, vbX, vbY, vbW, vbH,
                         marker.GetAttribute("preserveAspectRatio"));

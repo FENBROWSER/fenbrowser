@@ -11351,6 +11351,22 @@ Verification:
   for marker `overflow:visible`, which is a separate clipping-semantics unit.
 - `Svg.Skia` remains the default while the wider dynamic, resource, cross-platform,
   and soak gates remain open.
+
+## 2.148 SVG Marker Viewport Overflow (2026-09-04)
+
+- The first-party SVG cascade accepts `overflow` only for marker elements.
+  Marker rendering preserves the existing bounded marker-viewport clip
+  by default and removes only that local clip when the marker's own resolved value
+  is explicitly `visible`; outer canvas clips and render budgets remain unchanged.
+- Focused tests cover visible overflow beyond the marker viewport, default
+  clipping, and continued fallback for nested-SVG overflow; the complete 26-file
+  Release SVG test namespace passes 364/364.
+- Local WPT `painting/reftests/paint-order-001.svg` now renders first-party and
+  matches its declared reference exactly. Together, the three static paint-order
+  reftests are 3/3 first-party with zero fallback, rejection, renderer/worker
+  failure, timeout, maximum-channel difference, or differing pixels.
+- This closes marker `overflow:visible` for the isolated SVG image renderer; it
+  does not claim general nested-SVG overflow layout or close the default switch.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

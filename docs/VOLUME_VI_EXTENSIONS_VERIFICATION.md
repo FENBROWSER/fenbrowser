@@ -4835,6 +4835,23 @@ Verification:
 - This closes static fill/stroke/marker ordering only. It does not close marker
   overflow, text-decoration ordering, CSSOM parsing tests, or the default-switch
   gate.
+
+## 6.213 SVG Marker Overflow Conformance (2026-09-04)
+
+- The exact retained blocker from 6.212,
+  `painting/reftests/paint-order-001.svg`, reproduced as a `css-cascade`
+  compatibility fallback for marker `overflow:visible` before the fix.
+- After preserving default marker clipping while honoring explicit visible
+  overflow, the file routes first-party and matches its declared reference with
+  alpha intersection-over-union 1, mean RGB difference 0, maximum channel
+  difference 0, and 0 differing pixels.
+- The cumulative three-file paint-order gate is now 3/3 first-party and 3/3
+  declared-reference passes, with zero fallback, resource rejection, renderer or
+  worker failure, and timeout. Focused marker tests pass 7/7; the complete
+  26-file Release SVG namespace passes 364/364; the Release BenchSvg build has
+  zero warnings and zero errors.
+- Nested SVG viewport overflow and browser-level CSSOM behavior remain separate
+  gates. First-party SVG remains non-default.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
