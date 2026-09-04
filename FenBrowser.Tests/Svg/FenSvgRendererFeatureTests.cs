@@ -69,6 +69,21 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(0, result.Bitmap.GetPixel(10, 5).Alpha);
         }
 
+        [Theory]
+        [InlineData("svg")]
+        [InlineData("symbol")]
+        public void UseDimensions_OverrideReferencedViewport(string viewportElement)
+        {
+            using var result = _renderer.Render(
+                $"<svg width='30' height='20'><defs><{viewportElement} id='s' width='5' height='5'>" +
+                $"<rect width='100%' height='100%' fill='green'/></{viewportElement}></defs>" +
+                "<use href='#s' width='20' height='10'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(15, 8));
+            Assert.Equal(0, result.Bitmap.GetPixel(21, 8).Alpha);
+        }
+
         [Fact]
         public void Use_SelfCycle_TerminatesWithoutHang()
         {

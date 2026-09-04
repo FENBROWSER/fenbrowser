@@ -11478,6 +11478,19 @@ Verification:
   marker viewBoxes are byte-identical to their checked-in expected images. The
   Svg.Skia compatibility renderer paints content in these cases, so legacy pixel
   parity is deliberately not used as the correctness oracle.
+
+## 2.155 Used SVG Viewport Sizing And Overflow (2026-09-04)
+
+- Width and height specified on a `use` instance now override the corresponding
+  dimensions of a referenced `svg` or `symbol` viewport. Omitted instance
+  dimensions continue to use the referenced value or the established viewport
+  default, while a resolved zero dimension suppresses the instance.
+- Nested SVG viewports honor `overflow: visible` from presentation attributes,
+  inline style, or the supported CSS cascade. `hidden` retains viewport clipping;
+  unsupported overflow modes still request compatibility fallback.
+- The four local Windows WPT `use-*-dimensions-override` reftests route entirely
+  first-party and match their declared references exactly. First-party SVG remains
+  opt-in while broader conformance gaps are open.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

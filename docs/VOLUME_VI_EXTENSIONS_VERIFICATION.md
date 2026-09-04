@@ -4964,6 +4964,17 @@ Verification:
   backend paints the suppressed descendants. The expected WPT artifacts are the
   acceptance source. Pattern viewBox behavior remains behind the explicit pattern
   paint-server fallback and is not claimed by this unit.
+
+## 6.220 SVG Use Viewport Override Conformance (2026-09-04)
+
+- Exact local WPT verification covers `use-svg-dimensions-override-001.svg`,
+  `use-svg-dimensions-override-002.svg`, `use-symbol-dimensions-override-001.svg`,
+  and `use-symbol-dimensions-override-002.svg`.
+- All four are first-party, all four match their declared references at exact
+  pixel equality, and the run has no fallback, resource rejection, renderer or
+  worker failure, or timeout.
+- Focused tests separately exercise positive `use` width/height overrides for
+  both viewport element types and visible overflow beyond a nested SVG viewport.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

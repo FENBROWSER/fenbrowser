@@ -211,7 +211,8 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement el,
             SKCanvas canvas,
             ViewportContext outer,
-            InheritedStyle inherited)
+            InheritedStyle inherited,
+            SvgElement instance = null)
         {
             // CSS sizing participates on nested <svg> only for forms whose
             // resolution requires the containing block or nearest viewport:
@@ -224,12 +225,20 @@ namespace FenBrowser.FenEngine.Svg
                 el, "height", outer.Width, outer.Height, out float cssHeight);
             string widthAttribute = el.GetAttribute("width");
             string heightAttribute = el.GetAttribute("height");
-            float w = hasCssWidth
+            string instanceWidth = instance?.GetPresentationProperty("width");
+            string instanceHeight = instance?.GetPresentationProperty("height");
+            bool hasInstanceWidth = !string.IsNullOrWhiteSpace(instanceWidth);
+            bool hasInstanceHeight = !string.IsNullOrWhiteSpace(instanceHeight);
+            float w = hasInstanceWidth
+                ? ResolveViewportLength(instanceWidth, outer.Width)
+                : hasCssWidth
                 ? cssWidth
                 : string.IsNullOrWhiteSpace(widthAttribute)
                     ? outer.Width
                     : ResolveViewportLength(widthAttribute, outer.Width);
-            float h = hasCssHeight
+            float h = hasInstanceHeight
+                ? ResolveViewportLength(instanceHeight, outer.Height)
+                : hasCssHeight
                 ? cssHeight
                 : string.IsNullOrWhiteSpace(heightAttribute)
                     ? outer.Height
@@ -335,7 +344,12 @@ namespace FenBrowser.FenEngine.Svg
             bool hasViewBox,
             float vbX, float vbY, float vbW, float vbH)
         {
-            canvas.ClipRect(new SKRect(0f, 0f, inner.Width, inner.Height));
+            bool overflowVisible = string.Equals(
+                el.GetPresentationProperty("overflow")?.Trim(),
+                "visible",
+                System.StringComparison.OrdinalIgnoreCase);
+            if (!overflowVisible)
+                canvas.ClipRect(new SKRect(0f, 0f, inner.Width, inner.Height));
             if (hasViewBox)
             {
                 ApplyViewportTransform(canvas, inner, hasViewBox, vbX, vbY, vbW, vbH, el.GetAttribute("preserveAspectRatio"));
@@ -433,13 +447,13 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     if (target.Name == "svg")
                     {
-                        DrawNestedSvg(target, canvas, viewport, next);
+                        DrawNestedSvg(target, canvas, viewport, next, el);
                     }
                     else if (target.Name == "symbol")
                     {
                         // A used symbol establishes an svg-equivalent viewport whose
                         // default width/height is 100% of the referencing viewport.
-                        DrawSymbolInstance(target, canvas, viewport, next);
+                        DrawSymbolInstance(target, canvas, viewport, next, el);
                     }
                     else
                     {
@@ -468,12 +482,22 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement symbol,
             SKCanvas canvas,
             ViewportContext viewport,
-            InheritedStyle inherited)
+            InheritedStyle inherited,
+            SvgElement instance)
         {
-            float w = ResolveViewportLength(symbol.GetAttribute("width"), viewport.Width);
-            if (w <= 0f) w = viewport.Width;
-            float h = ResolveViewportLength(symbol.GetAttribute("height"), viewport.Height);
-            if (h <= 0f) h = viewport.Height;
+            string instanceWidth = instance?.GetPresentationProperty("width");
+            string instanceHeight = instance?.GetPresentationProperty("height");
+            string width = !string.IsNullOrWhiteSpace(instanceWidth)
+                ? instanceWidth
+                : symbol.GetAttribute("width");
+            string height = !string.IsNullOrWhiteSpace(instanceHeight)
+                ? instanceHeight
+                : symbol.GetAttribute("height");
+            float w = ResolveViewportLength(width, viewport.Width);
+            if (string.IsNullOrWhiteSpace(width)) w = viewport.Width;
+            float h = ResolveViewportLength(height, viewport.Height);
+            if (string.IsNullOrWhiteSpace(height)) h = viewport.Height;
+            if (w <= 0f || h <= 0f) return;
 
             var inner = new ViewportContext(w, h);
             bool hasViewBox = TryParseViewBox(

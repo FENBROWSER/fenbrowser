@@ -328,14 +328,17 @@ namespace FenBrowser.FenEngine.Svg
             if (string.IsNullOrEmpty(value)) return;
 
             bool isCustomProperty = property.StartsWith("--", StringComparison.Ordinal);
-            bool supportedMarkerOverflow =
-                element.Name.Equals("marker", StringComparison.Ordinal) &&
-                property.Equals("overflow", StringComparison.OrdinalIgnoreCase);
+            bool supportedViewportOverflow =
+                (element.Name.Equals("marker", StringComparison.Ordinal) ||
+                 element.Name.Equals("svg", StringComparison.Ordinal)) &&
+                property.Equals("overflow", StringComparison.OrdinalIgnoreCase) &&
+                (value.Equals("visible", StringComparison.OrdinalIgnoreCase) ||
+                 value.Equals("hidden", StringComparison.OrdinalIgnoreCase));
             bool supportedNonScalingStroke =
                 property.Equals("vector-effect", StringComparison.OrdinalIgnoreCase) &&
                 SvgFeatureSupport.SupportsNonScalingStroke(element, value);
             if (!isCustomProperty && !SupportedProperties.Contains(property) &&
-                !supportedMarkerOverflow && !supportedNonScalingStroke)
+                !supportedViewportOverflow && !supportedNonScalingStroke)
             {
                 if (EmbeddingOnlyProperties.Contains(property)) return;
                 if (NoneIsNoEffect.Contains(property) &&

@@ -244,7 +244,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void NestedSvgOverflowVisible_RemainsExplicitFallback()
+        public void NestedSvgOverflowVisible_PaintsOutsideItsViewport()
         {
             const string svg =
                 "<svg width='20' height='20'><svg width='4' height='4' style='overflow:visible'>" +
@@ -253,8 +253,8 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(svg);
 
             Assert.True(result.Success, result.ErrorMessage);
-            Assert.True(result.RequiresFallback);
-            Assert.Contains(result.Warnings, warning => warning.Contains("CSS property 'overflow'"));
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(result.Bitmap.GetPixel(7, 2).Red > 200);
         }
 
         private static bool HasRed(SKBitmap bitmap, int left, int top, int right, int bottom) =>
