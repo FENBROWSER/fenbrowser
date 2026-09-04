@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -2817,27 +2817,113 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
             throw new HttpRequestException($"Blocked by CORS preflight: {request.RequestUri}");
         }
 
+        // A keep-alive connection can be closed by the server in the window between
+        // our previous response and this request. The send then fails with a
+        // transport error having delivered nothing, and the fix is simply to try
+        // again on a fresh connection -- which is what every other browser does.
+        // Without it a page silently loses whichever subresource drew the dead
+        // socket: an HTTP/1.0 server closes after *every* response, so the loss is
+        // routine rather than rare, and an iframe that never loads takes the whole
+        // flow inside it with it.
+        private const int MaxIdleConnectionRetries = 2;
+
         private async Task<HttpResponseMessage> SendRequestTrackedAsync(HttpRequestMessage req, CancellationToken token)
         {
-            var id = System.Threading.Interlocked.Increment(ref _nextRequestId);
+            for (var attempt = 0; ; attempt++)
+            {
+                var id = System.Threading.Interlocked.Increment(ref _nextRequestId);
 
-            try
-            {
-                /* [PERF-REMOVED] */
-                PublishNetworkEvent(NetworkRequestStarting, id, req, "starting");
-                
-                var resp = await _client.SendAsync(req, token).ConfigureAwait(false);
-                
-                /* [PERF-REMOVED] */
-                PublishNetworkEvent(NetworkRequestCompleted, id, resp, "completed");
-                return resp;
+                try
+                {
+                    /* [PERF-REMOVED] */
+                    PublishNetworkEvent(NetworkRequestStarting, id, req, "starting");
+
+                    var resp = await _client.SendAsync(req, token).ConfigureAwait(false);
+
+                    /* [PERF-REMOVED] */
+                    PublishNetworkEvent(NetworkRequestCompleted, id, resp, "completed");
+                    return resp;
+                }
+                catch (HttpRequestException ex) when (
+                    attempt < MaxIdleConnectionRetries &&
+                    !token.IsCancellationRequested &&
+                    IsRepeatableRequest(req) &&
+                    IsIdleConnectionFailure(ex))
+                {
+                    PublishNetworkEvent(NetworkRequestFailed, id, ex, "failed");
+                    EngineLogCompat.Debug(
+                        $"[Network] Retrying '{req.RequestUri}' on a fresh connection " +
+                        $"(attempt {attempt + 1}/{MaxIdleConnectionRetries}): {ex.Message}",
+                        LogCategory.Network);
+
+                    // A request message cannot be sent twice, so the retry needs a copy.
+                    req = CloneBodylessRequest(req);
+                }
+                catch (Exception ex)
+                {
+                    /* [PERF-REMOVED] */
+                    PublishNetworkEvent(NetworkRequestFailed, id, ex, "failed");
+                    throw;
+                }
             }
-            catch (Exception ex)
+        }
+
+        // Only requests that carry no body and whose method is safe to repeat: the
+        // point is to resend something the server provably never saw, not to risk
+        // performing a side effect twice.
+        private static bool IsRepeatableRequest(HttpRequestMessage req) =>
+            req.Content == null &&
+            (req.Method == HttpMethod.Get ||
+             req.Method == HttpMethod.Head ||
+             req.Method == HttpMethod.Options);
+
+        // Distinguishes "the connection died" from "the server said no". Only the
+        // former is worth repeating; a DNS failure or a refused connection would
+        // just fail again.
+        private static bool IsIdleConnectionFailure(HttpRequestException ex)
+        {
+            if (ex.HttpRequestError == HttpRequestError.ConnectionError)
             {
-                /* [PERF-REMOVED] */
-                PublishNetworkEvent(NetworkRequestFailed, id, ex, "failed");
-                throw;
+                return true;
             }
+
+            for (Exception inner = ex.InnerException; inner != null; inner = inner.InnerException)
+            {
+                if (inner is System.Net.Sockets.SocketException socketEx)
+                {
+                    return socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionAborted
+                        || socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset
+                        || socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown;
+                }
+
+                if (inner is System.IO.IOException)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static HttpRequestMessage CloneBodylessRequest(HttpRequestMessage source)
+        {
+            var clone = new HttpRequestMessage(source.Method, source.RequestUri)
+            {
+                Version = source.Version,
+                VersionPolicy = source.VersionPolicy
+            };
+
+            foreach (var header in source.Headers)
+            {
+                clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            foreach (var option in (IDictionary<string, object>)source.Options)
+            {
+                ((IDictionary<string, object>)clone.Options)[option.Key] = option.Value;
+            }
+
+            return clone;
         }
 
         private static void PublishNetworkEvent<T>(Action<string, T> listeners, long requestId, T payload, string phase)
