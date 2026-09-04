@@ -18616,6 +18616,60 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             length: 0);
     }
 
+    // DOM 4.2.8 ChildNode: before(), after() and replaceWith(). Core implements
+    // the mixin on Element, CharacterData and DocumentType alike, so one shared
+    // callable covers every getter that needs them - the host getters do not
+    // chain, and only remove() had been written out per type.
+    //
+    // The arguments are (Node or DOMString)..., and a string becomes a Text node
+    // rather than being coerced away, so `el.replaceWith('text')` behaves.
+    private JsValue CreateChildNodeMutationCallable(Node node, string name)
+    {
+        return GetOrCreateHostCallable(
+            node,
+            name,
+            (_, args) =>
+            {
+                if (node is not IChildNode childNode)
+                {
+                    return JsValue.Undefined;
+                }
+
+                var owner = node.OwnerDocument;
+                var nodes = new List<Node>(args.Count);
+                for (var i = 0; i < args.Count; i++)
+                {
+                    var resolved = ResolveHostObjectOrNull<Node>(args[i]);
+                    if (resolved != null)
+                    {
+                        nodes.Add(resolved);
+                    }
+                    else if (owner != null)
+                    {
+                        nodes.Add(owner.CreateTextNode(CoerceToHostString(args[i])));
+                    }
+                }
+
+                var payload = nodes.ToArray();
+                switch (name)
+                {
+                    case "before":
+                        childNode.Before(payload);
+                        break;
+                    case "after":
+                        childNode.After(payload);
+                        break;
+                    case "replaceWith":
+                        childNode.ReplaceWith(payload);
+                        break;
+                }
+
+                return JsValue.Undefined;
+            },
+            // WebIDL reports 0 for a variadic-only operation.
+            length: 0);
+    }
+
     private object ResolveHostObjectOrNull(JsValue value)
     {
         if (value.Tag != JsValueTag.HostObject)
@@ -22387,6 +22441,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case "getRootNode":
                     value = _owner.CreateGetRootNodeCallable(element);
                     return true;
+                case "before":
+                case "after":
+                case "replaceWith":
+                    value = _owner.CreateChildNodeMutationCallable(element, property);
+                    return true;
                 case "offsetWidth":
                 case "offsetHeight":
                 case "offsetLeft":
@@ -22908,6 +22967,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "getRootNode":
                     value = _owner.CreateGetRootNodeCallable(characterData);
+                    return true;
+                case "before":
+                case "after":
+                case "replaceWith":
+                    value = _owner.CreateChildNodeMutationCallable(characterData, property);
                     return true;
                 default:
                     value = JsValue.Undefined;
