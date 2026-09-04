@@ -4852,6 +4852,27 @@ Verification:
   zero warnings and zero errors.
 - Nested SVG viewport overflow and browser-level CSSOM behavior remain separate
   gates. First-party SVG remains non-default.
+
+## 6.214 SVG Non-Scaling Stroke And Marker-Unit Conformance (2026-09-04)
+
+- Exact local WPT files
+  `painting/reftests/marker-units-strokewidth-non-scaling-stroke.svg` and
+  `marker-units-userspaceonuse-non-scaling-stroke.svg` reproduced as 0/2
+  first-party with `unsupported-property` routing before the fix.
+- An intermediate run that merely admitted the property was correctly rejected:
+  both declared-reference comparisons failed because the transformed stroke and
+  marker coordinate/style semantics were still wrong. The final device-space
+  stroke, marker-unit, and definition-inheritance implementation routes both
+  files first-party and passes 2/2 declared references.
+- Each final outcome has alpha intersection-over-union 1, mean RGB difference 0,
+  maximum channel difference 0, 0 differing pixels, and matching 10,000-pixel
+  foreground counts. There are zero fallbacks, resource rejections, renderer or
+  worker failures, and timeouts.
+- Focused vector-effect plus marker tests pass 12/12; the complete 27-file
+  Release SVG namespace passes 369/369; the Release BenchSvg build completes with
+  zero warnings and zero errors.
+- This is a static basic-geometry subset. Broader HTML-hosted non-scaling-stroke,
+  dynamic mutation, text, and paint-server coverage remain explicit future gates.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

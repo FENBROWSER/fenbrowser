@@ -15,11 +15,6 @@ namespace FenBrowser.FenEngine.Svg
             "foreignObject", "animation", "animate", "animateTransform", "set"
         };
 
-        private static readonly HashSet<string> FallbackProperties = new(StringComparer.OrdinalIgnoreCase)
-        {
-            "vector-effect"
-        };
-
         private static readonly HashSet<string> AdvancedTextAttributes = new(StringComparer.OrdinalIgnoreCase)
         {
             "textLength", "lengthAdjust", "rotate", "writing-mode", "direction",
@@ -65,9 +60,10 @@ namespace FenBrowser.FenEngine.Svg
                         $"SVG text attribute '{attribute.Key}' requires compatibility fallback");
                     continue;
                 }
-                if (FallbackProperties.Contains(attribute.Key) &&
+                if (attribute.Key.Equals("vector-effect", StringComparison.OrdinalIgnoreCase) &&
                     !string.IsNullOrWhiteSpace(attribute.Value) &&
-                    !string.Equals(attribute.Value.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+                    !attribute.Value.Trim().Equals("none", StringComparison.OrdinalIgnoreCase) &&
+                    !SupportsNonScalingStroke(element, attribute.Value))
                 {
                     report.RequireFallback($"SVG property '{attribute.Key}' requires compatibility fallback");
                 }
@@ -105,6 +101,15 @@ namespace FenBrowser.FenEngine.Svg
                 searchStart = close + 1;
             }
             return false;
+        }
+
+        internal static bool SupportsNonScalingStroke(SvgElement element, string value)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(value) ||
+                !value.Trim().Equals("non-scaling-stroke", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return element.Name is "path" or "rect" or "circle" or "ellipse" or
+                "line" or "polyline" or "polygon";
         }
     }
 }

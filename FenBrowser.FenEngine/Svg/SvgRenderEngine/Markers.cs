@@ -8,6 +8,7 @@ namespace FenBrowser.FenEngine.Svg
     {
         private const int MaxMarkersPerElement = 4096;
         private HashSet<string> _activeMarkerIds;
+        private Dictionary<SvgElement, InheritedStyle> _markerStyleCache;
 
         private void DrawMarkers(
             SvgElement element,
@@ -87,15 +88,28 @@ namespace FenBrowser.FenEngine.Svg
             if (markerWidth <= 0f || markerHeight <= 0f) return;
             float refX = ResolveMarkerLength(marker.GetAttribute("refX"), 0f);
             float refY = ResolveMarkerLength(marker.GetAttribute("refY"), 0f);
-            float unitScale = string.Equals(marker.GetAttribute("markerUnits"), "userSpaceOnUse", StringComparison.Ordinal)
-                ? 1f : Math.Max(0f, sourceStyle.StrokeWidth);
-            float angle = ResolveMarkerAngle(marker.GetAttribute("orient"), tangent, isStart);
+            bool strokeWidthUnits = !string.Equals(
+                marker.GetAttribute("markerUnits"), "userSpaceOnUse", StringComparison.Ordinal);
+            bool deviceSpaceStrokeUnits = strokeWidthUnits &&
+                SvgFeatureSupport.SupportsNonScalingStroke(
+                    source, source.GetPresentationProperty("vector-effect"));
+            float unitScale = strokeWidthUnits ? Math.Max(0f, sourceStyle.StrokeWidth) : 1f;
+            SKPoint markerPoint = point;
+            SKPoint markerTangent = tangent;
+            if (deviceSpaceStrokeUnits)
+            {
+                SKMatrix sourceMatrix = canvas.TotalMatrix;
+                markerPoint = sourceMatrix.MapPoint(point);
+                markerTangent = sourceMatrix.MapVector(tangent);
+            }
+            float angle = ResolveMarkerAngle(marker.GetAttribute("orient"), markerTangent, isStart);
 
             _activeMarkerIds.Add(id);
             try
             {
                 using var state = new CanvasState(canvas);
-                canvas.Translate(point.X, point.Y);
+                if (deviceSpaceStrokeUnits) canvas.ResetMatrix();
+                canvas.Translate(markerPoint.X, markerPoint.Y);
                 canvas.RotateDegrees(angle);
                 canvas.Scale(unitScale, unitScale);
 
@@ -118,7 +132,7 @@ namespace FenBrowser.FenEngine.Svg
                     ApplyViewportTransform(canvas, markerViewport, true, vbX, vbY, vbW, vbH,
                         marker.GetAttribute("preserveAspectRatio"));
 
-                var markerStyle = sourceStyle.ResolveOverrides(marker, _report);
+                var markerStyle = ResolveMarkerStyle(marker);
                 DrawChildren(marker, canvas,
                     hasViewBox ? new ViewportContext(vbW, vbH) : markerViewport,
                     markerStyle);
@@ -127,6 +141,21 @@ namespace FenBrowser.FenEngine.Svg
             {
                 _activeMarkerIds.Remove(id);
             }
+        }
+
+        private InheritedStyle ResolveMarkerStyle(SvgElement marker)
+        {
+            _markerStyleCache ??= new Dictionary<SvgElement, InheritedStyle>();
+            if (_markerStyleCache.TryGetValue(marker, out var cached)) return cached;
+
+            var ancestry = new List<SvgElement>();
+            for (SvgElement current = marker; current != null; current = current.Parent)
+                ancestry.Add(current);
+            var resolved = new InheritedStyle();
+            for (int i = ancestry.Count - 1; i >= 0; i--)
+                resolved = resolved.ResolveOverrides(ancestry[i], _report);
+            _markerStyleCache[marker] = resolved;
+            return resolved;
         }
 
         private List<MarkerVertex> ReadMarkerVertices(SvgElement element, SKPath path)

@@ -36,21 +36,52 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     using var fillPaint = BuildFillPaint(el, style, path);
                     using var strokePaint = BuildStrokePaint(el, style, path);
-
-                    for (int i = 0; i < 3; i++)
+                    bool nonScalingStroke =
+                        SvgFeatureSupport.SupportsNonScalingStroke(
+                            el, el.GetPresentationProperty("vector-effect"));
+                    SKPath deviceStrokePath = null;
+                    if (nonScalingStroke && style.Stroke.Kind == SvgValues.PaintKind.ServerRef)
                     {
-                        switch (style.PaintOrder.At(i))
+                        _report.RequireFallback(
+                            "SVG non-scaling paint-server stroke requires compatibility fallback");
+                        nonScalingStroke = false;
+                    }
+                    if (nonScalingStroke && strokePaint != null)
+                    {
+                        deviceStrokePath = new SKPath();
+                        path.Transform(canvas.TotalMatrix, deviceStrokePath);
+                    }
+
+                    try
+                    {
+                        for (int i = 0; i < 3; i++)
                         {
-                            case PaintPhase.Fill when fillPaint != null:
-                                canvas.DrawPath(path, fillPaint);
-                                break;
-                            case PaintPhase.Stroke when strokePaint != null:
-                                canvas.DrawPath(path, strokePaint);
-                                break;
-                            case PaintPhase.Markers:
-                                DrawMarkers(el, canvas, viewport, style, path);
-                                break;
+                            switch (style.PaintOrder.At(i))
+                            {
+                                case PaintPhase.Fill when fillPaint != null:
+                                    canvas.DrawPath(path, fillPaint);
+                                    break;
+                                case PaintPhase.Stroke when strokePaint != null:
+                                    if (nonScalingStroke)
+                                    {
+                                        using var strokeScope = new CanvasState(canvas);
+                                        canvas.ResetMatrix();
+                                        canvas.DrawPath(deviceStrokePath, strokePaint);
+                                    }
+                                    else
+                                    {
+                                        canvas.DrawPath(path, strokePaint);
+                                    }
+                                    break;
+                                case PaintPhase.Markers:
+                                    DrawMarkers(el, canvas, viewport, style, path);
+                                    break;
+                            }
                         }
+                    }
+                    finally
+                    {
+                        deviceStrokePath?.Dispose();
                     }
                 }
                 finally

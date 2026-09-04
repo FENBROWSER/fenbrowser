@@ -11367,6 +11367,29 @@ Verification:
   failure, timeout, maximum-channel difference, or differing pixels.
 - This closes marker `overflow:visible` for the isolated SVG image renderer; it
   does not claim general nested-SVG overflow layout or close the default switch.
+
+## 2.149 Bounded Non-Scaling SVG Strokes (2026-09-04)
+
+- Basic SVG geometry accepts `vector-effect: non-scaling-stroke` from a
+  presentation attribute or the bounded author cascade. The renderer maps the
+  shape path through the active affine canvas matrix, draws only its solid-color
+  stroke in device space under a scoped save/reset/restore, and disposes the
+  transformed native path deterministically. Fill and marker phases retain their
+  normal coordinate systems and paint order.
+- Other vector-effect values and non-geometry targets remain compatibility
+  fallbacks. Paint-server non-scaling strokes also remain explicit fallback so
+  resetting the canvas cannot silently change gradient coordinates.
+- Marker content now inherits from its definition-tree ancestry rather than the
+  referencing shape's ordinary fill/stroke. The resolved definition style is
+  cached per marker per render. For a non-scaling source, `markerUnits=strokeWidth`
+  maps position and tangent into device space and applies the computed stroke
+  width there; `userSpaceOnUse` markers continue through the normal transform.
+- Focused vector-effect and marker tests pass 12/12; the complete 27-file Release
+  SVG namespace passes 369/369. Both local WPT marker-unit non-scaling-stroke
+  reftests render first-party and match their declared references exactly with
+  alpha intersection-over-union 1 and zero pixel/channel difference.
+- Dynamic vector-effect behavior, text, paint-server strokes, and browser-level
+  HTML reftests remain open. First-party SVG remains non-default.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

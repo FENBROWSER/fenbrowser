@@ -331,7 +331,11 @@ namespace FenBrowser.FenEngine.Svg
             bool supportedMarkerOverflow =
                 element.Name.Equals("marker", StringComparison.Ordinal) &&
                 property.Equals("overflow", StringComparison.OrdinalIgnoreCase);
-            if (!isCustomProperty && !SupportedProperties.Contains(property) && !supportedMarkerOverflow)
+            bool supportedNonScalingStroke =
+                property.Equals("vector-effect", StringComparison.OrdinalIgnoreCase) &&
+                SvgFeatureSupport.SupportsNonScalingStroke(element, value);
+            if (!isCustomProperty && !SupportedProperties.Contains(property) &&
+                !supportedMarkerOverflow && !supportedNonScalingStroke)
             {
                 if (EmbeddingOnlyProperties.Contains(property)) return;
                 if (NoneIsNoEffect.Contains(property) &&
