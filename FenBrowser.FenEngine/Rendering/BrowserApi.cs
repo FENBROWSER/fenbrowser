@@ -5350,7 +5350,12 @@ pre {{
                 if (result?.Status != FetchStatus.Success || string.IsNullOrWhiteSpace(result.Content))
                 {
                     TryLogWarn(
-                        $"[BrowserHost] iframe load did not produce a document for '{frameUri}' status='{result?.Status.ToString() ?? "<null>"}'",
+                        $"[BrowserHost] iframe load did not produce a document for '{frameUri}' " +
+                        $"status='{result?.Status.ToString() ?? "<null>"}' " +
+                        $"reason='{result?.FailureReason.ToString() ?? "<null>"}' " +
+                        $"detail='{result?.ErrorDetail ?? "<null>"}' " +
+                        $"finalUri='{result?.FinalUri?.AbsoluteUri ?? "<null>"}' " +
+                        $"contentLen={result?.Content?.Length ?? -1}",
                         LogCategory.Navigation);
                     return;
                 }

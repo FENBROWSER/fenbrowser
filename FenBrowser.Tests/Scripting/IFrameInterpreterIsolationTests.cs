@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -309,6 +310,95 @@ public sealed class IFrameInterpreterIsolationTests
     }
 
     [Fact]
+    public async Task MessagePortTrace_CorrelatesPayloadAcrossQueueHandlerAndCheckpoint()
+    {
+        var uri = new Uri("https://trace.test/page");
+        var document = new HtmlParser(
+            "<html><body><script>" +
+            "window.__channel=new MessageChannel();" +
+            "window.__channel.port2.onmessage=function(event){window.__received=event.data.command;};" +
+            "</script></body></html>",
+            uri).Parse();
+        var engine = CreateEngine();
+        await engine.SetDomAsync(document.DocumentElement, uri);
+
+        var trace = new ConcurrentQueue<FenJsMessageTransportTraceEvent>();
+        engine.MessageTransportTraceSink = trace.Enqueue;
+        engine.Evaluate("window.__channel.port1.postMessage({command:'challenge',sequence:7});");
+
+        var deadline = DateTime.UtcNow.AddSeconds(1);
+        while (DateTime.UtcNow < deadline &&
+               (!trace.Any(entry => entry.Stage == "port-delivery-complete") ||
+                engine.Evaluate("String(window.__received || '')")?.ToString() != "challenge"))
+        {
+            await Task.Delay(10);
+        }
+
+        var events = trace.ToArray();
+        var send = Assert.Single(events, entry => entry.Stage == "port-send-enter");
+        Assert.Contains("command", send.Payload, StringComparison.Ordinal);
+        Assert.NotEqual(0, send.SourcePortId);
+        Assert.NotEqual(0, send.TargetPortId);
+        Assert.All(events, entry => Assert.Equal(send.MessageId, entry.MessageId));
+
+        var stages = events.Select(entry => entry.Stage).ToArray();
+        AssertStageOrder(stages, "port-send-enter", "port-send-enqueued");
+        AssertStageOrder(stages, "port-enqueued", "port-dequeued");
+        AssertStageOrder(stages, "port-dequeued", "port-handler-state");
+        AssertStageOrder(stages, "port-handler-enter", "port-handler-complete");
+        AssertStageOrder(stages, "port-checkpoint-enter", "port-checkpoint-complete");
+        AssertStageOrder(stages, "port-checkpoint-complete", "port-delivery-complete");
+
+        var handlerState = Assert.Single(events, entry => entry.Stage == "port-handler-state");
+        Assert.True(handlerState.HandlerCallable);
+        Assert.True(handlerState.PortEnabled);
+        Assert.True(handlerState.QueueDelayMilliseconds >= 0);
+        Assert.Equal("challenge", engine.Evaluate("String(window.__received)")?.ToString());
+    }
+
+    [Fact]
+    public async Task WindowMessageTrace_CorrelatesPayloadAcrossRoutingAndHandler()
+    {
+        var uri = new Uri("https://trace.test/page");
+        var document = new HtmlParser(
+            "<html><body><script>" +
+            "addEventListener('message',function(event){window.__windowMessage=event.data.command;});" +
+            "</script></body></html>",
+            uri).Parse();
+        var engine = CreateEngine();
+        await engine.SetDomAsync(document.DocumentElement, uri);
+
+        var trace = new ConcurrentQueue<FenJsMessageTransportTraceEvent>();
+        engine.MessageTransportTraceSink = trace.Enqueue;
+        engine.Evaluate("window.postMessage({command:'setup'}, '*');");
+
+        var deadline = DateTime.UtcNow.AddSeconds(1);
+        while (DateTime.UtcNow < deadline &&
+               (!trace.Any(entry => entry.Stage == "window-delivery-complete") ||
+                engine.Evaluate("String(window.__windowMessage || '')")?.ToString() != "setup"))
+        {
+            await Task.Delay(10);
+        }
+
+        var events = trace.ToArray();
+        var route = Assert.Single(events, entry => entry.Stage == "window-route-enter");
+        Assert.Contains("command", route.Payload, StringComparison.Ordinal);
+        Assert.All(events, entry => Assert.Equal(route.MessageId, entry.MessageId));
+
+        var stages = events.Select(entry => entry.Stage).ToArray();
+        AssertStageOrder(stages, "window-route-enter", "window-enqueued");
+        AssertStageOrder(stages, "window-enqueued", "window-dequeued");
+        AssertStageOrder(stages, "window-page-scripts-ready", "window-handler-state");
+        AssertStageOrder(stages, "window-handler-enter", "window-handler-complete");
+        AssertStageOrder(stages, "window-checkpoint-enter", "window-checkpoint-complete");
+        AssertStageOrder(stages, "window-checkpoint-complete", "window-delivery-complete");
+
+        var handlerState = Assert.Single(events, entry => entry.Stage == "window-handler-state");
+        Assert.True(handlerState.ListenerCount >= 1);
+        Assert.Equal("setup", engine.Evaluate("String(window.__windowMessage)")?.ToString());
+    }
+
+    [Fact]
     public async Task CrossOriginFrame_PreservesQueuedMessageOrderInOwningRealm()
     {
         var parentUri = new Uri("https://parent.test/page");
@@ -555,6 +645,14 @@ public sealed class IFrameInterpreterIsolationTests
             "_fenJsLock",
             BindingFlags.Instance | BindingFlags.NonPublic);
         return Assert.IsAssignableFrom<object>(lockField?.GetValue(engine));
+    }
+
+    private static void AssertStageOrder(string[] stages, string first, string second)
+    {
+        var firstIndex = Array.IndexOf(stages, first);
+        var secondIndex = Array.IndexOf(stages, second);
+        Assert.True(firstIndex >= 0, $"Missing trace stage '{first}'.");
+        Assert.True(secondIndex > firstIndex, $"Trace stage '{second}' did not follow '{first}'.");
     }
 
     private static JsHostAdapter CreateHost() => new(

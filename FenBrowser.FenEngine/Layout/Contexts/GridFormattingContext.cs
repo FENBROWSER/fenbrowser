@@ -595,6 +595,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             else if (style.WidthPercent.HasValue)
             {
                 width = (float)(style.WidthPercent.Value / 100d * available);
+                if (Environment.GetEnvironmentVariable("FEN_GRID_TRACE") == "1")
+                {
+                    Console.Error.WriteLine($"[gridtrace] pct={style.WidthPercent.Value} raw={rawAvailable} resolvedAvail={available} src={widthResolution.Source} cb={widthResolution.ContainingBlock} vp={widthResolution.Viewport} -> width={width}");
+                }
             }
             else if (widthUnconstrained)
             {

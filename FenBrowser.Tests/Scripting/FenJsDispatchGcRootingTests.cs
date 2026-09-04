@@ -114,6 +114,33 @@ public sealed class FenJsDispatchGcRootingTests
         }
     }
 
+    [Fact]
+    public async Task NativeRangeConstructor_RemainsRootedAfterMajorGc()
+    {
+        var baseUri = new Uri("https://fixture.test/range-gc-rooting.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            GetHeap(engine).CollectGarbage();
+
+            var result = engine.Evaluate(
+                "Range.name + '|' + globalThis.Range.name + '|' + " +
+                "Object.getOwnPropertyDescriptor(globalThis, 'Range').value.name");
+            Assert.Equal("Range|Range|Range", result?.ToString());
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static async Task<string> BootWithStressAsync(string html, string postBootProbe)
     {
         var baseUri = new Uri("https://fixture.test/boot-gc-rooting.html");
