@@ -80,24 +80,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             for (var i = 0; i < frame.Registers.Length; i++)
             {
                 var v = frame.Registers[i];
-                if (v.Tag == JsValueTag.Object) tracer.Trace(v.AsObjectHandle());
+                if (v.Tag == JsValueTag.Object) tracer.TraceRoot("interp.frame.register", v.AsObjectHandle());
             }
-            if (frame.ThisValue.Tag == JsValueTag.Object) tracer.Trace(frame.ThisValue.AsObjectHandle());
-            if (frame.NewTarget.Tag == JsValueTag.Object) tracer.Trace(frame.NewTarget.AsObjectHandle());
+            if (frame.ThisValue.Tag == JsValueTag.Object) tracer.TraceRoot("interp.frame.this", frame.ThisValue.AsObjectHandle());
+            if (frame.NewTarget.Tag == JsValueTag.Object) tracer.TraceRoot("interp.frame.newTarget", frame.NewTarget.AsObjectHandle());
             if (frame.PendingException is { } pe && pe.Tag == JsValueTag.Object)
-                tracer.Trace(pe.AsObjectHandle());
+                tracer.TraceRoot("interp.frame.pendingException", pe.AsObjectHandle());
             if (frame.PendingReturn is { } pr && pr.Tag == JsValueTag.Object)
-                tracer.Trace(pr.AsObjectHandle());
+                tracer.TraceRoot("interp.frame.pendingReturn", pr.AsObjectHandle());
             // Audit JSRT-004: while an async frame is active, its context must be
             // rooted even though no promise reaction holds it yet.
             if (frame.AsyncContext?.SelfHandle is { } asyncCtxHandle)
-                tracer.Trace(asyncCtxHandle);
+                tracer.TraceRoot("interp.frame.asyncContext", asyncCtxHandle);
             // The callee's own cell can otherwise become unreachable while its
             // body runs: the caller's register that held it is the only heap
             // edge, and top-level invocations (microtask drain, timer callbacks)
             // hold the callee solely in C# locals. Pin it for the frame's life.
             if (frame.CalleeFunctionObject?.OwnerHandle is { } calleeSelf)
-                tracer.Trace(calleeSelf);
+                tracer.TraceRoot("interp.frame.callee", calleeSelf);
             frame.Environment?.Trace(tracer);
         }
 
@@ -113,7 +113,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     continue;
                 }
 
-                tracer.Trace(handle);
+                tracer.TraceRoot("interp.cachedHandleField:" + field.Name, handle);
             }
         }
 
@@ -121,15 +121,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             foreach (var descriptor in propertySet.Values)
             {
-                TraceRootValue(tracer, descriptor.Value);
-                TraceRootValue(tracer, descriptor.Get);
-                TraceRootValue(tracer, descriptor.Set);
+                TraceRootValue(tracer, descriptor.Value, "interp.hostDefinedProperty.value");
+                TraceRootValue(tracer, descriptor.Get, "interp.hostDefinedProperty.get");
+                TraceRootValue(tracer, descriptor.Set, "interp.hostDefinedProperty.set");
             }
         }
 
         foreach (var prototype in _hostObjectPrototypes.Values)
         {
-            TraceRootValue(tracer, prototype);
+            TraceRootValue(tracer, prototype, "interp.hostObjectPrototype");
         }
 
         _globalEnvironment?.Trace(tracer);
@@ -138,40 +138,56 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         foreach (var callback in _pendingMicrotasks)
         {
-            TraceRootValue(tracer, callback);
+            TraceRootValue(tracer, callback, "interp.pendingMicrotask");
         }
 
         foreach (var (callback, heldValues) in _finalizationCleanupJobs)
         {
-            TraceRootValue(tracer, callback);
+            TraceRootValue(tracer, callback, "interp.finalizationCleanupJob.callback");
             foreach (var heldValue in heldValues)
             {
-                TraceRootValue(tracer, heldValue);
+                TraceRootValue(tracer, heldValue, "interp.finalizationCleanupJob.heldValue");
             }
         }
 
         _jobQueue.Trace(tracer);
-        TraceRootValue(tracer, _pendingNewTarget);
-        TraceRootValue(tracer, _tailCallee);
-        foreach (var pinned in _returnPinRing)
+        TraceRootValue(tracer, _pendingNewTarget, "interp.pendingNewTarget");
+        TraceRootValue(tracer, _tailCallee, "interp.tailCallee");
+        for (var i = 0; i < _returnPinRing.Length; i++)
         {
-            TraceRootValue(tracer, pinned);
+            TraceRootValue(
+                tracer,
+                _returnPinRing[i],
+                _returnPinProvenance[i] is { } pinned
+                    ? $"interp.returnPinRing[{i}]{{{pinned}}}"
+                    : $"interp.returnPinRing[{i}]");
         }
-        TraceRootValue(tracer, _tailThis);
+
+        TraceRootValue(tracer, _tailThis, "interp.tailThis");
         if (_tailArgs != null)
         {
-            foreach (var argument in _tailArgs)
+            for (var i = 0; i < _tailArgs.Count; i++)
             {
-                TraceRootValue(tracer, argument);
+                TraceRootValue(tracer, _tailArgs[i], $"interp.tailArgs[{i}]");
             }
         }
     }
 
+    // Edges reached from inside a payload, not entries of the root set: no
+    // root label applies to them.
     private static void TraceRootValue(IHeapTracer tracer, JsValue value)
     {
         if (value.Tag == JsValueTag.Object)
         {
             tracer.Trace(value.AsObjectHandle());
+        }
+    }
+
+    private static void TraceRootValue(IHeapTracer tracer, JsValue value, string context)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            tracer.TraceRoot(context, value.AsObjectHandle());
         }
     }
     double IBuiltinContext.ToNumber(JsValue value) => ToNumber(value);
@@ -367,7 +383,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private const int ReturnPinRingSize = 256;
     private const int ReturnPinRingMask = ReturnPinRingSize - 1;
     private readonly JsValue[] _returnPinRing = new JsValue[ReturnPinRingSize];
+    // What each occupied slot holds, so a slot that fails to resolve at
+    // collection time can name the call that filled it. Captured only under
+    // FEN_FENJS_PIN_AUDIT=1: building a signature per call would cost more
+    // than the pin it describes.
+    private static readonly bool ReturnPinAuditEnabled = string.Equals(
+        Environment.GetEnvironmentVariable("FEN_FENJS_PIN_AUDIT"),
+        "1",
+        StringComparison.Ordinal);
+    private readonly string?[] _returnPinProvenance = new string?[ReturnPinRingSize];
+    private readonly HashSet<string> _reportedReturnPinFailures = new(StringComparer.Ordinal);
+    private readonly List<string> _returnPinFailureReports = new();
     private int _returnPinIndex;
+
+    /// <summary>
+    /// Returns that could not be pinned because their handle does not resolve
+    /// in this interpreter's heap — each one a root the collector would
+    /// otherwise have died on. Empty is the healthy state.
+    /// </summary>
+    public IReadOnlyList<string> ReturnPinFailureReports => _returnPinFailureReports;
     private JsValue _tailCallee;
     private IReadOnlyList<JsValue>? _tailArgs;
     private JsValue _tailThis;
@@ -484,6 +518,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return;
 
         _wallClockCheckCountdown = WallClockCheckInterval;
+        TraceMicrotaskExecutionProgressIfDue();
         if (InterruptCallback is { } cb && !cb())
             throw new JsThrownException(CreateRangeError("Execution interrupted.")) { IsUncatchableByScript = true };
         if (_wallClockDeadlineTicks != 0 && Environment.TickCount64 >= _wallClockDeadlineTicks)
@@ -500,6 +535,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return;
 
         _wallClockCheckCountdown = WallClockCheckInterval;
+        TraceMicrotaskExecutionProgressIfDue();
         if (InterruptCallback is { } callback && !callback())
             throw new JsThrownException(CreateRangeError("Execution interrupted.")) { IsUncatchableByScript = true };
         if (_wallClockDeadlineTicks != 0 && Environment.TickCount64 >= _wallClockDeadlineTicks)
@@ -1090,12 +1126,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private void DrainPendingMicrotasks(Action<JsValue, Exception>? onQueueMicrotaskFailure = null)
     {
         var drainStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        var traceContext = BeginMicrotaskTraceCheckpoint();
+        Exception? traceFailure = null;
         try
         {
             DrainPendingMicrotasksCore(onQueueMicrotaskFailure);
         }
+        catch (Exception exception)
+        {
+            traceFailure = exception;
+            throw;
+        }
         finally
         {
+            EndMicrotaskTraceCheckpoint(traceContext, traceFailure);
             _microtaskTicks += System.Diagnostics.Stopwatch.GetTimestamp() - drainStart;
         }
     }
@@ -1117,8 +1161,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             CheckExecutionBudgetAtTaskBoundary();
         }
 
+        var checkpointPass = 0;
         while (_pendingMicrotasks.Count > 0 || _jobQueue.Count > 0 || _finalizationCleanupJobs.Count > 0)
         {
+            BeginMicrotaskTracePass(++checkpointPass);
             // FinalizationRegistry cleanup callbacks run first so collected
             // values are observable before queueMicrotask/promise reactions
             // scheduled in the same checkpoint.
@@ -1126,26 +1172,41 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 CheckCheckpointBudget();
                 var (callback, heldValues) = _finalizationCleanupJobs.Dequeue();
+                var traceJob = BeginMicrotaskTraceJob(
+                    "finalization-cleanup",
+                    $"callback={DescribeMicrotaskCallbackForTrace(callback)} heldValues={heldValues.Count}");
+                Exception? traceFailure = null;
                 var cleanupRootMark = _heap.RootCount;
-                if (callback.Tag == JsValueTag.Object)
+                try
                 {
-                    _heap.PushRoot(callback.AsObjectHandle());
-                }
-                foreach (var held in heldValues)
-                {
-                    // Skip held values that were themselves collected in the
-                    // same GC pass - invoking with a dead handle would surface
-                    // a JsEngineFatalException instead of the spec's "ignore".
-                    if (held.Tag == JsValueTag.Object &&
-                        !_heap.IsLiveObjectHandle(held.AsObjectHandle()))
+                    if (callback.Tag == JsValueTag.Object)
                     {
-                        continue;
+                        _heap.PushRoot(callback.AsObjectHandle());
                     }
+                    foreach (var held in heldValues)
+                    {
+                        // Skip held values that were themselves collected in the
+                        // same GC pass - invoking with a dead handle would surface
+                        // a JsEngineFatalException instead of the spec's "ignore".
+                        if (held.Tag == JsValueTag.Object &&
+                            !_heap.IsLiveObjectHandle(held.AsObjectHandle()))
+                        {
+                            continue;
+                        }
 
-                    _ = CallFunction(callback, new[] { held }, JsValue.Undefined);
+                        _ = CallFunction(callback, new[] { held }, JsValue.Undefined);
+                    }
                 }
-
-                _heap.PopRootsTo(cleanupRootMark);
+                catch (Exception exception)
+                {
+                    traceFailure = exception;
+                    throw;
+                }
+                finally
+                {
+                    _heap.PopRootsTo(cleanupRootMark);
+                    EndMicrotaskTraceJob(traceJob, traceFailure);
+                }
             }
 
             // Drain queueMicrotask first so an early host callback that resolves a
@@ -1155,6 +1216,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 CheckCheckpointBudget();
                 var callback = _pendingMicrotasks.Dequeue();
+                var traceJob = BeginMicrotaskTraceJob(
+                    "queue-microtask",
+                    "callback=" + DescribeMicrotaskCallbackForTrace(callback));
+                Exception? traceFailure = null;
                 // The dequeued callback leaves the traced root set here; pin it
                 // for the invocation so a safe-point collection inside the
                 // callback's own body cannot sweep the closure cell that is
@@ -1170,6 +1235,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 catch (Exception exception)
                 {
+                    traceFailure = exception;
                     try
                     {
                         onQueueMicrotaskFailure?.Invoke(callback, exception);
@@ -1184,17 +1250,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 finally
                 {
                     _heap.PopRootsTo(microtaskRootMark);
+                    EndMicrotaskTraceJob(traceJob, traceFailure);
                 }
             }
 
             _ = _jobQueue.RunMicrotaskCheckpoint(job =>
             {
                 CheckCheckpointBudget();
+                var traceJob = BeginMicrotaskTraceJob(
+                    "promise-job",
+                    DescribePromiseJobForTrace(job));
+                Exception? traceFailure = null;
                 var jobStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 var jobInstructions = _instructionCount;
                 try
                 {
                     return RunPromiseJob(job);
+                }
+                catch (Exception exception)
+                {
+                    traceFailure = exception;
+                    throw;
                 }
                 finally
                 {
@@ -1204,6 +1280,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         SlowestJobTicks = elapsed;
                         SlowestJobInstructions = _instructionCount - jobInstructions;
                     }
+                    EndMicrotaskTraceJob(traceJob, traceFailure);
                 }
             });
         }
@@ -1577,6 +1654,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (--_wallClockCheckCountdown <= 0)
             {
                 _wallClockCheckCountdown = WallClockCheckInterval;
+                TraceMicrotaskExecutionProgressIfDue();
                 if (InterruptCallback is { } cb && !cb())
                     throw new JsThrownException(CreateRangeError("Execution interrupted.")) { IsUncatchableByScript = true };
                 if (_wallClockDeadlineTicks != 0 && System.Environment.TickCount64 >= _wallClockDeadlineTicks)
@@ -5292,6 +5370,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         public bool TryGetSymbol(long id, out JsValue value) => _symbolEntries.TryGetValue(id, out value);
         public bool HasSymbol(long id) => _symbolEntries.ContainsKey(id);
         public bool RemoveSymbol(long id) => _symbolEntries.Remove(id);
+
+        // A WeakMap's keys are weak, but its values are not — Set() above says
+        // so and barriers them. Without this, nothing showed the major mark
+        // phase those values: the write barrier only dirties a remembered-set
+        // card for the *minor* collector, so a value reachable solely through a
+        // WeakMap was swept while the map still held its handle, and the next
+        // `wm.get(key)` returned a cell that no longer existed. Traced the way
+        // FinalizationRegistryObject traces HeldValue while leaving its weak
+        // Target alone: values yes, keys never.
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            foreach (var value in _entries.Values)
+            {
+                TraceRootValue(tracer, value);
+            }
+
+            foreach (var value in _hostEntries.Values)
+            {
+                TraceRootValue(tracer, value);
+            }
+
+            foreach (var value in _symbolEntries.Values)
+            {
+                TraceRootValue(tracer, value);
+            }
+        }
     }
 
     private sealed class WeakSetObject : JsObject
@@ -13348,6 +13453,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         BytecodeFunction function,
         EnvironmentRecord? outerEnvironment = null)
     {
+        // Tag the cell with something that identifies *this* function. A
+        // minified bundle is almost entirely anonymous and SourceText is null
+        // wherever the compiler could not recover the original text, so both
+        // the name and a source preview collapse to one label shared by
+        // thousands of distinct functions; the compiled shape does not.
+        var allocationSite = JsHeap.AllocationTaggingEnabled
+            ? AllocationSite.Current() with
+            {
+                MemberName = "CreateFunctionObject:" + BytecodeFunctionSignature.Describe(function)
+            }
+            : AllocationSite.Current();
         var fnObj = new JsFunctionObject(function, outerEnvironment, function.Kind);
         // ECMA-262 PrivateBrandAdd for the static side: a class constructor object
         // carries its class brand so that `C.#staticPriv` access (which brand-checks
@@ -13402,7 +13518,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             or FunctionKind.Constructor;
         if (!hasOwnPrototype)
         {
-            var bareHandle = _heap.AllocateObject(fnObj, AllocationSite.Current());
+            var bareHandle = _heap.AllocateObject(fnObj, allocationSite);
             fnObj.SelfHandle = bareHandle;
             fnObj.BarrierInternalSlot(bareHandle);
             return JsValue.FromObject(bareHandle);
@@ -13435,7 +13551,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     Writable: function.Kind != FunctionKind.Constructor,
                     Enumerable: false,
                     Configurable: false));
-            var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
+            var handle = _heap.AllocateObject(fnObj, allocationSite);
             _heap.PushRoot(handle);
             fnObj.SelfHandle = handle;
             fnObj.BarrierInternalSlot(handle);
