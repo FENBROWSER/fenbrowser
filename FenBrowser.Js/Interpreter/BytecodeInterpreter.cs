@@ -117,6 +117,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
         }
 
+        // The cached dummy capability is held in a PromiseCapability? field, so
+        // the ObjectHandle-typed reflection above cannot see it. It is a process
+        // -lifetime cache handed to every PerformPromiseThen that does not need
+        // a real capability, so an untraced entry is a permanently dangling one.
+        if (_dummyCapability is { } dummy)
+        {
+            TraceRootValue(tracer, dummy.Promise, "interp.dummyCapability.promise");
+            TraceRootValue(tracer, dummy.Resolve, "interp.dummyCapability.resolve");
+            TraceRootValue(tracer, dummy.Reject, "interp.dummyCapability.reject");
+        }
+
         foreach (var propertySet in _hostDefinedProperties.Values)
         {
             foreach (var descriptor in propertySet.Values)
@@ -11514,9 +11525,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.WriteBarrier(implHandle, fnProtoHandle);
 
         // The getter — returns implHandle each time the property is accessed.
+        //
+        // capturedRoots is load-bearing, not decoration. implHandle lives only
+        // inside this C# closure: it is in no property, no register and no root
+        // set, so the tracer has no edge to it. Without declaring it here the
+        // first major collection swept the impl while the getter stayed
+        // reachable from the prototype's accessor descriptor, and the next read
+        // of e.g. Intl.NumberFormat.prototype.format handed out a dangling
+        // handle - "Stale heap handle ... allocSite=DefineIntlPrototypeAccessor".
         var capturedImpl = implHandle;
-        var getter = new NativeFunctionObject("get " + name, (_, _2) =>
-            JsValue.FromObject(capturedImpl), length: 0);
+        var getter = new NativeFunctionObject(
+            "get " + name,
+            (_, _2) => JsValue.FromObject(capturedImpl),
+            length: 0,
+            capturedRoots: new[] { JsValue.FromObject(implHandle) });
         getter.SetPrototype(EnsureFunctionPrototype());
         var getterHandle = _heap.AllocateObject(getter, AllocationSite.Current());
         _heap.WriteBarrier(getterHandle, EnsureFunctionPrototype());
@@ -23361,8 +23383,14 @@ fallbackArraySpecies:
         var noopReject = new NativeFunctionObject("", (_, _2) => JsValue.Undefined, length: 1);
         var resolveHandle = _heap.AllocateObject(noopResolve, AllocationSite.Current());
         var rejectHandle = _heap.AllocateObject(noopReject, AllocationSite.Current());
-        _heap.PushRoot(resolveHandle);
-        _heap.PushRoot(rejectHandle);
+        // Deliberately no PushRoot here. PushRoot pushes onto the *scoped* root
+        // stack, so any enclosing HandleScope or PopRootsTo that unwinds past
+        // this point takes the entry with it - while _dummyCapability keeps
+        // handing the now-unrooted handles out forever. That is the same defect
+        // the cached-handle-field table above was introduced to kill, and this
+        // one escaped it only because PromiseCapability? is not an ObjectHandle
+        // field, so the reflection never saw it. TraceRoots traces this
+        // capability explicitly instead.
         _dummyCapability = new PromiseCapability(
             JsValue.FromObject(resolveHandle),
             JsValue.FromObject(resolveHandle),

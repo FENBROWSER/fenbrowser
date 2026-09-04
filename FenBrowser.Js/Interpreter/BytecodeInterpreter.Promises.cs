@@ -820,6 +820,26 @@ public sealed partial class BytecodeInterpreter
 
         var (resolveFn, rejectFn) = CreateResolvingFunctions(promiseHandle);
 
+        // The resolving functions are held by nothing but these C# locals once
+        // CreateResolvingFunctions' own scope closes: they are in no property,
+        // no register and no root set. While the executor runs they are its
+        // arguments and so reachable through its frame, but the executor is
+        // arbitrary user code - it allocates enough to age them out of the
+        // allocation pin ring, and the moment its frame unwinds on a throw the
+        // catch below calls rejectFn with a handle a minor collection has
+        // already swept ("Stale heap handle ... allocSite=CreateResolvingFunctions").
+        // Root them across the whole window instead.
+        using var executorScope = new HandleScope(_heap);
+        if (resolveFn.Tag == JsValueTag.Object)
+        {
+            _ = executorScope.Create(resolveFn.AsObjectHandle());
+        }
+
+        if (rejectFn.Tag == JsValueTag.Object)
+        {
+            _ = executorScope.Create(rejectFn.AsObjectHandle());
+        }
+
         try
         {
             _ = CallFunction(executor, new[] { resolveFn, rejectFn }, JsValue.Undefined);
