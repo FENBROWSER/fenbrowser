@@ -133,6 +133,7 @@ namespace FenBrowser.Core.Dom.V2
 
         private DOMTokenList _classList;
         private DOMTokenList _sandboxList;
+        private DOMTokenList _relList;
 
         /// <summary>
         /// Returns the classList DOMTokenList.
@@ -145,6 +146,12 @@ namespace FenBrowser.Core.Dom.V2
         /// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-sandbox
         /// </summary>
         public DOMTokenList SandboxList => _sandboxList ??= new DOMTokenList(this, "sandbox");
+
+        /// <summary>
+        /// Returns the rel DOMTokenList shared by link, a and area elements.
+        /// https://html.spec.whatwg.org/multipage/semantics.html#dom-link-rellist
+        /// </summary>
+        public DOMTokenList RelList => _relList ??= new DOMTokenList(this, "rel");
 
         // --- Constructor ---
 

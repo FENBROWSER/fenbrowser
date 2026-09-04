@@ -20326,6 +20326,60 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case Element element when string.Equals(property, "textContent", StringComparison.Ordinal):
                     element.TextContent = CoerceToHostString(value);
                     return true;
+                case Element element when
+                    string.Equals(property, "text", StringComparison.Ordinal) &&
+                    IsScriptElement(element):
+                    // HTML dom-script-text is defined as a child-text-content
+                    // setter, so it replaces the script's children.
+                    element.TextContent = CoerceToHostString(value);
+                    return true;
+                case Element element when
+                    string.Equals(property, "defaultValue", StringComparison.Ordinal) &&
+                    IsTextAreaElement(element):
+                    element.TextContent = CoerceToHostString(value);
+                    return true;
+                case Element element when
+                    string.Equals(property, "type", StringComparison.Ordinal) &&
+                    IsStyleElement(element):
+                    element.SetAttribute("type", CoerceToHostString(value));
+                    return true;
+                case Element element when
+                    string.Equals(property, "disabled", StringComparison.Ordinal) &&
+                    IsFieldSetElement(element):
+                    SetBooleanAttribute(element, "disabled", CoerceToHostBoolean(value));
+                    return true;
+                case Element element when
+                    string.Equals(property, "selected", StringComparison.Ordinal) &&
+                    IsOptionElement(element):
+                    // Stored as live state only. The selected content attribute is
+                    // defaultSelected, and Chrome leaves it untouched when a script
+                    // assigns .selected, so writing it here would corrupt the
+                    // element's default. The getter prefers this stored value.
+                    _owner.SetStoredHostProperty(
+                        element, "selected", JsValue.FromBoolean(CoerceToHostBoolean(value)));
+                    return true;
+                case Element element when
+                    string.Equals(property, "hash", StringComparison.Ordinal) &&
+                    IsHyperlinkElement(element):
+                    // HTML 4.6.3 dom-hyperlink-hash setter: replace the fragment
+                    // on the existing href, dropping a leading "#" from the input.
+                    var newFragment = CoerceToHostString(value);
+                    if (newFragment.StartsWith("#", StringComparison.Ordinal))
+                    {
+                        newFragment = newFragment.Substring(1);
+                    }
+
+                    var currentHref = element.GetAttribute("href") ?? string.Empty;
+                    var existingHash = currentHref.IndexOf('#');
+                    if (existingHash >= 0)
+                    {
+                        currentHref = currentHref.Substring(0, existingHash);
+                    }
+
+                    element.SetAttribute(
+                        "href",
+                        newFragment.Length == 0 ? currentHref : currentHref + "#" + newFragment);
+                    return true;
                 case Element element when string.Equals(property, "onload", StringComparison.Ordinal):
                     _owner.SetStoredHostProperty(element, "onload", value);
                     return true;
@@ -21196,6 +21250,46 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "href":
                     value = JsValue.FromString(ResolveElementUrlProperty(element, "href"));
+                    return true;
+                case "relList" when IsRelListElement(element):
+                    // HTML dom-link-rellist: shared by link, a and area.
+                    value = _owner.GetOrCreateDomTokenListView(element.RelList);
+                    return true;
+                case "hash" when IsHyperlinkElement(element):
+                    // HTML 4.6.3 dom-hyperlink-hash: the fragment of the resolved
+                    // URL including the leading "#", empty when there is none.
+                    var hyperlinkUrl = ResolveElementUrlProperty(element, "href");
+                    var fragmentIndex = hyperlinkUrl.IndexOf('#');
+                    value = JsValue.FromString(
+                        fragmentIndex >= 0 && fragmentIndex < hyperlinkUrl.Length - 1
+                            ? hyperlinkUrl.Substring(fragmentIndex)
+                            : string.Empty);
+                    return true;
+                case "type" when IsHyperlinkElement(element) || IsStyleElement(element):
+                    // Both reflect a plain type content attribute.
+                    value = JsValue.FromString(element.GetAttribute("type") ?? string.Empty);
+                    return true;
+                case "text" when IsScriptElement(element):
+                    // HTML dom-script-text: the script's child text content.
+                    value = JsValue.FromString(element.TextContent ?? string.Empty);
+                    return true;
+                case "defaultValue" when IsTextAreaElement(element):
+                    // HTML dom-textarea-defaultvalue: the element's child text
+                    // content, which is distinct from the live `value`.
+                    value = JsValue.FromString(element.TextContent ?? string.Empty);
+                    return true;
+                case "disabled" when IsFieldSetElement(element):
+                    value = JsValue.FromBoolean(element.HasAttribute("disabled"));
+                    return true;
+                case "selected" when IsOptionElement(element):
+                    // HTML dom-option-selected. The engine has no selection state
+                    // machine (only checkedness is tracked), so this reflects the
+                    // selected content attribute and any value a script assigned.
+                    // It therefore does not follow a user changing the selection.
+                    var storedSelected = _owner.GetStoredHostPropertyOrUndefined(element, "selected");
+                    value = storedSelected.Tag == JsValueTag.Boolean
+                        ? storedSelected
+                        : JsValue.FromBoolean(element.HasAttribute("selected"));
                     return true;
                 case "src":
                     value = JsValue.FromString(ResolveElementUrlProperty(element, "src"));
@@ -24933,6 +25027,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         private static bool IsScriptElement(Element element) =>
             string.Equals(element?.TagName, "script", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsStyleElement(Element element) =>
+            string.Equals(element?.TagName, "style", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsTextAreaElement(Element element) =>
+            string.Equals(element?.TagName, "textarea", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsOptionElement(Element element) =>
+            string.Equals(element?.TagName, "option", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsFieldSetElement(Element element) =>
+            string.Equals(element?.TagName, "fieldset", StringComparison.OrdinalIgnoreCase);
+
+        // HTML groups a and area as "hyperlink elements": they share href, hash,
+        // type and the rest of the URL-decomposition members.
+        private static bool IsHyperlinkElement(Element element) =>
+            string.Equals(element?.TagName, "a", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(element?.TagName, "area", StringComparison.OrdinalIgnoreCase);
+
+        // rel/relList is defined on link in addition to the hyperlink elements.
+        private static bool IsRelListElement(Element element) =>
+            IsHyperlinkElement(element) ||
+            string.Equals(element?.TagName, "link", StringComparison.OrdinalIgnoreCase);
 
         private static void SetBooleanAttribute(Element element, string attributeName, bool enabled)
         {
