@@ -152,6 +152,43 @@ public sealed class FenJsTypedElementMembersTests
                 "s.getAttribute('type');"));
     }
 
+    // HTML dom-button-type: limited-value reflection whose missing/invalid
+    // default is "submit", so a bare <button> reports "submit", not "".
+    [Fact]
+    public async Task ButtonType_DefaultsToSubmitWhenAbsent()
+    {
+        Assert.Equal("submit", await EvaluateAsync("document.getElementById('btn-bare').type;"));
+    }
+
+    [Fact]
+    public async Task ButtonType_ReflectsAValidKeyword()
+    {
+        Assert.Equal(
+            "reset|button",
+            await EvaluateAsync(
+                "document.getElementById('btn-reset').type + '|' +" +
+                "document.getElementById('btn-button').type;"));
+    }
+
+    [Fact]
+    public async Task ButtonType_FallsBackToSubmitForAnInvalidKeyword()
+    {
+        Assert.Equal("submit", await EvaluateAsync("document.getElementById('btn-bogus').type;"));
+    }
+
+    // HTML dom-select-type: derived from the multiple attribute, not a type one.
+    [Fact]
+    public async Task SelectType_IsSelectOneWithoutMultiple()
+    {
+        Assert.Equal("select-one", await EvaluateAsync("document.getElementById('sel').type;"));
+    }
+
+    [Fact]
+    public async Task SelectType_IsSelectMultipleWithMultiple()
+    {
+        Assert.Equal("select-multiple", await EvaluateAsync("document.getElementById('sel-multi').type;"));
+    }
+
     private static async Task<string> EvaluateAsync(string script)
     {
         var baseUri = new Uri("https://fixture.test/typed-members.html");
@@ -166,6 +203,12 @@ public sealed class FenJsTypedElementMembersTests
                 "<script id='scr'>var q = 1;</script>" +
                 "<textarea id='ta'>default text</textarea>" +
                 "<select><option id='opt1' selected>a</option><option id='opt2'>b</option></select>" +
+                "<button id='btn-bare'>b</button>" +
+                "<button id='btn-reset' type='reset'>r</button>" +
+                "<button id='btn-button' type='button'>u</button>" +
+                "<button id='btn-bogus' type='nonsense'>n</button>" +
+                "<select id='sel'><option>a</option></select>" +
+                "<select id='sel-multi' multiple><option>a</option></select>" +
                 "<fieldset id='fs' disabled></fieldset>" +
                 "<fieldset id='fs2'></fieldset>" +
                 "<style id='st' type='text/css'></style>" +

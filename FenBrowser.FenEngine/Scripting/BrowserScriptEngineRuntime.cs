@@ -21323,6 +21323,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     // Both reflect a plain type content attribute.
                     value = JsValue.FromString(element.GetAttribute("type") ?? string.Empty);
                     return true;
+                case "type" when IsButtonElement(element):
+                    // HTML dom-button-type is a limited-value reflection with a
+                    // missing/invalid default of "submit", so a bare <button>
+                    // reports "submit" rather than "". Forms code branches on it.
+                    var buttonType = (element.GetAttribute("type") ?? string.Empty).ToLowerInvariant();
+                    value = JsValue.FromString(
+                        buttonType is "reset" or "button" or "submit" ? buttonType : "submit");
+                    return true;
+                case "type" when IsSelectElement(element):
+                    // HTML dom-select-type: derived from the multiple attribute
+                    // rather than from a type attribute at all.
+                    value = JsValue.FromString(
+                        element.HasAttribute("multiple") ? "select-multiple" : "select-one");
+                    return true;
                 case "text" when IsScriptElement(element):
                     // HTML dom-script-text: the script's child text content.
                     value = JsValue.FromString(element.TextContent ?? string.Empty);
@@ -25100,6 +25114,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         private static bool IsOptionElement(Element element) =>
             string.Equals(element?.TagName, "option", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsButtonElement(Element element) =>
+            string.Equals(element?.TagName, "button", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsSelectElement(Element element) =>
+            string.Equals(element?.TagName, "select", StringComparison.OrdinalIgnoreCase);
 
         private static bool IsFieldSetElement(Element element) =>
             string.Equals(element?.TagName, "fieldset", StringComparison.OrdinalIgnoreCase);
