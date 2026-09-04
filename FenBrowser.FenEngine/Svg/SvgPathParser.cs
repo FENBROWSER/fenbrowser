@@ -143,6 +143,10 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         return true; // Close-path cannot be repeated with numbers.
                     }
+                    if (!scan.MoreNumbersAhead())
+                    {
+                        return true; // Invalid trailing token ends the parsed prefix.
+                    }
                     cmd = prevCmd;
                     // Implicit repeat after M is L per spec.
                     cmd = cmd switch
@@ -491,6 +495,7 @@ namespace FenBrowser.FenEngine.Svg
                 else
                 {
                     if (previous == '\0' || previous is 'Z' or 'z') return false;
+                    if (!scan.MoreNumbersAhead()) return false;
                     command = previous switch
                     {
                         'M' => 'L',
@@ -966,16 +971,9 @@ namespace FenBrowser.FenEngine.Svg
             public bool MoreNumbersAhead()
             {
                 int save = _i;
-                SkipCommaWsp();
-                int probe = _i;
+                bool result = TryReadNumber(out _);
                 _i = save;
-
-                if (probe >= _s.Length)
-                {
-                    return false;
-                }
-                char c = _s[probe];
-                return char.IsDigit(c) || c == '-' || c == '+' || c == '.';
+                return result;
             }
 
             private void SkipCommaWsp()

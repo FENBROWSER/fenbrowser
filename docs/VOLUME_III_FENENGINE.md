@@ -11503,6 +11503,19 @@ Verification:
   allocation, or resource-fetch path is introduced.
 - The local Windows `image-fractional-width-vertical-fidelity.svg` WPT now matches
   its declared reference exactly. First-party SVG remains non-default.
+
+## 2.157 Malformed Path Parser Progress (2026-09-04)
+
+- Implicit path-command repetition now requires a complete numeric token before
+  re-entering the previous command. An invalid suffix such as `H40#90` stops at
+  the successfully parsed `H40` prefix instead of repeatedly invoking `H` without
+  advancing the scanner.
+- Numeric lookahead now performs a non-consuming number parse rather than treating
+  bare signs or decimal points as sufficient. The same progress invariant guards
+  marker tangent extraction.
+- The sole complete-corpus Windows worker timeout,
+  `import/paths-data-18-f-manual.svg`, now completes first-party in 266 ms without
+  fallback or failure. First-party SVG remains opt-in.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

@@ -4987,6 +4987,18 @@ Verification:
   passes improve from 1/14 to 2/14 with no new classification regression.
 - A focused regression test paints red behind the embedded image and asserts both
   fractional boundary columns remain green under root `xMinYMin` placement.
+
+## 6.222 SVG Malformed Path Progress Conformance (2026-09-04)
+
+- The exact local Windows WPT `import/paths-data-18-f-manual.svg` previously hit
+  the five-second isolated-worker timeout. After the scanner progress fix it
+  completes in 730 ms total, including first-party, hybrid, and Svg.Skia checks.
+- The result routes first-party with zero fallback, resource rejection, renderer
+  or worker failure, and timeout. It is a manual visual test and has no declared
+  reference in the local manifest, so no reference-pass claim is made.
+- Focused parser coverage asserts that malformed data stops at the last valid path
+  point; existing maximal-munch, exponent, command-repeat, and segment-budget
+  cases remain in the full SVG test namespace.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

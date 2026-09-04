@@ -192,5 +192,17 @@ namespace FenBrowser.Tests.Svg
                 Assert.Equal(new SKPoint(50, 0), points[7]);
             }
         }
+
+        [Fact]
+        public void InvalidTokenAfterImplicitCommand_StopsAtParsedPrefix()
+        {
+            Assert.True(SvgPathParser.TryBuildPath(
+                "M20 100 H40#90".AsSpan(), out var path, new SvgParseReport()));
+            using (path)
+            {
+                SKPoint[] points = path.GetPoints(path.PointCount);
+                Assert.Equal(new SKPoint(40, 100), points[^1]);
+            }
+        }
     }
 }
