@@ -4975,6 +4975,18 @@ Verification:
   worker failure, or timeout.
 - Focused tests separately exercise positive `use` width/height overrides for
   both viewport element types and visible overflow beyond a nested SVG viewport.
+
+## 6.221 Embedded SVG Fractional-Width Conformance (2026-09-04)
+
+- The exact local Windows WPT
+  `embedded/image-fractional-width-vertical-fidelity.svg` routes first-party and
+  passes its declared reference at exact pixel equality, with no fallback,
+  rejection, failure, or timeout.
+- The complete 19-file local `svg/embedded` slice remains 15 first-party, one
+  compatibility fallback, and three resource rejections, while declared-reference
+  passes improve from 1/14 to 2/14 with no new classification regression.
+- A focused regression test paints red behind the embedded image and asserts both
+  fractional boundary columns remain green under root `xMinYMin` placement.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

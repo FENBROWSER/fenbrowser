@@ -99,7 +99,7 @@ namespace FenBrowser.FenEngine.Svg
 
             return TryRenderInternal(
                 source, limits, new NestedResourceBudget(limits), 0, baseUri, resourceResolver,
-                out picture, out width, out height, out error, out warnings,
+                out picture, out width, out height, out _, out error, out warnings,
                 out fallbackReasonCodes, out resourceRejectionReasonCodes,
                 out requiresFallback, out resourceRejected);
         }
@@ -114,6 +114,7 @@ namespace FenBrowser.FenEngine.Svg
             out SKPicture picture,
             out float width,
             out float height,
+            out string rootPreserveAspectRatio,
             out string error,
             out IReadOnlyList<string> warnings,
             out IReadOnlyList<string> fallbackReasonCodes,
@@ -124,6 +125,7 @@ namespace FenBrowser.FenEngine.Svg
             picture = null;
             width = 0f;
             height = 0f;
+            rootPreserveAspectRatio = null;
             error = null;
             warnings = System.Array.Empty<string>();
             fallbackReasonCodes = System.Array.Empty<string>();
@@ -136,6 +138,7 @@ namespace FenBrowser.FenEngine.Svg
                 error = fatalReason;
                 return false;
             }
+            rootPreserveAspectRatio = doc.Root.GetAttribute("preserveAspectRatio");
 
             var engine = new SvgRenderEngine(
                 doc, limits, resourceBudget, resourceDepth, baseUri, resourceResolver);

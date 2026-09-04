@@ -417,6 +417,27 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void EmbeddedSvgImage_FractionalScaleDoesNotExposeBackgroundAtSourceEdge()
+        {
+            string nested = Convert.ToBase64String(
+                System.Text.Encoding.UTF8.GetBytes(
+                    "<svg width='100' height='100' preserveAspectRatio='xMinYMin'>" +
+                    "<rect width='100' height='100' fill='green'/></svg>"));
+            string svg =
+                "<svg width='100' height='100'><rect width='100' height='100' fill='red'/>" +
+                "<defs><clipPath id='c'><rect width='95' height='100'/></clipPath></defs>" +
+                $"<g clip-path='url(#c)'><image href='data:image/svg+xml;base64,{nested}' " +
+                "width='101.2' height='100'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(0, 50));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(94, 50));
+        }
+
+        [Fact]
         public void EmbeddedRasterBudgetRejection_IsObservableOnSuccessfulDocument()
         {
             string payload = Convert.ToBase64String(BuildPngHeader(width: 50_000, height: 50_000));

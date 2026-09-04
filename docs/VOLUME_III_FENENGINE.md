@@ -11491,6 +11491,18 @@ Verification:
 - The four local Windows WPT `use-*-dimensions-override` reftests route entirely
   first-party and match their declared references exactly. First-party SVG remains
   opt-in while broader conformance gaps are open.
+
+## 2.156 Embedded SVG Aspect-Ratio Propagation (2026-09-04)
+
+- A nested first-party SVG render now returns its root `preserveAspectRatio`
+  metadata with the bounded picture and intrinsic dimensions. When the containing
+  `image` element omits that property, placement uses the embedded SVG root value;
+  an explicit value on `image` continues to take precedence.
+- This prevents default centered placement from introducing a fractional exposed
+  edge when an embedded SVG explicitly requests `xMinYMin`. No extra raster,
+  allocation, or resource-fetch path is introduced.
+- The local Windows `image-fractional-width-vertical-fidelity.svg` WPT now matches
+  its declared reference exactly. First-party SVG remains non-default.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

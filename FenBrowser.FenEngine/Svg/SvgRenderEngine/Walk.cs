@@ -1132,6 +1132,7 @@ namespace FenBrowser.FenEngine.Svg
                     source, _limits, _resourceBudget, _resourceDepth + 1,
                     resourceUri, _resourceResolver,
                     out var picture, out float sourceWidth, out float sourceHeight,
+                    out string nestedPreserveAspectRatio,
                     out string nestedError, out _, out _, out _,
                     out bool requiresFallback, out bool resourceRejected))
             {
@@ -1167,9 +1168,12 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     using var state = new CanvasState(canvas);
                     var imageViewport = new SKRect(x, y, x + width, y + height);
+                    string preserveAspectRatio = element.GetAttribute("preserveAspectRatio");
+                    if (string.IsNullOrWhiteSpace(preserveAspectRatio))
+                        preserveAspectRatio = nestedPreserveAspectRatio;
                     var destination = ResolveImageDestination(
                         imageViewport, sourceWidth, sourceHeight,
-                        element.GetAttribute("preserveAspectRatio"));
+                        preserveAspectRatio);
                     canvas.ClipRect(imageViewport);
                     canvas.Translate(destination.Left, destination.Top);
                     canvas.Scale(destination.Width / sourceWidth, destination.Height / sourceHeight);
