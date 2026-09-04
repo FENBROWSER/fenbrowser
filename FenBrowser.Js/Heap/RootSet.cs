@@ -27,16 +27,23 @@ public sealed class RootSet
         _entries.RemoveRange(mark, _entries.Count - mark);
     }
 
-    public void Trace(IHeapTracer tracer)
+    public void Trace(IHeapTracer tracer) => Trace(tracer, "rootSet");
+
+    // The slot index is part of the label: a root set is a stack, and knowing
+    // *which* push left a dangling entry is what identifies the owner that
+    // failed to pop it.
+    public void Trace(IHeapTracer tracer, string context)
     {
         ArgumentNullException.ThrowIfNull(tracer);
 
+        var slot = -1;
         foreach (var entry in _entries)
         {
+            slot++;
             switch (entry.Kind)
             {
                 case RootKind.Object:
-                    tracer.Trace(ObjectHandle.FromInt64(entry.Payload));
+                    tracer.TraceRoot($"{context}[{slot}]", ObjectHandle.FromInt64(entry.Payload));
                     break;
                 case RootKind.String:
                     tracer.Trace(StringHandle.FromInt64(entry.Payload));

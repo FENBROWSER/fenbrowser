@@ -91,6 +91,42 @@ public sealed class JsHeap
         Environment.GetEnvironmentVariable("FEN_FENJS_GC_AUDIT_REMEMBERED"),
         "1",
         StringComparison.Ordinal);
+
+    // Root-path auditing. A dangling entry in the root set kills the collector
+    // from inside its own mark phase, and the run ends at the first one, so a
+    // live page yields one sample and no idea whether there are others. With
+    // this on, a root handle that does not resolve is reported and skipped
+    // instead of thrown on, and the collection completes — one run enumerates
+    // every bad root rather than aborting at the first.
+    private static readonly bool RootAuditRequested = string.Equals(
+        Environment.GetEnvironmentVariable("FEN_FENJS_GC_ROOT_AUDIT"),
+        "1",
+        StringComparison.Ordinal);
+
+    /// <summary>
+    /// Where root-audit reports go. The heap cannot reach the host's logger,
+    /// and a diagnostic nobody reads is not a diagnostic; the embedder points
+    /// this at its trace log.
+    /// </summary>
+    public static Action<string>? DiagnosticSink { get; set; }
+
+    /// <summary>True when <c>FEN_FENJS_GC_ROOT_AUDIT=1</c> asked for non-fatal root auditing.</summary>
+    public static bool RootAuditEnabled => RootAuditRequested;
+
+    /// <summary>
+    /// True when a diagnostic that reads per-cell allocation-site tags is on.
+    /// Producers of those tags check this before building a richer label than
+    /// the caller-member name: an identifying tag costs a string per
+    /// allocation, which is not a price to pay when nothing reads it.
+    /// </summary>
+    public static bool AllocationTaggingEnabled => SweepLogRequested || RootAuditRequested;
+
+    // Which root slot the collector is walking, for the stale-handle message.
+    private string _rootTraceContext = string.Empty;
+    // One report per (context, handle): a bad root is re-walked by every
+    // collection, and repeating it drowns the log it is meant to inform.
+    private readonly HashSet<string> _reportedDeadRoots = new(StringComparer.Ordinal);
+    private readonly List<string> _rootAuditReports = new();
     private readonly HeapVerifier _verifier = new();
     // Diagnostic breadcrumbs: last sweep record per cell index, so a stale
     // handle error can say which collection freed the cell it points at.
@@ -130,21 +166,30 @@ public sealed class JsHeap
 
     private void TraceAllocationPinRing(IHeapTracer tracer)
     {
-        foreach (var pinned in _allocationPinRing)
+        for (var i = 0; i < _allocationPinRing.Length; i++)
         {
+            var pinned = _allocationPinRing[i];
             // Aged-out entries may reference swept cells; only live handles
             // still provide reachability. Non-throwing check (see its use in
             // FinalizationRegistry draining).
             if (IsLiveObjectHandle(pinned))
             {
-                tracer.Trace(pinned);
+                tracer.TraceRoot($"heap.allocationPinRing[{i}]", pinned);
             }
         }
     }
 
-    private readonly record struct SweepRecord(int Generation, HeapCellKind Kind, int MinorGc, int MajorGc, string PayloadType, string Collector)
+    private readonly record struct SweepRecord(
+        int Generation,
+        HeapCellKind Kind,
+        int MinorGc,
+        int MajorGc,
+        string PayloadType,
+        string AllocationSite,
+        string Collector)
     {
-        public string Describe() => $"{Collector}:gen{Generation}/{Kind}({PayloadType}) minor#{MinorGc} major#{MajorGc}";
+        public string Describe() =>
+            $"{Collector}:gen{Generation}/{Kind}({PayloadType}) allocSite={AllocationSite} minor#{MinorGc} major#{MajorGc}";
     }
 
     // Every live heap, for the stale-handle diagnostic below only. Weak so a
@@ -242,6 +287,83 @@ public sealed class JsHeap
     // Audit §1: subsystems whose live JsValue Objects aren't visible through
     // the heap's RootSet (e.g. BytecodeInterpreter's active InterpreterFrame
     // Registers) register here so GC honours those references too.
+    /// <summary>
+    /// Names the root slot being traced, so a handle that fails to resolve
+    /// during marking reports the root that held it. Cleared by
+    /// <see cref="EndRootTrace"/> once the root walk is over, so an edge found
+    /// inside an object payload is not mistaken for a root.
+    /// </summary>
+    internal void BeginRootTrace(string context) => _rootTraceContext = context;
+
+    internal void EndRootTrace() => _rootTraceContext = string.Empty;
+
+    /// <summary>
+    /// Root-audit hook: reports a root handle that does not resolve in this
+    /// heap and tells the caller to skip it. Returns false when auditing is
+    /// off or the handle is fine, and the root is traced normally.
+    /// </summary>
+    internal bool ShouldSkipDeadRoot(string context, ObjectHandle handle)
+    {
+        if (!RootAuditRequested || IsLiveObject(handle))
+        {
+            return false;
+        }
+
+        var key = $"{context}#{handle.Index}/{handle.Generation}";
+        if (_reportedDeadRoots.Add(key))
+        {
+            var report =
+                $"Dead GC root. heap#{HeapId} rootCtx={context} " +
+                $"idx={handle.Index} wantGen={handle.Generation} " +
+                $"cell={DescribeCellForDiagnostics(handle.Index)} " +
+                $"allocSite={GetAllocationSiteForDiagnostics(handle.Index)} " +
+                $"{DescribeHandleOwner(handle.Index, handle.Generation)} " +
+                $"minor#{_minorGcCount} major#{_gcCollectionCount}";
+            _rootAuditReports.Add(report);
+            DiagnosticSink?.Invoke(report);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The root-audit reports collected so far, newest last. Bounded only by
+    /// the number of distinct bad roots, which is the point of collecting them.
+    /// </summary>
+    public IReadOnlyList<string> RootAuditReports => _rootAuditReports;
+
+    /// <summary>
+    /// Non-throwing description of what a handle currently points at in this
+    /// heap, and which other live heap owns it if this one does not. For
+    /// callers auditing a handle before it reaches the root set.
+    /// </summary>
+    public string DescribeHandleForDiagnostics(ObjectHandle handle)
+    {
+        if ((uint)handle.Index >= (uint)_cells.Count)
+        {
+            return $"heap#{HeapId} idx={handle.Index} out-of-range(cells={_cells.Count})";
+        }
+
+        return
+            $"heap#{HeapId} idx={handle.Index} wantGen={handle.Generation} " +
+            $"cell={DescribeCellForDiagnostics(handle.Index)} " +
+            $"allocSite={GetAllocationSiteForDiagnostics(handle.Index)} " +
+            $"{DescribeHandleOwner(handle.Index, handle.Generation)}";
+    }
+
+    private string DescribeCellForDiagnostics(int index)
+    {
+        if ((uint)index >= (uint)_cells.Count)
+        {
+            return "out-of-range";
+        }
+
+        var cell = _cells[index];
+        return cell is null
+            ? "null"
+            : $"gen{cell.Generation}/{cell.Kind}({cell.Payload.GetType().Name})";
+    }
+
     public void AddRootSource(IHeapRootSource source) => _rootSources.Add(source);
     public bool RemoveRootSource(IHeapRootSource source) => _rootSources.Remove(source);
     public int WriteBarrierCount => _writeBarrierCount;
@@ -494,7 +616,7 @@ public sealed class JsHeap
                 : _sweepLog.TryGetValue(index, out var info) ? info.Describe() : "no-sweep-record";
             var allocSite = GetAllocationSiteForDiagnostics(index);
             throw new JsEngineFatalException(
-                $"Stale heap handle. heap#{HeapId} idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] allocSite={allocSite} {DescribeHandleOwner(index, generation)} rememberedEnvs={_rememberedEnvironments.Count} envRegs={_rememberedEnvironmentRegistrations} envScanMarks={_rememberedEnvironmentScanMarks} minor#{_minorGcCount} major#{_gcCollectionCount}");
+                $"Stale heap handle. heap#{HeapId} idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] allocSite={allocSite} rootCtx={(_rootTraceContext.Length == 0 ? "<not-a-root-walk>" : _rootTraceContext)} {DescribeHandleOwner(index, generation)} rememberedEnvs={_rememberedEnvironments.Count} envRegs={_rememberedEnvironmentRegistrations} envScanMarks={_rememberedEnvironmentScanMarks} minor#{_minorGcCount} major#{_gcCollectionCount}");
         }
 
         if (cell.Kind != expectedKind)
@@ -556,15 +678,21 @@ public sealed class JsHeap
         {
             _sharedMarkingTracer ??= new MarkingTracer(this, minorMode: true);
             var marker = _sharedMarkingTracer;
-            _roots.Trace(marker);
-            _constructionPins.Trace(marker);
+            BeginRootTrace("heap.roots");
+            _roots.Trace(marker, "heap.roots");
+            BeginRootTrace("heap.constructionPins");
+            _constructionPins.Trace(marker, "heap.constructionPins");
+            BeginRootTrace("heap.allocationPinRing");
             TraceAllocationPinRing(marker);
 
             // Audit §1: external root sources (interpreter frame registers).
             for (var i = 0; i < _rootSources.Count; i++)
             {
+                BeginRootTrace(_rootSources[i].GetType().Name);
                 _rootSources[i].TraceRoots(marker);
             }
+
+            EndRootTrace();
 
             ScanDirtyCards(marker);
             ScanRememberedEnvironments(marker);
@@ -617,7 +745,7 @@ public sealed class JsHeap
                     {
                         _sweepLog[i] = new SweepRecord(
                             cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount,
-                            cell.Payload.GetType().Name, "minor");
+                            cell.Payload.GetType().Name, GetAllocationSiteForDiagnostics(i), "minor");
                     }
 
                     _cells[i] = null;
@@ -930,15 +1058,21 @@ public sealed class JsHeap
         // Mark from explicit roots.
         _sharedMarkingTracer ??= new MarkingTracer(this);
         var marker = _sharedMarkingTracer;
-        _roots.Trace(marker);
-        _constructionPins.Trace(marker);
+        BeginRootTrace("heap.roots");
+        _roots.Trace(marker, "heap.roots");
+        BeginRootTrace("heap.constructionPins");
+        _constructionPins.Trace(marker, "heap.constructionPins");
+        BeginRootTrace("heap.allocationPinRing");
         TraceAllocationPinRing(marker);
 
         // Audit §1: roots held by external subsystems (interpreter frames).
         for (var i = 0; i < _rootSources.Count; i++)
         {
+            BeginRootTrace(_rootSources[i].GetType().Name);
             _rootSources[i].TraceRoots(marker);
         }
+
+        EndRootTrace();
 
         var auditDirectRoots = _auditRememberedSet ? CaptureDirectRootSources() : null;
         if (_auditRememberedSet)
@@ -982,7 +1116,7 @@ public sealed class JsHeap
             {
                 _sweepLog[i] = new SweepRecord(
                     cell.Generation, cell.Kind, _minorGcCount, _gcCollectionCount,
-                    cell.Payload.GetType().Name, "major");
+                    cell.Payload.GetType().Name, GetAllocationSiteForDiagnostics(i), "major");
             }
 
             _cells[i] = null;
@@ -1386,6 +1520,17 @@ public sealed class JsHeap
 
         public void Trace(ObjectHandle handle)
         {
+            _heap.Mark(handle);
+        }
+
+        public void TraceRoot(string context, ObjectHandle handle)
+        {
+            _heap.BeginRootTrace(context);
+            if (_heap.ShouldSkipDeadRoot(context, handle))
+            {
+                return;
+            }
+
             _heap.Mark(handle);
         }
 

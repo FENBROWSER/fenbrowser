@@ -5,6 +5,19 @@ namespace FenBrowser.Js.Heap;
 public interface IHeapTracer
 {
     void Trace(ObjectHandle handle);
+
+    /// <summary>
+    /// Traces a handle that is a GC *root* — an entry of the root set itself,
+    /// rather than an edge discovered inside an object payload — naming the
+    /// slot it came from.
+    ///
+    /// A dangling entry in the root set fails validation from inside the mark
+    /// phase, where the only thing the error could say was which cell was
+    /// missing; the root that pointed at it, which is the thing actually
+    /// broken, went unnamed. Root walks route through here so the collector
+    /// knows what it is holding when a handle does not resolve.
+    /// </summary>
+    void TraceRoot(string context, ObjectHandle handle) => Trace(handle);
     void Trace(StringHandle handle);
     void Trace(SymbolHandle handle);
 
