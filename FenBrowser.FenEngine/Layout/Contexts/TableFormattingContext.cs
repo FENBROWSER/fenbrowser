@@ -619,7 +619,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (style.Width.HasValue)
             {
-                return (float)style.Width.Value;
+                return RemoveBorderBoxEdges(style, (float)style.Width.Value);
             }
 
             if (style.WidthPercent.HasValue)
@@ -632,10 +632,29 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     return 0f;
                 }
 
-                return (float)(style.WidthPercent.Value / 100d * state.ContainingBlockWidth);
+                return RemoveBorderBoxEdges(
+                    style,
+                    (float)(style.WidthPercent.Value / 100d * state.ContainingBlockWidth));
             }
 
             return 0f;
+        }
+
+        // The caller treats this as a content width, so a border-box table has to
+        // give back its padding and borders first. Tables are border-box by UA
+        // rule (HTML Standard 15.3.3); leaving this out made every width:100%
+        // table with padding overflow its container by exactly that padding.
+        private static float RemoveBorderBoxEdges(CssComputed style, float width)
+        {
+            if (!string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                return width;
+            }
+
+            var padding = style.Padding;
+            var border = style.BorderThickness;
+            return Math.Max(0f, width -
+                (float)(padding.Left + padding.Right + border.Left + border.Right));
         }
 
         private static float ResolveSpecifiedHeight(CssComputed style, LayoutState state)
