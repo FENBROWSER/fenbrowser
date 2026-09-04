@@ -4981,6 +4981,13 @@ private static double? ExtractPx(string text, string prop)
             if (ta == "center") css.TextAlign = SKTextAlign.Center;
             else if (ta == "right") css.TextAlign = SKTextAlign.Right;
             else if (ta == "justify") css.TextAlign = SKTextAlign.Left; // Skia doesn't support justify natively
+            // "left" and "start" used to fall through and leave TextAlign null,
+            // which the inheritance step below then filled in from the parent -
+            // so an element could not opt out of a centred ancestor at all.
+            // start/end are direction-relative; resolving them for LTR only is
+            // what the rest of this pipeline already assumes.
+            else if (ta == "left" || ta == "start") css.TextAlign = SKTextAlign.Left;
+            else if (ta == "end") css.TextAlign = SKTextAlign.Right;
 
             css.TextDecoration = Safe(DictGet(css.Map, "text-decoration"));
 
