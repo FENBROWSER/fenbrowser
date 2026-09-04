@@ -13857,6 +13857,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 TryGetPropertyValue(obj, argsArray, key, out callArgs[i]);
             }
         }
+        else if (argsArray.Tag == JsValueTag.HostObject)
+        {
+            // ECMA-262 7.3.18 CreateListFromArrayLike accepts any Object, and a
+            // host object is one. jQuery reaches here on every DOM query:
+            // `push.apply(results, context.querySelectorAll(...))` hands us a
+            // NodeList, which lives behind the host bridge rather than the JS
+            // heap. Route length and element reads through the tag-dispatching
+            // getter so the host side answers them.
+            var length = checked((int)Math.Min(
+                ToLengthNumber(GetReceiverProperty(argsArray, "length")),
+                int.MaxValue));
+            callArgs = new JsValue[length];
+            for (var i = 0; i < length; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                callArgs[i] = GetReceiverProperty(argsArray, key);
+            }
+        }
         else
         {
             throw new JsThrownException(CreateTypeError(

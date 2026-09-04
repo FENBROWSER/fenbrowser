@@ -254,4 +254,67 @@ public sealed class HostObjectIntegrationTests
         };
         Assert.Throws<JsThrownException>(() => Run(interpreter, "myHost.x;"));
     }
+
+    // Regression: jQuery does `push.apply(results, context.querySelectorAll(sel))`
+    // on every DOM query. The NodeList is a host object, and apply used to accept
+    // only JsValueTag.Object, so the whole call threw. CreateListFromArrayLike
+    // (ECMA-262 7.3.18) accepts any Object, host objects included.
+    [Fact]
+    public void FunctionApplySpreadsHostArrayLike()
+    {
+        var (interpreter, hooks, handle) = Setup();
+        hooks.Store[(handle.Index, "length")] = JsValue.FromNumber(3);
+        hooks.Store[(handle.Index, "0")] = JsValue.FromNumber(10);
+        hooks.Store[(handle.Index, "1")] = JsValue.FromNumber(20);
+        hooks.Store[(handle.Index, "2")] = JsValue.FromNumber(30);
+
+        var result = Run(interpreter, """
+            var out = [];
+            Array.prototype.push.apply(out, myHost);
+            out.length + ':' + out.join(',');
+            """);
+
+        Assert.Equal("3:10,20,30", result.AsString());
+    }
+
+    [Fact]
+    public void FunctionApplyReadsHostArrayLikeLengthThroughTheBridge()
+    {
+        var (interpreter, hooks, handle) = Setup();
+        hooks.Store[(handle.Index, "length")] = JsValue.FromNumber(2);
+        hooks.Store[(handle.Index, "0")] = JsValue.FromString("a");
+        hooks.Store[(handle.Index, "1")] = JsValue.FromString("b");
+
+        var result = Run(interpreter, """
+            function collect() { return Array.prototype.slice.call(arguments).join('|'); }
+            collect.apply(null, myHost);
+            """);
+
+        Assert.Equal("a|b", result.AsString());
+        Assert.Contains(hooks.Reads, r => r.Prop == "length");
+    }
+
+    [Fact]
+    public void FunctionApplyWithHostArrayLikeMissingLengthPassesNoArguments()
+    {
+        var (interpreter, _, _) = Setup();
+
+        var result = Run(interpreter, """
+            function count() { return arguments.length; }
+            count.apply(null, myHost);
+            """);
+
+        Assert.Equal(0d, result.AsNumber());
+    }
+
+    [Fact]
+    public void FunctionApplyStillRejectsPrimitiveArgumentList()
+    {
+        var (interpreter, _, _) = Setup();
+
+        Assert.Throws<JsThrownException>(() => Run(interpreter, """
+            function noop() {}
+            noop.apply(null, 5);
+            """));
+    }
 }
