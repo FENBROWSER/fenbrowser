@@ -91,6 +91,8 @@
     <!-- Phase 10 watchdog late-frame policy regression. -->
     <Compile Include="Rendering\Phase10WatchdogLateFramePolicyTests.cs" />
     <Compile Include="Rendering\HitTesterContractTests.cs" />
+    <!-- Cursor reported by a page hit test. -->
+    <Compile Include="Rendering\HitTestCursorTests.cs" />
     <Compile Include="Rendering\BorderCurrentColorContractTests.cs" />
     <Compile Include="Rendering\PageFeedbackContractTests.cs" />
     <!-- Phase 3 property-specific animation invalidation classification. -->

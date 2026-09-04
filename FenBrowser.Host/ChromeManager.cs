@@ -952,6 +952,22 @@ namespace FenBrowser.Host
                     pointerMove.ViewportLeft,
                     pointerMove.ViewportTop);
                 CursorManager.UpdateFromHitTest(_mouse, result);
+                // Apply it here as well as in OnMouseMove. UpdateCursor only
+                // records a pending value; the OS cursor changes in
+                // ApplyPendingCursor. For page content OnMouseMove does not know
+                // the cursor yet - it queues the move and applies whatever was
+                // already pending - so the value this hit test just produced was
+                // only ever applied by the *next* mouse move, and never at all
+                // once the pointer came to rest, which is exactly when you are
+                // hovering something and looking at the cursor.
+                //
+                // This runs on the UI thread (RunOnUiThread above), which is
+                // where the Silk cursor may be touched.
+                if (_mouse != null)
+                {
+                    CursorManager.ApplyPendingCursor(_mouse);
+                }
+
                 _statusBar?.UpdateFromHitTest(result);
                 UpdatePageTooltip(result);
             }

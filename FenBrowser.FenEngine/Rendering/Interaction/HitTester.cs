@@ -744,6 +744,27 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// Resolve the cursor type for a hit element by checking the CSS 'cursor' property
         /// on the element and its ancestors, then applying CSS UI Module spec defaults for 'auto'.
         /// </summary>
+        // A <textarea>, or an <input> whose type accepts typed text. The type
+        // attribute defaults to "text" when absent or unrecognised.
+        private static bool IsTextEntryElement(Element element, string tagLow)
+        {
+            if (tagLow == "textarea")
+            {
+                return true;
+            }
+
+            if (tagLow != "input")
+            {
+                return false;
+            }
+
+            var type = element?.GetAttribute("type")?.Trim().ToLowerInvariant();
+            return string.IsNullOrEmpty(type) ||
+                   type is "text" or "password" or "email" or "search" or
+                           "url" or "tel" or "number" or "date" or "datetime-local" or
+                           "month" or "week" or "time";
+        }
+
         private static global::FenBrowser.FenEngine.Interaction.CursorType ResolveCursor(
             Element element, string tagLow, string href, bool isClickable, bool isEditable)
         {
@@ -779,6 +800,14 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             //    - Everything else → default
             if (!string.IsNullOrEmpty(href))
                 return global::FenBrowser.FenEngine.Interaction.CursorType.Pointer;
+
+            // Editable before clickable. isClickable counts every <input>, so a
+            // text field matched the pointer branch first and showed a hand where
+            // every browser shows an I-beam. Only the text-entry input types are
+            // editable; a button or checkbox input keeps the clickable
+            // affordance below.
+            if (isEditable && IsTextEntryElement(element, tagLow))
+                return global::FenBrowser.FenEngine.Interaction.CursorType.Text;
 
             // Clickable elements (checkboxes, interactive inputs) → pointer
             if (isClickable)
