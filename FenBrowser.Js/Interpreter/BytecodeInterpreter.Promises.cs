@@ -925,6 +925,16 @@ public sealed partial class BytecodeInterpreter
         }
 
         var captured = new JsValue[] { JsValue.Undefined, JsValue.Undefined };
+
+        // The captured slots live in a C# array held by the closure below, which
+        // the tracer has no edge to: no property, no register, no root. Between
+        // the executor filling them and this method returning, ConstructFunction
+        // runs the user's Promise subclass constructor - arbitrary code that
+        // allocates freely - so a minor collection in that window swept the
+        // resolve/reject pair and left the capability holding dangling handles
+        // ("Stale heap handle ... allocSite=CreateResolvingFunctions").
+        // Root them the moment they arrive, for as long as this method runs.
+        using var capturedScope = new HandleScope(_heap);
         var executor = new NativeFunctionObject("", (_, exArgs) =>
         {
             // 27.2.1.5.1 GetCapabilitiesExecutor steps 3-4: throw if [[Resolve]]
@@ -943,6 +953,16 @@ public sealed partial class BytecodeInterpreter
 
             captured[0] = exArgs.Count > 0 ? exArgs[0] : JsValue.Undefined;
             captured[1] = exArgs.Count > 1 ? exArgs[1] : JsValue.Undefined;
+            if (captured[0].Tag == JsValueTag.Object)
+            {
+                capturedScope.Create(captured[0].AsObjectHandle());
+            }
+
+            if (captured[1].Tag == JsValueTag.Object)
+            {
+                capturedScope.Create(captured[1].AsObjectHandle());
+            }
+
             return JsValue.Undefined;
         }, length: 2);
         var executorHandle = _heap.AllocateObject(executor, AllocationSite.Current());
