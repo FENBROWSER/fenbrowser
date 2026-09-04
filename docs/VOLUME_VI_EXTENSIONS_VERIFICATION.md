@@ -5034,6 +5034,17 @@ Verification:
   late-bound inherited `currentColor`, and explicit fallback for paint-server
   context values. The complete SVG test namespace passes 396/396.
 
+## 6.226 SVG Local-Reference Whitespace Conformance (2026-09-04)
+
+- Exact local Windows verification covers
+  `linking/reftests/url-processing-whitespace-001.svg`, `002.svg`, and `003.svg`.
+  The slice improves from one first-party file plus two resource rejections and
+  zero reference passes to three first-party files and 3/3 exact reference
+  passes, with no fallback, rejection, failure, or timeout.
+- Focused parser and renderer tests cover outer whitespace trimming, preserved
+  internal fragment whitespace, quoted paint URLs, gradient template links, and
+  `use` links. The complete SVG test namespace passes 398/398.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

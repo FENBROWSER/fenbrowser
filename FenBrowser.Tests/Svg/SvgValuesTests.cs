@@ -150,6 +150,16 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void LocalReference_TrimsSurroundingWhitespaceOnly()
+        {
+            Assert.True(SvgValues.TryParseLocalReference("  #green \t", out var fragment));
+            Assert.Equal("green", fragment);
+            Assert.True(SvgValues.TryParseLocalReference(" # red ", out fragment));
+            Assert.Equal(" red", fragment);
+            Assert.False(SvgValues.TryParseLocalReference("green", out _));
+        }
+
+        [Fact]
         public void TransformList_MultiplyInOrder()
         {
             // translate(10,20) scale(2): point (1,1) -> scale -> (2,2) -> translate -> (12,22)

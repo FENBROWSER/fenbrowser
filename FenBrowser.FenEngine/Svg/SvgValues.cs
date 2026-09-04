@@ -196,6 +196,16 @@ namespace FenBrowser.FenEngine.Svg
 
         public enum PaintKind { None, Color, ServerRef, CurrentColor, Unspecified }
 
+        public static bool TryParseLocalReference(string raw, out string fragment)
+        {
+            fragment = null;
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            ReadOnlySpan<char> value = raw.AsSpan().Trim();
+            if (value.Length < 2 || value[0] != '#') return false;
+            fragment = value.Slice(1).ToString();
+            return true;
+        }
+
         public static bool TryParsePaint(
             ReadOnlySpan<char> s,
             out PaintKind kind,

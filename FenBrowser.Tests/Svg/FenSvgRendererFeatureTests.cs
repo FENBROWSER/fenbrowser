@@ -126,6 +126,24 @@ namespace FenBrowser.Tests.Svg
             Assert.Contains(result.Warnings, warning => warning.Contains("context paint"));
         }
 
+        [Fact]
+        public void LocalUrlReferences_TrimSurroundingWhitespace()
+        {
+            using var result = _renderer.Render(
+                "<svg width='20' height='10'><defs>" +
+                "<linearGradient id='base'><stop stop-color='green'/></linearGradient>" +
+                "<linearGradient id='derived' href=' #base '/>" +
+                "<rect id='shape' width='10' height='10' fill='green'/>" +
+                "</defs><rect width='10' height='10' fill=\"url(' #derived ') red\"/>" +
+                "<use href=' #shape ' x='10'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.False(result.HadResourceRejection, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(5, 5));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(15, 5));
+        }
+
         [Theory]
         [InlineData("svg")]
         [InlineData("symbol")]

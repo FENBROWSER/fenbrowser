@@ -568,8 +568,8 @@ namespace FenBrowser.FenEngine.Svg
 
             // No local stops: follow template link (cycle-guarded, bounded).
             string href = server.GetAttribute("href") ?? server.GetLookup("xlink:href");
-            if (!string.IsNullOrEmpty(href) && href.StartsWith("#", System.StringComparison.Ordinal) &&
-                _doc.ElementsById.TryGetValue(href.Substring(1), out var template) &&
+            if (SvgValues.TryParseLocalReference(href, out string id) &&
+                _doc.ElementsById.TryGetValue(id, out var template) &&
                 (template.Name == "linearGradient" || template.Name == "radialGradient"))
             {
                 var inheritedStops = CollectStops(template, style, visited);

@@ -163,12 +163,12 @@ namespace FenBrowser.FenEngine.Svg
 
             string href = mpath.GetAttribute("href") ?? mpath.GetLookup("xlink:href");
             if (string.IsNullOrWhiteSpace(href)) return null;
-            if (href[0] != '#')
+            if (!SvgValues.TryParseLocalReference(href, out string id))
             {
                 _report.RejectResource("animateMotion external mpath reference rejected");
                 return null;
             }
-            if (!_doc.ElementsById.TryGetValue(href.Substring(1), out SvgElement referenced)) return null;
+            if (!_doc.ElementsById.TryGetValue(id, out SvgElement referenced)) return null;
             if (referenced.Name is not ("path" or "rect" or "circle" or "ellipse" or "line" or "polyline" or "polygon"))
             {
                 RequireMotionFallback("animateMotion reference geometry");

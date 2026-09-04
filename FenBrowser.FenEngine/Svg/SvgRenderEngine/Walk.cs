@@ -404,7 +404,7 @@ namespace FenBrowser.FenEngine.Svg
             InheritedStyle inherited)
         {
             string href = el.GetAttribute("href") ?? el.GetLookup("xlink:href");
-            if (string.IsNullOrEmpty(href) || href[0] != '#')
+            if (!SvgValues.TryParseLocalReference(href, out string id))
             {
                 // Remote references have no code path here by construction; log
                 // and ignore (fail closed).
@@ -412,7 +412,6 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
-            string id = href.Substring(1);
             if (!_doc.ElementsById.TryGetValue(id, out var target))
             {
                 return; // Dangling reference: silently nothing (browser behavior).
@@ -929,8 +928,8 @@ namespace FenBrowser.FenEngine.Svg
                 if (child.Name == "use")
                 {
                     var href = child.GetAttribute("href") ?? child.GetLookup("xlink:href");
-                    if (string.IsNullOrEmpty(href) || href.Length < 2 || href[0] != '#' ||
-                        !_doc.ElementsById.TryGetValue(href.Substring(1), out var target))
+                    if (!SvgValues.TryParseLocalReference(href, out string id) ||
+                        !_doc.ElementsById.TryGetValue(id, out var target))
                     {
                         continue;
                     }

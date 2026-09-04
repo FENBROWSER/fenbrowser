@@ -11552,6 +11552,18 @@ Verification:
   their coordinate-space semantics are not implemented. The first-party SVG
   backend remains non-default.
 
+## 2.161 SVG Local-Reference Whitespace Processing (2026-09-04)
+
+- Local fragment references now use one bounded parser that strips leading and
+  trailing whitespace before checking `#fragment`. Internal whitespace remains
+  part of the fragment and is not normalized into a different identifier.
+- The rule is shared by `use`, gradient templates, text paths, motion paths, and
+  clip-path `use` geometry. Quoted paint `url(...)` inspection applies the same
+  post-quote trimming, preventing valid local paint references from being
+  rejected as external resources.
+- Resource policy is unchanged: non-fragment references on local-only surfaces
+  remain rejected. The first-party SVG backend remains non-default.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

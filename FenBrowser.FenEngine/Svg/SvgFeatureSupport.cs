@@ -48,7 +48,7 @@ namespace FenBrowser.FenEngine.Svg
                     (string.Equals(attribute.Key, "href", StringComparison.OrdinalIgnoreCase) ||
                      string.Equals(attribute.Key, "xlink:href", StringComparison.OrdinalIgnoreCase)) &&
                     !string.IsNullOrWhiteSpace(attribute.Value) &&
-                    attribute.Value[0] != '#')
+                    !SvgValues.TryParseLocalReference(attribute.Value, out _))
                 {
                     report.RejectResource($"SVG {element.Name} external reference rejected");
                     continue;
@@ -96,7 +96,8 @@ namespace FenBrowser.FenEngine.Svg
                 if (start < 0) return false;
                 int close = value.IndexOf(')', start + 4);
                 if (close < 0) return false;
-                string target = value.Substring(start + 4, close - start - 4).Trim().Trim('\'', '"');
+                string target = value.Substring(start + 4, close - start - 4)
+                    .Trim().Trim('\'', '"').Trim();
                 if (target.Length > 0 && target[0] != '#') return true;
                 searchStart = close + 1;
             }

@@ -124,12 +124,12 @@ namespace FenBrowser.FenEngine.Svg
         {
             string href = element.GetAttribute("href") ?? element.GetLookup("xlink:href");
             if (string.IsNullOrWhiteSpace(href)) return;
-            if (href[0] != '#')
+            if (!SvgValues.TryParseLocalReference(href, out string id))
             {
                 _report.RejectResource("textPath external reference rejected by SVG resource policy");
                 return;
             }
-            if (!_doc.ElementsById.TryGetValue(href.Substring(1), out SvgElement target))
+            if (!_doc.ElementsById.TryGetValue(id, out SvgElement target))
                 return;
             if (target.Name is not ("path" or "rect" or "circle" or "ellipse" or "line" or "polyline" or "polygon"))
             {
