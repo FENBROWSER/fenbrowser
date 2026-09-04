@@ -18593,6 +18593,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             length: 1);
     }
 
+    // DOM 4.4 dom-node-getrootnode. Every host getter for a Node subtype needs
+    // this, and they do not chain to one another, so it lives here alongside
+    // CreateCompareDocumentPositionCallable rather than being written out once
+    // per getter. The composed option walks out through shadow hosts; Core's
+    // Node.GetRootNode already implements both modes.
+    private JsValue CreateGetRootNodeCallable(Node node)
+    {
+        return GetOrCreateHostCallable(
+            node,
+            "getRootNode",
+            (_, args) =>
+            {
+                var composed = false;
+                if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+                {
+                    composed = CoerceToHostBoolean(ReadJsProperty(args[0], "composed"));
+                }
+
+                return ToHostNodeOrNull(node.GetRootNode(new GetRootNodeOptions { Composed = composed }));
+            },
+            length: 0);
+    }
+
     private object ResolveHostObjectOrNull(JsValue value)
     {
         if (value.Tag != JsValueTag.HostObject)
@@ -21044,6 +21067,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case "compareDocumentPosition":
                     value = _owner.CreateCompareDocumentPositionCallable(document);
                     return true;
+                case "getRootNode":
+                    value = _owner.CreateGetRootNodeCallable(document);
+                    return true;
                 case "getElementsByName":
                     value = _owner.GetOrCreateHostCallable(
                         document,
@@ -21138,6 +21164,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "compareDocumentPosition":
                     value = _owner.CreateCompareDocumentPositionCallable(node);
+                    return true;
+                case "getRootNode":
+                    value = _owner.CreateGetRootNodeCallable(node);
                     return true;
                 default:
                     value = JsValue.Undefined;
@@ -21380,6 +21409,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "classList":
                     value = _owner.GetOrCreateDomTokenListView(element.ClassList);
+                    return true;
+                case "namespaceURI":
+                    // DOM 4.9 dom-element-namespaceuri. The tree builder already
+                    // tracks this per element, so SVG and MathML subtrees report
+                    // their own namespace rather than a hard-coded HTML one.
+                    value = string.IsNullOrEmpty(element.NamespaceUri)
+                        ? JsValue.Null
+                        : JsValue.FromString(element.NamespaceUri);
+                    return true;
+                case "accessKey":
+                    // HTML 3.2.6: reflects the accesskey content attribute,
+                    // empty string when absent. MediaWiki reads it on every
+                    // navigation link it decorates.
+                    value = JsValue.FromString(element.GetAttribute("accesskey") ?? string.Empty);
+                    return true;
+                case "contentEditable":
+                    // HTML 8.3: "true" / "false" / "plaintext-only" as authored,
+                    // and "inherit" when the attribute is absent. This is the
+                    // string form; isContentEditable is the resolved boolean.
+                    value = JsValue.FromString(
+                        element.GetAttribute("contenteditable") is { } editable
+                            ? (editable.Length == 0 ? "true" : editable)
+                            : "inherit");
                     return true;
                 case "dataset":
                     value = _owner.ToHostOrNull(new FenJsDomStringMapHost(element), HostObjectKind.Other);
@@ -22238,6 +22290,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case "compareDocumentPosition":
                     value = _owner.CreateCompareDocumentPositionCallable(element);
                     return true;
+                case "getRootNode":
+                    value = _owner.CreateGetRootNodeCallable(element);
+                    return true;
                 case "offsetWidth":
                 case "offsetHeight":
                 case "offsetLeft":
@@ -22757,6 +22812,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case "compareDocumentPosition":
                     value = _owner.CreateCompareDocumentPositionCallable(characterData);
                     return true;
+                case "getRootNode":
+                    value = _owner.CreateGetRootNodeCallable(characterData);
+                    return true;
                 default:
                     value = JsValue.Undefined;
                     return false;
@@ -23028,6 +23086,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "compareDocumentPosition":
                     value = _owner.CreateCompareDocumentPositionCallable(fragment);
+                    return true;
+                case "getRootNode":
+                    value = _owner.CreateGetRootNodeCallable(fragment);
                     return true;
                 case "append":
                     value = _owner.GetOrCreateHostCallable(
