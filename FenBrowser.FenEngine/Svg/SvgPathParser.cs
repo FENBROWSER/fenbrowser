@@ -24,6 +24,21 @@ namespace FenBrowser.FenEngine.Svg
     {
         public const int MaxSegments = 65536;
 
+        internal sealed class MarkerSubpath
+        {
+            public readonly List<MarkerVertex> Vertices = new List<MarkerVertex>();
+            public bool IsClosed;
+        }
+
+        internal struct MarkerVertex
+        {
+            public SKPoint Point;
+            public SKPoint Incoming;
+            public SKPoint Outgoing;
+            public bool HasIncoming;
+            public bool HasOutgoing;
+        }
+
         public static bool TryBuildPath(
             ReadOnlySpan<char> d,
             out SKPath path,
@@ -268,6 +283,7 @@ namespace FenBrowser.FenEngine.Svg
                                 curX = ex;
                                 curY = ey;
                                 AddSeg();
+                                prevCmd = relative ? 's' : 'S';
                             }
                             while (!report.TruncatedPathData && scan.MoreNumbersAhead());
                             prevCmd = relative ? 's' : 'S';
@@ -326,6 +342,7 @@ namespace FenBrowser.FenEngine.Svg
                                 curX = ex;
                                 curY = ey;
                                 AddSeg();
+                                prevCmd = relative ? 't' : 'T';
                             }
                             while (!report.TruncatedPathData && scan.MoreNumbersAhead());
                             prevCmd = relative ? 't' : 'T';
@@ -387,24 +404,27 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
-        internal static bool TryReadLinearMarkerSubpaths(
+        internal static bool TryReadMarkerSubpaths(
             ReadOnlySpan<char> d,
             int maxPoints,
-            out List<List<SKPoint>> subpaths,
+            out List<MarkerSubpath> subpaths,
             SvgParseReport report,
             System.Action budgetCheck = null)
         {
-            subpaths = new List<List<SKPoint>>();
+            var result = new List<MarkerSubpath>();
+            subpaths = result;
             if (maxPoints <= 0) return false;
 
             var scan = new Scanner(d);
-            List<SKPoint> current = null;
+            MarkerSubpath current = null;
             float curX = 0f, curY = 0f;
             float startX = 0f, startY = 0f;
+            float lastCubicCtrlX = 0f, lastCubicCtrlY = 0f;
+            float lastQuadCtrlX = 0f, lastQuadCtrlY = 0f;
             char previous = '\0';
             int pointCount = 0;
 
-            bool AddPoint(float x, float y)
+            bool AddVertex(MarkerVertex vertex)
             {
                 if (++pointCount > maxPoints)
                 {
@@ -412,9 +432,50 @@ namespace FenBrowser.FenEngine.Svg
                     return false;
                 }
                 if ((pointCount & 0xFF) == 0) budgetCheck?.Invoke();
-                current.Add(new SKPoint(Clamp(x), Clamp(y)));
+                current.Vertices.Add(vertex);
                 return true;
             }
+
+            bool StartSubpath(float x, float y)
+            {
+                current = new MarkerSubpath();
+                result.Add(current);
+                startX = curX = Clamp(x);
+                startY = curY = Clamp(y);
+                return AddVertex(new MarkerVertex { Point = new SKPoint(curX, curY) });
+            }
+
+            bool AddSegment(float x, float y, SKPoint outgoing, SKPoint incoming)
+            {
+                if (current == null || current.Vertices.Count == 0) return false;
+                int last = current.Vertices.Count - 1;
+                MarkerVertex start = current.Vertices[last];
+                start.Outgoing = outgoing;
+                start.HasOutgoing = true;
+                current.Vertices[last] = start;
+                curX = Clamp(x);
+                curY = Clamp(y);
+                return AddVertex(new MarkerVertex
+                {
+                    Point = new SKPoint(curX, curY),
+                    Incoming = incoming,
+                    HasIncoming = true
+                });
+            }
+
+            void ResolvePair(ref float x, ref float y, bool relative)
+            {
+                if (relative) { x += curX; y += curY; }
+                x = Clamp(x);
+                y = Clamp(y);
+            }
+
+            static SKPoint Vector(float fromX, float fromY, float toX, float toY) =>
+                new SKPoint(toX - fromX, toY - fromY);
+
+            static SKPoint FirstDirection(SKPoint first, SKPoint second, SKPoint fallback) =>
+                first.X != 0f || first.Y != 0f ? first :
+                second.X != 0f || second.Y != 0f ? second : fallback;
 
             while (!scan.Eof)
             {
@@ -450,23 +511,16 @@ namespace FenBrowser.FenEngine.Svg
                             {
                                 if (!scan.TryReadNumber(out float x) ||
                                     !scan.TryReadNumber(out float y)) return false;
-                                if (relative) { x += curX; y += curY; }
-                                x = Clamp(x);
-                                y = Clamp(y);
+                                ResolvePair(ref x, ref y, relative);
                                 if (move && firstPair)
                                 {
-                                    current = new List<SKPoint>();
-                                    subpaths.Add(current);
-                                    startX = x;
-                                    startY = y;
+                                    if (!StartSubpath(x, y)) return false;
                                 }
-                                else if (current == null)
+                                else
                                 {
-                                    return false;
+                                    SKPoint tangent = Vector(curX, curY, x, y);
+                                    if (!AddSegment(x, y, tangent, tangent)) return false;
                                 }
-                                if (!AddPoint(x, y)) return false;
-                                curX = x;
-                                curY = y;
                                 firstPair = false;
                             }
                             while (scan.MoreNumbersAhead());
@@ -478,8 +532,8 @@ namespace FenBrowser.FenEngine.Svg
                         while (scan.TryReadNumber(out float x))
                         {
                             x = Clamp(relative ? curX + x : x);
-                            if (!AddPoint(x, curY)) return false;
-                            curX = x;
+                            SKPoint tangent = Vector(curX, curY, x, curY);
+                            if (!AddSegment(x, curY, tangent, tangent)) return false;
                         }
                         previous = relative ? 'h' : 'H';
                         break;
@@ -488,14 +542,145 @@ namespace FenBrowser.FenEngine.Svg
                         while (scan.TryReadNumber(out float y))
                         {
                             y = Clamp(relative ? curY + y : y);
-                            if (!AddPoint(curX, y)) return false;
-                            curY = y;
+                            SKPoint tangent = Vector(curX, curY, curX, y);
+                            if (!AddSegment(curX, y, tangent, tangent)) return false;
                         }
                         previous = relative ? 'v' : 'V';
                         break;
+                    case 'C':
+                        if (current == null) return false;
+                        do
+                        {
+                            if (!scan.TryReadNumber(out float c1x) ||
+                                !scan.TryReadNumber(out float c1y) ||
+                                !scan.TryReadNumber(out float c2x) ||
+                                !scan.TryReadNumber(out float c2y) ||
+                                !scan.TryReadNumber(out float x) ||
+                                !scan.TryReadNumber(out float y)) return false;
+                            ResolvePair(ref c1x, ref c1y, relative);
+                            ResolvePair(ref c2x, ref c2y, relative);
+                            ResolvePair(ref x, ref y, relative);
+                            SKPoint chord = Vector(curX, curY, x, y);
+                            SKPoint outgoing = FirstDirection(
+                                Vector(curX, curY, c1x, c1y),
+                                Vector(curX, curY, c2x, c2y), chord);
+                            SKPoint incoming = FirstDirection(
+                                Vector(c2x, c2y, x, y),
+                                Vector(c1x, c1y, x, y), chord);
+                            if (!AddSegment(x, y, outgoing, incoming)) return false;
+                            lastCubicCtrlX = c2x;
+                            lastCubicCtrlY = c2y;
+                            previous = relative ? 's' : 'S';
+                        }
+                        while (scan.MoreNumbersAhead());
+                        previous = relative ? 'c' : 'C';
+                        break;
+                    case 'S':
+                        if (current == null) return false;
+                        do
+                        {
+                            if (!scan.TryReadNumber(out float c2x) ||
+                                !scan.TryReadNumber(out float c2y) ||
+                                !scan.TryReadNumber(out float x) ||
+                                !scan.TryReadNumber(out float y)) return false;
+                            float c1x = previous is 'C' or 'S' or 'c' or 's'
+                                ? Clamp(2f * curX - lastCubicCtrlX) : curX;
+                            float c1y = previous is 'C' or 'S' or 'c' or 's'
+                                ? Clamp(2f * curY - lastCubicCtrlY) : curY;
+                            ResolvePair(ref c2x, ref c2y, relative);
+                            ResolvePair(ref x, ref y, relative);
+                            SKPoint chord = Vector(curX, curY, x, y);
+                            SKPoint outgoing = FirstDirection(
+                                Vector(curX, curY, c1x, c1y),
+                                Vector(curX, curY, c2x, c2y), chord);
+                            SKPoint incoming = FirstDirection(
+                                Vector(c2x, c2y, x, y),
+                                Vector(c1x, c1y, x, y), chord);
+                            if (!AddSegment(x, y, outgoing, incoming)) return false;
+                            lastCubicCtrlX = c2x;
+                            lastCubicCtrlY = c2y;
+                        }
+                        while (scan.MoreNumbersAhead());
+                        previous = relative ? 's' : 'S';
+                        break;
+                    case 'Q':
+                        if (current == null) return false;
+                        do
+                        {
+                            if (!scan.TryReadNumber(out float qx) ||
+                                !scan.TryReadNumber(out float qy) ||
+                                !scan.TryReadNumber(out float x) ||
+                                !scan.TryReadNumber(out float y)) return false;
+                            ResolvePair(ref qx, ref qy, relative);
+                            ResolvePair(ref x, ref y, relative);
+                            SKPoint chord = Vector(curX, curY, x, y);
+                            if (!AddSegment(
+                                    x, y,
+                                    FirstDirection(Vector(curX, curY, qx, qy), chord, chord),
+                                    FirstDirection(Vector(qx, qy, x, y), chord, chord))) return false;
+                            lastQuadCtrlX = qx;
+                            lastQuadCtrlY = qy;
+                            previous = relative ? 't' : 'T';
+                        }
+                        while (scan.MoreNumbersAhead());
+                        previous = relative ? 'q' : 'Q';
+                        break;
+                    case 'T':
+                        if (current == null) return false;
+                        do
+                        {
+                            if (!scan.TryReadNumber(out float x) ||
+                                !scan.TryReadNumber(out float y)) return false;
+                            float qx = previous is 'Q' or 'T' or 'q' or 't'
+                                ? Clamp(2f * curX - lastQuadCtrlX) : curX;
+                            float qy = previous is 'Q' or 'T' or 'q' or 't'
+                                ? Clamp(2f * curY - lastQuadCtrlY) : curY;
+                            ResolvePair(ref x, ref y, relative);
+                            SKPoint chord = Vector(curX, curY, x, y);
+                            if (!AddSegment(
+                                    x, y,
+                                    FirstDirection(Vector(curX, curY, qx, qy), chord, chord),
+                                    FirstDirection(Vector(qx, qy, x, y), chord, chord))) return false;
+                            lastQuadCtrlX = qx;
+                            lastQuadCtrlY = qy;
+                        }
+                        while (scan.MoreNumbersAhead());
+                        previous = relative ? 't' : 'T';
+                        break;
+                    case 'A':
+                        if (current == null) return false;
+                        do
+                        {
+                            if (!scan.TryReadNumber(out float rx) ||
+                                !scan.TryReadNumber(out float ry) ||
+                                !scan.TryReadNumber(out float rotation) ||
+                                !scan.TryReadFlag(out bool largeArc) ||
+                                !scan.TryReadFlag(out bool sweep) ||
+                                !scan.TryReadNumber(out float x) ||
+                                !scan.TryReadNumber(out float y)) return false;
+                            ResolvePair(ref x, ref y, relative);
+                            if (curX == x && curY == y) continue;
+                            if (!TryGetArcTangents(
+                                    curX, curY, x, y, rx, ry, rotation,
+                                    largeArc, sweep, out SKPoint outgoing, out SKPoint incoming))
+                            {
+                                SKPoint chord = Vector(curX, curY, x, y);
+                                outgoing = chord;
+                                incoming = chord;
+                            }
+                            if (!AddSegment(x, y, outgoing, incoming)) return false;
+                        }
+                        while (scan.MoreNumbersAhead());
+                        previous = relative ? 'a' : 'A';
+                        break;
                     case 'Z':
-                        if (current == null || current.Count == 0) return false;
-                        if (!AddPoint(startX, startY)) return false;
+                        if (current == null || current.Vertices.Count == 0) return false;
+                        if (curX != startX || curY != startY)
+                        {
+                            SKPoint closing = Vector(curX, curY, startX, startY);
+                            if (!AddSegment(startX, startY, closing, closing)) return false;
+                        }
+                        current.IsClosed = true;
                         curX = startX;
                         curY = startY;
                         previous = command;
@@ -505,7 +690,82 @@ namespace FenBrowser.FenEngine.Svg
                 }
             }
 
-            return subpaths.Count > 0;
+            return result.Count > 0;
+        }
+
+        private static bool TryGetArcTangents(
+            float x1, float y1,
+            float x2, float y2,
+            float radiusX, float radiusY,
+            float rotationDegrees,
+            bool largeArc,
+            bool sweep,
+            out SKPoint outgoing,
+            out SKPoint incoming)
+        {
+            outgoing = default;
+            incoming = default;
+            double rx = Math.Abs(radiusX);
+            double ry = Math.Abs(radiusY);
+            if (rx <= 0d || ry <= 0d) return false;
+
+            double phi = SvgValues.DegreesToRadians(rotationDegrees % 360f);
+            double cosPhi = Math.Cos(phi);
+            double sinPhi = Math.Sin(phi);
+            double halfDx = (x1 - x2) / 2d;
+            double halfDy = (y1 - y2) / 2d;
+            double x1Prime = cosPhi * halfDx + sinPhi * halfDy;
+            double y1Prime = -sinPhi * halfDx + cosPhi * halfDy;
+
+            double radiiScale =
+                x1Prime * x1Prime / (rx * rx) +
+                y1Prime * y1Prime / (ry * ry);
+            if (radiiScale > 1d)
+            {
+                double scale = Math.Sqrt(radiiScale);
+                rx *= scale;
+                ry *= scale;
+            }
+
+            double rx2 = rx * rx;
+            double ry2 = ry * ry;
+            double xPrime2 = x1Prime * x1Prime;
+            double yPrime2 = y1Prime * y1Prime;
+            double denominator = rx2 * yPrime2 + ry2 * xPrime2;
+            if (denominator <= double.Epsilon || !double.IsFinite(denominator)) return false;
+            double numerator = Math.Max(0d, rx2 * ry2 - rx2 * yPrime2 - ry2 * xPrime2);
+            double coefficient = Math.Sqrt(numerator / denominator);
+            if (largeArc == sweep) coefficient = -coefficient;
+            double centerXPrime = coefficient * rx * y1Prime / ry;
+            double centerYPrime = coefficient * -ry * x1Prime / rx;
+
+            double startAngle = Math.Atan2(
+                (y1Prime - centerYPrime) / ry,
+                (x1Prime - centerXPrime) / rx);
+            double endAngle = Math.Atan2(
+                (-y1Prime - centerYPrime) / ry,
+                (-x1Prime - centerXPrime) / rx);
+            double direction = sweep ? 1d : -1d;
+
+            outgoing = ArcTangent(startAngle, rx, ry, cosPhi, sinPhi, direction);
+            incoming = ArcTangent(endAngle, rx, ry, cosPhi, sinPhi, direction);
+            return SvgValues.IsFinite(outgoing.X) && SvgValues.IsFinite(outgoing.Y) &&
+                SvgValues.IsFinite(incoming.X) && SvgValues.IsFinite(incoming.Y);
+        }
+
+        private static SKPoint ArcTangent(
+            double angle,
+            double radiusX,
+            double radiusY,
+            double cosPhi,
+            double sinPhi,
+            double direction)
+        {
+            double localX = -radiusX * Math.Sin(angle) * direction;
+            double localY = radiusY * Math.Cos(angle) * direction;
+            return new SKPoint(
+                (float)(cosPhi * localX - sinPhi * localY),
+                (float)(sinPhi * localX + cosPhi * localY));
         }
 
         private static void Truncate(SvgParseReport report)

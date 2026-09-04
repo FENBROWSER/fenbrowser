@@ -11442,6 +11442,29 @@ Verification:
   first-party; five match their declared references exactly. `marker-006.svg`
   remains a visible near-exact marker-viewBox raster mismatch rather than being
   waived, and broader curved-path marker support remains open.
+
+## 2.153 Curve And Arc Marker Tangents (2026-09-04)
+
+- The bounded marker extractor now carries explicit incoming/outgoing tangents
+  for cubic, smooth-cubic, quadratic, smooth-quadratic, and elliptical-arc path
+  segments. Degenerate control vectors fall back through later controls to the
+  endpoint chord instead of producing non-finite orientation.
+- Arc tangents use endpoint-to-center ellipse conversion with absolute/scaled
+  radii, rotation, large-arc, and sweep direction. The calculation is allocation-
+  free, finite-checked, and shares the existing point/deadline limits. SVG bearing
+  commands remain explicit marker compatibility fallback.
+- Repeated parameter groups inside one smooth cubic or smooth quadratic command
+  now reflect the immediately preceding group's control point in both raster path
+  construction and marker tangent extraction.
+- A close command no longer creates a duplicate marker vertex when the preceding
+  segment already ends at the subpath start; the incoming/outgoing closed tangent
+  join is preserved.
+- Local Windows marker verification routes all nine targeted path/reference files
+  first-party and passes 8/9 exact declared references. The complete 152-file
+  painting slice improves from 131 to 134 first-party documents, 15 to 12 legacy
+  fallbacks, and 19 to 22 reference passes without worker failure or timeout.
+- `marker-006.svg` remains the sole targeted marker mismatch at 103 differing edge
+  pixels; it is not waived. First-party SVG remains non-default.
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

@@ -177,5 +177,20 @@ namespace FenBrowser.Tests.Svg
                 "M1e1 , 1E1L2e+1,-3.5e-1Z".AsSpan(), out var path, new SvgParseReport()));
             path.Dispose();
         }
+
+        [Fact]
+        public void RepeatedSmoothCubicGroups_ReflectThePreviousGroupControl()
+        {
+            Assert.True(SvgPathParser.TryBuildPath(
+                "M0 0 C10 0 10 0 20 0 S30 0 40 0 50 100 60 100".AsSpan(),
+                out var path,
+                new SvgParseReport()));
+            using (path)
+            {
+                SKPoint[] points = path.GetPoints(path.PointCount);
+                Assert.Equal(path.PointCount, points.Length);
+                Assert.Equal(new SKPoint(50, 0), points[7]);
+            }
+        }
     }
 }

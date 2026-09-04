@@ -55,17 +55,51 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void MarkerMidOnCurvedPath_RemainsExplicitFallback()
+        public void MarkerMidOnBearingPath_RemainsExplicitFallback()
         {
             const string svg =
                 "<svg width='60' height='40'><defs><marker id='m'><circle r='1'/></marker></defs>" +
-                "<path d='M5 20 C20 0 40 40 55 20' marker-mid='url(#m)'/></svg>";
+                "<path d='M5 20 L25 20 B45 l20 0' marker-mid='url(#m)'/></svg>";
 
             using var result = new FenSvgRenderer().Render(svg);
 
             Assert.True(result.Success, result.ErrorMessage);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("marker-mid"));
+        }
+
+        [Fact]
+        public void MarkerMidOnArcPath_UsesEllipseTangent()
+        {
+            const string svg =
+                "<svg width='70' height='50'><defs><marker id='m' markerWidth='8' markerHeight='4' " +
+                "refX='0' refY='2' markerUnits='userSpaceOnUse' overflow='visible' orient='auto'>" +
+                "<path d='M0 0 L8 2 L0 4 Z' fill='red'/></marker></defs>" +
+                "<path d='M5 25 A15 10 0 0 1 35 25 A15 10 0 0 1 65 25' fill='none' stroke='black' " +
+                "marker-mid='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(HasRed(result.Bitmap, 30, 17, 43, 34));
+        }
+
+        [Fact]
+        public void MarkerMidOnCubicPath_UsesControlPointTangents()
+        {
+            const string svg =
+                "<svg width='70' height='50'><defs><marker id='m' markerWidth='8' markerHeight='4' " +
+                "refX='0' refY='2' markerUnits='userSpaceOnUse' overflow='visible' orient='auto'>" +
+                "<path d='M0 0 L8 2 L0 4 Z' fill='red'/></marker></defs>" +
+                "<path d='M5 40 C15 10 25 10 35 25 C45 40 55 40 65 10' fill='none' stroke='black' " +
+                "marker-mid='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(HasRed(result.Bitmap, 30, 20, 46, 40));
         }
 
         [Fact]

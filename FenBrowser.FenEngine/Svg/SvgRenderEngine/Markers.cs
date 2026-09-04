@@ -26,7 +26,7 @@ namespace FenBrowser.FenEngine.Svg
             if (element.Name == "path")
             {
                 string data = ResolvePathData(element);
-                if (SvgPathParser.TryReadLinearMarkerSubpaths(
+                if (SvgPathParser.TryReadMarkerSubpaths(
                         (data ?? string.Empty).AsSpan(),
                         MaxMarkersPerElement,
                         out var subpaths,
@@ -164,7 +164,7 @@ namespace FenBrowser.FenEngine.Svg
             SKCanvas canvas,
             ViewportContext viewport,
             InheritedStyle style,
-            List<List<SKPoint>> subpaths,
+            List<SvgPathParser.MarkerSubpath> subpaths,
             string start,
             string middle,
             string end)
@@ -173,56 +173,78 @@ namespace FenBrowser.FenEngine.Svg
             int lastSubpath = -1;
             for (int i = 0; i < subpaths.Count; i++)
             {
-                if (subpaths[i].Count < 2) continue;
+                if (subpaths[i].Vertices.Count < 2) continue;
                 if (firstSubpath < 0) firstSubpath = i;
                 lastSubpath = i;
             }
             if (firstSubpath < 0) return;
 
-            List<SKPoint> first = subpaths[firstSubpath];
+            SvgPathParser.MarkerSubpath first = subpaths[firstSubpath];
             if (HasEffectValue(start))
-                DrawMarkerInstance(start, element, canvas, viewport, style, first[0],
+                DrawMarkerInstance(start, element, canvas, viewport, style, first.Vertices[0].Point,
                     MarkerVertexDirection(first, 0), isStart: true);
 
             if (HasEffectValue(middle))
             {
                 for (int subpathIndex = firstSubpath; subpathIndex <= lastSubpath; subpathIndex++)
                 {
-                    List<SKPoint> points = subpaths[subpathIndex];
-                    if (points.Count < 2) continue;
+                    SvgPathParser.MarkerSubpath points = subpaths[subpathIndex];
+                    if (points.Vertices.Count < 2) continue;
                     int firstMiddle = subpathIndex == firstSubpath ? 1 : 0;
-                    int middleEnd = subpathIndex == lastSubpath ? points.Count - 1 : points.Count;
+                    int middleEnd = subpathIndex == lastSubpath
+                        ? points.Vertices.Count - 1
+                        : points.Vertices.Count;
                     for (int i = firstMiddle; i < middleEnd; i++)
                     {
                         DrawMarkerInstance(
-                            middle, element, canvas, viewport, style, points[i],
+                            middle, element, canvas, viewport, style, points.Vertices[i].Point,
                             MarkerVertexDirection(points, i), false);
                     }
                 }
             }
 
-            List<SKPoint> last = subpaths[lastSubpath];
+            SvgPathParser.MarkerSubpath last = subpaths[lastSubpath];
             if (HasEffectValue(end))
             {
-                int endIndex = last.Count - 1;
-                DrawMarkerInstance(end, element, canvas, viewport, style, last[endIndex],
+                int endIndex = last.Vertices.Count - 1;
+                DrawMarkerInstance(end, element, canvas, viewport, style, last.Vertices[endIndex].Point,
                     MarkerVertexDirection(last, endIndex), isStart: false);
             }
         }
 
-        private static SKPoint MarkerVertexDirection(List<SKPoint> points, int index)
+        private static SKPoint MarkerVertexDirection(
+            SvgPathParser.MarkerSubpath subpath,
+            int index)
         {
-            bool closed = points.Count >= 3 && points[0] == points[^1];
-            if (closed && (index == 0 || index == points.Count - 1))
-                return BisectDirections(
-                    Direction(points[^2], points[0]),
-                    Direction(points[0], points[1]));
-            if (index <= 0) return Direction(points[0], points[1]);
-            if (index >= points.Count - 1)
-                return Direction(points[^2], points[^1]);
+            var vertices = subpath.Vertices;
+            SvgPathParser.MarkerVertex vertex = vertices[index];
+            SKPoint incoming = vertex.Incoming;
+            SKPoint outgoing = vertex.Outgoing;
+            bool hasIncoming = vertex.HasIncoming;
+            bool hasOutgoing = vertex.HasOutgoing;
+            if (subpath.IsClosed && index == 0)
+            {
+                incoming = vertices[^1].Incoming;
+                hasIncoming = vertices[^1].HasIncoming;
+            }
+            if (subpath.IsClosed && index == vertices.Count - 1)
+            {
+                outgoing = vertices[0].Outgoing;
+                hasOutgoing = vertices[0].HasOutgoing;
+            }
+            if (!hasIncoming) return NormalizeDirection(outgoing);
+            if (!hasOutgoing) return NormalizeDirection(incoming);
             return BisectDirections(
-                Direction(points[index - 1], points[index]),
-                Direction(points[index], points[index + 1]));
+                NormalizeDirection(incoming),
+                NormalizeDirection(outgoing));
+        }
+
+        private static SKPoint NormalizeDirection(SKPoint vector)
+        {
+            float length = MathF.Sqrt(vector.X * vector.X + vector.Y * vector.Y);
+            return length > 0f
+                ? new SKPoint(vector.X / length, vector.Y / length)
+                : new SKPoint(1f, 0f);
         }
 
         private static SKPoint BisectDirections(SKPoint incoming, SKPoint outgoing)

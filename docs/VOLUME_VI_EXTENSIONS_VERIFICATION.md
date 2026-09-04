@@ -4931,6 +4931,26 @@ Verification:
   orientation, and line middle-marker handling. Curved/arc marker tangents and the
   remaining marker-viewBox pixel mismatch are still Windows parity work; the
   first-party backend remains non-default.
+
+## 6.218 SVG Curve And Arc Marker Conformance (2026-09-04)
+
+- Exact local Windows verification adds `painting/marker-orient-001.svg`,
+  `painting/reftests/marker-path-022.svg`, and `marker-path-023.svg` to the six
+  linear-path files from 6.217. All nine route first-party with no fallback,
+  rejection, renderer/worker failure, or timeout.
+- Eight declared references pass at exact pixel equality, including closed and
+  multi-subpath linear, cubic, and elliptical-arc markers. The only red result is
+  the unchanged `marker-006.svg` viewBox edge raster mismatch: alpha IoU 0.9993,
+  mean RGB difference 0.1081, maximum channel difference 71, and 103 differing
+  pixels.
+- The broader 152-file local painting slice moves from 131 to 134 first-party,
+  15 to 12 legacy fallbacks, and 19 to 22 declared-reference passes. Its marker
+  reason is now limited to the intentionally rejected external marker resource;
+  no supported local curve/arc marker test requests compatibility fallback.
+- Focused tests cover control-point tangents, ellipse tangents, closed joins,
+  repeated smooth-command groups, default orientation, path-wide subpath roles,
+  and the 4,096-point cap. Bearing commands and the retained marker-viewBox raster
+  difference remain open.
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
