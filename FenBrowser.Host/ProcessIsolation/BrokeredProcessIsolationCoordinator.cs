@@ -38,6 +38,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
         public event Action<int, RendererMetadataChangedPayload> MetadataChanged;
+        public event Action<int, RendererCursorChangedPayload> CursorChanged;
         public event Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
         public event Action<int, string> RendererCrashed;
 
@@ -362,6 +363,7 @@ namespace FenBrowser.Host.ProcessIsolation
                         // Remap pooled session tab ids back to the owning host tab id.
                         pooledSession.FrameReceived += (_, payload) => FrameReceived?.Invoke(state.TabId, payload);
                         pooledSession.MetadataChanged += (_, payload) => MetadataChanged?.Invoke(state.TabId, payload);
+                        pooledSession.CursorChanged += (_, payload) => CursorChanged?.Invoke(state.TabId, payload);
                         pooledSession.NavigationLifecycleReceived += (_, payload) => NavigationLifecycleReceived?.Invoke(state.TabId, payload);
 
                         state.Sandbox?.Dispose();
@@ -393,6 +395,7 @@ namespace FenBrowser.Host.ProcessIsolation
             var session = new RendererChildSession(state.TabId, pipeName, token);
             session.FrameReceived += (_, payload) => FrameReceived?.Invoke(state.TabId, payload);
             session.MetadataChanged += (_, payload) => MetadataChanged?.Invoke(state.TabId, payload);
+            session.CursorChanged += (_, payload) => CursorChanged?.Invoke(state.TabId, payload);
             session.NavigationLifecycleReceived += (_, payload) => NavigationLifecycleReceived?.Invoke(state.TabId, payload);
 
             var process = StartRendererChildWithSandbox(

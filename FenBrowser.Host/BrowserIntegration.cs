@@ -574,6 +574,7 @@ public class BrowserIntegration : IDisposable
         {
             FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.FrameReceived += OnFrameReceivedFromRenderer;
             FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.MetadataChanged += OnMetadataChangedFromRenderer;
+            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.CursorChanged += OnCursorChangedFromRenderer;
         }
 
         // Wire CSS animation/transition engine → repaint loop.
@@ -954,6 +955,7 @@ public class BrowserIntegration : IDisposable
         {
             FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.FrameReceived -= OnFrameReceivedFromRenderer;
             FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.MetadataChanged -= OnMetadataChangedFromRenderer;
+            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.CursorChanged -= OnCursorChangedFromRenderer;
         }
 
         if (_browser?.Engine?.EventLoopCoordinator != null)
@@ -3661,6 +3663,9 @@ public class BrowserIntegration : IDisposable
     /// Handle mouse move for cursor updates and status bar.
     /// </summary>
     private bool _isMouseMovePending = false;
+    // What the renderer child last reported under the pointer. Null until the
+    // first report, and only ever written in brokered mode.
+    private HitTestResult? _rendererReportedHit;
     private (float X, float Y, float VX, float VY) _pendingMouseMove;
     private const long DoubleClickThresholdMs = 500;
     private const float DoubleClickDistance = 6f;
@@ -3668,6 +3673,31 @@ public class BrowserIntegration : IDisposable
     private float _lastClickWindowX;
     private float _lastClickWindowY;
     private int _lastClickButton = -1;
+
+    // The renderer child resolved what is under the pointer and told us. Keep it
+    // for the next HandleMouseMove; the cursor is applied on the UI thread by
+    // ChromeManager, and touching the OS cursor from this IPC thread is not safe.
+    private void OnCursorChangedFromRenderer(int tabId, FenBrowser.Host.ProcessIsolation.RendererCursorChangedPayload payload)
+    {
+        if (payload == null || OwnerTab == null || OwnerTab.Id != tabId)
+        {
+            return;
+        }
+
+        if (!Enum.TryParse<CursorType>(payload.Cursor, ignoreCase: true, out var cursor))
+        {
+            cursor = CursorType.Default;
+        }
+
+        var href = string.IsNullOrEmpty(payload.Href) ? null : payload.Href;
+        _rendererReportedHit = new HitTestResult(
+            TagName: payload.TagName ?? string.Empty,
+            Href: href,
+            Cursor: cursor,
+            IsClickable: href != null || cursor == CursorType.Pointer,
+            IsFocusable: false,
+            IsEditable: cursor == CursorType.Text);
+    }
 
     /// <summary>
     /// Handle mouse move for cursor updates and status bar.
@@ -3690,7 +3720,13 @@ public class BrowserIntegration : IDisposable
                 };
                 FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, evt);
             }
-            return result;
+
+            // The document lives in the renderer child, so the hit test above ran
+            // against nothing and reported Default for every point - which is why
+            // the pointer stayed an arrow over every link in brokered mode. Answer
+            // with what the child last told us instead. It arrives a frame late,
+            // which is invisible, and it is the only correct answer available here.
+            return _rendererReportedHit ?? result;
         }
 
         // ChromeManager/CompositorThread already reduced native movement to one

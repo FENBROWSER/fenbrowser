@@ -32,6 +32,7 @@ namespace FenBrowser.Host.ProcessIsolation
         FrameRequest,
         FrameReady,
         MetadataChanged,
+        CursorChanged,
         NavigationLifecycle,
         TabActivated,
         TabClosed,
@@ -128,6 +129,27 @@ namespace FenBrowser.Host.ProcessIsolation
         /// to size the viewport scrollbar without re-running layout.
         /// </summary>
         public float ContentHeight { get; set; }
+    }
+
+    /// <summary>
+    /// What the pointer is over, reported by the renderer child.
+    /// </summary>
+    /// <remarks>
+    /// The broker cannot answer this itself: in brokered mode the document lives
+    /// in the child, so the host's own hit test returns an empty result and the
+    /// pointer stayed an arrow over every link. The child owns the DOM, so the
+    /// child resolves the cursor and tells the broker.
+    /// </remarks>
+    public sealed class RendererCursorChangedPayload
+    {
+        /// <summary>CursorType name, e.g. "Pointer". Unparsable values are ignored.</summary>
+        public string Cursor { get; set; }
+
+        /// <summary>Link target under the pointer, for the status bar. May be empty.</summary>
+        public string Href { get; set; }
+
+        /// <summary>Lowercase tag under the pointer. May be empty.</summary>
+        public string TagName { get; set; }
     }
 
     public sealed class RendererMetadataChangedPayload
@@ -252,6 +274,7 @@ namespace FenBrowser.Host.ProcessIsolation
             return messageType == RendererIpcMessageType.Ready ||
                    messageType == RendererIpcMessageType.FrameReady ||
                    messageType == RendererIpcMessageType.MetadataChanged ||
+                   messageType == RendererIpcMessageType.CursorChanged ||
                    messageType == RendererIpcMessageType.NavigationLifecycle ||
                    messageType == RendererIpcMessageType.Error ||
                    messageType == RendererIpcMessageType.LogBatch ||
@@ -385,6 +408,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
         public event Action<int, RendererMetadataChangedPayload> MetadataChanged;
+        public event Action<int, RendererCursorChangedPayload> CursorChanged;
         public event Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
 
         public int TabId { get; }
@@ -670,6 +694,14 @@ namespace FenBrowser.Host.ProcessIsolation
                         if (payload != null)
                         {
                             MetadataChanged?.Invoke(TabId, payload);
+                        }
+                    }
+                    else if (messageType == RendererIpcMessageType.CursorChanged)
+                    {
+                        var payload = RendererIpc.DeserializePayload<RendererCursorChangedPayload>(envelope);
+                        if (payload != null)
+                        {
+                            CursorChanged?.Invoke(TabId, payload);
                         }
                     }
                     else if (messageType == RendererIpcMessageType.NavigationLifecycle)
