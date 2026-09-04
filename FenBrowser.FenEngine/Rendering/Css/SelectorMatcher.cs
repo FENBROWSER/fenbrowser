@@ -1659,6 +1659,15 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static long ComputeSegmentHash(SelectorSegment seg)
         {
+            // Computed once per segment, not once per element tested against it.
+            // See SelectorSegment.CachedAncestorFilterHash for why 0 is a safe
+            // "not computed" marker and why no lock is needed.
+            var cached = seg.CachedAncestorFilterHash;
+            if (cached != 0)
+            {
+                return cached;
+            }
+
             long hash = 0;
 
             // Tag
@@ -1679,6 +1688,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 hash |= FilterHash("." + cls);
             }
 
+            seg.CachedAncestorFilterHash = hash;
             return hash;
         }
 

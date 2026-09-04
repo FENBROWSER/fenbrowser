@@ -271,6 +271,23 @@ namespace FenBrowser.FenEngine.Rendering.Css
         public List<PseudoSelector> PseudoElements { get; } = new List<PseudoSelector>();
         public char Combinator { get; set; } = ' ';
 
+        /// <summary>
+        /// Memoized ancestor bloom-filter hash for this segment
+        /// (SelectorMatcher.ComputeSegmentHash). The hash depends only on the
+        /// segment's tag, id and classes, all fixed once parsing is done, but it
+        /// was being recomputed for every element the selector was tested
+        /// against - and computing it builds a string per tag, id and class.
+        /// On a page with ~17,000 rules that is a string allocation per
+        /// (element, rule) pair.
+        ///
+        /// 0 doubles as "not computed yet": a segment that genuinely hashes to 0
+        /// has no tag, id or classes, so recomputing it allocates nothing. That
+        /// keeps this a plain long, whose reads and writes are atomic, so the
+        /// parallel cascade needs no lock - two threads racing here compute the
+        /// same value.
+        /// </summary>
+        internal long CachedAncestorFilterHash;
+
         public bool IsEmpty => string.IsNullOrEmpty(TagName) && string.IsNullOrEmpty(Id) && 
                                Classes.Count == 0 && Attributes.Count == 0 && 
                                PseudoClasses.Count == 0 && PseudoElements.Count == 0;
