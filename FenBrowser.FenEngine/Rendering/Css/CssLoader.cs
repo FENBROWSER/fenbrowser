@@ -1238,7 +1238,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             double ruleParseMs = System.Diagnostics.Stopwatch.GetElapsedTime(ruleParseStarted).TotalMilliseconds;
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[PERF-CSS] Rule Parsing Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Sheets: {styleSet.Count})");
+            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[PERF-CSS] Rule Parsing Complete: {ruleParseMs:F0}ms (Sheets: {styleSet.Count})");
 
             // Extract all rules purely for variable resolution (which is order-independent for initial pass)
             var allRulesForVars = new List<NewCss.CssRule>();
@@ -1273,8 +1273,13 @@ namespace FenBrowser.FenEngine.Rendering
                 out var inlineStyleCacheStatistics);
             FenBrowser.FenEngine.Rendering.Performance.PerformanceDiagnosticsStore.RecordInlineStyleCache(inlineStyleCacheStatistics);
             double cascadeMs = System.Diagnostics.Stopwatch.GetElapsedTime(cascadeStarted).TotalMilliseconds;
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})");
-            
+            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[PERF-CSS] Cascade Matching Complete: {cascadeMs:F0}ms (Elements: {computed.Count})");
+
+            double cssTotalMs = System.Diagnostics.Stopwatch.GetElapsedTime(computeStarted).TotalMilliseconds;
+            // Every stage of this CSS load on one line, so a slow page can be attributed
+            // to a phase directly instead of reconstructing it from log timestamps.
+            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[PERF-CSS] Load complete: total={cssTotalMs:F0}ms queueWait={queueWaitMs:F0}ms discoveryAndFetch={discoveryAndFetchMs:F0}ms importExpansion={importExpansionMs:F0}ms ruleParse={ruleParseMs:F0}ms variableResolution={variableResolutionMs:F0}ms cascade={cascadeMs:F0}ms sources={cssBlobs.Count} expanded={expanded.Count} rules={allRulesForVars.Count} elements={computed.Count}");
+
                 return new CssLoadResult
                 {
                     Computed = computed,
@@ -4918,9 +4923,11 @@ private static double? ExtractPx(string text, string prop)
                 if (containsUrl)
                 {
                     // Preserve URL-backed image layers even when gradients are also present.
+                    // Storing a parsed value is not an event either: the same URL was
+                    // reported 546 times in one short run, once per element per
+                    // recalc, and none of those repeats told anyone anything.
                     var normalizedBgImage = ParseBackgroundImage(bgImage) ?? bgImage;
                     css.BackgroundImage = normalizedBgImage;
-                    EngineLogCompat.Log(LogCategory.CSS, LogLevel.Debug, $"[CSS] BackgroundImage URL stored: {bgImage.Substring(0, Math.Min(80, bgImage.Length))}...");
                 }
                 else if (containsGradient)
                 {
@@ -5102,16 +5109,10 @@ private static double? ExtractPx(string text, string prop)
             if (IsCssAuto(marginBlockStartRaw)) css.MarginTopAuto = true;
             if (IsCssAuto(marginBlockEndRaw)) css.MarginBottomAuto = true;
 
-            if (css.MarginLeftAuto || css.MarginRightAuto)
-            {
-                EngineLogCompat.Log(LogCategory.CSS, LogLevel.Info, $"[CSS-MARGIN] <{tag}#{n.Id}> margin-auto detected. L={css.MarginLeftAuto} R={css.MarginRightAuto} Raw='{marginRaw}' LRaw='{marginLeftRaw}' RRaw='{marginRightRaw}'");
-            }
-
-            // DEBUG: Log margin auto detection for DIV elements
-            if (tag == "DIV" && (!string.IsNullOrEmpty(marginRaw) || !string.IsNullOrEmpty(marginLeftRaw) || !string.IsNullOrEmpty(marginRightRaw)))
-            {
-                /* [PERF-REMOVED] */
-            }
+            // An element with auto margins used to announce itself here, at Info,
+            // once per element per style recalc. Every centred block has them, so
+            // this was reporting a routine outcome rather than an event, and the
+            // computed style already carries the answer for anyone who wants it.
 
             double mVal;
             var m = css.Margin;

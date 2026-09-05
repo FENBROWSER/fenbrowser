@@ -1053,7 +1053,7 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             LastFrameWatchdogTriggered = true;
                             LastFrameWatchdogReason = $"Paint stage exceeded budget ({paintMs:F2}ms > {SafetyPolicy.MaxPaintStageMs:F2}ms)";
-                            EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                            LogWatchdogOutcome(LastFrameWatchdogReason);
                             if (SafetyPolicy.SkipRasterWhenOverBudget)
                             {
                                 watchdogAbortBeforeRaster = true;
@@ -1065,7 +1065,7 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             LastFrameWatchdogTriggered = true;
                             LastFrameWatchdogReason = $"Frame exceeded budget before raster ({frameMsAfterPaint:F2}ms > {SafetyPolicy.MaxFrameBudgetMs:F2}ms)";
-                            EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                            LogWatchdogOutcome(LastFrameWatchdogReason);
                             if (SafetyPolicy.SkipRasterWhenOverBudget)
                             {
                                 watchdogAbortBeforeRaster = true;
@@ -1154,7 +1154,11 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             // DOM/layout/paint changes must present a fresh frame even under budget pressure.
                             LastFrameWatchdogAction = RenderFrameWatchdogAction.ForcedFreshRaster;
-                            EngineLogCompat.Warn(
+                            // Forcing a full raster over budget is the watchdog doing
+                            // its job correctly, on a large share of frames. It is
+                            // detail about how a frame was produced, not a problem
+                            // report.
+                            EngineLogCompat.Debug(
                                 "[SkiaDomRenderer] Watchdog budget exceeded before raster on a fresh paint tree; forcing full raster to avoid presenting stale content.",
                                 LogCategory.Performance);
                             if (emitVerificationReport)
@@ -1257,7 +1261,7 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             LastFrameWatchdogTriggered = true;
                             LastFrameWatchdogReason = $"Raster stage exceeded budget ({rasterMs:F2}ms > {SafetyPolicy.MaxRasterStageMs:F2}ms)";
-                            EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                            LogWatchdogOutcome(LastFrameWatchdogReason);
                         }
 
                         var frameMs = frameWatchdog.Elapsed.TotalMilliseconds;
@@ -1265,7 +1269,7 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             LastFrameWatchdogTriggered = true;
                             LastFrameWatchdogReason = $"Frame exceeded budget during raster ({frameMs:F2}ms > {SafetyPolicy.MaxFrameBudgetMs:F2}ms)";
-                            EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {LastFrameWatchdogReason}", LogCategory.Performance);
+                            LogWatchdogOutcome(LastFrameWatchdogReason);
                         }
                     }
                 }
@@ -2261,6 +2265,42 @@ namespace FenBrowser.FenEngine.Rendering
                     stack.Push(children[i]);
                 }
             }
+        }
+
+        // Missing the frame budget is the ordinary outcome on a real page - these
+        // fired on roughly half of all frames. Emitted as warnings they trained the
+        // reader to skim past the level; a frame slow enough to be seen as a stall
+        // still earns one, and the rest is per-frame detail.
+        private static void LogWatchdogOutcome(string reason)
+        {
+            var severe = reason is not null &&
+                         TryReadLeadingMilliseconds(reason, out var elapsedMs) &&
+                         elapsedMs >= SevereFrameMs;
+
+            if (severe)
+            {
+                EngineLogCompat.Warn($"[SkiaDomRenderer] Watchdog: {reason}", LogCategory.Performance);
+            }
+            else
+            {
+                EngineLogCompat.Debug($"[SkiaDomRenderer] Watchdog: {reason}", LogCategory.Performance);
+            }
+        }
+
+        private const double SevereFrameMs = 250d;
+
+        private static bool TryReadLeadingMilliseconds(string reason, out double value)
+        {
+            value = 0d;
+            var open = reason.IndexOf('(');
+            if (open < 0) return false;
+            var end = reason.IndexOf("ms", open, System.StringComparison.Ordinal);
+            if (end < 0) return false;
+            return double.TryParse(
+                reason.AsSpan(open + 1, end - open - 1),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out value);
         }
 
         private static void RemoveElementRectsForSubtree(Node root, Dictionary<Element, ElementGeometry> rects)

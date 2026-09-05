@@ -221,9 +221,12 @@ namespace FenBrowser.FenEngine.Rendering
                 builder._renderingTopLayer = false;
             }
 
+            // Once per painted frame. That is timeline detail, not news: at Info it
+            // was 45.7% of everything the browser logged, which buries the handful
+            // of lines that do carry information.
             EngineLog.Write(
                 LogSubsystem.Paint,
-                LogSeverity.Info,
+                LogSeverity.Debug,
                 "Paint tree build completed",
                 LogMarker.None,
                 default,

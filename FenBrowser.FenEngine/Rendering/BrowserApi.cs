@@ -3902,7 +3902,9 @@ pre {{
 
             _inputManager.ProcessEvent(inputEvent, renderContext, context);
             if (type == "click" || type == "mousedown" || type == "mouseup" || type == "mousemove") {
-                TryLogInfo($"[InputPipeline-DEBUG] {type} @ {inputEvent.X},{inputEvent.Y} -> target: {(inputEvent.Target?.TagName??"null")}#{(inputEvent.Target?.Id??"")}", LogCategory.Events);
+                // One line per pointer sample, at Info, under a name that says DEBUG.
+                // A pointer crossing a page produces hundreds of these.
+                TryLogDebug($"[InputPipeline] {type} @ {inputEvent.X},{inputEvent.Y} -> target: {(inputEvent.Target?.TagName??"null")}#{(inputEvent.Target?.Id??"")}", LogCategory.Events);
             }
 
             if (inputEvent.Target == null && fallbackTarget != null)

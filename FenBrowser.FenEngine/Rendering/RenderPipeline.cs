@@ -30,6 +30,10 @@ namespace FenBrowser.FenEngine.Rendering
         public static bool StrictInvariants { get; set; } = true;
         public static TimeSpan FrameBudget { get; set; } = TimeSpan.FromMilliseconds(16.67);
 
+        // The point at which a slow frame stops being jitter and becomes something a
+        // person watching the screen would call a stall.
+        public static TimeSpan SevereFrameBudget { get; set; } = TimeSpan.FromMilliseconds(250);
+
         public static RenderPhase CurrentPhase
         {
             get
@@ -164,9 +168,17 @@ namespace FenBrowser.FenEngine.Rendering
                     EngineLogCompat.Debug(
                         $"[PIPELINE][SUMMARY] frame={state.FrameSequence} durationMs={state.LastFrameDuration.TotalMilliseconds:F2} phase={state.CurrentPhase}",
                         LogCategory.Rendering);
-                    if (state.LastFrameDuration > FrameBudget)
+                    // Missing a 16.67ms budget is ordinary on a real page - it fired
+                    // on roughly half of all frames, so as a warning it only taught
+                    // the reader that warnings are noise. A frame slow enough to be
+                    // seen as a stall still earns one; the rest is Debug detail.
+                    if (state.LastFrameDuration > SevereFrameBudget)
                     {
-                        EngineLogCompat.Warn($"[PIPELINE] Frame {state.FrameSequence} exceeded budget: {state.LastFrameDuration.TotalMilliseconds:F2}ms > {FrameBudget.TotalMilliseconds:F2}ms", LogCategory.Performance);
+                        EngineLogCompat.Warn($"[PIPELINE] Frame {state.FrameSequence} stalled: {state.LastFrameDuration.TotalMilliseconds:F0}ms", LogCategory.Performance);
+                    }
+                    else if (state.LastFrameDuration > FrameBudget)
+                    {
+                        EngineLogCompat.Debug($"[PIPELINE] Frame {state.FrameSequence} exceeded budget: {state.LastFrameDuration.TotalMilliseconds:F2}ms > {FrameBudget.TotalMilliseconds:F2}ms", LogCategory.Performance);
                     }
                 }
 

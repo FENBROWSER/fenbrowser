@@ -1358,7 +1358,11 @@ public class BrowserIntegration : IDisposable
             var remoteEntry = new LogEntry
             {
                 Category = LogCategory.Performance,
-                Level = payload.WatchdogTriggered ? FenBrowser.Core.Logging.LogLevel.Warn : FenBrowser.Core.Logging.LogLevel.Info,
+                // Same policy as the in-process commit above: per-frame detail at
+                // Debug, Warn only for a frame slow enough to matter on its own.
+                Level = payload.TotalDurationMs >= SevereFrameWarnMs
+                    ? FenBrowser.Core.Logging.LogLevel.Warn
+                    : FenBrowser.Core.Logging.LogLevel.Debug,
                 Component = "BrowserIntegration.RemoteFrame",
                 Message = "[FRAME] RemoteCommit",
                 DurationMs = (long)Math.Round(Math.Max(0d, payload.TotalDurationMs)),
@@ -2526,7 +2530,14 @@ public class BrowserIntegration : IDisposable
         var entry = new LogEntry
         {
             Category = LogCategory.Performance,
-            Level = telemetry.WatchdogTriggered ? FenBrowser.Core.Logging.LogLevel.Warn : FenBrowser.Core.Logging.LogLevel.Info,
+            // One record per frame is timeline detail, so it belongs at Debug. The
+            // watchdog trips on a large share of frames on any real page, so raising
+            // those to Warn produced over a thousand warnings a session and taught
+            // the reader to skim past the level entirely. Keep Warn for a frame that
+            // is severe enough to be worth a person's attention on its own.
+            Level = telemetry.TotalDurationMs >= SevereFrameWarnMs
+                ? FenBrowser.Core.Logging.LogLevel.Warn
+                : FenBrowser.Core.Logging.LogLevel.Debug,
             Component = "BrowserIntegration.Frame",
             Message = "[FRAME] Commit",
             DurationMs = (long)Math.Round(Math.Max(0d, telemetry.TotalDurationMs)),
@@ -2609,19 +2620,22 @@ public class BrowserIntegration : IDisposable
 
     private bool TryApplyPendingFragmentNavigation()
     {
+        // No fragment navigation is pending. This runs every frame, and "there was
+        // nothing to do" is not an event - logging it accounted for 11.7% of every
+        // line the browser wrote.
         if (string.IsNullOrWhiteSpace(_pendingFragmentTargetId) ||
             string.IsNullOrWhiteSpace(_pendingFragmentSourceUrl) ||
             _root == null)
         {
-            EngineLogBridge.Info(
-                $"[FragmentNav] Skipped: target='{_pendingFragmentTargetId ?? "<null>"}' source='{_pendingFragmentSourceUrl ?? "<null>"}' root={_root?.TagName ?? "<null>"}",
-                LogCategory.Navigation);
             return false;
         }
 
+        // The remaining cases describe a real pending navigation that could not be
+        // applied *yet*, and they are retried every frame until it can, so they are
+        // per-frame detail rather than news.
         if (!string.Equals(CurrentUrl, _pendingFragmentSourceUrl, StringComparison.OrdinalIgnoreCase))
         {
-            EngineLogBridge.Info(
+            EngineLogBridge.Debug(
                 $"[FragmentNav] Skipped: currentUrl='{CurrentUrl}' pendingUrl='{_pendingFragmentSourceUrl}'",
                 LogCategory.Navigation);
             return false;
@@ -2630,14 +2644,14 @@ public class BrowserIntegration : IDisposable
         var target = FindElementById(_root, _pendingFragmentTargetId);
         if (target == null)
         {
-            EngineLogBridge.Info($"[FragmentNav] Skipped: target element '#{_pendingFragmentTargetId}' not found", LogCategory.Navigation);
+            EngineLogBridge.Debug($"[FragmentNav] Skipped: target element '#{_pendingFragmentTargetId}' not found", LogCategory.Navigation);
             return false;
         }
 
         var rect = GetElementRect(target);
         if (!rect.HasValue)
         {
-            EngineLogBridge.Info($"[FragmentNav] Skipped: target element '#{_pendingFragmentTargetId}' has no layout box yet", LogCategory.Navigation);
+            EngineLogBridge.Debug($"[FragmentNav] Skipped: target element '#{_pendingFragmentTargetId}' has no layout box yet", LogCategory.Navigation);
             return false;
         }
 
@@ -3703,6 +3717,11 @@ public class BrowserIntegration : IDisposable
     /// <summary>
     /// Handle mouse move for cursor updates and status bar.
     /// </summary>
+    // A frame this slow is a stall a person would notice, not ordinary jitter, so
+    // it earns a warning of its own. Everything under it is per-frame detail and
+    // lives at Debug where a preset can ask for it.
+    private const double SevereFrameWarnMs = 250d;
+
     private bool _loggedOutOfProcessFrameOwner;
     private bool _isMouseMovePending = false;
     // What the renderer child last reported under the pointer. Null until the

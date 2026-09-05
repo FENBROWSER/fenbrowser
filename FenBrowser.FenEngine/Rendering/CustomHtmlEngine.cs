@@ -2151,10 +2151,10 @@ public void Dispose()
 
             if (dirtyRoots.Count == 0)
             {
-                // No dirty nodes — still fire repaint in case layout changed
-                EngineLogCompat.Debug(
-                    "[CustomHtmlEngine] Incremental recascade found no dirty roots; skipping no-op recascade.",
-                    LogCategory.CSS);
+                // Nothing was dirty, so there is nothing to recascade. This is the
+                // ordinary outcome on most frames and saying so was 44.8% of the
+                // log once the louder per-frame messages were quietened - a
+                // no-op is not an event.
                 return;
             }
 
