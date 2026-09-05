@@ -584,8 +584,11 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
 
-                    // 3. Check for NEW animations on other elements if style was invalidated globally
-                    if (styleInvalidation)
+                    // Incremental recascade updates the existing style dictionary and
+                    // clears StyleDirty before publishing layout/paint invalidation.
+                    // Discover animations on those frames too (e.g. display:none ->
+                    // block); otherwise an inactive element never starts its effect.
+                    if (styleInvalidation || isLayoutDirty)
                     {
                         foreach(var kvp in styles)
                         {

@@ -831,6 +831,7 @@ namespace FenBrowser.FenEngine.Rendering
                         string.Equals(existing.FillMode, animation.FillMode, StringComparison.OrdinalIgnoreCase) &&
                         string.Equals(existing.TimingFunction, animation.TimingFunction, StringComparison.OrdinalIgnoreCase))
                     {
+                        UpdatePlayState(existing, animation.PlayState);
                         startedAny = true;
                         continue;
                     }
@@ -972,21 +973,27 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     foreach (var anim in list)
                     {
-                        if (state == "paused" && anim.PlayState != "paused")
-                        {
-                            anim.PauseTime = Now();
-                            anim.ElapsedBeforePause = (anim.PauseTime.Value - anim.StartTime).TotalMilliseconds;
-                        }
-                        else if (state == "running" && anim.PlayState == "paused")
-                        {
-                            // Adjust start time to account for pause
-                            anim.StartTime = Now().AddMilliseconds(-anim.ElapsedBeforePause);
-                            anim.PauseTime = null;
-                        }
-                        anim.PlayState = state;
+                        UpdatePlayState(anim, state);
                     }
                 }
             }
+        }
+
+        private static void UpdatePlayState(ActiveAnimation animation, string state)
+        {
+            if (state == "paused" && animation.PlayState != "paused")
+            {
+                animation.PauseTime = Now();
+                animation.ElapsedBeforePause = (animation.PauseTime.Value - animation.StartTime).TotalMilliseconds;
+            }
+            else if (state == "running" && animation.PlayState == "paused")
+            {
+                // Resume the same effect at its paused elapsed time, including
+                // an animation created paused before it has advanced at all.
+                animation.StartTime = Now().AddMilliseconds(-animation.ElapsedBeforePause);
+                animation.PauseTime = null;
+            }
+            animation.PlayState = state;
         }
         
         

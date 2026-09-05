@@ -14,6 +14,28 @@ namespace FenBrowser.Tests.Scripting;
 public sealed class IFrameInterpreterIsolationTests
 {
     [Fact]
+    public async Task AttachedFrame_AnimationLonghandAssignmentUpdatesInlineCss()
+    {
+        var uri = new Uri("https://style.test/page");
+        var document = new HtmlParser("<iframe id='child' src='/frame'></iframe>", uri).Parse();
+        var engine = CreateEngine();
+        await engine.SetDomAsync(document.DocumentElement, uri);
+        var childUri = new Uri("https://style.test/frame");
+        var child = new HtmlParser("<div id='spinner'></div><script>" +
+            "var s=document.getElementById('spinner').style;" +
+            "s.animationPlayState='running';s.animationDuration='2.5s';s.transformOrigin='bottom center';" +
+            "document.body.setAttribute('data-style-readback',s.getPropertyValue('animation-play-state'));</script>", childUri).Parse();
+        document.GetElementById("child").AppendChild(child);
+        await engine.SetSubdocumentDomAsync(child.DocumentElement, childUri);
+
+        var inline = child.GetElementById("spinner").GetAttribute("style") ?? string.Empty;
+        Assert.Contains("animation-play-state:running;", inline);
+        Assert.Contains("animation-duration:2.5s;", inline);
+        Assert.Contains("transform-origin:bottom center;", inline);
+        Assert.Equal("running", child.Body.GetAttribute("data-style-readback"));
+    }
+
+    [Fact]
     public async Task AttachedFrame_ExecutesInIndependentInterpreterAndPublishesWindowState()
     {
         var parentUri = new Uri("https://same.test/page");

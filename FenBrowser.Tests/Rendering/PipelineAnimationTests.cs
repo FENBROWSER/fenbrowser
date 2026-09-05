@@ -69,6 +69,61 @@ public class PipelineAnimationTests
     }
 
     [Fact]
+    public async Task RenderFrame_StartsAnimationAfterInPlaceRecascadeRevealsElement()
+    {
+        const string source = "<!doctype html><style>@keyframes revealSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } } #target { display:none; width:28px; height:28px; animation:revealSpin 2s linear infinite; }</style><div id='target'></div>";
+        var uri = new Uri("https://animation-reveal.test/");
+        var doc = new HtmlParser(source, uri).Parse();
+        var root = doc.DocumentElement;
+        var target = doc.GetElementById("target");
+        var styles = await CssLoader.ComputeAsync(root, uri, _ => Task.FromResult(string.Empty), 128, 128);
+        var renderer = CreateRenderer();
+        var engine = renderer.AnimationEngine;
+        var now = new DateTime(2026, 9, 5, 0, 0, 0, DateTimeKind.Utc);
+        var previousClock = CssAnimationEngine.NowProvider;
+        using var bitmap = new SKBitmap(128, 128);
+        using var canvas = new SKCanvas(bitmap);
+        try
+        {
+            CssAnimationEngine.NowProvider = () => now;
+            var request = new RenderFrameRequest
+            {
+                Root = root, Canvas = canvas, Styles = styles,
+                Viewport = new SKRect(0, 0, 128, 128), BaseUrl = uri.AbsoluteUri,
+                InvalidationReason = RenderFrameInvalidationReason.Style,
+                EmitVerificationReport = false
+            };
+            renderer.RenderFrame(request);
+            Assert.False(engine.HasActiveAnimations(target));
+
+            // Incremental recascade publishes into the existing dictionary and
+            // consumes StyleDirty, leaving layout/paint invalidation for rendering.
+            var visible = styles[target].Clone();
+            CssStyleApplicator.ApplyProperty(visible, "display", "block");
+            styles[target] = visible;
+            target.SetComputedStyle(visible);
+            target.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+            Assert.False(root.StyleDirty || root.ChildStyleDirty);
+            request.InvalidationReason = RenderFrameInvalidationReason.Layout | RenderFrameInvalidationReason.Paint;
+            renderer.RenderFrame(request);
+            Assert.True(engine.HasActiveAnimations(target));
+
+            engine.Stop();
+            now = now.AddMilliseconds(500);
+            InvokeAnimationTick(engine);
+            var first = engine.GetAnimatedProperties(target)["transform"];
+            now = now.AddMilliseconds(500);
+            InvokeAnimationTick(engine);
+            Assert.NotEqual(first, engine.GetAnimatedProperties(target)["transform"]);
+        }
+        finally
+        {
+            engine.Stop();
+            CssAnimationEngine.NowProvider = previousClock;
+        }
+    }
+
+    [Fact]
     public async Task ComputeAsync_RegistersCachedKeyframesForEachDocument()
     {
         const string htmlSource = "<!doctype html><html><head><style>@keyframes iframeCacheSpin_6f17 { to { transform: rotate(360deg); } } .spinner { animation: iframeCacheSpin_6f17 .75s linear infinite; }</style></head><body><span class='spinner'></span></body></html>";
@@ -148,6 +203,55 @@ public class PipelineAnimationTests
         {
             engine.Stop();
             CssAnimationEngine.NowProvider = previousNowProvider;
+        }
+    }
+
+    [Fact]
+    public async Task CssAnimationEngine_StylePlayStateChangesPreserveProgress()
+    {
+        var uri = new Uri("https://animation-pause.test/");
+        var doc = new HtmlParser("<style>@keyframes pauseSpin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } } #target { animation:pauseSpin 2s linear infinite; animation-play-state:paused; }</style><div id='target'></div>", uri).Parse();
+        var styles = await CssLoader.ComputeAsync(doc.DocumentElement, uri, _ => Task.FromResult(string.Empty), 128, 128);
+        var target = doc.GetElementById("target");
+        var style = styles[target];
+        var engine = new CssAnimationEngine();
+        var now = new DateTime(2026, 9, 5, 0, 0, 0, DateTimeKind.Utc);
+        var previousClock = CssAnimationEngine.NowProvider;
+        try
+        {
+            CssAnimationEngine.NowProvider = () => now;
+            engine.StartAnimation(target, style);
+            engine.Stop();
+            var animation = GetAnimations(engine, target).Single();
+            now = now.AddSeconds(10);
+            style.Map["animation-play-state"] = "running";
+            engine.StartAnimation(target, style);
+            engine.Stop();
+            Assert.Same(animation, GetAnimations(engine, target).Single());
+            Assert.Equal("running", animation.PlayState);
+            Assert.Equal(now, animation.StartTime);
+
+            now = now.AddMilliseconds(500);
+            InvokeAnimationTick(engine);
+            var first = engine.GetAnimatedProperties(target)["transform"];
+            style.Map["animation-play-state"] = "paused";
+            engine.StartAnimation(target, style);
+            engine.Stop();
+            now = now.AddSeconds(10);
+            InvokeAnimationTick(engine);
+            Assert.Equal(first, engine.GetAnimatedProperties(target)["transform"]);
+            style.Map["animation-play-state"] = "running";
+            engine.StartAnimation(target, style);
+            engine.Stop();
+            Assert.Equal(500d, (now - animation.StartTime).TotalMilliseconds);
+            now = now.AddMilliseconds(500);
+            InvokeAnimationTick(engine);
+            Assert.NotEqual(first, engine.GetAnimatedProperties(target)["transform"]);
+        }
+        finally
+        {
+            engine.Stop();
+            CssAnimationEngine.NowProvider = previousClock;
         }
     }
 
