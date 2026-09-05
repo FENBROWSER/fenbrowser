@@ -38,6 +38,10 @@ namespace FenBrowser.Tooling
         internal const int DebugSiteViewportHeight = 800;
         internal const int WebDriverMainStackBytes = 16 * 1024 * 1024;
         internal const int JsTimeStackBytes = 16 * 1024 * 1024;
+
+        // Matches FenJsBrowserParserMaxRecursionDepth, so jstime measures the same
+        // front end the browser runs rather than a stricter one.
+        internal const int JsTimeParserMaxRecursionDepth = 1024;
         internal const string WebDriverLargeStackEnvironmentVariable =
             "FEN_TOOLING_WEBDRIVER_LARGE_STACK";
 
@@ -196,8 +200,13 @@ namespace FenBrowser.Tooling
                 {
                     var source = new FenBrowser.Js.Source.SourceText(text, path);
 
+                    // Parse the way the browser does. The default 128-level cap is
+                    // sized for a small test stack, and a minified real-world bundle
+                    // nests far past it - reCAPTCHA's threw at 1343:478 - so timing a
+                    // page's own script was impossible with the tool meant for it.
                     var swParse = System.Diagnostics.Stopwatch.StartNew();
-                    var program = FenBrowser.Js.Parser.JsParser.ParseScript(source);
+                    var program = FenBrowser.Js.Parser.JsParser.ParseScript(
+                        source, inheritedStrictMode: false, maxRecursionDepth: JsTimeParserMaxRecursionDepth);
                     swParse.Stop();
                     Console.WriteLine($"[jstime] PARSE ok in {swParse.ElapsedMilliseconds} ms (statements={program.Body.Count})");
 
@@ -207,7 +216,10 @@ namespace FenBrowser.Tooling
                     }
 
                     var swCompile = System.Diagnostics.Stopwatch.StartNew();
-                    var compiler = new FenBrowser.Js.Bytecode.BytecodeCompiler();
+                    var compiler = new FenBrowser.Js.Bytecode.BytecodeCompiler
+                    {
+                        ParserMaxRecursionDepth = JsTimeParserMaxRecursionDepth
+                    };
                     var fn = compiler.CompileProgram(program);
                     swCompile.Stop();
                     Console.WriteLine($"[jstime] COMPILE ok in {swCompile.ElapsedMilliseconds} ms (instructions={fn.Instructions.Count}, maxDepth={compiler.MaxObservedCompileDepth})");
