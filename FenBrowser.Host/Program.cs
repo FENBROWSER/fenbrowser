@@ -437,6 +437,14 @@ namespace FenBrowser.Host
             SkiaSharp.SKBitmap frameBitmap = null;
             SkiaSharp.SKCanvas frameCanvas = null;
 
+            // Frames come from this process, so this is the only place that can say
+            // where a multi-second freeze went. The host's own loop reports nothing
+            // in brokered mode because it does not render. Track the gap between
+            // published frames and split each frame into the two things that can
+            // block it: taking the DOM snapshot, which contends with whoever holds
+            // the render state lock, and the raster itself.
+            long lastFramePublishTimestamp = 0;
+
             EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[RendererChild] Started for tab={tabId}, parentPid={parentPid}, pipe={pipeName}, assignment={assignmentKey}");
 
             if (string.IsNullOrWhiteSpace(pipeName) || string.IsNullOrWhiteSpace(authToken))
@@ -565,8 +573,24 @@ namespace FenBrowser.Host
                 {
                     try
                     {
+                        var frameStartTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+                        var gapMs = lastFramePublishTimestamp == 0
+                            ? 0d
+                            : System.Diagnostics.Stopwatch.GetElapsedTime(lastFramePublishTimestamp, frameStartTimestamp).TotalMilliseconds;
+
+                        var snapshotStartTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
                         var domRoot = browser.GetDomRoot();
                         var styles = browser.ComputedStyles;
+                        var snapshotMs = System.Diagnostics.Stopwatch.GetElapsedTime(snapshotStartTimestamp).TotalMilliseconds;
+
+                        if (gapMs > 500d || snapshotMs > 100d)
+                        {
+                            EngineLog.Write(
+                                LogSubsystem.ProcessIsolation,
+                                LogSeverity.Warn,
+                                $"[FrameStall] renderer child: {gapMs:F0}ms since the last published frame, " +
+                                $"snapshot took {snapshotMs:F0}ms");
+                        }
 
                         if (domRoot != null)
                         {
@@ -631,6 +655,18 @@ namespace FenBrowser.Host
                                 byteCount);
                             frameSharedMemory.SignalReady();
                             seqNum = 1; // Approximate; actual seq tracked inside WriteFrame.
+
+                            var frameMs = System.Diagnostics.Stopwatch.GetElapsedTime(frameStartTimestamp).TotalMilliseconds;
+                            lastFramePublishTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+                            if (frameMs > 250d)
+                            {
+                                EngineLog.Write(
+                                    LogSubsystem.ProcessIsolation,
+                                    LogSeverity.Warn,
+                                    $"[FrameStall] renderer child: producing one frame took {frameMs:F0}ms " +
+                                    $"(snapshot {snapshotMs:F0}ms) requestedBy={requestedBy}");
+                            }
+
                             EngineLog.Write(LogSubsystem.Paint, LogSeverity.Debug, $"[RendererChild] Frame written to shared memory: {iWidth}x{iHeight} for tab={tabId} requestedBy={requestedBy}");
                         }
                         else
