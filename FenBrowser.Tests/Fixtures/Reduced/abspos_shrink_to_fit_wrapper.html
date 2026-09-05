@@ -1,0 +1,24 @@
+<!doctype html>
+<!--
+  Reduced from the reCAPTCHA challenge wrapper on google.com/sorry, captured by
+  the iframe_style_chain_probe. The wrapper is absolutely positioned with `left`
+  set and both `width` and `right` auto, which CSS 2.1 10.3.7 sizes shrink-to-fit.
+
+  Chrome (1280x800 viewport):  #wrap rect 306 x 160, content width 304 - sized
+      from the iframe's 300x150 default, and independent of the viewport.
+  FenBrowser (1904px-wide viewport):  #wrap rect 1904 x 602 - it takes the
+      containing block's width instead of shrinking to its content.
+
+  It only becomes visible when reCAPTCHA opens the challenge, and it then paints
+  as a large empty white panel instead of the challenge-sized bubble.
+-->
+<html>
+  <body style="padding:20px">
+    <div style="max-width:400px"><p>line one</p><p>line two</p><p>line three</p></div>
+    <div id="wrap" style="background-color:#fff;border:1px solid #ccc;position:absolute;transition:visibility 0s linear 0.3s, opacity 0.3s linear;opacity:0;visibility:hidden;z-index:2000000000;left:0px;top:-10000px;">
+      <div id="inner" style="z-index:2000000000;position:relative;">
+        <iframe id="fr" style="width: 100%; height: 100%;"></iframe>
+      </div>
+    </div>
+  </body>
+</html>
