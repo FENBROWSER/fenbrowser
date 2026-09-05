@@ -29,10 +29,20 @@ namespace FenBrowser.Js.Bytecode;
 // opcodes are added by extending TryEmitOpcode below.
 public static class JitCompiler
 {
-    // Tier-up after 10 calls (was 100).  Page scripts often call the same utility
-    // function 10-50 times during bootstrap; 100 misses most of those.  10 catches
-    // the hot path without JIT-compiling every single-call initializer.
-    public const int TierUpThreshold = 10;
+    // How much a function must have done before it is worth compiling.
+    // Compiling one costs single-digit milliseconds of Expression.Compile, and
+    // the compiled body runs about a quarter faster than the dispatch loop, so
+    // a function has to spend well over a hundred milliseconds interpreted
+    // before the trade pays. Ten calls of a bootstrap utility is nowhere near
+    // that: on reCAPTCHA's bundle it compiled ~500 functions and the page ran
+    // slower overall than with the JIT switched off.
+    //
+    // FEN_JIT_TIERUP overrides it, so the trade can be measured against a real
+    // page rather than argued about.
+    public static readonly int TierUpThreshold =
+        int.TryParse(Environment.GetEnvironmentVariable("FEN_JIT_TIERUP"), out var configured) && configured > 0
+            ? configured
+            : 10;
 
     /// <summary>
     /// Set FEN_JIT_DISABLE=1 to keep everything on the dispatch loop. Having a
