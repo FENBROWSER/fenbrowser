@@ -1940,9 +1940,39 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 $"microtasks={_interpreter.MicrotaskJobsRun} ({_interpreter.MicrotaskMilliseconds:F0}ms) " +
                 $"instructions={_interpreter.TotalInstructionsExecuted} " +
                 $"slowestJob={_interpreter.SlowestJobMilliseconds:F0}ms/{_interpreter.SlowestJobInstructions}instr " +
-                $"natives=[{_interpreter.DescribeNativeCallCost()}]",
+                $"natives=[{_interpreter.DescribeNativeCallCost()}] " +
+                // Whether the JIT tiered in at all decides how to read every
+                // number above it: 70M instructions is a different problem when
+                // the compiler took the hot function than when it refused it.
+                // The refusal reason - the opcode it could not emit - is the
+                // one fact that says which opcode to teach it next, and it was
+                // only ever written to the child's stderr, where nothing reads it.
+                $"jit=[{DescribeJitTierUp()}]",
                 FenBrowser.Core.Logging.LogCategory.JavaScript);
         }
+    }
+
+    private static string DescribeJitTierUp()
+    {
+#if PUBLISH_AOT
+        return "unavailable";
+#else
+        if (!FenBrowser.Js.Bytecode.JitCompiler.Enabled)
+        {
+            return "disabled";
+        }
+
+        // DescribeRejections lists every opcode that ever blocked a
+        // compilation, most-frequent first. Only the head of that list names
+        // the work worth doing, and the tail would crowd the entry.
+        var refusals = FenBrowser.Js.Bytecode.JitCompiler.DescribeRejections().Split(' ');
+        var topRefusals = string.Join(' ', refusals.Take(6));
+
+        return $"attempts={FenBrowser.Js.Bytecode.JitCompiler.CompileAttempts} " +
+               $"compiled={FenBrowser.Js.Bytecode.JitCompiler.CompileSuccesses} " +
+               $"exprTree={FenBrowser.Js.Bytecode.JitCompiler.CompileExpressionTreeSuccesses} " +
+               $"refusedOn={topRefusals}";
+#endif
     }
 
     // Persistent large-stack worker thread â€” created once per engine instance
@@ -2109,6 +2139,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             {
                                 FenBrowser.Core.EngineLogCompat.Warn(
                                     FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(),
+                                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                                // The opcode histogram says LoadVar dominates; only
+                                // this says whether that is scope-chain walking (a
+                                // cache would pay) or already-resolved local reads
+                                // (it would not).
+                                FenBrowser.Core.EngineLogCompat.Warn(
+                                    FenBrowser.Js.Diagnostics.InterpreterProfiler.VarReport(),
                                     FenBrowser.Core.Logging.LogCategory.JavaScript);
                             }
                         },
