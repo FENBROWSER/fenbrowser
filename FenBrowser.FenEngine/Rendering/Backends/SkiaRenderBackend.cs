@@ -185,6 +185,19 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 return;
             }
 
+            // Sides that differ on a rounded box are not straight lines. Each one
+            // is its share of the ring between the border box and the padding box,
+            // so it curves through the corners it owns. Clipping a straight line to
+            // the outer shape - what this used to do - replaces that curve with a
+            // chord, which is why the canonical CSS spinner (a round box whose
+            // bottom and left border-colors are transparent, spun by a keyframe)
+            // came out as two flat bars instead of an arc.
+            if (hasRadius &&
+                TryDrawRoundedNonUniformBorder(rect, border, paintTop, paintRight, paintBottom, paintLeft))
+            {
+                return;
+            }
+
             int saveCount = 0;
             if (hasRadius)
             {
@@ -207,6 +220,224 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                     _canvas.RestoreToCount(saveCount);
                 }
             }
+        }
+
+        /// <summary>
+        /// Paints a rounded border whose sides differ, by filling each side's
+        /// share of the ring between the border box and the padding box.
+        /// Returns false when a side asks for something a filled ring cannot
+        /// express (dashes, dots, a double rule), leaving the caller's
+        /// straight-line path to handle it.
+        /// </summary>
+        private bool TryDrawRoundedNonUniformBorder(
+            SKRect rect,
+            BorderStyle border,
+            bool paintTop,
+            bool paintRight,
+            bool paintBottom,
+            bool paintLeft)
+        {
+            if (rect.Width <= 0 || rect.Height <= 0 ||
+                IsSegmentedBorderStyle(border.TopStyle) ||
+                IsSegmentedBorderStyle(border.RightStyle) ||
+                IsSegmentedBorderStyle(border.BottomStyle) ||
+                IsSegmentedBorderStyle(border.LeftStyle))
+            {
+                return false;
+            }
+
+            // CreateRoundedRectPath applies the CSS §5.3 overlap reduction to the
+            // array it is given, so read the radii back afterwards: the inner curve
+            // has to be derived from the radii actually drawn, not the declared
+            // ones. A 36px radius on a 36px box is 'border-radius: 50%' after that
+            // reduction, and deriving from 36 would not give a circle.
+            var radii = new[]
+            {
+                border.TopLeftRadius,
+                border.TopRightRadius,
+                border.BottomRightRadius,
+                border.BottomLeftRadius
+            };
+
+            using var outer = CreateRoundedRectPath(rect, radii);
+
+            var innerRect = new SKRect(
+                rect.Left + border.LeftWidth,
+                rect.Top + border.TopWidth,
+                rect.Right - border.RightWidth,
+                rect.Bottom - border.BottomWidth);
+
+            // Borders thick enough to meet leave no padding box. The wedges still
+            // have to tile the whole shape, so collapse the inner edge onto the
+            // centre line rather than letting it invert.
+            if (innerRect.Width <= 0)
+            {
+                float centreX = (rect.Left + rect.Right) / 2f;
+                innerRect.Left = centreX;
+                innerRect.Right = centreX;
+            }
+
+            if (innerRect.Height <= 0)
+            {
+                float centreY = (rect.Top + rect.Bottom) / 2f;
+                innerRect.Top = centreY;
+                innerRect.Bottom = centreY;
+            }
+
+            SKPath ring;
+            if (innerRect.Width > 0 && innerRect.Height > 0)
+            {
+                // CSS Backgrounds & Borders §5.2: the inner curve's radius is the
+                // outer radius less that side's border width, floored at zero.
+                var innerRadii = new[]
+                {
+                    new SKPoint(
+                        Math.Max(0, radii[0].X - border.LeftWidth),
+                        Math.Max(0, radii[0].Y - border.TopWidth)),
+                    new SKPoint(
+                        Math.Max(0, radii[1].X - border.RightWidth),
+                        Math.Max(0, radii[1].Y - border.TopWidth)),
+                    new SKPoint(
+                        Math.Max(0, radii[2].X - border.RightWidth),
+                        Math.Max(0, radii[2].Y - border.BottomWidth)),
+                    new SKPoint(
+                        Math.Max(0, radii[3].X - border.LeftWidth),
+                        Math.Max(0, radii[3].Y - border.BottomWidth))
+                };
+
+                using var inner = CreateRoundedRectPath(innerRect, innerRadii);
+                ring = outer.Op(inner, SKPathOp.Difference);
+            }
+            else
+            {
+                ring = new SKPath(outer);
+            }
+
+            if (ring is null)
+            {
+                return false;
+            }
+
+            // Each corner is split along the miter - the line from the border-box
+            // corner to the padding-box corner behind it - carried on to the middle
+            // of the box. Stopping the split at the padding-box corner leaves the
+            // stretch of ring between that corner and the curve belonging to
+            // neither side, and on a circle that stretch is most of the corner.
+            var miterTopLeft = MiterSplitPoint(rect, new SKPoint(rect.Left, rect.Top), border.LeftWidth, border.TopWidth, -1f, 1f);
+            var miterTopRight = MiterSplitPoint(rect, new SKPoint(rect.Right, rect.Top), border.RightWidth, border.TopWidth, 1f, 1f);
+            var miterBottomRight = MiterSplitPoint(rect, new SKPoint(rect.Right, rect.Bottom), border.RightWidth, border.BottomWidth, 1f, -1f);
+            var miterBottomLeft = MiterSplitPoint(rect, new SKPoint(rect.Left, rect.Bottom), border.LeftWidth, border.BottomWidth, -1f, -1f);
+
+            using (ring)
+            {
+                FillBorderSideOfRing(
+                    ring, new SKPoint(rect.Left, rect.Top), new SKPoint(rect.Right, rect.Top),
+                    miterTopRight, miterTopLeft, border.TopColor, paintTop);
+                FillBorderSideOfRing(
+                    ring, new SKPoint(rect.Right, rect.Top), new SKPoint(rect.Right, rect.Bottom),
+                    miterBottomRight, miterTopRight, border.RightColor, paintRight);
+                FillBorderSideOfRing(
+                    ring, new SKPoint(rect.Right, rect.Bottom), new SKPoint(rect.Left, rect.Bottom),
+                    miterBottomLeft, miterBottomRight, border.BottomColor, paintBottom);
+                FillBorderSideOfRing(
+                    ring, new SKPoint(rect.Left, rect.Bottom), new SKPoint(rect.Left, rect.Top),
+                    miterTopLeft, miterBottomLeft, border.LeftColor, paintLeft);
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Where a corner's miter ends: it starts at the border-box corner, runs
+        /// in the direction of the padding-box corner behind it, and stops on
+        /// whichever centre line of the box it reaches first. Ending on a centre
+        /// line is what makes the four sides tile the whole box, so no part of a
+        /// rounded corner is left to no side at all.
+        /// </summary>
+        private static SKPoint MiterSplitPoint(
+            SKRect rect,
+            SKPoint corner,
+            float horizontalWidth,
+            float verticalWidth,
+            float inwardX,
+            float inwardY)
+        {
+            float travel = float.MaxValue;
+            if (horizontalWidth > 0)
+            {
+                travel = Math.Min(travel, rect.Width / 2f / horizontalWidth);
+            }
+
+            if (verticalWidth > 0)
+            {
+                travel = Math.Min(travel, rect.Height / 2f / verticalWidth);
+            }
+
+            if (travel == float.MaxValue)
+            {
+                // No border on either side of this corner: nothing is painted
+                // there, so any point on the centre will do.
+                return new SKPoint(rect.MidX, rect.MidY);
+            }
+
+            return new SKPoint(
+                corner.X - inwardX * horizontalWidth * travel,
+                corner.Y + inwardY * verticalWidth * travel);
+        }
+
+        /// <summary>
+        /// Fills one side's share of a border ring: the area swept from the two
+        /// border-box corners the side runs between, inward along each corner's
+        /// miter. Filling that region rather than stroking a line is what lets the
+        /// side follow the corner curve.
+        /// </summary>
+        private void FillBorderSideOfRing(
+            SKPath ring,
+            SKPoint startCorner,
+            SKPoint endCorner,
+            SKPoint endMiter,
+            SKPoint startMiter,
+            SKColor color,
+            bool enabled)
+        {
+            if (!enabled || color.Alpha == 0)
+            {
+                return;
+            }
+
+            using var wedge = PathBuilderHelper.Build(p =>
+            {
+                p.MoveTo(startCorner.X, startCorner.Y);
+                p.LineTo(endCorner.X, endCorner.Y);
+                p.LineTo(endMiter.X, endMiter.Y);
+                p.LineTo(startMiter.X, startMiter.Y);
+                p.Close();
+            });
+
+            using var slice = ring.Op(wedge, SKPathOp.Intersect);
+            if (slice is null || slice.IsEmpty)
+            {
+                return;
+            }
+
+            using var paint = new SKPaint
+            {
+                Color = color,
+                Style = SKPaintStyle.Fill,
+                IsAntialias = true
+            };
+
+            _canvas.DrawPath(slice, paint);
+        }
+
+        // dashed/dotted repeat along the edge and double is two rules with a gap:
+        // none of them is a solid fill of the ring.
+        private static bool IsSegmentedBorderStyle(string style)
+        {
+            var normalized = style?.Trim();
+            return string.Equals(normalized, "dashed", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(normalized, "dotted", StringComparison.OrdinalIgnoreCase) ||
+                   IsDoubleBorderStyle(style);
         }
 
         private void DrawBorderSide(SKRect rect, BorderSide side, SKColor color, float width, string style, bool enabled, BorderStyle border)
