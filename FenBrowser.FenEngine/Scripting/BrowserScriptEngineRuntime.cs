@@ -8051,7 +8051,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             CaptureCallbackProvenance(JsValue.Undefined));
     }
 
-    private void RecordPromiseRejection(JsValue promise)
+    // Returns the rejection reason as text so the tracker can name it in the
+    // one-line warning it writes. Without that the warning said only that a
+    // rejection had happened, and the reason - the single fact that explains
+    // the page's behaviour - was reachable only by opening the structured
+    // payload of a differently-titled entry.
+    private string RecordPromiseRejection(JsValue promise)
     {
         var pending = _pendingPromiseRejectionDiagnostics.TryGetValue(promise, out var captured)
             ? captured
@@ -8060,9 +8065,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 CaptureCallbackProvenance(JsValue.Undefined));
         _pendingPromiseRejectionDiagnostics.Remove(promise);
 
+        var description = DescribePromiseRejectionReason(pending.Reason);
         var exception = new JsThrownException(pending.Reason)
         {
-            Description = DescribePromiseRejectionReason(pending.Reason)
+            Description = description
         };
         var callbackId = Interlocked.Increment(ref _diagnosticCallbackIdSequence);
         var failure = RecordCallbackFailure(
@@ -8075,6 +8081,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             exception,
             "reject");
         LogDiagnosticCallbackFailure(failure, callbackId, "promise-rejection", "reject");
+        return description;
     }
 
     private (string Representation, string HostType) DescribeCallbackReceiver(JsValue receiver)
@@ -25366,7 +25373,7 @@ internal sealed class FenJsDiagnosticPromiseRejectionTracker : IHostPromiseRejec
 {
     private readonly IHostPromiseRejectionTracker _inner;
     private readonly Action<JsValue, PromiseRejectionOperation> _lifecycleObserver;
-    private readonly Action<JsValue> _unhandledObserver;
+    private readonly Func<JsValue, string> _unhandledObserver;
     private readonly object _sync = new();
     private readonly List<JsValue> _pending = new();
     private int _rejectedCount;
@@ -25375,7 +25382,7 @@ internal sealed class FenJsDiagnosticPromiseRejectionTracker : IHostPromiseRejec
     public FenJsDiagnosticPromiseRejectionTracker(
         IHostPromiseRejectionTracker inner,
         Action<JsValue, PromiseRejectionOperation> lifecycleObserver,
-        Action<JsValue> unhandledObserver)
+        Func<JsValue, string> unhandledObserver)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _lifecycleObserver = lifecycleObserver ?? throw new ArgumentNullException(nameof(lifecycleObserver));
@@ -25437,9 +25444,10 @@ internal sealed class FenJsDiagnosticPromiseRejectionTracker : IHostPromiseRejec
         foreach (var promise in pending)
         {
             var count = Interlocked.Increment(ref _rejectedCount);
+            var reason = string.Empty;
             try
             {
-                _unhandledObserver(promise);
+                reason = _unhandledObserver(promise) ?? string.Empty;
             }
             catch
             {
@@ -25449,10 +25457,18 @@ internal sealed class FenJsDiagnosticPromiseRejectionTracker : IHostPromiseRejec
             if (count <= 20)
             {
                 FenLogger.Warn(
-                    $"[PromiseRejection] Unhandled rejection #{count} detected",
+                    reason.Length == 0
+                        ? $"[PromiseRejection] Unhandled rejection #{count}, reason unavailable"
+                        : $"[PromiseRejection] Unhandled rejection #{count}: {Truncate(reason, 300)}",
                     LogCategory.JavaScript);
             }
         }
+    }
+
+    private static string Truncate(string value, int max)
+    {
+        var single = value.Replace('\r', ' ').Replace('\n', ' ');
+        return single.Length <= max ? single : single.Substring(0, max) + "...";
     }
 
     public void Reset()
