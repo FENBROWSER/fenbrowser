@@ -15,7 +15,12 @@ internal static class RendererChildEnvironment
         // Diagnostics-only toggles; the renderer child writes probes/dumps to the
         // workspace logs dir, so it needs the same envelope as the host process.
         "FEN_DIAGNOSTIC_APPENDS",
-        "FEN_DIAGNOSTICS_DIR"
+        "FEN_DIAGNOSTICS_DIR",
+        // The run this browser belongs to. A child that does not inherit it invents
+        // its own, and the log files stop being groupable into one run - which is
+        // the entire reason the id exists. It carries no capability: it is an opaque
+        // eight-character tag used only to label log entries.
+        "FEN_RUN_ID"
     };
 
     private static readonly string[] UnixGraphicsEnvironmentKeys =

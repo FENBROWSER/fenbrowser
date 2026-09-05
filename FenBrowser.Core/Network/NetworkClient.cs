@@ -136,6 +136,8 @@ namespace FenBrowser.Core.Network
                 LogManager.Log(LogCategory.Network, LogLevel.Info,
                     $"[NetworkClient] {request.Method} {request.RequestUri} -> " +
                     $"{(int)context.Response.StatusCode} {sw.ElapsedMilliseconds}ms");
+                FenBrowser.Core.Memory.EngineMetrics.Instance.Increment(
+                    FenBrowser.Core.Memory.MetricCounter.FetchRequestCount);
                 _stats.RecordRequest(hostKey, sw.ElapsedMilliseconds, context.Response.IsSuccessStatusCode);
                 requestCounted = false;
                 connInfo.LastUsed = DateTime.UtcNow;

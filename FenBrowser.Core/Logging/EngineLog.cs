@@ -105,6 +105,62 @@ public static class EngineLog
 
         Configure(opts);
         WriteSessionHeader();
+        ArmRunSummary();
+    }
+
+    private static int _runSummaryArmed;
+
+    private static void ArmRunSummary()
+    {
+        if (Interlocked.Exchange(ref _runSummaryArmed, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => WriteRunSummary();
+        }
+        catch
+        {
+            // Without the hook the summary can still be requested explicitly.
+        }
+    }
+
+    /// <summary>
+    /// One line closing out the run, carrying the counters an investigation opens
+    /// with. Reconstructing these meant mining the trace with a throwaway script
+    /// every single time; the browser knows them already and can simply say so.
+    /// </summary>
+    public static void WriteRunSummary()
+    {
+        try
+        {
+            var counters = Memory.EngineMetrics.Instance.Snapshot();
+            var data = new Dictionary<string, object?> { ["runId"] = RunId };
+            foreach (var pair in counters)
+            {
+                // Only the counters that moved. A wall of zeroes is the same noise
+                // problem in a different shape.
+                if (pair.Value != 0)
+                {
+                    data[pair.Key] = pair.Value;
+                }
+            }
+
+            Write(
+                LogSubsystem.General,
+                LogSeverity.Info,
+                "[session] run summary",
+                LogMarker.None,
+                default,
+                data);
+            Flush(TimeSpan.FromMilliseconds(500));
+        }
+        catch
+        {
+            // A summary must never be the reason a shutdown fails.
+        }
     }
 
     /// <summary>

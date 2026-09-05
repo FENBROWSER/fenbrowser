@@ -295,6 +295,8 @@ public sealed class BrowserInputQueue
             _droppedOverflowCount++;
         }
 
+        FenBrowser.Core.Memory.EngineMetrics.Instance.Increment(
+            FenBrowser.Core.Memory.MetricCounter.InputEventsDropped);
         ReportDrop(input);
     }
 

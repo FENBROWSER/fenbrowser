@@ -28,6 +28,11 @@ namespace FenBrowser.Core.Memory
         DroppedFrameCount,
         JsScriptExecutionCount,
         JsBytecodeCompileCount,
+        // Counters for the questions every investigation actually opens with. Each
+        // one previously had to be reconstructed by mining the trace with a script.
+        InputEventsDropped,
+        JsUncaughtExceptionCount,
+        FrameStallCount,
         _Count
     }
 
