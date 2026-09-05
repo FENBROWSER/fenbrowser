@@ -1530,12 +1530,41 @@ public class BrowserIntegration : IDisposable
 
             if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
             {
+                // Frames come from the renderer child in this mode, so the two
+                // stages below never run here. Say so once: their instrumentation
+                // reporting nothing means "this loop is not the one rendering",
+                // not "nothing stalled".
+                if (!_loggedOutOfProcessFrameOwner)
+                {
+                    _loggedOutOfProcessFrameOwner = true;
+                    EngineLogBridge.Info(
+                        "[FrameStall] out-of-process renderer owns frame production; " +
+                        "the host loop's JS-pump and snapshot probes do not apply here",
+                        LogCategory.Rendering);
+                }
+
                 _wakeEvent.WaitOne(100);
                 continue;
             }
 
             // Stage 2: Pump JS event loop (budget-gated: reserve 8ms for render)
+            //
+            // The budget only decides whether to START more work; a job already
+            // running cannot be interrupted, and Stage 3 below is behind this. So
+            // one long script keeps every frame from being produced - no paint, no
+            // CSS animation tick, no hover feedback - for as long as it runs.
+            // Report it, because from the outside that is indistinguishable from
+            // the browser having hung.
+            var __pumpStart = System.Diagnostics.Stopwatch.GetTimestamp();
             var sliceTelemetry = PumpJSEventLoop(deadline, coordinator);
+            var __pumpMs = System.Diagnostics.Stopwatch.GetElapsedTime(__pumpStart).TotalMilliseconds;
+            if (__pumpMs > 250)
+            {
+                EngineLogBridge.Warn(
+                    $"[FrameStall] JS pump held the frame loop for {__pumpMs:F0}ms " +
+                    $"(tasks={sliceTelemetry.ProcessedTaskCount}); no frame was presented in that time",
+                    LogCategory.Rendering);
+            }
             _lastEventLoopSliceTelemetry = sliceTelemetry;
 
             // Stage 3: Style sync + Layout + Paint + Present
@@ -1695,7 +1724,15 @@ public class BrowserIntegration : IDisposable
             }
 
             // Sync latest state from browser host
+            var __snapWait = System.Diagnostics.Stopwatch.GetTimestamp();
             var snapshot = _browser.GetRenderSnapshot();
+            var __snapMs = System.Diagnostics.Stopwatch.GetElapsedTime(__snapWait).TotalMilliseconds;
+            if (__snapMs > 100)
+            {
+                EngineLogBridge.Warn(
+                    $"[FrameStall] GetRenderSnapshot blocked {__snapMs:F0}ms",
+                    LogCategory.Rendering);
+            }
             _root = snapshot.Root;
             _styles = snapshot.Styles;
             _hasStableStyleSnapshot = snapshot.HasStableStyles;
@@ -3662,6 +3699,7 @@ public class BrowserIntegration : IDisposable
     /// <summary>
     /// Handle mouse move for cursor updates and status bar.
     /// </summary>
+    private bool _loggedOutOfProcessFrameOwner;
     private bool _isMouseMovePending = false;
     // What the renderer child last reported under the pointer. Null until the
     // first report, and only ever written in brokered mode.
