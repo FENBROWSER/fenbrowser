@@ -261,6 +261,15 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly Action<Element> _elementStateChangedHandler;
         private readonly Action<Element> _styleAttributeChangedHandler;
         private CancellationTokenSource _interactionRecascadeDebounce;
+
+        // How long a hover/focus/active change waits before the cascade re-runs.
+        // This batches a burst of crossings into one recascade, but it is also
+        // dead time before the pointer's own element takes its :hover style, and
+        // it was 75ms - long enough that a moving pointer had usually left before
+        // the highlight arrived, which reads as hover not responding at all.
+        // One frame keeps the batching that matters and takes the wait off the
+        // part a person actually sees.
+        private const int InteractionRecascadeDelayMs = 16;
         
         private readonly List<HistoryEntry> _history = new List<HistoryEntry>();
         private int _historyIndex = -1;
@@ -12023,7 +12032,16 @@ pre {{
         {
             try
             {
-                await Task.Delay(75, token).ConfigureAwait(false);
+                await Task.Delay(InteractionRecascadeDelayMs, token).ConfigureAwait(false);
+
+                // Release the slot BEFORE recascading, not after. Clearing it
+                // afterwards left a window where ScheduleInteractionRecascade saw a
+                // run still pending, dropped the state change, and then that run
+                // finished without ever applying it - so the pointer sat on an
+                // element that never took its :hover style until it was moved away
+                // and back. A change that lands during the recascade now arms a
+                // fresh one instead of being lost.
+                Interlocked.CompareExchange(ref _interactionRecascadeDebounce, null, owner);
 
                 if (!_disposed)
                 {
