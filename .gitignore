@@ -31,6 +31,7 @@ bld/
 !tools/html-tokenizer-bench/corpus/benchmark-seed.html
 *.js
 !FenBrowser.Js/
+!scripts/bench_obfuscated_vm.js
 *.ps1
 !scripts/ci/verify-volume-doc-references.ps1
 !scripts/ci/run-parser-fuzz-regressions.ps1
