@@ -126,6 +126,55 @@ namespace FenBrowser.Tests.Scripting
             Assert.NotNull(lateDocument);
         }
 
+        // The port half of a sibling message. reCAPTCHA's challenge frame opens a
+        // MessageChannel, keeps port1, and hands port2 to the anchor frame beside
+        // it; everything that drives the challenge afterwards rides that channel.
+        // Confirmed live on google.com/sorry: the challenge frame sends exactly one
+        // sibling message carrying one port and is then never spoken to again -
+        // every later port message is anchor <-> page, the challenge frame's own
+        // port traffic is zero, no /reload is ever issued and the checkbox spins
+        // forever. So a transferred port has to arrive, and the channel has to
+        // carry a reply back to the frame that opened it.
+        [Fact]
+        public async Task PortTransferredToSibling_CarriesAReplyBack()
+        {
+            var world = await CreateTwoFrameDocumentAsync();
+
+            // The anchor's side: take the port off the message and answer on it.
+            Eval(
+                world,
+                world.SecondFrameDocument,
+                "globalThis.__portCount = -1;" +
+                "window.addEventListener('message', function (event) {" +
+                "  globalThis.__portCount = event.ports ? event.ports.length : 0;" +
+                "  if (event.ports && event.ports[0]) {" +
+                "    event.ports[0].postMessage('challenge-ready');" +
+                "  }" +
+                "});");
+
+            // The challenge frame's side: open the channel, keep port1, send port2.
+            Eval(
+                world,
+                world.FirstFrameDocument,
+                "globalThis.__reply = null;" +
+                "var channel = new MessageChannel();" +
+                "channel.port1.onmessage = function (event) { globalThis.__reply = event.data; };" +
+                "channel.port1.start();" +
+                "parent.frames['second-frame'].postMessage('recaptcha-setup', '*', [channel.port2]);");
+
+            Assert.Equal(
+                "1",
+                await WaitForValueAsync(
+                    world,
+                    world.SecondFrameDocument,
+                    "String(globalThis.__portCount)",
+                    "1"));
+
+            Assert.Equal(
+                "challenge-ready",
+                await WaitForValueAsync(world, world.FirstFrameDocument, "globalThis.__reply"));
+        }
+
         private sealed record FrameWorld(
             FenJsBrowserScriptEngine Engine,
             Document Document,
