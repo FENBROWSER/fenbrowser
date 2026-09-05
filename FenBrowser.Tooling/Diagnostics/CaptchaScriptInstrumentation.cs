@@ -131,6 +131,50 @@ internal static class CaptchaScriptInstrumentation
                     };
                 }
             } catch (e) { note('parentpost-hook-threw:' + e); }
+            // Posts into a child go through iframe.contentWindow, which the hooks
+            // above never see: a parent that posted setup into a frame and a
+            // parent that never posted at all left an identical record. Frames
+            // appear after this prologue runs, so hook each one the first time a
+            // sweep finds it, and keep sweeping.
+            try {
+                // A hook that silently fails to install would make "the parent
+                // never posted" and "we could not watch" look the same, so say
+                // which frames could not be hooked and why.
+                var hookReported = {};
+                var reportOnce = function (label, why) {
+                    if (hookReported[label + why]) { return; }
+                    hookReported[label + why] = 1;
+                    note('childpost-hook ' + label + ': ' + why);
+                };
+                var hookChildPost = function (frame, label) {
+                    var win = null;
+                    try { win = frame.contentWindow; } catch (e) { reportOnce(label, 'contentWindow threw ' + e); return; }
+                    if (!win) { reportOnce(label, 'no contentWindow'); return; }
+                    if (win.__fenChildPostHooked) { return; }
+                    if (typeof win.postMessage !== 'function') { reportOnce(label, 'no postMessage'); return; }
+                    try {
+                        var childPost = win.postMessage;
+                        win.postMessage = function (d, o, t) {
+                            logPost('child:' + label, d, o, t);
+                            return childPost.apply(this, arguments);
+                        };
+                        if (win.postMessage === childPost) { reportOnce(label, 'postMessage not writable'); return; }
+                        win.__fenChildPostHooked = 1;
+                        if (!win.__fenChildPostHooked) { reportOnce(label, 'hooked, but the facade drops expandos'); }
+                        reportOnce(label, 'hooked');
+                    } catch (e) { reportOnce(label, 'hook threw ' + e); }
+                };
+                var sweepFrames = function () {
+                    try {
+                        var fs = document.getElementsByTagName('iframe');
+                        for (var i = 0; i < fs.length; i++) {
+                            hookChildPost(fs[i], fs[i].name || fs[i].id || ('iframe#' + i));
+                        }
+                    } catch (e) { }
+                };
+                sweepFrames();
+                setInterval(sweepFrames, 250);
+            } catch (e) { note('childsweep-threw:' + e); }
             try {
                 if (typeof MessagePort === 'function' && MessagePort.prototype) {
                     var portPost = MessagePort.prototype.postMessage;
