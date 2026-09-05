@@ -93,6 +93,60 @@ public sealed class CssAnimationEngineFrameTests
         engine.Stop();
     }
 
+    // rotate() takes any angle unit. An unrecognised one used to parse as zero,
+    // so a keyframe ending on rotate(3turn) drove the element backwards to
+    // nothing over its final segment instead of finishing the turn - which is
+    // what reCAPTCHA's spinner does between its 75% and 100% frames.
+    [Theory]
+    [InlineData("rotate(3turn)", 540d)]
+    [InlineData("rotate(1080deg)", 540d)]
+    [InlineData("rotate(1200grad)", 540d)]
+    [InlineData("rotate(18.8495559rad)", 540d)]
+    public void InterpolateTransform_ReadsEveryAngleUnit(string to, double expectedDegreesAtHalfway)
+    {
+        var engine = new CssAnimationEngine();
+
+        var interpolated = InvokeInterpolateValue(engine, "transform", "rotate(0deg)", to, 0.5d);
+
+        Assert.Equal(expectedDegreesAtHalfway, ReadRotationDegrees(interpolated), 3);
+        engine.Stop();
+    }
+
+    // The spinner's last segment: 810deg to a full three turns must keep winding
+    // forward, so the halfway point sits between them rather than back near zero.
+    [Fact]
+    public void InterpolateTransform_SpinnerFinalSegmentKeepsWindingForward()
+    {
+        var engine = new CssAnimationEngine();
+
+        var interpolated = InvokeInterpolateValue(engine, "transform", "rotate(810deg)", "rotate(3turn)", 0.5d);
+
+        Assert.Equal(945d, ReadRotationDegrees(interpolated), 3);
+        engine.Stop();
+    }
+
+    private static string InvokeInterpolateValue(
+        CssAnimationEngine engine,
+        string property,
+        string from,
+        string to,
+        double progress)
+    {
+        var method = typeof(CssAnimationEngine).GetMethod(
+            "InterpolateValue",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        return Assert.IsType<string>(method!.Invoke(engine, new object[] { property, from, to, progress }));
+    }
+
+    private static double ReadRotationDegrees(string transform)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(transform, @"rotate\(\s*([-\d.]+)deg\s*\)");
+        Assert.True(match.Success, $"no rotate() in '{transform}'");
+        return double.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
+    }
+
     private static CssAnimationEngine.ActiveAnimation CreateOpacityAnimation()
     {
         return new CssAnimationEngine.ActiveAnimation

@@ -1687,12 +1687,23 @@ namespace FenBrowser.FenEngine.Rendering
                     sy = sx;
             }
             
-            // Parse rotate
-            var rotateMatch = System.Text.RegularExpressions.Regex.Match(value, @"rotate\s*\(\s*([-\d.]+)(deg|rad)?\s*\)");
+            // Parse rotate. Every angle unit has to be accepted, not just deg and
+            // rad: an unmatched unit left the angle at zero, and a keyframe that
+            // ends on rotate(3turn) then interpolated *backwards* to nothing over
+            // its last segment. reCAPTCHA's spinner does exactly that — it wound
+            // forward through 810deg and then unwound to 0 instead of completing
+            // its third turn.
+            var rotateMatch = System.Text.RegularExpressions.Regex.Match(
+                value, @"rotate\s*\(\s*([-\d.]+)(deg|grad|rad|turn)?\s*\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             if (rotateMatch.Success)
             {
                 double.TryParse(rotateMatch.Groups[1].Value, out r);
-                if (rotateMatch.Groups[2].Value == "rad") r = r * 180 / Math.PI;
+                switch (rotateMatch.Groups[2].Value.ToLowerInvariant())
+                {
+                    case "rad": r = r * 180 / Math.PI; break;
+                    case "grad": r *= 0.9; break;
+                    case "turn": r *= 360; break;
+                }
             }
             
             return (tx, ty, sx, sy, r, txPercent, tyPercent);
