@@ -89,13 +89,34 @@ public static class InterpreterProfiler
                $"inLocalScope={100.0*_varLocal/total:F1}% avgScopesWalked={(double)_varDepth/total:F2}";
     }
 
+    // Compiled code that had to call an interpreter helper anyway. The JIT emits
+    // an inline fast path per operator behind a type guard; when the guard fails
+    // the operator costs a call plus a run-time switch instead of a few
+    // instructions. A CPU profile shows the helpers are hot but not which
+    // operator sends work to them, and that is the fact a fix needs.
+    private static readonly long[] DeoptCounts = new long[512];
+    private static long _deoptTotal;
+
+    public static void RecordJitDeopt(OpCode opCode)
+    {
+        var index = (int)opCode;
+        if ((uint)index < (uint)DeoptCounts.Length)
+        {
+            DeoptCounts[index]++;
+        }
+
+        _deoptTotal++;
+    }
+
     public static void Reset()
     {
         Array.Clear(OpCodeCounts);
         Array.Clear(OpCodePairCounts);
+        Array.Clear(DeoptCounts);
         _previousOpCode = -1;
         _previousFunction = null;
         Interlocked.Exchange(ref _total, 0);
+        Interlocked.Exchange(ref _deoptTotal, 0);
     }
 
     // Renders the top opcodes and functions by share of total executed
@@ -141,6 +162,27 @@ public static class InterpreterProfiler
                 {
                     pairs.Add((previous, current, count));
                 }
+            }
+        }
+
+        if (_deoptTotal > 0)
+        {
+            builder.AppendLine("  -- compiled code falling back to an interpreter helper --");
+            var deopts = new List<(OpCode Op, long Count)>();
+            for (var i = 0; i < DeoptCounts.Length; i++)
+            {
+                if (DeoptCounts[i] > 0)
+                {
+                    deopts.Add(((OpCode)i, DeoptCounts[i]));
+                }
+            }
+
+            deopts.Sort(static (a, b) => b.Count.CompareTo(a.Count));
+            foreach (var (op, count) in deopts.Take(top))
+            {
+                builder.Append("    ").Append(op.ToString().PadRight(28))
+                    .Append(count.ToString().PadLeft(14))
+                    .Append("  ").Append((100.0 * count / total).ToString("F2")).AppendLine("% of all instructions");
             }
         }
 

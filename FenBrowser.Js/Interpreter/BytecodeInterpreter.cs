@@ -22866,6 +22866,11 @@ fallbackArraySpecies:
     {
         var op = (OpCode)opCodeByte;
 
+        if (Diagnostics.InterpreterProfiler.Enabled)
+        {
+            Diagnostics.InterpreterProfiler.RecordJitDeopt(op);
+        }
+
         // The dispatch loop takes these shortcuts inline; without them here the
         // compiled body was reaching the generic operators for work the
         // interpreter never sent there, and ran arithmetic slower than the loop

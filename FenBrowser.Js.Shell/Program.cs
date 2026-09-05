@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Text.Json;
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
@@ -258,6 +258,17 @@ static int ExecuteSource(
     {
         WriteError("runtime-fatal", ex.Message, sourceName);
         return 25;
+    }
+    finally
+    {
+        // The profiler had no way out of the shell, so triaging a slow bundle
+        // meant running the whole browser. A reduced script plus FEN_FENJS_PROFILE=1
+        // is a far shorter loop.
+        if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
+        {
+            Console.Error.Write(FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(25));
+            Console.Error.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.VarReport());
+        }
     }
 
     return 0;
