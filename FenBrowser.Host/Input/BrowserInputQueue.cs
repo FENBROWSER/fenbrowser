@@ -59,6 +59,9 @@ public sealed class BrowserInputQueue
     private long _coalescedMouseWheelCount;
     private long _droppedMouseMoveCount;
     private long _droppedOverflowCount;
+    private long _dropsSinceReport;
+    private long _lastDropReportTimestamp;
+    private static readonly TimeSpan DropReportInterval = TimeSpan.FromSeconds(1);
 
     public BrowserInputQueue(int maxPendingEvents = 256)
     {
@@ -291,6 +294,37 @@ public sealed class BrowserInputQueue
             // without incrementing any drop counter, making overload invisible.
             _droppedOverflowCount++;
         }
+
+        ReportDrop(input);
+    }
+
+    // The counters above were readable but nothing running ever read them, so a
+    // session that dropped input said nothing about it - and dropped input is
+    // exactly what "I hover and it does not respond, I click and nothing happens"
+    // looks like from the outside. Report it, rate-limited so a flood cannot
+    // become its own load, and name the event so a lost hover crossing can be
+    // told apart from a lost click.
+    private void ReportDrop(BrowserInputEvent input)
+    {
+        _dropsSinceReport++;
+
+        var now = Stopwatch.GetTimestamp();
+        if (_lastDropReportTimestamp != 0 &&
+            Stopwatch.GetElapsedTime(_lastDropReportTimestamp, now) < DropReportInterval)
+        {
+            return;
+        }
+
+        _lastDropReportTimestamp = now;
+        var burst = _dropsSinceReport;
+        _dropsSinceReport = 0;
+
+        FenBrowser.Core.EngineLogCompat.Warn(
+            $"[InputQueue] dropped {burst} event(s) since the last report " +
+            $"(latest={input.Type} at {input.X:F0},{input.Y:F0}; " +
+            $"totals: mouseMove={_droppedMouseMoveCount} other={_droppedOverflowCount}; " +
+            $"pending={_pending.Count}/{_maxPendingEvents})",
+            FenBrowser.Core.Logging.LogCategory.Events);
     }
 
     private LinkedListNode<BrowserInputEvent> FindOldestCoalescibleInput()
