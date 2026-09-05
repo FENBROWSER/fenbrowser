@@ -15536,6 +15536,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     var data = args.Count > 0 ? ConvertJsValueToObject(args[0]) : null;
                     ReadPostMessageTarget(args, out var targetOrigin, out var transferValue);
                     var ports = ExtractTransferredMessagePorts(transferValue);
+                    if (DiagnosticPaths.AppendEnabled)
+                    {
+                        DiagnosticPaths.AppendLogText(
+                            "postmessage_probe.txt",
+                            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] sibling-route " +
+                            $"owner={(owner == null ? "NULL" : "ok")} " +
+                            $"from={sourceFrame?.GetAttribute("name") ?? "<none>"} " +
+                            $"to={frame.GetAttribute("name") ?? "?"} ports={ports?.Count ?? -1} " +
+                            $"data={DescribePostMessageValue(args.Count > 0 ? args[0] : JsValue.Undefined)}{Environment.NewLine}");
+                    }
                     owner?.RouteMessageBetweenChildFrames(
                         sourceFrame,
                         frame,
