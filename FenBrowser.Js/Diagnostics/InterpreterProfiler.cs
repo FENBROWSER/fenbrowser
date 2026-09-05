@@ -21,6 +21,19 @@ public static class InterpreterProfiler
     private static readonly long[] OpCodeCounts = new long[512];
     private static long _total;
 
+    // Adjacent pairs, indexed [previous * PairStride + current]. A histogram
+    // says which operation dominates; only pairs say whether that operation is
+    // work or plumbing - "LoadConst then an arithmetic op" is a constant the
+    // instruction could have carried itself, and a Move straight into a use is
+    // a register the allocator did not have to spend. Both are removable
+    // without touching semantics, and half of everything executed on a real
+    // page is that kind of data movement, so the distinction decides whether a
+    // peephole pass is worth writing.
+    private const int PairStride = 256;
+    private static readonly long[] OpCodePairCounts = new long[PairStride * PairStride];
+    private static int _previousOpCode = -1;
+    private static object? _previousFunction;
+
     public static long Total => Interlocked.Read(ref _total);
 
     public static void RecordOpCode(OpCode opCode)
@@ -32,6 +45,28 @@ public static class InterpreterProfiler
         }
 
         _total++;
+    }
+
+    /// <summary>
+    /// Records an executed opcode along with the function it belongs to, so the
+    /// pair histogram only counts instructions that really followed one another
+    /// in the same body - a call's last opcode is not adjacent to the callee's
+    /// first, and pairing them would invent patterns no peephole could match.
+    /// </summary>
+    public static void RecordOpCode(OpCode opCode, object function)
+    {
+        RecordOpCode(opCode);
+
+        var index = (int)opCode;
+        if ((uint)index < PairStride &&
+            _previousOpCode >= 0 &&
+            ReferenceEquals(function, _previousFunction))
+        {
+            OpCodePairCounts[(_previousOpCode * PairStride) + index]++;
+        }
+
+        _previousOpCode = (uint)index < PairStride ? index : -1;
+        _previousFunction = function;
     }
 
     // Where identifier reads actually land, and how many scopes they walk
@@ -57,6 +92,9 @@ public static class InterpreterProfiler
     public static void Reset()
     {
         Array.Clear(OpCodeCounts);
+        Array.Clear(OpCodePairCounts);
+        _previousOpCode = -1;
+        _previousFunction = null;
         Interlocked.Exchange(ref _total, 0);
     }
 
@@ -90,6 +128,35 @@ public static class InterpreterProfiler
             builder.Append("    ").Append(op.ToString().PadRight(28))
                 .Append(count.ToString().PadLeft(14))
                 .Append("  ").Append((100.0 * count / total).ToString("F2")).AppendLine("%");
+        }
+
+        var pairs = new List<(int Previous, int Current, long Count)>();
+        for (var previous = 0; previous < PairStride; previous++)
+        {
+            var rowStart = previous * PairStride;
+            for (var current = 0; current < PairStride; current++)
+            {
+                var count = OpCodePairCounts[rowStart + current];
+                if (count > 0)
+                {
+                    pairs.Add((previous, current, count));
+                }
+            }
+        }
+
+        if (pairs.Count > 0)
+        {
+            pairs.Sort(static (a, b) => b.Count.CompareTo(a.Count));
+            builder.AppendLine("  -- by adjacent pair --");
+            foreach (var (previous, current, count) in pairs.Take(top))
+            {
+                builder.Append("    ")
+                    .Append(((OpCode)previous).ToString())
+                    .Append(" -> ")
+                    .Append(((OpCode)current).ToString().PadRight(24))
+                    .Append(count.ToString().PadLeft(14))
+                    .Append("  ").Append((100.0 * count / total).ToString("F2")).AppendLine("%");
+            }
         }
 
         return builder.ToString();

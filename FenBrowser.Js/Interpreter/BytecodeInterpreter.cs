@@ -1787,7 +1787,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var ins = instructions[frame.InstructionPointer++];
             if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
             {
-                FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordOpCode(ins.OpCode);
+                FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordOpCode(ins.OpCode, function);
             }
             switch (ins.OpCode)
             {
