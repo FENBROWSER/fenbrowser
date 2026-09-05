@@ -2928,6 +2928,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         {
                             frame.Registers[ins.A] = GetReceiverSymbolProperty(receiver, keyValue.AsSymbolId());
                         }
+                        else if (TryGetDenseElement(receiver, keyValue, out var denseElement))
+                        {
+                            // A dense array element is an own data property, so the
+                            // answer is the slot itself: no key to build, no table to
+                            // walk, no prototype chain to consider.
+                            frame.Registers[ins.A] = denseElement;
+                        }
                         else
                         {
                             // Tier 4 #20: GetElem IC fast path for the common
@@ -16009,6 +16016,102 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateTypeError($"Cannot delete property '{key}'."));
     }
 
+    // True when the array inherits directly from the intrinsic %Array.prototype% and
+    // neither that object nor %Object.prototype% carries an index-keyed property. In
+    // that state no inherited accessor can claim an index, so writing the slot
+    // directly means what [[Set]] would have meant. Anything more exotic - a
+    // subclass, a replaced prototype, an index defined on a prototype - takes the
+    // ordinary path.
+    private bool HasPristineArrayPrototype(ArrayObject array)
+    {
+        if (_arrayPrototypeHandle is not { } arrayProtoHandle ||
+            array.PrototypeHandle is not { } protoHandle ||
+            protoHandle != arrayProtoHandle)
+        {
+            return false;
+        }
+
+        // Walking the chain per push would cost more than the write it guards, so
+        // remember the answer against the prototypes' shapes. Defining a property
+        // transitions the shape, which is exactly the event that can invalidate it;
+        // a delete leaves the shape alone but can only make the chain more pristine,
+        // so a stale "no" is safe.
+        var arrayProto = _heap.GetObject(arrayProtoHandle);
+        var objectProto = arrayProto?.PrototypeHandle is { } objectProtoHandle
+            ? _heap.GetObject(objectProtoHandle)
+            : null;
+
+        var arrayShape = arrayProto?.CurrentShape;
+        var objectShape = objectProto?.CurrentShape;
+        if (ReferenceEquals(arrayShape, _pristineArrayProtoShape) &&
+            ReferenceEquals(objectShape, _pristineObjectProtoShape))
+        {
+            return _pristineArrayProtoResult;
+        }
+
+        _pristineArrayProtoShape = arrayShape;
+        _pristineObjectProtoShape = objectShape;
+        _pristineArrayProtoResult = !ObjectHasIndexedOwnProperty(arrayProto);
+        return _pristineArrayProtoResult;
+    }
+
+    private Shape? _pristineArrayProtoShape;
+    private Shape? _pristineObjectProtoShape;
+    private bool _pristineArrayProtoResult;
+
+    private bool ObjectHasIndexedOwnProperty(JsObject? candidate)
+    {
+        while (candidate is not null)
+        {
+            foreach (var pair in candidate.EnumerateOwnProperties())
+            {
+                if (JsObject.IsArrayIndexKey(pair.Key, out _))
+                {
+                    return true;
+                }
+            }
+
+            candidate = candidate.PrototypeHandle is { } next ? _heap.GetObject(next) : null;
+        }
+
+        return false;
+    }
+
+    // A numeric key naming a live slot of a dense array. Anything else - a hole, an
+    // index past the end, a non-array, an array that gave the fast path up - says
+    // no and leaves the caller on the ordinary property path.
+    private bool TryGetDenseElement(JsValue receiver, JsValue key, out JsValue value)
+    {
+        value = JsValue.Undefined;
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        int index;
+        if (key.Tag == JsValueTag.Int32)
+        {
+            index = key.AsInt32();
+        }
+        else if (key.Tag == JsValueTag.Number)
+        {
+            var number = key.AsNumber();
+            index = (int)number;
+            if (index != number)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            return false;
+        }
+
+        return index >= 0 &&
+               _heap.GetObject(receiver.AsObjectHandle()) is ArrayObject array &&
+               array.TryDenseGet((uint)index, out value);
+    }
+
     private JsValue ArrayPrototypePush(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
@@ -16018,6 +16121,52 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // 23.1.3.23 step 4: pushing past 2^53-1 is a TypeError, before any write.
         if (length + args.Count > MaxArrayLikeLength)
             throw new JsThrownException(CreateTypeError("Pushing onto the array would exceed the maximum array length."));
+
+        // Appending to a dense array is a vector write. The general path below has
+        // to format the index into a string and drive it through the property
+        // table, which for a plain append is all cost and no meaning.
+        // Appending straight into the vector skips [[Set]], and [[Set]] is where
+        // three things happen that an array is entitled to do: a frozen array or a
+        // non-writable length rejects the push, and an *inherited* accessor for the
+        // index runs instead of a plain write. The last one is why the fast path
+        // also demands an ordinary prototype - a page may put a setter on
+        // Array.prototype["0"], and test262 does exactly that.
+        if (obj is ArrayObject denseTarget &&
+            denseTarget.IsDense &&
+            denseTarget.Extensible &&
+            length == denseTarget.DenseCount &&
+            HasPristineArrayPrototype(denseTarget) &&
+            (!obj.TryGetOwnProperty("length", out var denseLengthDesc) || denseLengthDesc.Writable))
+        {
+            var appended = 0;
+            for (; appended < args.Count; appended++)
+            {
+                if (!denseTarget.TryDenseAppend(args[appended]))
+                {
+                    break;
+                }
+            }
+
+            if (appended == args.Count)
+            {
+                var densedLength = length + args.Count;
+                SetOrThrow(ownerHandle, obj, "length", JsValue.FromNumber(densedLength));
+                return JsValue.FromNumber(densedLength);
+            }
+
+            // The array stopped being dense mid-append; the elements already
+            // appended are still in place, so continue from where it stopped.
+            length += appended;
+            for (var i = appended; i < args.Count; i++)
+            {
+                var remainingKey = (length + (i - appended)).ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
+                SetOrThrow(ownerHandle, obj, remainingKey, args[i]);
+            }
+
+            var mixedLength = length + (args.Count - appended);
+            SetOrThrow(ownerHandle, obj, "length", JsValue.FromNumber(mixedLength));
+            return JsValue.FromNumber(mixedLength);
+        }
 
         for (var i = 0; i < args.Count; i++)
         {
