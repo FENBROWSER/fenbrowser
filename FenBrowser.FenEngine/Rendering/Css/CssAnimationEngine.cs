@@ -152,6 +152,34 @@ namespace FenBrowser.FenEngine.Rendering
         private System.Threading.Timer _timer;
         private const int FrameIntervalMs = 16; // ~60fps
 
+        // Tick health. When the renderer child reports a frame stall the two
+        // explanations look identical from the outside: the timer stopped landing
+        // ticks, or ticks landed and the frame was never produced. Counting both
+        // ends of every tick separates them. Timer callbacks overlap freely, so
+        // in-flight depth is what says a tick is blocking rather than merely slow.
+        private long _tickStarted;
+        private long _tickCompleted;
+        private int _tickInFlight;
+        private int _tickInFlightPeak;
+        private long _tickLongestMs;
+
+        // Per-branch tally of what each tick decided. A tick that emits no frame event
+        // took one of these exits, and only naming the exit separates "the element fell
+        // out of the animation set" from "the interpolated value did not move".
+        private const int OutcomeStale = 0;          // CanParticipateInAnimation said no
+        private const int OutcomeComplete = 1;       // animation already finished
+        private const int OutcomePaused = 2;
+        private const int OutcomeScrollTimeline = 3; // driven by scroll, not by time
+        private const int OutcomeInDelay = 4;
+        private const int OutcomeChanged = 5;        // produced a new value -> notified
+        private const int OutcomeUnchanged = 6;      // recomputed the same value
+        private const int OutcomeTransitionChanged = 7;
+        private const int OutcomeNotified = 8;       // OnAnimationFrame invocations
+        private const int OutcomeCount = 9;
+        private readonly long[] _tickOutcomes = new long[OutcomeCount];
+
+        private void RecordOutcome(int outcome) => Interlocked.Increment(ref _tickOutcomes[outcome]);
+
         private sealed class AnimationDocumentState
         {
             public readonly object SyncRoot = new();
@@ -1196,10 +1224,78 @@ namespace FenBrowser.FenEngine.Rendering
             EngineLogCompat.Debug("[Animation] Engine stopped", LogCategory.Layout);
         }
         
+        /// <summary>
+        /// Health of the animation timer since the engine started. A frame stall with
+        /// a rising <see cref="AnimationTickHealth.Started"/> is a frame-delivery
+        /// problem; a stall with a flat one is the timer itself being starved or
+        /// blocked, and <see cref="AnimationTickHealth.InFlight"/> says which.
+        /// </summary>
+        public readonly record struct AnimationTickHealth(
+            long Started,
+            long Completed,
+            int InFlight,
+            int InFlightPeak,
+            long LongestMs);
+
+        public AnimationTickHealth SnapshotTickHealth() => new(
+            Interlocked.Read(ref _tickStarted),
+            Interlocked.Read(ref _tickCompleted),
+            Volatile.Read(ref _tickInFlight),
+            Volatile.Read(ref _tickInFlightPeak),
+            Interlocked.Read(ref _tickLongestMs));
+
+        /// <summary>
+        /// Which exit each animation the tick visited took, as a compact
+        /// <c>name=count</c> list. Cumulative since the engine started.
+        /// </summary>
+        public string DescribeTickOutcomes() =>
+            $"stale={Interlocked.Read(ref _tickOutcomes[OutcomeStale])} " +
+            $"complete={Interlocked.Read(ref _tickOutcomes[OutcomeComplete])} " +
+            $"paused={Interlocked.Read(ref _tickOutcomes[OutcomePaused])} " +
+            $"scrollTimeline={Interlocked.Read(ref _tickOutcomes[OutcomeScrollTimeline])} " +
+            $"inDelay={Interlocked.Read(ref _tickOutcomes[OutcomeInDelay])} " +
+            $"changed={Interlocked.Read(ref _tickOutcomes[OutcomeChanged])} " +
+            $"unchanged={Interlocked.Read(ref _tickOutcomes[OutcomeUnchanged])} " +
+            $"transitionChanged={Interlocked.Read(ref _tickOutcomes[OutcomeTransitionChanged])} " +
+            $"notified={Interlocked.Read(ref _tickOutcomes[OutcomeNotified])}";
+
         private void Tick(object state)
         {
             if (!_isRunning) return;
 
+            Interlocked.Increment(ref _tickStarted);
+            int inFlight = Interlocked.Increment(ref _tickInFlight);
+            int peak = Volatile.Read(ref _tickInFlightPeak);
+            while (inFlight > peak)
+            {
+                int seen = Interlocked.CompareExchange(ref _tickInFlightPeak, inFlight, peak);
+                if (seen == peak) break;
+                peak = seen;
+            }
+
+            long tickStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            try
+            {
+                TickCore();
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _tickInFlight);
+                Interlocked.Increment(ref _tickCompleted);
+                long elapsedMs = (long)System.Diagnostics.Stopwatch
+                    .GetElapsedTime(tickStartedAt).TotalMilliseconds;
+                long longest = Interlocked.Read(ref _tickLongestMs);
+                while (elapsedMs > longest)
+                {
+                    long seen = Interlocked.CompareExchange(ref _tickLongestMs, elapsedMs, longest);
+                    if (seen == longest) break;
+                    longest = seen;
+                }
+            }
+        }
+
+        private void TickCore()
+        {
             var now = Now();
             var toRemove = new List<(Element element, ActiveAnimation anim)>();
             var notifications = new Dictionary<Element, AnimationFrameEvent>();
@@ -1250,6 +1346,7 @@ namespace FenBrowser.FenEngine.Rendering
                     var style = element.GetComputedStyle();
                     if (!CanParticipateInAnimation(element, style))
                     {
+                        RecordOutcome(OutcomeStale);
                         staleAnimationElements.Add(element);
                         continue;
                     }
@@ -1263,18 +1360,26 @@ namespace FenBrowser.FenEngine.Rendering
                             // animation-fill-mode: forwards/both retains the final
                             // animation effect, but it must not keep the timer alive
                             // or emit additional animation frames/end events.
+                            RecordOutcome(OutcomeComplete);
                             ApplyToOverlay(element, anim.ComputedProperties);
                             continue;
                         }
 
-                        if (anim.PlayState == "paused") continue;
+                        if (anim.PlayState == "paused")
+                        {
+                            RecordOutcome(OutcomePaused);
+                            continue;
+                        }
 
                         // Skip time-based progression for scroll-driven animations
                         var elementStyle = element.GetComputedStyle();
                         string animTimeline = null;
                         elementStyle?.Map?.TryGetValue("animation-timeline", out animTimeline);
                         if (!string.IsNullOrWhiteSpace(animTimeline) && !string.Equals(animTimeline, "auto", StringComparison.OrdinalIgnoreCase))
+                        {
+                            RecordOutcome(OutcomeScrollTimeline);
                             continue;
+                        }
 
                         double elapsed = (now - anim.StartTime).TotalMilliseconds;
                         
@@ -1288,6 +1393,7 @@ namespace FenBrowser.FenEngine.Rendering
                                     NotifyElement(element, classification.DomInvalidation, classification.ChangedProperties);
                                 }
                             }
+                            RecordOutcome(OutcomeInDelay);
                             continue;
                         }
 
@@ -1329,8 +1435,13 @@ namespace FenBrowser.FenEngine.Rendering
                         progress = ApplyEasing(progress, anim.TimingFunction);
                         if (ApplyAnimationFrame(element, anim, progress * 100))
                         {
+                            RecordOutcome(OutcomeChanged);
                             var classification = ClassifyAnimationProperties(anim.ComputedProperties.Keys);
                             NotifyElement(element, classification.DomInvalidation, classification.ChangedProperties);
+                        }
+                        else
+                        {
+                            RecordOutcome(OutcomeUnchanged);
                         }
                     }
                 }
@@ -1404,6 +1515,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                     if (elementDirty)
                     {
+                        RecordOutcome(OutcomeTransitionChanged);
                         if (invalidation != InvalidationKind.None)
                             element.MarkDirty(invalidation);
                         NotifyElement(element, invalidation, changedProps);
@@ -1432,6 +1544,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     ev.Generation = GetDocumentGeneration(ev.Element.OwnerDocument);
                 }
+                RecordOutcome(OutcomeNotified);
                 OnAnimationFrame?.Invoke(ev);
             }
 
