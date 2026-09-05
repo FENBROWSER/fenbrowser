@@ -1,0 +1,25 @@
+<!doctype html>
+<!--
+  Reduced from reCAPTCHA's image challenge. Each of the nine tiles is one <img>
+  of the whole 3x3 payload, sized to 300% of an overflow:hidden wrapper and
+  shifted by a negative percentage so the wrapper frames one ninth of it:
+
+      .rc-image-tile-33   { width:300%; height:300% }
+      .rc-image-tile-wrapper { overflow:hidden; position:relative }
+
+  Chrome:      #tile 300 x 300 at (-100,-100)  - 300% of the 100px wrapper.
+  FenBrowser:  #tile 17280 x ... at (-5760,-1800) - the percentage resolves
+      against something viewport-sized (1920 * 3) rather than the wrapper, so
+      each tile frames a sliver of a hugely upscaled image. On the live
+      challenge that reads as nine smeared colour bands instead of photographs.
+
+  grid.png here is any 300x300 image; a 3x3 grid of flat colours makes a wrong
+  crop obvious at a glance.
+-->
+<html>
+  <body style="margin:0">
+    <div id="wrap" style="overflow:hidden;position:relative;width:100px;height:100px">
+      <img id="tile" src="grid.png" style="width:300%;height:300%;position:relative;left:-100%;top:-100%">
+    </div>
+  </body>
+</html>
