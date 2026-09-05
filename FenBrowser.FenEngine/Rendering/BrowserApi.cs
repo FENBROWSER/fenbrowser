@@ -5987,6 +5987,7 @@ pre {{
                 return;
             }
 
+
             if (_engine?.ScriptEngine == null)
             {
                 return;
@@ -6001,14 +6002,23 @@ pre {{
             // just defined were gone by the time the next script used them, and
             // reCAPTCHA's bootstrap died on "recaptcha is not defined". Callers
             // that arrive during a setup join the one in flight instead.
+            //
+            // The record is what "this document has been set up" means, not the
+            // marker attribute: the marker is written after the setup finishes, so
+            // a caller whose unsynchronised check fell in the instant before that
+            // write found no marker, then reached this lock a moment after the
+            // write and found the task already completed. Requiring the task to
+            // still be running made both tests miss, and the frame was set up a
+            // second time — which is the rebind that empties the realm. A record
+            // matching this document and address answers for it however far along
+            // it is; awaiting a completed task simply returns.
             var requestedUrl = frameUri?.AbsoluteUri ?? string.Empty;
             Task hydration;
             lock (_frameScriptHydrationGate)
             {
                 if (_frameScriptHydrations.TryGetValue(frameElement, out var running) &&
                     string.Equals(running.Url, requestedUrl, StringComparison.Ordinal) &&
-                    ReferenceEquals(running.Root, frameRoot) &&
-                    !running.Task.IsCompleted)
+                    ReferenceEquals(running.Root, frameRoot))
                 {
                     hydration = running.Task;
                 }
