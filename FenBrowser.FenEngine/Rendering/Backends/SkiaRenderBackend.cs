@@ -328,23 +328,118 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             var miterBottomRight = MiterSplitPoint(rect, new SKPoint(rect.Right, rect.Bottom), border.RightWidth, border.BottomWidth, 1f, -1f);
             var miterBottomLeft = MiterSplitPoint(rect, new SKPoint(rect.Left, rect.Bottom), border.LeftWidth, border.BottomWidth, -1f, -1f);
 
+            // Sides are indexed clockwise from the top; side i runs from corner i
+            // to corner i+1 and is bounded by the miters at both.
+            var corners = new[]
+            {
+                new SKPoint(rect.Left, rect.Top),
+                new SKPoint(rect.Right, rect.Top),
+                new SKPoint(rect.Right, rect.Bottom),
+                new SKPoint(rect.Left, rect.Bottom)
+            };
+            var miters = new[] { miterTopLeft, miterTopRight, miterBottomRight, miterBottomLeft };
+            var enabled = new[] { paintTop, paintRight, paintBottom, paintLeft };
+            var colors = new[] { border.TopColor, border.RightColor, border.BottomColor, border.LeftColor };
+
+            for (var i = 0; i < 4; i++)
+            {
+                enabled[i] = enabled[i] && colors[i].Alpha != 0;
+            }
+
             using (ring)
             {
-                FillBorderSideOfRing(
-                    ring, new SKPoint(rect.Left, rect.Top), new SKPoint(rect.Right, rect.Top),
-                    miterTopRight, miterTopLeft, border.TopColor, paintTop);
-                FillBorderSideOfRing(
-                    ring, new SKPoint(rect.Right, rect.Top), new SKPoint(rect.Right, rect.Bottom),
-                    miterBottomRight, miterTopRight, border.RightColor, paintRight);
-                FillBorderSideOfRing(
-                    ring, new SKPoint(rect.Right, rect.Bottom), new SKPoint(rect.Left, rect.Bottom),
-                    miterBottomLeft, miterBottomRight, border.BottomColor, paintBottom);
-                FillBorderSideOfRing(
-                    ring, new SKPoint(rect.Left, rect.Bottom), new SKPoint(rect.Left, rect.Top),
-                    miterTopLeft, miterBottomLeft, border.LeftColor, paintLeft);
+                // Neighbouring sides of one colour are filled as a single run
+                // rather than one path each. Two antialiased fills that share an
+                // edge each cover their side of it partially, and the two partial
+                // coverages do not add back to opaque - which shows up as a pale
+                // hairline across the paint where they meet. On a spinner, whose
+                // visible half is two same-coloured sides, that hairline sweeps
+                // round with the animation.
+                var filledAnything = false;
+                for (var start = 0; start < 4; start++)
+                {
+                    if (!enabled[start] || ContinuesRun(enabled, colors, (start + 3) % 4, start))
+                    {
+                        continue;
+                    }
+
+                    var length = 1;
+                    while (length < 4 && ContinuesRun(enabled, colors, (start + length - 1) % 4, (start + length) % 4))
+                    {
+                        length++;
+                    }
+
+                    FillBorderRunOfRing(ring, corners, miters, start, length, colors[start]);
+                    filledAnything = true;
+                }
+
+                if (!filledAnything && enabled[0])
+                {
+                    // Every side is painted in one colour and none of them starts a
+                    // run, so they form a closed cycle: the whole ring is one fill
+                    // and needs no wedge at all.
+                    using var paint = new SKPaint
+                    {
+                        Color = colors[0],
+                        Style = SKPaintStyle.Fill,
+                        IsAntialias = true
+                    };
+
+                    _canvas.DrawPath(ring, paint);
+                }
             }
 
             return true;
+        }
+
+        private static bool ContinuesRun(bool[] enabled, SKColor[] colors, int previous, int current) =>
+            enabled[previous] && enabled[current] && colors[previous] == colors[current];
+
+        /// <summary>
+        /// Fills the share of the ring belonging to a run of adjacent same-coloured
+        /// sides: out along the border-box corners the run spans, then back along
+        /// the miters that bound it.
+        /// </summary>
+        private void FillBorderRunOfRing(
+            SKPath ring,
+            SKPoint[] corners,
+            SKPoint[] miters,
+            int start,
+            int length,
+            SKColor color)
+        {
+            using var wedge = PathBuilderHelper.Build(p =>
+            {
+                p.MoveTo(corners[start].X, corners[start].Y);
+                for (var step = 1; step <= length; step++)
+                {
+                    var corner = corners[(start + step) % 4];
+                    p.LineTo(corner.X, corner.Y);
+                }
+
+                for (var step = length; step >= 0; step--)
+                {
+                    var miter = miters[(start + step) % 4];
+                    p.LineTo(miter.X, miter.Y);
+                }
+
+                p.Close();
+            });
+
+            using var slice = ring.Op(wedge, SKPathOp.Intersect);
+            if (slice is null || slice.IsEmpty)
+            {
+                return;
+            }
+
+            using var paint = new SKPaint
+            {
+                Color = color,
+                Style = SKPaintStyle.Fill,
+                IsAntialias = true
+            };
+
+            _canvas.DrawPath(slice, paint);
         }
 
         /// <summary>
@@ -385,50 +480,6 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 corner.Y + inwardY * verticalWidth * travel);
         }
 
-        /// <summary>
-        /// Fills one side's share of a border ring: the area swept from the two
-        /// border-box corners the side runs between, inward along each corner's
-        /// miter. Filling that region rather than stroking a line is what lets the
-        /// side follow the corner curve.
-        /// </summary>
-        private void FillBorderSideOfRing(
-            SKPath ring,
-            SKPoint startCorner,
-            SKPoint endCorner,
-            SKPoint endMiter,
-            SKPoint startMiter,
-            SKColor color,
-            bool enabled)
-        {
-            if (!enabled || color.Alpha == 0)
-            {
-                return;
-            }
-
-            using var wedge = PathBuilderHelper.Build(p =>
-            {
-                p.MoveTo(startCorner.X, startCorner.Y);
-                p.LineTo(endCorner.X, endCorner.Y);
-                p.LineTo(endMiter.X, endMiter.Y);
-                p.LineTo(startMiter.X, startMiter.Y);
-                p.Close();
-            });
-
-            using var slice = ring.Op(wedge, SKPathOp.Intersect);
-            if (slice is null || slice.IsEmpty)
-            {
-                return;
-            }
-
-            using var paint = new SKPaint
-            {
-                Color = color,
-                Style = SKPaintStyle.Fill,
-                IsAntialias = true
-            };
-
-            _canvas.DrawPath(slice, paint);
-        }
 
         // dashed/dotted repeat along the edge and double is two rules with a gap:
         // none of them is a solid fill of the ring.

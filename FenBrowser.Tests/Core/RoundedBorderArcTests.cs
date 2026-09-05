@@ -67,6 +67,54 @@ namespace FenBrowser.Tests.Core
             Assert.False(IsPainted(bitmap, 18, 10), "8px down is inside the padding box.");
         }
 
+        // Two antialiased fills that share an edge each cover their side of it
+        // partially, and the partial coverages do not add back to opaque - a pale
+        // hairline shows through where they meet. Drawn straight the shared edge
+        // lands on whole pixels and mostly hides; a spinner is drawn through a
+        // rotation, which puts it between pixel centres and makes the hairline
+        // plain, sweeping round with the animation as a gap in the wheel.
+        [Fact]
+        public void AdjacentSidesOfOneColour_LeaveNoSeamUnderRotation()
+        {
+            const float Turn = 30f;
+            using var bitmap = new SKBitmap(Size, Size);
+            using (var canvas = new SKCanvas(bitmap))
+            {
+                canvas.Clear(SKColors.Transparent);
+                canvas.RotateDegrees(Turn, Size / 2f, Size / 2f);
+                new SkiaRenderBackend(canvas).DrawBorder(
+                    new SKRect(0, 0, Size, Size),
+                    SpinnerBorder(dashedTop: false));
+            }
+
+            // The join between the two painted sides sits on the corner diagonal,
+            // which the rotation carries from -45 to -15 degrees. Sample across it,
+            // staying well inside the painted half.
+            var faintest = 255;
+            var faintestAt = string.Empty;
+            for (var degrees = -25.0; degrees <= -5.0; degrees += 1.0)
+            {
+                var radians = degrees * System.Math.PI / 180.0;
+                // Stay clear of the ring's own antialiased edges at 12 and 18,
+                // which are meant to be soft; only the interior is being judged.
+                for (var radius = 13.5; radius <= 16.0; radius += 0.5)
+                {
+                    var x = (int)System.Math.Round((Size / 2.0) + (radius * System.Math.Cos(radians)));
+                    var y = (int)System.Math.Round((Size / 2.0) + (radius * System.Math.Sin(radians)));
+                    int alpha = bitmap.GetPixel(x, y).Alpha;
+                    if (alpha < faintest)
+                    {
+                        faintest = alpha;
+                        faintestAt = $"({x},{y})";
+                    }
+                }
+            }
+
+            Assert.True(
+                faintest >= 230,
+                $"Seam across the join between the top and right sides at {faintestAt}: alpha {faintest}.");
+        }
+
         // Segmented styles repeat along the edge and cannot be expressed as a
         // solid fill of the ring, so they keep the straight-line path. They must
         // still paint something.
