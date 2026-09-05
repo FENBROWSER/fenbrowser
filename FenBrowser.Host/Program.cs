@@ -492,6 +492,18 @@ namespace FenBrowser.Host
             float lastFrameViewportHeight = 720f;
             float lastFrameScrollY = 0f;
             int pendingRendererRepaintFrame = 0;
+            // Animation ticks seen when the last frame went out, so a stall can report
+            // how many ticks landed while no frame was published.
+            long ticksAtLastFramePublish = 0;
+            var frameProductionLock = new object();
+            // Between a tick and a published frame sit two more steps that can drop the
+            // frame: the engine deciding a tick changed nothing (no OnAnimationFrame),
+            // and the child loop not reaching its drain. Count both so a stall says
+            // which step lost it rather than only that it was lost.
+            long animationFrameEvents = 0;
+            long animationFrameEventsAtLastPublish = 0;
+            long drainCalls = 0;
+            long drainCallsAtLastPublish = 0;
             // Set when a CSS animation/transition tick produced changed values.
             // Without this pump the engine updates animation overlays internally
             // but nothing schedules a new frame, so animations freeze on screen.
@@ -539,6 +551,7 @@ namespace FenBrowser.Host
                     pendingAnimationGeneration = Math.Max(pendingAnimationGeneration, animation.Generation);
                 }
 
+                Interlocked.Increment(ref animationFrameEvents);
                 Interlocked.Exchange(ref pendingAnimationRepaintFrame, 1);
             };
 
@@ -550,6 +563,24 @@ namespace FenBrowser.Host
                 System.Collections.Generic.IReadOnlyCollection<FenBrowser.Core.Dom.V2.Element> compositeDirtyElements = null,
                 System.Collections.Generic.IReadOnlyCollection<FenBrowser.Core.Dom.V2.Element> paintDirtyElements = null,
                 long animationGeneration = 0)
+            {
+                // The frame pump and the IPC loop both produce frames, and a frame owns
+                // the child's single bitmap, canvas and shared-memory slot. One producer
+                // at a time; the loser waits rather than rasterising into the same pixels.
+                lock (frameProductionLock)
+                {
+                    SendFrameReadyCore(viewportWidth, viewportHeight, scrollY, requestedBy, correlationId,
+                        invalidationReason, animationUpdateKind, compositeDirtyElements, paintDirtyElements,
+                        animationGeneration);
+                }
+            }
+
+            void SendFrameReadyCore(float viewportWidth, float viewportHeight, float scrollY, string requestedBy, string correlationId,
+                FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason invalidationReason,
+                FenBrowser.FenEngine.Rendering.AnimationUpdateKind animationUpdateKind,
+                System.Collections.Generic.IReadOnlyCollection<FenBrowser.Core.Dom.V2.Element> compositeDirtyElements,
+                System.Collections.Generic.IReadOnlyCollection<FenBrowser.Core.Dom.V2.Element> paintDirtyElements,
+                long animationGeneration)
             {
                 viewportWidth = Math.Max(1f, Math.Min(viewportWidth, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxWidth));
                 viewportHeight = Math.Max(1f, Math.Min(viewportHeight, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight));
@@ -585,11 +616,25 @@ namespace FenBrowser.Host
 
                         if (gapMs > 500d || snapshotMs > 100d)
                         {
+                            // Report the animation timer alongside the gap. A stall whose
+                            // tick count moved is a frame-delivery problem; one whose count
+                            // stood still is the timer being starved or blocked, and a
+                            // non-zero inFlight says a tick is stuck inside the engine.
+                            var tickHealth = childRenderer.AnimationEngine.SnapshotTickHealth();
+                            long ticksInGap = tickHealth.Started - ticksAtLastFramePublish;
+                            long eventsInGap = Interlocked.Read(ref animationFrameEvents) - animationFrameEventsAtLastPublish;
+                            long drainsInGap = Interlocked.Read(ref drainCalls) - drainCallsAtLastPublish;
                             EngineLog.Write(
                                 LogSubsystem.ProcessIsolation,
                                 LogSeverity.Warn,
                                 $"[FrameStall] renderer child: {gapMs:F0}ms since the last published frame, " +
-                                $"snapshot took {snapshotMs:F0}ms");
+                                $"snapshot took {snapshotMs:F0}ms, " +
+                                $"animTicks={ticksInGap} started={tickHealth.Started} " +
+                                $"completed={tickHealth.Completed} inFlight={tickHealth.InFlight} " +
+                                $"peakInFlight={tickHealth.InFlightPeak} longestTickMs={tickHealth.LongestMs} " +
+                                $"animFrameEvents={eventsInGap} drains={drainsInGap} " +
+                                $"running={childRenderer.AnimationEngine.IsRunning} " +
+                                childRenderer.AnimationEngine.DescribeTickOutcomes());
                         }
 
                         if (domRoot != null)
@@ -658,6 +703,9 @@ namespace FenBrowser.Host
 
                             var frameMs = System.Diagnostics.Stopwatch.GetElapsedTime(frameStartTimestamp).TotalMilliseconds;
                             lastFramePublishTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+                            ticksAtLastFramePublish = childRenderer.AnimationEngine.SnapshotTickHealth().Started;
+                            animationFrameEventsAtLastPublish = Interlocked.Read(ref animationFrameEvents);
+                            drainCallsAtLastPublish = Interlocked.Read(ref drainCalls);
                             if (frameMs > 250d)
                             {
                                 EngineLog.Write(
@@ -717,6 +765,7 @@ namespace FenBrowser.Host
 
             void DrainPendingRendererRepaintFrame()
             {
+                Interlocked.Increment(ref drainCalls);
                 // Check readiness BEFORE consuming the pending flags. Taking them
                 // first and then bailing out threw the request away: an image that
                 // finished decoding before the first frame viewport arrived lost its
@@ -924,6 +973,40 @@ namespace FenBrowser.Host
                 // and dropping the signal here left that image unpainted.
                 Interlocked.Exchange(ref pendingRendererRepaintFrame, 1);
             };
+
+            // Frames must not be produced on the thread that handles IPC messages. An
+            // Input message awaits the JS worker, and that wait is capped at 2s, so a
+            // page running a long script starved frame production for seconds at a
+            // time: measured 172 animation frame events delivered against a single
+            // drain in 2003ms, which is the reCAPTCHA spinner jumping instead of
+            // spinning. This pump drains on its own thread, so a blocked dispatch
+            // costs input latency and nothing else.
+            using var framePumpCancellation = new CancellationTokenSource();
+            var framePump = Task.Run(async () =>
+            {
+                using var pump = new PeriodicTimer(TimeSpan.FromMilliseconds(8));
+                try
+                {
+                    while (await pump.WaitForNextTickAsync(framePumpCancellation.Token).ConfigureAwait(false))
+                    {
+                        try
+                        {
+                            DrainPendingRendererRepaintFrame();
+                            CheckTextCaretBlink();
+                        }
+                        catch (Exception pumpEx)
+                        {
+                            EngineLog.Write(
+                                LogSubsystem.Paint,
+                                LogSeverity.Warn,
+                                $"[RendererChild] Frame pump iteration failed for tab={tabId}: {pumpEx.Message}");
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            });
 
             while (running)
             {
@@ -1137,6 +1220,17 @@ namespace FenBrowser.Host
             if (handshakeComplete)
             {
                 logForwarder.FlushRenderer(writer, tabId);
+            }
+
+            // The pump renders into frameBitmap/frameCanvas, so it has to be stopped
+            // and joined before those are disposed.
+            framePumpCancellation.Cancel();
+            try
+            {
+                await framePump.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
             }
 
             frameSharedMemory?.Dispose();
