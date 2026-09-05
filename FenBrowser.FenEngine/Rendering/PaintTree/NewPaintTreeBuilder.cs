@@ -1,4 +1,4 @@
-// SpecRef: CSS2.1 Appendix E (stacking contexts and painting order)
+﻿// SpecRef: CSS2.1 Appendix E (stacking contexts and painting order)
 // CapabilityId: PAINT-STACKING-ORDER-01
 // Determinism: strict
 // FallbackPolicy: spec-defined
@@ -5278,6 +5278,20 @@ namespace FenBrowser.FenEngine.Rendering
             var h = iframeElement.GetAttribute("height");
             if (w != null && int.TryParse(w, out var wv) && wv <= 0) return false;
             if (h != null && int.TryParse(h, out var hv) && hv <= 0) return false;
+
+            // A frame that names a source is going to have content, or has
+            // failed trying. Either way the placeholder - a grey panel with a
+            // document icon drawn as a box inside a box, and the URL under it -
+            // is developer scaffolding, and on a real page it reads as a broken
+            // panel sitting in the layout. It showed up under reCAPTCHA's
+            // challenge overlay, which is revealed a beat before its frame
+            // document is attached. Browsers paint nothing there; so do we, and
+            // the element's own background and border still paint normally.
+            if (!string.IsNullOrEmpty(iframeElement.GetAttribute("src")) ||
+                iframeElement.HasAttribute("srcdoc"))
+            {
+                return false;
+            }
 
             var children = iframeElement.ChildNodes;
             if (children != null)
