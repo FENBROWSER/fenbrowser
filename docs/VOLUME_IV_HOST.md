@@ -50,6 +50,8 @@ This class acts as the "Glue" between the Host and the Engine.
 - **Frame Commit Guard (2026-05-08)**:
   - `BrowserIntegration.RecordFrame(...)` serializes renderer access under `_rendererLock` to prevent concurrent frame-building races.
   - The host continues presenting the committed `SKPicture` while maintaining a parallel `SKImage` seed snapshot for base-frame reuse/damage workflows.
+  - Damage frames refresh that seed even when retained tiles were updated: the tiles and host seed are separate snapshots. Reusing an older seed on a later preserved frame would restore stale or blank content.
+  - Seed creation transfers ownership of the CPU surface snapshot to the host; it must remain alive after the temporary surface is disposed.
   - The consecutive-reuse guard advances only when a frame retains the same seed image; producing a refreshed seed resets the streak so damage/compositor updates do not trigger an unnecessary forced full raster.
   - Navigation resets now clear `_root` and `_styles` up front; sync/render adopts live snapshot styles directly to avoid stale pre-style presentation.
 - **Google Input-Latency Repaint Guard (2026-07-05)**:

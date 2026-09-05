@@ -10,6 +10,46 @@ namespace FenBrowser.Tests.Rendering
     public class BaseFrameReusePolicyTests
     {
         [Fact]
+        public void DamageThenPreservedFrame_KeepsUpdatedPixels()
+        {
+            var viewport = new SKSize(32, 32);
+            using var initialSurface = SKSurface.Create(new SKImageInfo(32, 32));
+            initialSurface.Canvas.Clear(SKColors.White);
+            using var initialSeed = initialSurface.Snapshot();
+            using var recorder = new SKPictureRecorder();
+            var canvas = recorder.BeginRecording(new SKRect(0, 0, 32, 32));
+            canvas.DrawImage(initialSeed, 0, 0, SKSamplingOptions.Default);
+            using var paint = new SKPaint { Color = SKColors.Blue };
+            canvas.DrawRect(new SKRect(4, 4, 20, 20), paint);
+            using var updatedFrame = recorder.EndRecording();
+
+            var updatedSeed = BrowserIntegration.CreateNextFrameSeed(
+                updatedFrame, viewport,
+                new RenderFrameResult
+                {
+                    RasterMode = RenderFrameRasterMode.Damage,
+                    RetainedBackingStoreUpdated = true
+                }, initialSeed, out _);
+            try
+            {
+                var preservedSeed = BrowserIntegration.CreateNextFrameSeed(
+                    updatedFrame, viewport,
+                    new RenderFrameResult { RasterMode = RenderFrameRasterMode.PreservedBaseFrame },
+                    updatedSeed, out _);
+                Assert.Same(updatedSeed, preservedSeed);
+                Assert.NotNull(preservedSeed);
+                Assert.NotEqual(System.IntPtr.Zero, preservedSeed.Handle);
+                using var pixels = SKBitmap.FromImage(preservedSeed);
+                Assert.Equal(SKColors.Blue, pixels.GetPixel(10, 10));
+                Assert.Equal(SKColors.White, pixels.GetPixel(25, 25));
+            }
+            finally
+            {
+                if (!ReferenceEquals(initialSeed, updatedSeed)) updatedSeed?.Dispose();
+            }
+        }
+
+        [Fact]
         public void CanReuseBaseFrame_RequiresBaseFrame()
         {
             var canReuse = BaseFrameReusePolicy.CanReuseBaseFrame(

@@ -2358,30 +2358,9 @@ public class BrowserIntegration : IDisposable
             // Finish recording and derive the next seed image from the committed picture.
             var newFrame = _recorder.EndRecording();
 
-            // Phase 8/9: Do NOT re-raster a full seed image when the frame's content
-            // is already preserved. Extended from Phase 8 (only PreservedBaseFrame/None)
-            // to Phase 9: when the retained tile backing store was updated (Damage mode
-            // with tiles rasterized), the tiles already hold the latest content — a full
-            // seed reraster would be redundant.
-            var rasterMode = frameResult?.RasterMode ?? RenderFrameRasterMode.Full;
-            bool canSkipSeedRaster =
-                rasterMode == RenderFrameRasterMode.PreservedBaseFrame ||
-                rasterMode == RenderFrameRasterMode.None ||
-                (rasterMode == RenderFrameRasterMode.Damage &&
-                 frameResult?.RetainedBackingStoreUpdated == true);
-
-            SKImage newSeedImage;
-            if (canSkipSeedRaster && _currentFrameSeedImage != null)
-            {
-                newSeedImage = _currentFrameSeedImage;
-                _lastSeedImageCreateMs = 0;
-            }
-            else
-            {
-                var seedStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                newSeedImage = CreateSeedImageFromFrame(newFrame, viewportSize);
-                _lastSeedImageCreateMs = seedStopwatch.ElapsedMilliseconds;
-            }
+            var newSeedImage = CreateNextFrameSeed(
+                newFrame, viewportSize, frameResult, _currentFrameSeedImage,
+                out _lastSeedImageCreateMs);
 
             // Replacement waits for an active DrawPicture lease before
             // disposing the retired native frame.
@@ -2469,6 +2448,29 @@ public class BrowserIntegration : IDisposable
             ? currentCount + 1
             : 0;
 
+    internal static SKImage CreateNextFrameSeed(
+        SKPicture frame, SKSize viewportSize, RenderFrameResult frameResult,
+        SKImage currentSeed, out long elapsedMs)
+    {
+        var rasterMode = frameResult?.RasterMode ?? RenderFrameRasterMode.Full;
+        // Retained tiles and the host seed are separate snapshots. Any rasterized
+        // change must refresh the seed too, or the next preserved frame restores
+        // pixels from before that change.
+        bool canSkipSeedRaster =
+            rasterMode == RenderFrameRasterMode.PreservedBaseFrame ||
+            rasterMode == RenderFrameRasterMode.None;
+        if (canSkipSeedRaster && currentSeed != null)
+        {
+            elapsedMs = 0;
+            return currentSeed;
+        }
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var seed = CreateSeedImageFromFrame(frame, viewportSize);
+        elapsedMs = stopwatch.ElapsedMilliseconds;
+        return seed;
+    }
+
     private static SKImage CreateSeedImageFromFrame(SKPicture frame, SKSize viewportSize)
     {
         if (frame == null ||
@@ -2494,8 +2496,10 @@ public class BrowserIntegration : IDisposable
             var seedCanvas = surface.Canvas;
             seedCanvas.Clear(SKColors.Transparent);
             seedCanvas.DrawPicture(frame);
-            using var snapshot = surface.Snapshot();
-            return snapshot?.ToRasterImage();
+            // This is a CPU surface, so its snapshot is already raster-backed.
+            // ToRasterImage can return the same managed image; disposing a local
+            // snapshot would then invalidate the seed handed to the next frame.
+            return surface.Snapshot();
         }
         catch (Exception ex)
         {
