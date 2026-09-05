@@ -128,6 +128,14 @@ namespace FenBrowser.Core.Network
                 }
 
                 sw.Stop();
+                // Every request the engine makes, in the engine's own log. Without
+                // this a run could not answer "did the page ask for that?" from its
+                // logs at all - diagnosing why reCAPTCHA never issues its /reload
+                // meant re-running under separate tooling that records requests,
+                // which is not available for a GUI session.
+                LogManager.Log(LogCategory.Network, LogLevel.Info,
+                    $"[NetworkClient] {request.Method} {request.RequestUri} -> " +
+                    $"{(int)context.Response.StatusCode} {sw.ElapsedMilliseconds}ms");
                 _stats.RecordRequest(hostKey, sw.ElapsedMilliseconds, context.Response.IsSuccessStatusCode);
                 requestCounted = false;
                 connInfo.LastUsed = DateTime.UtcNow;
@@ -141,9 +149,14 @@ namespace FenBrowser.Core.Network
 
                 return context.Response;
             }
-            catch
+            catch (Exception ex)
             {
                 sw.Stop();
+                // A request that never completes is exactly the interesting case, so
+                // say so rather than leaving a gap in the log.
+                LogManager.Log(LogCategory.Network, LogLevel.Warn,
+                    $"[NetworkClient] {request.Method} {request.RequestUri} -> " +
+                    $"{ex.GetType().Name}: {ex.Message} {sw.ElapsedMilliseconds}ms");
                 if (requestCounted)
                 {
                     _stats.RecordRequest(hostKey, sw.ElapsedMilliseconds, success: false);
