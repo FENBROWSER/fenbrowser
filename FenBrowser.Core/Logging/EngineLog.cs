@@ -104,6 +104,72 @@ public static class EngineLog
         }
 
         Configure(opts);
+        WriteSessionHeader();
+    }
+
+    /// <summary>
+    /// Identifies the run every log file belongs to. Inherited from the parent
+    /// through the environment, so a browser process and the renderer children it
+    /// spawns all report the same run.
+    /// </summary>
+    public static string RunId { get; } = ResolveRunId();
+
+    private static string ResolveRunId()
+    {
+        var inherited = Environment.GetEnvironmentVariable("FEN_RUN_ID");
+        if (!string.IsNullOrWhiteSpace(inherited))
+        {
+            return inherited;
+        }
+
+        var generated = Guid.NewGuid().ToString("N").Substring(0, 8);
+        try
+        {
+            // Children read this back out of their environment, which is what makes
+            // one run's files identifiable as a set.
+            Environment.SetEnvironmentVariable("FEN_RUN_ID", generated);
+        }
+        catch
+        {
+            // A restricted environment just means children get their own id.
+        }
+
+        return generated;
+    }
+
+    // The first line of every log file says what run, process and role produced it.
+    // Files rotate at a size limit and several processes write at once, so without
+    // this there is no way to tell which files belong together - analysing a run by
+    // file timestamps instead silently mixed two runs and produced a confidently
+    // wrong answer about how often a page was reloading.
+    private static void WriteSessionHeader()
+    {
+        try
+        {
+            var process = System.Diagnostics.Process.GetCurrentProcess();
+            var isRendererChild = Environment.GetCommandLineArgs()
+                .Any(a => a.Contains("--renderer-child", StringComparison.OrdinalIgnoreCase));
+
+            Write(
+                LogSubsystem.General,
+                LogSeverity.Info,
+                "[session] run start",
+                LogMarker.None,
+                default,
+                new Dictionary<string, object?>
+                {
+                    ["runId"] = RunId,
+                    ["pid"] = process.Id,
+                    ["role"] = isRendererChild ? "renderer-child" : "browser",
+                    ["commandLine"] = string.Join(' ', Environment.GetCommandLineArgs().Skip(1)),
+                    ["startedUtc"] = DateTimeOffset.UtcNow.ToString("O"),
+                    ["machineProcessors"] = Environment.ProcessorCount
+                });
+        }
+        catch
+        {
+            // A header that cannot be written must never stop the browser starting.
+        }
     }
 
     public static void Configure(EngineLoggingOptions options)
