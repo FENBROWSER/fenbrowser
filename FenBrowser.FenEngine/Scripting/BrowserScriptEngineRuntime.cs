@@ -585,6 +585,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private readonly BrowserFenJsHostHooks _hostHooks = new();
     private readonly NavigationEpoch _navigationEpoch = NavigationEpoch.Initial;
     private string _currentDocumentId = string.Empty;
+    // How many times this realm has been bound to a document. A second bind runs
+    // ResetFenJsSession, so everything the previous document's scripts built --
+    // globals, listener maps, message-port handlers -- is discarded while the DOM
+    // survives. That is invisible from the page's side and looks exactly like a
+    // widget that rendered and then ignored every event, so count and report it.
+    private int _domBindCount;
     private long _callbackFailureSequence;
     private long _diagnosticCallbackIdSequence;
     private FenJsDiagnosticPromiseRejectionTracker _diagnosticPromiseRejectionTracker;
@@ -4852,6 +4858,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private void BindFenJsDomContext(Node domRoot, Uri baseUri, string documentReadyState)
     {
+        var bindOrdinal = Interlocked.Increment(ref _domBindCount);
+        if (bindOrdinal > 1)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] realm rebind #{bindOrdinal} realm={RuntimeHelpers.GetHashCode(this)} " +
+                $"scope={(_embeddingFrameElement == null ? "top" : "frame<" + _embeddingFrameElement.TagName + ">")} " +
+                $"uri='{baseUri?.AbsoluteUri ?? "<none>"}' - the previous document's JS state is discarded",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+
+
         // Acquire the large stack before _fenJsLock for the same reason as
         // ResetFenJsSession: the nested ResetFenJsSession -> InstallFenJsDomGlobals ->
         // EvaluateWithFenJsRaw must run inline on this worker rather than spawning a
