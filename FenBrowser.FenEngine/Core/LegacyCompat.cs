@@ -159,8 +159,66 @@ namespace FenBrowser.FenEngine.Diagnostics
     public static class JsDiagnosticsRecorder
     {
         public static void RecordEvaluation(string source, long durationMs) { }
-        public static void RecordException(FenBrowser.FenEngine.Core.Interfaces.IValue ex, string source = null, string stack = null) { }
-        public static void RecordException(Exception ex, string source = null, string stack = null) { }
+
+        /// <summary>
+        /// An exception a page's script let escape. This was a no-op, so a page that
+        /// threw left nothing behind at all - no console line, no log entry, no
+        /// difference from a page that ran cleanly. That is the hardest possible
+        /// failure to diagnose, and it is the state reCAPTCHA leaves us in.
+        /// </summary>
+        public static void RecordException(
+            FenBrowser.FenEngine.Core.Interfaces.IValue ex,
+            string source = null,
+            string stack = null)
+        {
+            string described;
+            try
+            {
+                described = ex?.ToString() ?? "<no value>";
+            }
+            catch (Exception describeFailure)
+            {
+                // A thrown object whose own toString throws still has to be reported.
+                described = $"<value could not be described: {describeFailure.GetType().Name}>";
+            }
+
+            WriteUncaught(described, source, stack);
+        }
+
+        public static void RecordException(Exception ex, string source = null, string stack = null)
+        {
+            WriteUncaught(
+                ex is null ? "<null>" : $"{ex.GetType().Name}: {ex.Message}",
+                source,
+                stack ?? ex?.StackTrace);
+        }
+
+        private static void WriteUncaught(string described, string source, string stack)
+        {
+            try
+            {
+                FenBrowser.Core.Memory.EngineMetrics.Instance.Increment(
+                    FenBrowser.Core.Memory.MetricCounter.JsUncaughtExceptionCount);
+                FenBrowser.Core.Logging.EngineLog.Write(
+                    FenBrowser.Core.Logging.LogSubsystem.Js,
+                    FenBrowser.Core.Logging.LogSeverity.Error,
+                    $"[JS:uncaught] {described}",
+                    FenBrowser.Core.Logging.LogMarker.None,
+                    default,
+                    new System.Collections.Generic.Dictionary<string, object?>
+                    {
+                        ["source"] = source ?? string.Empty,
+                        ["stack"] = stack ?? string.Empty
+                    });
+            }
+            catch
+            {
+                // Diagnostics must never break a navigation.
+            }
+        }
+
+        // console.log/warn/error already reach the log through the __fenLog native
+        // hook, so recording them again here would double every line.
         public static void RecordConsole(string level, string message, string source = null) { }
     }
 }
