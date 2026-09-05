@@ -1118,11 +1118,36 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             float directWidth = box.Geometry.MarginBox.Width;
+
+            // A percentage width resolves against the containing block, and while
+            // measuring a shrink-to-fit box that block has no width yet - so the
+            // percentage behaves as auto here, exactly as it does in Chrome. Taking
+            // the provisional pixel width instead reports whatever the box was
+            // stretched to on the way in, which makes the measurement circular:
+            // reCAPTCHA's challenge wrapper measured its own containing block
+            // because the iframe inside it is width:100%.
+            bool widthIsPercentage =
+                box.ComputedStyle != null &&
+                box.ComputedStyle.WidthPercent.HasValue &&
+                !box.ComputedStyle.Width.HasValue;
             bool hasExplicitWidth =
                 box.ComputedStyle != null &&
+                !widthIsPercentage &&
                 (box.ComputedStyle.Width.HasValue ||
                  box.ComputedStyle.WidthPercent.HasValue ||
                  !string.IsNullOrEmpty(box.ComputedStyle.WidthExpression));
+
+            // A replaced element sized by a percentage has no resolvable width
+            // here, so it contributes its own intrinsic width rather than the space
+            // it happens to be sitting in. Only the percentage case: a replaced
+            // element with width:auto is already measured correctly, and preferring
+            // the 300px default over that measurement makes Acid2's eyes too wide.
+            if (widthIsPercentage &&
+                box.SourceNode is Element replaced &&
+                TryMeasureReplacedIntrinsicWidth(replaced, box.ComputedStyle, out float replacedWidth))
+            {
+                return replacedWidth;
+            }
             bool isFloating =
                 string.Equals(box.ComputedStyle?.Float, "left", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(box.ComputedStyle?.Float, "right", StringComparison.OrdinalIgnoreCase);
@@ -1188,6 +1213,48 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return directWidth;
+        }
+
+        // The intrinsic width of a replaced element: an explicit width/height
+        // attribute or a real intrinsic size if the resource reported one, else the
+        // 300x150 default every engine uses for a replaced element that has none.
+        private static bool TryMeasureReplacedIntrinsicWidth(Element element, CssComputed style, out float width)
+        {
+            width = 0f;
+            string tag = element?.TagName?.ToUpperInvariant() ?? string.Empty;
+            if (!ReplacedElementSizing.IsReplacedElementTag(tag))
+            {
+                return false;
+            }
+
+            if (ReplacedElementSizing.TryGetLengthAttribute(element, "width", out float attributeWidth) &&
+                attributeWidth > 0f)
+            {
+                width = attributeWidth;
+            }
+            else if (ReplacedElementSizing.TryResolveIntrinsicSizeFromElement(tag, element, out float intrinsicWidth, out _) &&
+                     intrinsicWidth > 0f)
+            {
+                width = intrinsicWidth;
+            }
+            else
+            {
+                width = ReplacedElementSizing.GetFallbackSize(tag).Width;
+            }
+
+            if (width <= 0f)
+            {
+                return false;
+            }
+
+            if (style != null)
+            {
+                width += (float)(style.Padding.Left + style.Padding.Right +
+                                 style.BorderThickness.Left + style.BorderThickness.Right +
+                                 style.Margin.Left + style.Margin.Right);
+            }
+
+            return true;
         }
 
         private static bool TryMeasureDescendantOverflowShrinkToFitWidth(LayoutBox box, out float width)
