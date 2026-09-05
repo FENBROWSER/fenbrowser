@@ -1724,6 +1724,12 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     if (ShouldRenderIframePlaceholder(elem))
                     {
+                        // The placeholder is the empty box-in-box outline a user sees in
+                        // place of frame content. Reaching it means the frame's document
+                        // is not a child node of this element at paint time, so say which
+                        // frame and what it does have - a live frame drawn as a
+                        // placeholder is a materialisation bug, not a paint bug.
+                        ReportIframePlaceholder(elem);
                         var iframeNode = BuildIframePlaceholder(elem, box, style);
                         if (iframeNode != null) nodes.Add(iframeNode);
                     }
@@ -5213,6 +5219,50 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
             };
+        }
+
+        // Frames already reported as painting a placeholder, so a 60fps paint loop logs
+        // each one once instead of every frame. Keyed weakly: a frame that goes away
+        // must not be kept alive by its own diagnostic.
+        private static readonly ConditionalWeakTable<Element, object> _reportedIframePlaceholders = new();
+
+        private static void ReportIframePlaceholder(Element iframeElement)
+        {
+            if (iframeElement == null || _reportedIframePlaceholders.TryGetValue(iframeElement, out _))
+            {
+                return;
+            }
+
+            _reportedIframePlaceholders.Add(iframeElement, new object());
+
+            int childDocuments = 0;
+            int childElements = 0;
+            var children = iframeElement.ChildNodes;
+            if (children != null)
+            {
+                for (int i = 0; i < children.Length; i++)
+                {
+                    if (children[i] is Document) childDocuments++;
+                    else if (children[i] is Element) childElements++;
+                }
+            }
+
+            bool hasCachedDocument =
+                ElementWrapper.TryGetCachedIframeDocument(iframeElement, out var cached) && cached != null;
+            bool hasCachedDocumentElement = cached?.DocumentElement != null;
+
+            string name = iframeElement.GetAttribute("name") ?? "<none>";
+            string src = iframeElement.GetAttribute("src") ?? "<none>";
+            if (src.Length > 120)
+            {
+                src = src.Substring(0, 120) + "...";
+            }
+
+            global::FenBrowser.Core.EngineLogCompat.Warn(
+                $"[IframePlaceholder] painting placeholder for <iframe> name={name} src={src} " +
+                $"childDocuments={childDocuments} childElements={childElements} " +
+                $"cachedDocument={hasCachedDocument} cachedDocumentElement={hasCachedDocumentElement}",
+                LogCategory.Paint);
         }
 
         private static bool ShouldRenderIframePlaceholder(Element iframeElement)
