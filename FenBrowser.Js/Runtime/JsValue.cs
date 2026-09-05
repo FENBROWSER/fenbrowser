@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Threading;
 
 namespace FenBrowser.Js.Runtime;
@@ -37,6 +37,27 @@ public readonly struct JsValue : IEquatable<JsValue>
     public static JsValue FromBoolean(bool value) => new(JsValueTag.Boolean, value ? 1 : 0, 0);
     public static JsValue FromInt32(int value) => new(JsValueTag.Int32, value, 0);
     public static JsValue FromNumber(double value) => new(JsValueTag.Number, 0, value);
+
+    /// <summary>
+    /// A number tagged the way the engine's fast paths expect: Int32 when the
+    /// value is an exact non-negative-zero integer in range, Number otherwise.
+    /// Both tags are the same ECMAScript Number; the distinction only decides
+    /// which paths can stay in integer registers. Negative zero must stay a
+    /// Number, since Int32 cannot represent it.
+    /// </summary>
+    public static JsValue FromNumberCompact(double value)
+    {
+        if (value >= int.MinValue && value <= int.MaxValue)
+        {
+            var truncated = (int)value;
+            if (truncated == value && !double.IsNegative(value - truncated))
+            {
+                return FromInt32(truncated);
+            }
+        }
+
+        return FromNumber(value);
+    }
     public static JsValue FromObject(ObjectHandle handle) => new(JsValueTag.Object, handle.ToInt64(), 0);
     public static JsValue FromHostObject(HostObjectHandle handle) => new(JsValueTag.HostObject, handle.ToInt64(), 0);
 

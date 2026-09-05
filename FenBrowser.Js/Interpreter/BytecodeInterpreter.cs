@@ -3143,7 +3143,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.Pos:
                     try
                     {
-                        frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]));
+                        frame.Registers[ins.A] = JsValue.FromNumberCompact(ToNumber(frame.Registers[ins.B]));
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
@@ -3154,7 +3154,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         if (numeric.Tag == JsValueTag.BigInt)
                             frame.Registers[ins.A] = JsValue.FromBigInt(-numeric.AsBigInt());
                         else
-                            frame.Registers[ins.A] = JsValue.FromNumber(-numeric.AsNumber());
+                            frame.Registers[ins.A] = JsValue.FromNumberCompact(-numeric.AsNumber());
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
@@ -6302,13 +6302,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Small integer results stay tagged as integers so the paths that look for
     // an integer (array indexing, for one) still find one.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    private static JsValue FastNumberResult(double value)
-    {
-        var truncated = (int)value;
-        return truncated == value && !double.IsNegative(value - truncated)
-            ? JsValue.FromInt32(truncated)
-            : JsValue.FromNumber(value);
-    }
+    private static JsValue FastNumberResult(double value) => JsValue.FromNumberCompact(value);
 
     // The compiler already numbered this function's variables; give the call's
     // own environment that numbering so declaring and reading them is an array
@@ -22983,7 +22977,7 @@ fallbackArraySpecies:
             case OpCode.Pos:
                 try
                 {
-                    frame.Registers[a] = JsValue.FromNumber(ToNumber(frame.Registers[b]));
+                    frame.Registers[a] = JsValue.FromNumberCompact(ToNumber(frame.Registers[b]));
                 }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
@@ -22994,7 +22988,7 @@ fallbackArraySpecies:
                     if (numeric.Tag == JsValueTag.BigInt)
                         frame.Registers[a] = JsValue.FromBigInt(-numeric.AsBigInt());
                     else
-                        frame.Registers[a] = JsValue.FromNumber(-numeric.AsNumber());
+                        frame.Registers[a] = JsValue.FromNumberCompact(-numeric.AsNumber());
                 }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;

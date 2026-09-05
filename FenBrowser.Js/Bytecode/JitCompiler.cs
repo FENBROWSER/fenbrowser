@@ -1,4 +1,4 @@
-using System.Linq.Expressions;
+﻿using System.Linq.Expressions;
 using System.Reflection;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
@@ -779,24 +779,27 @@ public static class JitCompiler
 
         switch (ins.OpCode)
         {
-            // StepNumeric yields a Number for anything that is not a BigInt,
-            // including an Int32 input; keep that exactly, because the tag
-            // decides which fast paths downstream operators can take.
+            // Match StepNumeric exactly, tagging included: an integral result
+            // keeps the Int32 tag. The tag decides which fast paths downstream
+            // operators can take, and a loop counter feeds the bitwise
+            // operators an obfuscated bundle is built out of, so handing `i++`
+            // back as a Number deoptimised every `i & mask` after it. Negating
+            // zero still yields a Number, because Int32 cannot carry -0.
             case OpCode.Increment:
                 guard = isNumeric;
-                fast = Expression.Call(MiFromNumber, Expression.Add(asNumber, Expression.Constant(1.0)));
+                fast = Expression.Call(MiFastNumberResult, Expression.Add(asNumber, Expression.Constant(1.0)));
                 break;
             case OpCode.Decrement:
                 guard = isNumeric;
-                fast = Expression.Call(MiFromNumber, Expression.Subtract(asNumber, Expression.Constant(1.0)));
+                fast = Expression.Call(MiFastNumberResult, Expression.Subtract(asNumber, Expression.Constant(1.0)));
                 break;
             case OpCode.Neg:
                 guard = isNumeric;
-                fast = Expression.Call(MiFromNumber, Expression.Negate(asNumber));
+                fast = Expression.Call(MiFastNumberResult, Expression.Negate(asNumber));
                 break;
             case OpCode.Pos:
                 guard = isNumeric;
-                fast = Expression.Call(MiFromNumber, asNumber);
+                fast = Expression.Call(MiFastNumberResult, asNumber);
                 break;
             case OpCode.ToNumeric:
                 // Already numeric: ToNumeric is the identity on it.

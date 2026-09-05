@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Runtime;
 
@@ -75,7 +75,7 @@ public sealed partial class BytecodeInterpreter
             return JsValue.FromBigInt(numeric.AsBigInt() + delta);
         }
 
-        return JsValue.FromNumber(numeric.AsNumber() + delta);
+        return JsValue.FromNumberCompact(numeric.AsNumber() + delta);
     }
 
     private JsValue Add(JsValue left, JsValue right)

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
@@ -3078,7 +3078,12 @@ public sealed class BytecodeCompiler
             case NumericLiteralExpressionNode number:
             {
                 var reg = AllocateRegister();
-                var ci = AddConstant(JsValue.FromNumber(number.Value));
+                // Tag an integral literal as Int32. The bitwise operators only
+                // take their compiled fast path when both operands already are
+                // one, and a literal is one operand of most of them, so tagging
+                // every literal Number sent every `x & 255` in a bundle to the
+                // interpreter helper.
+                var ci = AddConstant(JsValue.FromNumberCompact(number.Value));
                 _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
                 return reg;
             }
@@ -4189,7 +4194,7 @@ public sealed class BytecodeCompiler
 
                     var valueReg = CompileExpression(arr.Elements[i]);
                     var indexReg = AllocateRegister();
-                    var ci = AddConstant(JsValue.FromNumber(i));
+                    var ci = AddConstant(JsValue.FromNumberCompact(i));
                     _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, ci, 0));
                     _instructions.Add(new Instruction(OpCode.SetElem, dest, indexReg, valueReg));
                 }
@@ -4200,7 +4205,7 @@ public sealed class BytecodeCompiler
                 if (!hasSpread && arr.Elements.Count > 0)
                 {
                     var lenReg = AllocateRegister();
-                    var lenConst = AddConstant(JsValue.FromNumber(arr.Elements.Count));
+                    var lenConst = AddConstant(JsValue.FromNumberCompact(arr.Elements.Count));
                     _instructions.Add(new Instruction(OpCode.LoadConst, lenReg, lenConst, 0));
                     var lenNameIdx = GetOrCreatePropertyName("length");
                     _instructions.Add(new Instruction(OpCode.SetPropByName, dest, lenNameIdx, lenReg));
@@ -4831,9 +4836,9 @@ public sealed class BytecodeCompiler
                 var restReg = AllocateRegister();
                 _instructions.Add(new Instruction(OpCode.NewArray, restReg, 0, 0));
                 var writeIndexReg = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.LoadConst, writeIndexReg, AddConstant(JsValue.FromNumber(0)), 0));
+                _instructions.Add(new Instruction(OpCode.LoadConst, writeIndexReg, AddConstant(JsValue.FromNumberCompact(0)), 0));
                 var oneReg = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.LoadConst, oneReg, AddConstant(JsValue.FromNumber(1)), 0));
+                _instructions.Add(new Instruction(OpCode.LoadConst, oneReg, AddConstant(JsValue.FromNumberCompact(1)), 0));
 
                 var restValueReg = AllocateRegister();
                 var loopStart = _instructions.Count;
@@ -4900,9 +4905,9 @@ public sealed class BytecodeCompiler
         _instructions.Add(new Instruction(OpCode.NewArray, arr, 0, 0));
 
         var idxReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.LoadConst, idxReg, AddConstant(JsValue.FromNumber(0)), 0));
+        _instructions.Add(new Instruction(OpCode.LoadConst, idxReg, AddConstant(JsValue.FromNumberCompact(0)), 0));
         var oneReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.LoadConst, oneReg, AddConstant(JsValue.FromNumber(1)), 0));
+        _instructions.Add(new Instruction(OpCode.LoadConst, oneReg, AddConstant(JsValue.FromNumberCompact(1)), 0));
 
         foreach (var element in elements)
         {
@@ -5185,7 +5190,7 @@ public sealed class BytecodeCompiler
         for (var i = 0; i < parts.Count; i++)
         {
             var indexReg = AllocateRegister();
-            var indexConst = AddConstant(JsValue.FromNumber(i));
+            var indexConst = AddConstant(JsValue.FromNumberCompact(i));
             _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, indexConst, 0));
             var valueReg = LoadStringConstant(parts[i]);
             _instructions.Add(new Instruction(OpCode.SetElem, arrayReg, indexReg, valueReg));
