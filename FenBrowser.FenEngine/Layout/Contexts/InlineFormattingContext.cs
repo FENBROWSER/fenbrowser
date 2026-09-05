@@ -2540,8 +2540,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             string tag = el.TagName?.ToUpperInvariant() ?? string.Empty;
             float w = (float)(box.ComputedStyle?.Width ?? 0);
             float h = (float)(box.ComputedStyle?.Height ?? 0);
-            float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
-            float cbHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+            float cbWidth = LayoutBoxOps.ResolvePercentageBaseWidth(box, state);
+            float cbHeight = LayoutBoxOps.ResolvePercentageBaseHeight(box, state);
             if (w <= 0f && box.ComputedStyle?.WidthPercent.HasValue == true && cbWidth > 0f)
             {
                 w = (float)(box.ComputedStyle.WidthPercent.Value / 100.0 * cbWidth);
@@ -3112,7 +3112,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
             else if (specifiedWidthPercent.HasValue)
             {
-                float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
+                float cbWidth = LayoutBoxOps.ResolvePercentageBaseWidth(box, state);
                 if (cbWidth > 0f)
                 {
                     finalW = (float)(specifiedWidthPercent.Value / 100.0 * cbWidth);

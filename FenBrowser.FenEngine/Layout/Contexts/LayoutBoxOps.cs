@@ -167,7 +167,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                 return;
             }
 
-            var relativeOffset = ResolveRelativeOffset(box.ComputedStyle, state);
+            var relativeOffset = ResolveRelativeOffset(box, box.ComputedStyle, state);
             float targetX = x + relativeOffset.X;
             float targetY = y + relativeOffset.Y;
             var anchor = GetPositionAnchor(box.Geometry);
@@ -340,14 +340,89 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
             return baselineOffset;
         }
 
-        private static SKPoint ResolveRelativeOffset(CssComputed style, LayoutState state)
+        // What a percentage on a box resolves against: the content width of its
+        // containing block, which is the nearest ancestor that is neither an inline
+        // box nor an anonymous block - neither of those is a containing block.
+        //
+        // The layout state was the wrong source for this. It carried the viewport's
+        // width rather than the block the box actually sits in, and once a box had
+        // been sized the state was carrying *that* width on the next pass, so the
+        // error squared: reCAPTCHA's challenge tiles are images at width:300%
+        // inside a 100px wrapper and came out 5760px wide, then 17280px, instead of
+        // 300px. Every tile then framed a sliver of a hugely magnified image, which
+        // is why the challenge rendered as smeared bands rather than photographs.
+        internal static float ResolvePercentageBaseWidth(LayoutBox box, LayoutState state)
+        {
+            for (var ancestor = box?.Parent; ancestor != null; ancestor = ancestor.Parent)
+            {
+                if (ancestor is InlineBox || ancestor is AnonymousBlockBox)
+                {
+                    continue;
+                }
+
+                if (ancestor.ComputedStyle?.Width is double specified && specified > 0d)
+                {
+                    return (float)specified;
+                }
+
+                float width = ancestor.Geometry?.ContentBox.Width ?? 0f;
+                return width > 0f
+                    ? width
+                    : (state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth);
+            }
+
+            return state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
+        }
+
+        // A percentage height needs a containing block whose own height is definite,
+        // so only an ancestor that states one answers for it. Anything else leaves
+        // the percentage to behave as auto, which is what the fallback does.
+        internal static float ResolvePercentageBaseHeight(LayoutBox box, LayoutState state)
+        {
+            for (var ancestor = box?.Parent; ancestor != null; ancestor = ancestor.Parent)
+            {
+                if (ancestor is InlineBox || ancestor is AnonymousBlockBox)
+                {
+                    continue;
+                }
+
+                // Prefer the height the ancestor states over the one it has been
+                // laid out to: inline content is measured before the block it sits
+                // in has resolved its own box, so the laid-out value reads 0 here
+                // and the percentage would fall through to the viewport.
+                if (ancestor.ComputedStyle?.Height is double specified && specified > 0d)
+                {
+                    return (float)specified;
+                }
+
+                float height = ancestor.Geometry?.ContentBox.Height ?? 0f;
+                bool definite = ancestor.ComputedStyle != null &&
+                                (ancestor.ComputedStyle.HeightPercent.HasValue ||
+                                 !string.IsNullOrEmpty(ancestor.ComputedStyle.HeightExpression));
+                if (definite && height > 0f)
+                {
+                    return height;
+                }
+
+                break;
+            }
+
+            return state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+        }
+
+        // CSS 2.1 9.4.3: percentage left/right resolve against the containing
+        // block's width and top/bottom against its height - not against the box's
+        // own size, and not against the viewport. reCAPTCHA nudges each challenge
+        // tile into place with left/top:-100%, so getting this wrong moved every
+        // tile by its own width instead of the wrapper's.
+        private static SKPoint ResolveRelativeOffset(LayoutBox box, CssComputed style, LayoutState state)
         {
             if (style == null || !string.Equals(LayoutStyleResolver.GetEffectivePosition(style), "relative", StringComparison.OrdinalIgnoreCase))
             {
                 return SKPoint.Empty;
             }
 
-            float cbWidth = state.ContainingBlockWidth;
+            float cbWidth = ResolvePercentageBaseWidth(box, state);
             if (!float.IsFinite(cbWidth) || cbWidth <= 0f)
             {
                 cbWidth = state.AvailableSize.Width;
@@ -357,7 +432,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                 cbWidth = state.ViewportWidth;
             }
 
-            float cbHeight = state.ContainingBlockHeight;
+            float cbHeight = ResolvePercentageBaseHeight(box, state);
             if (!float.IsFinite(cbHeight) || cbHeight <= 0f)
             {
                 cbHeight = state.AvailableSize.Height;
