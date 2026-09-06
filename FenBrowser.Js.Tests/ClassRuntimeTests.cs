@@ -2,6 +2,7 @@ using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
+using FenBrowser.Js.Parser;
 using Xunit;
 
 namespace FenBrowser.Js.Tests;
@@ -340,9 +341,9 @@ public sealed class ClassRuntimeTests
     }
 
     [Fact]
-    public void SuperOutsideMethodThrowsReferenceError()
+    public void SuperOutsideMethodIsAnEarlyError()
     {
-        Assert.Throws<JsThrownException>(() =>
+        Assert.Throws<JsParserException>(() =>
             Run("function f() { return super.x; } f();"));
     }
 

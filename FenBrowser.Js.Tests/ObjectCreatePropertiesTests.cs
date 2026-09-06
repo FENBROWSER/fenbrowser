@@ -30,9 +30,23 @@ public sealed class ObjectCreatePropertiesTests
     }
 
     [Fact]
-    public void NonObjectPropertiesArgThrows()
+    public void PrimitivePropertiesArgContributesNoProperties()
     {
-        Assert.Throws<JsThrownException>(() => Run("Object.create(null, 5);"));
+        // ToObject(5) is a Number wrapper with no own enumerable keys.
+        Assert.Equal(0d, Run("Object.keys(Object.create(null, 5)).length;").AsNumber());
+    }
+
+    [Fact]
+    public void NullPropertiesArgThrows()
+    {
+        Assert.Throws<JsThrownException>(() => Run("Object.create(null, null);"));
+    }
+
+    [Fact]
+    public void NonObjectDescriptorEntryThrows()
+    {
+        // ToObject("ab") has own enumerable "0"/"1" whose values are not descriptors.
+        Assert.Throws<JsThrownException>(() => Run("Object.create(null, 'ab');"));
     }
 
     [Fact]

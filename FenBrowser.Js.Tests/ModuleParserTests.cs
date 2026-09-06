@@ -16,10 +16,12 @@ public sealed class ModuleParserTests
         return Assert.IsType<ImportDeclarationNode>(program.Body[0]);
     }
 
+    // Some fixtures have to declare the bindings they export, so pick the export out
+    // of the body rather than assuming it is the first statement.
     private static ExportDeclarationNode ParseExport(string source)
     {
         var program = JsParser.ParseModule(new SourceText(source));
-        return Assert.IsType<ExportDeclarationNode>(program.Body[0]);
+        return Assert.Single(program.Body.OfType<ExportDeclarationNode>());
     }
 
     [Fact]
@@ -111,7 +113,7 @@ public sealed class ModuleParserTests
     [Fact]
     public void ExportNamedListProducesOneEntryEach()
     {
-        var decl = ParseExport("export { a, b as c };");
+        var decl = ParseExport("var a, b; export { a, b as c };");
         Assert.Equal(2, decl.Entries.Count);
         Assert.Equal("a", decl.Entries[0].ExportName);
         Assert.Equal("a", decl.Entries[0].LocalName);
