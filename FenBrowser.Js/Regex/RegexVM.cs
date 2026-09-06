@@ -17,6 +17,10 @@ public sealed class RegexVM
     private int[] _charOffsets = Array.Empty<int>(); // codePoint → char offset mapping
     private int _cpLen;
 
+    // True when one code point is one UTF-16 char, so _charOffsets is the
+    // identity and a char offset needs no lookup at all.
+    private bool _identityOffsets;
+
     // Backtracking stack
     private Stack<ThreadState>? _stack;
 
@@ -339,45 +343,75 @@ public sealed class RegexVM
     {
         _input = input;
 
-        // Pre-compute code points array
-        var cpList = new List<int>(input.Length);
-        var offsetList = new List<int>(input.Length);
-
         // Without /u or /v, matching operates on UTF-16 code units, so a
         // surrogate pair is two separate "characters" (ECMA-262 22.2.2.1).
         var pairSurrogates = _program.Flags.Unicode || _program.Flags.UnicodeSets;
+
+        // Fill the two arrays directly. Building them through Lists and then
+        // calling ToArray on both allocated four arrays and copied the whole
+        // input twice before matching began - on every execution, against the
+        // whole subject string.
+        var codePoints = new int[input.Length];
+        var charOffsets = new int[input.Length + 1];
+
+        var count = 0;
         for (int i = 0; i < input.Length; i++)
         {
-            offsetList.Add(i);
+            charOffsets[count] = i;
             if (pairSurrogates && char.IsHighSurrogate(input[i]) && i + 1 < input.Length &&
                 char.IsLowSurrogate(input[i + 1]))
             {
-                cpList.Add(char.ConvertToUtf32(input[i], input[i + 1]));
+                codePoints[count] = char.ConvertToUtf32(input[i], input[i + 1]);
                 i++; // skip low surrogate
             }
             else
             {
-                cpList.Add(input[i]);
+                codePoints[count] = input[i];
             }
+
+            count++;
         }
 
-        // Add sentinel at end
-        offsetList.Add(input.Length);
-        _codePoints = cpList.ToArray();
-        _charOffsets = offsetList.ToArray();
-        _cpLen = cpList.Count;
+        // Sentinel at the end: ExecuteFrom reads _charOffsets[_cpLen].
+        charOffsets[count] = input.Length;
+        _codePoints = codePoints;
+        _charOffsets = charOffsets;
+        _cpLen = count;
+        _identityOffsets = count == input.Length;
     }
 
     private int CharOffsetToCodePoint(int charOffset)
     {
-        // Binary search in _charOffsets to find the code point index.
-        // Actually, a linear scan is fine for typical input sizes.
-        for (int cp = 0; cp < _cpLen; cp++)
+        if (charOffset <= 0)
         {
-            if (_charOffsets[cp] >= charOffset)
-                return cp;
+            return 0;
         }
-        return _cpLen;
+
+        // One code point per char means _charOffsets[cp] == cp, so the answer
+        // is the offset itself; no search needed for the common case.
+        if (_identityOffsets)
+        {
+            return charOffset < _cpLen ? charOffset : _cpLen;
+        }
+
+        // _charOffsets ascends, so find the first entry at or past the offset
+        // by halving rather than by walking the whole subject.
+        var lo = 0;
+        var hi = _cpLen;
+        while (lo < hi)
+        {
+            var mid = (int)(((uint)lo + (uint)hi) >> 1);
+            if (_charOffsets[mid] >= charOffset)
+            {
+                hi = mid;
+            }
+            else
+            {
+                lo = mid + 1;
+            }
+        }
+
+        return lo;
     }
 
     private int CodePointToCharOffset(int cp)
