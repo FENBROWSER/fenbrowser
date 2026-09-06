@@ -64,6 +64,35 @@ public sealed class RememberedSetPrecisionTests
     }
 
     [Fact]
+    public void CallsWithOnlyOldObjectsDoNotRetainTheirEnvironments()
+    {
+        var (interpreter, heap) = CreateEngine();
+        Run(interpreter, """
+            var receiver = { marker: 42 };
+            function read(value) {
+                var local = value;
+                local = value;
+                return this.marker + local.marker;
+            }
+            receiver.read = read;
+            """);
+        heap.MinorCollect();
+        heap.MinorCollect();
+        var registrations = heap.RememberedEnvironmentRegistrations;
+        var remembered = heap.RememberedEnvironmentCount;
+
+        var result = Run(interpreter, """
+            var total = 0;
+            for (var i = 0; i < 1000; i++) total += receiver.read(receiver);
+            total;
+            """);
+
+        Assert.Equal(84000, result.AsNumber());
+        Assert.Equal(registrations, heap.RememberedEnvironmentRegistrations);
+        Assert.Equal(remembered, heap.RememberedEnvironmentCount);
+    }
+
+    [Fact]
     public void RememberedEnvironmentSelfCleansOnceBindingsHoldNoYoungCells()
     {
         var (interpreter, heap) = CreateEngine();

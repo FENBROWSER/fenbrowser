@@ -43,7 +43,7 @@ public abstract class EnvironmentRecord
         OwnerHeap = heap;
     }
 
-    internal void RememberBindingStore()
+    internal void RememberBindingStore(ObjectHandle? storedObject = null)
     {
         if (OwnerHeap is null)
         {
@@ -54,7 +54,7 @@ public abstract class EnvironmentRecord
                 $"Unstamped environment binding store: {GetType().Name}");
         }
 
-        OwnerHeap.RememberEnvironment(this);
+        OwnerHeap.RememberEnvironment(this, storedObject);
     }
 
     // Reads a binding in one step where the record can report a miss itself.

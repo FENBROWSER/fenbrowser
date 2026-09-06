@@ -65,7 +65,7 @@ public sealed class FunctionEnvironmentRecord : DeclarativeEnvironmentRecord
                 ThisBindingStatus = ThisBindingStatus.Initialized;
                 if (value.Tag == JsValueTag.Object)
                 {
-                    RememberBindingStore();
+                    RememberBindingStore(value.AsObjectHandle());
                 }
                 return BindingOpResult.Ok;
             default:

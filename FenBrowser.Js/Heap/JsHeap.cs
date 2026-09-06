@@ -1,4 +1,4 @@
-﻿using FenBrowser.Js.Objects;
+using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Heap;
@@ -51,7 +51,7 @@ public sealed class JsHeap
     // Remembered-environment set: environment records are not heap cells, so a
     // young object stored into a binding of a record reachable only through Old
     // (promoted) cells cannot dirty any card. Such records register here on
-    // every object-valued binding store; each minor collection scans them once
+    // every Young-object binding store; each minor collection scans them once
     // (not once per referencing closure) and drops the ones whose bindings no
     // longer hold young cells. See EnvironmentRecord.RememberBindingStore.
     private readonly List<FenBrowser.Js.Environments.EnvironmentRecord> _rememberedEnvironments = new();
@@ -968,10 +968,22 @@ public sealed class JsHeap
 
     public int RememberedEnvironmentRegistrations => _rememberedEnvironmentRegistrations;
 
-    public void RememberEnvironment(FenBrowser.Js.Environments.EnvironmentRecord record)
+    public void RememberEnvironment(
+        FenBrowser.Js.Environments.EnvironmentRecord record,
+        ObjectHandle? storedObject = null)
     {
         _auditEnvironments?.Add(record);
         if (record.IsRememberedForMinorGc)
+        {
+            return;
+        }
+
+        // Old objects cannot introduce a nursery edge. Remembering every
+        // method receiver/argument instead retains one environment per call
+        // until another collection, even when the loop allocates no JS cells.
+        // A bulk binding copy has no single stored object and remains
+        // conservative; individual stores supply their handle.
+        if (storedObject is { } handle && Validate(handle).Tier != GenerationTier.Young)
         {
             return;
         }

@@ -167,7 +167,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
                     // Same write barrier the name-keyed store takes. Skipping it
                     // hides the reference from the collector's remembered set,
                     // and the object goes away while the variable still names it.
-                    RememberBindingStore();
+                    RememberBindingStore(value.AsObjectHandle());
                 }
 
                 return true;
@@ -224,7 +224,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         binding = binding with { Value = value };
         if (value.Tag == JsValueTag.Object)
         {
-            RememberBindingStore();
+            RememberBindingStore(value.AsObjectHandle());
         }
 
         status = BindingOpResult.Ok;
@@ -249,7 +249,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         _slotPresent[slot] = true;
         if (value.Tag == JsValueTag.Object)
         {
-            RememberBindingStore();
+            RememberBindingStore(value.AsObjectHandle());
         }
     }
 
@@ -306,7 +306,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
 
         if (value.Tag == JsValueTag.Object)
         {
-            RememberBindingStore();
+            RememberBindingStore(value.AsObjectHandle());
         }
 
         return BindingOpResult.Ok;
@@ -432,7 +432,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
             ref var slotBinding = ref _slotBindings![initSlot];
             if (slotBinding.IsInitialized) return BindingOpResult.NotInitializable;
             slotBinding = slotBinding with { Value = value, IsInitialized = true };
-            if (value.Tag == JsValueTag.Object) RememberBindingStore();
+            if (value.Tag == JsValueTag.Object) RememberBindingStore(value.AsObjectHandle());
             return BindingOpResult.Ok;
         }
 
@@ -452,7 +452,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         _bindings[name] = binding with { Value = value, IsInitialized = true };
         if (value.Tag == JsValueTag.Object)
         {
-            RememberBindingStore();
+            RememberBindingStore(value.AsObjectHandle());
         }
         return BindingOpResult.Ok;
     }
@@ -492,7 +492,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         _bindings[name] = binding with { Value = value };
         if (value.Tag == JsValueTag.Object)
         {
-            RememberBindingStore();
+            RememberBindingStore(value.AsObjectHandle());
         }
         return BindingOpResult.Ok;
     }
