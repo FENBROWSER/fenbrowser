@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Linq;
+using System.Text;
 using FenBrowser.Js.Bytecode;
 
 namespace FenBrowser.Js.Diagnostics;
@@ -58,15 +59,123 @@ public static class InterpreterProfiler
         RecordOpCode(opCode);
 
         var index = (int)opCode;
-        if ((uint)index < PairStride &&
-            _previousOpCode >= 0 &&
-            ReferenceEquals(function, _previousFunction))
+        if (ReferenceEquals(function, _previousFunction))
         {
-            OpCodePairCounts[(_previousOpCode * PairStride) + index]++;
+            if ((uint)index < PairStride && _previousOpCode >= 0)
+            {
+                OpCodePairCounts[(_previousOpCode * PairStride) + index]++;
+            }
+        }
+        else
+        {
+            // Control reached another body: bank what the last one ran before
+            // starting a tally for this one.
+            BankCurrentFunction();
+            _previousFunction = function;
+            RecordFunctionEntry(function);
         }
 
+        _currentFunctionInstructions++;
         _previousOpCode = (uint)index < PairStride ? index : -1;
-        _previousFunction = function;
+    }
+
+    // Instructions banked against the body that ran them. Attributing on every
+    // step would mean a hash lookup per instruction; control stays inside one
+    // body for long stretches, so this keeps a running tally and pays the
+    // lookup only when the function changes.
+    private sealed class FunctionStat
+    {
+        public long Instructions;
+        public long Entries;
+    }
+
+    private static readonly Dictionary<object, FunctionStat> FunctionCounts =
+        new(ReferenceEqualityComparer.Instance);
+
+    private static long _currentFunctionInstructions;
+
+    private static void BankCurrentFunction()
+    {
+        if (_previousFunction is null || _currentFunctionInstructions == 0)
+        {
+            _currentFunctionInstructions = 0;
+            return;
+        }
+
+        if (!FunctionCounts.TryGetValue(_previousFunction, out var stat))
+        {
+            stat = new FunctionStat();
+            FunctionCounts[_previousFunction] = stat;
+        }
+
+        stat.Instructions += _currentFunctionInstructions;
+        _currentFunctionInstructions = 0;
+    }
+
+    private static void RecordFunctionEntry(object function)
+    {
+        if (!FunctionCounts.TryGetValue(function, out var stat))
+        {
+            stat = new FunctionStat();
+            FunctionCounts[function] = stat;
+        }
+
+        stat.Entries++;
+    }
+
+    /// <summary>
+    /// Names a function well enough to find it in a minified bundle: its own
+    /// name where it has one, otherwise the head of its source text, which for
+    /// an anonymous callback is the only thing that identifies it.
+    /// </summary>
+    private static string DescribeFunction(object function)
+    {
+        if (function is not BytecodeFunction bytecode)
+        {
+            return function.GetType().Name;
+        }
+
+        if (!string.IsNullOrEmpty(bytecode.Name))
+        {
+            return bytecode.Name!;
+        }
+
+        var source = bytecode.SourceText;
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            // A minified bundle strips names and we may hold no source text, but
+            // the parameter list and the first string constants are still
+            // distinctive enough to find the body again in the original file.
+            var fingerprint = new StringBuilder(64);
+            fingerprint.Append("fn(").Append(string.Join(",", bytecode.ParameterNames)).Append(')');
+            if (bytecode.VarDeclarationNames.Count > 0)
+            {
+                fingerprint.Append(" var ")
+                    .Append(string.Join(",", bytecode.VarDeclarationNames.Take(6)));
+            }
+
+            return fingerprint.ToString();
+        }
+
+        var collapsed = new StringBuilder(48);
+        var lastWasSpace = false;
+        foreach (var ch in source)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                if (!lastWasSpace && collapsed.Length > 0) collapsed.Append(' ');
+                lastWasSpace = true;
+            }
+            else
+            {
+                collapsed.Append(ch);
+                lastWasSpace = false;
+            }
+
+            if (collapsed.Length >= 44) break;
+        }
+
+        return "<anon> " + collapsed.ToString();
     }
 
     // Where identifier reads actually land, and how many scopes they walk
@@ -115,6 +224,8 @@ public static class InterpreterProfiler
         Array.Clear(DeoptCounts);
         _previousOpCode = -1;
         _previousFunction = null;
+        FunctionCounts.Clear();
+        _currentFunctionInstructions = 0;
         Interlocked.Exchange(ref _total, 0);
         Interlocked.Exchange(ref _deoptTotal, 0);
     }
@@ -149,6 +260,33 @@ public static class InterpreterProfiler
             builder.Append("    ").Append(op.ToString().PadRight(28))
                 .Append(count.ToString().PadLeft(14))
                 .Append("  ").Append((100.0 * count / total).ToString("F2")).AppendLine("%");
+        }
+
+        // Bank whatever the currently-running body has accumulated so a report
+        // taken mid-run does not omit the function that is hot right now.
+        BankCurrentFunction();
+
+        if (FunctionCounts.Count > 0)
+        {
+            builder.AppendLine("  -- by function (self, interpreted only) --");
+            var functions = new List<(string Name, long Instructions, long Entries, int Size)>();
+            foreach (var (function, stat) in FunctionCounts)
+            {
+                var size = function is BytecodeFunction bytecode ? bytecode.InstructionArray.Length : 0;
+                functions.Add((DescribeFunction(function), stat.Instructions, stat.Entries, size));
+            }
+
+            functions.Sort(static (a, b) => b.Instructions.CompareTo(a.Instructions));
+            foreach (var (name, instructions, entries, size) in functions.Take(top))
+            {
+                builder.Append("    ")
+                    .Append(name.Length > 52 ? name.Substring(0, 52) : name.PadRight(52))
+                    .Append(instructions.ToString().PadLeft(14))
+                    .Append("  ").Append((100.0 * instructions / total).ToString("F2").PadLeft(6)).Append("%")
+                    .Append("  entries=").Append(entries.ToString().PadLeft(9))
+                    .Append("  bodyOps=").Append(size.ToString().PadLeft(6))
+                    .AppendLine();
+            }
         }
 
         var pairs = new List<(int Previous, int Current, long Count)>();
