@@ -2697,12 +2697,14 @@ public sealed partial class BytecodeInterpreter
             // Find end of digit run (may be followed by currency/non-digit chars).
             int fracEnd = fracStart;
             while (fracEnd < formatted.Length && char.IsDigit(formatted[fracEnd])) fracEnd++;
+            // Capture the currency/literal suffix before trimming, otherwise the
+            // trimmed zeros are still part of the tail and get appended right back.
+            string afterFraction = formatted[fracEnd..];
             // Trim trailing zeros down to max(minFrac, 0).
             int trimTo = Math.Max(minFrac, 0);
             while (fracEnd > fracStart + trimTo && formatted[fracEnd - 1] == '0')
                 fracEnd--;
             // Remove fraction and decimal if no fraction digits remain and none required.
-            string afterFraction = formatted[fracEnd..]; // preserve currency/literal suffix
             if (fracEnd == fracStart && trimTo == 0)
                 formatted = formatted[..decIdx] + afterFraction;
             else
