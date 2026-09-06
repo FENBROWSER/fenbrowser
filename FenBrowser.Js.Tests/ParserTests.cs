@@ -1669,8 +1669,9 @@ public sealed class ParserTests
     [InlineData("class C {} let C;")]
     [InlineData("let [a, b] = []; let a;")]
     [InlineData("switch (0) { case 1: let x; default: let x; }")]
-    [InlineData("switch (0) { case 1: function f() {} default: function f() {} }")]
     [InlineData("switch (0) { case 1: async function f() {} default: function* f() {} }")]
+    [InlineData("switch (0) { case 1: function* f() {} default: function* f() {} }")]
+    [InlineData("'use strict'; switch (0) { case 1: function f() {} default: function f() {} }")]
     [InlineData("switch (0) { case 1: function* f() {} default: var f; }")]
     public void RejectsLexicalRedeclaration(string source)
     {
@@ -1684,6 +1685,9 @@ public sealed class ParserTests
     [InlineData("var f; function f() {}")]                  // var/function legal
     [InlineData("let x; function g() { let x; }")]          // distinct function scope
     [InlineData("for (let i = 0; i < 1; i++) { let i; }")]  // head vs body block
+    // Annex B.3.3.5: a sloppy CaseBlock forgives duplicates bound only by plain
+    // FunctionDeclarations. Generator/async duplicates stay errors (above).
+    [InlineData("switch (0) { case 1: function f() {} default: function f() {} }")]
     public void AllowsValidDeclarations(string source)
     {
         // Must not throw — parses successfully.

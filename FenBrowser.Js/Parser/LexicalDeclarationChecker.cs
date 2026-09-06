@@ -40,6 +40,9 @@ internal static class LexicalDeclarationChecker
     {
         var lexNames = new HashSet<string>(System.StringComparer.Ordinal);
         var funcNames = new HashSet<string>(System.StringComparer.Ordinal);
+        // Names already bound here by a generator or async declaration, which
+        // Annex B.3.3.5 does not forgive a duplicate of.
+        var nonPlainFuncNames = new HashSet<string>(System.StringComparer.Ordinal);
 
         // Top-level declarations of this scope.
         foreach (var stmt in statements)
@@ -60,9 +63,22 @@ internal static class LexicalDeclarationChecker
                 case FunctionDeclarationNode f when f.Name is { Length: > 0 }:
                     if (treatFunctionsAsLexical)
                     {
-                        if (_strictMode && !funcNames.Add(f.Name))
+                        // B.3.3.5 waives the CaseBlock duplicate-name error only in
+                        // sloppy code and only when every colliding binding is a plain
+                        // FunctionDeclaration. A GeneratorDeclaration or
+                        // AsyncFunctionDeclaration on either side keeps the 14.12.1 error.
+                        var isPlainFunction = !f.IsAsync && !f.IsGenerator;
+                        var isDuplicate = !funcNames.Add(f.Name);
+                        if (isDuplicate &&
+                            (_strictMode || !isPlainFunction || nonPlainFuncNames.Contains(f.Name)))
+                        {
                             throw new JsParserException($"Identifier '{f.Name}' has already been declared.");
-                        funcNames.Add(f.Name);
+                        }
+
+                        if (!isPlainFunction)
+                        {
+                            nonPlainFuncNames.Add(f.Name);
+                        }
                     }
                     else
                     {
