@@ -11609,7 +11609,7 @@ Verification:
 - `feFlood`, `feBlend`, Porter-Duff `feComposite`, and ordered `feMerge` nodes
   join the existing blur, offset, drop-shadow, color-matrix, and morphology
   primitives. Color matrices additionally implement `saturate` and degree-based
-  `hueRotate`; arithmetic composite remains an explicit compatibility fallback.
+  `hueRotate`; arithmetic composite support is described in section 2.171.
 - Generated `feFlood` inputs honor user-space and object-bounding-box filter and
   primitive regions. Object-bounding-box primitive distances scale independently
   by target width and height, and group/link target bounds are the
@@ -11697,6 +11697,17 @@ Verification:
   deadline, and layer guards. External `feImage` resources remain resource-policy
   rejections and compatibility fallbacks until the bounded resource pipeline is
   connected to filter inputs.
+
+## 2.171 SVG Arithmetic Composite Filters (2026-09-06)
+
+- `feComposite operator="arithmetic"` now implements the SVG four-coefficient
+  formula with zero defaults and preserves the specified `in` foreground and
+  `in2` background ordering at the native filter boundary.
+- Coefficients must be single finite values with magnitude at most 32,767.
+  Native output is constrained to the resolved primitive region and enforces
+  valid premultiplied colors, preventing a nonzero constant term from creating
+  an unbounded filter result. Invalid coefficients and unknown operators remain
+  explicit compatibility fallbacks.
 
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 

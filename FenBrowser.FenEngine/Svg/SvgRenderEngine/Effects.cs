@@ -356,7 +356,9 @@ namespace FenBrowser.FenEngine.Svg
                             primitive.GetAttribute("in2") ?? "SourceGraphic",
                             current, results, owned, primitive.Name, out var input2))
                         return false;
-                    next = BuildComposite(primitive, input, input2);
+                    next = BuildComposite(
+                        filterElement, primitive, target, viewport, filterRegion,
+                        input, input2);
                 }
                 else if (primitive.Name == "feDisplacementMap")
                 {
@@ -571,11 +573,32 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private SKImageFilter BuildComposite(
+            SvgElement filter,
             SvgElement element,
+            SvgElement target,
+            ViewportContext viewport,
+            SKRect filterRegion,
             SKImageFilter input,
             SKImageFilter input2)
         {
-            SKBlendMode mode = (element.GetAttribute("operator") ?? "over").Trim().ToLowerInvariant() switch
+            string operation = (element.GetAttribute("operator") ?? "over").Trim().ToLowerInvariant();
+            if (operation == "arithmetic")
+            {
+                if (!TryResolvePrimitiveRegion(
+                        filter, element, target, viewport, filterRegion, out var primitiveRegion) ||
+                    !TryReadBoundedCoefficient(element, "k1", out float k1) ||
+                    !TryReadBoundedCoefficient(element, "k2", out float k2) ||
+                    !TryReadBoundedCoefficient(element, "k3", out float k3) ||
+                    !TryReadBoundedCoefficient(element, "k4", out float k4))
+                    return null;
+
+                // SVG's `in` is the foreground/source term and `in2` is the
+                // background/destination term in Skia's arithmetic formula.
+                return SKImageFilter.CreateArithmetic(
+                    k1, k2, k3, k4, true, input2, input, primitiveRegion);
+            }
+
+            SKBlendMode mode = operation switch
             {
                 "over" => SKBlendMode.SrcOver,
                 "in" => SKBlendMode.SrcIn,
@@ -586,6 +609,15 @@ namespace FenBrowser.FenEngine.Svg
             };
             if ((int)mode < 0) return null;
             return SKImageFilter.CreateBlendMode(mode, input2, input);
+        }
+
+        private static bool TryReadBoundedCoefficient(
+            SvgElement element,
+            string name,
+            out float value)
+        {
+            return TryReadSingleNumber(element.GetAttribute(name), 0f, out value) &&
+                MathF.Abs(value) <= 32767f;
         }
 
         private static SKImageFilter BuildDisplacementMap(

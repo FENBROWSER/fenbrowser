@@ -200,6 +200,32 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void ArithmeticComposite_PreservesSvgInputCoefficientOrdering()
+        {
+            const string prefix =
+                "<svg width='20' height='20'><defs><filter id='f'>" +
+                "<feFlood flood-color='red' result='first'/>" +
+                "<feFlood flood-color='blue' result='second'/>" +
+                "<feComposite in='first' in2='second' operator='arithmetic' ";
+            const string suffix =
+                "/></filter></defs><rect width='20' height='20' filter='url(#f)'/></svg>";
+
+            using var first = new FenSvgRenderer().Render(prefix + "k2='1'" + suffix);
+            using var second = new FenSvgRenderer().Render(prefix + "k3='1'" + suffix);
+            using var defaults = new FenSvgRenderer().Render(prefix + suffix);
+
+            Assert.True(first.Success, first.ErrorMessage);
+            Assert.True(second.Success, second.ErrorMessage);
+            Assert.True(defaults.Success, defaults.ErrorMessage);
+            Assert.False(first.RequiresFallback, string.Join("; ", first.Warnings));
+            Assert.False(second.RequiresFallback, string.Join("; ", second.Warnings));
+            Assert.False(defaults.RequiresFallback, string.Join("; ", defaults.Warnings));
+            Assert.Equal(SKColors.Red, first.Bitmap.GetPixel(10, 10));
+            Assert.Equal(SKColors.Blue, second.Bitmap.GetPixel(10, 10));
+            Assert.Equal(0, defaults.Bitmap.GetPixel(10, 10).Alpha);
+        }
+
+        [Fact]
         public void ObjectBoundingBoxPrimitiveUnits_ScaleOffsetByTargetBounds()
         {
             using var result = new FenSvgRenderer().Render(
@@ -435,6 +461,8 @@ namespace FenBrowser.Tests.Svg
         [InlineData("<feConvolveMatrix order='1' kernelMatrix='1' edgeMode='mirror'/>")]
         [InlineData("<feConvolveMatrix order='1' kernelMatrix='1' kernelUnitLength='2'/>")]
         [InlineData("<feImage href='image.png'/>")]
+        [InlineData("<feComposite operator='arithmetic' k1='invalid'/>")]
+        [InlineData("<feComposite operator='arithmetic' k4='32768'/>")]
         public void UnsupportedOrUnboundedPrimitive_RemainsExplicitFallback(string primitive)
         {
             using var result = new FenSvgRenderer().Render(

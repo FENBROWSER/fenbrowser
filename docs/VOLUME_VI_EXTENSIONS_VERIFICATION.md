@@ -5197,9 +5197,19 @@ Verification:
   and can feed named `feComposite` graph inputs. External image references
   remain explicit resource-policy fallbacks.
 - The exact local `filters-composite-02-b-manual.svg` rerun advances past all
-  24 local-fragment `feImage` inputs. Its sole reported filter boundary is now
-  the unsupported arithmetic `feComposite` operator; no first-party or WPT
-  reference-pass claim is made yet.
+  24 local-fragment `feImage` inputs. Its sole reported filter boundary at this
+  stage was arithmetic `feComposite`, subsequently closed in section 6.237.
+
+## 6.237 SVG Arithmetic Composite Verification (2026-09-06)
+
+- The exact local `filters-composite-02-b-manual.svg` now completes first-party
+  with no fallback, resource rejection, renderer/worker failure, or timeout.
+  The manual file declares no WPT reference and produced no comparable legacy
+  pair, so no pixel-parity or exact reference-pass claim is made.
+- Focused regressions verify `k2` selects SVG `in`, `k3` selects `in2`, omitted
+  coefficients default to zero, malformed and over-bound coefficients remain
+  fallback, and the primitive-region crop prevents constant arithmetic output
+  from expanding into an unbounded native filter graph.
 
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
