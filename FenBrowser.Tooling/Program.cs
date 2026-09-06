@@ -226,11 +226,31 @@ namespace FenBrowser.Tooling
 
                     if (phase == "exec" || phase == "run" || phase == "all")
                     {
-                        var interp = new FenBrowser.Js.Interpreter.BytecodeInterpreter();
+                        var interp = new FenBrowser.Js.Interpreter.BytecodeInterpreter
+                        {
+                            // The dispatch loop only counts instructions when a
+                            // budget is set, so a tool that exists to report the
+                            // count has to ask for one. int.MaxValue is far past
+                            // anything a benchmark reaches, so nothing is capped.
+                            InstructionBudget = int.MaxValue,
+                        };
                         var swExec = System.Diagnostics.Stopwatch.StartNew();
                         var result = interp.Execute(fn);
                         swExec.Stop();
-                        Console.WriteLine($"[jstime] EXEC ok in {swExec.ElapsedMilliseconds} ms (result={result.Tag})");
+                        // A duration on its own cannot be compared with anything.
+                        // The instruction count is what turns it into a price per
+                        // instruction, which is the number worth carrying between
+                        // a benchmark and a real page.
+                        var executed = interp.InstructionsExecuted;
+                        var perInstructionNs = executed > 0
+                            ? swExec.Elapsed.TotalMilliseconds * 1_000_000.0 / executed
+                            : 0;
+                        Console.WriteLine(
+                            $"[jstime] EXEC ok in {swExec.ElapsedMilliseconds} ms (result={result.Tag}) " +
+                            $"executed={executed:N0} " +
+                            $"rate={(swExec.Elapsed.TotalSeconds > 0 ? executed / swExec.Elapsed.TotalSeconds : 0):N0}/s " +
+                            $"perInstruction={perInstructionNs:F1}ns " +
+                            $"natives=[{interp.DescribeNativeCallCost()}]");
                     }
                 }
                 catch (FenBrowser.Js.Interpreter.JsThrownException jte)
