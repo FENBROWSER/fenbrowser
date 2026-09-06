@@ -47,6 +47,77 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(10, 10));
         }
 
+        [Fact]
+        public void Animate_InterpolatesNumericGeometryAtDocumentTime()
+        {
+            const string svg =
+                "<svg width='30' height='10'><rect x='0' width='5' height='10' fill='green'>" +
+                "<animate attributeName='x' from='0' to='20' begin='1s' dur='2s' fill='freeze'/>" +
+                "</rect></svg>";
+
+            using var middle = RenderAt(svg, 2d);
+            using var frozen = RenderAt(svg, 4d);
+
+            Assert.True(middle.Success, middle.ErrorMessage);
+            Assert.True(frozen.Success, frozen.ErrorMessage);
+            Assert.False(middle.RequiresFallback, string.Join("; ", middle.Warnings));
+            Assert.False(frozen.RequiresFallback, string.Join("; ", frozen.Warnings));
+            Assert.Equal(SKColors.Green, middle.Bitmap.GetPixel(12, 5));
+            Assert.Equal(0, middle.Bitmap.GetPixel(2, 5).Alpha);
+            Assert.Equal(SKColors.Green, frozen.Bitmap.GetPixel(22, 5));
+        }
+
+        [Fact]
+        public void AnimateColor_InterpolatesPresentationColor()
+        {
+            const string svg =
+                "<svg width='10' height='10'><rect width='10' height='10'>" +
+                "<animateColor attributeName='fill' from='red' to='blue' dur='2s'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, 1d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            SKColor center = result.Bitmap.GetPixel(5, 5);
+            Assert.InRange(center.Red, (byte)127, (byte)128);
+            Assert.Equal((byte)0, center.Green);
+            Assert.InRange(center.Blue, (byte)127, (byte)128);
+        }
+
+        [Fact]
+        public void Animate_RemoveRestoresUnderlyingValueAfterInterval()
+        {
+            const string svg =
+                "<svg width='30' height='10'><rect x='0' width='5' height='10' fill='green'>" +
+                "<animate attributeName='x' from='0' to='20' dur='1s'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, 2d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(2, 5));
+            Assert.Equal(0, result.Bitmap.GetPixel(22, 5).Alpha);
+        }
+
+        [Fact]
+        public void Animate_UnsupportedSplineRequiresFallback()
+        {
+            const string svg =
+                "<svg width='10' height='10'><rect width='5' height='10'>" +
+                "<animate attributeName='width' from='0' to='10' dur='1s' " +
+                "calcMode='spline' keySplines='0 0 1 1'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, .5d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings,
+                warning => warning.Contains("animate", System.StringComparison.Ordinal));
+        }
+
         [Theory]
         [InlineData(double.NaN)]
         [InlineData(double.PositiveInfinity)]

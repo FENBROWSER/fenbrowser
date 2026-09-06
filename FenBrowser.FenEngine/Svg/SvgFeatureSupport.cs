@@ -12,7 +12,7 @@ namespace FenBrowser.FenEngine.Svg
     {
         private static readonly HashSet<string> FallbackElements = new(StringComparer.Ordinal)
         {
-            "foreignObject", "animation", "animate", "animateTransform"
+            "foreignObject", "animation", "animateTransform"
         };
 
         private static readonly HashSet<string> AdvancedTextAttributes = new(StringComparer.OrdinalIgnoreCase)

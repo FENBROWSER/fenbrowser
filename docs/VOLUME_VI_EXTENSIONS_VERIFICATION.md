@@ -5250,6 +5250,15 @@ Verification:
   transform animation, event timing, DOM SMIL controls, and live invalidation
   remain explicit migration work.
 
+## 6.241 SMIL Value-Interpolation Verification (2026-09-07)
+
+- Focused regressions verify numeric geometry at the middle and frozen end of
+  an interval, presentation-color interpolation, restoration of the underlying
+  value for `fill="remove"`, and explicit fallback for spline calculation.
+- The complete SVG test namespace passes with no regression. This unit covers
+  deterministic two-value snapshots; value lists, repeats, transforms, live
+  invalidation, event timing, and DOM SMIL controls remain migration work.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

@@ -11747,6 +11747,17 @@ Verification:
   fallbacks. The legacy renderer rejects nonzero document time rather than
   silently returning a time-zero image.
 
+## 2.175 Deterministic SMIL Value Interpolation (2026-09-07)
+
+- `<animate>` and `<animateColor>` now interpolate bounded numeric lengths and
+  sRGB colors at `SvgRenderRequest.DocumentTimeSeconds`. Linear and two-value
+  paced calculation, discrete sampling, clock-based begin/end, and
+  remove/freeze fill behavior share the deterministic snapshot pipeline.
+- Supported animated geometry and presentation values are render-local and do
+  not mutate the parsed document. Value lists, spline calculation, mixed units,
+  additive/accumulative composition, event timing, and repetitions remain
+  explicit `smil-animation` fallbacks until their value math is implemented.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

@@ -180,11 +180,12 @@ namespace FenBrowser.FenEngine.Svg
                 case "textPath":
                 case "foreignObject":
                 case "animation":
-                case "animate":
                 case "animateTransform":
-                case "animateMotion":
                     WarnUnsupportedOnce(el.Name);
                     return;
+                case "animate":
+                case "animateColor":
+                case "animateMotion":
                 case "set":
                     return;
                 default:

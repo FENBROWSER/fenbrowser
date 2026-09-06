@@ -23,10 +23,129 @@ namespace FenBrowser.FenEngine.Svg
                 CheckDeadline();
                 SvgElement element = pending.Pop();
                 if (element.Name == "set") ApplySetSnapshot(element);
+                else if (element.Name is "animate" or "animateColor")
+                    ApplyAnimateSnapshot(element);
                 for (int i = element.Children.Count - 1; i >= 0; i--)
                     pending.Push(element.Children[i]);
             }
         }
+
+        private void ApplyAnimateSnapshot(SvgElement animation)
+        {
+            SvgElement target = animation.Parent;
+            string attributeName = animation.GetAttribute("attributeName")?.Trim();
+            string from = animation.GetAttribute("from");
+            string to = animation.GetAttribute("to");
+            string attributeType = animation.GetAttribute("attributeType")?.Trim();
+            if (target == null || string.IsNullOrEmpty(attributeName) ||
+                !SettableSmilAttributes.Contains(attributeName) || from == null || to == null ||
+                animation.GetAttribute("values") != null || animation.GetAttribute("by") != null ||
+                animation.GetAttribute("keyTimes") != null ||
+                animation.GetAttribute("keySplines") != null ||
+                !IsDefaultMotionAttribute(animation, "additive", "replace") ||
+                !IsDefaultMotionAttribute(animation, "accumulate", "none") ||
+                (!string.IsNullOrEmpty(attributeType) &&
+                 !attributeType.Equals("auto", StringComparison.OrdinalIgnoreCase) &&
+                 !attributeType.Equals("CSS", StringComparison.OrdinalIgnoreCase) &&
+                 !attributeType.Equals("XML", StringComparison.OrdinalIgnoreCase)))
+            {
+                RequireSmilFallback("animate values or target");
+                return;
+            }
+
+            string durationRaw = animation.GetAttribute("dur")?.Trim();
+            if (string.IsNullOrEmpty(durationRaw) ||
+                !TryParseClockSeconds(durationRaw, out double duration) || duration <= 0d ||
+                animation.GetAttribute("repeatCount") != null)
+            {
+                RequireSmilFallback("animate duration or repetition");
+                return;
+            }
+            if (!TryResolveSetInterval(animation, out double begin, out double end,
+                    out bool indefiniteEnd, out bool freeze))
+                return;
+
+            bool active = _documentTimeSeconds >= begin &&
+                (indefiniteEnd || _documentTimeSeconds < end);
+            bool frozen = freeze && !indefiniteEnd && _documentTimeSeconds >= end;
+            if (!active && !frozen) return;
+
+            float progress = frozen
+                ? 1f
+                : (float)Math.Clamp((_documentTimeSeconds - begin) / duration, 0d, 1d);
+            string calcMode = animation.GetAttribute("calcMode")?.Trim();
+            if (string.IsNullOrEmpty(calcMode) ||
+                calcMode.Equals("linear", StringComparison.OrdinalIgnoreCase) ||
+                calcMode.Equals("paced", StringComparison.OrdinalIgnoreCase))
+            {
+                // Linear interpolation below.
+            }
+            else if (calcMode.Equals("discrete", StringComparison.OrdinalIgnoreCase))
+            {
+                progress = progress < 1f ? 0f : 1f;
+            }
+            else
+            {
+                RequireSmilFallback("animate calculation mode");
+                return;
+            }
+
+            if (!TryInterpolateSmilValue(attributeName, from, to, progress, out string value))
+            {
+                RequireSmilFallback("animate value interpolation");
+                return;
+            }
+            target.AnimatedProperties ??=
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            target.AnimatedProperties[attributeName] = value;
+        }
+
+        private static bool TryInterpolateSmilValue(
+            string attributeName,
+            string from,
+            string to,
+            float progress,
+            out string value)
+        {
+            value = null;
+            if (attributeName.Equals("fill", StringComparison.OrdinalIgnoreCase) ||
+                attributeName.Equals("stroke", StringComparison.OrdinalIgnoreCase) ||
+                attributeName.Equals("color", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!SvgValues.TryParseColor(from.AsSpan(), out var start) ||
+                    !SvgValues.TryParseColor(to.AsSpan(), out var finish))
+                    return false;
+                byte Lerp(byte a, byte b) => (byte)Math.Clamp(
+                    (int)MathF.Round(a + (b - a) * progress), 0, 255);
+                value = $"#{Lerp(start.Red, finish.Red):x2}{Lerp(start.Green, finish.Green):x2}" +
+                    $"{Lerp(start.Blue, finish.Blue):x2}{Lerp(start.Alpha, finish.Alpha):x2}";
+                return true;
+            }
+
+            if (!SvgValues.TryParseLength(from.AsSpan(), out float startValue, out var startUnit) ||
+                !SvgValues.TryParseLength(to.AsSpan(), out float endValue, out var endUnit) ||
+                startUnit != endUnit)
+                return false;
+            float interpolated = startValue + (endValue - startValue) * progress;
+            if (!float.IsFinite(interpolated)) return false;
+            value = interpolated.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                SmilUnitSuffix(startUnit);
+            return true;
+        }
+
+        private static string SmilUnitSuffix(SvgValues.SvgUnit unit) => unit switch
+        {
+            SvgValues.SvgUnit.Px => "px",
+            SvgValues.SvgUnit.Pt => "pt",
+            SvgValues.SvgUnit.Pc => "pc",
+            SvgValues.SvgUnit.Mm => "mm",
+            SvgValues.SvgUnit.Cm => "cm",
+            SvgValues.SvgUnit.In => "in",
+            SvgValues.SvgUnit.Em => "em",
+            SvgValues.SvgUnit.Ex => "ex",
+            SvgValues.SvgUnit.Percent => "%",
+            _ => string.Empty
+        };
 
         private void ApplySetSnapshot(SvgElement animation)
         {
