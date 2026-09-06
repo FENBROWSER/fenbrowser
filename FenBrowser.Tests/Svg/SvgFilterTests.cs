@@ -270,6 +270,27 @@ namespace FenBrowser.Tests.Svg
             }
         }
 
+        [Theory]
+        [InlineData("feDiffuseLighting", "diffuseConstant='1'")]
+        [InlineData("feSpecularLighting", "specularConstant='1' specularExponent='4'")]
+        public void DistantLighting_UsesAlphaSurfaceAndLightingColor(
+            string primitive,
+            string parameters)
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs><filter id='f'>" +
+                "<" + primitive + " " + parameters + " surfaceScale='2' lighting-color='red'>" +
+                "<feDistantLight azimuth='0' elevation='90'/></" + primitive + ">" +
+                "</filter></defs><rect width='20' height='20' fill='white' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            SKColor center = result.Bitmap.GetPixel(10, 10);
+            Assert.True(center.Red > 200, center.ToString());
+            Assert.True(center.Green < 5 && center.Blue < 5, center.ToString());
+            Assert.True(center.Alpha > 0, center.ToString());
+        }
+
         [Fact]
         public void ObjectBoundingBoxPrimitiveUnits_ScaleOffsetByTargetBounds()
         {
@@ -510,6 +531,8 @@ namespace FenBrowser.Tests.Svg
         [InlineData("<feTurbulence baseFrequency='-.1'/>")]
         [InlineData("<feTurbulence numOctaves='17'/>")]
         [InlineData("<feTurbulence stitchTiles='stitch'/>")]
+        [InlineData("<feDiffuseLighting><fePointLight/></feDiffuseLighting>")]
+        [InlineData("<feSpecularLighting specularExponent='129'><feDistantLight/></feSpecularLighting>")]
         public void UnsupportedOrUnboundedPrimitive_RemainsExplicitFallback(string primitive)
         {
             using var result = new FenSvgRenderer().Render(

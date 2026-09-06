@@ -11720,6 +11720,18 @@ Verification:
   32,767. `stitchTiles="stitch"`, object-bounding-box primitive units, invalid
   modes, and out-of-bound parameters remain explicit compatibility fallbacks.
 
+## 2.173 SVG Distant Lighting Filters (2026-09-06)
+
+- `feDiffuseLighting` and `feSpecularLighting` now accept one
+  `feDistantLight`, convert SVG azimuth/elevation degrees into the native light
+  direction, and apply inherited `lighting-color` to the input alpha surface.
+- Surface scale, diffuse/specular constants, and the specular exponent use SVG
+  defaults with finite bounds; the exponent is restricted to its 1 through 128
+  range. Output is constrained to the resolved primitive region and native
+  filters remain owned by the current graph.
+- Non-unit `kernelUnitLength`, point and spot lights, multiple light children,
+  and invalid or over-bound parameters remain explicit compatibility fallbacks.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

@@ -411,6 +411,12 @@ namespace FenBrowser.FenEngine.Svg
                             primitive, input, filterRegion, owned),
                         "feMorphology" => BuildMorphology(
                             primitive, input, primitiveScaleX, primitiveScaleY),
+                        "feDiffuseLighting" => BuildDistantLighting(
+                            filterElement, primitive, target, viewport, filterRegion,
+                            input, specular: false),
+                        "feSpecularLighting" => BuildDistantLighting(
+                            filterElement, primitive, target, viewport, filterRegion,
+                            input, specular: true),
                         _ => null
                     };
                 }
@@ -675,6 +681,86 @@ namespace FenBrowser.FenEngine.Svg
             return tokenizer.Next(out var token) &&
                 TryParseBoundedInteger(token, maximum, out value) &&
                 !tokenizer.Next(out _);
+        }
+
+        private SKImageFilter BuildDistantLighting(
+            SvgElement filter,
+            SvgElement lighting,
+            SvgElement target,
+            ViewportContext viewport,
+            SKRect filterRegion,
+            SKImageFilter input,
+            bool specular)
+        {
+            if (!TryResolvePrimitiveRegion(
+                    filter, lighting, target, viewport, filterRegion, out var primitiveRegion) ||
+                !SupportsUnitKernel(lighting.GetAttribute("kernelUnitLength")) ||
+                !TryReadBoundedLightingNumber(
+                    lighting.GetAttribute("surfaceScale"), 1f, -32767f, 32767f,
+                    out float surfaceScale))
+                return null;
+
+            SvgElement light = null;
+            foreach (var child in lighting.Children)
+            {
+                if (child.Name is "title" or "desc" or "metadata") continue;
+                if (light != null || child.Name != "feDistantLight") return null;
+                light = child;
+            }
+            if (light == null ||
+                !TryReadBoundedLightingNumber(
+                    light.GetAttribute("azimuth"), 0f, -360000f, 360000f,
+                    out float azimuth) ||
+                !TryReadBoundedLightingNumber(
+                    light.GetAttribute("elevation"), 0f, -360000f, 360000f,
+                    out float elevation))
+                return null;
+
+            const float DegreesToRadians = MathF.PI / 180f;
+            float azimuthRadians = azimuth * DegreesToRadians;
+            float elevationRadians = elevation * DegreesToRadians;
+            float elevationCosine = MathF.Cos(elevationRadians);
+            var direction = new SKPoint3(
+                MathF.Cos(azimuthRadians) * elevationCosine,
+                MathF.Sin(azimuthRadians) * elevationCosine,
+                MathF.Sin(elevationRadians));
+
+            string colorRaw = lighting.GetPresentationProperty("lighting-color");
+            if (!SvgValues.TryParseColor((colorRaw ?? "white").AsSpan(), out var lightColor))
+                return null;
+
+            if (!specular)
+            {
+                if (!TryReadBoundedLightingNumber(
+                        lighting.GetAttribute("diffuseConstant"), 1f, 0f, 32767f,
+                        out float diffuseConstant))
+                    return null;
+                return SKImageFilter.CreateDistantLitDiffuse(
+                    direction, lightColor, surfaceScale, diffuseConstant,
+                    input, primitiveRegion);
+            }
+
+            if (!TryReadBoundedLightingNumber(
+                    lighting.GetAttribute("specularConstant"), 1f, 0f, 32767f,
+                    out float specularConstant) ||
+                !TryReadBoundedLightingNumber(
+                    lighting.GetAttribute("specularExponent"), 1f, 1f, 128f,
+                    out float specularExponent))
+                return null;
+            return SKImageFilter.CreateDistantLitSpecular(
+                direction, lightColor, surfaceScale, specularConstant,
+                specularExponent, input, primitiveRegion);
+        }
+
+        private static bool TryReadBoundedLightingNumber(
+            string raw,
+            float fallback,
+            float minimum,
+            float maximum,
+            out float value)
+        {
+            return TryReadSingleNumber(raw, fallback, out value) &&
+                value >= minimum && value <= maximum;
         }
 
         private static SKImageFilter BuildDisplacementMap(

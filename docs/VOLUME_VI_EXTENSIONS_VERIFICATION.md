@@ -5224,6 +5224,20 @@ Verification:
   exercised by the local SVG 1.1 seed test. Unsupported stitching and invalid or
   over-bound parameters remain fallback.
 
+## 6.239 SVG Distant Lighting Verification (2026-09-06)
+
+- The exact local `filters-light-02-f-manual.svg` now completes first-party and
+  passes the legacy pixel threshold at alpha IoU 0.9287 and mean RGB difference
+  0.0004, with no fallback, rejection, renderer/worker failure, or timeout. The
+  manual file declares no WPT reference, so no exact reference-pass claim is
+  made.
+- `filters-diffuse-01-f-manual.svg` and `filters-specular-01-f-manual.svg`
+  reach resource rejection because their `bumpMap2.png` input is absent from the
+  authorized local WPT resource tree. They are not counted as lighting passes.
+- Focused regressions cover both diffuse and specular output, input handling,
+  lighting color, exponent admission, unsupported point lights, and primitive
+  region bounds.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
