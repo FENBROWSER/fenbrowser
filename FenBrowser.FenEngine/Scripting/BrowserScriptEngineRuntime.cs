@@ -13488,6 +13488,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 FenBrowser.FenEngine.Rendering.ElementStateManager.Instance
                     .ResetFormControlState(control);
             }
+
+            // A select needs its selection re-derived after its options go back to
+            // their defaults: a dropdown whose markup selects nothing still has to
+            // end up showing its first option.
+            foreach (var select in element.Descendants().OfType<Element>())
+            {
+                if (string.Equals(select.NodeName, "SELECT", StringComparison.OrdinalIgnoreCase))
+                {
+                    FenBrowser.FenEngine.Rendering.SelectSelection.AskForReset(select);
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -20940,6 +20951,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case Element element when string.Equals(property, "id", StringComparison.Ordinal):
                     element.Id = CoerceToHostString(value);
                     return true;
+                case Element element when
+                    string.Equals(property, "value", StringComparison.Ordinal) &&
+                    IsSelectElement(element):
+                    FenBrowser.FenEngine.Rendering.SelectSelection.SetValue(
+                        element, CoerceToHostString(value));
+                    return true;
                 case Element element when string.Equals(property, "value", StringComparison.Ordinal):
                     FenBrowser.FenEngine.Rendering.FormControlValue.Write(element, CoerceToHostString(value));
                     return true;
@@ -21088,12 +21105,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case Element element when
                     string.Equals(property, "selected", StringComparison.Ordinal) &&
                     IsOptionElement(element):
-                    // Stored as live state only. The selected content attribute is
-                    // defaultSelected, and Chrome leaves it untouched when a script
-                    // assigns .selected, so writing it here would corrupt the
-                    // element's default. The getter prefers this stored value.
-                    _owner.SetStoredHostProperty(
-                        element, "selected", JsValue.FromBoolean(CoerceToHostBoolean(value)));
+                    // Selectedness is live state; the "selected" content attribute
+                    // is defaultSelected and stays where the markup put it. Going
+                    // through the state machine also applies the single-selection
+                    // rule to the option's siblings.
+                    FenBrowser.FenEngine.Rendering.SelectSelection.SetSelected(
+                        element, CoerceToHostBoolean(value));
+                    return true;
+                case Element element when
+                    string.Equals(property, "defaultSelected", StringComparison.Ordinal) &&
+                    IsOptionElement(element):
+                    SetBooleanAttribute(element, "selected", CoerceToHostBoolean(value));
+                    return true;
+                case Element element when
+                    string.Equals(property, "selectedIndex", StringComparison.Ordinal) &&
+                    IsSelectElement(element):
+                    FenBrowser.FenEngine.Rendering.SelectSelection.SetSelectedIndex(
+                        element, (int)CoerceToFiniteNumber(value, -1));
                     return true;
                 case Element element when
                     string.Equals(property, "hash", StringComparison.Ordinal) &&
@@ -22028,14 +22056,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     value = JsValue.FromBoolean(element.HasAttribute("disabled"));
                     return true;
                 case "selected" when IsOptionElement(element):
-                    // HTML dom-option-selected. The engine has no selection state
-                    // machine (only checkedness is tracked), so this reflects the
-                    // selected content attribute and any value a script assigned.
-                    // It therefore does not follow a user changing the selection.
-                    var storedSelected = _owner.GetStoredHostPropertyOrUndefined(element, "selected");
-                    value = storedSelected.Tag == JsValueTag.Boolean
-                        ? storedSelected
-                        : JsValue.FromBoolean(element.HasAttribute("selected"));
+                    // HTML dom-option-selected: live selectedness, which follows
+                    // the "selected" attribute only until something moves it.
+                    value = JsValue.FromBoolean(
+                        FenBrowser.FenEngine.Rendering.SelectSelection.IsSelected(element));
+                    return true;
+                case "defaultSelected" when IsOptionElement(element):
+                    value = JsValue.FromBoolean(element.HasAttribute("selected"));
                     return true;
                 case "src":
                     value = JsValue.FromString(ResolveElementUrlProperty(element, "src"));
@@ -22045,6 +22072,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "title":
                     value = JsValue.FromString(element.GetAttribute("title") ?? string.Empty);
+                    return true;
+                case "value" when IsSelectElement(element):
+                    value = JsValue.FromString(
+                        FenBrowser.FenEngine.Rendering.SelectSelection.Value(element));
+                    return true;
+                case "selectedIndex" when IsSelectElement(element):
+                    value = JsValue.FromInt32(
+                        FenBrowser.FenEngine.Rendering.SelectSelection.SelectedIndex(element));
                     return true;
                 case "value":
                     value = JsValue.FromString(ReadElementValue(element));

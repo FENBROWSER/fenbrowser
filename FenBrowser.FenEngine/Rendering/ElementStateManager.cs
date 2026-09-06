@@ -537,12 +537,87 @@ namespace FenBrowser.FenEngine.Rendering
 
             _checkedElements.Remove(element);
             _trackedCheckedElements.Remove(element);
+            ClearOptionSelectionState(element);
 
             RequestFullRepaint();
             OnStateChanged?.Invoke(element);
         }
 
         private readonly object _valueLock = new object();
+        #endregion
+
+        #region Option Selectedness State
+        // HTML 4.10.10: an option's selectedness is internal state and the
+        // "selected" content attribute is only its default (defaultSelected). The
+        // dirtiness flag records that a script or the user has moved it, after
+        // which the attribute no longer speaks for the control.
+        private readonly HashSet<Element> _selectedOptions = new HashSet<Element>();
+        private readonly HashSet<Element> _dirtySelectedOptions = new HashSet<Element>();
+
+        /// <summary>
+        /// An option's selectedness, falling back to its "selected" content
+        /// attribute while the option is still pristine.
+        /// </summary>
+        public bool IsOptionSelected(Element option)
+        {
+            if (option == null) return false;
+
+            lock (_valueLock)
+            {
+                if (_dirtySelectedOptions.Contains(option))
+                {
+                    return _selectedOptions.Contains(option);
+                }
+            }
+
+            return option.HasAttribute("selected");
+        }
+
+        /// <summary>
+        /// Sets an option's selectedness and raises its dirtiness flag. Callers
+        /// that are honouring the single-selection rule drive every option in the
+        /// list; this only records one.
+        /// </summary>
+        public void SetOptionSelected(Element option, bool selected)
+        {
+            if (option == null) return;
+
+            lock (_valueLock)
+            {
+                _dirtySelectedOptions.Add(option);
+                if (selected)
+                {
+                    _selectedOptions.Add(option);
+                }
+                else
+                {
+                    _selectedOptions.Remove(option);
+                }
+            }
+
+            RequestFullRepaint();
+            OnStateChanged?.Invoke(option);
+        }
+
+        /// <summary>True once selectedness has diverged from the attribute.</summary>
+        public bool HasDirtySelectedness(Element option)
+        {
+            if (option == null) return false;
+            lock (_valueLock)
+            {
+                return _dirtySelectedOptions.Contains(option);
+            }
+        }
+
+        private void ClearOptionSelectionState(Element option)
+        {
+            if (option == null) return;
+            lock (_valueLock)
+            {
+                _selectedOptions.Remove(option);
+                _dirtySelectedOptions.Remove(option);
+            }
+        }
         #endregion
 
         /// <summary>
@@ -1968,6 +2043,8 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _elementValues.Clear();
                 _dirtyValueElements.Clear();
+                _selectedOptions.Clear();
+                _dirtySelectedOptions.Clear();
             }
             Interlocked.Exchange(ref _fullRepaintRequested, 0);
         }

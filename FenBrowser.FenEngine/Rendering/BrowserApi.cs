@@ -11314,6 +11314,25 @@ pre {{
 
             foreach (var control in form.Descendants().OfType<Element>())
             {
+                // A "multiple" select contributes one entry per selected option,
+                // so it cannot go through the single-value path.
+                if (string.Equals(control.NodeName, "SELECT", StringComparison.OrdinalIgnoreCase))
+                {
+                    var selectName = control.GetAttribute("name");
+                    if (IsDisabledControl(control) || string.IsNullOrWhiteSpace(selectName))
+                    {
+                        continue;
+                    }
+
+                    foreach (var option in SelectSelection.SuccessfulOptions(control))
+                    {
+                        entries.Add(new KeyValuePair<string, string>(
+                            selectName, FormControlValue.Read(option)));
+                    }
+
+                    continue;
+                }
+
                 if (!TryGetSuccessfulFormControl(control, submitter, out var name, out var value))
                 {
                     continue;
@@ -11397,8 +11416,8 @@ pre {{
                     value = FormControlValue.Read(control);
                     return true;
                 case "select":
-                    value = GetSelectSubmissionValue(control);
-                    return true;
+                    // Handled by the caller, which can emit several entries.
+                    return false;
                 default:
                     return false;
             }
@@ -11538,26 +11557,6 @@ pre {{
 
             var type = (element.GetAttribute("type") ?? string.Empty).ToLowerInvariant();
             return type != "hidden";
-        }
-
-        private static string GetSelectSubmissionValue(Element select)
-        {
-            if (select == null) return string.Empty;
-
-            var options = select
-                .Descendants()
-                .OfType<Element>()
-                .Where(el => string.Equals(el.NodeName, "OPTION", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            if (options.Count == 0) return string.Empty;
-
-            // Selectedness is still read off the content attribute: the engine has
-            // no selection state machine, so a user changing the selection is not
-            // tracked here. The option's *value* now resolves properly, falling back
-            // to its text when it carries no value attribute.
-            var selected = options.FirstOrDefault(opt => opt.HasAttribute("selected")) ?? options[0];
-            return FormControlValue.Read(selected);
         }
 
         internal static string AppendQueryToUri(Uri baseUri, IReadOnlyList<KeyValuePair<string, string>> fields)
