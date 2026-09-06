@@ -209,7 +209,7 @@ namespace FenBrowser.FenEngine.Adapters
         public static SvgRenderLimits Default => new SvgRenderLimits
         {
             MaxRecursionDepth = 32,
-            MaxFilterCount = 10,
+            MaxFilterCount = 16,
             MaxRenderTimeMs = 250,
             MaxElementCount = 50000,
             MaxSourceChars = 8 * 1024 * 1024,

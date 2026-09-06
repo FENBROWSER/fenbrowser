@@ -1125,8 +1125,8 @@ So you want to add `border-radius`? Follow these steps:
 - `Adapters/ISvgRenderer.cs`
   - Aligned default SVG safety limits to project hard constraints:
     - `MaxRecursionDepth = 32`
-    - `MaxFilterCount = 10`
-    - `MaxRenderTimeMs = 100`
+    - `MaxFilterCount = 16`
+    - `MaxRenderTimeMs = 250`
 
 ### 6.12 Phase-1 Correctness and Wiring (2026-02-18)
 
@@ -11677,6 +11677,15 @@ Verification:
 - Convolution defaults to linear-light RGB and honors inherited
   `color-interpolation-filters="sRGB"`. All intermediate color and image
   filters are deterministically disposed with the enclosing render graph.
+
+## 2.169 SVG Filter-Definition Admission (2026-09-06)
+
+- The default render profile now admits up to 16 filter definitions, allowing
+  valid artwork with 12 small, independently bounded filters to reach feature
+  evaluation. The strict untrusted-content profile remains capped at 5.
+- Per-filter primitive admission remains capped at 32, the render deadline and
+  element/layer/raster limits are unchanged, and caller limits still normalize
+  under the existing non-bypassable hard cap.
 
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 

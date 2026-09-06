@@ -167,6 +167,20 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void DefaultFilterCount_AdmitsTwelveIndependentDefinitions()
+        {
+            var source = new System.Text.StringBuilder("<svg><defs>");
+            for (int i = 0; i < 12; i++)
+                source.Append("<filter id='f").Append(i).Append("'><feOffset/></filter>");
+            source.Append("</defs></svg>");
+
+            bool ok = SvgMarkupParser.TryParse(
+                source.ToString(), SvgRenderLimits.Default, out _, out string fatal);
+
+            Assert.True(ok, fatal);
+        }
+
+        [Fact]
         public void DepthBudget_TriggersSandboxViolation_BeforeStackOverflow()
         {
             var sb = new System.Text.StringBuilder("<svg>");

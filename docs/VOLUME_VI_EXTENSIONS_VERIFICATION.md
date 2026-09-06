@@ -5180,6 +5180,16 @@ Verification:
 - Focused regressions cover normalized bias, divisor use, edge sampling, and
   malformed kernel admission. The complete SVG test namespace passes 437/437.
 
+## 6.235 SVG Filter-Definition Admission Verification (2026-09-06)
+
+- A parser regression proves the default profile admits 12 independent filter
+  definitions, while the existing explicit two-filter limit still rejects a
+  third definition with a sandbox violation.
+- Local `filters-composite-02-b-manual.svg` now reaches first-party feature
+  evaluation instead of failing hybrid routing at the former 10-filter limit.
+  Its local-fragment `feImage` inputs remain the next explicit compatibility
+  boundary; no rendering-support claim is made by this admission change.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
