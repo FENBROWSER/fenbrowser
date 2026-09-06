@@ -3614,6 +3614,40 @@ public sealed class BytecodeCompiler
                         return deleteDest;
                     }
 
+                    if (deleteOperand is OptionalMemberExpressionNode optionalMember)
+                    {
+                        // ECMA-262 13.5.1.2: a short-circuited optional chain deletes
+                        // nothing and evaluates to true, so seed the result with true
+                        // and let the short-circuit jump straight past the delete.
+                        var deleteDest = AllocateRegister();
+                        _instructions.Add(new Instruction(OpCode.LoadConst, deleteDest, AddConstant(JsValue.FromBoolean(true)), 0));
+
+                        var shortCircuitJumps = new List<int>();
+                        var objReg = CompileOptionalChainOperand(optionalMember.Object, shortCircuitJumps);
+                        if (optionalMember.IsOptional)
+                        {
+                            EmitOptionalChainShortCircuit(objReg, shortCircuitJumps);
+                        }
+
+                        if (optionalMember.Computed)
+                        {
+                            var keyReg = CompileExpression(optionalMember.PropertyExpression!);
+                            _instructions.Add(new Instruction(OpCode.DeleteElem, deleteDest, objReg, keyReg));
+                        }
+                        else
+                        {
+                            _instructions.Add(new Instruction(OpCode.DeletePropByName, deleteDest, objReg, GetOrCreatePropertyName(optionalMember.Property)));
+                        }
+
+                        var deleteEndLabel = _instructions.Count;
+                        foreach (var jump in shortCircuitJumps)
+                        {
+                            PatchJump(jump, deleteEndLabel);
+                        }
+
+                        return deleteDest;
+                    }
+
                     // delete on a non-reference expression: ECMA-262 13.5.1.2
                     // says return true without evaluating the operand.
                     var defaultDeleteResult = AllocateRegister();
