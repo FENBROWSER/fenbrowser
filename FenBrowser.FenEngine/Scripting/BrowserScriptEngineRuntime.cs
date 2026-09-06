@@ -1940,17 +1940,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             "(e.g. WAF challenge â†’ location.reload).");
                     }
                     _fenJsEvaluationCount++;
+                    // Split these: front-end cost on a megabyte bundle is most of
+                    // the time before a page shows anything, and "compile+verify"
+                    // as one number cannot say whether to attack the parser, the
+                    // bytecode emitter or the verifier.
                     var compileWatch = System.Diagnostics.Stopwatch.StartNew();
                     var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
-                    RegisterCallbackFunctionProvenance(function, GetCurrentScriptRecord());
-                    new BytecodeVerifier().Verify(function);
                     var compileMs = compileWatch.ElapsedMilliseconds;
+                    RegisterCallbackFunctionProvenance(function, GetCurrentScriptRecord());
+                    compileWatch.Restart();
+                    new BytecodeVerifier().Verify(function);
+                    var verifyMs = compileWatch.ElapsedMilliseconds;
                     compileWatch.Restart();
                     var evalResult = _interpreter.Execute(function);
                     if (script.Length > 20000)
                     {
                         FenBrowser.Core.EngineLogCompat.Info(
-                            $"[FenJsBridge] script {script.Length} chars: compile+verify {compileMs}ms, " +
+                            $"[FenJsBridge] script {script.Length} chars: " +
+                            $"parse+compile {compileMs}ms, verify {verifyMs}ms, " +
                             $"execute {compileWatch.ElapsedMilliseconds}ms",
                             FenBrowser.Core.Logging.LogCategory.JavaScript);
                     }
