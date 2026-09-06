@@ -39,10 +39,11 @@ public static class JitCompiler
     //
     // FEN_JIT_TIERUP overrides it, so the trade can be measured against a real
     // page rather than argued about.
+    // Default raised to 100 to avoid over-compilation on complex pages like reCAPTCHA.
     public static readonly int TierUpThreshold =
         int.TryParse(Environment.GetEnvironmentVariable("FEN_JIT_TIERUP"), out var configured) && configured > 0
             ? configured
-            : 10;
+            : 100;
 
     /// <summary>
     /// Set FEN_JIT_DISABLE=1 to keep everything on the dispatch loop. Having a

@@ -406,10 +406,13 @@ public sealed partial class BytecodeInterpreter
             bcFn.Invocations++;
 #if !PUBLISH_AOT
             // Tier-4 #24 (audit §3.2): combined invocation + back-edge
-            // trigger. Either 100 calls OR 10,000 cross-call loop
+            // trigger. Either 1000 calls OR 100,000 cross-call loop
             // iterations OR a balanced mix gets the function JIT-compiled.
             // BackEdgeScale=100 keeps the legacy "100 invocations" cliff
             // intact while letting one-call loop-heavy functions tier up.
+            // Default TierUpThreshold=100 avoids over-compilation on complex
+            // pages like reCAPTCHA (which compiled ~500 functions at the old
+            // threshold of 10 and ran slower overall than with JIT disabled).
             const int BackEdgeScale = 100;
             if (!bcFn.JitCompileAttempted &&
                 (long)bcFn.Invocations * BackEdgeScale + bcFn.BackEdges
