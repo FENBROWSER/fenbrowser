@@ -13472,6 +13472,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
     }
 
+    /// <summary>
+    /// HTML "reset the form": clears the dirty value and checkedness flags on
+    /// every control, so each one goes back to tracking its markup defaults.
+    /// </summary>
+    internal void ResetFormFromScript(Element element)
+    {
+        if (element == null || !string.Equals(element.TagName, "FORM", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        try
+        {
+            foreach (var control in element.Descendants().OfType<Element>())
+            {
+                FenBrowser.FenEngine.Rendering.ElementStateManager.Instance
+                    .ResetFormControlState(control);
+            }
+        }
+        catch (Exception ex)
+        {
+            EngineLogCompat.Error($"[ResetForm] Failed: {ex.Message}", LogCategory.JavaScript);
+        }
+    }
+
     internal void SubmitFormFromScript(Element element)
     {
         if (element == null || !string.Equals(element.TagName, "FORM", StringComparison.OrdinalIgnoreCase))
@@ -14288,6 +14311,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         return new StringContent(CoerceToHostString(bodyValue), Encoding.UTF8, "text/plain");
     }
 
+    // defaultValue exists on the elements that have a default distinct from their
+    // live value: input and textarea.
+    private static bool IsValueDefaultingElement(Element element)
+    {
+        return string.Equals(element?.TagName, "input", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(element?.TagName, "textarea", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsCheckableInputElement(Element element)
     {
         if (!string.Equals(element?.TagName, "input", StringComparison.OrdinalIgnoreCase))
@@ -14448,14 +14479,25 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 element.Id = CoerceToHostString(value);
                 break;
             case "value":
-                element.SetAttribute("value", CoerceToHostString(value));
-                if (string.Equals(element.TagName, "textarea", StringComparison.OrdinalIgnoreCase))
-                {
-                    element.TextContent = CoerceToHostString(value);
-                }
+                FenBrowser.FenEngine.Rendering.FormControlValue.Write(element, CoerceToHostString(value));
+                break;
+            case "defaultValue" when IsValueDefaultingElement(element):
+                FenBrowser.FenEngine.Rendering.FormControlValue.WriteDefault(element, CoerceToHostString(value));
                 break;
             case "checked" when IsCheckableInputElement(element):
                 ElementStateManager.Instance.SetChecked(element, CoerceToHostBoolean(value));
+                break;
+            case "defaultChecked" when IsCheckableInputElement(element):
+                // defaultChecked reflects the "checked" content attribute, which is
+                // the default -- not the live checkedness.
+                if (CoerceToHostBoolean(value))
+                {
+                    element.SetAttribute("checked", string.Empty);
+                }
+                else
+                {
+                    element.RemoveAttribute("checked");
+                }
                 break;
             case "type" when string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase):
                 element.SetAttribute("type", CoerceToHostString(value));
@@ -20899,7 +20941,27 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     element.Id = CoerceToHostString(value);
                     return true;
                 case Element element when string.Equals(property, "value", StringComparison.Ordinal):
-                    SetElementValue(element, CoerceToHostString(value));
+                    FenBrowser.FenEngine.Rendering.FormControlValue.Write(element, CoerceToHostString(value));
+                    return true;
+                case Element element when
+                    string.Equals(property, "defaultValue", StringComparison.Ordinal) &&
+                    IsValueDefaultingElement(element):
+                    FenBrowser.FenEngine.Rendering.FormControlValue.WriteDefault(
+                        element, CoerceToHostString(value));
+                    return true;
+                case Element element when
+                    string.Equals(property, "defaultChecked", StringComparison.Ordinal) &&
+                    IsCheckableInputElement(element):
+                    // defaultChecked reflects the "checked" content attribute --
+                    // the default, not the live checkedness.
+                    if (CoerceToHostBoolean(value))
+                    {
+                        element.SetAttribute("checked", string.Empty);
+                    }
+                    else
+                    {
+                        element.RemoveAttribute("checked");
+                    }
                     return true;
                 case Element element when
                     string.Equals(property, "type", StringComparison.Ordinal) &&
@@ -21962,11 +22024,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     // HTML dom-script-text: the script's child text content.
                     value = JsValue.FromString(element.TextContent ?? string.Empty);
                     return true;
-                case "defaultValue" when IsTextAreaElement(element):
-                    // HTML dom-textarea-defaultvalue: the element's child text
-                    // content, which is distinct from the live `value`.
-                    value = JsValue.FromString(element.TextContent ?? string.Empty);
-                    return true;
                 case "disabled" when IsFieldSetElement(element):
                     value = JsValue.FromBoolean(element.HasAttribute("disabled"));
                     return true;
@@ -21991,6 +22048,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "value":
                     value = JsValue.FromString(ReadElementValue(element));
+                    return true;
+                case "defaultValue" when IsValueDefaultingElement(element):
+                    value = JsValue.FromString(ReadElementDefaultValue(element));
+                    return true;
+                case "defaultChecked" when IsCheckableInputElement(element):
+                    value = JsValue.FromBoolean(element.HasAttribute("checked"));
                     return true;
                 case "type" when string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase):
                     value = JsValue.FromString(ReadInputType(element));
@@ -22371,6 +22434,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             (_, _) =>
                             {
                                 _owner.SubmitFormFromScript(element);
+                                return JsValue.Undefined;
+                            });
+                        return true;
+                    }
+                    value = JsValue.Undefined;
+                    return false;
+                case "reset":
+                    // HTMLFormElement.reset(): return every control to its default
+                    // value and checkedness by dropping the dirty flags.
+                    if (string.Equals(element.TagName, "FORM", StringComparison.OrdinalIgnoreCase))
+                    {
+                        value = _owner.GetOrCreateHostCallable(
+                            element,
+                            "reset",
+                            (_, _) =>
+                            {
+                                _owner.ResetFormFromScript(element);
                                 return JsValue.Undefined;
                             });
                         return true;
@@ -25796,54 +25876,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         private static string ReadElementValue(Element element)
-        {
-            if (element == null)
-            {
-                return string.Empty;
-            }
-
-            var attrValue = element.GetAttribute("value");
-            if (attrValue != null)
-            {
-                return attrValue;
-            }
-
-            if (string.Equals(element.TagName, "textarea", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(element.TagName, "option", StringComparison.OrdinalIgnoreCase))
-            {
-                return element.TextContent ?? string.Empty;
-            }
-
-            return string.Empty;
-        }
+            => FenBrowser.FenEngine.Rendering.FormControlValue.Read(element);
 
         private static string ReadInputType(Element element)
-        {
-            var type = (element?.GetAttribute("type") ?? string.Empty).Trim().ToLowerInvariant();
-            return type switch
-            {
-                "hidden" or "text" or "search" or "tel" or "url" or "email" or "password" or
-                "date" or "month" or "week" or "time" or "datetime-local" or "number" or
-                "range" or "color" or "checkbox" or "radio" or "file" or "submit" or "image" or
-                "reset" or "button" => type,
-                _ => "text"
-            };
-        }
+            => FenBrowser.FenEngine.Rendering.FormControlValue.ReadInputType(element);
 
         private static void SetElementValue(Element element, string value)
-        {
-            if (element == null)
-            {
-                return;
-            }
+            => FenBrowser.FenEngine.Rendering.FormControlValue.Write(element, value);
 
-            value ??= string.Empty;
-            element.SetAttribute("value", value);
-            if (string.Equals(element.TagName, "textarea", StringComparison.OrdinalIgnoreCase))
-            {
-                element.TextContent = value;
-            }
-        }
+        private static string ReadElementDefaultValue(Element element)
+            => FenBrowser.FenEngine.Rendering.FormControlValue.ReadDefault(element);
+
+        private static void SetElementDefaultValue(Element element, string value)
+            => FenBrowser.FenEngine.Rendering.FormControlValue.WriteDefault(element, value);
 
         private static int ReadElementTabIndex(Element element)
         {

@@ -11350,12 +11350,12 @@ pre {{
             {
                 case "input":
                 {
-                    var type = control.GetAttribute("type")?.ToLowerInvariant() ?? "text";
+                    var type = FormControlValue.ReadInputType(control);
                     switch (type)
                     {
                         case "submit":
                             if (submitter == null || !ReferenceEquals(control, submitter)) return false;
-                            value = control.GetAttribute("value") ?? string.Empty;
+                            value = FormControlValue.Read(control);
                             return true;
                         case "button":
                         case "reset":
@@ -11364,12 +11364,15 @@ pre {{
                             return false;
                         case "checkbox":
                         case "radio":
-                            if (!control.HasAttribute("checked")) return false;
-                            value = control.GetAttribute("value");
-                            if (string.IsNullOrEmpty(value)) value = "on";
+                            // Successfulness follows live checkedness, not the
+                            // "checked" content attribute -- that is only the
+                            // default, and a box the user has since toggled would
+                            // otherwise submit the state the markup shipped with.
+                            if (!FormControlValue.IsChecked(control)) return false;
+                            value = FormControlValue.Read(control);
                             return true;
                         default:
-                            value = control.GetAttribute("value") ?? string.Empty;
+                            value = FormControlValue.Read(control);
                             return true;
                     }
                 }
@@ -11391,7 +11394,7 @@ pre {{
                     return true;
                 }
                 case "textarea":
-                    value = control.GetAttribute("value") ?? control.TextContent ?? string.Empty;
+                    value = FormControlValue.Read(control);
                     return true;
                 case "select":
                     value = GetSelectSubmissionValue(control);
@@ -11549,8 +11552,12 @@ pre {{
 
             if (options.Count == 0) return string.Empty;
 
+            // Selectedness is still read off the content attribute: the engine has
+            // no selection state machine, so a user changing the selection is not
+            // tracked here. The option's *value* now resolves properly, falling back
+            // to its text when it carries no value attribute.
             var selected = options.FirstOrDefault(opt => opt.HasAttribute("selected")) ?? options[0];
-            return selected.GetAttribute("value") ?? selected.TextContent ?? string.Empty;
+            return FormControlValue.Read(selected);
         }
 
         internal static string AppendQueryToUri(Uri baseUri, IReadOnlyList<KeyValuePair<string, string>> fields)

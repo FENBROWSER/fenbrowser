@@ -62,8 +62,11 @@ namespace FenBrowser.Tests.Rendering
             var token = "03AFcWeA7-token_value";
             var response = new Element("textarea");
             response.SetAttribute("name", "g-recaptcha-response");
-            response.SetAttribute("value", token);
             form.AppendChild(response);
+
+            // A textarea has no "value" content attribute; the script assignment
+            // lands in the control's value state, which is what must be submitted.
+            ElementStateManager.Instance.SetValue(response, token);
 
             var entries = BrowserHost.CollectFormSubmissionEntries(form, submitter: null);
             var (body, _) = BrowserHost.EncodeFormSubmissionBody(form, entries);

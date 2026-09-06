@@ -23,7 +23,9 @@ namespace FenBrowser.Tests.Rendering
 
             var query = new Element("textarea");
             query.SetAttribute("name", "q");
-            query.SetAttribute("value", "fenbrowser");
+            // A textarea takes its value from its child text, not a "value"
+            // content attribute -- HTML defines no such attribute for it.
+            query.TextContent = "fenbrowser";
 
             var source = new Element("input");
             source.SetAttribute("type", "hidden");

@@ -1146,7 +1146,9 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("rtl", engine.Evaluate("String(globalThis.__currentDirection)")?.ToString());
             Assert.Equal(string.Empty, engine.Evaluate("String(globalThis.__emptyDirection)")?.ToString());
             Assert.Equal("from-attribute", engine.Evaluate("String(globalThis.__inputInitialValue)")?.ToString());
-            Assert.Equal("from-property:from-property", engine.Evaluate("String(globalThis.__inputUpdatedValue)")?.ToString());
+            // HTML 4.10.5.1: assigning .value sets the control's value state and
+            // leaves the "value" content attribute as the default it always was.
+            Assert.Equal("from-attribute:from-property", engine.Evaluate("String(globalThis.__inputUpdatedValue)")?.ToString());
         }
 
         [Fact]

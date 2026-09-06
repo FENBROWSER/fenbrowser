@@ -442,6 +442,109 @@ namespace FenBrowser.FenEngine.Rendering
             return element.HasAttribute("checked");
         }
 
+
+        #region Form Control Value State
+        // HTML 4.10.5.1: a form control's value is internal state, not the "value"
+        // content attribute. The attribute is the *default* value; the two diverge
+        // as soon as the user types or a script assigns, which the dirty value flag
+        // records. Reading submissions off the attribute therefore sees the page's
+        // initial markup rather than what is on screen.
+        private readonly Dictionary<Element, string> _elementValues = new Dictionary<Element, string>();
+        private readonly HashSet<Element> _dirtyValueElements = new HashSet<Element>();
+
+        /// <summary>
+        /// The control's current value, honouring the dirty value flag. Falls back
+        /// to the default value (the content attribute, or a textarea's child text)
+        /// while the control is still pristine.
+        /// </summary>
+        public string GetValue(Element element)
+        {
+            if (element == null) return string.Empty;
+
+            lock (_valueLock)
+            {
+                if (_dirtyValueElements.Contains(element) &&
+                    _elementValues.TryGetValue(element, out var stored))
+                {
+                    return stored ?? string.Empty;
+                }
+            }
+
+            return GetDefaultValue(element);
+        }
+
+        /// <summary>
+        /// Sets the value and raises the dirty value flag, so the control no longer
+        /// tracks its content attribute.
+        /// </summary>
+        public void SetValue(Element element, string value)
+        {
+            if (element == null) return;
+
+            lock (_valueLock)
+            {
+                _elementValues[element] = value ?? string.Empty;
+                _dirtyValueElements.Add(element);
+            }
+
+            RequestFullRepaint();
+            OnStateChanged?.Invoke(element);
+        }
+
+        /// <summary>
+        /// True once the value has diverged from the default. Setting the "value"
+        /// content attribute only moves a pristine control.
+        /// </summary>
+        public bool HasDirtyValue(Element element)
+        {
+            if (element == null) return false;
+            lock (_valueLock)
+            {
+                return _dirtyValueElements.Contains(element);
+            }
+        }
+
+        /// <summary>
+        /// The default value: a textarea's child text content, otherwise the "value"
+        /// content attribute. This is what defaultValue exposes and what a reset
+        /// restores.
+        /// </summary>
+        public string GetDefaultValue(Element element)
+        {
+            if (element == null) return string.Empty;
+
+            if (string.Equals(element.TagName, "TEXTAREA", StringComparison.OrdinalIgnoreCase))
+            {
+                return element.TextContent ?? string.Empty;
+            }
+
+            return element.GetAttribute("value") ?? string.Empty;
+        }
+
+        /// <summary>
+        /// Drops the value and checkedness overrides for one control, returning it
+        /// to its markup defaults. This is the per-control half of form reset.
+        /// </summary>
+        public void ResetFormControlState(Element element)
+        {
+            if (element == null) return;
+
+            lock (_valueLock)
+            {
+                _elementValues.Remove(element);
+                _dirtyValueElements.Remove(element);
+            }
+
+            _checkedElements.Remove(element);
+            _trackedCheckedElements.Remove(element);
+
+            RequestFullRepaint();
+            OnStateChanged?.Invoke(element);
+        }
+
+        private readonly object _valueLock = new object();
+        #endregion
+
         /// <summary>
         /// Check if an element is disabled (has disabled attribute)
         /// </summary>
@@ -1861,6 +1964,11 @@ namespace FenBrowser.FenEngine.Rendering
             _focusWithinChain.Clear();
             _checkedElements.Clear();
             _trackedCheckedElements.Clear();
+            lock (_valueLock)
+            {
+                _elementValues.Clear();
+                _dirtyValueElements.Clear();
+            }
             Interlocked.Exchange(ref _fullRepaintRequested, 0);
         }
 
