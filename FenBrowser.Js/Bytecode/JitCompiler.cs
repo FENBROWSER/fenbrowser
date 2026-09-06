@@ -179,6 +179,20 @@ public static class JitCompiler
         }
     }
 
+    private static void PrepareForFirstCall(JitDelegate compiled)
+    {
+        try
+        {
+            System.Runtime.CompilerServices.RuntimeHelpers.PrepareDelegate(compiled);
+        }
+        catch (Exception)
+        {
+            // Not every runtime will pre-JIT a dynamic method on demand. If it
+            // will not, the delegate is still correct - the CLR compiles it on
+            // first call as before.
+        }
+    }
+
     public static JitDelegate? TryCompile(BytecodeFunction function)
     {
         var compileStart = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -741,6 +755,14 @@ public static class JitCompiler
         try
         {
             var compiled = lambda.Compile();
+            // Compile() hands back a delegate over a DynamicMethod whose IL the
+            // CLR has not turned into machine code yet; it does that on the
+            // first invocation. That invocation is on the thread running the
+            // page, so without this the compile is off-thread and the CLR's own
+            // JIT of what it produced is not - and on a bundle this size that is
+            // the larger of the two (dotnet.jit.compilation.time measured 16s
+            // over one reCAPTCHA run). Force it here, where we already are.
+            PrepareForFirstCall(compiled);
             function.OsrEntryPoints = loopHeaders.Count > 0 ? loopHeaders : null;
             return compiled;
         }
