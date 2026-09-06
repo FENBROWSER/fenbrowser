@@ -3331,50 +3331,9 @@ public sealed class BytecodeCompiler
 
                 return dest;
             }
-            case OptionalMemberExpressionNode optionalMember:
-            {
-                var objectReg = CompileExpression(optionalMember.Object);
-                var dest = AllocateRegister();
-                var undefinedConst = AddConstant(JsValue.Undefined);
-                _instructions.Add(new Instruction(OpCode.LoadConst, dest, undefinedConst, 0));
-
-                var nullConstReg = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, AddConstant(JsValue.Null), 0));
-                var undefConstReg = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.LoadConst, undefConstReg, AddConstant(JsValue.Undefined), 0));
-
-                var nullEqReg = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.StrictEq, nullEqReg, objectReg, nullConstReg));
-                var jumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, nullEqReg);
-                var jumpEndFromNull = EmitPlaceholder(OpCode.Jump);
-
-                var checkUndefinedLabel = _instructions.Count;
-                PatchJump(jumpIfNotNull, checkUndefinedLabel);
-                var undefEqReg = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.StrictEq, undefEqReg, objectReg, undefConstReg));
-                var jumpIfNotUndefined = EmitPlaceholder(OpCode.JumpIfFalse, undefEqReg);
-                var jumpEndFromUndefined = EmitPlaceholder(OpCode.Jump);
-
-                var evalPropertyLabel = _instructions.Count;
-                PatchJump(jumpIfNotUndefined, evalPropertyLabel);
-                var memberValueReg = AllocateRegister();
-                if (optionalMember.Computed)
-                {
-                    var keyReg = CompileExpression(optionalMember.PropertyExpression!);
-                    _instructions.Add(new Instruction(OpCode.GetElem, memberValueReg, objectReg, keyReg));
-                }
-                else
-                {
-                    var nameIndex = GetOrCreatePropertyName(optionalMember.Property);
-                    _instructions.Add(new Instruction(OpCode.GetPropByName, memberValueReg, objectReg, nameIndex));
-                }
-
-                _instructions.Add(new Instruction(OpCode.Move, dest, memberValueReg, 0));
-                var endLabel = _instructions.Count;
-                PatchJump(jumpEndFromNull, endLabel);
-                PatchJump(jumpEndFromUndefined, endLabel);
-                return dest;
-            }
+            case OptionalMemberExpressionNode:
+            case OptionalCallExpressionNode:
+                return CompileOptionalChain(expr);
             case CallExpressionNode call:
             {
                 var calleeReg = -1;
@@ -3597,215 +3556,6 @@ public sealed class BytecodeCompiler
                         return dest;
                     }
                 }
-            }
-            case OptionalCallExpressionNode optionalCall:
-            {
-                var dest = AllocateRegister();
-                var undefinedConst = AddConstant(JsValue.Undefined);
-                _instructions.Add(new Instruction(OpCode.LoadConst, dest, undefinedConst, 0));
-
-                var nullConstReg = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, AddConstant(JsValue.Null), 0));
-                var undefConstReg = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.LoadConst, undefConstReg, AddConstant(JsValue.Undefined), 0));
-
-                int calleeReg;
-                int thisReg;
-                bool isMethodCall = false;
-
-                if (optionalCall.Callee is MemberExpressionNode memberCallee)
-                {
-                    if (memberCallee.Object is SuperExpressionNode && !memberCallee.Computed)
-                    {
-                        thisReg = AllocateRegister();
-                        _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
-                        calleeReg = AllocateRegister();
-                        var superName = GetOrCreatePropertyName(memberCallee.Property);
-                        _instructions.Add(new Instruction(OpCode.LoadSuperProperty, calleeReg, superName, 0));
-                    }
-                    else
-                    {
-                        thisReg = CompileExpression(memberCallee.Object);
-                        calleeReg = AllocateRegister();
-                        if (memberCallee.Computed)
-                        {
-                            var keyReg = CompileExpression(memberCallee.PropertyExpression!);
-                            _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
-                        }
-                        else
-                        {
-                            var nameIndex = GetOrCreatePropertyName(memberCallee.Property);
-                            _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
-                        }
-                    }
-                    isMethodCall = true;
-                }
-                else if (optionalCall.Callee is OptionalMemberExpressionNode optMember)
-                {
-                    thisReg = CompileExpression(optMember.Object);
-
-                    var innerNullEqReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.StrictEq, innerNullEqReg, thisReg, nullConstReg));
-                    var innerJumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, innerNullEqReg);
-                    var innerJumpEndFromNull = EmitPlaceholder(OpCode.Jump);
-
-                    var innerCheckUndefLabel = _instructions.Count;
-                    PatchJump(innerJumpIfNotNull, innerCheckUndefLabel);
-                    var innerUndefEqReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.StrictEq, innerUndefEqReg, thisReg, undefConstReg));
-                    var innerJumpIfNotUndef = EmitPlaceholder(OpCode.JumpIfFalse, innerUndefEqReg);
-                    var innerJumpEndFromUndef = EmitPlaceholder(OpCode.Jump);
-
-                    var innerLoadLabel = _instructions.Count;
-                    PatchJump(innerJumpIfNotUndef, innerLoadLabel);
-                    calleeReg = AllocateRegister();
-                    if (optMember.Computed)
-                    {
-                        var keyReg = CompileExpression(optMember.PropertyExpression!);
-                        _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
-                    }
-                    else
-                    {
-                        var nameIndex = GetOrCreatePropertyName(optMember.Property);
-                        _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
-                    }
-
-                    var calleeNullEqReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.StrictEq, calleeNullEqReg, calleeReg, nullConstReg));
-                    var calleeJumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, calleeNullEqReg);
-                    var calleeJumpEndFromNull = EmitPlaceholder(OpCode.Jump);
-
-                    var calleeCheckUndefLabel = _instructions.Count;
-                    PatchJump(calleeJumpIfNotNull, calleeCheckUndefLabel);
-                    var calleeUndefEqReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.StrictEq, calleeUndefEqReg, calleeReg, undefConstReg));
-                    var calleeJumpIfNotUndef = EmitPlaceholder(OpCode.JumpIfFalse, calleeUndefEqReg);
-                    var calleeJumpEndFromUndef = EmitPlaceholder(OpCode.Jump);
-
-                    var callLabel = _instructions.Count;
-                    PatchJump(calleeJumpIfNotUndef, callLabel);
-                    isMethodCall = true;
-
-                    var hasSpreadInner = false;
-                    for (var i = 0; i < optionalCall.Arguments.Count; i++)
-                    {
-                        if (optionalCall.Arguments[i] is SpreadElementExpressionNode) { hasSpreadInner = true; break; }
-                    }
-
-                    if (hasSpreadInner)
-                    {
-                        var spreadArgReg = BuildSpreadArray(optionalCall.Arguments);
-                        _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArgReg, thisReg));
-                    }
-                    else
-                    {
-                        switch (optionalCall.Arguments.Count)
-                        {
-                            case 0:
-                                _instructions.Add(new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg));
-                                break;
-                            case 1:
-                            {
-                                var arg0 = CompileExpression(optionalCall.Arguments[0]);
-                                _instructions.Add(new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0));
-                                break;
-                            }
-                            default:
-                            {
-                                var argStart = AllocateRegister();
-                                for (var i = 0; i < optionalCall.Arguments.Count; i++)
-                                {
-                                    var argReg = CompileExpression(optionalCall.Arguments[i]);
-                                    _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
-                                    if (i + 1 < optionalCall.Arguments.Count)
-                                        _ = AllocateRegister();
-                                }
-                                _instructions.Add(new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, optionalCall.Arguments.Count));
-                                break;
-                            }
-                        }
-                    }
-
-                    var endLabel = _instructions.Count;
-                    PatchJump(innerJumpEndFromNull, endLabel);
-                    PatchJump(innerJumpEndFromUndef, endLabel);
-                    PatchJump(calleeJumpEndFromNull, endLabel);
-                    PatchJump(calleeJumpEndFromUndef, endLabel);
-                    return dest;
-                }
-                else
-                {
-                    calleeReg = CompileExpression(optionalCall.Callee);
-                    thisReg = 0;
-                }
-
-                var nullEqReg = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.StrictEq, nullEqReg, calleeReg, nullConstReg));
-                var jumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, nullEqReg);
-                var jumpEndFromNull = EmitPlaceholder(OpCode.Jump);
-
-                var checkUndefinedLabel = _instructions.Count;
-                PatchJump(jumpIfNotNull, checkUndefinedLabel);
-                var undefEqReg = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.StrictEq, undefEqReg, calleeReg, undefConstReg));
-                var jumpIfNotUndefined = EmitPlaceholder(OpCode.JumpIfFalse, undefEqReg);
-                var jumpEndFromUndefined = EmitPlaceholder(OpCode.Jump);
-
-                var callLabelNonMethod = _instructions.Count;
-                PatchJump(jumpIfNotUndefined, callLabelNonMethod);
-                var hasSpread = false;
-                for (var i = 0; i < optionalCall.Arguments.Count; i++)
-                {
-                    if (optionalCall.Arguments[i] is SpreadElementExpressionNode) { hasSpread = true; break; }
-                }
-
-                if (hasSpread)
-                {
-                    var spreadArgReg = BuildSpreadArray(optionalCall.Arguments);
-                    _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArgReg, isMethodCall ? thisReg : 0));
-                }
-                else
-                {
-                    switch (optionalCall.Arguments.Count)
-                    {
-                        case 0:
-                            if (isMethodCall)
-                                _instructions.Add(new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg));
-                            else
-                                _instructions.Add(new Instruction(OpCode.Call0, dest, calleeReg, 0));
-                            break;
-                        case 1:
-                        {
-                            var arg0 = CompileExpression(optionalCall.Arguments[0]);
-                            if (isMethodCall)
-                                _instructions.Add(new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0));
-                            else
-                                _instructions.Add(new Instruction(OpCode.Call1, dest, calleeReg, arg0));
-                            break;
-                        }
-                        default:
-                        {
-                            var argStart = AllocateRegister();
-                            for (var i = 0; i < optionalCall.Arguments.Count; i++)
-                            {
-                                var argReg = CompileExpression(optionalCall.Arguments[i]);
-                                _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
-                                if (i + 1 < optionalCall.Arguments.Count)
-                                    _ = AllocateRegister();
-                            }
-                            if (isMethodCall)
-                                _instructions.Add(new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, optionalCall.Arguments.Count));
-                            else
-                                _instructions.Add(new Instruction(OpCode.CallN, dest, calleeReg, argStart, optionalCall.Arguments.Count));
-                            break;
-                        }
-                    }
-                }
-
-                var endLabelNonMethod = _instructions.Count;
-                PatchJump(jumpEndFromNull, endLabelNonMethod);
-                PatchJump(jumpEndFromUndefined, endLabelNonMethod);
-                return dest;
             }
             case UnaryExpressionNode unary:
             {
@@ -4902,6 +4652,198 @@ public sealed class BytecodeCompiler
     // spread, expanding each spread via the iterator protocol (SpreadAppend).
     // Used by array literals, call argument lists, and `new` argument lists so a
     // single mechanism handles `[a, ...b, c]`, `f(a, ...b)`, `new F(...a, b)`.
+    // ECMA-262 13.3.9 OptionalExpression. The whole chain shares one short-circuit
+    // target: if any `?.` link sees a nullish base, evaluation of the rest of the
+    // chain is skipped and the result is undefined. Links that merely continue the
+    // chain (`a?.b.c`, `a?.b()`) are ordinary accesses and still throw on their own.
+    private int CompileOptionalChain(ExpressionNode chain)
+    {
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.LoadConst, dest, AddConstant(JsValue.Undefined), 0));
+
+        var shortCircuitJumps = new List<int>();
+        var valueReg = CompileOptionalChainLink(chain, shortCircuitJumps, out _);
+        _instructions.Add(new Instruction(OpCode.Move, dest, valueReg, 0));
+
+        var endLabel = _instructions.Count;
+        foreach (var jump in shortCircuitJumps)
+        {
+            PatchJump(jump, endLabel);
+        }
+
+        return dest;
+    }
+
+    // Compiles one chain link, returning the register holding its value. `thisReg`
+    // receives the receiver a following call link must use, or -1 when this link is
+    // not a property access.
+    private int CompileOptionalChainLink(ExpressionNode node, List<int> shortCircuitJumps, out int thisReg)
+    {
+        switch (node)
+        {
+            case OptionalMemberExpressionNode member:
+            {
+                var baseReg = CompileOptionalChainOperand(member.Object, shortCircuitJumps);
+                if (member.IsOptional)
+                {
+                    EmitOptionalChainShortCircuit(baseReg, shortCircuitJumps);
+                }
+
+                var valueReg = AllocateRegister();
+                if (member.Computed)
+                {
+                    var keyReg = CompileExpression(member.PropertyExpression!);
+                    _instructions.Add(new Instruction(OpCode.GetElem, valueReg, baseReg, keyReg));
+                }
+                else
+                {
+                    _instructions.Add(new Instruction(OpCode.GetPropByName, valueReg, baseReg, GetOrCreatePropertyName(member.Property)));
+                }
+
+                thisReg = baseReg;
+                return valueReg;
+            }
+
+            case OptionalCallExpressionNode call:
+            {
+                var calleeReg = CompileOptionalChainCallee(call.Callee, shortCircuitJumps, out var receiverReg);
+                if (call.IsOptional)
+                {
+                    EmitOptionalChainShortCircuit(calleeReg, shortCircuitJumps);
+                }
+
+                var resultReg = AllocateRegister();
+                EmitOptionalChainCall(resultReg, calleeReg, receiverReg, call.Arguments);
+                thisReg = -1;
+                return resultReg;
+            }
+
+            default:
+                thisReg = -1;
+                return CompileExpression(node);
+        }
+    }
+
+    private int CompileOptionalChainOperand(ExpressionNode operand, List<int> shortCircuitJumps)
+        => operand is OptionalMemberExpressionNode or OptionalCallExpressionNode
+            ? CompileOptionalChainLink(operand, shortCircuitJumps, out _)
+            : CompileExpression(operand);
+
+    // Produces the callee of a call link plus the receiver it should be invoked with.
+    private int CompileOptionalChainCallee(ExpressionNode callee, List<int> shortCircuitJumps, out int thisReg)
+    {
+        switch (callee)
+        {
+            case OptionalMemberExpressionNode or OptionalCallExpressionNode:
+                return CompileOptionalChainLink(callee, shortCircuitJumps, out thisReg);
+
+            case MemberExpressionNode { Object: SuperExpressionNode, Computed: false } superMember:
+            {
+                thisReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
+                var superReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadSuperProperty, superReg, GetOrCreatePropertyName(superMember.Property), 0));
+                return superReg;
+            }
+
+            case MemberExpressionNode member:
+            {
+                thisReg = CompileExpression(member.Object);
+                var calleeReg = AllocateRegister();
+                if (member.Computed)
+                {
+                    var keyReg = CompileExpression(member.PropertyExpression!);
+                    _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
+                }
+                else
+                {
+                    _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, GetOrCreatePropertyName(member.Property)));
+                }
+
+                return calleeReg;
+            }
+
+            default:
+                thisReg = -1;
+                return CompileExpression(callee);
+        }
+    }
+
+    // Jumps to the chain's short-circuit target when `valueReg` holds null or undefined.
+    private void EmitOptionalChainShortCircuit(int valueReg, List<int> shortCircuitJumps)
+    {
+        var nullConstReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, AddConstant(JsValue.Null), 0));
+        var nullEqReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.StrictEq, nullEqReg, valueReg, nullConstReg));
+        var jumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, nullEqReg);
+        shortCircuitJumps.Add(EmitPlaceholder(OpCode.Jump));
+
+        PatchJump(jumpIfNotNull, _instructions.Count);
+        var undefConstReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.LoadConst, undefConstReg, AddConstant(JsValue.Undefined), 0));
+        var undefEqReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.StrictEq, undefEqReg, valueReg, undefConstReg));
+        var jumpIfNotUndefined = EmitPlaceholder(OpCode.JumpIfFalse, undefEqReg);
+        shortCircuitJumps.Add(EmitPlaceholder(OpCode.Jump));
+
+        PatchJump(jumpIfNotUndefined, _instructions.Count);
+    }
+
+    private void EmitOptionalChainCall(int dest, int calleeReg, int thisReg, IReadOnlyList<ExpressionNode> arguments)
+    {
+        var hasSpread = false;
+        for (var i = 0; i < arguments.Count; i++)
+        {
+            if (arguments[i] is SpreadElementExpressionNode) { hasSpread = true; break; }
+        }
+
+        var isMethodCall = thisReg >= 0;
+        if (hasSpread)
+        {
+            var spreadArgReg = BuildSpreadArray(arguments);
+            _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArgReg, isMethodCall ? thisReg : 0));
+            return;
+        }
+
+        switch (arguments.Count)
+        {
+            case 0:
+                _instructions.Add(isMethodCall
+                    ? new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg)
+                    : new Instruction(OpCode.Call0, dest, calleeReg, 0));
+                break;
+
+            case 1:
+            {
+                var arg0 = CompileExpression(arguments[0]);
+                _instructions.Add(isMethodCall
+                    ? new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0)
+                    : new Instruction(OpCode.Call1, dest, calleeReg, arg0));
+                break;
+            }
+
+            default:
+            {
+                var argStart = AllocateRegister();
+                for (var i = 0; i < arguments.Count; i++)
+                {
+                    var argReg = CompileExpression(arguments[i]);
+                    _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
+                    if (i + 1 < arguments.Count)
+                    {
+                        _ = AllocateRegister();
+                    }
+                }
+
+                _instructions.Add(isMethodCall
+                    ? new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, arguments.Count)
+                    : new Instruction(OpCode.CallN, dest, calleeReg, argStart, arguments.Count));
+                break;
+            }
+        }
+    }
+
     private int BuildSpreadArray(IReadOnlyList<ExpressionNode> elements)
     {
         var arr = AllocateRegister();

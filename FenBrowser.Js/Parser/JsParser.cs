@@ -4706,7 +4706,7 @@ public sealed class JsParser
                 }
                 if (left is OptionalMemberExpressionNode or OptionalCallExpressionNode)
                 {
-                    left = new OptionalMemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
+                    left = new OptionalMemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span), IsOptional: false);
                 }
                 else
                 {
@@ -4723,7 +4723,7 @@ public sealed class JsParser
                 var close = Previous();
                 if (left is OptionalMemberExpressionNode or OptionalCallExpressionNode)
                 {
-                    left = new OptionalMemberExpressionNode(left, string.Empty, Computed: true, PropertyExpression: propExpr, MergeSpan(left.Span, close.Span));
+                    left = new OptionalMemberExpressionNode(left, string.Empty, Computed: true, PropertyExpression: propExpr, MergeSpan(left.Span, close.Span), IsOptional: false);
                 }
                 else
                 {
@@ -4738,7 +4738,7 @@ public sealed class JsParser
                 var end = Previous();
                 if (left is OptionalMemberExpressionNode or OptionalCallExpressionNode)
                 {
-                    left = new OptionalCallExpressionNode(left, args, MergeSpan(left.Span, end.Span));
+                    left = new OptionalCallExpressionNode(left, args, MergeSpan(left.Span, end.Span), IsOptional: false);
                 }
                 else
                 {

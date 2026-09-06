@@ -101,9 +101,13 @@ public sealed record SpreadElementExpressionNode(ExpressionNode Argument, Source
 
 public sealed record MemberExpressionNode(ExpressionNode Object, string Property, bool Computed, ExpressionNode? PropertyExpression, SourceSpan Span) : ExpressionNode(Span);
 
-public sealed record OptionalMemberExpressionNode(ExpressionNode Object, string Property, bool Computed, ExpressionNode? PropertyExpression, SourceSpan Span) : ExpressionNode(Span);
+// One link of an OptionalExpression. IsOptional says whether this link is the one
+// written with `?.`: in `a?.b.c` the `.c` link is part of the chain (so it is skipped
+// when `a` is nullish) but is not itself optional, so `a.b` being undefined is a
+// TypeError rather than another short-circuit.
+public sealed record OptionalMemberExpressionNode(ExpressionNode Object, string Property, bool Computed, ExpressionNode? PropertyExpression, SourceSpan Span, bool IsOptional = true) : ExpressionNode(Span);
 
-public sealed record OptionalCallExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);
+public sealed record OptionalCallExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span, bool IsOptional = true) : ExpressionNode(Span);
 
 public sealed record UnaryExpressionNode(string Operator, ExpressionNode Operand, SourceSpan Span) : ExpressionNode(Span);
 

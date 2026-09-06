@@ -36,7 +36,7 @@ public sealed class OptionalChainingParserTests
     {
         var program = JsParser.ParseScript(new SourceText("a?.(1);"));
         var expr = Assert.IsType<ExpressionStatementNode>(Assert.Single(program.Body));
-        Assert.IsType<OptionalCallExpressionNode>(expr.Expression);
+        Assert.True(Assert.IsType<OptionalCallExpressionNode>(expr.Expression).IsOptional);
     }
 
     [Fact]
@@ -44,7 +44,12 @@ public sealed class OptionalChainingParserTests
     {
         var program = JsParser.ParseScript(new SourceText("a?.b();"));
         var expr = Assert.IsType<ExpressionStatementNode>(Assert.Single(program.Body));
-        var call = Assert.IsType<CallExpressionNode>(expr.Expression);
-        Assert.IsType<OptionalMemberExpressionNode>(call.Callee);
+        // The call continues the optional chain - it short-circuits with the chain -
+        // but the call itself is not written with `?.`, so it is not optional and an
+        // undefined `a.b` still throws.
+        var call = Assert.IsType<OptionalCallExpressionNode>(expr.Expression);
+        Assert.False(call.IsOptional);
+        var callee = Assert.IsType<OptionalMemberExpressionNode>(call.Callee);
+        Assert.True(callee.IsOptional);
     }
 }
