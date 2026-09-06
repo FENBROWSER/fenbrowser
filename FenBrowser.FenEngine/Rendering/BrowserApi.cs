@@ -736,6 +736,14 @@ namespace FenBrowser.FenEngine.Rendering
             _options = options ?? BrowserHostOptions.Default;
             _engineLoop = new FenBrowser.FenEngine.Core.EngineLoop(); // Phase 5: Initialize Loop
             _engine.InitHistory(this); // Wire up history bridge
+
+            // A script calling form.submit() on a method=POST form navigates with
+            // a body; without this the entry list never leaves the browser.
+            _engine.FormPostHandler = (uri, body, contentType) =>
+            {
+                if (uri == null) return;
+                _ = NavigateWithBodyAsync(uri.AbsoluteUri, "POST", body, contentType);
+            };
             
             // Initialize FontResolver for @font-face support
             // This allows Core.Css.CssComputed to use the Engine's FontRegistry
@@ -1285,7 +1293,32 @@ namespace FenBrowser.FenEngine.Rendering
             return NavigateAsync(url, NavigationRequestKind.Programmatic);
         }
 
-        private async Task<bool> NavigateAsync(string url, NavigationRequestKind requestKind)
+        /// <summary>
+        /// Navigates by submitting a request that carries a body, which is how a
+        /// form with method=POST reaches its action. Navigating to the action URL
+        /// without the body looks like a submission to the page and arrives at the
+        /// server as an empty GET.
+        /// </summary>
+        public Task<bool> NavigateWithBodyAsync(
+            string url,
+            string method,
+            byte[] requestBody,
+            string requestContentType)
+        {
+            return NavigateAsync(
+                url,
+                NavigationRequestKind.Programmatic,
+                method,
+                requestBody,
+                requestContentType);
+        }
+
+        private async Task<bool> NavigateAsync(
+            string url,
+            NavigationRequestKind requestKind,
+            string method = null,
+            byte[] requestBody = null,
+            string requestContentType = null)
         {
             long navigationId = 0;
             TryLogDebug($"[BrowserHost] NavigateAsync called for: '{url}'", LogCategory.Navigation);
@@ -1441,11 +1474,20 @@ namespace FenBrowser.FenEngine.Rendering
                 CurrentXFrameOptions = FenBrowser.Core.XFrameOptionsPolicy.None;
                 CurrentPermissionsPolicy = FenBrowser.Core.Security.PermissionsPolicy.None;
 
-                const int maxTransientNavAttempts = 2;
+                // A request carrying a body is not idempotent, so a transient
+                // failure must not be replayed: the server may well have accepted
+                // the first attempt.
+                int maxTransientNavAttempts = requestBody == null ? 2 : 1;
                 FetchResult result = null;
                 for (int attempt = 1; attempt <= maxTransientNavAttempts; attempt++)
                 {
-                    result = await _navManager.NavigateAsync(url, requestKind);
+                    result = await _navManager.NavigateAsync(
+                        url,
+                        requestKind,
+                        referer: null,
+                        method: method,
+                        requestBody: requestBody,
+                        requestContentType: requestContentType);
                     if (!IsLatestNavigation(navigationId))
                     {
                         _navigationSubresources.AbandonNavigation(navigationId);
@@ -11088,8 +11130,17 @@ pre {{
                 return true;
             }
 
-            TryLogWarn($"[BrowserApi] Form method '{method}' not fully implemented; navigating to action URL.", LogCategory.Navigation);
-            await NavigateAsync(actionUri.AbsoluteUri);
+            if (string.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                var (body, contentType) = EncodeFormSubmissionBody(form, controls);
+                await NavigateWithBodyAsync(actionUri.AbsoluteUri, "POST", body, contentType);
+                return true;
+            }
+
+            // "dialog" and any unknown method fall back to the GET behaviour the
+            // form would have had without a method attribute.
+            TryLogWarn($"[BrowserApi] Form method '{method}' not supported; navigating to action URL.", LogCategory.Navigation);
+            await NavigateAsync(AppendQueryToUri(actionUri, controls));
             return true;
         }
 
@@ -11256,7 +11307,7 @@ pre {{
             }
         }
 
-        private static List<KeyValuePair<string, string>> CollectFormSubmissionEntries(Element form, Element submitter)
+        internal static List<KeyValuePair<string, string>> CollectFormSubmissionEntries(Element form, Element submitter)
         {
             var entries = new List<KeyValuePair<string, string>>();
             if (form == null) return entries;
@@ -11502,7 +11553,7 @@ pre {{
             return selected.GetAttribute("value") ?? selected.TextContent ?? string.Empty;
         }
 
-        private static string AppendQueryToUri(Uri baseUri, IReadOnlyList<KeyValuePair<string, string>> fields)
+        internal static string AppendQueryToUri(Uri baseUri, IReadOnlyList<KeyValuePair<string, string>> fields)
         {
             if (baseUri == null) return string.Empty;
             if (fields == null || fields.Count == 0) return baseUri.AbsoluteUri;
@@ -11524,6 +11575,66 @@ pre {{
         private static string EncodeFormComponent(string value)
         {
             return Uri.EscapeDataString(value ?? string.Empty).Replace("%20", "+");
+        }
+
+        /// <summary>
+        /// Serializes a form entry list into a request body per the HTML form
+        /// submission algorithm (HTML 4.10.21.8). UTF-8 throughout, which is what
+        /// the standard mandates for every enctype.
+        /// </summary>
+        internal static (byte[] Body, string ContentType) EncodeFormSubmissionBody(
+            Element form,
+            IReadOnlyList<KeyValuePair<string, string>> entries)
+        {
+            var enctype = (form?.GetAttribute("enctype") ?? string.Empty).Trim();
+
+            if (string.Equals(enctype, "text/plain", StringComparison.OrdinalIgnoreCase))
+            {
+                var plain = new System.Text.StringBuilder();
+                foreach (var entry in entries)
+                {
+                    plain.Append(entry.Key).Append('=').Append(entry.Value).Append("\r\n");
+                }
+
+                return (System.Text.Encoding.UTF8.GetBytes(plain.ToString()), "text/plain;charset=UTF-8");
+            }
+
+            if (string.Equals(enctype, "multipart/form-data", StringComparison.OrdinalIgnoreCase))
+            {
+                // The boundary must not occur in the payload; a random token makes a
+                // collision far less likely than a transport error.
+                var boundary = "----FenBrowserFormBoundary" + Guid.NewGuid().ToString("N");
+                var multipart = new System.Text.StringBuilder();
+                foreach (var entry in entries)
+                {
+                    multipart.Append("--").Append(boundary).Append("\r\n");
+                    multipart.Append("Content-Disposition: form-data; name=\"")
+                        .Append(EscapeMultipartFieldName(entry.Key))
+                        .Append("\"\r\n\r\n");
+                    multipart.Append(entry.Value).Append("\r\n");
+                }
+
+                multipart.Append("--").Append(boundary).Append("--\r\n");
+                return (
+                    System.Text.Encoding.UTF8.GetBytes(multipart.ToString()),
+                    "multipart/form-data; boundary=" + boundary);
+            }
+
+            var urlEncoded = string.Join("&", entries.Select(pair =>
+                $"{EncodeFormComponent(pair.Key)}={EncodeFormComponent(pair.Value)}"));
+            return (
+                System.Text.Encoding.UTF8.GetBytes(urlEncoded),
+                "application/x-www-form-urlencoded;charset=UTF-8");
+        }
+
+        // HTML 4.10.21.8: only CR, LF and the double quote are escaped in a
+        // multipart field name; it is otherwise emitted as-is.
+        private static string EscapeMultipartFieldName(string name)
+        {
+            return (name ?? string.Empty)
+                .Replace("\r", "%0D")
+                .Replace("\n", "%0A")
+                .Replace("\"", "%22");
         }
 
         public async Task HandleKeyPress(string key)

@@ -13495,17 +13495,25 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 requestUri = new Uri(baseUri, action ?? string.Empty);
             }
 
-            if (!method.Equals("POST", StringComparison.OrdinalIgnoreCase))
+            // The same entry list the user-initiated path builds: it honours
+            // disabled controls, unchecked boxes and select state, none of which a
+            // flat sweep of every input attribute gets right.
+            var entries = FenBrowser.FenEngine.Rendering.BrowserHost
+                .CollectFormSubmissionEntries(element, submitter: null);
+
+            if (method.Equals("POST", StringComparison.OrdinalIgnoreCase))
             {
-                var queryString = string.Join("&",
-                    element.QuerySelectorAll("input, select, textarea, button")
-                        .OfType<Element>()
-                        .Select(input => (Name: input.GetAttribute("name"), Value: input.GetAttribute("value") ?? string.Empty))
-                        .Where(entry => !string.IsNullOrEmpty(entry.Name))
-                        .Select(entry =>
-                            $"{Uri.EscapeDataString(entry.Name)}={Uri.EscapeDataString(entry.Value)}"));
-                var builder = new UriBuilder(requestUri) { Query = queryString };
-                requestUri = builder.Uri;
+                var (body, contentType) = FenBrowser.FenEngine.Rendering.BrowserHost
+                    .EncodeFormSubmissionBody(element, entries);
+                _host.PostForm(requestUri, body, contentType);
+                return;
+            }
+
+            var target = FenBrowser.FenEngine.Rendering.BrowserHost
+                .AppendQueryToUri(requestUri, entries);
+            if (!string.IsNullOrEmpty(target) && Uri.TryCreate(target, UriKind.Absolute, out var queryUri))
+            {
+                requestUri = queryUri;
             }
 
             NavigateOwningBrowsingContext(requestUri);

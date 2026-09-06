@@ -318,6 +318,21 @@ namespace FenBrowser.FenEngine.Scripting
     {
         void Navigate(Uri target);
         void PostForm(Uri target, string body);
+
+        /// <summary>
+        /// Submits a form navigation that carries an encoded request body. A
+        /// method=POST form is only submitted when its entry list reaches the
+        /// server, so a host that navigates to the action URL alone has not
+        /// submitted the form -- it has issued an unrelated empty GET.
+        /// </summary>
+        void PostForm(Uri target, byte[] body, string contentType)
+        {
+            // Legacy hosts degrade to the old behaviour, but say so: silently
+            // dropping the body is indistinguishable from the server rejecting
+            // the submission.
+            Log($"[JsHost] Form POST to '{target}' dropped the request body: host does not support body-carrying navigation.");
+            Navigate(target);
+        }
         void SetStatus(string s);
         void SetTitle(string tval);
         void Alert(string msg);
@@ -344,6 +359,7 @@ namespace FenBrowser.FenEngine.Scripting
     {
         private readonly Action<Uri> _navigate;
         private readonly Action<Uri, string> _post;
+        private readonly Action<Uri, byte[], string> _postBody;
         private readonly Action<string> _status;
         private readonly Action _requestRender;
         private readonly Action<Action> _invokeOnUiThread;
@@ -361,10 +377,12 @@ namespace FenBrowser.FenEngine.Scripting
             Action<string> setTitle = null, Action<string> alert = null,
             Func<string, bool> confirm = null, Func<string, string, string> prompt = null,
             Action<string> log = null, Action<Element> scrollToElement = null,
-            Action<Element> focusNode = null)
+            Action<Element> focusNode = null,
+            Action<Uri, byte[], string> postBody = null)
         {
             _navigate = navigate ?? (_ => { });
             _post = post ?? ((_, __) => { });
+            _postBody = postBody;
             _status = status ?? (_ => { });
             _requestRender = requestRender ?? (() => { });
             _invokeOnUiThread = invokeOnUiThread ?? (a => { try { a(); } catch { } });
@@ -379,6 +397,18 @@ namespace FenBrowser.FenEngine.Scripting
 
         public void Navigate(Uri target) => _navigate(target);
         public void PostForm(Uri target, string body) => _post(target, body);
+
+        public void PostForm(Uri target, byte[] body, string contentType)
+        {
+            if (_postBody != null)
+            {
+                _postBody(target, body, contentType);
+                return;
+            }
+
+            _log($"[JsHost] Form POST to '{target}' dropped the request body: no body-carrying handler was supplied.");
+            _navigate(target);
+        }
         public void SetStatus(string s) => _status(s);
         public void SetTitle(string tval) => _setTitle(tval);
         public void Alert(string msg) => _alert(msg);

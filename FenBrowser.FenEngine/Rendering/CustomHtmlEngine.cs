@@ -494,6 +494,13 @@ namespace FenBrowser.FenEngine.Rendering
         private Func<Uri, Task<Stream>> _activeImageLoader;
         internal Func<Element, Uri, Task<string>> FetchExternalCssForRootAsync { get; set; }
         private Action<Uri> _activeOnNavigate;
+
+        /// <summary>
+        /// Host hook for a form submission that carries a request body. Set by the
+        /// browser host; without it a method=POST form degrades to an empty GET
+        /// against the action URL, which the page cannot tell from a rejection.
+        /// </summary>
+        public Action<Uri, byte[], string> FormPostHandler { get; set; }
         private double? _activeViewportWidth;
         private double? _activeViewportHeight;
         private Action<object> _activeFixedBackground;
@@ -2396,6 +2403,8 @@ public void Dispose()
              var js = BrowserScriptEngineRuntime.Create(new JsHostAdapter(
                  navigate: onNavigate,
                  post: (_, __) => { },
+                 postBody: (uri, body, contentType) =>
+                     FormPostHandler?.Invoke(uri, body, contentType),
                  status: _ => { },
                  requestRender: ScheduleRepaintFromJs,
                  invokeOnUiThread: action =>

@@ -41,8 +41,16 @@ namespace FenBrowser.FenEngine.Rendering
         public async Task<FetchResult> NavigateAsync(
             string url,
             NavigationRequestKind requestKind,
-            Uri referer = null)
+            Uri referer = null,
+            string method = null,
+            byte[] requestBody = null,
+            string requestContentType = null)
         {
+            var isBodylessGet =
+                (string.IsNullOrWhiteSpace(method) ||
+                 string.Equals(method, "GET", StringComparison.OrdinalIgnoreCase)) &&
+                (requestBody == null || requestBody.Length == 0);
+
             // 1. Normalize URL
             if (string.IsNullOrWhiteSpace(url))
                 return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Empty URL" };
@@ -164,15 +172,18 @@ namespace FenBrowser.FenEngine.Rendering
                 return DecodeDataNavigation(uri);
             }
 
-            // Handle images
+            // Handle images. Only a GET can be answered with a synthetic viewer
+            // document: a form posting to an image-suffixed action still has a
+            // body that has to reach the server.
             var path = uri.AbsolutePath.ToLowerInvariant();
-            if (path.EndsWith(".png", StringComparison.Ordinal) ||
+            if (isBodylessGet &&
+                (path.EndsWith(".png", StringComparison.Ordinal) ||
                 path.EndsWith(".jpg", StringComparison.Ordinal) ||
                 path.EndsWith(".jpeg", StringComparison.Ordinal) ||
                 path.EndsWith(".gif", StringComparison.Ordinal) ||
                 path.EndsWith(".bmp", StringComparison.Ordinal) ||
                 path.EndsWith(".webp", StringComparison.Ordinal) ||
-                path.EndsWith(".svg", StringComparison.Ordinal))
+                path.EndsWith(".svg", StringComparison.Ordinal)))
             {
                 // This HTML becomes a privileged synthetic document. Encode every
                 // URI-derived value before placing it into markup rather than relying
@@ -200,7 +211,9 @@ namespace FenBrowser.FenEngine.Rendering
                     CredentialsMode = "include",
                     IsTopLevelNavigation = true,
                     IsUserInitiated = requestKind == NavigationRequestKind.UserInput,
-                    Method = "GET"
+                    Method = string.IsNullOrWhiteSpace(method) ? "GET" : method,
+                    RequestBody = requestBody,
+                    RequestContentType = requestContentType
                 }).ConfigureAwait(false);
         }
 

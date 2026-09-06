@@ -534,7 +534,9 @@ public sealed class IFrameInterpreterIsolationTests
         Assert.Same(navigation.Task, completed);
         var frameNavigation = await navigation.Task;
         Assert.Same(frameElement, frameNavigation.Frame);
-        Assert.Equal("https://child.test/verify?token=abc%20123", frameNavigation.Uri.AbsoluteUri);
+        // The urlencoded serializer (URL Standard) writes 0x20 as "+", not "%20",
+        // which is what a GET form submission puts in the query string.
+        Assert.Equal("https://child.test/verify?token=abc+123", frameNavigation.Uri.AbsoluteUri);
         Assert.Null(topLevelNavigation);
     }
 

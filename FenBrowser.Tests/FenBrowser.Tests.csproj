@@ -93,6 +93,10 @@
     <!-- Parallel cascade must not lose an element's computed style. -->
     <Compile Include="Rendering\ParallelCascadeSharedCacheTests.cs" />
     <Compile Include="Rendering\HitTesterContractTests.cs" />
+    <!-- Form method=POST must carry its entry list as a request body; the
+         action URL alone reaches the server as an unrelated empty GET. -->
+    <Compile Include="Rendering\FormPostSubmissionTests.cs" />
+    <Compile Include="Rendering\BrowserHostFormSubmissionTests.cs" />
     <!-- Cursor reported by a page hit test. -->
     <Compile Include="Rendering\HitTestCursorTests.cs" />
     <Compile Include="Rendering\BorderCurrentColorContractTests.cs" />
