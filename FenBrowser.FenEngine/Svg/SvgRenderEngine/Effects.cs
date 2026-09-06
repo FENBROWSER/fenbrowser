@@ -331,6 +331,11 @@ namespace FenBrowser.FenEngine.Svg
                     next = BuildFlood(
                         filterElement, primitive, target, viewport, filterRegion);
                 }
+                else if (primitive.Name == "feImage")
+                {
+                    next = BuildImage(
+                        filterElement, primitive, target, viewport, filterRegion);
+                }
                 else if (primitive.Name == "feBlend")
                 {
                     if (!TryResolveFilterInput(
@@ -500,6 +505,40 @@ namespace FenBrowser.FenEngine.Svg
 
             using var shader = SKShader.CreateColor(color);
             return SKImageFilter.CreateShader(shader, false, primitiveRegion);
+        }
+
+        private SKImageFilter BuildImage(
+            SvgElement filter,
+            SvgElement image,
+            SvgElement target,
+            ViewportContext viewport,
+            SKRect filterRegion)
+        {
+            if (!TryResolvePrimitiveRegion(
+                    filter, image, target, viewport, filterRegion, out var primitiveRegion))
+                return null;
+
+            string href = image.GetAttribute("href") ?? image.GetLookup("xlink:href");
+            if (!SvgValues.TryParseLocalReference(href, out string id))
+            {
+                _report.RejectResource(
+                    "feImage external reference rejected by SVG resource policy");
+                return null;
+            }
+            if (!_doc.ElementsById.TryGetValue(id, out var referenced))
+            {
+                return null;
+            }
+
+            using var recorder = new SKPictureRecorder();
+            var pictureCanvas = recorder.BeginRecording(primitiveRegion);
+            pictureCanvas.ClipRect(primitiveRegion);
+            var inherited = referenced.Parent == null
+                ? new InheritedStyle()
+                : ResolvePatternContentStyle(referenced.Parent);
+            DrawElement(referenced, pictureCanvas, viewport, inherited);
+            using var picture = recorder.EndRecording();
+            return SKImageFilter.CreatePicture(picture, primitiveRegion);
         }
 
         private SKImageFilter BuildBlend(

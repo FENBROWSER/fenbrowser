@@ -11687,6 +11687,17 @@ Verification:
   element/layer/raster limits are unchanged, and caller limits still normalize
   under the existing non-bypassable hard cap.
 
+## 2.170 SVG Local-Fragment Image Filter Inputs (2026-09-06)
+
+- `feImage` now resolves same-document `href` and `xlink:href` fragment targets
+  and records the referenced SVG subtree as a render-owned picture filter.
+  Referenced content retains its ancestor cascade and is clipped to the resolved
+  primitive region before it enters the named filter graph.
+- Fragment rendering uses the existing element, filter-reference, recursion,
+  deadline, and layer guards. External `feImage` resources remain resource-policy
+  rejections and compatibility fallbacks until the bounded resource pipeline is
+  connected to filter inputs.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

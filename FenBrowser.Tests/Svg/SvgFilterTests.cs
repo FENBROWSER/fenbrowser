@@ -106,6 +106,41 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void Image_LocalFragmentRendersAsFilterGraphSource()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='30' height='20'><defs>" +
+                "<g fill='lime'><path id='tile' d='M0 0h10v20H0z'/></g>" +
+                "<filter id='f' x='0' y='0' width='1' height='1'>" +
+                "<feImage href='#tile'/></filter></defs>" +
+                "<rect width='20' height='20' fill='red' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(5, 10));
+            Assert.Equal(0, result.Bitmap.GetPixel(15, 10).Alpha);
+        }
+
+        [Fact]
+        public void Image_LocalFragmentsFeedNamedCompositeInputs()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20' xmlns:xlink='http://www.w3.org/1999/xlink'><defs>" +
+                "<path id='blue' d='M0 0h20v20H0z' fill='blue'/>" +
+                "<path id='red' d='M0 0h10v20H0z' fill='red'/>" +
+                "<filter id='f' x='0' y='0' width='1' height='1'>" +
+                "<feImage xlink:href='#blue' result='blueImage'/>" +
+                "<feImage xlink:href='#red' result='redImage'/>" +
+                "<feComposite in='redImage' in2='blueImage' operator='over'/>" +
+                "</filter></defs><rect width='20' height='20' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(5, 10));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(15, 10));
+        }
+
+        [Fact]
         public void NamedFilterResult_CanFeedALaterPrimitive()
         {
             using var result = new FenSvgRenderer().Render(
@@ -399,6 +434,7 @@ namespace FenBrowser.Tests.Svg
         [InlineData("<feConvolveMatrix order='1' kernelMatrix='1' targetX='1'/>")]
         [InlineData("<feConvolveMatrix order='1' kernelMatrix='1' edgeMode='mirror'/>")]
         [InlineData("<feConvolveMatrix order='1' kernelMatrix='1' kernelUnitLength='2'/>")]
+        [InlineData("<feImage href='image.png'/>")]
         public void UnsupportedOrUnboundedPrimitive_RemainsExplicitFallback(string primitive)
         {
             using var result = new FenSvgRenderer().Render(

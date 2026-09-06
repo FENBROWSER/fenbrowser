@@ -5190,6 +5190,17 @@ Verification:
   Its local-fragment `feImage` inputs remain the next explicit compatibility
   boundary; no rendering-support claim is made by this admission change.
 
+## 6.236 SVG Local-Fragment Image Filter Verification (2026-09-06)
+
+- Focused regressions prove both SVG 2 `href` and SVG 1.1 `xlink:href` local
+  fragments render as filter sources, remain clipped to their primitive region,
+  and can feed named `feComposite` graph inputs. External image references
+  remain explicit resource-policy fallbacks.
+- The exact local `filters-composite-02-b-manual.svg` rerun advances past all
+  24 local-fragment `feImage` inputs. Its sole reported filter boundary is now
+  the unsupported arithmetic `feComposite` operator; no first-party or WPT
+  reference-pass claim is made yet.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
