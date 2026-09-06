@@ -78,6 +78,25 @@ public sealed class JsHeap
     // discarded (for example, during reCAPTCHA MessagePort/promise churn).
     // Zero disables the automatic major collection cadence.
     public int MinorCollectionsPerMajorGc { get; set; } = 32;
+
+    // Only a major collection reclaims Old cells, and only a major drains the
+    // remembered-environment set - which is a root set, so until one runs, an
+    // environment record belonging to a dead closure keeps its bindings alive
+    // (textbook nepotism). Counting minor collections ties that to the
+    // allocation *rate* rather than to how much garbage has accumulated: on
+    // google.com/recaptcha/api2/demo one callback allocated 1.13M cells in 15s,
+    // never reached 32 minors, and ended with 1.09M of them still live and
+    // 280,242 remembered records marking 92% of every nursery it collected.
+    //
+    // So also collect when the live set has grown by this factor since the last
+    // major. That bounds retained garbage by a multiple of what is genuinely
+    // live instead of by how fast the page happens to allocate.
+    public double MajorGcHeapGrowthFactor { get; set; } = 2.0;
+
+    // Below this the heap is small enough that the growth rule would fire on
+    // noise; a major there costs more than the garbage it reclaims.
+    public int MajorGcGrowthFloorCells { get; set; } = 65536;
+    private int _liveCellsAfterLastMajor;
     private int _youngAllocationsSinceLastMinorGc;
     private bool _minorCollectionPending;
     private readonly bool _verifyHeapBeforeGc;
@@ -900,12 +919,44 @@ public sealed class JsHeap
     private void RunAutomaticCollection()
     {
         MinorCollect();
-        if (MinorCollectionsPerMajorGc > 0 &&
-            _minorGcCount % MinorCollectionsPerMajorGc == 0)
+        if (ShouldRunAutomaticMajorCollection())
         {
             CollectGarbage();
         }
     }
+
+    private bool ShouldRunAutomaticMajorCollection()
+    {
+        if (MinorCollectionsPerMajorGc > 0 &&
+            _minorGcCount % MinorCollectionsPerMajorGc == 0)
+        {
+            return true;
+        }
+
+        if (MajorGcHeapGrowthFactor <= 0)
+        {
+            return false;
+        }
+
+        var live = ApproximateLiveCellCount;
+        if (live < MajorGcGrowthFloorCells)
+        {
+            return false;
+        }
+
+        // The first major after the floor is crossed establishes the baseline
+        // everything afterwards is measured against.
+        var baseline = Math.Max(_liveCellsAfterLastMajor, MajorGcGrowthFloorCells);
+        return live >= baseline * MajorGcHeapGrowthFactor;
+    }
+
+    /// <summary>
+    /// Live cells without the O(n) scan <see cref="LiveCellCount"/> does: every
+    /// allocated slot minus the ones the sweeper has handed back. Used on the
+    /// collection path, which must not walk the heap to decide whether to walk
+    /// the heap.
+    /// </summary>
+    public int ApproximateLiveCellCount => _cells.Count - _freeList.Count;
 
     /// <summary>
     /// Registers an environment record whose bindings may hold young cells.
@@ -1079,6 +1130,20 @@ public sealed class JsHeap
     }
 
     private void CollectGarbageCore()
+    {
+        // Reset on the way out, so the next growth check measures against what
+        // this collection actually left behind.
+        try
+        {
+            CollectGarbageCoreInner();
+        }
+        finally
+        {
+            _liveCellsAfterLastMajor = ApproximateLiveCellCount;
+        }
+    }
+
+    private void CollectGarbageCoreInner()
     {
         // Full GC must traverse old-generation cells even if a previous minor
         // collection was interrupted before it could clear its traversal mode.
