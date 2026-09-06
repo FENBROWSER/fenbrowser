@@ -90,6 +90,8 @@
     <Compile Include="Host\Phase11InteractionRecascadeCtsTests.cs" />
     <!-- Phase 10 watchdog late-frame policy regression. -->
     <Compile Include="Rendering\Phase10WatchdogLateFramePolicyTests.cs" />
+    <!-- Parallel cascade must not lose an element's computed style. -->
+    <Compile Include="Rendering\ParallelCascadeSharedCacheTests.cs" />
     <Compile Include="Rendering\HitTesterContractTests.cs" />
     <!-- Cursor reported by a page hit test. -->
     <Compile Include="Rendering\HitTestCursorTests.cs" />

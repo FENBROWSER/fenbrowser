@@ -3,6 +3,7 @@
 // Determinism: strict
 // FallbackPolicy: spec-defined
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -36,7 +37,14 @@ private bool _indexed = false;
 internal static long TCollect, TSort, TApply, NMatches, NElems, TCacheHit, NCacheHit, NMain, NPseudo, TPseudoCollect;
 
 // PERF: Style cache to avoid recomputing styles for unchanged elements
-private readonly Dictionary<Node, CssComputed> _styleCache = new Dictionary<Node, CssComputed>();
+// ParallelCascadeScheduler fans body's subtrees across threads and shares one
+// CascadeEngine between them, so this is written from several at once. A plain
+// Dictionary is not safe for that: concurrent writes drop entries, and an
+// element whose computed style went missing renders with its defaults - a row
+// that lost `display:flex` laid out as a block, differing run to run. The
+// inline-style cache below already took a lock for the same reason; this one
+// was left unguarded.
+private readonly ConcurrentDictionary<Node, CssComputed> _styleCache = new ConcurrentDictionary<Node, CssComputed>();
 
 // Inline style text is commonly repeated by generated markup. Parsing it once per
 // element dominated sampled cascade time, so keep a small engine-owned FIFO cache.
@@ -425,9 +433,9 @@ public Dictionary<string, CssDeclaration> ComputeCascadedValues(Element element,
 	}
 	// If the element is StyleDirty, discard any stale cache entry so the
 	// recomputed result replaces it below.
-	if (element != null && element.StyleDirty && _styleCache.ContainsKey(element))
+	if (element != null && element.StyleDirty)
 	{
-	_styleCache.Remove(element);
+	_styleCache.TryRemove(element, out _);
 	}
 
 EnsureIndex();
