@@ -2258,6 +2258,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 $"budget={workItem.InstructionBudget} allocations={heap?.AllocationCount ?? 0} " +
                                 $"minorGc={heap?.MinorCollectionCount ?? 0} majorGc={heap?.GcCollectionCount ?? 0} " +
                                 $"liveCells={heap?.LiveCellCount ?? 0} " +
+                                // A job that allocates a million cells and frees
+                                // none is not slow because it is doing work; it is
+                                // slow because nothing dies. These say whether the
+                                // nursery is surviving and, if so, which root
+                                // source is holding it.
+                                $"nursery={heap?.NurserySize ?? 0} " +
+                                $"lastMinor=[size={heap?.LastMinorNurserySize ?? 0} " +
+                                $"marked={heap?.LastMinorMarked ?? 0} " +
+                                $"swept={heap?.LastMinorSwept ?? 0} " +
+                                $"scannedOld={heap?.LastMinorScannedOldCells ?? 0} " +
+                                $"dirtyCards={heap?.RememberedSetEdgeCount ?? 0} " +
+                                $"rememberedEnvs={heap?.RememberedEnvironmentCount ?? 0}] " +
+                                $"roots=[{heap?.LastMinorRootBreakdown ?? string.Empty}] " +
                                 $"inputQueue={_fenJsInputWorkQueue.Count} normalQueue={_fenJsWorkQueue.Count} " +
                                 $"documentId={workItem.DocumentId} url={workItem.Url}",
                                 FenBrowser.Core.Logging.LogCategory.JavaScript);
@@ -2276,8 +2289,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             }
                         },
                         null,
-                        dueTime: 2_000,
-                        period: 5_000);
+                        dueTime: LongRunningProbeDueMs,
+                        period: LongRunningProbePeriodMs);
                     var result = interpreter == null
                         ? workItem.Work()
                         : interpreter.RunWithExecutionBudget(
@@ -2286,10 +2299,26 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             workItem.Work);
                     workItem.Completion.TrySetResult(result);
                     var elapsedMs = Math.Max(0, Environment.TickCount64 - startedTick);
-                    FenBrowser.Core.EngineLogCompat.Debug(
+                    var completion =
                         $"[FenJsWorker] Completed id={workItem.Sequence} kind={workItem.Kind} " +
-                        $"elapsedMs={elapsedMs} instructions={interpreter?.LastExecutionInstructions ?? 0}",
-                        FenBrowser.Core.Logging.LogCategory.JavaScript);
+                        $"elapsedMs={elapsedMs} instructions={interpreter?.LastExecutionInstructions ?? 0}";
+                    // A job that ran long enough to announce itself has to
+                    // announce that it finished, at the same level: otherwise the
+                    // only evidence it ended is that StillRunning stopped
+                    // repeating, and its duration cannot be read off the log at
+                    // all. LongRunningProbeDueMs is the threshold either way.
+                    if (elapsedMs >= LongRunningProbeDueMs)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            completion,
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    }
+                    else
+                    {
+                        FenBrowser.Core.EngineLogCompat.Debug(
+                            completion,
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -5345,6 +5374,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             ? EvaluateWithFenJsRaw("window")
             : _fenJsGlobalThis;
     }
+
+    // A job is "long" once it outlives this; both the progress probe and the
+    // completion line key off the same number so a run can be read as pairs.
+    private const int LongRunningProbeDueMs = 2_000;
+    private const int LongRunningProbePeriodMs = 5_000;
 
     private JsValue CreateTopWindowPostMessageFunction()
     {

@@ -123,6 +123,14 @@ public sealed class JsHeap
 
     // Which root slot the collector is walking, for the stale-handle message.
     private string _rootTraceContext = string.Empty;
+
+    // Which root source marked how many young cells in the last minor
+    // collection. A nursery that survives says nothing on its own; the caller
+    // needs to know what was holding it, and that is only knowable here, while
+    // the root walk is in progress.
+    private readonly Dictionary<string, int> _minorRootMarks = new(StringComparer.Ordinal);
+    private int _rootTraceMarkBaseline;
+    private int _lastMinorNurserySize;
     // One report per (context, handle): a bad root is re-walked by every
     // collection, and repeating it drowns the log it is meant to inform.
     private readonly HashSet<string> _reportedDeadRoots = new(StringComparer.Ordinal);
@@ -293,9 +301,47 @@ public sealed class JsHeap
     /// <see cref="EndRootTrace"/> once the root walk is over, so an edge found
     /// inside an object payload is not mistaken for a root.
     /// </summary>
-    internal void BeginRootTrace(string context) => _rootTraceContext = context;
+    internal void BeginRootTrace(string context)
+    {
+        RecordRootTraceMarks();
+        _rootTraceContext = context;
+        _rootTraceMarkBaseline = _lastMinorMarked;
+    }
 
-    internal void EndRootTrace() => _rootTraceContext = string.Empty;
+    private void RecordRootTraceMarks()
+    {
+        if (!_currentMarkMinorMode || _rootTraceContext.Length == 0) return;
+        var delta = _lastMinorMarked - _rootTraceMarkBaseline;
+        if (delta <= 0) return;
+        _minorRootMarks[_rootTraceContext] =
+            _minorRootMarks.TryGetValue(_rootTraceContext, out var previous) ? previous + delta : delta;
+    }
+
+    internal void EndRootTrace()
+    {
+        RecordRootTraceMarks();
+        _rootTraceContext = string.Empty;
+        _rootTraceMarkBaseline = _lastMinorMarked;
+    }
+
+    /// <summary>
+    /// Last minor collection, one entry per root source: how many young cells
+    /// that source was responsible for marking, largest first. Empty until a
+    /// minor collection has run.
+    /// </summary>
+    public string LastMinorRootBreakdown
+    {
+        get
+        {
+            if (_minorRootMarks.Count == 0) return string.Empty;
+            var parts = new List<KeyValuePair<string, int>>(_minorRootMarks);
+            parts.Sort((a, b) => b.Value.CompareTo(a.Value));
+            return string.Join(" ", parts.ConvertAll(entry => $"{entry.Key}={entry.Value}"));
+        }
+    }
+
+    public int LastMinorNurserySize => _lastMinorNurserySize;
+    public int NurserySize => _nursery.Count;
 
     /// <summary>
     /// Root-audit hook: reports a root handle that does not resolve in this
@@ -661,6 +707,9 @@ public sealed class JsHeap
         _lastMinorSwept = 0;
         _lastMinorPromoted = 0;
         _lastMinorScannedOldCells = 0;
+        _lastMinorNurserySize = _nursery.Count;
+        _minorRootMarks.Clear();
+        _rootTraceMarkBaseline = 0;
         _sharedMarkingTracer?.ForgetTracedEnvironments();
 
         foreach (var (index, generation) in _nursery)
@@ -692,10 +741,11 @@ public sealed class JsHeap
                 _rootSources[i].TraceRoots(marker);
             }
 
-            EndRootTrace();
-
+            BeginRootTrace("heap.dirtyCards");
             ScanDirtyCards(marker);
+            BeginRootTrace("heap.rememberedEnvs");
             ScanRememberedEnvironments(marker);
+            EndRootTrace();
             if (_auditRememberedSet)
             {
                 AuditRememberedSet();
