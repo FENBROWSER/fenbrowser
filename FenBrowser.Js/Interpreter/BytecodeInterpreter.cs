@@ -4787,9 +4787,56 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return false;
     }
 
+    // Map and Set identify entries by SameValueZero. Pairing that with a hash
+    // lets them index their entries instead of scanning them; Equals *is*
+    // SameValueZero, so the two cannot drift, and the hash only ever
+    // distinguishes values SameValueZero also distinguishes.
+    private sealed class SameValueZeroComparer : IEqualityComparer<JsValue>
+    {
+        public static readonly SameValueZeroComparer Instance = new();
+
+        private const int NaNHash = 0x7FF80000;
+        private const int UndefinedHash = 0x556E6465;
+        private const int NullHash = 0x4E756C6C;
+
+        public bool Equals(JsValue x, JsValue y) => SameValueZero(x, y);
+
+        public int GetHashCode(JsValue value)
+        {
+            switch (value.Tag)
+            {
+                case JsValueTag.Int32:
+                case JsValueTag.Number:
+                {
+                    // An Int32 and a Number holding the same quantity are the
+                    // same key, so hash the numeric value rather than the tag.
+                    var number = NumericValue(value);
+                    // SameValueZero matches NaN with NaN and +0 with -0, so both
+                    // pairs must hash alike. Adding 0.0 turns -0.0 into +0.0.
+                    return double.IsNaN(number) ? NaNHash : (number + 0.0).GetHashCode();
+                }
+                case JsValueTag.String: return value.AsString().GetHashCode();
+                case JsValueTag.Symbol: return value.AsSymbolId().GetHashCode();
+                case JsValueTag.Object: return value.AsObjectHandle().GetHashCode();
+                case JsValueTag.HostObject: return value.AsHostObjectHandle().GetHashCode();
+                case JsValueTag.Boolean: return value.AsBoolean() ? 1 : 0;
+                case JsValueTag.BigInt: return value.AsBigInt().GetHashCode();
+                case JsValueTag.Undefined: return UndefinedHash;
+                case JsValueTag.Null: return NullHash;
+                default: return 0;
+            }
+        }
+    }
+
     private sealed class MapObject : JsObject
     {
+        // Insertion-ordered, and iterated by index elsewhere while user code may
+        // be mutating it, so the list stays exactly as it was.
         internal readonly List<(JsValue Key, JsValue Value)> _entries = new();
+
+        // Key -> its position in _entries. Every lookup used to scan the list,
+        // which made a get O(n) and building an n-entry Map O(n^2).
+        private readonly Dictionary<JsValue, int> _index = new(SameValueZeroComparer.Instance);
 
         public int Count => _entries.Count;
 
@@ -4799,61 +4846,57 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // its remembered-set card (entries are strong references).
             BarrierInternalSlot(key);
             BarrierInternalSlot(value);
-            for (var i = 0; i < _entries.Count; i++)
+            if (_index.TryGetValue(key, out var at))
             {
-                if (SameValueZero(_entries[i].Key, key))
-                {
-                    _entries[i] = (_entries[i].Key, value);
-                    return;
-                }
+                // Keep the key already stored: ECMA-262 24.1.3.9 replaces the
+                // value only, so a -0 key stays the -0 that was inserted.
+                _entries[at] = (_entries[at].Key, value);
+                return;
             }
 
+            _index[key] = _entries.Count;
             _entries.Add((key, value));
         }
 
         public bool TryGet(JsValue key, out JsValue value)
         {
-            foreach (var entry in _entries)
+            if (_index.TryGetValue(key, out var at))
             {
-                if (SameValueZero(entry.Key, key))
-                {
-                    value = entry.Value;
-                    return true;
-                }
+                value = _entries[at].Value;
+                return true;
             }
 
             value = JsValue.Undefined;
             return false;
         }
 
-        public bool Has(JsValue key)
-        {
-            foreach (var entry in _entries)
-            {
-                if (SameValueZero(entry.Key, key))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
+        public bool Has(JsValue key) => _index.ContainsKey(key);
 
         public bool Remove(JsValue key)
         {
-            for (var i = 0; i < _entries.Count; i++)
+            if (!_index.TryGetValue(key, out var at))
             {
-                if (SameValueZero(_entries[i].Key, key))
-                {
-                    _entries.RemoveAt(i);
-                    return true;
-                }
+                return false;
             }
 
-            return false;
+            _entries.RemoveAt(at);
+            _index.Remove(key);
+            // RemoveAt shifts everything after it down one, so their recorded
+            // positions have to follow. That keeps Remove O(n) - which is what
+            // the scan it replaces already cost.
+            for (var i = at; i < _entries.Count; i++)
+            {
+                _index[_entries[i].Key] = i;
+            }
+
+            return true;
         }
 
-        public void Clear() => _entries.Clear();
+        public void Clear()
+        {
+            _entries.Clear();
+            _index.Clear();
+        }
 
         public IReadOnlyList<(JsValue, JsValue)> Snapshot() => _entries.ToArray();
 
@@ -5108,46 +5151,49 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // traceability (entries are reachable via the list).
         internal readonly List<JsValue> _entries = new();
 
+        // See MapObject: the list keeps insertion order and live-mutation
+        // semantics, the dictionary answers membership without scanning it.
+        private readonly Dictionary<JsValue, int> _index = new(SameValueZeroComparer.Instance);
+
         public int Count => _entries.Count;
 
         public void Add(JsValue value)
         {
             // Write barrier (strong entry; see MapObject.Set).
             BarrierInternalSlot(value);
-            if (!Has(value))
+            if (_index.ContainsKey(value))
             {
-                _entries.Add(value);
-            }
-        }
-
-        public bool Has(JsValue value)
-        {
-            foreach (var e in _entries)
-            {
-                if (SameValueZero(e, value))
-                {
-                    return true;
-                }
+                return;
             }
 
-            return false;
+            _index[value] = _entries.Count;
+            _entries.Add(value);
         }
+
+        public bool Has(JsValue value) => _index.ContainsKey(value);
 
         public bool Remove(JsValue value)
         {
-            for (var i = 0; i < _entries.Count; i++)
+            if (!_index.TryGetValue(value, out var at))
             {
-                if (SameValueZero(_entries[i], value))
-                {
-                    _entries.RemoveAt(i);
-                    return true;
-                }
+                return false;
             }
 
-            return false;
+            _entries.RemoveAt(at);
+            _index.Remove(value);
+            for (var i = at; i < _entries.Count; i++)
+            {
+                _index[_entries[i]] = i;
+            }
+
+            return true;
         }
 
-        public void Clear() => _entries.Clear();
+        public void Clear()
+        {
+            _entries.Clear();
+            _index.Clear();
+        }
 
         public IReadOnlyList<JsValue> Snapshot() => _entries.ToArray();
 
