@@ -4665,7 +4665,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             DiagnosticPaths.AppendLogText(
                 "worker_probe.txt",
                 $"{DateTimeOffset.UtcNow:O} page->worker{worker.Id} " +
-                $"data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)}{Environment.NewLine}");
+                $"data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)} " +
+                $"transferCount={transferred.Count} " +
+                $"ports=[{string.Join(",", transferred.Select(e => "#" + e.TraceId))}]{Environment.NewLine}");
         }
 
         var senderOrigin = GetCurrentWindowOrigin();
@@ -4735,7 +4737,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 "worker_probe.txt",
                 $"{DateTimeOffset.UtcNow:O} worker{workerId}->page " +
                 $"data={(args != null && args.Count > 0 ? worker.Realm.DescribePostMessageValue(args[0]) : "<none>")} " +
-                $"transferCount={transferred.Count} args={args?.Count ?? 0}{Environment.NewLine}");
+                $"transferCount={transferred.Count} args={args?.Count ?? 0} " +
+                $"ports=[{string.Join(",", transferred.Select(e => "#" + e.TraceId))}]{Environment.NewLine}");
         }
 
         try
@@ -4758,9 +4761,28 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     var dispatch = ReadJsProperty(worker.PageObject, "dispatchEvent");
                     if (_interpreter.CanCallValue(dispatch))
                     {
+                        // A worker reply that lands on a page object carrying no
+                        // handler is dropped in silence, and from the send side it
+                        // looks exactly like a delivered message. Say which it was.
+                        var onmessage = ReadJsProperty(worker.PageObject, "onmessage");
+                        // Worker._fenListeners is keyed by event type, not an
+                        // array - count the bucket dispatchEvent will actually
+                        // read rather than the map itself.
+                        var listenerMap = ReadJsProperty(worker.PageObject, "_fenListeners");
+                        var listeners = listenerMap.Tag == JsValueTag.Object
+                            ? ReadArrayLikeLength(ReadJsProperty(listenerMap, "message"))
+                            : 0;
+                        var handlerCallable = _interpreter.CanCallValue(onmessage);
+                        DiagnosticPaths.AppendLogText(
+                            "worker_probe.txt",
+                            $"{DateTimeOffset.UtcNow:O} worker{workerId}->page dispatch " +
+                            $"onmessage={handlerCallable} listeners={listeners} " +
+                            $"portsIn={ReadArrayLikeLength(ReadJsProperty(eventValue, "ports"))}" +
+                            $"{(handlerCallable || listeners > 0 ? string.Empty : "  <-- NO HANDLER, message discarded")}" +
+                            $"{Environment.NewLine}");
                         _interpreter.InvokeFunction(dispatch, new[] { eventValue }, worker.PageObject);
                     }
-                    else if (DiagnosticPaths.AppendEnabled)
+                    else
                     {
                         DiagnosticPaths.AppendLogText(
                             "worker_probe.txt",
@@ -4776,6 +4798,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             FenBrowser.Core.EngineLogCompat.Warn(
                 $"[FenJsBridge] Worker {workerId} reply delivery threw: {ex.GetType().Name}: {ex.Message}",
                 FenBrowser.Core.Logging.LogCategory.JavaScript);
+            DiagnosticPaths.AppendLogText(
+                "worker_probe.txt",
+                $"{DateTimeOffset.UtcNow:O} worker{workerId}->page THREW " +
+                $"{ex.GetType().Name}: {ex.Message}{Environment.NewLine}");
         }
         return JsValue.Undefined;
     }
@@ -15011,6 +15037,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
         if (source.Closed || target == null || target.Closed || target.Owner == null)
         {
+            // Without this the whole failure is silent: script sees postMessage
+            // return, and the probe file shows nothing at all for the send.
+            DiagnosticPaths.AppendLogText(
+                "postmessage_probe.txt",
+                $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-send-DROPPED " +
+                $"port#{source.TraceId}->#{target?.TraceId ?? 0} " +
+                $"sourceClosed={source.Closed} targetMissing={target == null} " +
+                $"targetClosed={target?.Closed ?? true} targetOwner=" +
+                $"{(target?.Owner == null ? "<none>" : target.Owner.ProbeFrame())} " +
+                $"data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)}{Environment.NewLine}");
             if (traceEnabled)
             {
                 TraceFenJsMessageTransport(new FenJsMessageTransportTraceEvent(
@@ -15034,7 +15070,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         DiagnosticPaths.AppendLogText(
             "postmessage_probe.txt",
-            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-send data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)} " +
+            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-send " +
+            $"port#{source.TraceId}->#{target.TraceId} to={target.Owner.ProbeFrame()} " +
+            $"data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)} " +
             $"transferCount={(args.Count > 2 ? ReadArrayLikeLength(args[2]) : 0)}{Environment.NewLine}");
         var data = args.Count > 1 ? ConvertJsValueToObject(args[1]) : null;
         var transferredPorts = args.Count > 2
@@ -15124,6 +15162,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             endpoint.Port = JsValue.Undefined;
             result.Add(endpoint);
         }
+
+        // A transferred port is detached here and re-bound in the receiving
+        // realm. Logging both halves is what makes "handed over and then never
+        // used again" distinguishable from "never handed over".
+        if (result.Count > 0)
+        {
+            DiagnosticPaths.AppendLogText(
+                "postmessage_probe.txt",
+                $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-transfer-out " +
+                $"ports=[{string.Join(",", result.Select(e => "#" + e.TraceId))}]{Environment.NewLine}");
+        }
+
         return result;
     }
 
@@ -15141,6 +15191,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             BindMessagePort(endpoints[index], port);
             ports[index] = port;
         }
+
+        DiagnosticPaths.AppendLogText(
+            "postmessage_probe.txt",
+            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-transfer-in " +
+            $"ports=[{string.Join(",", endpoints.Select(e => "#" + e.TraceId))}]{Environment.NewLine}");
         return _interpreter.AllocateArray(ports);
     }
 
@@ -15240,6 +15295,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         DiagnosticPaths.AppendLogText(
                             "postmessage_probe.txt",
                             $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-DROPPED " +
+                            $"port#{target.TraceId} " +
                             $"staleSession={sessionGeneration != _fenJsSessionGeneration} " +
                             $"wrongOwner={target.Owner != this} closed={target.Closed} " +
                             $"portTag={target.Port.Tag}{Environment.NewLine}");
@@ -15249,7 +15305,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     if (DiagnosticPaths.AppendEnabled)
                     DiagnosticPaths.AppendLogText(
                         "postmessage_probe.txt",
-                        $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-deliver{Environment.NewLine}");
+                        $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-deliver " +
+                        $"port#{target.TraceId} from#{sourcePortId}{Environment.NewLine}");
 
                     try
                     {
@@ -15304,7 +15361,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                     {
                                         DiagnosticPaths.AppendLogText(
                                             "postmessage_probe.txt",
-                                            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-handlers onmessage=" +
+                                            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-handlers " +
+                                            $"port#{target.TraceId} onmessage=" +
                                             $"{handlerCallable} " +
                                             $"listeners={listenerCount} " +
                                             $"enabled={portEnabled}" +
@@ -17069,6 +17127,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         out string targetOrigin,
         out JsValue transfer)
     {
+        string overload;
         if (args.Count > 1 && args[1].Tag == JsValueTag.Object)
         {
             var options = args[1];
@@ -17078,13 +17137,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 ? GetCurrentWindowOrigin()
                 : NormalizeSelfPostMessageOrigin(CoerceToHostString(originValue));
             transfer = ReadJsProperty(options, "transfer");
-            return;
+            overload = "options";
+        }
+        else
+        {
+            targetOrigin = args.Count > 1
+                ? NormalizeSelfPostMessageOrigin(CoerceToHostString(args[1]))
+                : "*";
+            transfer = args.Count > 2 ? args[2] : JsValue.Undefined;
+            overload = args.Count > 1 ? "targetOrigin" : "bare";
         }
 
-        targetOrigin = args.Count > 1
-            ? NormalizeSelfPostMessageOrigin(CoerceToHostString(args[1]))
-            : "*";
-        transfer = args.Count > 2 ? args[2] : JsValue.Undefined;
+        // A delivery probe can only report the transfer list it was handed, so a
+        // dropped port and a call that never carried one read the same downstream.
+        // Naming the overload here separates "the page sent no port" from "we
+        // parsed the arguments the wrong way".
+        DiagnosticPaths.AppendLogText(
+            "postmessage_probe.txt",
+            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] post-args overload={overload} " +
+            $"argc={args.Count} arg1Tag={(args.Count > 1 ? args[1].Tag.ToString() : "<absent>")} " +
+            $"targetOrigin={targetOrigin} " +
+            $"transferTag={transfer.Tag} " +
+            $"transferCount={(transfer.Tag == JsValueTag.Object ? ReadArrayLikeLength(transfer) : -1)}" +
+            $"{Environment.NewLine}");
     }
 
     private string NormalizeSelfPostMessageOrigin(string targetOrigin) =>

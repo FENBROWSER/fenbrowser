@@ -22,18 +22,28 @@ namespace FenBrowser.Core.Logging
         /// Individual subsystems may still have their own per-category gates
         /// (LayoutDebugLogEnabled, CompilerEmitLogEnabled) layered above this one.
         /// </summary>
-        public static bool AppendEnabled =
-            string.Equals(Environment.GetEnvironmentVariable("FEN_DIAGNOSTIC_APPENDS"), "1",
-                StringComparison.Ordinal);
+        public static bool AppendEnabled
+        {
+            // A channel that is on has to be able to write, or its callsites log
+            // into a writer that silently discards them - which is what
+            // FEN_DIAGNOSTIC_IFRAME=1 on its own used to do.
+            get => _appendEnabled || IframeDiagnosticsEnabled;
+            set => _appendEnabled = value;
+        }
+
+        private static bool _appendEnabled = IsEnvFlagSet("FEN_DIAGNOSTIC_APPENDS");
 
         /// <summary>
         /// Detailed iframe/recaptcha diagnostics: frame creation, positioning,
-        /// visibility, cross-frame messaging, challenge frame lifecycle.
-        /// Enable with FEN_DIAGNOSTIC_IFRAME=1 (implies AppendEnabled).
+        /// visibility, cross-frame messaging, challenge frame lifecycle, and the
+        /// MessagePort/worker plumbing the frames talk over.
+        /// Enable with FEN_DIAGNOSTIC_IFRAME=1; FEN_DIAGNOSTIC_APPENDS=1 implies it.
         /// </summary>
         public static bool IframeDiagnosticsEnabled =>
-            string.Equals(Environment.GetEnvironmentVariable("FEN_DIAGNOSTIC_IFRAME"), "1",
-                StringComparison.Ordinal) || AppendEnabled;
+            IsEnvFlagSet("FEN_DIAGNOSTIC_IFRAME") || _appendEnabled;
+
+        private static bool IsEnvFlagSet(string name) =>
+            string.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal);
 
         public static string GetWorkspaceRoot()
         {
