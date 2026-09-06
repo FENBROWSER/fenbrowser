@@ -2266,6 +2266,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 // slow because nothing dies. These say whether the
                                 // nursery is surviving and, if so, which root
                                 // source is holding it.
+                                $"frames={interpreter?.FramesCreated ?? 0} " +
+                                $"regMB={(interpreter?.RegisterBytesAllocated ?? 0) / (1024.0 * 1024.0):F0} " +
+                                $"regPool=[hit={interpreter?.RegisterFileHits ?? 0} " +
+                                $"miss={interpreter?.RegisterFileMisses ?? 0} " +
+                                $"largest={interpreter?.LargestRegisterFile ?? 0}] " +
                                 $"nursery={heap?.NurserySize ?? 0} " +
                                 $"lastMinor=[size={heap?.LastMinorNurserySize ?? 0} " +
                                 $"marked={heap?.LastMinorMarked ?? 0} " +

@@ -15,11 +15,24 @@ public sealed class InterpreterFrame
 		BytecodeFunction function,
 		JsValue thisValue,
 		EnvironmentRecord? environment = null)
+		: this(function, thisValue, environment, registers: null)
+	{
+	}
+
+	// A register file may be supplied by the interpreter's pool. It must be
+	// exactly RegisterCount long - generator suspend and resume copy by
+	// Registers.Length against an array sized to the function - and it must
+	// arrive cleared, because every slot is a GC root and a stale reference
+	// would both resurrect a dead object and read as a live register.
+	internal InterpreterFrame(
+		BytecodeFunction function,
+		JsValue thisValue,
+		EnvironmentRecord? environment,
+		JsValue[]? registers)
 	{
 		Function = function;
 		ThisValue = thisValue;
-		Registers = new JsValue[function.RegisterCount];
-		Registers[0] = JsValue.Undefined;
+		Registers = registers ?? new JsValue[function.RegisterCount];
 
 		Environment = environment ?? new DeclarativeEnvironmentRecord(outerEnv: null);
 	}

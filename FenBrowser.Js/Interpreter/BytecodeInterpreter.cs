@@ -43,20 +43,89 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private readonly struct ActiveFrameScope : IDisposable
     {
-        private readonly Stack<InterpreterFrame> _stack;
+        private readonly BytecodeInterpreter _interpreter;
+        private readonly InterpreterFrame _frame;
         private readonly BytecodeFunction? _function;
-        public ActiveFrameScope(Stack<InterpreterFrame> stack, InterpreterFrame frame)
+        public ActiveFrameScope(BytecodeInterpreter interpreter, InterpreterFrame frame)
         {
-            _stack = stack;
+            _interpreter = interpreter;
+            _frame = frame;
             _function = frame.Function;
             if (_function is not null) _function.ActiveActivations++;
-            stack.Push(frame);
+            interpreter._activeFrames.Push(frame);
         }
         public void Dispose()
         {
-            _stack.Pop();
+            _interpreter._activeFrames.Pop();
             if (_function is not null) _function.ActiveActivations--;
+            // The frame is unreachable from here: nothing stores an
+            // InterpreterFrame, and a suspended generator or async context has
+            // already copied its registers out into its own array.
+            _interpreter.ReturnRegisterFile(_frame.Registers);
         }
+    }
+
+    // A call allocates a register file, a JsValue is 32 bytes and carries an
+    // object reference, and the file is a GC root for the length of the call.
+    // On google.com/recaptcha/api2/demo that came to 6.4GB across 1.35M calls in
+    // a single 12-second callback - 517MB/s the CLR had to allocate, trace and
+    // collect, which is where that job's time was going.
+    //
+    // Frames nest, so the live count per size is the call depth: a small
+    // free list per size class serves almost every call after the first few.
+    private readonly Dictionary<int, Stack<JsValue[]>> _registerFilePool = new();
+    private int _pooledRegisterFiles;
+
+    // Bounds the pool's own footprint. Depth rarely passes a few hundred, and a
+    // file is only kept if it can be handed straight back out.
+    private const int MaxPooledRegisterFiles = 512;
+    private const int MaxPooledRegisterFileLength = 4096;
+
+    private long _registerFileHits;
+    private long _registerFileMisses;
+    private int _largestRegisterFile;
+
+    public long RegisterFileHits => _registerFileHits;
+    public long RegisterFileMisses => _registerFileMisses;
+    public int LargestRegisterFile => _largestRegisterFile;
+
+    private JsValue[] RentRegisterFile(int length)
+    {
+        if (length <= 0) return Array.Empty<JsValue>();
+        if (length > _largestRegisterFile) _largestRegisterFile = length;
+        if (length <= MaxPooledRegisterFileLength &&
+            _registerFilePool.TryGetValue(length, out var bucket) &&
+            bucket.Count > 0)
+        {
+            _pooledRegisterFiles--;
+            _registerFileHits++;
+            // Returned cleared, so it is already all-Undefined here.
+            return bucket.Pop();
+        }
+
+        _registerFileMisses++;
+        return new JsValue[length];
+    }
+
+    private void ReturnRegisterFile(JsValue[] registers)
+    {
+        var length = registers.Length;
+        if (length == 0 ||
+            length > MaxPooledRegisterFileLength ||
+            _pooledRegisterFiles >= MaxPooledRegisterFiles)
+        {
+            return;
+        }
+
+        // Clear on the way in, not on the way out: a pooled file must hold no
+        // object references, or the pool itself would keep dead objects alive.
+        Array.Clear(registers, 0, length);
+
+        ref var bucket = ref System.Runtime.InteropServices.CollectionsMarshal
+            .GetValueRefOrAddDefault(_registerFilePool, length, out var existed);
+        if (!existed) bucket = new Stack<JsValue[]>();
+        bucket!.Push(registers);
+        _pooledRegisterFiles++;
     }
 
     // All cached ObjectHandle fields of the interpreter (lazily-built builtin
@@ -460,6 +529,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     /// interpreter, interpreted and compiled alike.</summary>
     public long TotalInstructionsExecuted { get; private set; }
     public int LastExecutionInstructions { get; private set; }
+
+    private long _framesCreated;
+    private long _registerSlotsAllocated;
+
+    /// <summary>Interpreter frames built since this interpreter started.</summary>
+    public long FramesCreated => _framesCreated;
+
+    /// <summary>
+    /// Register slots allocated across all of them. At 32 bytes per JsValue this
+    /// is the dominant per-call allocation.
+    /// </summary>
+    public long RegisterSlotsAllocated => _registerSlotsAllocated;
+
+    public long RegisterBytesAllocated => _registerSlotsAllocated * 32;
 
     // Tier 5 #27: wall-clock execution deadline in milliseconds. Zero = no
     // limit. Checked every WallClockCheckInterval instructions to keep the
@@ -1545,7 +1628,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             frameEnv = functionEnv;
         }
-        var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator, AsyncContext = asyncContext };
+        // Every call allocates a register file, and a JsValue is 32 bytes with a
+        // reference field in it, so this is both the bulk of the bytes a call
+        // costs and an array the CLR has to trace. Counting it is what turns
+        // "GC pauses dominate" into a number that can be attacked.
+        _framesCreated++;
+        _registerSlotsAllocated += function.RegisterCount;
+        var frame = new InterpreterFrame(
+            function,
+            thisValue,
+            frameEnv,
+            RentRegisterFile(function.RegisterCount))
+        { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator, AsyncContext = asyncContext };
         // Safety net: cover frame environments created without StampEnvironment
         // (InterpreterFrame's null-env fallback) so no store can miss the
         // remembered-environment set.
@@ -1556,7 +1650,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Audit �1: pin this frame's registers/env into the GC root set for
         // its execution lifetime. Dispose pops on every return path (normal
         // return, exception, generator yield) via using-scope semantics.
-        using var _frameScope = new ActiveFrameScope(_activeFrames, frame);
+        using var _frameScope = new ActiveFrameScope(this, frame);
         // H.5 - new.target: consume the one-shot pending slot set by
         // ExecuteConstruct. Ordinary calls leave it Undefined.
         if (_pendingNewTarget.Tag != JsValueTag.Undefined)
