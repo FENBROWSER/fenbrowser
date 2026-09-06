@@ -11709,6 +11709,17 @@ Verification:
   an unbounded filter result. Invalid coefficients and unknown operators remain
   explicit compatibility fallbacks.
 
+## 2.172 SVG Turbulence Filter Sources (2026-09-06)
+
+- `feTurbulence` now creates render-owned Perlin `turbulence` and
+  `fractalNoise` shader sources with independent nonnegative X/Y base
+  frequencies, the SVG defaults, deterministic fractional-seed conversion,
+  and up to 16 octaves.
+- Noise output is clipped to the resolved primitive region before entering the
+  named filter graph. Frequencies are capped at 1,024 and seeds at magnitude
+  32,767. `stitchTiles="stitch"`, object-bounding-box primitive units, invalid
+  modes, and out-of-bound parameters remain explicit compatibility fallbacks.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

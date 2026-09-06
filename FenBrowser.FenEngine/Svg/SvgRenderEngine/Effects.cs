@@ -336,6 +336,11 @@ namespace FenBrowser.FenEngine.Svg
                     next = BuildImage(
                         filterElement, primitive, target, viewport, filterRegion);
                 }
+                else if (primitive.Name == "feTurbulence")
+                {
+                    next = BuildTurbulence(
+                        filterElement, primitive, target, viewport, filterRegion);
+                }
                 else if (primitive.Name == "feBlend")
                 {
                     if (!TryResolveFilterInput(
@@ -543,6 +548,44 @@ namespace FenBrowser.FenEngine.Svg
             return SKImageFilter.CreatePicture(picture, primitiveRegion);
         }
 
+        private SKImageFilter BuildTurbulence(
+            SvgElement filter,
+            SvgElement turbulence,
+            SvgElement target,
+            ViewportContext viewport,
+            SKRect filterRegion)
+        {
+            if (string.Equals(
+                    filter.GetAttribute("primitiveUnits"), "objectBoundingBox",
+                    StringComparison.Ordinal) ||
+                !TryResolvePrimitiveRegion(
+                    filter, turbulence, target, viewport, filterRegion, out var primitiveRegion) ||
+                !TryReadNumberPair(
+                    turbulence.GetAttribute("baseFrequency"), 0f, 1024f,
+                    out float frequencyX, out float frequencyY) ||
+                !TryReadBoundedInteger(
+                    turbulence.GetAttribute("numOctaves"), 1, 16, out int octaves) ||
+                !TryReadSingleNumber(turbulence.GetAttribute("seed"), 0f, out float seed) ||
+                MathF.Abs(seed) > 32767f ||
+                !string.Equals(
+                    turbulence.GetAttribute("stitchTiles") ?? "noStitch", "noStitch",
+                    StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            string type = (turbulence.GetAttribute("type") ?? "turbulence").Trim();
+            using var shader = type switch
+            {
+                "turbulence" => SKShader.CreatePerlinNoiseTurbulence(
+                    frequencyX, frequencyY, octaves, seed),
+                "fractalNoise" => SKShader.CreatePerlinNoiseFractalNoise(
+                    frequencyX, frequencyY, octaves, seed),
+                _ => null
+            };
+            return shader == null
+                ? null
+                : SKImageFilter.CreateShader(shader, false, primitiveRegion);
+        }
+
         private SKImageFilter BuildBlend(
             SvgElement element,
             SKImageFilter input,
@@ -618,6 +661,20 @@ namespace FenBrowser.FenEngine.Svg
         {
             return TryReadSingleNumber(element.GetAttribute(name), 0f, out value) &&
                 MathF.Abs(value) <= 32767f;
+        }
+
+        private static bool TryReadBoundedInteger(
+            string raw,
+            int fallback,
+            int maximum,
+            out int value)
+        {
+            value = fallback;
+            if (string.IsNullOrWhiteSpace(raw)) return true;
+            var tokenizer = SvgValues.CreateTokenizer(raw.AsSpan());
+            return tokenizer.Next(out var token) &&
+                TryParseBoundedInteger(token, maximum, out value) &&
+                !tokenizer.Next(out _);
         }
 
         private static SKImageFilter BuildDisplacementMap(

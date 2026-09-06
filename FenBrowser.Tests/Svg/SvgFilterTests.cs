@@ -225,6 +225,51 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(0, defaults.Bitmap.GetPixel(10, 10).Alpha);
         }
 
+        [Theory]
+        [InlineData("turbulence")]
+        [InlineData("fractalNoise")]
+        public void Turbulence_ProducesDeterministicBoundedNoise(string type)
+        {
+            string svg =
+                "<svg width='32' height='32'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='32' height='32'><feTurbulence type='" + type +
+                "' baseFrequency='.08 .12' numOctaves='3' seed='7'/></filter></defs>" +
+                "<rect width='32' height='32' filter='url(#f)'/></svg>";
+
+            using var first = new FenSvgRenderer().Render(svg);
+            using var second = new FenSvgRenderer().Render(svg);
+
+            Assert.True(first.Success, first.ErrorMessage);
+            Assert.True(second.Success, second.ErrorMessage);
+            Assert.False(first.RequiresFallback, string.Join("; ", first.Warnings));
+            Assert.False(second.RequiresFallback, string.Join("; ", second.Warnings));
+            Assert.Equal(first.Bitmap.GetPixel(7, 9), second.Bitmap.GetPixel(7, 9));
+            Assert.NotEqual(first.Bitmap.GetPixel(7, 9), first.Bitmap.GetPixel(23, 21));
+            Assert.True(first.Bitmap.GetPixel(7, 9).Alpha > 0);
+        }
+
+        [Fact]
+        public void Turbulence_FractionalSeedsFollowSvgIntegerConversion()
+        {
+            const string prefix =
+                "<svg width='24' height='24'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='24' height='24'><feTurbulence baseFrequency='.08' seed='";
+            const string suffix =
+                "'/></filter></defs><rect width='24' height='24' filter='url(#f)'/></svg>";
+
+            using var baseline = new FenSvgRenderer().Render(prefix + "0" + suffix);
+            Assert.True(baseline.Success, baseline.ErrorMessage);
+            foreach (string seed in new[] { "-.8", "-.5", "-.2", ".2", ".5", "1.5" })
+            {
+                using var candidate = new FenSvgRenderer().Render(prefix + seed + suffix);
+                Assert.True(candidate.Success, candidate.ErrorMessage);
+                Assert.False(candidate.RequiresFallback, string.Join("; ", candidate.Warnings));
+                for (int y = 0; y < 24; y++)
+                    for (int x = 0; x < 24; x++)
+                        Assert.Equal(baseline.Bitmap.GetPixel(x, y), candidate.Bitmap.GetPixel(x, y));
+            }
+        }
+
         [Fact]
         public void ObjectBoundingBoxPrimitiveUnits_ScaleOffsetByTargetBounds()
         {
@@ -450,7 +495,6 @@ namespace FenBrowser.Tests.Svg
 
         [Theory]
         [InlineData("<feGaussianBlur stdDeviation='999'/>")]
-        [InlineData("<feTurbulence/>")]
         [InlineData("<feComponentTransfer><feFuncR type='unknown'/></feComponentTransfer>")]
         [InlineData("<feDisplacementMap xChannelSelector='Q'/>")]
         [InlineData("<feConvolveMatrix order='3' kernelMatrix='1 2'/>")]
@@ -463,6 +507,9 @@ namespace FenBrowser.Tests.Svg
         [InlineData("<feImage href='image.png'/>")]
         [InlineData("<feComposite operator='arithmetic' k1='invalid'/>")]
         [InlineData("<feComposite operator='arithmetic' k4='32768'/>")]
+        [InlineData("<feTurbulence baseFrequency='-.1'/>")]
+        [InlineData("<feTurbulence numOctaves='17'/>")]
+        [InlineData("<feTurbulence stitchTiles='stitch'/>")]
         public void UnsupportedOrUnboundedPrimitive_RemainsExplicitFallback(string primitive)
         {
             using var result = new FenSvgRenderer().Render(

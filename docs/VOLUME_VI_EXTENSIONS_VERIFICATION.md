@@ -5211,6 +5211,19 @@ Verification:
   fallback, and the primitive-region crop prevents constant arithmetic output
   from expanding into an unbounded native filter graph.
 
+## 6.238 SVG Turbulence Verification (2026-09-06)
+
+- The exact local manual files `filters-turb-01-f-manual.svg` and
+  `filters-turb-02-f-manual.svg` now complete first-party with no fallback,
+  rejection, renderer/worker failure, or timeout. Neither declares a WPT
+  reference; the one comparable legacy rendering does not meet pixel parity
+  (alpha IoU 0.9454, mean RGB difference 48.737), so no visual-equivalence
+  claim is made.
+- Focused regressions verify deterministic turbulence and fractal-noise output,
+  independent base frequencies, bounded octaves, and the fractional seed groups
+  exercised by the local SVG 1.1 seed test. Unsupported stitching and invalid or
+  over-bound parameters remain fallback.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.
