@@ -179,7 +179,9 @@ public sealed class BytecodeCompiler
         string? name,
         FunctionKind functionKind)
     {
-        var program = JsParser.ParseFunctionBody(body, ParserMaxRecursionDepth);
+        var allowYield = functionKind is FunctionKind.Generator or FunctionKind.AsyncGenerator;
+        var allowAwait = functionKind is FunctionKind.Async or FunctionKind.AsyncGenerator;
+        var program = JsParser.ParseFunctionBody(body, ParserMaxRecursionDepth, allowYield, allowAwait);
         return CompileProgramCore(
             program,
             parameters,

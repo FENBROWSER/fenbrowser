@@ -139,18 +139,28 @@ public sealed class JsParser
         => ParseFunctionBody(source, maxRecursionDepth: null);
 
     public static ProgramNode ParseFunctionBody(SourceText source, int? maxRecursionDepth)
+        => ParseFunctionBody(source, maxRecursionDepth, allowYield: false, allowAwait: false);
+
+    // A body parsed on its own still needs the [Yield]/[Await] grammar parameters of
+    // the function it will become, which for CreateDynamicFunction come from the
+    // constructor that was invoked (GeneratorFunction, AsyncFunction, ...).
+    public static ProgramNode ParseFunctionBody(SourceText source, int? maxRecursionDepth, bool allowYield, bool allowAwait)
     {
         var tokens = new JsLexer(source).LexAll();
         var parser = new JsParser(source, tokens, maxRecursionDepth ?? DefaultMaxRecursionDepth) { _functionBodyDepth = 1 };
-        return parser.ParseProgram(ProgramKind.Script);
+        return parser.ParseProgram(ProgramKind.Script, allowYieldExpression: allowYield, allowAwaitExpression: allowAwait);
     }
 
-    private ProgramNode ParseProgram(ProgramKind kind, bool inheritedStrictMode = false)
+    private ProgramNode ParseProgram(
+        ProgramKind kind,
+        bool inheritedStrictMode = false,
+        bool allowYieldExpression = false,
+        bool allowAwaitExpression = false)
     {
         _moduleMode = kind == ProgramKind.Module;
         _strictMode = kind == ProgramKind.Module || inheritedStrictMode;
-        _allowYieldExpression = false;
-        _allowAwaitExpression = kind == ProgramKind.Module;
+        _allowYieldExpression = allowYieldExpression;
+        _allowAwaitExpression = allowAwaitExpression || kind == ProgramKind.Module;
         var statements = new List<StatementNode>();
         var start = Current().Span;
 
