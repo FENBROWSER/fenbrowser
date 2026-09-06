@@ -419,7 +419,7 @@ public sealed partial class BytecodeInterpreter
                     >= (long)JitCompiler.TierUpThreshold * BackEdgeScale)
             {
                 bcFn.JitCompileAttempted = true;
-                bcFn.JitDelegate = JitCompiler.TryCompile(bcFn);
+                JitCompiler.RequestCompile(bcFn);
             }
 #endif
             return ExecuteInternal(fn.Function, args, thisValue, ResolveFunctionOuterEnvironment(fn), callee: fn);

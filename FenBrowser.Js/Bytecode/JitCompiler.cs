@@ -90,7 +90,109 @@ public static class JitCompiler
     public static long CompileSuccesses;
     public static long CompileExpressionTreeSuccesses;
 
+    // Expression-tree compilation is not free and it happens on the thread that
+    // was trying to run the function, so on a bundle that tiers up hundreds of
+    // functions the compiler competes with the code it exists to speed up. The
+    // counters said how many were compiled but never what that cost, so a run
+    // could not tell a JIT that paid for itself from one that did not.
+    public static long CompileTicks;
+
+    public static double CompileMilliseconds =>
+        CompileTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+    // Compilation happens off the thread that asked for it. Building an
+    // expression tree and handing it to LambdaCompiler is not cheap - on
+    // google.com/recaptcha/api2/demo, 279 functions cost 9.9 seconds of a
+    // 15.1-second callback - and doing it inline means the page waits for the
+    // compiler before it may run the very function it wanted to speed up. The
+    // function keeps running interpreted until its delegate shows up.
+    //
+    // Set FEN_JIT_SYNC=1 to compile inline instead, which a measurement that
+    // wants a delegate to exist by a known call needs.
+    public static readonly bool CompileInBackground =
+        !string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_SYNC"), "1", StringComparison.Ordinal);
+
+    private static readonly System.Collections.Concurrent.BlockingCollection<BytecodeFunction> PendingCompiles = new();
+    private static int _compilerStarted;
+
+    public static long BackgroundQueueDepth => PendingCompiles.Count;
+
+    /// <summary>
+    /// Asks for <paramref name="function"/> to be compiled. The delegate is
+    /// published when it is ready; callers keep interpreting until then.
+    /// </summary>
+    public static void RequestCompile(BytecodeFunction function)
+    {
+        if (function is null) return;
+
+        if (!CompileInBackground)
+        {
+            Publish(function, TryCompile(function));
+            return;
+        }
+
+        EnsureCompilerThread();
+        try
+        {
+            PendingCompiles.Add(function);
+        }
+        catch (InvalidOperationException)
+        {
+            // Queue completed during shutdown: staying interpreted is correct.
+        }
+    }
+
+    // OsrEntryPoints is written while compiling; publishing the delegate last
+    // means a reader that sees a delegate also sees the entry points that go
+    // with it. Every on-stack-replacement test checks the delegate first.
+    private static void Publish(BytecodeFunction function, JitDelegate? compiled) =>
+        System.Threading.Volatile.Write(ref function.JitDelegate, compiled);
+
+    private static void EnsureCompilerThread()
+    {
+        if (Interlocked.Exchange(ref _compilerStarted, 1) == 1) return;
+
+        // Expression-tree compilation recurses with the shape of the function
+        // it is compiling, so it gets the same large stack the JS worker runs on.
+        var thread = new System.Threading.Thread(CompilerLoop, 16 * 1024 * 1024)
+        {
+            IsBackground = true,
+            Name = "fenjs-jit",
+        };
+        thread.Start();
+    }
+
+    private static void CompilerLoop()
+    {
+        foreach (var function in PendingCompiles.GetConsumingEnumerable())
+        {
+            try
+            {
+                Publish(function, TryCompile(function));
+            }
+            catch (Exception)
+            {
+                // A function the compiler cannot handle simply stays
+                // interpreted; it must never take the page down with it.
+                Publish(function, null);
+            }
+        }
+    }
+
     public static JitDelegate? TryCompile(BytecodeFunction function)
+    {
+        var compileStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            return TryCompileCore(function);
+        }
+        finally
+        {
+            Interlocked.Add(ref CompileTicks, System.Diagnostics.Stopwatch.GetTimestamp() - compileStart);
+        }
+    }
+
+    private static JitDelegate? TryCompileCore(BytecodeFunction function)
     {
         Interlocked.Increment(ref CompileAttempts);
         if (function is null || function.Instructions.Count == 0) return null;

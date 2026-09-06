@@ -2097,6 +2097,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         return $"attempts={FenBrowser.Js.Bytecode.JitCompiler.CompileAttempts} " +
                $"compiled={FenBrowser.Js.Bytecode.JitCompiler.CompileSuccesses} " +
                $"exprTree={FenBrowser.Js.Bytecode.JitCompiler.CompileExpressionTreeSuccesses} " +
+               // Compilation runs on the thread that wanted to run the function,
+               // so this is time the page waited for, not background work.
+               $"compileMs={FenBrowser.Js.Bytecode.JitCompiler.CompileMilliseconds:F0} " +
                $"refusedOn={topRefusals}";
 #endif
     }

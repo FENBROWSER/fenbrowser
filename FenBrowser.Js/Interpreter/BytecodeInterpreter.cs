@@ -6482,7 +6482,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (!function.JitCompileAttempted)
         {
             function.JitCompileAttempted = true;
-            function.JitDelegate = JitCompiler.TryCompile(function);
+            JitCompiler.RequestCompile(function);
         }
 
         // Only a loop header the compiled body advertises is safe to enter:
