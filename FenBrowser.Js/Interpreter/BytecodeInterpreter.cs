@@ -14879,6 +14879,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Build a fully-populated data property-descriptor object
     // { value, writable: true, enumerable: true, configurable: true } for passing
     // to a Proxy [[DefineOwnProperty]] trap (CreateDataProperty semantics).
+    // FromPropertyDescriptor for a value-only descriptor { [[Value]]: value }, as
+    // used by OrdinarySetWithOwnDescriptor step 5.d.iii. Unlike the full data
+    // descriptor it must not assert writable/enumerable/configurable, which would
+    // otherwise be reported to a defineProperty trap as an attribute change.
+    private JsValue BuildValueOnlyDescriptorObject(JsValue value)
+    {
+        var desc = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(desc, AllocationSite.Current());
+        _ = desc.DefineOwnProperty("value", new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+        if (value.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(handle, value.AsObjectHandle());
+        }
+
+        return JsValue.FromObject(handle);
+    }
+
     private JsValue BuildDataPropertyDescriptorObject(JsValue value)
     {
         var desc = CreateOrdinaryObject();
@@ -15540,6 +15557,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var receiverObj = _heap.GetObject(receiver.AsObjectHandle());
+
+        // Steps 5.c-f run against the receiver's own internal methods. A Proxy
+        // receiver has exotic [[GetOwnProperty]]/[[DefineOwnProperty]], so touching
+        // its property table directly would strand the write on the proxy instead of
+        // forwarding it to the target (or firing the defineProperty trap).
+        if (receiverObj is ProxyObject receiverProxy)
+        {
+            if (ProxyGetOwnProperty(receiverProxy, key, out var proxyExisting))
+            {
+                if (proxyExisting.IsAccessor || !proxyExisting.Writable)
+                    return false;
+                // Step 5.d.iii: the descriptor carries only [[Value]].
+                return ProxyDefineProperty(receiverProxy, key, BuildValueOnlyDescriptorObject(value));
+            }
+
+            // Step 5.f: CreateDataProperty(Receiver, P, V).
+            return ProxyDefineProperty(receiverProxy, key, BuildDataPropertyDescriptorObject(value));
+        }
 
         // Step 5.c-d: check receiver for an existing own property.
         if (receiverObj.TryGetOwnProperty(key, out var existing))
