@@ -13146,7 +13146,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", (thisValue, _) => ObjectPrototypeToString(thisValue));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", (thisValue, _) => ObjectPrototypeToString(thisValue));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", (thisValue, _) => ObjectPrototypeToLocaleString(thisValue));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "valueOf", (thisValue, _) => ObjectPrototypeValueOf(thisValue));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "hasOwnProperty", ObjectPrototypeHasOwnProperty, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "isPrototypeOf", ObjectPrototypeIsPrototypeOf, length: 1);
@@ -14315,6 +14315,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = prototype.DefineOwnSymbolProperty(
             tagId,
             new JsPropertyDescriptor(JsValue.FromString(tag), Writable: false, Enumerable: false, Configurable: true));
+    }
+
+    // ECMA-262 20.1.3.5 Object.prototype.toLocaleString: Return ? Invoke(O, "toString").
+    // This dispatches through the receiver, so a String or Number wrapper reaches its
+    // own toString rather than falling back to Object.prototype.toString.
+    private JsValue ObjectPrototypeToLocaleString(JsValue thisValue)
+    {
+        var toStringFn = GetReceiverProperty(thisValue, "toString");
+        if (!IsCallable(toStringFn))
+            throw new JsThrownException(CreateTypeError("Object.prototype.toLocaleString called on a value whose toString is not callable."));
+        return CallFunction(toStringFn, System.Array.Empty<JsValue>(), thisValue);
     }
 
     private JsValue ObjectPrototypeToString(JsValue thisValue)
