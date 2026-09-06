@@ -12423,11 +12423,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var iterId = GetWellKnownSymbolId("iterator");
 
             if (iterId != 0 &&
-                iterableObj.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) &&
-                iterDesc.Value.Tag == JsValueTag.Object)
+                TryGetSymbolPropertyValue(iterableObj, iterable, iterId, out var iteratorMethod) &&
+                iteratorMethod.Tag == JsValueTag.Object)
             {
                 // @@iterator path — use lazy iteration so IteratorClose is called on errors.
-                var iterator = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), iterable);
+                var iterator = CallFunction(iteratorMethod, Array.Empty<JsValue>(), iterable);
                 if (iterator.Tag != JsValueTag.Object)
                 {
                     throw new JsThrownException(CreateTypeError(
@@ -12513,24 +12513,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 return JsValue.FromObject(resultHandle);
             }
 
-            // No @@iterator — array-like fallback.
-            var src = _heap.GetObject(iterable.AsObjectHandle());
-            var length = GetArrayLength(src);
-            for (var i = 0; i < length; i++)
-            {
-                var idxKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                if (!TryGetPropertyValue(src, iterable, idxKey, out var entryValue) ||
-                    entryValue.Tag != JsValueTag.Object)
-                    throw new JsThrownException(CreateTypeError($"Object.fromEntries: entry at index {i} is not an object."));
-                var entry = _heap.GetObject(entryValue.AsObjectHandle());
-                if (!TryGetPropertyValue(entry, entryValue, "0", out var k) ||
-                    !TryGetPropertyValue(entry, entryValue, "1", out var v))
-                    throw new JsThrownException(CreateTypeError($"Object.fromEntries: entry at index {i} must have '0' and '1' properties."));
-                var propKey = ToPropertyKey(k);
-                result.SetProperty(propKey, v);
-                if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
-            }
-            return JsValue.FromObject(resultHandle);
+            // Step 4 is GetIterator, which has no array-like fallback: an object with
+            // no callable @@iterator is simply not iterable.
+            throw new JsThrownException(CreateTypeError(
+                "Object.fromEntries: argument is not iterable."));
         }, length: 1);
 
         // ECMA-262 20.1.2.5 Object.groupBy(items, callbackfn) (ES2024). Walks the
