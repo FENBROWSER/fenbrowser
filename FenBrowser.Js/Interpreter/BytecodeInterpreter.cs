@@ -458,10 +458,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // limit. Checked every WallClockCheckInterval instructions to keep the
     // hot path cheap; a small over-shoot beyond the deadline is acceptable
     // because the budget exists to bound runaway scripts, not to provide
-    // sub-millisecond precision.
+    // sub-millisecond precision. Increased from 1024 to 8192 to reduce
+    // check overhead in tight loops (reCAPTCHA-like workloads).
     public long WallClockTimeoutMs { get; set; }
     public int MicrotaskCheckpointJobBudget { get; set; } = 10_000;
-    private const int WallClockCheckInterval = 1024;
+    private const int WallClockCheckInterval = 8192;
     private long _wallClockDeadlineTicks;
     private int _wallClockCheckCountdown;
 
@@ -1718,26 +1719,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // built, so an ordinary call need not re-test for one on every
         // instruction it executes.
         var mayResumeAbruptly = frame.OwnerGenerator is not null || frame.AsyncContext is not null;
+        // Plan §14.2: instruction budget and interrupt check.
+        var hasBudget = InstructionBudget > 0;
+        var hasWallClock = _wallClockDeadlineTicks != 0 || InterruptCallback is not null;
+        var checkBudgetAndWallClock = hasBudget || hasWallClock;
         while (frame.InstructionPointer < instructions.Length)
         {
             _heap.CollectAtSafePointIfRequested();
-            // Plan §14.2: instruction budget and interrupt check.
-            if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
-                throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded.")) { IsUncatchableByScript = true };
-            // Tier 5 #27: interrupt + wall-clock deadline, sampled every N
-            // instructions to amortize the delegate invocation and TickCount64
-            // read (a per-instruction delegate call is measurable on hot loops).
-            if (--_wallClockCheckCountdown <= 0)
+            if (checkBudgetAndWallClock)
             {
-                _wallClockCheckCountdown = WallClockCheckInterval;
-                TraceMicrotaskExecutionProgressIfDue();
-                if (InterruptCallback is { } cb && !cb())
-                    throw new JsThrownException(CreateRangeError("Execution interrupted.")) { IsUncatchableByScript = true };
-                if (_wallClockDeadlineTicks != 0 && System.Environment.TickCount64 >= _wallClockDeadlineTicks)
-                    throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded.")) { IsUncatchableByScript = true };
+                if (hasBudget && ++_instructionCount > InstructionBudget)
+                    throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded.")) { IsUncatchableByScript = true };
+                // Tier 5 #27: interrupt + wall-clock deadline, sampled every N
+                // instructions (WallClockCheckInterval=8192) to amortize the
+                // delegate invocation and TickCount64 read (a per-instruction
+                // delegate call is measurable on hot loops).
+                if (--_wallClockCheckCountdown <= 0)
+                {
+                    _wallClockCheckCountdown = WallClockCheckInterval;
+                    TraceMicrotaskExecutionProgressIfDue();
+                    if (InterruptCallback is { } cb && !cb())
+                        throw new JsThrownException(CreateRangeError("Execution interrupted.")) { IsUncatchableByScript = true };
+                    if (_wallClockDeadlineTicks != 0 && System.Environment.TickCount64 >= _wallClockDeadlineTicks)
+                        throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded.")) { IsUncatchableByScript = true };
+                }
             }
 
-            // ECMA-262 27.5.1.5 GeneratorResumeAbrupt — inject a throw-mode
+                // ECMA-262 27.5.1.5 GeneratorResumeAbrupt — inject a throw-mode
             // completion into the resumed generator body. ThrowOrHandle routes
             // through the frame's exception handler stack so try/catch blocks
             // inside the generator can intercept the injected exception.
