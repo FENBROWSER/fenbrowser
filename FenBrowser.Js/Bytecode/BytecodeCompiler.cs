@@ -1219,11 +1219,12 @@ public sealed class BytecodeCompiler
             }
         }
 
-        // H.3.2 - record the class itself as the constructor's HomeObject so
-        // LoadSuperConstructor can read HomeObject.[[Prototype]] to find the
-        // base class. The constructor is the class object itself, so this is
-        // an intentional self-reference.
-        _instructions.Add(new Instruction(OpCode.SetHomeObject, classReg, classReg, 0));
+        // H.3.2 - ECMA-262 15.7.14: the constructor is a MethodDefinition on the
+        // class prototype, so that is its [[HomeObject]] and `super.x` resolves
+        // from Class.prototype.[[Prototype]] like it does in any other method.
+        // super() does not read the home object at all - LoadSuperConstructor
+        // takes the base class off the constructor function's own [[Prototype]].
+        _instructions.Add(new Instruction(OpCode.SetHomeObject, classReg, protoReg, 0));
 
         // ECMA-262 15.7.14 step 16: proto.constructor uses CreateMethodProperty
         // -> { writable: true, enumerable: false, configurable: true }.

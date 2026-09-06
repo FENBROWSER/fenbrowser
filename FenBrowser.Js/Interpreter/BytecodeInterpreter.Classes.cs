@@ -440,17 +440,17 @@ public sealed partial class BytecodeInterpreter
 
     internal void HandleLoadSuperConstructor(InterpreterFrame frame, Instruction ins)
     {
-        // ECMA-262 13.3.7.4 GetSuperConstructor: read the active function's
-        // HomeObject (which the class compiler sets to the class itself for the
-        // constructor), then return HomeObject.[[Prototype]] - the base class.
+        // ECMA-262 13.3.7.4 GetSuperConstructor: return activeFunction.[[GetPrototypeOf]]().
+        // That is the constructor function object's own prototype slot - the base
+        // class - not anything reached through [[HomeObject]].
         // Arrow functions and eval inherit the enclosing method's binding.
-        if (!TryGetSuperHome(frame, out var home))
+        if (!TryGetActiveSuperFunction(frame, out var activeFunction))
         {
             ThrowOrHandle(frame, CreateReferenceError("super constructor call requires a class constructor context."));
             return;
         }
 
-        var homeObj = _heap.GetObject(home);
+        var homeObj = _heap.GetObject(activeFunction);
         if (homeObj.PrototypeHandle is not { } baseHandle)
         {
             ThrowOrHandle(frame, CreateTypeError("super constructor is not callable (no base class)."));
@@ -459,6 +459,51 @@ public sealed partial class BytecodeInterpreter
 
         frame.Registers[ins.A] = JsValue.FromObject(baseHandle);
         frame.SuperConstructorHandle = baseHandle;
+    }
+
+    // Locates the function object that provides the current `super` binding, using
+    // the same lookup order as TryGetSuperHome (own callee, then the environment
+    // chain for arrows/eval, then enclosing frames) but yielding the function
+    // itself rather than its [[HomeObject]].
+    private bool TryGetActiveSuperFunction(InterpreterFrame currentFrame, out ObjectHandle function)
+    {
+        if (currentFrame.CalleeFunctionObject is { HomeObject: not null, SelfHandle: { } selfHandle })
+        {
+            function = selfHandle;
+            return true;
+        }
+
+        var env = currentFrame.Environment;
+        while (env is not null)
+        {
+            if (env is FunctionEnvironmentRecord { HomeObject: not null } fen &&
+                fen.FunctionObject.Tag == JsValueTag.Object)
+            {
+                function = fen.FunctionObject.AsObjectHandle();
+                return true;
+            }
+
+            env = env.OuterEnv;
+        }
+
+        var foundCurrent = false;
+        foreach (var f in _activeFrames)
+        {
+            if (!foundCurrent)
+            {
+                if (ReferenceEquals(f, currentFrame)) foundCurrent = true;
+                continue;
+            }
+
+            if (f.CalleeFunctionObject is { HomeObject: not null, SelfHandle: { } parentHandle })
+            {
+                function = parentHandle;
+                return true;
+            }
+        }
+
+        function = default;
+        return false;
     }
 
     private bool TryGetSuperPropertyBase(BytecodeFunction function, ObjectHandle home, out ObjectHandle baseProtoHandle)
