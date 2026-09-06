@@ -5331,6 +5331,83 @@ pre {{
             return builder.ToString();
         }
 
+        /// <summary>
+        /// Extended iframe diagnostics including computed layout, visibility,
+        /// challenge frame detection, and cross-frame messaging.
+        /// Only runs when FEN_DIAGNOSTIC_IFRAME=1.
+        /// </summary>
+        private static void LogIframeDiagnostics(Element frameElement, Uri frameUri, string phase)
+        {
+            if (!DiagnosticPaths.IframeDiagnosticsEnabled)
+            {
+                return;
+            }
+
+            try
+            {
+                var builder = new System.Text.StringBuilder();
+                builder.AppendLine($"=== IFRAME DIAGNOSTICS [{phase}] ===");
+                builder.AppendLine($"  uri: {frameUri}");
+                builder.AppendLine($"  element: <{frameElement.TagName}> id='{frameElement.GetAttribute("id") ?? ""}' class='{frameElement.GetAttribute("class") ?? ""}'");
+                builder.AppendLine($"  src: {frameElement.GetAttribute("src") ?? ""}");
+                builder.AppendLine($"  isConnected: {frameElement.IsConnected}");
+
+                // Computed style and layout
+                var style = frameElement.GetAttribute("style") ?? "";
+                builder.AppendLine($"  inlineStyle: {style}");
+
+                // Check for challenge frame indicators
+                var isChallengeFrame = frameUri?.AbsoluteUri.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true ||
+                                       frameElement.GetAttribute("class")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true ||
+                                       frameElement.GetAttribute("id")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true;
+                builder.AppendLine($"  isChallengeFrame: {isChallengeFrame}");
+
+                // Ancestor chain with computed styles
+                var current = frameElement;
+                var depth = 0;
+                builder.AppendLine("  ancestorChain:");
+                while (current != null && depth < 12)
+                {
+                    var inlineStyle = current.GetAttribute("style") ?? string.Empty;
+                    var classAttr = current.GetAttribute("class") ?? string.Empty;
+                    var id = current.GetAttribute("id") ?? string.Empty;
+                    var display = current.GetAttribute("display") ?? "";
+                    var visibility = current.GetAttribute("visibility") ?? "";
+                    var position = current.GetAttribute("position") ?? "";
+                    var zIndex = current.GetAttribute("z-index") ?? "";
+                    builder.AppendLine(
+                        $"    depth={depth} <{current.TagName}> id='{id}' class='{classAttr}' style='{inlineStyle}' display='{display}' visibility='{visibility}' position='{position}' z-index='{zIndex}'");
+                    current = current.ParentElement;
+                    depth++;
+                }
+
+                // Child frames (nested iframes)
+                var children = frameElement.Descendants().OfType<Element>()
+                    .Where(e => string.Equals(e.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (children.Length > 0)
+                {
+                    builder.AppendLine($"  childFrames: {children.Length}");
+                    foreach (var child in children)
+                    {
+                        var childSrc = child.GetAttribute("src") ?? "";
+                        var childClass = child.GetAttribute("class") ?? "";
+                        builder.AppendLine($"    child: <iframe> src='{childSrc}' class='{childClass}' connected={child.IsConnected}");
+                    }
+                }
+
+                DiagnosticPaths.AppendLogText(
+                    "iframe_diagnostics.txt",
+                    $"{DateTimeOffset.UtcNow:O} {builder}");
+            }
+            catch (Exception ex)
+            {
+                DiagnosticPaths.AppendLogText(
+                    "iframe_diagnostics.txt",
+                    $"{DateTimeOffset.UtcNow:O} ERROR in LogIframeDiagnostics: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
         private async Task LoadFrameElementAsync(Element frameElement, Uri frameUri)
         {
             if (!IsFrameElement(frameElement) || frameUri == null)
@@ -5358,6 +5435,7 @@ pre {{
 
             try
             {
+                LogIframeDiagnostics(frameElement, frameUri, "LoadFrameElementAsync:start");
                 TryLogInfo($"[BrowserHost] Loading iframe '{frameUri}'", LogCategory.Navigation);
                 DiagnosticPaths.AppendLogText(
                     "iframe_style_chain_probe.txt",
@@ -5391,6 +5469,8 @@ pre {{
                     return;
                 }
 
+                LogIframeDiagnostics(frameElement, finalUri, "LoadFrameElementAsync:parsed");
+
                 currentFrameUri = ResolveFrameBaseUri(frameElement);
                 if (currentFrameUri != null &&
                     !string.Equals(currentFrameUri.AbsoluteUri, frameUri.AbsoluteUri, StringComparison.Ordinal))
@@ -5421,6 +5501,7 @@ pre {{
                 TryLogInfo(
                     $"[BrowserHost] iframe document attached final='{finalUri}' root='{parsedRoot.TagName}'",
                     LogCategory.Navigation);
+                LogIframeDiagnostics(frameElement, finalUri, "LoadFrameElementAsync:attached");
             }
             catch (Exception ex)
             {

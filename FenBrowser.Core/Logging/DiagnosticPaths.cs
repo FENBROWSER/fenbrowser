@@ -26,6 +26,15 @@ namespace FenBrowser.Core.Logging
             string.Equals(Environment.GetEnvironmentVariable("FEN_DIAGNOSTIC_APPENDS"), "1",
                 StringComparison.Ordinal);
 
+        /// <summary>
+        /// Detailed iframe/recaptcha diagnostics: frame creation, positioning,
+        /// visibility, cross-frame messaging, challenge frame lifecycle.
+        /// Enable with FEN_DIAGNOSTIC_IFRAME=1 (implies AppendEnabled).
+        /// </summary>
+        public static bool IframeDiagnosticsEnabled =>
+            string.Equals(Environment.GetEnvironmentVariable("FEN_DIAGNOSTIC_IFRAME"), "1",
+                StringComparison.Ordinal) || AppendEnabled;
+
         public static string GetWorkspaceRoot()
         {
             var envRoot = Environment.GetEnvironmentVariable(DiagnosticsRootEnv);
