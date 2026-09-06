@@ -62,13 +62,14 @@ HarfBuzz text/tspan and text-path shaping, bounded filter graphs and common
 mask/marker subsets, bounded matrix convolution,
 same-document `feImage` filter inputs, arithmetic compositing, and bounded
 Perlin turbulence/filter-noise sources and distant lighting,
+plus deterministic bounded SMIL `set` snapshots,
 curved-path marker tangents, static pattern paint servers, bounded nested
 resources, blend modes, and the genuine captured-site gate are implemented. The
 11-site capture evaluated all 151 captured SVGs first-party with zero fallback,
 failure, timeout, rejection, or truncation. SMIL, remaining cascade and filter
 gaps, vertical/per-glyph text, scripted pattern mutation, unsupported properties
 and elements, and unresolved local WPT failures remain open compatibility gates
-(see VOLUME_III 2.121-2.173 and VOLUME_VI 6.193-6.239 for the matrix and current
+(see VOLUME_III 2.121-2.174 and VOLUME_VI 6.193-6.240 for the matrix and current
 evidence).
 Removal from this inventory happens only after the documented gate closes.
 

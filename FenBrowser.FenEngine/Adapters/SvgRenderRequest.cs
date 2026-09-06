@@ -18,6 +18,11 @@ namespace FenBrowser.FenEngine.Adapters
         public SvgRenderLimits Limits { get; }
         public Uri? BaseUri { get; init; }
         public ISvgResourceResolver? ResourceResolver { get; init; }
+        /// <summary>
+        /// Deterministic SVG document time sampled by declarative animations.
+        /// The default is the initial document time of zero seconds.
+        /// </summary>
+        public double DocumentTimeSeconds { get; init; }
     }
 
     public enum SvgResourceKind

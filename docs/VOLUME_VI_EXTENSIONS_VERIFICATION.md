@@ -5238,6 +5238,18 @@ Verification:
   lighting color, exponent admission, unsupported point lights, and primitive
   region bounds.
 
+## 6.240 SMIL Set Snapshot Verification (2026-09-07)
+
+- Focused tests sample a `<set>` before, at, during, and at the end of its active
+  interval, verify frozen state after the interval, reject invalid document
+  times, and prove the legacy renderer cannot misrepresent a nonzero request.
+- The exact local `svg/animations/support/green-at-3s.svg` file now routes
+  first-party at document time zero with no fallback, rejection,
+  renderer/worker failure, or timeout and reaches legacy pixel parity 1/1.
+- This closes deterministic `<set>` snapshots only. Interpolated `animate`,
+  transform animation, event timing, DOM SMIL controls, and live invalidation
+  remain explicit migration work.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

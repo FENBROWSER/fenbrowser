@@ -50,6 +50,16 @@ namespace FenBrowser.FenEngine.Adapters
                     Backend = SvgRendererBackend.FirstParty
                 };
             }
+            if (!double.IsFinite(request.DocumentTimeSeconds) ||
+                request.DocumentTimeSeconds < 0d || request.DocumentTimeSeconds > 1_000_000_000d)
+            {
+                return new SvgRenderResult
+                {
+                    Success = false,
+                    ErrorMessage = "SVG document time is outside the supported finite range",
+                    Backend = SvgRendererBackend.FirstParty
+                };
+            }
 
             limits = SvgRenderLimits.Normalize(limits);
 
@@ -73,6 +83,7 @@ namespace FenBrowser.FenEngine.Adapters
                         limits,
                         request.BaseUri,
                         request.ResourceResolver,
+                        request.DocumentTimeSeconds,
                         out var picture,
                         out float naturalWidth,
                         out float naturalHeight,

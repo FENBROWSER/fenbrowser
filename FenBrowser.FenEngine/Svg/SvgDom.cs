@@ -25,11 +25,17 @@ namespace FenBrowser.FenEngine.Svg
         public SvgElement PreviousElementSibling;
         public Dictionary<string, string> CascadedDeclarations;
         public Dictionary<string, string> CustomProperties;
+        public Dictionary<string, string> AnimatedProperties;
 
         private Dictionary<string, string> _lookup;
 
         public string GetAttribute(string name)
         {
+            if (AnimatedProperties != null && name != null &&
+                AnimatedProperties.TryGetValue(name, out string animated))
+            {
+                return animated;
+            }
             var attrs = Attributes;
             if (attrs == null || name == null)
             {
@@ -57,6 +63,11 @@ namespace FenBrowser.FenEngine.Svg
         public string GetPresentationProperty(string name)
         {
             string value;
+            if (AnimatedProperties != null &&
+                AnimatedProperties.TryGetValue(name, out value))
+            {
+                return value;
+            }
             if (CascadedDeclarations != null &&
                 CascadedDeclarations.TryGetValue(name, out value))
             {

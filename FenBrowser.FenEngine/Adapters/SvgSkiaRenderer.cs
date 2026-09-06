@@ -18,6 +18,13 @@ namespace FenBrowser.FenEngine.Adapters
         {
             if (request == null)
                 return new SvgRenderResult { Success = false, ErrorMessage = "SVG render request is null", Backend = SvgRendererBackend.LegacySvgSkia };
+            if (request.DocumentTimeSeconds != 0d)
+                return new SvgRenderResult
+                {
+                    Success = false,
+                    ErrorMessage = "Svg.Skia cannot sample a requested SVG document time",
+                    Backend = SvgRendererBackend.LegacySvgSkia
+                };
             return Render(request.Content, request.Limits);
         }
 

@@ -11732,6 +11732,21 @@ Verification:
 - Non-unit `kernelUnitLength`, point and spot lights, multiple light children,
   and invalid or over-bound parameters remain explicit compatibility fallbacks.
 
+## 2.174 Deterministic SMIL Set Snapshots (2026-09-07)
+
+- `SvgRenderRequest.DocumentTimeSeconds` now selects a finite, nonnegative SVG
+  document-time snapshot. The first-party renderer evaluates bounded declarative
+  animation state before recording the paint picture, and nested SVG resources
+  inherit the same requested time.
+- `<set>` supports clock-based begin, duration/end, numeric or indefinite repeat
+  counts, remove/freeze fill behavior, and a bounded set of geometry and
+  presentation attributes. Animated values override both XML presentation
+  attributes and the static CSS cascade for that render only.
+- Event/list timing, min/max/repeat-duration constraints, unsafe target
+  attributes, and unsupported values remain explicit `smil-animation`
+  fallbacks. The legacy renderer rejects nonzero document time rather than
+  silently returning a time-zero image.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

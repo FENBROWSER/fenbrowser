@@ -183,8 +183,9 @@ namespace FenBrowser.FenEngine.Svg
                 case "animate":
                 case "animateTransform":
                 case "animateMotion":
-                case "set":
                     WarnUnsupportedOnce(el.Name);
+                    return;
+                case "set":
                     return;
                 default:
                     if (IsSvgTestSuiteMetadata(el))
@@ -1197,7 +1198,7 @@ namespace FenBrowser.FenEngine.Svg
 
             if (!TryRenderInternal(
                     source, _limits, _resourceBudget, _resourceDepth + 1,
-                    resourceUri, _resourceResolver,
+                    resourceUri, _resourceResolver, _documentTimeSeconds,
                     out var picture, out float sourceWidth, out float sourceHeight,
                     out string nestedPreserveAspectRatio,
                     out string nestedError, out _, out _, out _,

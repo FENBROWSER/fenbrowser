@@ -28,6 +28,7 @@ namespace FenBrowser.FenEngine.Svg
         private readonly int _resourceDepth;
         private readonly System.Uri _baseUri;
         private readonly ISvgResourceResolver _resourceResolver;
+        private readonly double _documentTimeSeconds;
         private readonly int _maxActiveLayers;
         private readonly int _maxReferenceDepth;
         private int _elementsVisited;
@@ -57,7 +58,8 @@ namespace FenBrowser.FenEngine.Svg
             NestedResourceBudget resourceBudget,
             int resourceDepth,
             System.Uri baseUri,
-            ISvgResourceResolver resourceResolver)
+            ISvgResourceResolver resourceResolver,
+            double documentTimeSeconds)
         {
             _doc = doc;
             _report = doc.Report;
@@ -66,6 +68,7 @@ namespace FenBrowser.FenEngine.Svg
             _resourceDepth = resourceDepth;
             _baseUri = baseUri;
             _resourceResolver = resourceResolver;
+            _documentTimeSeconds = documentTimeSeconds;
             _clock = resourceBudget.Clock;
             _deadlineMs = limits.MaxRenderTimeMs > 0 ? limits.MaxRenderTimeMs : long.MaxValue;
             _maxActiveLayers = limits.MaxActiveLayers;
@@ -77,6 +80,7 @@ namespace FenBrowser.FenEngine.Svg
             SvgRenderLimits limits,
             System.Uri baseUri,
             ISvgResourceResolver resourceResolver,
+            double documentTimeSeconds,
             out SKPicture picture,
             out float width,
             out float height,
@@ -99,6 +103,7 @@ namespace FenBrowser.FenEngine.Svg
 
             return TryRenderInternal(
                 source, limits, new NestedResourceBudget(limits), 0, baseUri, resourceResolver,
+                documentTimeSeconds,
                 out picture, out width, out height, out _, out error, out warnings,
                 out fallbackReasonCodes, out resourceRejectionReasonCodes,
                 out requiresFallback, out resourceRejected);
@@ -111,6 +116,7 @@ namespace FenBrowser.FenEngine.Svg
             int resourceDepth,
             System.Uri baseUri,
             ISvgResourceResolver resourceResolver,
+            double documentTimeSeconds,
             out SKPicture picture,
             out float width,
             out float height,
@@ -141,13 +147,15 @@ namespace FenBrowser.FenEngine.Svg
             rootPreserveAspectRatio = doc.Root.GetAttribute("preserveAspectRatio");
 
             var engine = new SvgRenderEngine(
-                doc, limits, resourceBudget, resourceDepth, baseUri, resourceResolver);
+                doc, limits, resourceBudget, resourceDepth, baseUri, resourceResolver,
+                documentTimeSeconds);
             engine.ConfigureImageBudgets(
                 limits.MaxDecodedImagePixels,
                 limits.MaxDecodedImageBytes,
                 limits.MaxRasterWidth);
             try
             {
+                engine.ApplySmilSnapshot(doc.Root);
                 engine.RenderRoot(out picture, out width, out height);
                 warnings = engine._report.Warnings.ToArray();
                 fallbackReasonCodes = engine._report.FallbackReasonCodes.ToArray();
