@@ -23,6 +23,11 @@ public sealed class JsLexer
     };
 
     private readonly string _source;
+
+    // End of the region this lexer is responsible for. Normally the end of the
+    // text, but a template substitution is lexed in place out of the middle of
+    // its enclosing source, and must stop where the substitution stops.
+    private readonly int _end;
     private int _index;
     private int _line = 1;
     private int _column = 1;
@@ -34,6 +39,28 @@ public sealed class JsLexer
     public JsLexer(SourceText source, bool moduleMode = false)
     {
         _source = source.Text;
+        _end = _source.Length;
+        _moduleMode = moduleMode;
+    }
+
+    /// <summary>
+    /// Lexes the region [<paramref name="startIndex"/>, <paramref name="endIndex"/>)
+    /// of <paramref name="source"/>, reporting positions as they stand in that
+    /// source rather than from zero.
+    ///
+    /// A template substitution used to be lexed from a synthesised string that
+    /// repeated every character before it as whitespace, purely so the counters
+    /// below started at the right values. That made the lexer walk the whole
+    /// preceding file once per substitution.
+    /// </summary>
+    internal JsLexer(SourceText source, int startIndex, int endIndex, int startLine, int startColumn, bool moduleMode = false)
+    {
+        _source = source.Text;
+        _end = Math.Clamp(endIndex, 0, _source.Length);
+        _index = Math.Clamp(startIndex, 0, _end);
+        _line = startLine;
+        _column = startColumn;
+        _atLineStart = _index == 0;
         _moduleMode = moduleMode;
     }
 
@@ -52,7 +79,7 @@ public sealed class JsLexer
                 continue;
             }
 
-            if (_index >= _source.Length)
+            if (_index >= _end)
             {
                 tokens.Add(new Token(TokenKind.EndOfFile, string.Empty, new SourceSpan(_index, 0, _line, _column)));
                 return tokens;
@@ -109,7 +136,7 @@ public sealed class JsLexer
                     _column += startRuneLength;
                 }
 
-                while (_index < _source.Length)
+                while (_index < _end)
                 {
                     var c = _source[_index];
                     if (TryPeekRune(_index, out var partRune, out var partRuneLength) && IsIdentifierPart(partRune))
@@ -160,7 +187,7 @@ public sealed class JsLexer
                 var builder = new StringBuilder("#");
                 var hadEscape = false;
                 var malformedIdentifier = false;
-                if (_index >= _source.Length)
+                if (_index >= _end)
                 {
                     var hashToken = new Token(TokenKind.Unknown, "#", new SourceSpan(start, 1, line, column));
                     tokens.Add(hashToken);
@@ -199,7 +226,7 @@ public sealed class JsLexer
                     continue;
                 }
 
-                while (!malformedIdentifier && _index < _source.Length)
+                while (!malformedIdentifier && _index < _end)
                 {
                     var c = _source[_index];
                     if (TryPeekRune(_index, out var partRune, out var partRuneLength) && IsIdentifierPart(partRune))
@@ -245,7 +272,7 @@ public sealed class JsLexer
                 _index++;
                 _column++;
                 var isNonDecimalRadix = false;
-                if (ch == '0' && _index < _source.Length)
+                if (ch == '0' && _index < _end)
                 {
                     var radix = _source[_index];
                     if (radix is 'x' or 'X')
@@ -253,7 +280,7 @@ public sealed class JsLexer
                         isNonDecimalRadix = true;
                         _index++;
                         _column++;
-                        while (_index < _source.Length && (IsHexDigit(_source[_index]) || _source[_index] == '_'))
+                        while (_index < _end && (IsHexDigit(_source[_index]) || _source[_index] == '_'))
                         {
                             _index++;
                             _column++;
@@ -264,7 +291,7 @@ public sealed class JsLexer
                         isNonDecimalRadix = true;
                         _index++;
                         _column++;
-                        while (_index < _source.Length && (IsOctDigit(_source[_index]) || _source[_index] == '_'))
+                        while (_index < _end && (IsOctDigit(_source[_index]) || _source[_index] == '_'))
                         {
                             _index++;
                             _column++;
@@ -275,7 +302,7 @@ public sealed class JsLexer
                         isNonDecimalRadix = true;
                         _index++;
                         _column++;
-                        while (_index < _source.Length && (IsBinDigit(_source[_index]) || _source[_index] == '_'))
+                        while (_index < _end && (IsBinDigit(_source[_index]) || _source[_index] == '_'))
                         {
                             _index++;
                             _column++;
@@ -283,7 +310,7 @@ public sealed class JsLexer
                     }
                     else
                     {
-                        while (_index < _source.Length && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
+                        while (_index < _end && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
                         {
                             _index++;
                             _column++;
@@ -292,7 +319,7 @@ public sealed class JsLexer
                 }
                 else
                 {
-                    while (_index < _source.Length && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
+                    while (_index < _end && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
                     {
                         _index++;
                         _column++;
@@ -301,28 +328,28 @@ public sealed class JsLexer
 
                 if (!isNonDecimalRadix)
                 {
-                    if (_index < _source.Length && _source[_index] == '.' && (_index + 1 >= _source.Length || _source[_index + 1] != '.'))
+                    if (_index < _end && _source[_index] == '.' && (_index + 1 >= _end || _source[_index + 1] != '.'))
                     {
                         _index++;
                         _column++;
-                        while (_index < _source.Length && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
+                        while (_index < _end && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
                         {
                             _index++;
                             _column++;
                         }
                     }
 
-                    if (_index < _source.Length && (_source[_index] == 'e' || _source[_index] == 'E'))
+                    if (_index < _end && (_source[_index] == 'e' || _source[_index] == 'E'))
                     {
                         var expStart = _index;
                         var expIndex = _index + 1;
-                        if (expIndex < _source.Length && (_source[expIndex] == '+' || _source[expIndex] == '-'))
+                        if (expIndex < _end && (_source[expIndex] == '+' || _source[expIndex] == '-'))
                         {
                             expIndex++;
                         }
 
                         var hasExponentDigits = false;
-                        while (expIndex < _source.Length && (char.IsDigit(_source[expIndex]) || _source[expIndex] == '_'))
+                        while (expIndex < _end && (char.IsDigit(_source[expIndex]) || _source[expIndex] == '_'))
                         {
                             if (_source[expIndex] != '_')
                             {
@@ -340,7 +367,7 @@ public sealed class JsLexer
                 }
 
                 var isBigInt = false;
-                if (_index < _source.Length && _source[_index] == 'n')
+                if (_index < _end && _source[_index] == 'n')
                 {
                     isBigInt = true;
                     _index++;
@@ -357,27 +384,27 @@ public sealed class JsLexer
                 continue;
             }
 
-            if (ch == '.' && _index + 1 < _source.Length && char.IsDigit(_source[_index + 1]))
+            if (ch == '.' && _index + 1 < _end && char.IsDigit(_source[_index + 1]))
             {
                 _index++;
                 _column++;
-                while (_index < _source.Length && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
+                while (_index < _end && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
                 {
                     _index++;
                     _column++;
                 }
 
-                if (_index < _source.Length && (_source[_index] == 'e' || _source[_index] == 'E'))
+                if (_index < _end && (_source[_index] == 'e' || _source[_index] == 'E'))
                 {
                     var expStart = _index;
                     var expIndex = _index + 1;
-                    if (expIndex < _source.Length && (_source[expIndex] == '+' || _source[expIndex] == '-'))
+                    if (expIndex < _end && (_source[expIndex] == '+' || _source[expIndex] == '-'))
                     {
                         expIndex++;
                     }
 
                     var hasExponentDigits = false;
-                    while (expIndex < _source.Length && (char.IsDigit(_source[expIndex]) || _source[expIndex] == '_'))
+                    while (expIndex < _end && (char.IsDigit(_source[expIndex]) || _source[expIndex] == '_'))
                     {
                         if (_source[expIndex] != '_')
                         {
@@ -410,7 +437,7 @@ public sealed class JsLexer
                 _index++;
                 _column++;
                 var malformed = false;
-                while (_index < _source.Length)
+                while (_index < _end)
                 {
                     var c = _source[_index];
                     if (c is '\r' or '\n')
@@ -422,7 +449,7 @@ public sealed class JsLexer
 
                     _index++;
                     _column++;
-                    if (c == '\\' && _index < _source.Length)
+                    if (c == '\\' && _index < _end)
                     {
                         if (IsLineTerminator(_source[_index]))
                         {
@@ -480,7 +507,7 @@ public sealed class JsLexer
 
     private void SkipTrivia()
     {
-        while (_index < _source.Length)
+        while (_index < _end)
         {
             var ch = _source[_index];
             if (IsWhiteSpace(ch))
@@ -496,11 +523,11 @@ public sealed class JsLexer
                 continue;
             }
 
-            if (_index == 0 && _source.Length >= 2 && _source[0] == '#' && _source[1] == '!')
+            if (_index == 0 && _end >= 2 && _source[0] == '#' && _source[1] == '!')
             {
                 _index += 2;
                 _column += 2;
-                while (_index < _source.Length && !IsLineTerminator(_source[_index]))
+                while (_index < _end && !IsLineTerminator(_source[_index]))
                 {
                     _index++;
                     _column++;
@@ -511,11 +538,11 @@ public sealed class JsLexer
 
             // ECMA-262 B.1.3 HTML-like comments — only in non-module (script) code.
             // Module code is always strict and does not support HTML comments.
-            if (!_moduleMode && _atLineStart && _index + 2 < _source.Length && _source[_index] == '-' && _source[_index + 1] == '-' && _source[_index + 2] == '>')
+            if (!_moduleMode && _atLineStart && _index + 2 < _end && _source[_index] == '-' && _source[_index + 1] == '-' && _source[_index + 2] == '>')
             {
                 _index += 3;
                 _column += 3;
-                while (_index < _source.Length && !IsLineTerminator(_source[_index]))
+                while (_index < _end && !IsLineTerminator(_source[_index]))
                 {
                     _index++;
                     _column++;
@@ -525,11 +552,11 @@ public sealed class JsLexer
             }
 
             // ECMA-262 B.1.3 HTML-like comments — only in non-module (script) code.
-            if (!_moduleMode && _index + 3 < _source.Length && _source[_index] == '<' && _source[_index + 1] == '!' && _source[_index + 2] == '-' && _source[_index + 3] == '-')
+            if (!_moduleMode && _index + 3 < _end && _source[_index] == '<' && _source[_index + 1] == '!' && _source[_index + 2] == '-' && _source[_index + 3] == '-')
             {
                 _index += 4;
                 _column += 4;
-                while (_index < _source.Length && !IsLineTerminator(_source[_index]))
+                while (_index < _end && !IsLineTerminator(_source[_index]))
                 {
                     _index++;
                     _column++;
@@ -538,14 +565,14 @@ public sealed class JsLexer
                 continue;
             }
 
-            if (ch == '/' && _index + 1 < _source.Length)
+            if (ch == '/' && _index + 1 < _end)
             {
                 var next = _source[_index + 1];
                 if (next == '/')
                 {
                     _index += 2;
                     _column += 2;
-                    while (_index < _source.Length && !IsLineTerminator(_source[_index]))
+                    while (_index < _end && !IsLineTerminator(_source[_index]))
                     {
                         _index++;
                         _column++;
@@ -562,7 +589,7 @@ public sealed class JsLexer
                     _index += 2;
                     _column += 2;
                     var closed = false;
-                    while (_index + 1 < _source.Length)
+                    while (_index + 1 < _end)
                     {
                         if (_source[_index] == '*' && _source[_index + 1] == '/')
                         {
@@ -588,8 +615,8 @@ public sealed class JsLexer
                         _pendingMalformedTrivia = new Token(
                             TokenKind.Unknown,
                             _source[commentStart..],
-                            new SourceSpan(commentStart, _source.Length - commentStart, commentLine, commentColumn));
-                        _index = _source.Length;
+                            new SourceSpan(commentStart, _end - commentStart, commentLine, commentColumn));
+                        _index = _end;
                     }
 
                     continue;
@@ -602,7 +629,7 @@ public sealed class JsLexer
 
     private bool TryReadPunctuator(out string text)
     {
-        if (_index + 3 < _source.Length)
+        if (_index + 3 < _end)
         {
             var four = _source.Substring(_index, 4);
             if (four is ">>>=")
@@ -614,7 +641,7 @@ public sealed class JsLexer
             }
         }
 
-        if (_index + 2 < _source.Length)
+        if (_index + 2 < _end)
         {
             var three = _source.Substring(_index, 3);
             if (three is "===" or "!==" or "..." or "&&=" or "||=" or "??=" or ">>>" or "<<=" or ">>=" or "**=")
@@ -626,13 +653,13 @@ public sealed class JsLexer
             }
         }
 
-        if (_index + 1 < _source.Length)
+        if (_index + 1 < _end)
         {
             var two = _source.Substring(_index, 2);
             // ECMA-262 12.7: OptionalChainingPunctuator `?.` has the negative
             // lookahead [∉ DecimalDigit], so `x?.5:y` is a conditional whose
             // consequent is the numeric literal `.5`, not optional chaining.
-            if (two is "?." && _index + 2 < _source.Length && _source[_index + 2] is >= '0' and <= '9')
+            if (two is "?." && _index + 2 < _end && _source[_index + 2] is >= '0' and <= '9')
             {
                 _index += 1;
                 _column += 1;
@@ -705,7 +732,7 @@ public sealed class JsLexer
         var i = _index + 1;
         var escaped = false;
         var inCharClass = false;
-        while (i < _source.Length)
+        while (i < _end)
         {
             var ch = _source[i];
             if (!escaped)
@@ -734,7 +761,7 @@ public sealed class JsLexer
                 if (ch == '/' && !inCharClass)
                 {
                     i++;
-                    while (i < _source.Length && char.IsLetter(_source[i]))
+                    while (i < _end && char.IsLetter(_source[i]))
                     {
                         i++;
                     }
@@ -781,12 +808,12 @@ public sealed class JsLexer
 
     private bool IsUnicodeEscapeStart(int index)
     {
-        if (index + 1 >= _source.Length || _source[index] != '\\' || _source[index + 1] != 'u')
+        if (index + 1 >= _end || _source[index] != '\\' || _source[index + 1] != 'u')
         {
             return false;
         }
 
-        if (index + 2 >= _source.Length)
+        if (index + 2 >= _end)
         {
             return false;
         }
@@ -796,7 +823,7 @@ public sealed class JsLexer
             return true;
         }
 
-        return index + 5 < _source.Length;
+        return index + 5 < _end;
     }
 
     private bool TryReadUnicodeEscape(out Rune value)
@@ -810,12 +837,12 @@ public sealed class JsLexer
         _index += 2; // \u
         _column += 2;
 
-        if (_index < _source.Length && _source[_index] == '{')
+        if (_index < _end && _source[_index] == '{')
         {
             _index++;
             _column++;
             var hexStart = _index;
-            while (_index < _source.Length && _source[_index] != '}')
+            while (_index < _end && _source[_index] != '}')
             {
                 if (!IsHexDigit(_source[_index]))
                 {
@@ -826,7 +853,7 @@ public sealed class JsLexer
                 _column++;
             }
 
-            if (_index >= _source.Length || _source[_index] != '}')
+            if (_index >= _end || _source[_index] != '}')
             {
                 return false;
             }
@@ -847,7 +874,7 @@ public sealed class JsLexer
             return Rune.TryCreate(codePoint, out value);
         }
 
-        if (_index + 3 >= _source.Length)
+        if (_index + 3 >= _end)
         {
             return false;
         }
@@ -958,7 +985,7 @@ public sealed class JsLexer
     {
         rune = default;
         utf16Length = 0;
-        if (index >= _source.Length)
+        if (index >= _end)
         {
             return false;
         }
@@ -966,7 +993,7 @@ public sealed class JsLexer
         var ch = _source[index];
         if (char.IsHighSurrogate(ch))
         {
-            if (index + 1 >= _source.Length || !char.IsLowSurrogate(_source[index + 1]))
+            if (index + 1 >= _end || !char.IsLowSurrogate(_source[index + 1]))
             {
                 return false;
             }
@@ -1138,12 +1165,12 @@ public sealed class JsLexer
     {
         _index++;
         _column++;
-        if (_index < _source.Length && _source[_index] == '{')
+        if (_index < _end && _source[_index] == '{')
         {
             _index++;
             _column++;
             var hexStart = _index;
-            while (_index < _source.Length && _source[_index] != '}')
+            while (_index < _end && _source[_index] != '}')
             {
                 if (!IsHexDigit(_source[_index]))
                 {
@@ -1154,7 +1181,7 @@ public sealed class JsLexer
                 _column++;
             }
 
-            if (_index >= _source.Length || _source[_index] != '}' || _index == hexStart)
+            if (_index >= _end || _source[_index] != '}' || _index == hexStart)
             {
                 return false;
             }
@@ -1183,7 +1210,7 @@ public sealed class JsLexer
 
     private bool ConsumeFixedHexDigits(int escapeDigitCount)
     {
-        if (_index + escapeDigitCount > _source.Length)
+        if (_index + escapeDigitCount > _end)
         {
             return false;
         }
@@ -1203,7 +1230,7 @@ public sealed class JsLexer
 
     private bool HasInvalidNumericLiteralBoundary()
     {
-        if (_index >= _source.Length)
+        if (_index >= _end)
         {
             return false;
         }
@@ -1216,7 +1243,7 @@ public sealed class JsLexer
 
     private void AdvanceLineTerminator()
     {
-        if (_source[_index] == '\r' && _index + 1 < _source.Length && _source[_index + 1] == '\n')
+        if (_source[_index] == '\r' && _index + 1 < _end && _source[_index + 1] == '\n')
         {
             _index += 2;
         }
@@ -1244,7 +1271,7 @@ public sealed class JsLexer
 
     private bool ScanTemplateLiteralBody(ref bool containsEscape, ref bool containsInvalidEscape)
     {
-        while (_index < _source.Length)
+        while (_index < _end)
         {
             var c = _source[_index];
             if (c == '\\')
@@ -1253,7 +1280,7 @@ public sealed class JsLexer
                 _index++;
                 _column++;
 
-                if (_index >= _source.Length)
+                if (_index >= _end)
                 {
                     containsInvalidEscape = true;
                     break;
@@ -1280,7 +1307,7 @@ public sealed class JsLexer
                 return true;
             }
 
-            if (c == '$' && _index + 1 < _source.Length && _source[_index + 1] == '{')
+            if (c == '$' && _index + 1 < _end && _source[_index + 1] == '{')
             {
                 _index += 2;
                 _column += 2;
@@ -1309,7 +1336,7 @@ public sealed class JsLexer
     private bool ScanTemplateSubstitution(ref bool containsEscape, ref bool containsInvalidEscape)
     {
         var braceDepth = 1;
-        while (_index < _source.Length)
+        while (_index < _end)
         {
             var c = _source[_index];
             if (c == '/')
@@ -1351,13 +1378,13 @@ public sealed class JsLexer
             {
                 _index++;
                 _column++;
-                if (_index < _source.Length && IsLineTerminator(_source[_index]))
+                if (_index < _end && IsLineTerminator(_source[_index]))
                 {
                     AdvanceLineTerminator();
                     continue;
                 }
 
-                if (_index < _source.Length)
+                if (_index < _end)
                 {
                     _index++;
                     _column++;
@@ -1403,7 +1430,7 @@ public sealed class JsLexer
 
     private bool TrySkipTemplateSubstitutionComment()
     {
-        if (_index + 1 >= _source.Length)
+        if (_index + 1 >= _end)
         {
             return false;
         }
@@ -1413,7 +1440,7 @@ public sealed class JsLexer
         {
             _index += 2;
             _column += 2;
-            while (_index < _source.Length && !IsLineTerminator(_source[_index]))
+            while (_index < _end && !IsLineTerminator(_source[_index]))
             {
                 _index++;
                 _column++;
@@ -1429,10 +1456,10 @@ public sealed class JsLexer
 
         _index += 2;
         _column += 2;
-        while (_index < _source.Length)
+        while (_index < _end)
         {
             var c = _source[_index];
-            if (c == '*' && _index + 1 < _source.Length && _source[_index + 1] == '/')
+            if (c == '*' && _index + 1 < _end && _source[_index + 1] == '/')
             {
                 _index += 2;
                 _column += 2;
@@ -1474,7 +1501,7 @@ public sealed class JsLexer
         var i = _index + 1;
         var escaped = false;
         var inCharClass = false;
-        while (i < _source.Length)
+        while (i < _end)
         {
             var c = _source[i];
             if (!escaped)
@@ -1503,7 +1530,7 @@ public sealed class JsLexer
                 if (c == '/' && !inCharClass)
                 {
                     i++;
-                    while (i < _source.Length && char.IsLetter(_source[i]))
+                    while (i < _end && char.IsLetter(_source[i]))
                     {
                         i++;
                     }
@@ -1533,7 +1560,7 @@ public sealed class JsLexer
     {
         _index++;
         _column++;
-        while (_index < _source.Length)
+        while (_index < _end)
         {
             var c = _source[_index];
             if (IsLineTerminator(c))
@@ -1545,11 +1572,11 @@ public sealed class JsLexer
             _column++;
             if (c == '\\')
             {
-                if (_index < _source.Length && IsLineTerminator(_source[_index]))
+                if (_index < _end && IsLineTerminator(_source[_index]))
                 {
                     AdvanceLineTerminator();
                 }
-                else if (_index < _source.Length)
+                else if (_index < _end)
                 {
                     _index++;
                     _column++;
@@ -1591,7 +1618,7 @@ public sealed class JsLexer
         {
             _index++;
             _column++;
-            return _index >= _source.Length || !char.IsDigit(_source[_index]);
+            return _index >= _end || !char.IsDigit(_source[_index]);
         }
 
         _index++;

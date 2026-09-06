@@ -6670,9 +6670,16 @@ public sealed class JsParser
             throw new JsParserException("Template substitution expression cannot be empty.");
         }
 
+        // The substitution is a verbatim slice of the enclosing source, so lex it
+        // where it already is. Building a stand-in string that padded everything
+        // before it with whitespace - and then lexing that padding - cost time
+        // proportional to the offset, once per substitution: on a 1.1MB bundle
+        // that padding was about two thirds of the whole parse.
         var absoluteStart = templateToken.Span.Start + expressionStart;
-        var source = new SourceText(CreateTemplateSourcePrefix(absoluteStart) + expressionText, _source.Path);
-        var tokens = new JsLexer(source).LexAll();
+        var absoluteEnd = absoluteStart + expressionText.Length;
+        var (startLine, startColumn) = _source.GetLineColumn(absoluteStart);
+        var source = _source;
+        var tokens = new JsLexer(source, absoluteStart, absoluteEnd, startLine, startColumn).LexAll();
         var parser = new JsParser(source, tokens, _maxRecursionDepth)
         {
             _strictMode = _strictMode,
@@ -6695,19 +6702,6 @@ public sealed class JsParser
         }
 
         return expression;
-    }
-
-    private string CreateTemplateSourcePrefix(int length)
-    {
-        return string.Create(length, _source.Text, static (destination, original) =>
-        {
-            for (var i = 0; i < destination.Length; i++)
-            {
-                destination[i] = original[i] is '\r' or '\n' or '\u2028' or '\u2029'
-                    ? original[i]
-                    : ' ';
-            }
-        });
     }
 
     private static int FindTemplateExpressionEnd(string raw, int start)
