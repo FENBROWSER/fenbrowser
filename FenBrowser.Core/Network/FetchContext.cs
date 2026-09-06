@@ -43,6 +43,20 @@ public sealed record FetchContext
     public string Method { get; init; } = "GET";
 
     /// <summary>
+    /// Request body for methods that carry one. A form submitted with
+    /// method=POST is the ordinary case: the entry list is serialized here and
+    /// the server never sees it if the navigation silently downgrades to GET.
+    /// Null for bodyless requests.
+    /// </summary>
+    public byte[] RequestBody { get; init; }
+
+    /// <summary>
+    /// Media type of <see cref="RequestBody"/>, e.g.
+    /// "application/x-www-form-urlencoded". Ignored when there is no body.
+    /// </summary>
+    public string RequestContentType { get; init; }
+
+    /// <summary>
     /// Immutable network/storage partition identity derived from the browsing
     /// context, never from the Referer header. Redirects do not change it.
     /// </summary>

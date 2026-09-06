@@ -1501,6 +1501,14 @@ public Uri LastTextResponseUri { get; private set; }
             {
                 var _startFetch = DateTimeOffset.UtcNow;
                 Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
+                // Method and body travel with the redirect chain: RFC 9110 15.4
+                // rewrites 301/302/303 to a bodyless GET while 307/308 preserve
+                // both, so neither can simply be read off the immutable context.
+                var currentMethod = string.IsNullOrWhiteSpace(context.Method)
+                    ? HttpMethod.Get.Method
+                    : context.Method.Trim().ToUpperInvariant();
+                var currentBody = context.RequestBody;
+                var currentBodyContentType = context.RequestContentType;
                 var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
                 while (hops < maxRedirectHops)
                 {
@@ -1536,7 +1544,20 @@ public Uri LastTextResponseUri { get; private set; }
                         };
                     }
                     /* [PERF-REMOVED] */
-                    req = new HttpRequestMessage(HttpMethod.Get, current);
+                    req = new HttpRequestMessage(new HttpMethod(currentMethod), current);
+                    if (currentBody != null && currentBody.Length > 0)
+                    {
+                        var body = new ByteArrayContent(currentBody);
+                        if (!string.IsNullOrWhiteSpace(currentBodyContentType) &&
+                            System.Net.Http.Headers.MediaTypeHeaderValue.TryParse(
+                                currentBodyContentType, out var parsedBodyContentType))
+                        {
+                            body.Headers.ContentType = parsedBodyContentType;
+                        }
+
+                        req.Content = body;
+                    }
+
                     var effectiveReferer = refererOriginal ?? previousRequest;
                     BrowserRequestHeaderPolicy.Apply(
                         req,
@@ -1634,6 +1655,19 @@ public Uri LastTextResponseUri { get; private set; }
                             // current = UpgradeIfHsts(loc); // Handled by HstsHandler
                             current = loc;
                             redirectChain.Add(current);
+                            // RFC 9110 15.4.4 (303) and 15.4.3/15.4.2: the 301/302/303 family
+                            // rewrites the request to a bodyless GET, while 307 and 308 keep the
+                            // method and body. Replaying a POST body across a 302 would submit
+                            // the form twice against a server that asked for a plain GET.
+                            if (code != 307 && code != 308 &&
+                                !string.Equals(currentMethod, "GET", StringComparison.OrdinalIgnoreCase) &&
+                                !string.Equals(currentMethod, "HEAD", StringComparison.OrdinalIgnoreCase))
+                            {
+                                currentMethod = HttpMethod.Get.Method;
+                                currentBody = null;
+                                currentBodyContentType = null;
+                            }
+
                             hops++;
                             resp.Dispose();
                             resp = null;
