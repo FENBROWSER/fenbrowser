@@ -429,6 +429,10 @@ namespace FenBrowser.FenEngine.Rendering
 
             try
             {
+                // Frame routing is the script engine's job, not ours:
+                // DispatchEventForElement hands an element inside an iframe to that
+                // frame's realm and then syncs the realm's observables back. Calling
+                // the frame realm directly from here skips that sync.
                 return _activeJs.DispatchEventForElement(element, eventType, eventInit);
             }
             catch (Exception ex)
@@ -448,6 +452,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             try
             {
+                // See DispatchPointerEvent: the script engine owns frame routing.
                 return await _activeJs.DispatchEventForElementAsync(element, eventType, eventInit).ConfigureAwait(false);
             }
             catch (Exception ex)

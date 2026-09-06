@@ -394,6 +394,13 @@ public interface IBrowserScriptEngine
     object ConvertJsValueToObject(FenBrowser.Js.Runtime.JsValue value);
     void SyncDomContext(Node domRoot, Uri baseUri = null);
     Task SetDomAsync(Node domRoot, Uri baseUri = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the JS engine for the frame containing <paramref name="element"/>,
+    /// or null if the element is in the top-level document.
+    /// This allows event dispatch to route to the correct frame's JS engine.
+    /// </summary>
+    IBrowserScriptEngine GetFrameEngineForElement(Element element);
 }
 
 public sealed class BrowserDomEventInit
@@ -1280,8 +1287,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         if (TryGetFrameRealm(element.OwnerDocument, out var frameRealm))
         {
+            if (DiagnosticPaths.IframeDiagnosticsEnabled)
+            {
+                var tag = element?.TagName ?? "null";
+                var id = element?.GetAttribute("id") ?? "";
+                var classAttr = element?.GetAttribute("class") ?? "";
+                DiagnosticPaths.AppendLogText(
+                    "iframe_diagnostics.txt",
+                    $"{DateTimeOffset.UtcNow:O} DispatchEventForElement (iframe): element=<{tag}> id='{id}' class='{classAttr}' event={eventName}");
+            }
             LogInputPipelineDispatch(element, eventName, "iframe");
             var defaultAllowed = frameRealm.DispatchEventForElement(element, eventName, eventInit);
+            if (DiagnosticPaths.IframeDiagnosticsEnabled)
+            {
+                DiagnosticPaths.AppendLogText(
+                    "iframe_diagnostics.txt",
+                    $"{DateTimeOffset.UtcNow:O} DispatchEventForElement (iframe) result: defaultAllowed={defaultAllowed}");
+            }
             SyncFrameRealmObservables(TryGetFrameElementForDocument(element.OwnerDocument), frameRealm);
             LogInputPipelineCompletion(element, eventName, defaultAllowed);
             return defaultAllowed;
@@ -1289,6 +1311,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         try
         {
+            if (DiagnosticPaths.IframeDiagnosticsEnabled)
+            {
+                var tag = element?.TagName ?? "null";
+                var id = element?.GetAttribute("id") ?? "";
+                var classAttr = element?.GetAttribute("class") ?? "";
+                DiagnosticPaths.AppendLogText(
+                    "iframe_diagnostics.txt",
+                    $"{DateTimeOffset.UtcNow:O} DispatchEventForElement (local): element=<{tag}> id='{id}' class='{classAttr}' event={eventName}");
+            }
             var inputTimeoutMs = ResolveFenJsInputEventTimeoutMs();
             return RunFenJsWithLargeStack(() =>
             {
@@ -1314,6 +1345,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                     dispatchState);
                                 _interpreter.PumpMicrotasks();
                                 RecordMicrotaskCheckpoint("event:" + eventName);
+                                if (DiagnosticPaths.IframeDiagnosticsEnabled)
+                                {
+                                    DiagnosticPaths.AppendLogText(
+                                        "iframe_diagnostics.txt",
+                                        $"{DateTimeOffset.UtcNow:O} DispatchEventForElement (local) result: defaultAllowed={defaultAllowed}");
+                                }
                                 return defaultAllowed;
                             });
                     }
@@ -1340,9 +1377,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         if (TryGetFrameRealm(element.OwnerDocument, out var frameRealm))
         {
+            if (DiagnosticPaths.IframeDiagnosticsEnabled)
+            {
+                var tag = element?.TagName ?? "null";
+                var id = element?.GetAttribute("id") ?? "";
+                var classAttr = element?.GetAttribute("class") ?? "";
+                DiagnosticPaths.AppendLogText(
+                    "iframe_diagnostics.txt",
+                    $"{DateTimeOffset.UtcNow:O} DispatchEventForElementAsync (iframe): element=<{tag}> id='{id}' class='{classAttr}' event={eventName}");
+            }
             LogInputPipelineDispatch(element, eventName, "iframe");
             var defaultAllowed = await frameRealm.DispatchEventForElementAsync(element, eventName, eventInit)
                 .ConfigureAwait(false);
+            if (DiagnosticPaths.IframeDiagnosticsEnabled)
+            {
+                DiagnosticPaths.AppendLogText(
+                    "iframe_diagnostics.txt",
+                    $"{DateTimeOffset.UtcNow:O} DispatchEventForElementAsync (iframe) result: defaultAllowed={defaultAllowed}");
+            }
             SyncFrameRealmObservables(TryGetFrameElementForDocument(element.OwnerDocument), frameRealm);
             LogInputPipelineCompletion(element, eventName, defaultAllowed);
             return defaultAllowed;
@@ -1375,6 +1427,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                     dispatchState);
                                 _interpreter.PumpMicrotasks();
                                 RecordMicrotaskCheckpoint("event:" + eventName);
+                                if (DiagnosticPaths.IframeDiagnosticsEnabled)
+                                {
+                                    DiagnosticPaths.AppendLogText(
+                                        "iframe_diagnostics.txt",
+                                        $"{DateTimeOffset.UtcNow:O} DispatchEventForElementAsync (local) result: defaultAllowed={defaultAllowed}");
+                                }
                                 return defaultAllowed;
                             });
                     }
@@ -1445,6 +1503,25 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         var realm = FindRealmForFrame(frameElement);
         return realm != null ? realm.Evaluate(script) : Evaluate(script);
+    }
+
+    /// <inheritdoc />
+    public IBrowserScriptEngine GetFrameEngineForElement(Element element)
+    {
+        if (element == null) return null;
+        var doc = element.OwnerDocument;
+        if (doc == null) return null;
+        var result = TryGetFrameRealm(doc, out var realm) ? realm : null;
+        if (DiagnosticPaths.IframeDiagnosticsEnabled)
+        {
+            var tag = element?.TagName ?? "null";
+            var id = element?.GetAttribute("id") ?? "";
+            var classAttr = element?.GetAttribute("class") ?? "";
+            DiagnosticPaths.AppendLogText(
+                "iframe_diagnostics.txt",
+                $"{DateTimeOffset.UtcNow:O} GetFrameEngineForElement: element=<{element?.TagName ?? "null"}> id='{element?.GetAttribute("id") ?? ""}' class='{element?.GetAttribute("class") ?? ""}' doc={doc != null} realm={result != null}");
+        }
+        return result;
     }
 
     // A frame's realm is owned by the realm of the document that embeds it,
@@ -1597,9 +1674,28 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private bool TryGetFrameRealm(Document document, out FenJsBrowserScriptEngine realm)
     {
         var frame = TryGetFrameElementForDocument(document);
+        if (DiagnosticPaths.IframeDiagnosticsEnabled)
+        {
+            DiagnosticPaths.AppendLogText(
+                "iframe_diagnostics.txt",
+                $"{DateTimeOffset.UtcNow:O} TryGetFrameRealm: doc={document != null} frame={frame != null}");
+        }
         if (frame != null && _iframeRealms.TryGetValue(frame, out realm))
         {
+            if (DiagnosticPaths.IframeDiagnosticsEnabled)
+            {
+                DiagnosticPaths.AppendLogText(
+                    "iframe_diagnostics.txt",
+                    $"{DateTimeOffset.UtcNow:O} TryGetFrameRealm: FOUND realm for frame={frame.TagName} id='{frame.GetAttribute("id") ?? ""}'");
+            }
             return true;
+        }
+
+        if (DiagnosticPaths.IframeDiagnosticsEnabled)
+        {
+            DiagnosticPaths.AppendLogText(
+                "iframe_diagnostics.txt",
+                $"{DateTimeOffset.UtcNow:O} TryGetFrameRealm: NOT FOUND realm for frame={frame?.TagName ?? "null"}");
         }
 
         realm = null;
@@ -5203,6 +5299,56 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 var data = args.Count > 0 ? args[0] : JsValue.Undefined;
                 ReadPostMessageTarget(args, out var targetOrigin, out var ports);
                 var sourceWindow = GetActiveWindowEventTarget();
+                QueueWindowMessage(
+                    _fenJsGlobalThis,
+                    _windowEventListeners,
+                    data,
+                    sourceWindow,
+                    ports,
+                    targetOrigin,
+                    GetTopWindowDeliveryOrigin());
+                return JsValue.Undefined;
+            },
+            length: 1);
+    }
+
+    /// <summary>
+    /// Creates a postMessage function for a cross-origin iframe's parent/top facade.
+    /// Routes messages to the parent realm (_parentRealmOwner) instead of the current realm.
+    /// This enables reCAPTCHA anchor frame to notify parent page of checkbox clicks.
+    /// </summary>
+    private JsValue CreateParentFacadePostMessageFunction(FenJsBrowserScriptEngine parentRealm)
+    {
+        return _interpreter.AllocateNativeFunction(
+            "postMessage",
+            (_, args) =>
+            {
+                var data = args.Count > 0 ? args[0] : JsValue.Undefined;
+                ReadPostMessageTarget(args, out var targetOrigin, out var ports);
+                var sourceWindow = GetActiveWindowEventTarget();
+                
+                if (DiagnosticPaths.IframeDiagnosticsEnabled)
+                {
+                    var dataStr = data.ToString();
+                    if (dataStr.Length > 200) dataStr = dataStr.Substring(0, 200) + "...";
+                    var portsCount = ports.Tag == JsValueTag.Object ? 1 : 0;
+                    DiagnosticPaths.AppendLogText(
+                        "iframe_diagnostics.txt",
+                        $"{DateTimeOffset.UtcNow:O} CreateParentFacadePostMessageFunction (iframe->parent): data={dataStr} targetOrigin={targetOrigin} ports={portsCount} embeddingFrame={_embeddingFrameElement?.TagName ?? "null"} parentRealm={parentRealm != null}");
+                }
+                
+                // Route to parent realm if available (cross-origin iframe -> parent)
+                if (parentRealm != null)
+                {
+                    parentRealm.QueueCrossRealmMessage(() => parentRealm.QueueMessageFromChildFrame(
+                        _embeddingFrameElement!,
+                        ConvertJsValueToObject(data),
+                        GetCurrentWindowOrigin(),
+                        targetOrigin,
+                        ExtractTransferredMessagePorts(ports)));
+                    return JsValue.Undefined;
+                }
+                // Fallback: same behavior as top window postMessage
                 QueueWindowMessage(
                     _fenJsGlobalThis,
                     _windowEventListeners,
@@ -13866,10 +14012,31 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return;
         }
 
+        if (DiagnosticPaths.IframeDiagnosticsEnabled && string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+        {
+            var src = element.GetAttribute("src") ?? "";
+            var isChallenge = src.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
+                             element.GetAttribute("class")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true ||
+                             element.GetAttribute("id")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true;
+            DiagnosticPaths.AppendLogText(
+                "iframe_diagnostics.txt",
+                $"{DateTimeOffset.UtcNow:O} QueueFrameLoadsForTree: new iframe src='{src}' isChallenge={isChallenge} connected={element.IsConnected} parent={element.ParentElement?.TagName ?? "null"}");
+        }
+
         QueueFrameElementLoad(element);
 
         foreach (var descendant in element.Descendants().OfType<Element>())
         {
+            if (DiagnosticPaths.IframeDiagnosticsEnabled && string.Equals(descendant.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                var src = descendant.GetAttribute("src") ?? "";
+                var isChallenge = src.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
+                                 descendant.GetAttribute("class")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true ||
+                                 descendant.GetAttribute("id")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true;
+                DiagnosticPaths.AppendLogText(
+                    "iframe_diagnostics.txt",
+                    $"{DateTimeOffset.UtcNow:O} QueueFrameLoadsForTree: descendant iframe src='{src}' isChallenge={isChallenge} connected={descendant.IsConnected} parent={descendant.ParentElement?.TagName ?? "null"}");
+            }
             QueueFrameElementLoad(descendant);
         }
     }
@@ -15945,6 +16112,67 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }, "parent postMessage enqueue failed");
     }
 
+/// <summary>
+    /// Delivers a postMessage from a child frame (iframe) to this realm.
+    /// Called when a cross-origin iframe invokes parent.postMessage().
+    /// Computes the exposedWindow (contentWindow or cross-origin facade) that
+    /// the parent registered for this iframe, so event.source matches what the
+    /// parent's event listener expects (anchorFrame.contentWindow).
+    /// </summary>
+    private void QueueMessageFromChildFrame(
+        Element sourceFrame,
+        object data,
+        string sourceOrigin,
+        string targetOrigin,
+        IReadOnlyList<MessagePortEndpoint> transferredEndpoints)
+    {
+        if (DiagnosticPaths.IframeDiagnosticsEnabled)
+        {
+            var dataStr = data?.ToString() ?? "null";
+            if (dataStr.Length > 200) dataStr = dataStr.Substring(0, 200) + "...";
+            DiagnosticPaths.AppendLogText(
+                "iframe_diagnostics.txt",
+                $"{DateTimeOffset.UtcNow:O} QueueMessageFromChildFrame: sourceFrame=<{sourceFrame.TagName}> id='{sourceFrame.GetAttribute("id") ?? ""}' class='{sourceFrame.GetAttribute("class") ?? ""}' data={dataStr} sourceOrigin={sourceOrigin} targetOrigin={targetOrigin} ports={transferredEndpoints?.Count ?? 0}");
+        }
+
+        QueueOnDeliveryTail(() =>
+        {
+            lock (_fenJsLock)
+            {
+                var ports = ImportTransferredMessagePorts(transferredEndpoints);
+                // Use the exposedWindow the parent already registered for this iframe
+                // so event.source === anchorFrame.contentWindow in the parent's listener.
+                JsValue source = JsValue.Undefined;
+                var iframe = sourceFrame;
+                var window = GetOrCreateIFrameContentWindow(iframe);
+                if (window.Tag == JsValueTag.Object)
+                {
+                    var href = ResolveIFrameWindowHref(iframe, null, null);
+                    var parentCanAccessFrame = IsSameOriginFrameAccess(iframe, href, _currentBaseUri);
+                    source = parentCanAccessFrame
+                        ? window
+                        : GetOrCreateCrossOriginChildWindowFacade(iframe, window);
+                }
+
+                if (source.Tag == JsValueTag.Undefined)
+                {
+                    // Fallback to sibling proxy
+                    source = GetOrCreateSiblingWindowProxy(iframe, _embeddedParentWindowProxy);
+                }
+
+                QueueWindowMessage(
+                    _fenJsGlobalThis,
+                    _windowEventListeners,
+                    ConvertObjectToJsValue(data),
+                    source.Tag == JsValueTag.Object ? source : _embeddedParentWindowProxy,
+                    ports,
+                    targetOrigin,
+                    GetCurrentWindowOrigin(),
+                    sourceOrigin);
+            }
+        }, "child frame postMessage enqueue failed");
+    }
+
     /// <summary>
     /// Runs a delivery body on the shared FenJS worker with the interpreter
     /// lock held there, chained onto the window-message delivery tail. Cross-
@@ -16130,7 +16358,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         var facade = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
-        var parentFacade = GetOrCreateTopWindowFacade();
+        // Create a parent facade with postMessage that routes to the parent realm
+        // (this realm's _parentRealmOwner) instead of the current realm.
+        var parentFacade = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        _interpreter.SetObjectProperty(parentFacade, "window", parentFacade);
+        _interpreter.SetObjectProperty(parentFacade, "self", parentFacade);
+        _interpreter.SetObjectProperty(parentFacade, "parent", parentFacade);
+        _interpreter.SetObjectProperty(parentFacade, "top", parentFacade);
+        _interpreter.SetObjectProperty(parentFacade, "frames", parentFacade);
+        _interpreter.SetObjectProperty(parentFacade, "length", JsValue.FromInt32(0));
+        _interpreter.SetObjectProperty(parentFacade, "postMessage", CreateParentFacadePostMessageFunction(_parentRealmOwner!));
+
         _interpreter.SetObjectProperty(facade, "window", facade);
         _interpreter.SetObjectProperty(facade, "self", facade);
         _interpreter.SetObjectProperty(facade, "frames", facade);
@@ -17658,6 +17896,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         var grantsTransientActivation = string.Equals(type, "click", StringComparison.OrdinalIgnoreCase) &&
             ReadJsProperty(eventValue, "isTrusted") is { Tag: JsValueTag.Boolean } trusted &&
             trusted.AsBoolean();
+        
+        if (DiagnosticPaths.IframeDiagnosticsEnabled)
+        {
+            var tag = element?.TagName ?? "null";
+            var id = element?.GetAttribute("id") ?? "";
+            var classAttr = element?.GetAttribute("class") ?? "";
+            var role = element?.GetAttribute("role") ?? "";
+            var isTrusted = ReadJsProperty(eventValue, "isTrusted");
+            var trustedBool = isTrusted is { Tag: JsValueTag.Boolean } t ? t.AsBoolean().ToString() : "undefined";
+            DiagnosticPaths.AppendLogText(
+                "iframe_diagnostics.txt",
+                $"{DateTimeOffset.UtcNow:O} DispatchElementEventWithActivation: type={type} tag={tag} id='{id}' class='{element?.GetAttribute("class") ?? ""}' role='{role}' isTrusted={trustedBool} grantsTA={grantsTransientActivation}");
+        }
+        
         if (grantsTransientActivation)
         {
             _transientUserActivationDepth++;
@@ -20437,6 +20689,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     element.SetAttribute("src", CoerceToHostString(value));
                     if (IsIFrameElement(element))
                     {
+                        if (DiagnosticPaths.IframeDiagnosticsEnabled)
+                        {
+                            var newSrc = CoerceToHostString(value);
+                            var isChallenge = newSrc.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
+                                             element.GetAttribute("class")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true ||
+                                             element.GetAttribute("id")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true;
+                            DiagnosticPaths.AppendLogText(
+                                "iframe_diagnostics.txt",
+                                $"{DateTimeOffset.UtcNow:O} SetAttribute(src) on iframe: newSrc='{newSrc}' isChallenge={isChallenge} connected={element.IsConnected} element={element.TagName} id='{element.GetAttribute("id") ?? ""}' class='{element.GetAttribute("class") ?? ""}'");
+                        }
                         _owner.QueueFrameElementLoad(element);
                     }
                     return true;
