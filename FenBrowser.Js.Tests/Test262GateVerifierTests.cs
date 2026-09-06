@@ -697,10 +697,10 @@ public sealed class Test262GateVerifierTests
             var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
             using var report = JsonDocument.Parse(result.ReportJson);
             var currentSummary = report.RootElement.GetProperty("summary").GetProperty("current");
-            Assert.Equal(2, currentSummary.GetProperty("Total").GetInt32());
-            Assert.Equal(1, currentSummary.GetProperty("Passed").GetInt32());
-            Assert.Equal(1, currentSummary.GetProperty("UnexpectedPasses").GetInt32());
-            Assert.Equal(0, currentSummary.GetProperty("Crashes").GetInt32());
+            Assert.Equal(2, currentSummary.GetProperty("total").GetInt32());
+            Assert.Equal(1, currentSummary.GetProperty("passed").GetInt32());
+            Assert.Equal(1, currentSummary.GetProperty("unexpectedPasses").GetInt32());
+            Assert.Equal(0, currentSummary.GetProperty("crashes").GetInt32());
         }
         finally
         {
@@ -747,8 +747,8 @@ public sealed class Test262GateVerifierTests
             var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
             using var report = JsonDocument.Parse(result.ReportJson);
             var currentSummary = report.RootElement.GetProperty("summary").GetProperty("current");
-            Assert.Equal(1, currentSummary.GetProperty("Unsupported").GetInt32());
-            Assert.Equal(1, currentSummary.GetProperty("ParserErrors").GetInt32());
+            Assert.Equal(1, currentSummary.GetProperty("unsupported").GetInt32());
+            Assert.Equal(1, currentSummary.GetProperty("parserErrors").GetInt32());
         }
         finally
         {
@@ -812,7 +812,7 @@ public sealed class Test262GateVerifierTests
             var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
             using var report = JsonDocument.Parse(result.ReportJson);
             var currentSummary = report.RootElement.GetProperty("summary").GetProperty("current");
-            Assert.Equal(2, currentSummary.GetProperty("ExpectedFailures").GetInt32());
+            Assert.Equal(2, currentSummary.GetProperty("expectedFailures").GetInt32());
         }
         finally
         {
@@ -863,10 +863,10 @@ public sealed class Test262GateVerifierTests
             var result = Test262GateVerifier.Verify(currentPath, previousPath);
             using var report = JsonDocument.Parse(result.ReportJson);
             var previousSummary = report.RootElement.GetProperty("summary").GetProperty("previous");
-            Assert.Equal(1, previousSummary.GetProperty("Total").GetInt32());
-            Assert.Equal(1, previousSummary.GetProperty("Passed").GetInt32());
-            Assert.Equal(0, previousSummary.GetProperty("UnexpectedPasses").GetInt32());
-            Assert.Equal(0, previousSummary.GetProperty("Crashes").GetInt32());
+            Assert.Equal(1, previousSummary.GetProperty("total").GetInt32());
+            Assert.Equal(1, previousSummary.GetProperty("passed").GetInt32());
+            Assert.Equal(0, previousSummary.GetProperty("unexpectedPasses").GetInt32());
+            Assert.Equal(0, previousSummary.GetProperty("crashes").GetInt32());
         }
         finally
         {
@@ -917,7 +917,7 @@ public sealed class Test262GateVerifierTests
             var result = Test262GateVerifier.Verify(currentPath, previousPath);
             using var report = JsonDocument.Parse(result.ReportJson);
             var previousSummary = report.RootElement.GetProperty("summary").GetProperty("previous");
-            Assert.Equal(1, previousSummary.GetProperty("Crashes").GetInt32());
+            Assert.Equal(1, previousSummary.GetProperty("crashes").GetInt32());
         }
         finally
         {
@@ -968,7 +968,7 @@ public sealed class Test262GateVerifierTests
             var result = Test262GateVerifier.Verify(currentPath, previousPath);
             using var report = JsonDocument.Parse(result.ReportJson);
             var previousSummary = report.RootElement.GetProperty("summary").GetProperty("previous");
-            Assert.Equal(1, previousSummary.GetProperty("UnexpectedPasses").GetInt32());
+            Assert.Equal(1, previousSummary.GetProperty("unexpectedPasses").GetInt32());
         }
         finally
         {
@@ -1047,7 +1047,7 @@ public sealed class Test262GateVerifierTests
             var result = Test262GateVerifier.Verify(currentPath, previousPath);
             using var report = JsonDocument.Parse(result.ReportJson);
             var previousSummary = report.RootElement.GetProperty("summary").GetProperty("previous");
-            Assert.Equal(2, previousSummary.GetProperty("ExpectedFailures").GetInt32());
+            Assert.Equal(2, previousSummary.GetProperty("expectedFailures").GetInt32());
         }
         finally
         {
@@ -1109,8 +1109,8 @@ public sealed class Test262GateVerifierTests
             var result = Test262GateVerifier.Verify(currentPath, previousPath);
             using var report = JsonDocument.Parse(result.ReportJson);
             var previousSummary = report.RootElement.GetProperty("summary").GetProperty("previous");
-            Assert.Equal(1, previousSummary.GetProperty("Unsupported").GetInt32());
-            Assert.Equal(1, previousSummary.GetProperty("ParserErrors").GetInt32());
+            Assert.Equal(1, previousSummary.GetProperty("unsupported").GetInt32());
+            Assert.Equal(1, previousSummary.GetProperty("parserErrors").GetInt32());
         }
         finally
         {

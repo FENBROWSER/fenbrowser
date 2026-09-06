@@ -3,6 +3,8 @@
 // Test262DashboardWriter, Test262GateVerifier, and Test262Runner, making the
 // project trimmable and Native-AOT-compatible.
 
+using System.Text.Json.Serialization;
+
 namespace FenBrowser.Js.Test262;
 
 // ── Result writer types ────────────────────────────────────────────────
@@ -126,6 +128,10 @@ public sealed class Test262DashboardResult
 public sealed class Test262DashboardSource
 {
     public string Current { get; set; } = "";
+
+    // Emitted even when null: an absent baseline is meaningful to report consumers,
+    // so "previous": null is preserved rather than dropped by WhenWritingNull.
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public string? Previous { get; set; }
 }
 
@@ -169,6 +175,9 @@ public sealed class Test262GateVerificationPayload
 public sealed class Test262GateSummary
 {
     public Test262GateSummaryValues Current { get; set; } = new();
+
+    // Emitted even when null, for the same reason as Test262DashboardSource.Previous.
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public Test262GateSummaryValues? Previous { get; set; }
 }
 
