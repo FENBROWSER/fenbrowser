@@ -340,11 +340,65 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(0, result.Bitmap.GetPixel(450, 20).Alpha);
         }
 
+        [Fact]
+        public void ConvolveMatrix_UsesDivisorAndNormalizedBias()
+        {
+            using var biased = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs><filter id='f' color-interpolation-filters='sRGB'>" +
+                "<feConvolveMatrix order='1' kernelMatrix='0' divisor='1' bias='.5' preserveAlpha='true'/>" +
+                "</filter></defs><rect width='20' height='20' fill='black' filter='url(#f)'/></svg>");
+            using var divided = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs><filter id='f' color-interpolation-filters='sRGB'>" +
+                "<feConvolveMatrix order='1' kernelMatrix='2' divisor='2' preserveAlpha='true'/>" +
+                "</filter></defs><rect width='20' height='20' fill='rgb(64,32,16)' filter='url(#f)'/></svg>");
+
+            Assert.True(biased.Success, biased.ErrorMessage);
+            Assert.True(divided.Success, divided.ErrorMessage);
+            Assert.False(biased.RequiresFallback, string.Join("; ", biased.Warnings));
+            Assert.False(divided.RequiresFallback, string.Join("; ", divided.Warnings));
+            SKColor biasedCenter = biased.Bitmap.GetPixel(10, 10);
+            Assert.InRange(biasedCenter.Red, (byte)127, (byte)129);
+            Assert.InRange(biasedCenter.Green, (byte)127, (byte)129);
+            Assert.InRange(biasedCenter.Blue, (byte)127, (byte)129);
+            SKColor dividedCenter = divided.Bitmap.GetPixel(10, 10);
+            Assert.InRange(dividedCenter.Red, (byte)63, (byte)65);
+            Assert.InRange(dividedCenter.Green, (byte)31, (byte)33);
+            Assert.InRange(dividedCenter.Blue, (byte)15, (byte)17);
+        }
+
+        [Fact]
+        public void ConvolveMatrix_EdgeModesControlOutsideSamples()
+        {
+            const string prefix =
+                "<svg width='20' height='20'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='20' height='20'><feConvolveMatrix order='3 1' " +
+                "kernelMatrix='1 1 1' divisor='3' edgeMode='";
+            const string suffix =
+                "'/></filter></defs><rect width='20' height='20' fill='red' filter='url(#f)'/></svg>";
+
+            using var none = new FenSvgRenderer().Render(prefix + "none" + suffix);
+            using var duplicate = new FenSvgRenderer().Render(prefix + "duplicate" + suffix);
+
+            Assert.True(none.Success, none.ErrorMessage);
+            Assert.True(duplicate.Success, duplicate.ErrorMessage);
+            Assert.False(none.RequiresFallback, string.Join("; ", none.Warnings));
+            Assert.False(duplicate.RequiresFallback, string.Join("; ", duplicate.Warnings));
+            Assert.InRange(none.Bitmap.GetPixel(0, 10).Alpha, (byte)169, (byte)171);
+            Assert.Equal(255, duplicate.Bitmap.GetPixel(0, 10).Alpha);
+        }
+
         [Theory]
         [InlineData("<feGaussianBlur stdDeviation='999'/>")]
         [InlineData("<feTurbulence/>")]
         [InlineData("<feComponentTransfer><feFuncR type='unknown'/></feComponentTransfer>")]
         [InlineData("<feDisplacementMap xChannelSelector='Q'/>")]
+        [InlineData("<feConvolveMatrix order='3' kernelMatrix='1 2'/>")]
+        [InlineData("<feConvolveMatrix order='0' kernelMatrix='1'/>")]
+        [InlineData("<feConvolveMatrix order='26' kernelMatrix='1'/>")]
+        [InlineData("<feConvolveMatrix order='1' kernelMatrix='1' divisor='0'/>")]
+        [InlineData("<feConvolveMatrix order='1' kernelMatrix='1' targetX='1'/>")]
+        [InlineData("<feConvolveMatrix order='1' kernelMatrix='1' edgeMode='mirror'/>")]
+        [InlineData("<feConvolveMatrix order='1' kernelMatrix='1' kernelUnitLength='2'/>")]
         public void UnsupportedOrUnboundedPrimitive_RemainsExplicitFallback(string primitive)
         {
             using var result = new FenSvgRenderer().Render(

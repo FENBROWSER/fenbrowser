@@ -11664,6 +11664,20 @@ Verification:
 - Reference-cycle and native layer budgets are unchanged, and all instance
   effect state remains scoped to the current render.
 
+## 2.168 SVG Matrix-Convolution Filters (2026-09-06)
+
+- `feConvolveMatrix` now builds a render-owned matrix-convolution node with
+  SVG defaults for `order`, `divisor`, target coordinates, `edgeMode`, and
+  `preserveAlpha`. Explicit divisors, normalized bias, non-central targets,
+  and `none`, `wrap`, and `duplicate` edge sampling are supported.
+- Admission requires a finite kernel with exact cardinality and bounds each
+  dimension to 25 samples and the complete matrix to 625 samples. Zero or
+  near-zero divisors, invalid targets, unknown edge modes, and non-unit
+  `kernelUnitLength` values remain explicit compatibility fallbacks.
+- Convolution defaults to linear-light RGB and honors inherited
+  `color-interpolation-filters="sRGB"`. All intermediate color and image
+  filters are deterministically disposed with the enclosing render graph.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

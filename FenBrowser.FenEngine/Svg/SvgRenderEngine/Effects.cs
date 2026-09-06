@@ -395,6 +395,8 @@ namespace FenBrowser.FenEngine.Svg
                             primitive, input, primitiveScaleX, primitiveScaleY),
                         "feColorMatrix" => BuildColorMatrix(primitive, input),
                         "feComponentTransfer" => BuildComponentTransfer(primitive, input),
+                        "feConvolveMatrix" => BuildConvolveMatrix(
+                            primitive, input, filterRegion, owned),
                         "feMorphology" => BuildMorphology(
                             primitive, input, primitiveScaleX, primitiveScaleY),
                         _ => null
@@ -861,19 +863,9 @@ namespace FenBrowser.FenEngine.Svg
             SKColorFilter operation,
             SKImageFilter input)
         {
-            string interpolation = null;
-            for (SvgElement current = element; current != null; current = current.Parent)
-            {
-                interpolation = current.GetPresentationProperty("color-interpolation-filters")?.Trim();
-                if (!string.IsNullOrEmpty(interpolation)) break;
-            }
-
-            if (string.Equals(interpolation, "sRGB", StringComparison.OrdinalIgnoreCase))
+            if (!TryUseLinearFilterColorSpace(element, out bool useLinear)) return null;
+            if (!useLinear)
                 return SKImageFilter.CreateColorFilter(operation, input);
-            if (!string.IsNullOrEmpty(interpolation) &&
-                !string.Equals(interpolation, "linearRGB", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(interpolation, "auto", StringComparison.OrdinalIgnoreCase))
-                return null;
 
             // Filter color operations default to linear-light channels. Compose
             // explicit transfer functions around Skia's channel operation so the
@@ -883,6 +875,152 @@ namespace FenBrowser.FenEngine.Svg
             using var toSrgb = SKColorFilter.CreateLinearToSrgbGamma();
             using var composed = SKColorFilter.CreateCompose(toSrgb, operationInLinear);
             return SKImageFilter.CreateColorFilter(composed, input);
+        }
+
+        private static bool TryUseLinearFilterColorSpace(
+            SvgElement element,
+            out bool useLinear)
+        {
+            string interpolation = null;
+            for (SvgElement current = element; current != null; current = current.Parent)
+            {
+                interpolation = current.GetPresentationProperty("color-interpolation-filters")?.Trim();
+                if (!string.IsNullOrEmpty(interpolation)) break;
+            }
+
+            useLinear = !string.Equals(interpolation, "sRGB", StringComparison.OrdinalIgnoreCase);
+            return string.IsNullOrEmpty(interpolation) ||
+                string.Equals(interpolation, "sRGB", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(interpolation, "linearRGB", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(interpolation, "auto", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private SKImageFilter BuildConvolveMatrix(
+            SvgElement element,
+            SKImageFilter input,
+            SKRect filterRegion,
+            List<SKImageFilter> owned)
+        {
+            if (!TryReadIntegerPair(element.GetAttribute("order"), 3, 25,
+                    out int orderX, out int orderY) ||
+                orderX * orderY > 625 ||
+                !TryReadKernel(element.GetAttribute("kernelMatrix"), orderX * orderY,
+                    out float[] kernel))
+                return null;
+
+            float divisor = 0f;
+            string divisorRaw = element.GetAttribute("divisor");
+            if (string.IsNullOrWhiteSpace(divisorRaw))
+            {
+                for (int i = 0; i < kernel.Length; i++) divisor += kernel[i];
+                if (divisor == 0f) divisor = 1f;
+            }
+            else if (!TryReadSingleNumber(divisorRaw, 1f, out divisor) || divisor == 0f)
+            {
+                return null;
+            }
+            if (!float.IsFinite(divisor) || MathF.Abs(divisor) < 1e-6f) return null;
+
+            if (!TryReadSingleNumber(element.GetAttribute("bias"), 0f, out float bias) ||
+                MathF.Abs(bias) > 128f ||
+                !TryReadTarget(element.GetAttribute("targetX"), orderX / 2, orderX, out int targetX) ||
+                !TryReadTarget(element.GetAttribute("targetY"), orderY / 2, orderY, out int targetY) ||
+                !SupportsUnitKernel(element.GetAttribute("kernelUnitLength")))
+                return null;
+
+            SKShaderTileMode edgeMode = (element.GetAttribute("edgeMode") ?? "duplicate")
+                .Trim().ToLowerInvariant() switch
+                {
+                    "duplicate" => SKShaderTileMode.Clamp,
+                    "wrap" => SKShaderTileMode.Repeat,
+                    "none" => SKShaderTileMode.Decal,
+                    _ => (SKShaderTileMode)(-1)
+                };
+            if ((int)edgeMode < 0) return null;
+
+            bool preserveAlpha = string.Equals(
+                element.GetAttribute("preserveAlpha")?.Trim(), "true",
+                StringComparison.OrdinalIgnoreCase);
+            if (!TryUseLinearFilterColorSpace(element, out bool useLinear)) return null;
+
+            SKImageFilter convolutionInput = input;
+            if (useLinear)
+            {
+                using var toLinear = SKColorFilter.CreateSrgbToLinearGamma();
+                convolutionInput = SKImageFilter.CreateColorFilter(toLinear, input);
+                if (convolutionInput == null) return null;
+                owned.Add(convolutionInput);
+            }
+
+            var convolution = SKImageFilter.CreateMatrixConvolution(
+                new SKSizeI(orderX, orderY), kernel, 1f / divisor, bias * 255f,
+                new SKPointI(targetX, targetY), edgeMode, !preserveAlpha,
+                convolutionInput, filterRegion);
+            if (convolution == null) return null;
+
+            if (!useLinear) return convolution;
+            owned.Add(convolution);
+            using var toSrgb = SKColorFilter.CreateLinearToSrgbGamma();
+            return SKImageFilter.CreateColorFilter(toSrgb, convolution);
+        }
+
+        private static bool TryReadIntegerPair(
+            string raw,
+            int fallback,
+            int maximum,
+            out int x,
+            out int y)
+        {
+            x = y = fallback;
+            if (string.IsNullOrWhiteSpace(raw)) return true;
+            var tokenizer = SvgValues.CreateTokenizer(raw.AsSpan());
+            if (!tokenizer.Next(out var first) || !TryParseBoundedInteger(first, maximum, out x))
+                return false;
+            y = x;
+            return !tokenizer.Next(out var second) ||
+                (TryParseBoundedInteger(second, maximum, out y) && !tokenizer.Next(out _));
+        }
+
+        private static bool TryParseBoundedInteger(ReadOnlySpan<char> raw, int maximum, out int value)
+        {
+            value = 0;
+            return SvgValues.TryParseNumber(raw, out float parsed) &&
+                float.IsFinite(parsed) && parsed >= 1f && parsed <= maximum &&
+                parsed == MathF.Truncate(parsed) && (value = (int)parsed) > 0;
+        }
+
+        private static bool TryReadKernel(string raw, int count, out float[] kernel)
+        {
+            kernel = null;
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            var values = new float[count];
+            var tokenizer = SvgValues.CreateTokenizer(raw.AsSpan());
+            int index = 0;
+            while (tokenizer.Next(out var token))
+            {
+                if (index >= count || !SvgValues.TryParseNumber(token, out values[index]) ||
+                    !float.IsFinite(values[index])) return false;
+                index++;
+            }
+            if (index != count) return false;
+            kernel = values;
+            return true;
+        }
+
+        private static bool TryReadTarget(string raw, int fallback, int order, out int target)
+        {
+            target = fallback;
+            if (string.IsNullOrWhiteSpace(raw)) return true;
+            return SvgValues.TryParseNumber(raw.AsSpan(), out float value) &&
+                float.IsFinite(value) && value == MathF.Truncate(value) &&
+                value >= 0f && value < order && (target = (int)value) >= 0;
+        }
+
+        private static bool SupportsUnitKernel(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return true;
+            return TryReadNumberPair(raw, 0f, 32767f, out float x, out float y) &&
+                MathF.Abs(x - 1f) < 1e-6f && MathF.Abs(y - 1f) < 1e-6f;
         }
 
         private static byte[] BuildComponentTransferTable(SvgElement function)

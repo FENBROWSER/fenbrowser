@@ -5166,6 +5166,20 @@ Verification:
 - The complete focused SVG namespace passes 428/428, with no renderer or worker
   failure in the corrected local WPT run.
 
+## 6.234 SVG Matrix-Convolution Verification (2026-09-06)
+
+- The exact five local Windows SVG 1.1 convolution manual files were rerun.
+  `filters-conv-05-f-manual.svg` now routes first-party with no fallback,
+  rejection, renderer/worker failure, or timeout and passes the legacy pixel
+  threshold at alpha IoU 0.8762 and mean RGB difference 2.5559.
+- The other four files remain resource-rejected because their imported fonts or
+  raster images resolve outside the current authorized resource directory.
+  `filters-conv-03-f-manual.svg` additionally retains honest `set` animation
+  and `feImage` fallbacks. These manual files provide no declared WPT reference,
+  so no exact reference-pass claim is made.
+- Focused regressions cover normalized bias, divisor use, edge sampling, and
+  malformed kernel admission. The complete SVG test namespace passes 437/437.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

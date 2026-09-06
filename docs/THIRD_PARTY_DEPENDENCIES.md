@@ -59,14 +59,14 @@ utility-process decoding and observes runtime configuration changes without a
 static-read-once cache.
 It has NOT replaced Svg.Skia. Shared CSS cascade integration, bounded horizontal
 HarfBuzz text/tspan and text-path shaping, bounded filter graphs and common
-mask/marker subsets,
+mask/marker subsets, bounded matrix convolution,
 curved-path marker tangents, static pattern paint servers, bounded nested
 resources, blend modes, and the genuine captured-site gate are implemented. The
 11-site capture evaluated all 151 captured SVGs first-party with zero fallback,
 failure, timeout, rejection, or truncation. SMIL, remaining cascade and filter
 gaps, vertical/per-glyph text, scripted pattern mutation, unsupported properties
 and elements, and unresolved local WPT failures remain open compatibility gates
-(see VOLUME_III 2.121-2.167 and VOLUME_VI 6.193-6.233 for the matrix and current
+(see VOLUME_III 2.121-2.168 and VOLUME_VI 6.193-6.234 for the matrix and current
 evidence).
 Removal from this inventory happens only after the documented gate closes.
 
