@@ -37,7 +37,7 @@ public sealed class DurationFormatTests
             options.style === "short" &&
             options.years === "short" &&
             options.hours === "short" &&
-            options.hoursDisplay === "always" &&
+            options.hoursDisplay === "auto" &&
             options.numberingSystem === "latn"
             """));
     }

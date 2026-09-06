@@ -48,22 +48,31 @@ public sealed class IntlSmokeTests
         Assert.Equal("function", RunStr("typeof Intl.getCanonicalLocales;"));
     }
 
+    // ECMA-402 11.1.1: with NewTarget undefined these constructors use the active
+    // function object instead, so a plain call constructs rather than throwing.
     [Fact]
-    public void DateTimeFormatThrowsWhenCalledWithoutNew()
+    public void DateTimeFormatConstructsWhenCalledWithoutNew()
     {
-        Assert.Throws<JsThrownException>(() => Run("Intl.DateTimeFormat();"));
+        Assert.True(RunBool("Intl.DateTimeFormat() instanceof Intl.DateTimeFormat;"));
     }
 
     [Fact]
-    public void NumberFormatThrowsWhenCalledWithoutNew()
+    public void NumberFormatConstructsWhenCalledWithoutNew()
     {
-        Assert.Throws<JsThrownException>(() => Run("Intl.NumberFormat();"));
+        Assert.True(RunBool("Intl.NumberFormat() instanceof Intl.NumberFormat;"));
     }
 
     [Fact]
-    public void CollatorThrowsWhenCalledWithoutNew()
+    public void CollatorConstructsWhenCalledWithoutNew()
     {
-        Assert.Throws<JsThrownException>(() => Run("Intl.Collator();"));
+        Assert.True(RunBool("Intl.Collator() instanceof Intl.Collator;"));
+    }
+
+    // The constructors added after ES2015 have no such fallback.
+    [Fact]
+    public void PluralRulesThrowsWhenCalledWithoutNew()
+    {
+        Assert.Throws<JsThrownException>(() => Run("Intl.PluralRules();"));
     }
 
     [Fact]
