@@ -127,15 +127,19 @@ internal static class DateMath
         return Trunc(t) + 0.0; // +0 normalises -0
     }
 
-    // ECMA-262 21.4.4.41 Date.prototype.toString: "Www Mmm DD YYYY HH:mm:ss GMT+HHmm"
-    // LocalTZA is 0 in this engine, so the timezone suffix is always "GMT+0000".
+    // ECMA-262 21.4.4.41.7 TimeZoneString: the offset, then an implementation-defined
+    // timezone name in parentheses. LocalTZA is 0 in this engine, so both halves are
+    // fixed and every other engine spells this one the same way.
+    public const string TimeZoneString = "GMT+0000 (Coordinated Universal Time)";
+
+    // ECMA-262 21.4.4.41 Date.prototype.toString: "Www Mmm DD YYYY HH:mm:ss GMT+HHmm (name)"
     public static string DateToString(double t)
     {
         if (!double.IsFinite(t)) return "Invalid Date";
         return string.Format(CultureInfo.InvariantCulture,
-            "{0} {1} {2:D2} {3} {4:D2}:{5:D2}:{6:D2} GMT+0000",
+            "{0} {1} {2:D2} {3} {4:D2}:{5:D2}:{6:D2} {7}",
             DayNames[WeekDay(t)], MonthNames[MonthFromTime(t)], DateFromTime(t),
-            FormatYear4(t), HoursFromTime(t), MinFromTime(t), SecFromTime(t));
+            FormatYear4(t), HoursFromTime(t), MinFromTime(t), SecFromTime(t), TimeZoneString);
     }
 
     private static string FormatYear4(double t)

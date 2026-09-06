@@ -7803,8 +7803,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private string FormatTimePart(double t) =>
         string.Format(System.Globalization.CultureInfo.InvariantCulture,
-            "{0:D2}:{1:D2}:{2:D2} GMT+0000",
-            DateMath.HoursFromTime(t), DateMath.MinFromTime(t), DateMath.SecFromTime(t));
+            "{0:D2}:{1:D2}:{2:D2} {3}",
+            DateMath.HoursFromTime(t), DateMath.MinFromTime(t), DateMath.SecFromTime(t), DateMath.TimeZoneString);
 
     private JsValue DatePrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
