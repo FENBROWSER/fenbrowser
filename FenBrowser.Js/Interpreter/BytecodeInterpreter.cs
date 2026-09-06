@@ -11760,24 +11760,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var valueObj = _heap.GetObject(value.AsObjectHandle());
             var valueHandle = value.AsObjectHandle();
-            if (valueObj is ArrayObject)
+            // 25.5.1.1 step 2.a: isArray = ? IsArray(val). IsArray looks through a
+            // Proxy to its target, so a proxy whose target is an Array takes the index
+            // path below and its non-index own keys are never visited.
+            if (IsArrayValue(value))
             {
-                var length = GetArrayLength(valueObj);
-                for (var i = 0; i < length; i++)
+                var length = LengthOfArrayLikeAsDouble(valueObj, value);
+                for (double i = 0; i < length; i++)
                 {
-                    var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    var k = ToStringValue(JsValue.FromNumber(i));
                     var newValue = InternalizeJsonProperty(valueHandle, k, reviver);
-                    if (newValue.Tag == JsValueTag.Undefined)
-                    {
-                        valueObj.DeleteProperty(k);
-                    }
-                    else
-                    {
-                        // 25.5.1.1: Perform ? CreateDataProperty(val, P, newElement) —
-                        // a define (not [[Set]]), so a non-configurable property is not
-                        // overwritten and no inherited setter runs.
-                        _ = CreateDataProperty(valueHandle, valueObj, k, newValue);
-                    }
+                    ApplyRevivedProperty(valueHandle, valueObj, k, newValue);
                 }
             }
             else
@@ -11810,36 +11803,46 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 foreach (var k in keys)
                 {
                     var newValue = InternalizeJsonProperty(valueHandle, k, reviver);
-                    if (newValue.Tag == JsValueTag.Undefined)
-                    {
-                        if (valueObj is ProxyObject proxyDelete)
-                        {
-                            if (!ProxyDelete(proxyDelete, k))
-                            {
-                                throw new JsThrownException(CreateTypeError(
-                                    $"JSON.parse reviver: cannot delete property '{k}'."));
-                            }
-                        }
-                        else
-                        {
-                            valueObj.DeleteProperty(k);
-                        }
-                    }
-                    else if (valueObj is ProxyObject proxyDefine)
-                    {
-                        // CreateDataProperty through the [[DefineOwnProperty]] trap.
-                        _ = ProxyDefineProperty(proxyDefine, k, BuildDataPropertyDescriptorObject(newValue));
-                    }
-                    else
-                    {
-                        // 25.5.1.1: Perform ? CreateDataProperty(val, P, newElement).
-                        _ = CreateDataProperty(valueHandle, valueObj, k, newValue);
-                    }
+                    ApplyRevivedProperty(valueHandle, valueObj, k, newValue);
                 }
             }
         }
 
         return CallFunction(reviver, new[] { JsValue.FromString(key), value }, JsValue.FromObject(holderHandle));
+    }
+
+    // 25.5.1.1: an undefined result deletes the property, anything else is a
+    // CreateDataProperty - a define rather than a [[Set]], so a non-configurable
+    // property is not overwritten and no inherited setter runs. Both go through the
+    // holder's own internal methods so a Proxy holder sees its deleteProperty and
+    // defineProperty traps.
+    private void ApplyRevivedProperty(ObjectHandle holderHandle, JsObject holder, string key, JsValue newValue)
+    {
+        if (newValue.Tag == JsValueTag.Undefined)
+        {
+            if (holder is ProxyObject proxyDelete)
+            {
+                if (!ProxyDelete(proxyDelete, key))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        $"JSON.parse reviver: cannot delete property '{key}'."));
+                }
+            }
+            else
+            {
+                holder.DeleteProperty(key);
+            }
+
+            return;
+        }
+
+        if (holder is ProxyObject proxyDefine)
+        {
+            _ = ProxyDefineProperty(proxyDefine, key, BuildDataPropertyDescriptorObject(newValue));
+            return;
+        }
+
+        _ = CreateDataProperty(holderHandle, holder, key, newValue);
     }
 
     private JsValue ConvertJsonElement(JsonElement element)
