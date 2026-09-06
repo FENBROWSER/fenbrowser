@@ -132,6 +132,8 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             inlineStyleCacheStatistics = engine.GetInlineStyleCacheStatistics();
+            double __f = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            FenBrowser.Core.EngineLogCompat.Log(FenBrowser.Core.Logging.LogCategory.Rendering, FenBrowser.Core.Logging.LogLevel.Info, $"[PERF-CASCADE] elemVisits={CascadeEngine.NElems} collectMs={CascadeEngine.TCollect*__f:F0} sortMs={CascadeEngine.TSort*__f:F0} applyMs={CascadeEngine.TApply*__f:F0} matchedDecls={CascadeEngine.NMatches} universalBucket={engine.UniversalCandidateCount} cacheHitMs={CascadeEngine.TCacheHit*__f:F0} cacheHits={CascadeEngine.NCacheHit} mainPass={CascadeEngine.NMain} pseudoPass={CascadeEngine.NPseudo} pseudoCollectMs={CascadeEngine.TPseudoCollect*__f:F0}");
             return new Dictionary<Node, CssComputed>(result);
         }
 

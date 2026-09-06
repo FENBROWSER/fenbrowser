@@ -27,8 +27,13 @@ private Dictionary<string, List<CssStyleRule>> _classIndex; // .class rules
 private Dictionary<string, List<CssStyleRule>> _attributeIndex; // [attribute] rules
 private Dictionary<string, List<CssStyleRule>> _tagIndex; // tag rules
 private List<CssStyleRule> _universalRules; // * and attribute-only rules
+// Rules whose key segment names a pseudo-element, bucketed by that pseudo-element.
+// A ::before pass can only ever match rules in the "before" bucket, so this keeps a
+// pseudo sweep proportional to the rules that name it rather than to the whole sheet.
+private Dictionary<string, List<CssStyleRule>> _pseudoIndex;
 private bool _indexed = false;
 [ThreadStatic] private static HashSet<CssStyleRule> _processedRules; // Track duplicates
+internal static long TCollect, TSort, TApply, NMatches, NElems, TCacheHit, NCacheHit, NMain, NPseudo, TPseudoCollect;
 
 // PERF: Style cache to avoid recomputing styles for unchanged elements
 private readonly Dictionary<Node, CssComputed> _styleCache = new Dictionary<Node, CssComputed>();
@@ -110,6 +115,7 @@ private int _inlineStyleCacheEvictions;
             _attributeIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _tagIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _universalRules = new List<CssStyleRule>();
+            _pseudoIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             
             _pseudoElementsWithRules = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             
@@ -161,6 +167,7 @@ private int _inlineStyleCacheEvictions;
                     {
                         var keySeg = chain.Segments[chain.Segments.Count - 1];
                         IndexKeySegment(keySeg, styleRule);
+                        IndexKeySegmentPseudoElements(keySeg, styleRule);
                     }
                     else
                     {
@@ -276,6 +283,54 @@ private int _inlineStyleCacheEvictions;
             return false;
         }
 
+        // Mirrors RuleMatchesPseudo: only the key segment's pseudo-elements (including
+        // the legacy single-colon spellings) can satisfy a pseudo-element request.
+        private void IndexKeySegmentPseudoElements(SelectorSegment keySeg, CssStyleRule styleRule)
+        {
+            if (keySeg == null)
+            {
+                return;
+            }
+
+            if (keySeg.PseudoElements != null)
+            {
+                foreach (var pe in keySeg.PseudoElements)
+                {
+                    if (TryNormalizePseudoElementName(pe?.Name, out var normalized))
+                    {
+                        AddToPseudoIndex(normalized, styleRule);
+                    }
+                }
+            }
+
+            if (keySeg.PseudoClasses != null)
+            {
+                foreach (var pc in keySeg.PseudoClasses)
+                {
+                    if (TryNormalizeLegacyPseudoElementName(pc?.Name, out var normalized))
+                    {
+                        AddToPseudoIndex(normalized, styleRule);
+                    }
+                }
+            }
+        }
+
+        private void AddToPseudoIndex(string pseudoName, CssStyleRule styleRule)
+        {
+            ref List<CssStyleRule> list = ref CollectionsMarshal.GetValueRefOrAddDefault(_pseudoIndex, pseudoName, out bool exists);
+            if (!exists)
+            {
+                list = new List<CssStyleRule>();
+            }
+
+            // A rule reaches this bucket once per chain naming the pseudo-element; the
+            // last-entry check keeps the common repeat out without a set per bucket.
+            if (list.Count == 0 || !ReferenceEquals(list[list.Count - 1], styleRule))
+            {
+                list.Add(styleRule);
+            }
+        }
+
         private void IndexKeySegment(SelectorSegment keySeg, CssStyleRule styleRule)
         {
             if (keySeg == null)
@@ -360,7 +415,11 @@ public Dictionary<string, CssDeclaration> ComputeCascadedValues(Element element,
 	{
 	if (pseudoElement == null)
 	{
-	return ConvertComputedMapToDeclarations(cachedStyle.Map);
+	long __tc = System.Diagnostics.Stopwatch.GetTimestamp();
+	var __r = ConvertComputedMapToDeclarations(cachedStyle.Map);
+	System.Threading.Interlocked.Add(ref TCacheHit, System.Diagnostics.Stopwatch.GetTimestamp() - __tc);
+	System.Threading.Interlocked.Increment(ref NCacheHit);
+	return __r;
 	}
 	// For pseudo-elements, still need to recompute
 	}
@@ -377,9 +436,16 @@ if (_processedRules == null) _processedRules = new HashSet<CssStyleRule>();
 _processedRules.Clear();
 
 // 1. Gather all declarations from matching rules (priority order: ID > Classes > Tag > Universal)
+long __t0 = System.Diagnostics.Stopwatch.GetTimestamp();
 CollectMatches(element, results, pseudoElement);
 CollectPresentationalHintMatches(element, results, pseudoElement);
 CollectInlineStyleMatches(element, results, pseudoElement);
+long __dt = System.Diagnostics.Stopwatch.GetTimestamp() - __t0;
+System.Threading.Interlocked.Add(ref TCollect, __dt);
+if (pseudoElement == null) System.Threading.Interlocked.Increment(ref NMain);
+else { System.Threading.Interlocked.Increment(ref NPseudo); System.Threading.Interlocked.Add(ref TPseudoCollect, __dt); }
+System.Threading.Interlocked.Increment(ref NElems);
+System.Threading.Interlocked.Add(ref NMatches, results.Count);
 
             /*
             if (_logCascade && results.Count > 0)
@@ -397,7 +463,9 @@ CollectInlineStyleMatches(element, results, pseudoElement);
 
             // 2. Sort declarations
             deadline?.Check();
+            long __t1 = System.Diagnostics.Stopwatch.GetTimestamp();
             results.Sort();
+            System.Threading.Interlocked.Add(ref TSort, System.Diagnostics.Stopwatch.GetTimestamp() - __t1);
             deadline?.Check();
 
             if (_logCascade && results.Count > 0)
@@ -413,11 +481,13 @@ CollectInlineStyleMatches(element, results, pseudoElement);
 // CSS custom properties are case-sensitive and must not be merged by
 // case-insensitive dictionary keys.
 var computed = new Dictionary<string, CssDeclaration>(StringComparer.Ordinal);
+long __t2 = System.Diagnostics.Stopwatch.GetTimestamp();
 foreach (var match in results)
 {
 deadline?.Check();
 ApplyDeclaration(computed, match.Declaration);
 }
+System.Threading.Interlocked.Add(ref TApply, System.Diagnostics.Stopwatch.GetTimestamp() - __t2);
 
 // PERF: Store result in cache for future reuse
 if (element != null && string.IsNullOrEmpty(pseudoElement))
@@ -795,6 +865,30 @@ return computed;
 
         private void CollectMatches(Element element, List<MatchedDeclaration> results, string pseudoElement)
         {
+            // The element's root is fixed for the whole rule sweep, while GetRootNode walks
+            // the full ancestor chain. Resolving it per candidate rule cost ~16 parent hops
+            // per check (153M hops on github.com); resolve it once per element instead.
+            var elementShadowRoot = element.GetRootNode() as ShadowRoot;
+
+            // A pseudo-element pass can only match rules whose key segment names that
+            // pseudo-element, so walk that bucket instead of every id/class/tag/universal
+            // candidate. TryMatchRule still re-verifies, so this only removes rules that
+            // could not have matched.
+            if (!string.IsNullOrWhiteSpace(pseudoElement))
+            {
+                var requestedPseudo = pseudoElement.Trim().TrimStart(':').ToLowerInvariant();
+                if (_pseudoIndex.TryGetValue(requestedPseudo, out var pseudoRules))
+                {
+                    foreach (var rule in pseudoRules)
+                    {
+                        if (_processedRules.Add(rule))
+                            TryMatchRule(element, rule, results, pseudoElement, elementShadowRoot);
+                    }
+                }
+
+                return;
+            }
+
             // Get attributes via properties
             string elemId = element.Id;
             string elemClass = element.GetAttribute("class");
@@ -805,7 +899,7 @@ return computed;
                 foreach (var rule in idRules)
                 {
                     if (_processedRules.Add(rule))
-                        TryMatchRule(element, rule, results, pseudoElement);
+                        TryMatchRule(element, rule, results, pseudoElement, elementShadowRoot);
                 }
             }
             
@@ -820,7 +914,7 @@ return computed;
                         foreach (var rule in classRules)
                         {
                             if (_processedRules.Add(rule))
-                                TryMatchRule(element, rule, results, pseudoElement);
+                                TryMatchRule(element, rule, results, pseudoElement, elementShadowRoot);
                         }
                     }
                 }
@@ -841,7 +935,7 @@ return computed;
                         foreach (var rule in attributeRules)
                         {
                             if (_processedRules.Add(rule))
-                                TryMatchRule(element, rule, results, pseudoElement);
+                                TryMatchRule(element, rule, results, pseudoElement, elementShadowRoot);
                         }
                     }
                 }
@@ -854,7 +948,7 @@ return computed;
                 foreach (var rule in tagRules)
                 {
                     if (_processedRules.Add(rule))
-                        TryMatchRule(element, rule, results, pseudoElement);
+                        TryMatchRule(element, rule, results, pseudoElement, elementShadowRoot);
                 }
             }
             
@@ -862,13 +956,12 @@ return computed;
             foreach (var rule in _universalRules)
             {
                 if (_processedRules.Add(rule))
-                    TryMatchRule(element, rule, results, pseudoElement);
+                    TryMatchRule(element, rule, results, pseudoElement, elementShadowRoot);
             }
         }
         
-        private void TryMatchRule(Element element, CssStyleRule styleRule, List<MatchedDeclaration> results, string pseudoElement)
+        private void TryMatchRule(Element element, CssStyleRule styleRule, List<MatchedDeclaration> results, string pseudoElement, ShadowRoot elementShadowRoot)
         {
-            var elementShadowRoot = element.GetRootNode() as ShadowRoot;
             if (styleRule.ShadowScopeRoot != null)
             {
                 if (!ReferenceEquals(styleRule.ShadowScopeRoot, elementShadowRoot))
