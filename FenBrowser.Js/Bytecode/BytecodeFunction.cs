@@ -137,6 +137,13 @@ public sealed class BytecodeFunction
 #if !PUBLISH_AOT
     internal bool JitCompileAttempted;
 
+    // How many frames for this function are on the interpreter's active stack.
+    // The JIT entry test asks "is this a recursive activation?" on every call it
+    // is eligible for, and answering that by scanning the whole frame stack made
+    // the question cost O(call depth) per call - on a deeply nested bundle, the
+    // dominant part of the test. The frame scope maintains this instead.
+    internal int ActiveActivations;
+
     /// <summary>
     /// Loop headers the JIT body can be entered at while a frame is already
     /// running it. Null when the compiled form only makes sense from the top.

@@ -44,12 +44,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private readonly struct ActiveFrameScope : IDisposable
     {
         private readonly Stack<InterpreterFrame> _stack;
+        private readonly BytecodeFunction? _function;
         public ActiveFrameScope(Stack<InterpreterFrame> stack, InterpreterFrame frame)
         {
             _stack = stack;
+            _function = frame.Function;
+            if (_function is not null) _function.ActiveActivations++;
             stack.Push(frame);
         }
-        public void Dispose() => _stack.Pop();
+        public void Dispose()
+        {
+            _stack.Pop();
+            if (_function is not null) _function.ActiveActivations--;
+        }
     }
 
     // All cached ObjectHandle fields of the interpreter (lazily-built builtin
@@ -1377,24 +1384,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     public int? ParserMaxRecursionDepth { get; set; }
 
-    private bool IsRecursiveFunctionActivation(BytecodeFunction function)
-    {
-        var matches = 0;
-        foreach (var frame in _activeFrames)
-        {
-            if (!ReferenceEquals(frame.Function, function))
-            {
-                continue;
-            }
-
-            if (++matches > 1)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+    // The caller's own frame is already on the stack when this is asked, so a
+    // second activation means the call is recursive. Counted by ActiveFrameScope
+    // rather than found by scanning, which made it O(call depth) per call.
+    private static bool IsRecursiveFunctionActivation(BytecodeFunction function) =>
+        function.ActiveActivations > 1;
 
     [MayExecuteJs]
     private JsValue ExecuteInternal(
