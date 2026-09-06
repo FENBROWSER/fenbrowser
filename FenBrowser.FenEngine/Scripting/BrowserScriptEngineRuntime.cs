@@ -453,12 +453,42 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 {
     private sealed class MessagePortEndpoint
     {
+        // Transfer detaches a port from one realm before the receiving realm
+        // binds it, so for a moment it has no owner. HTML 9.4.5 keeps the port
+        // message queue with the port across that hop: messages posted to it
+        // while it is in transit are queued and delivered once it is
+        // re-entangled. Dropping them instead cost reCAPTCHA its three setup
+        // payloads and left it waiting for a reply that could never come.
+        public readonly object TransitLock = new();
+
         public long TraceId { get; init; }
         public MessagePortEndpoint Peer { get; set; }
         public FenJsBrowserScriptEngine Owner { get; set; }
         public JsValue Port { get; set; } = JsValue.Undefined;
         public bool Closed { get; set; }
+        public List<PendingPortMessage> InTransitQueue { get; set; }
     }
+
+    /// <summary>
+    /// One message held for a port that is between realms. Everything here has
+    /// already been converted out of the sending realm's heap, so it stays
+    /// valid however long the hop takes.
+    /// </summary>
+    private sealed class PendingPortMessage
+    {
+        public object Data { get; init; }
+        public IReadOnlyList<MessagePortEndpoint> Transferred { get; init; }
+        public long MessageId { get; init; }
+        public long SourcePortId { get; init; }
+        public string SourceFrame { get; init; }
+        public string TargetFrame { get; init; }
+        public string Payload { get; init; }
+    }
+
+    // A port that is transferred and never bound would otherwise buffer without
+    // limit. The cap is far above any real handshake and only exists so a lost
+    // port cannot become a leak.
+    private const int MaxInTransitPortMessages = 256;
 
     private sealed class FenJsTimerRegistration : IDisposable
     {
@@ -15035,7 +15065,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 false,
                 string.Empty));
         }
-        if (source.Closed || target == null || target.Closed || target.Owner == null)
+        if (source.Closed || target == null || target.Closed)
         {
             // Without this the whole failure is silent: script sees postMessage
             // return, and the probe file shows nothing at all for the send.
@@ -15068,17 +15098,58 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return JsValue.FromBoolean(true);
         }
 
-        DiagnosticPaths.AppendLogText(
-            "postmessage_probe.txt",
-            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-send " +
-            $"port#{source.TraceId}->#{target.TraceId} to={target.Owner.ProbeFrame()} " +
-            $"data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)} " +
-            $"transferCount={(args.Count > 2 ? ReadArrayLikeLength(args[2]) : 0)}{Environment.NewLine}");
         var data = args.Count > 1 ? ConvertJsValueToObject(args[1]) : null;
         var transferredPorts = args.Count > 2
             ? ExtractTransferredMessagePorts(args[2])
             : Array.Empty<MessagePortEndpoint>();
-        target.Owner.QueueMessagePort(
+
+        // Read the owner under the transit lock: the receiving realm binds the
+        // port under the same lock, so this either sees an owner to deliver to
+        // or a port still in flight, never a half-bound one.
+        FenJsBrowserScriptEngine targetOwner;
+        lock (target.TransitLock)
+        {
+            targetOwner = target.Owner;
+            if (targetOwner == null && !target.Closed)
+            {
+                var queue = target.InTransitQueue ??= new List<PendingPortMessage>();
+                if (queue.Count >= MaxInTransitPortMessages)
+                {
+                    DiagnosticPaths.AppendLogText(
+                        "postmessage_probe.txt",
+                        $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-send-OVERFLOW " +
+                        $"port#{source.TraceId}->#{target.TraceId} queued={queue.Count}" +
+                        $"{Environment.NewLine}");
+                    return JsValue.FromBoolean(true);
+                }
+
+                queue.Add(new PendingPortMessage
+                {
+                    Data = data,
+                    Transferred = transferredPorts,
+                    MessageId = messageId,
+                    SourcePortId = source.TraceId,
+                    SourceFrame = sourceFrame,
+                    TargetFrame = targetFrame,
+                    Payload = payload,
+                });
+                DiagnosticPaths.AppendLogText(
+                    "postmessage_probe.txt",
+                    $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-send-QUEUED " +
+                    $"port#{source.TraceId}->#{target.TraceId} depth={queue.Count} " +
+                    $"data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)}" +
+                    $"{Environment.NewLine}");
+                return JsValue.FromBoolean(true);
+            }
+        }
+
+        DiagnosticPaths.AppendLogText(
+            "postmessage_probe.txt",
+            $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-send " +
+            $"port#{source.TraceId}->#{target.TraceId} to={targetOwner.ProbeFrame()} " +
+            $"data={DescribePostMessageValue(args.Count > 1 ? args[1] : JsValue.Undefined)} " +
+            $"transferCount={(args.Count > 2 ? ReadArrayLikeLength(args[2]) : 0)}{Environment.NewLine}");
+        targetOwner.QueueMessagePort(
             target,
             data,
             transferredPorts,
@@ -15112,7 +15183,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         if (args != null && args.Count > 0 && TryGetMessagePortEndpoint(args[0], out var endpoint))
         {
-            endpoint.Closed = true;
+            lock (endpoint.TransitLock)
+            {
+                endpoint.Closed = true;
+                endpoint.InTransitQueue = null;
+            }
             _messagePortEndpoints.Remove(args[0].AsObjectHandle().ToInt64());
         }
         return JsValue.Undefined;
@@ -15131,12 +15206,49 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private void BindMessagePort(MessagePortEndpoint endpoint, JsValue port)
     {
-        endpoint.Owner = this;
-        endpoint.Port = port;
-        endpoint.Closed = false;
         _messagePortEndpoints[port.AsObjectHandle().ToInt64()] = endpoint;
-        _interpreter.SetObjectProperty(port, "_fenWindow", _fenJsGlobalThis);
-        _interpreter.SetObjectProperty(port, "_fenClosed", JsValue.FromBoolean(false));
+
+        // Hold the transit lock across the flush. A sender only reads the owner
+        // under this lock, so it either still sees no owner and queues behind
+        // what is being flushed, or sees one and enqueues after the flush has
+        // finished. Releasing first let a concurrent send overtake the backlog
+        // and the messages arrived out of order.
+        lock (endpoint.TransitLock)
+        {
+            endpoint.Owner = this;
+            endpoint.Port = port;
+            endpoint.Closed = false;
+            var queued = endpoint.InTransitQueue;
+            endpoint.InTransitQueue = null;
+
+            _interpreter.SetObjectProperty(port, "_fenWindow", _fenJsGlobalThis);
+            _interpreter.SetObjectProperty(port, "_fenClosed", JsValue.FromBoolean(false));
+
+            if (queued == null)
+            {
+                return;
+            }
+
+            // The port itself decides whether to hold these: one that has not
+            // been started keeps its queue, which is exactly what these messages
+            // would have met had the port never moved.
+            DiagnosticPaths.AppendLogText(
+                "postmessage_probe.txt",
+                $"{DateTimeOffset.UtcNow:O} [{ProbeFrame()}] port-transit-flush " +
+                $"port#{endpoint.TraceId} count={queued.Count}{Environment.NewLine}");
+            foreach (var pending in queued)
+            {
+                QueueMessagePort(
+                    endpoint,
+                    pending.Data,
+                    pending.Transferred,
+                    pending.MessageId,
+                    pending.SourcePortId,
+                    pending.SourceFrame,
+                    pending.TargetFrame,
+                    pending.Payload);
+            }
+        }
     }
 
     private IReadOnlyList<MessagePortEndpoint> ExtractTransferredMessagePorts(JsValue ports)
@@ -15158,8 +15270,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
             _messagePortEndpoints.Remove(port.AsObjectHandle().ToInt64());
             _interpreter.SetObjectProperty(port, "_fenClosed", JsValue.FromBoolean(true));
-            endpoint.Owner = null;
-            endpoint.Port = JsValue.Undefined;
+            lock (endpoint.TransitLock)
+            {
+                endpoint.Owner = null;
+                endpoint.Port = JsValue.Undefined;
+            }
             result.Add(endpoint);
         }
 

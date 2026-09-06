@@ -175,6 +175,54 @@ namespace FenBrowser.Tests.Scripting
                 await WaitForValueAsync(world, world.FirstFrameDocument, "globalThis.__reply"));
         }
 
+        // Transfer detaches a port from the sending realm and the receiving realm
+        // binds it only when the queued message is delivered, so for a moment the
+        // port belongs to nobody. Anything posted to it in that window used to be
+        // dropped: on the live demo page the anchor frame handed its port to the
+        // page and immediately sent three setup payloads, all three were discarded
+        // for want of an owner, and reCAPTCHA waited out its watchdog for a reply
+        // that could not come. HTML 9.4.5 keeps the message queue with the port
+        // across the hop, so these have to arrive, in order.
+        [Fact]
+        public async Task PortMessagesSentWhileTheTransferIsInFlight_AreNotLost()
+        {
+            var world = await CreateTwoFrameDocumentAsync();
+
+            // The receiving side starts the port it is handed and records the lot.
+            Eval(
+                world,
+                world.SecondFrameDocument,
+                "globalThis.__received = [];" +
+                "window.addEventListener('message', function (event) {" +
+                "  if (event.ports && event.ports[0]) {" +
+                "    var port = event.ports[0];" +
+                "    port.onmessage = function (portEvent) {" +
+                "      globalThis.__received.push(portEvent.data);" +
+                "    };" +
+                "    port.start();" +
+                "  }" +
+                "});");
+
+            // The sending side hands port2 over and, in the same turn - before the
+            // sibling realm can possibly have bound it - posts three on port1.
+            Eval(
+                world,
+                world.FirstFrameDocument,
+                "var channel = new MessageChannel();" +
+                "parent.frames['second-frame'].postMessage('recaptcha-setup', '*', [channel.port2]);" +
+                "channel.port1.postMessage('one');" +
+                "channel.port1.postMessage('two');" +
+                "channel.port1.postMessage('three');");
+
+            Assert.Equal(
+                "one,two,three",
+                await WaitForValueAsync(
+                    world,
+                    world.SecondFrameDocument,
+                    "globalThis.__received.join(',')",
+                    "one,two,three"));
+        }
+
         private sealed record FrameWorld(
             FenJsBrowserScriptEngine Engine,
             Document Document,
