@@ -5259,6 +5259,16 @@ Verification:
   deterministic two-value snapshots; value lists, repeats, transforms, live
   invalidation, event timing, and DOM SMIL controls remain migration work.
 
+## 6.242 SMIL Value-List and Repeat Verification (2026-09-07)
+
+- Focused regressions sample a three-value linear animation within its second
+  key-time segment, hold the active item in a discrete color list, sample the
+  third repeated iteration, retain its frozen endpoint, and animate an element
+  selected by local `href`.
+- The complete SVG test namespace remains the regression boundary. Spline and
+  additive math, transform animation, event timing, live invalidation, and DOM
+  SMIL controls remain separately tracked migration work.
+
 ## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
 
 - Focused XML, navigation, engine, and CSSOM tests cover namespace-qualified SVG/XHTML elements, legal prolog/epilog whitespace, parameterized XML MIME types, HTTP and data SVG document routing, bounded SVG script discovery/execution, and SVG geometry declaration validation/serialization.

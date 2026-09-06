@@ -11758,6 +11758,19 @@ Verification:
   additive/accumulative composition, event timing, and repetitions remain
   explicit `smil-animation` fallbacks until their value math is implemented.
 
+## 2.176 SMIL Value Lists and Repeated Intervals (2026-09-07)
+
+- `<animate>` and `<animateColor>` snapshots now select bounded `values`
+  segments with optional ordered `keyTimes`, including discrete value changes
+  and linear interpolation between numeric or color values.
+- Finite and indefinite `repeatCount` values reuse the shared interval model.
+  Active snapshots sample the current simple iteration and frozen snapshots
+  retain the final value. Local `href` and `xlink:href` fragment targets resolve
+  through the parsed document ID map; external targets remain rejected.
+- Value lists are capped at 1,024 entries. Multi-value paced calculation,
+  spline calculation, additive/accumulative composition, and event timing remain
+  explicit compatibility fallbacks.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.

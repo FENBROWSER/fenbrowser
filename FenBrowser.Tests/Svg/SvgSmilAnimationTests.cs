@@ -118,6 +118,74 @@ namespace FenBrowser.Tests.Svg
                 warning => warning.Contains("animate", System.StringComparison.Ordinal));
         }
 
+        [Fact]
+        public void Animate_ValuesAndKeyTimesSelectCurrentSegment()
+        {
+            const string svg =
+                "<svg width='30' height='10'><rect width='5' height='10' fill='green'>" +
+                "<animate attributeName='x' values='0;20;10' keyTimes='0;.5;1' dur='4s'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, 3d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(17, 5));
+            Assert.Equal(0, result.Bitmap.GetPixel(2, 5).Alpha);
+        }
+
+        [Fact]
+        public void Animate_RepeatCountSamplesCurrentIterationAndFrozenEnd()
+        {
+            const string svg =
+                "<svg width='20' height='10'><rect width='4' height='10' fill='green'>" +
+                "<animate attributeName='x' from='0' to='10' dur='1s' " +
+                "repeatCount='3' fill='freeze'/>" +
+                "</rect></svg>";
+
+            using var repeated = RenderAt(svg, 2.5d);
+            using var frozen = RenderAt(svg, 4d);
+
+            Assert.True(repeated.Success, repeated.ErrorMessage);
+            Assert.True(frozen.Success, frozen.ErrorMessage);
+            Assert.False(repeated.RequiresFallback, string.Join("; ", repeated.Warnings));
+            Assert.False(frozen.RequiresFallback, string.Join("; ", frozen.Warnings));
+            Assert.Equal(SKColors.Green, repeated.Bitmap.GetPixel(6, 5));
+            Assert.Equal(SKColors.Green, frozen.Bitmap.GetPixel(11, 5));
+        }
+
+        [Fact]
+        public void Animate_DiscreteValuesHoldCurrentValue()
+        {
+            const string svg =
+                "<svg width='10' height='10'><rect width='10' height='10' fill='red'>" +
+                "<animate attributeName='fill' values='red;green;blue' " +
+                "calcMode='discrete' dur='3s'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, 1.5d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(5, 5));
+        }
+
+        [Fact]
+        public void Animate_LocalHrefTargetsReferencedElement()
+        {
+            const string svg =
+                "<svg width='20' height='10'><rect id='target' width='4' height='10' fill='green'/>" +
+                "<animate href='#target' attributeName='x' from='0' to='10' dur='2s'/>" +
+                "</svg>";
+
+            using var result = RenderAt(svg, 1d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(6, 5));
+            Assert.Equal(0, result.Bitmap.GetPixel(1, 5).Alpha);
+        }
+
         [Theory]
         [InlineData(double.NaN)]
         [InlineData(double.PositiveInfinity)]

@@ -32,15 +32,12 @@ namespace FenBrowser.FenEngine.Svg
 
         private void ApplyAnimateSnapshot(SvgElement animation)
         {
-            SvgElement target = animation.Parent;
+            SvgElement target = ResolveSmilTarget(animation);
             string attributeName = animation.GetAttribute("attributeName")?.Trim();
-            string from = animation.GetAttribute("from");
-            string to = animation.GetAttribute("to");
             string attributeType = animation.GetAttribute("attributeType")?.Trim();
             if (target == null || string.IsNullOrEmpty(attributeName) ||
-                !SettableSmilAttributes.Contains(attributeName) || from == null || to == null ||
-                animation.GetAttribute("values") != null || animation.GetAttribute("by") != null ||
-                animation.GetAttribute("keyTimes") != null ||
+                !SettableSmilAttributes.Contains(attributeName) ||
+                animation.GetAttribute("by") != null ||
                 animation.GetAttribute("keySplines") != null ||
                 !IsDefaultMotionAttribute(animation, "additive", "replace") ||
                 !IsDefaultMotionAttribute(animation, "accumulate", "none") ||
@@ -55,10 +52,9 @@ namespace FenBrowser.FenEngine.Svg
 
             string durationRaw = animation.GetAttribute("dur")?.Trim();
             if (string.IsNullOrEmpty(durationRaw) ||
-                !TryParseClockSeconds(durationRaw, out double duration) || duration <= 0d ||
-                animation.GetAttribute("repeatCount") != null)
+                !TryParseClockSeconds(durationRaw, out double duration) || duration <= 0d)
             {
-                RequireSmilFallback("animate duration or repetition");
+                RequireSmilFallback("animate duration");
                 return;
             }
             if (!TryResolveSetInterval(animation, out double begin, out double end,
@@ -70,9 +66,13 @@ namespace FenBrowser.FenEngine.Svg
             bool frozen = freeze && !indefiniteEnd && _documentTimeSeconds >= end;
             if (!active && !frozen) return;
 
-            float progress = frozen
-                ? 1f
-                : (float)Math.Clamp((_documentTimeSeconds - begin) / duration, 0d, 1d);
+            double elapsed = frozen ? Math.Max(0d, end - begin) : _documentTimeSeconds - begin;
+            double iterations = Math.Max(0d, elapsed / duration);
+            double completedIterations = Math.Floor(iterations);
+            double simpleProgress = iterations - completedIterations;
+            if (frozen && Math.Abs(simpleProgress) <= 1e-12 && iterations > 0d)
+                simpleProgress = 1d;
+            float progress = (float)Math.Clamp(simpleProgress, 0d, 1d);
             string calcMode = animation.GetAttribute("calcMode")?.Trim();
             if (string.IsNullOrEmpty(calcMode) ||
                 calcMode.Equals("linear", StringComparison.OrdinalIgnoreCase) ||
@@ -80,24 +80,103 @@ namespace FenBrowser.FenEngine.Svg
             {
                 // Linear interpolation below.
             }
-            else if (calcMode.Equals("discrete", StringComparison.OrdinalIgnoreCase))
-            {
-                progress = progress < 1f ? 0f : 1f;
-            }
+            else if (calcMode.Equals("discrete", StringComparison.OrdinalIgnoreCase)) { }
             else
             {
                 RequireSmilFallback("animate calculation mode");
                 return;
             }
 
-            if (!TryInterpolateSmilValue(attributeName, from, to, progress, out string value))
+            if (!TryResolveAnimationSample(animation, attributeName, calcMode, progress,
+                    out string value))
             {
-                RequireSmilFallback("animate value interpolation");
+                RequireSmilFallback("animate values");
                 return;
             }
             target.AnimatedProperties ??=
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             target.AnimatedProperties[attributeName] = value;
+        }
+
+        private SvgElement ResolveSmilTarget(SvgElement animation)
+        {
+            string href = animation.GetAttribute("href") ?? animation.GetLookup("xlink:href");
+            if (string.IsNullOrWhiteSpace(href)) return animation.Parent;
+            if (!SvgValues.TryParseLocalReference(href, out string id))
+            {
+                _report.RejectResource("SVG animation external target rejected");
+                return null;
+            }
+            return _doc.ElementsById.TryGetValue(id, out SvgElement target) ? target : null;
+        }
+
+        private static bool TryResolveAnimationSample(
+            SvgElement animation,
+            string attributeName,
+            string calcMode,
+            float progress,
+            out string value)
+        {
+            value = null;
+            string valuesRaw = animation.GetAttribute("values");
+            string[] values;
+            if (valuesRaw != null)
+            {
+                values = valuesRaw.Split(';', StringSplitOptions.TrimEntries);
+                if (values.Length == 0 || values.Length > 1024) return false;
+                for (int i = 0; i < values.Length; i++)
+                    if (values[i].Length == 0) return false;
+            }
+            else
+            {
+                string from = animation.GetAttribute("from");
+                string to = animation.GetAttribute("to");
+                if (from == null || to == null) return false;
+                values = new[] { from, to };
+            }
+
+            bool discrete = calcMode?.Equals("discrete", StringComparison.OrdinalIgnoreCase) == true;
+            bool paced = calcMode?.Equals("paced", StringComparison.OrdinalIgnoreCase) == true;
+            string keyTimesRaw = animation.GetAttribute("keyTimes")?.Trim();
+            float[] keyTimes = null;
+            if (!string.IsNullOrEmpty(keyTimesRaw) &&
+                (!TryParseSemicolonNumbers(keyTimesRaw, out keyTimes) ||
+                 keyTimes.Length != values.Length || keyTimes[0] != 0f ||
+                 !IsOrderedUnitInterval(keyTimes) || (!discrete && keyTimes[^1] != 1f)))
+                return false;
+            if (paced && values.Length > 2) return false;
+
+            if (discrete)
+            {
+                int selected = 0;
+                if (keyTimes == null)
+                    selected = Math.Min((int)MathF.Floor(progress * values.Length), values.Length - 1);
+                else
+                    for (int i = 1; i < keyTimes.Length && progress >= keyTimes[i]; i++) selected = i;
+                value = values[selected];
+                return true;
+            }
+
+            if (values.Length == 1)
+            {
+                value = values[0];
+                return true;
+            }
+
+            int segment = values.Length - 2;
+            float segmentProgress = 1f;
+            for (int i = 0; i < values.Length - 1; i++)
+            {
+                float start = keyTimes?[i] ?? (float)i / (values.Length - 1);
+                float finish = keyTimes?[i + 1] ?? (float)(i + 1) / (values.Length - 1);
+                if (progress > finish && i < values.Length - 2) continue;
+                if (finish <= start) return false;
+                segment = i;
+                segmentProgress = Math.Clamp((progress - start) / (finish - start), 0f, 1f);
+                break;
+            }
+            return TryInterpolateSmilValue(
+                attributeName, values[segment], values[segment + 1], segmentProgress, out value);
         }
 
         private static bool TryInterpolateSmilValue(
