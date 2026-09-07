@@ -63,6 +63,10 @@ public sealed class BytecodeCompiler
     // Per-function brand tokens for private field access validation.
     private List<long> _brandTokens = new();
 
+    // One entry per tagged-template site in the function being compiled; the
+    // GetTemplateObject opcode indexes into it.
+    private readonly List<TemplateSite> _templateSites = new();
+
     // Computed field names whose evaluation is deferred from the constructor
     // to class-definition time (ECMA-262 15.7.10 step 27). Each entry is
     // evaluated and stored via StoreFieldKey during class setup; the
@@ -330,6 +334,7 @@ public sealed class BytecodeCompiler
             NestedFunctions = _nestedFunctions.ToArray(),
             RegisterCount = NoteRegisterFile(Math.Max(2, _highWaterRegister)),
             BrandTokens = _brandTokens.ToArray(),
+            TemplateSites = _templateSites.ToArray(),
             PrologueEndIp = prologueEndIp,
         };
     }
@@ -5230,13 +5235,20 @@ public sealed class BytecodeCompiler
         }
     }
 
+    // ECMA-262 13.2.8.4 GetTemplateObject. The object is built once per source
+    // site and reused, so `tag`a${1}` === tag`a${2}`` inside the same function.
+    // Building it inline meant a fresh, unfrozen, never-equal array per
+    // evaluation - the shape the tagged-template cache tests reject.
     private int CompileTemplateObject(TemplateLiteralExpressionNode template)
     {
-        var cookedArrayReg = CompileTemplateStringArray(CookQuasis(template.Quasis));
-        var rawArrayReg = CompileTemplateStringArray(ComputeRawQuasis(template.Quasis));
-        var rawNameIndex = GetOrCreatePropertyName("raw");
-        _instructions.Add(new Instruction(OpCode.SetPropByName, cookedArrayReg, rawNameIndex, rawArrayReg));
-        return cookedArrayReg;
+        var siteIndex = _templateSites.Count;
+        _templateSites.Add(new TemplateSite(
+            CookQuasisForTag(template.Quasis),
+            ComputeRawQuasis(template.Quasis)));
+
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.GetTemplateObject, dest, siteIndex, 0));
+        return dest;
     }
 
     private int CompileTemplateStringArray(IReadOnlyList<string> parts)
@@ -5255,8 +5267,16 @@ public sealed class BytecodeCompiler
         return arrayReg;
     }
 
-    private static string CookTemplateQuasi(string raw)
+    private static string CookTemplateQuasi(string raw) => CookTemplateQuasi(raw, out _);
+
+    // `wellFormed` is false when the text contains an escape the spec rejects:
+    // a short or invalid \x or \u, an out-of-range \u{...}, or a legacy octal or
+    // non-octal decimal escape. Untagged templates never get here with one - the
+    // parser rejects those - but in a tagged template the cooked value is
+    // undefined and only `raw` survives.
+    private static string CookTemplateQuasi(string raw, out bool wellFormed)
     {
+        wellFormed = true;
         var sb = new StringBuilder(raw.Length);
         var i = 0;
         while (i < raw.Length)
@@ -5299,16 +5319,40 @@ public sealed class BytecodeCompiler
                     case '"': sb.Append('"'); break;
                     case '\\': sb.Append('\\'); break;
                     case '`': sb.Append('`'); break;
-                    case '0': sb.Append('\0'); break;
+                    case '0':
+                        // \0 is legal only when not followed by a decimal digit.
+                        if (i < raw.Length && raw[i] is >= '0' and <= '9') wellFormed = false;
+                        sb.Append('\0');
+                        break;
+                    case '1': case '2': case '3': case '4':
+                    case '5': case '6': case '7':
+                        // LegacyOctalEscapeSequence.
+                        wellFormed = false;
+                        sb.Append(escape);
+                        break;
+                    case '8': case '9':
+                        // NonOctalDecimalEscapeSequence.
+                        wellFormed = false;
+                        sb.Append(escape);
+                        break;
                     case 'x':
                     {
                         if (i + 1 < raw.Length)
                         {
                             var hexStr = raw.Substring(i, 2);
-                            if (int.TryParse(hexStr, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var code))
+                            if (IsHexDigits(hexStr) &&
+                                int.TryParse(hexStr, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var code))
                                 sb.Append((char)code);
+                            else
+                                wellFormed = false;
                             i += 2;
                         }
+                        else
+                        {
+                            wellFormed = false;
+                            i = raw.Length;
+                        }
+
                         break;
                     }
                     case 'u':
@@ -5318,20 +5362,32 @@ public sealed class BytecodeCompiler
                             i++;
                             var braceStart = i;
                             while (i < raw.Length && raw[i] != '}') i++;
+                            var closed = i < raw.Length;
                             var hexDigits = raw.Substring(braceStart, i - braceStart);
-                            if (hexDigits.Length > 0 &&
+                            if (closed && IsHexDigits(hexDigits) &&
                                 int.TryParse(hexDigits, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var cp) &&
                                 cp <= 0x10FFFF)
                                 sb.Append(char.ConvertFromUtf32(cp));
+                            else
+                                wellFormed = false;
                             i++;
                         }
                         else if (i + 3 < raw.Length)
                         {
                             var hexStr = raw.Substring(i, 4);
-                            if (int.TryParse(hexStr, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var code))
+                            if (IsHexDigits(hexStr) &&
+                                int.TryParse(hexStr, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var code))
                                 sb.Append((char)code);
+                            else
+                                wellFormed = false;
                             i += 4;
                         }
+                        else
+                        {
+                            wellFormed = false;
+                            i = raw.Length;
+                        }
+
                         break;
                     }
                     default:
@@ -5353,6 +5409,17 @@ public sealed class BytecodeCompiler
             i++;
         }
         return sb.ToString();
+    }
+
+    private static bool IsHexDigits(string text)
+    {
+        if (text.Length == 0) return false;
+        foreach (var c in text)
+        {
+            if (!Uri.IsHexDigit(c)) return false;
+        }
+
+        return true;
     }
 
     private static string ComputeTemplateRawQuasi(string raw)
@@ -5380,6 +5447,20 @@ public sealed class BytecodeCompiler
         var result = new List<string>(quasis.Count);
         foreach (var q in quasis)
             result.Add(CookTemplateQuasi(q));
+        return result;
+    }
+
+    // ECMA-262 12.9.6.1: in a TAGGED template an illegal escape sequence is not
+    // a SyntaxError - the cooked value is undefined and only `raw` survives.
+    private static List<string?> CookQuasisForTag(IReadOnlyList<string> quasis)
+    {
+        var result = new List<string?>(quasis.Count);
+        foreach (var q in quasis)
+        {
+            var cooked = CookTemplateQuasi(q, out var wellFormed);
+            result.Add(wellFormed ? cooked : null);
+        }
+
         return result;
     }
 

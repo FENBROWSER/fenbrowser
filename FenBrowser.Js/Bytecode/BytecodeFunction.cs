@@ -179,6 +179,12 @@ public sealed class BytecodeFunction
     // loaded in the constructor via LoadFieldKey instead of recomputing.
     public List<JsValue> ComputedFieldKeys { get; init; } = new();
 
+    // ECMA-262 13.2.8.4 GetTemplateObject: one entry per tagged-template site in
+    // this function. Cooked entries are null where the literal has an illegal
+    // escape sequence, which the spec renders as undefined. Immutable, so a
+    // cached template shares the list with its copies.
+    public IReadOnlyList<TemplateSite> TemplateSites { get; init; } = Array.Empty<TemplateSite>();
+
     // Runtime feedback. These fields are intentionally NOT part of the immutable
     // compiled template stored by BytecodeCache. Property ICs hold Shapes and call
     // ICs hold heap-local ObjectHandle values, so sharing them across interpreters
@@ -302,6 +308,7 @@ public sealed class BytecodeFunction
             IsDerivedConstructor = IsDerivedConstructor,
             IsClassConstructor = IsClassConstructor,
             ComputedFieldKeys = new List<JsValue>(ComputedFieldKeys),
+            TemplateSites = TemplateSites,
             BrandTokens = BrandTokens,
 
             // Explicitly document the execution-local reset rather than relying on
@@ -321,3 +328,10 @@ public sealed class BytecodeFunction
     private static bool IsHeapLocalValue(JsValue value) =>
         value.Tag is JsValueTag.Object or JsValueTag.HostObject;
 }
+
+/// <summary>
+/// The strings of one tagged-template site: the cooked values (null where an
+/// illegal escape sequence makes the cooked value undefined) and the raw ones.
+/// </summary>
+public sealed record TemplateSite(IReadOnlyList<string?> Cooked, IReadOnlyList<string> Raw);
+

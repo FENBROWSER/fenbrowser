@@ -1,4 +1,4 @@
-namespace FenBrowser.Js.Bytecode;
+﻿namespace FenBrowser.Js.Bytecode;
 
 public enum OpCode : byte
 {
@@ -318,4 +318,10 @@ public enum OpCode : byte
 		// property deleted by the initializer).
 		PreResolveVar,
 		StoreResolvedVar,
+
+		// ECMA-262 13.2.8.4 GetTemplateObject: the frozen template object for a
+		// tagged template. Cached per (function, site) so the same source site
+		// hands the tag the same object on every evaluation.
+		// A=dest reg, B=index into BytecodeFunction.TemplateSites.
+		GetTemplateObject,
 	}

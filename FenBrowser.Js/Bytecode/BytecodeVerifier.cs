@@ -1,4 +1,4 @@
-namespace FenBrowser.Js.Bytecode;
+﻿namespace FenBrowser.Js.Bytecode;
 
 public sealed class BytecodeVerifier
 {
@@ -144,6 +144,16 @@ public sealed class BytecodeVerifier
                 break;
             case OpCode.LoadFieldKey:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                break;
+            case OpCode.GetTemplateObject:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                if (ins.B < 0 || ins.B >= function.TemplateSites.Count)
+                {
+                    throw new InvalidOperationException(
+                        $"GetTemplateObject at ip {ip} references template site {ins.B}, " +
+                        $"but the function declares {function.TemplateSites.Count}.");
+                }
+
                 break;
             case OpCode.Add:
             case OpCode.Sub:

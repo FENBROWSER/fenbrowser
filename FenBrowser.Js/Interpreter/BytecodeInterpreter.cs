@@ -329,6 +329,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
         }
 
+        foreach (var templateObject in _templateObjects.Values)
+        {
+            tracer.TraceRoot("interp.templateObject", templateObject);
+        }
+
         _jobQueue.Trace(tracer);
         TraceRootValue(tracer, _pendingNewTarget, "interp.pendingNewTarget");
         TraceRootValue(tracer, _tailCallee, "interp.tailCallee");
@@ -2305,6 +2310,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     var rawText = function.Constants[ins.B].AsString();
                     registers[ins.A] = NewRegExpLiteral(rawText);
+                    break;
+                }
+                case OpCode.GetTemplateObject:
+                {
+                    registers[ins.A] = GetTemplateObject(function, ins.B);
                     break;
                 }
                 case OpCode.DefineGetter:
@@ -16308,6 +16318,65 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _arrayPrototypeHandle = prototypeHandle;
         _arrayConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    // ECMA-262 13.2.8.4 GetTemplateObject: the realm's template registry, keyed
+    // by the source site. Reference equality on the BytecodeFunction is what
+    // makes "the same Parse Node" work: every closure over an inner function
+    // shares its compiled body, while each eval compiles a new one.
+    private readonly Dictionary<(BytecodeFunction Function, int Site), ObjectHandle> _templateObjects = new();
+
+    private JsValue GetTemplateObject(BytecodeFunction function, int siteIndex)
+    {
+        if (_templateObjects.TryGetValue((function, siteIndex), out var cached))
+        {
+            return JsValue.FromObject(cached);
+        }
+
+        var site = function.TemplateSites[siteIndex];
+
+        var rawArray = CreateArrayObject(Array.Empty<JsValue>());
+        var rawHandle = _heap.AllocateObject(rawArray, AllocationSite.Current());
+        var templateArray = CreateArrayObject(Array.Empty<JsValue>());
+        var templateHandle = _heap.AllocateObject(templateArray, AllocationSite.Current());
+
+        // Pin both while the other one allocates: the only edge to them so far
+        // is a C# local.
+        var rootMark = _heap.RootCount;
+        _heap.PushRoot(rawHandle);
+        _heap.PushRoot(templateHandle);
+        try
+        {
+            for (var i = 0; i < site.Raw.Count; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var cookedValue = site.Cooked[i] is { } cooked
+                    ? JsValue.FromString(cooked)
+                    : JsValue.Undefined;
+                templateArray.DefineOwnProperty(key,
+                    new JsPropertyDescriptor(cookedValue, Writable: false, Enumerable: true, Configurable: false));
+                rawArray.DefineOwnProperty(key,
+                    new JsPropertyDescriptor(JsValue.FromString(site.Raw[i]), Writable: false, Enumerable: true, Configurable: false));
+            }
+
+            rawArray.DefineOwnProperty("length",
+                new JsPropertyDescriptor(JsValue.FromNumberCompact(site.Raw.Count), Writable: false, Enumerable: false, Configurable: false));
+            rawArray.PreventExtensions();
+
+            templateArray.DefineOwnProperty("raw",
+                new JsPropertyDescriptor(JsValue.FromObject(rawHandle), Writable: false, Enumerable: false, Configurable: false));
+            _heap.WriteBarrier(templateHandle, rawHandle);
+            templateArray.DefineOwnProperty("length",
+                new JsPropertyDescriptor(JsValue.FromNumberCompact(site.Cooked.Count), Writable: false, Enumerable: false, Configurable: false));
+            templateArray.PreventExtensions();
+        }
+        finally
+        {
+            _heap.PopRootsTo(rootMark);
+        }
+
+        _templateObjects[(function, siteIndex)] = templateHandle;
+        return JsValue.FromObject(templateHandle);
     }
 
     private JsObject CreateArrayObject(IReadOnlyList<JsValue> elements)
