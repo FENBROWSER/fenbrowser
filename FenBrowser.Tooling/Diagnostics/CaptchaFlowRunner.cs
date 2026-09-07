@@ -513,6 +513,11 @@ internal static class CaptchaFlowRunner
             Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.TimingReport());
         }
 
+        if (string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_REPORT"), "1", StringComparison.Ordinal))
+        {
+            Console.Write(FenBrowser.Js.Bytecode.JitCompiler.Report());
+        }
+
         Console.WriteLine(solved ? "[captcha] RESULT solved" : "[captcha] RESULT unsolved");
         return solved ? 0 : 1;
     }

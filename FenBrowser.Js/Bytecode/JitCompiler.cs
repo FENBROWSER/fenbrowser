@@ -39,11 +39,31 @@ public static class JitCompiler
     //
     // FEN_JIT_TIERUP overrides it, so the trade can be measured against a real
     // page rather than argued about.
-    // Default raised to 100 to avoid over-compilation on complex pages like reCAPTCHA.
+    //
+    // Measured on google.com/recaptcha/api2/demo, one run per threshold:
+    //
+    //   threshold  compiled  compileMs  queueWait  neverCalled  postCompileCalls
+    //         100       329      12356     276.7s     74 (22%)         2,366,847
+    //        1000       116       5067      25.3s      5 (4.3%)        2,328,620
+    //        5000        82       3792       4.8s      1 (1.2%)        1,970,622
+    //
+    // 1000 keeps 98.4% of the calls that ever reach compiled code for 41% of
+    // the compile cost, and cuts the aggregate queue wait by 91% - which is
+    // what a genuinely hot function actually feels, because at 100 it waited
+    // behind a queue of functions that would be called a handful of times or,
+    // for 74 of them, never again.
+    //
+    // The floor is this low only because compiled code is barely faster than
+    // the interpreter. Measured on a 40-op function called 100k times:
+    // interpreter 1207ms, compiled 1176ms - a 10% gain on execution against a
+    // 90ms compile, which puts true break-even near 79,000 calls. Raising the
+    // threshold that far would compile almost nothing; the real fix is better
+    // codegen, and until then this is the knee of the curve rather than the
+    // point where compilation pays for itself.
     public static readonly int TierUpThreshold =
         int.TryParse(Environment.GetEnvironmentVariable("FEN_JIT_TIERUP"), out var configured) && configured > 0
             ? configured
-            : 100;
+            : 1000;
 
     /// <summary>
     /// Set FEN_JIT_DISABLE=1 to keep everything on the dispatch loop. Having a
@@ -97,6 +117,40 @@ public static class JitCompiler
     // could not tell a JIT that paid for itself from one that did not.
     public static long CompileTicks;
 
+    // CompileTicks is the total; these split it, because the halves have very
+    // different fixes. Building the tree is our code and can be made cheaper or
+    // skipped; LambdaCompiler is not ours and can only be avoided or deferred;
+    // PrepareDelegate is the CLR turning the emitted IL into machine code, which
+    // is pure overhead for a function that is never called again.
+    public static long TreeBuildTicks;
+    public static long LambdaCompileTicks;
+    public static long PrepareTicks;
+
+    // How long a request sat in the queue before the compiler reached it. A
+    // delegate that arrives after the page has stopped calling the function is
+    // worth nothing no matter how fast it was to produce, and only this says
+    // whether that is happening.
+    public static long QueueWaitTicks;
+    public static long QueuedRequests;
+
+    public static double TreeBuildMilliseconds =>
+        TreeBuildTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+    public static double LambdaCompileMilliseconds =>
+        LambdaCompileTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+    public static double PrepareMilliseconds =>
+        PrepareTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+    public static double QueueWaitMilliseconds =>
+        QueueWaitTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+    // Set FEN_JIT_INTERPRET=1 to ask LambdaCompiler for an interpreted
+    // delegate instead of emitted IL. It compiles far faster and runs far
+    // slower, which is the whole question a tiering policy has to answer.
+    public static readonly bool PreferInterpretation =
+        string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_INTERPRET"), "1", StringComparison.Ordinal);
+
     public static double CompileMilliseconds =>
         CompileTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
@@ -134,6 +188,7 @@ public static class JitCompiler
         EnsureCompilerThread();
         try
         {
+            function.CompileRequestedTicks = System.Diagnostics.Stopwatch.GetTimestamp();
             PendingCompiles.Add(function);
         }
         catch (InvalidOperationException)
@@ -168,6 +223,14 @@ public static class JitCompiler
         {
             try
             {
+                if (function.CompileRequestedTicks != 0)
+                {
+                    Interlocked.Add(
+                        ref QueueWaitTicks,
+                        System.Diagnostics.Stopwatch.GetTimestamp() - function.CompileRequestedTicks);
+                    Interlocked.Increment(ref QueuedRequests);
+                }
+
                 Publish(function, TryCompile(function));
             }
             catch (Exception)
@@ -193,16 +256,89 @@ public static class JitCompiler
         }
     }
 
+    // Every function that reached the compiler, with what it cost and how many
+    // times it was called afterwards. Compilation only pays if the delegate is
+    // used, and a total compile time cannot say whether it was: a run that
+    // compiles 300 functions and then calls each twice is pure loss no matter
+    // how quick each compile was.
+    private static readonly object CompiledLogGate = new();
+    private static readonly List<(string Name, double Ms, int InvocationsAtCompile, BytecodeFunction Function)> CompiledLog = new();
+
+    private static void NoteCompiled(BytecodeFunction function, double milliseconds)
+    {
+        lock (CompiledLogGate)
+        {
+            CompiledLog.Add((function.Name is { Length: > 0 } n ? n : "<anon>", milliseconds, function.Invocations, function));
+        }
+    }
+
+    public static string Report()
+    {
+        var frequency = (double)System.Diagnostics.Stopwatch.Frequency;
+        var text = new System.Text.StringBuilder();
+        text.Append("[FenJsJit] attempts=").Append(Interlocked.Read(ref CompileAttempts))
+            .Append(" compiled=").Append(Interlocked.Read(ref CompileSuccesses))
+            .Append(" mode=").Append(PreferInterpretation ? "interpreted-lambda" : "emitted-il")
+            .AppendLine();
+        text.Append("[FenJsJit] total=").Append(CompileMilliseconds.ToString("F1"))
+            .Append("ms  treeBuild=").Append(TreeBuildMilliseconds.ToString("F1"))
+            .Append("ms  lambdaCompile=").Append(LambdaCompileMilliseconds.ToString("F1"))
+            .Append("ms  prepareDelegate=").Append(PrepareMilliseconds.ToString("F1"))
+            .Append("ms  queueWait=").Append(QueueWaitMilliseconds.ToString("F1"))
+            .Append("ms over ").Append(Interlocked.Read(ref QueuedRequests)).AppendLine(" requests");
+
+        (string Name, double Ms, int InvocationsAtCompile, BytecodeFunction Function)[] log;
+        lock (CompiledLogGate) log = CompiledLog.ToArray();
+        if (log.Length == 0) return text.ToString();
+
+        // Calls made after the delegate existed are the only ones it could have
+        // sped up; everything before was interpreted regardless.
+        var wasted = 0;
+        long usedAfter = 0;
+        foreach (var entry in log)
+        {
+            var after = entry.Function.Invocations - entry.InvocationsAtCompile;
+            usedAfter += after;
+            if (after == 0) wasted++;
+        }
+
+        text.Append("[FenJsJit] neverCalledAfterCompile=").Append(wasted).Append('/').Append(log.Length)
+            .Append("  postCompileInvocations=").Append(usedAfter)
+            .Append("  msPerCompile=").Append((CompileMilliseconds / log.Length).ToString("F1"))
+            .AppendLine();
+
+        Array.Sort(log, static (a, b) => b.Ms.CompareTo(a.Ms));
+        text.AppendLine("[FenJsJit] costliest compiles (ms, calls after compile, body ops)");
+        for (var i = 0; i < log.Length && i < 8; i++)
+        {
+            var entry = log[i];
+            text.Append("    ").Append(entry.Name.Length > 30 ? entry.Name.Substring(0, 30) : entry.Name.PadRight(30))
+                .Append(entry.Ms.ToString("F1").PadLeft(8))
+                .Append((entry.Function.Invocations - entry.InvocationsAtCompile).ToString().PadLeft(12))
+                .Append(entry.Function.InstructionArray.Length.ToString().PadLeft(10))
+                .AppendLine();
+        }
+
+        return text.ToString();
+    }
+
     public static JitDelegate? TryCompile(BytecodeFunction function)
     {
         var compileStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        JitDelegate? result = null;
         try
         {
-            return TryCompileCore(function);
+            result = TryCompileCore(function);
+            return result;
         }
         finally
         {
-            Interlocked.Add(ref CompileTicks, System.Diagnostics.Stopwatch.GetTimestamp() - compileStart);
+            var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - compileStart;
+            Interlocked.Add(ref CompileTicks, elapsed);
+            if (result is not null)
+            {
+                NoteCompiled(function, elapsed * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+            }
         }
     }
 
@@ -229,7 +365,15 @@ public static class JitCompiler
         // with each opcode bound at JIT-compile time. Bails to null if
         // any opcode in the function lacks an emitter — the interpreter
         // takes over.
+        var emitStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        var lambdaBefore = Interlocked.Read(ref LambdaCompileTicks);
+        var prepareBefore = Interlocked.Read(ref PrepareTicks);
         var emitted = TryEmitExpressionTree(function);
+        Interlocked.Add(
+            ref TreeBuildTicks,
+            System.Diagnostics.Stopwatch.GetTimestamp() - emitStart
+                - (Interlocked.Read(ref LambdaCompileTicks) - lambdaBefore)
+                - (Interlocked.Read(ref PrepareTicks) - prepareBefore));
         if (emitted is not null)
         {
             Interlocked.Increment(ref CompileSuccesses);
@@ -754,7 +898,9 @@ public static class JitCompiler
         var lambda = Expression.Lambda<JitDelegate>(full, interpParam, frameParam, startIpParam);
         try
         {
-            var compiled = lambda.Compile();
+            var lambdaStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            var compiled = PreferInterpretation ? lambda.Compile(preferInterpretation: true) : lambda.Compile();
+            Interlocked.Add(ref LambdaCompileTicks, System.Diagnostics.Stopwatch.GetTimestamp() - lambdaStart);
             // Compile() hands back a delegate over a DynamicMethod whose IL the
             // CLR has not turned into machine code yet; it does that on the
             // first invocation. That invocation is on the thread running the
@@ -762,7 +908,15 @@ public static class JitCompiler
             // JIT of what it produced is not - and on a bundle this size that is
             // the larger of the two (dotnet.jit.compilation.time measured 16s
             // over one reCAPTCHA run). Force it here, where we already are.
-            PrepareForFirstCall(compiled);
+            // An interpreted delegate has no IL to pre-JIT, so preparing it
+            // would cost time and produce nothing.
+            if (!PreferInterpretation)
+            {
+                var prepareStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                PrepareForFirstCall(compiled);
+                Interlocked.Add(ref PrepareTicks, System.Diagnostics.Stopwatch.GetTimestamp() - prepareStart);
+            }
+
             function.OsrEntryPoints = loopHeaders.Count > 0 ? loopHeaders : null;
             return compiled;
         }

@@ -92,6 +92,10 @@ public sealed class BytecodeFunction
 
     public FunctionKind Kind { get; init; } = FunctionKind.Ordinary;
 
+    // When compilation was asked for, so the compiler can report how long the
+    // request waited behind others before it was served.
+    internal long CompileRequestedTicks;
+
     // Whether this function's environment record provably dies with its call,
     // so the interpreter may reuse its slot storage instead of allocating a
     // fresh Binding[] per call.

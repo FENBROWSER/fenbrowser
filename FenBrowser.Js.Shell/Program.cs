@@ -274,6 +274,11 @@ static int ExecuteSource(
         if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled)
         {
             Console.Error.Write(FenBrowser.Js.Diagnostics.CallPathProfiler.Report());
+        }
+
+        if (string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_REPORT"), "1", StringComparison.Ordinal))
+        {
+            Console.Error.Write(FenBrowser.Js.Bytecode.JitCompiler.Report());
             // Bytes the CLR actually handed out, as opposed to slots an engine
             // counter says were requested: a pooled allocation costs nothing
             // here, and only this number tells the two apart.
