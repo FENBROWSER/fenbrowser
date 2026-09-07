@@ -3006,7 +3006,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var keyValueDel = registers[ins.C];
                     if (keyValueDel.Tag == JsValueTag.Symbol)
                     {
-                        var deletedSymbol = obj.DeleteSymbolProperty(keyValueDel.AsSymbolId());
+                        var deletedSymbol = obj is ProxyObject deleteSymbolProxy
+                            ? ProxyDelete(deleteSymbolProxy, keyValueDel)
+                            : obj.DeleteSymbolProperty(keyValueDel.AsSymbolId());
                         if (!deletedSymbol && function.IsStrictMode)
                         {
                             ThrowOrHandle(frame, CreateTypeError("Cannot delete symbol-keyed property."));
@@ -3595,16 +3597,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     else
                     {
-                        var obj = ResolveObject(rhs);
-                        var keyValue = registers[ins.B];
-                        if (keyValue.Tag == JsValueTag.Symbol)
+                        // A Proxy has-trap can throw, both for its own invariant
+                        // violations and from user code; without this the throw
+                        // escaped the interpreter uncaught, past any enclosing
+                        // JS try/catch.
+                        try
                         {
-                            has = HasSymbolProperty(obj, keyValue.AsSymbolId());
+                            var obj = ResolveObject(rhs);
+                            var keyValue = registers[ins.B];
+                            has = keyValue.Tag == JsValueTag.Symbol
+                                ? HasSymbolProperty(obj, keyValue.AsSymbolId())
+                                : HasPropertyIncludingProxy(obj, ToPropertyKey(keyValue));
                         }
-                        else
+                        catch (JsThrownException ex)
                         {
-                            var key = ToPropertyKey(keyValue);
-                            has = HasPropertyIncludingProxy(obj, key);
+                            ThrowOrHandle(frame, ex.Value);
+                            break;
                         }
                     }
                     registers[ins.A] = JsValue.FromBoolean(has);
@@ -5866,7 +5874,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
             if (keyArg.Tag == JsValueTag.Symbol)
             {
-                return JsValue.FromBoolean(obj.TryGetSymbolProperty(keyArg.AsSymbolId(), ResolvePrototypeDelegate, out JsPropertyDescriptor _));
+                return JsValue.FromBoolean(obj is ProxyObject hasSymbolProxy
+                    ? ProxyHas(hasSymbolProxy, keyArg)
+                    : obj.TryGetSymbolProperty(keyArg.AsSymbolId(), ResolvePrototypeDelegate, out JsPropertyDescriptor _));
             }
             var key = ToPropertyKey(keyArg);
             // ECMA-262 28.1.9 Reflect.has → target.[[HasProperty]]: a Proxy must run
@@ -5910,7 +5920,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var receiver = args.Count > 3 ? args[3] : args[0];
             if (keyArg.Tag == JsValueTag.Symbol)
             {
-                return JsValue.FromBoolean(SetSymbolPropertyValue(targetHandle, obj, keyArg.AsSymbolId(), value, receiver));
+                return JsValue.FromBoolean(obj is ProxyObject reflectSetSymbolProxy
+                    ? ProxySet(reflectSetSymbolProxy, receiver, keyArg, value)
+                    : SetSymbolPropertyValue(targetHandle, obj, keyArg.AsSymbolId(), value, receiver));
             }
             var key = ToPropertyKey(keyArg);
             if (obj is ProxyObject reflectProxy)
@@ -5928,7 +5940,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
             if (keyArg.Tag == JsValueTag.Symbol)
             {
-                return JsValue.FromBoolean(obj.DeleteSymbolProperty(keyArg.AsSymbolId()));
+                return JsValue.FromBoolean(obj is ProxyObject reflectDeleteSymbolProxy
+                    ? ProxyDelete(reflectDeleteSymbolProxy, keyArg)
+                    : obj.DeleteSymbolProperty(keyArg.AsSymbolId()));
             }
             var key = ToPropertyKey(keyArg);
             // ECMA-262 28.1.4 Reflect.deleteProperty → target.[[Delete]]: a Proxy must
@@ -9775,16 +9789,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return targetObj.Extensible;
     }
 
-    private bool TryGetOwnPropertyDescriptorForTarget(ObjectHandle targetHandle, string prop, out JsPropertyDescriptor descriptor)
+    // Proxy internal methods take the property key as a JsValue (a String or a
+    // Symbol), because the spec's [[Get]]/[[Set]]/[[Has]]/[[Delete]]/
+    // [[GetOwnProperty]]/[[DefineOwnProperty]] make no distinction between the
+    // two. They used to take a `string`, so every symbol-keyed operation went
+    // around the handler entirely: `p[sym] = 1` never reached the set trap, and
+    // the get trap that did run skipped its invariant checks (audit JSRT-010).
+    // These helpers are the only places that still have to know which it is.
+    private static bool IsSymbolKey(JsValue key) => key.Tag == JsValueTag.Symbol;
+
+    private static bool TargetTryGetOwnProperty(JsObject obj, JsValue key, out JsPropertyDescriptor descriptor)
+        => IsSymbolKey(key)
+            ? obj.TryGetOwnSymbolProperty(key.AsSymbolId(), out descriptor)
+            : obj.TryGetOwnProperty(key.AsString(), out descriptor);
+
+    private bool TryGetOwnPropertyDescriptorForTarget(ObjectHandle targetHandle, JsValue key, out JsPropertyDescriptor descriptor)
     {
         var targetObj = _heap.GetObject(targetHandle);
         if (targetObj is ProxyObject nestedProxy)
         {
-            return ProxyTryGetOwnPropertyDescriptor(nestedProxy, prop, out descriptor);
+            return ProxyTryGetOwnPropertyDescriptor(nestedProxy, key, out descriptor);
         }
 
-        return targetObj.TryGetOwnProperty(prop, out descriptor);
+        return TargetTryGetOwnProperty(targetObj, key, out descriptor);
     }
+
+    private bool TryGetOwnPropertyDescriptorForTarget(ObjectHandle targetHandle, string prop, out JsPropertyDescriptor descriptor)
+        => TryGetOwnPropertyDescriptorForTarget(targetHandle, JsValue.FromString(prop), out descriptor);
 
     private bool DescriptorCompatibleWithTarget(bool targetExtensible, bool hasTargetDesc, JsPropertyDescriptor targetDesc, JsPropertyDescriptor resultDesc)
     {
@@ -9896,6 +9927,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     [MayExecuteJs]
     private JsValue ProxyGet(ProxyObject proxy, JsValue receiver, string prop)
+        => ProxyGet(proxy, receiver, JsValue.FromString(prop));
+
+    [MayExecuteJs]
+    private JsValue ProxyGet(ProxyObject proxy, JsValue receiver, JsValue key)
     {
         if (++_proxyGetDepth > MaxInternalRecursionDepth)
         {
@@ -9909,10 +9944,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (trap is not null)
             {
                 var target = JsValue.FromObject(proxy.TargetHandle);
-                var propVal = JsValue.FromString(prop);
+                var propVal = key;
                 var trapResult = CallFunction(trap.Value, new[] { target, propVal, receiver },
                     JsValue.FromObject(proxy.HandlerHandle!.Value));
-                if (TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc) &&
+                if (TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, key, out var targetDesc) &&
                     !targetDesc.Configurable)
                 {
                     if (!targetDesc.IsAccessor && !targetDesc.Writable &&
@@ -9935,9 +9970,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var targetObj = _heap.GetObject(proxy.TargetHandle);
             if (targetObj is ProxyObject nestedProxy)
             {
-                return ProxyGet(nestedProxy, receiver, prop);
+                return ProxyGet(nestedProxy, receiver, key);
             }
-            return TryGetPropertyValue(targetObj, receiver, prop, out var value)
+
+            if (IsSymbolKey(key))
+            {
+                return targetObj.TryGetSymbolProperty(key.AsSymbolId(), ResolvePrototypeDelegate, out var symbolDesc)
+                    ? GetDescriptorValue(symbolDesc, receiver)
+                    : JsValue.Undefined;
+            }
+
+            return TryGetPropertyValue(targetObj, receiver, key.AsString(), out var value)
                 ? value : JsValue.Undefined;
         }
         finally
@@ -9946,37 +9989,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
     }
 
-    [MayExecuteJs]
     private JsValue ProxyGetSymbol(ProxyObject proxy, JsValue receiver, long symbolId)
-    {
-        var trap = TryGetProxyTrap(proxy, "get");
-        if (trap is not null)
-        {
-            var target = JsValue.FromObject(proxy.TargetHandle);
-            var propVal = ResolveSymbol(symbolId);
-            return CallFunction(trap.Value, new[] { target, propVal, receiver },
-                JsValue.FromObject(proxy.HandlerHandle!.Value));
-        }
-
-        var targetObj = _heap.GetObject(proxy.TargetHandle);
-        if (targetObj is ProxyObject nestedProxy)
-        {
-            return ProxyGetSymbol(nestedProxy, receiver, symbolId);
-        }
-
-        return targetObj.TryGetSymbolProperty(symbolId, ResolvePrototypeDelegate, out var desc)
-            ? GetDescriptorValue(desc, receiver)
-            : JsValue.Undefined;
-    }
+        => ProxyGet(proxy, receiver, ResolveSymbol(symbolId));
 
     [MayExecuteJs]
     private bool ProxySet(ProxyObject proxy, JsValue receiver, string prop, JsValue value)
+        => ProxySet(proxy, receiver, JsValue.FromString(prop), value);
+
+    [MayExecuteJs]
+    private bool ProxySet(ProxyObject proxy, JsValue receiver, JsValue key, JsValue value)
     {
         var trap = TryGetProxyTrap(proxy, "set");
         if (trap is not null)
         {
             var target = JsValue.FromObject(proxy.TargetHandle);
-            var propVal = JsValue.FromString(prop);
+            var propVal = key;
             var result = CallFunction(trap.Value,
                 new[] { target, propVal, value, receiver },
                 JsValue.FromObject(proxy.HandlerHandle!.Value));
@@ -9988,7 +10015,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // ECMA-262 10.5.9 [[Set]] invariant: a successful trap cannot contradict a
             // non-configurable own property on the target — a non-writable data property
             // must keep its value, and an accessor with no setter cannot be written.
-            if (TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc) &&
+            if (TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, key, out var targetDesc) &&
                 !targetDesc.Configurable)
             {
                 if (!targetDesc.IsAccessor && !targetDesc.Writable && !SameValue(value, targetDesc.Value))
@@ -10009,27 +10036,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var targetObj = _heap.GetObject(proxy.TargetHandle);
         if (targetObj is ProxyObject nestedProxy)
         {
-            return ProxySet(nestedProxy, receiver, prop, value);
+            return ProxySet(nestedProxy, receiver, key, value);
         }
         // ECMA-262 10.5.9 Proxy [[Set]] step 7: no trap → target.[[Set]](P, V, Receiver).
         // The ordinary [[Set]] algorithm uses `receiver` when creating a new property
         // (step 5.f), so the proxy's defineProperty trap fires if applicable.
-        return SetPropertyValue(proxy.TargetHandle, targetObj, prop, value, receiver);
+        return IsSymbolKey(key)
+            ? SetSymbolPropertyValue(proxy.TargetHandle, targetObj, key.AsSymbolId(), value, receiver)
+            : SetPropertyValue(proxy.TargetHandle, targetObj, key.AsString(), value, receiver);
     }
 
     [MayExecuteJs]
     private bool ProxyHas(ProxyObject proxy, string prop)
+        => ProxyHas(proxy, JsValue.FromString(prop));
+
+    [MayExecuteJs]
+    private bool ProxyHas(ProxyObject proxy, JsValue key)
     {
         var trap = TryGetProxyTrap(proxy, "has");
         if (trap is not null)
         {
             var target = JsValue.FromObject(proxy.TargetHandle);
-            var propVal = JsValue.FromString(prop);
-            var result = CallFunction(trap.Value, new[] { target, propVal },
+            var result = CallFunction(trap.Value, new[] { target, key },
                 JsValue.FromObject(proxy.HandlerHandle!.Value));
             var trapResult = ValueToBooleanProxy(result);
             if (!trapResult &&
-                TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc) &&
+                TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, key, out var targetDesc) &&
                 (!targetDesc.Configurable || !IsTargetExtensible(proxy.TargetHandle)))
             {
                 throw new JsThrownException(CreateTypeError(
@@ -10041,36 +10073,45 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var targetObj = _heap.GetObject(proxy.TargetHandle);
         if (targetObj is ProxyObject nestedProxy)
         {
-            return ProxyHas(nestedProxy, prop);
+            return ProxyHas(nestedProxy, key);
         }
-        return targetObj.TryGetProperty(prop, ResolvePrototypeDelegate, out _);
+
+        return IsSymbolKey(key)
+            ? targetObj.TryGetSymbolProperty(key.AsSymbolId(), ResolvePrototypeDelegate, out _)
+            : targetObj.TryGetProperty(key.AsString(), ResolvePrototypeDelegate, out _);
     }
 
     [MayExecuteJs]
     private bool ProxyDelete(ProxyObject proxy, string prop)
+        => ProxyDelete(proxy, JsValue.FromString(prop));
+
+    [MayExecuteJs]
+    private bool ProxyDelete(ProxyObject proxy, JsValue key)
     {
         var trap = TryGetProxyTrap(proxy, "deleteProperty");
         if (trap is not null)
         {
             var target = JsValue.FromObject(proxy.TargetHandle);
-            var propVal = JsValue.FromString(prop);
-            var result = CallFunction(trap.Value, new[] { target, propVal },
+            var result = CallFunction(trap.Value, new[] { target, key },
                 JsValue.FromObject(proxy.HandlerHandle!.Value));
             var trapResult = ValueToBooleanProxy(result);
-            if (trapResult &&
-                TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc) &&
-                !targetDesc.Configurable)
+            if (trapResult)
             {
-                throw new JsThrownException(CreateTypeError(
-                    "Proxy deleteProperty trap cannot report deletion of a non-configurable own property."));
-            }
+                // ECMA-262 10.5.10 step 12: target.[[GetOwnProperty]] runs ONCE.
+                // Asking twice fired a nested proxy's getOwnPropertyDescriptor
+                // trap twice for one delete (audit JSRT-009).
+                var hasTargetDesc = TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, key, out var targetDesc);
+                if (hasTargetDesc && !targetDesc.Configurable)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy deleteProperty trap cannot report deletion of a non-configurable own property."));
+                }
 
-            if (trapResult &&
-                TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out _) &&
-                !IsTargetExtensible(proxy.TargetHandle))
-            {
-                throw new JsThrownException(CreateTypeError(
-                    "Proxy deleteProperty trap cannot report deletion of an existing property on a non-extensible target."));
+                if (hasTargetDesc && !IsTargetExtensible(proxy.TargetHandle))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy deleteProperty trap cannot report deletion of an existing property on a non-extensible target."));
+                }
             }
 
             return trapResult;
@@ -10078,8 +10119,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var targetObj = _heap.GetObject(proxy.TargetHandle);
         if (targetObj is ProxyObject nestedProxy)
         {
-            return ProxyDelete(nestedProxy, prop);
+            return ProxyDelete(nestedProxy, key);
         }
+
+        if (IsSymbolKey(key))
+        {
+            return !targetObj.TryGetOwnSymbolProperty(key.AsSymbolId(), out _) ||
+                   targetObj.DeleteSymbolProperty(key.AsSymbolId());
+        }
+
+        var prop = key.AsString();
         if (targetObj.TryGetOwnProperty(prop, out _))
         {
             return targetObj.DeleteProperty(prop);
@@ -10397,14 +10446,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     [MayExecuteJs]
     private bool ProxyTryGetOwnPropertyDescriptor(ProxyObject proxy, string prop, out JsPropertyDescriptor descriptor)
+        => ProxyTryGetOwnPropertyDescriptor(proxy, JsValue.FromString(prop), out descriptor);
+
+    [MayExecuteJs]
+    private bool ProxyTryGetOwnPropertyDescriptor(ProxyObject proxy, JsValue key, out JsPropertyDescriptor descriptor)
     {
         var trap = TryGetProxyTrap(proxy, "getOwnPropertyDescriptor");
         if (trap is not null)
         {
             var target = JsValue.FromObject(proxy.TargetHandle);
-            var key = JsValue.FromString(prop);
             var result = CallFunction(trap.Value, new[] { target, key }, JsValue.FromObject(proxy.HandlerHandle!.Value));
-            var targetHasDesc = TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc);
+            var targetHasDesc = TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, key, out var targetDesc);
             var targetExtensible = IsTargetExtensible(proxy.TargetHandle);
             if (result.Tag == JsValueTag.Undefined)
             {
@@ -10437,13 +10489,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var targetObj = _heap.GetObject(proxy.TargetHandle);
         if (targetObj is ProxyObject nestedProxy)
         {
-            return ProxyTryGetOwnPropertyDescriptor(nestedProxy, prop, out descriptor);
+            return ProxyTryGetOwnPropertyDescriptor(nestedProxy, key, out descriptor);
         }
-        return targetObj.TryGetOwnProperty(prop, out descriptor);
+        return TargetTryGetOwnProperty(targetObj, key, out descriptor);
     }
 
     [MayExecuteJs]
     private bool ProxyDefineProperty(ProxyObject proxy, string prop, JsValue descriptorValue)
+        => ProxyDefineProperty(proxy, JsValue.FromString(prop), descriptorValue);
+
+    [MayExecuteJs]
+    private bool ProxyDefineProperty(ProxyObject proxy, JsValue key, JsValue descriptorValue)
     {
         var trap = TryGetProxyTrap(proxy, "defineProperty");
         if (trap is not null)
@@ -10453,7 +10509,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // in the current realm with %ObjectPrototype% as its [[Prototype]].
             var descObj = FromPropertyDescriptorObject(descriptorValue);
             var target = JsValue.FromObject(proxy.TargetHandle);
-            var key = JsValue.FromString(prop);
             var result = CallFunction(trap.Value, new[] { target, key, descObj }, JsValue.FromObject(proxy.HandlerHandle!.Value));
             var trapResult = ValueToBooleanProxy(result);
             if (!trapResult)
@@ -10462,13 +10517,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             if (!IsTargetExtensible(proxy.TargetHandle) &&
-                !TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out _))
+                !TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, key, out _))
             {
                 throw new JsThrownException(CreateTypeError(
                     "Proxy defineProperty trap cannot create a new property on a non-extensible target."));
             }
 
-            var hasTargetDesc = TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc);
+            var hasTargetDesc = TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, key, out var targetDesc);
             var descriptorObj = descriptorValue.Tag == JsValueTag.Object
                 ? _heap.GetObject(descriptorValue.AsObjectHandle())
                 : null;
@@ -10566,9 +10621,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var targetObj = _heap.GetObject(proxy.TargetHandle);
         if (targetObj is ProxyObject nestedProxy)
         {
-            return ProxyDefineProperty(nestedProxy, prop, descriptorValue);
+            return ProxyDefineProperty(nestedProxy, key, descriptorValue);
         }
-        var ok = targetObj.DefineOwnProperty(prop, desc);
+        var ok = IsSymbolKey(key)
+            ? targetObj.DefineOwnSymbolProperty(key.AsSymbolId(), desc)
+            : targetObj.DefineOwnProperty(key.AsString(), desc);
         if (ok)
         {
             WriteDescriptorBarrier(proxy.TargetHandle, desc);
@@ -12607,7 +12664,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var obj = _heap.GetObject(args[0].AsObjectHandle());
             if (keyArg.Tag == JsValueTag.Symbol)
             {
-                return JsValue.FromBoolean(obj.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out var __));
+                return JsValue.FromBoolean(obj is ProxyObject hasOwnSymbolProxy
+                    ? ProxyTryGetOwnPropertyDescriptor(hasOwnSymbolProxy, keyArg, out JsPropertyDescriptor _)
+                    : obj.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out var __));
             }
             return JsValue.FromBoolean(obj.TryGetOwnProperty(ToPropertyKey(keyArg), out var ___));
         }, length: 2);
@@ -14701,7 +14760,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var obj = _heap.GetObject(objectValue.AsObjectHandle());
         if (keyArg.Tag == JsValueTag.Symbol)
         {
-            return JsValue.FromBoolean(obj.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out _));
+            return JsValue.FromBoolean(obj is ProxyObject hasOwnPropertySymbolProxy
+                ? ProxyTryGetOwnPropertyDescriptor(hasOwnPropertySymbolProxy, keyArg, out JsPropertyDescriptor _)
+                : obj.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out _));
         }
         return JsValue.FromBoolean(obj.TryGetOwnProperty(ToPropertyKey(keyArg), out _));
     }
@@ -14736,7 +14797,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var obj = _heap.GetObject(objectValue.AsObjectHandle());
         if (keyArg.Tag == JsValueTag.Symbol)
         {
-            return JsValue.FromBoolean(obj.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out var symDesc) && symDesc.Enumerable);
+            var foundSymbolDesc = obj is ProxyObject enumerableSymbolProxy
+                ? ProxyTryGetOwnPropertyDescriptor(enumerableSymbolProxy, keyArg, out var symDesc)
+                : obj.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out symDesc);
+            return JsValue.FromBoolean(foundSymbolDesc && symDesc.Enumerable);
         }
         return JsValue.FromBoolean(obj.TryGetOwnProperty(ToPropertyKey(keyArg), out var descriptor) && descriptor.Enumerable);
     }
@@ -14962,11 +15026,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         if (target is ProxyObject proxyDefineProperty)
         {
-            if (isSymbolKey)
-            {
-                throw new JsThrownException(CreateTypeError("Proxy.defineProperty with symbol key is not yet supported."));
-            }
-            var ok = ProxyDefineProperty(proxyDefineProperty, key, args[2]);
+            var ok = ProxyDefineProperty(
+                proxyDefineProperty, isSymbolKey ? keyArg : JsValue.FromString(key), args[2]);
             if (!ok)
             {
                 throw new JsThrownException(CreateTypeError("Cannot define property on proxy target."));
@@ -15241,11 +15302,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         JsPropertyDescriptor descriptor;
         if (target is ProxyObject proxyGetOwnPropertyDescriptor)
         {
-            if (isSymbolKey)
-            {
-                return JsValue.Undefined;
-            }
-            found = ProxyTryGetOwnPropertyDescriptor(proxyGetOwnPropertyDescriptor, key, out descriptor);
+            found = ProxyTryGetOwnPropertyDescriptor(
+                proxyGetOwnPropertyDescriptor, isSymbolKey ? keyArg : JsValue.FromString(key), out descriptor);
         }
         else
         {
@@ -15332,6 +15390,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     [MayExecuteJs]
     private bool HasSymbolProperty(JsObject obj, long symbolId)
     {
+        if (obj is ProxyObject symbolHasProxy)
+        {
+            return ProxyHas(symbolHasProxy, ResolveSymbol(symbolId));
+        }
+
         if (obj.TryGetOwnSymbolProperty(symbolId, out _))
         {
             return true;
@@ -15756,6 +15819,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var receiverObj = _heap.GetObject(receiver.AsObjectHandle());
+
+        // A Proxy receiver has exotic [[GetOwnProperty]]/[[DefineOwnProperty]];
+        // writing into its own property table would strand the value on the
+        // proxy instead of reaching the target. Mirrors the string-keyed path.
+        if (receiverObj is ProxyObject receiverProxy)
+        {
+            var symbolKey = ResolveSymbol(symbolId);
+            if (ProxyTryGetOwnPropertyDescriptor(receiverProxy, symbolKey, out var proxyExisting))
+            {
+                if (proxyExisting.IsAccessor || !proxyExisting.Writable)
+                    return false;
+                return ProxyDefineProperty(receiverProxy, symbolKey, BuildValueOnlyDescriptorObject(value));
+            }
+
+            return ProxyDefineProperty(receiverProxy, symbolKey, BuildDataPropertyDescriptorObject(value));
+        }
 
         // Steps 5.c-d: check receiver for an existing own symbol property.
         if (receiverObj.TryGetOwnSymbolProperty(symbolId, out var existing))
@@ -23159,7 +23238,20 @@ fallbackArraySpecies:
 
         if (keyValue.Tag == JsValueTag.Symbol)
         {
-            var symbolOk = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, receiverValue);
+            // A setter or a Proxy set trap can throw; keep it inside the try so
+            // the throw routes through ThrowOrHandle and an enclosing JS
+            // try/catch can see it.
+            bool symbolOk;
+            try
+            {
+                symbolOk = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, receiverValue);
+            }
+            catch (JsThrownException ex)
+            {
+                ThrowOrHandle(frame, ex.Value);
+                return;
+            }
+
             if (!symbolOk && strict)
             {
                 ThrowTypeError(frame, "Cannot assign to symbol-keyed property.");
