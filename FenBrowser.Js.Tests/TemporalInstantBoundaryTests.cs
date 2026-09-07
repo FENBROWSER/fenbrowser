@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Source;
@@ -94,5 +94,46 @@ public sealed class TemporalInstantBoundaryTests
         Assert.True(
             result == "formatted-or-noop" || result == "range-error",
             $"Expected formatting or a spec RangeError at the legal extreme, got: {result}");
+    }
+
+    // The extremes constructed and round-tripped fine, but every wall-clock
+    // rendering went through a long and so reported the same clamped instant
+    // (2262-04-11T23:47:16.854775807Z) for everything past it - a plain year
+    // 2300 date included.
+    [Theory]
+    [InlineData(MaxInstantNs, "+275760-09-13T00:00:00Z")]
+    [InlineData(MinInstantNs, "-271821-04-20T00:00:00Z")]
+    public void InstantToString_AtLegalExtremes_RendersTheRealWallClock(string epochNs, string expected)
+    {
+        Assert.Equal(expected, RunString($"new Temporal.Instant({epochNs}n).toString();"));
+    }
+
+    [Theory]
+    [InlineData("2300-01-01T00:00:00Z")]
+    [InlineData("9999-12-31T23:59:59Z")]
+    [InlineData("+275760-09-13T00:00:00Z")]
+    [InlineData("-271821-04-20T00:00:00Z")]
+    public void InstantToString_RoundTripsBeyondTheLongNanosecondRange(string iso)
+    {
+        Assert.Equal(iso, RunString($"Temporal.Instant.from(\"{iso}\").toString();"));
+    }
+
+    [Fact]
+    public void ZonedDateTimeToString_AtMaxInstant_RendersTheRealWallClock()
+    {
+        Assert.Equal(
+            "+275760-09-13T00:00:00+00:00[UTC]",
+            RunString($"new Temporal.ZonedDateTime({MaxInstantNs}n, \"UTC\").toString();"));
+    }
+
+    [Fact]
+    public void ZonedDateTimeToString_FarFutureZone_UsesTheLastKnownOffset()
+    {
+        // TZDB has no rules out there; the offset at the edge of the table is
+        // the right answer, not the offset at the clamped long boundary.
+        Assert.Equal(
+            "+275760-09-11T15:13:20-05:00[America/New_York]",
+            RunString($"new Temporal.ZonedDateTime({MaxInstantNs}n - 100000000000000n, \"America/New_York\")" +
+                ".toString();"));
     }
 }

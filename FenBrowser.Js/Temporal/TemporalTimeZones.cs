@@ -1,4 +1,4 @@
-using NodaTime;
+﻿using NodaTime;
 using NodaTime.TimeZones;
 
 namespace FenBrowser.Js.Temporal;
@@ -155,6 +155,47 @@ internal static class TemporalTimeZones
     /// <summary>GetOffsetNanosecondsFor: UTC offset of the zone at an epoch instant.</summary>
     public static long GetOffsetNs(string canonicalId, long epochNs)
     {
+        long seconds = Math.DivRem(epochNs, 1_000_000_000L, out long nanos);
+        if (nanos < 0)
+        {
+            seconds--;
+            nanos += 1_000_000_000L;
+        }
+
+        return GetOffsetNsAt(canonicalId, seconds, nanos);
+    }
+
+    /// <summary>
+    /// GetOffsetNanosecondsFor for an instant outside the long-nanosecond range.
+    /// Temporal instants reach +/-8.64e21 ns (about +/-275,760 years) while a long
+    /// holds only +/-292 years of nanoseconds, so taking a long here reported every
+    /// later instant's offset as the one at 2262-04-11.
+    /// </summary>
+    public static long GetOffsetNsBig(string canonicalId, System.Numerics.BigInteger epochNs)
+    {
+        var seconds = System.Numerics.BigInteger.DivRem(epochNs, 1_000_000_000, out var nanosBig);
+        long nanos = (long)nanosBig;
+        if (nanos < 0)
+        {
+            seconds -= 1;
+            nanos += 1_000_000_000L;
+        }
+
+        // The zone table itself still has to be clamped - TZDB answers only
+        // within NodaTime's instant range - but a zone's offset no longer
+        // changes out there, so the edge of the table gives the right answer.
+        if (seconds > MaxLookupUnixSeconds) return GetOffsetNsAt(canonicalId, MaxLookupUnixSeconds, 0);
+        if (seconds < MinLookupUnixSeconds) return GetOffsetNsAt(canonicalId, MinLookupUnixSeconds, 0);
+        return GetOffsetNsAt(canonicalId, (long)seconds, nanos);
+    }
+
+    // Unix seconds at the edges of NodaTime's instant range (0001-01-01 and
+    // 9999-12-31), the widest span the TZDB provider will answer for.
+    private const long MinLookupUnixSeconds = -62_135_596_800L;
+    private const long MaxLookupUnixSeconds = 253_402_300_799L;
+
+    private static long GetOffsetNsAt(string canonicalId, long unixSeconds, long nanosOfSecond)
+    {
         if (canonicalId.Length > 0 && (canonicalId[0] == '+' || canonicalId[0] == '-'))
         {
             int i = 0;
@@ -177,13 +218,7 @@ internal static class TemporalTimeZones
         var zone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(lookupId);
         if (zone is not null)
         {
-            long seconds = Math.DivRem(epochNs, 1_000_000_000L, out long nanos);
-            if (nanos < 0)
-            {
-                seconds--;
-                nanos += 1_000_000_000L;
-            }
-            var instant = Instant.FromUnixTimeSeconds(seconds).PlusNanoseconds(nanos);
+            var instant = Instant.FromUnixTimeSeconds(unixSeconds).PlusNanoseconds(nanosOfSecond);
             return zone.GetUtcOffset(instant).Seconds * 1_000_000_000L;
         }
 

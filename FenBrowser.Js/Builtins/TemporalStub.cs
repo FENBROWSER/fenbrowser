@@ -1,4 +1,4 @@
-using FenBrowser.Js.Heap;
+﻿using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Intl;
 using FenBrowser.Js.Objects;
@@ -169,12 +169,14 @@ public sealed class TemporalStub : IBuiltinModule
     /// <summary>Format an Instant as ISO 8601 string (e.g. "2024-01-15T12:00:00Z").</summary>
     private static JsValue FormatInstant(JsHeap h, JsObject o)
     {
-        long nanos = DecodeInstantNanos(h, o);
-        var dt = InstantToDateTime(nanos);
-        long subMilliNanos = nanos % 1_000_000;
-        if (subMilliNanos < 0) subMilliNanos += 1_000_000;
+        // Goes through the BigInteger wall-clock split, not DateTime: Temporal
+        // instants reach +/-275,760 years and DateTime stops at 9999.
+        var nanos = DecodeInstantNanosBig(h, o);
+        var (date, time) = TemporalTimeZones.WallFromEpochNsBig(nanos, 0);
+        long subMilliNanos = time.ToNanosecondsOfDay() % 1_000_000;
         string frac = subMilliNanos == 0 ? "" : $".{subMilliNanos:D6}".TrimEnd('0');
-        return JsValue.FromString($"{dt.Year:D4}-{dt.Month:D2}-{dt.Day:D2}T{dt.Hour:D2}:{dt.Minute:D2}:{dt.Second:D2}{frac}Z");
+        return JsValue.FromString(
+            $"{FormatIsoYear(date.Year)}-{date.Month:D2}-{date.Day:D2}T{time.Hour:D2}:{time.Minute:D2}:{time.Second:D2}{frac}Z");
     }
 
     private static JsValue FormatInstant(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
@@ -183,19 +185,18 @@ public sealed class TemporalStub : IBuiltinModule
         System.Numerics.BigInteger epochNs = DecodeInstantNanosBig(h, o);
         System.Numerics.BigInteger inc = PrecisionIncrementNs(opts);
         if (inc > 1) epochNs = RoundNsToIncrement(ctx, epochNs, inc, opts.RoundingMode);
-        long epochNsLong = ToSafeLong(epochNs);
 
         // timeZone option: render the wall clock in that zone with its offset.
         if (opts.TimeZoneValue is not null)
         {
             string ctz = CanonicalizeTimeZoneId(ctx, opts.TimeZoneValue);
-            long offNs = TemporalTimeZones.GetOffsetNs(ctz, epochNsLong);
-            var (zd, zt) = TemporalTimeZones.WallFromEpochNs(epochNsLong, offNs);
+            long offNs = TemporalTimeZones.GetOffsetNsBig(ctz, epochNs);
+            var (zd, zt) = TemporalTimeZones.WallFromEpochNsBig(epochNs, offNs);
             return JsValue.FromString($"{FormatIsoYear(zd.Year)}-{zd.Month:D2}-{zd.Day:D2}T{zt.Hour:D2}:{zt.Minute:D2}" +
                 $"{FormatSecondsPart(zt.ToNanosecondsOfDay(), opts)}{TemporalTimeZones.FormatOffsetRoundedToMinute(offNs)}");
         }
 
-        var (d, t) = TemporalTimeZones.WallFromEpochNs(epochNsLong, 0);
+        var (d, t) = TemporalTimeZones.WallFromEpochNsBig(epochNs, 0);
         return JsValue.FromString($"{FormatIsoYear(d.Year)}-{d.Month:D2}-{d.Day:D2}T{t.Hour:D2}:{t.Minute:D2}" +
             $"{FormatSecondsPart(t.ToNanosecondsOfDay(), opts)}Z");
     }
@@ -488,9 +489,8 @@ public sealed class TemporalStub : IBuiltinModule
         var epochNsBig = DecodeInstantNanosBig(h, o);
         System.Numerics.BigInteger inc = PrecisionIncrementNs(opts);
         if (inc > 1) epochNsBig = RoundNsToIncrement(ctx, epochNsBig, inc, opts.RoundingMode);
-        long epochNs = ToSafeLong(epochNsBig);
-        long offsetNs = TemporalTimeZones.GetOffsetNs(tz, epochNs);
-        var (date, time) = TemporalTimeZones.WallFromEpochNs(epochNs, offsetNs);
+        long offsetNs = TemporalTimeZones.GetOffsetNsBig(tz, epochNsBig);
+        var (date, time) = TemporalTimeZones.WallFromEpochNsBig(epochNsBig, offsetNs);
         var sb = new System.Text.StringBuilder();
         sb.Append($"{FormatIsoYear(date.Year)}-{date.Month:D2}-{date.Day:D2}T{time.Hour:D2}:{time.Minute:D2}");
         sb.Append(FormatSecondsPart(time.ToNanosecondsOfDay(), opts));
