@@ -8557,7 +8557,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             RunFenJsWithLargeStack<object>(() =>
             {
                 SetFenJsWorkerPhase("callback:waiting-interpreter-lock");
-                using (ScriptEngineLockProbe.Hold(_fenJsLock))
+                using (ScriptEngineLockProbe.Hold(
+                    _fenJsLock,
+                    ScriptEngineLockProbe.Enabled ? origin + " | " + callbackProvenance : null))
                 {
                     SetFenJsWorkerPhase("callback:validating-context");
                     TraceFenJsCallbackStage("stage-2-validating-context", origin, callbackId, callbackProvenance);

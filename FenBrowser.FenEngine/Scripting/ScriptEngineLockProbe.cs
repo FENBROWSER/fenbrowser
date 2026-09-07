@@ -45,14 +45,29 @@ namespace FenBrowser.FenEngine.Scripting
         private static readonly Dictionary<string, SiteStat> Stats =
             new Dictionary<string, SiteStat>(StringComparer.Ordinal);
 
+        // Aggregates say the lock is held too long; they cannot say by what. A
+        // single 9-second hold and ninety 100ms holds look similar in a total,
+        // and only one of them is a bug worth chasing, so every hold past the
+        // threshold is kept individually with whatever the caller could name
+        // about the work it was doing.
+        private const double LongHoldMs = 50.0;
+        private const int MaxLongHolds = 400;
+
+        private static readonly List<(string Site, string Label, double Ms, double AtMs)> LongHolds =
+            new List<(string, string, double, double)>();
+
+        private static readonly long ProbeStartTicks = Stopwatch.GetTimestamp();
+
         private readonly object _gate;
         private readonly string _site;
+        private readonly string _label;
         private readonly long _acquiredTicks;
 
-        private ScriptEngineLockProbe(object gate, string site, long acquiredTicks)
+        private ScriptEngineLockProbe(object gate, string site, string label, long acquiredTicks)
         {
             _gate = gate;
             _site = site;
+            _label = label;
             _acquiredTicks = acquiredTicks;
         }
 
@@ -61,13 +76,14 @@ namespace FenBrowser.FenEngine.Scripting
         /// </summary>
         internal static ScriptEngineLockProbe Hold(
             object gate,
+            string label = null,
             [CallerMemberName] string member = "",
             [CallerLineNumber] int line = 0)
         {
             if (!Enabled)
             {
                 Monitor.Enter(gate);
-                return new ScriptEngineLockProbe(gate, null, 0);
+                return new ScriptEngineLockProbe(gate, null, null, 0);
             }
 
             var site = member + ":" + line.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -103,7 +119,7 @@ namespace FenBrowser.FenEngine.Scripting
                 }
             }
 
-            return new ScriptEngineLockProbe(gate, site, acquired);
+            return new ScriptEngineLockProbe(gate, site, label, acquired);
         }
 
         public void Dispose()
@@ -121,12 +137,23 @@ namespace FenBrowser.FenEngine.Scripting
             // source of the contention it is measuring.
             Monitor.Exit(_gate);
 
+            var heldMs = 1000.0 * held / Stopwatch.Frequency;
+
             lock (StatsGate)
             {
                 if (Stats.TryGetValue(_site, out var stat))
                 {
                     stat.HoldTicks += held;
                     if (held > stat.MaxHoldTicks) stat.MaxHoldTicks = held;
+                }
+
+                if (heldMs >= LongHoldMs && LongHolds.Count < MaxLongHolds)
+                {
+                    LongHolds.Add((
+                        _site,
+                        _label,
+                        heldMs,
+                        1000.0 * (_acquiredTicks - ProbeStartTicks) / Stopwatch.Frequency));
                 }
             }
         }
@@ -177,6 +204,31 @@ namespace FenBrowser.FenEngine.Scripting
                     .Append((1000.0 * stat.WaitTicks / frequency).ToString("F0").PadLeft(11))
                     .Append((1000.0 * stat.MaxWaitTicks / frequency).ToString("F0").PadLeft(11))
                     .AppendLine();
+            }
+
+            (string Site, string Label, double Ms, double AtMs)[] holds;
+            lock (StatsGate)
+            {
+                holds = LongHolds.ToArray();
+            }
+
+            if (holds.Length > 0)
+            {
+                Array.Sort(holds, (a, b) => b.Ms.CompareTo(a.Ms));
+                text.Append("[FenJsLock] longest individual holds (>=")
+                    .Append(LongHoldMs.ToString("F0")).Append("ms), ")
+                    .Append(holds.Length).AppendLine(" recorded");
+                text.AppendLine("        heldMs      atMs  site / what it was running");
+                var shown = holds.Length < 15 ? holds.Length : 15;
+                for (var i = 0; i < shown; i++)
+                {
+                    var what = holds[i].Label ?? holds[i].Site;
+                    text.Append("    ")
+                        .Append(holds[i].Ms.ToString("F0").PadLeft(10))
+                        .Append(holds[i].AtMs.ToString("F0").PadLeft(10))
+                        .Append("  ")
+                        .AppendLine(what.Length > 150 ? what.Substring(0, 150) : what);
+                }
             }
 
             return text.ToString();
