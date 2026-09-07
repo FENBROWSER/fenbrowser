@@ -3318,6 +3318,12 @@ namespace FenBrowser.Tooling
             var artifactPath = await runner.WriteReportAsync(report).ConfigureAwait(false);
             Console.WriteLine(FenJsPerformanceBenchmarkRunner.FormatSummary(report));
             Console.WriteLine($"artifact={artifactPath}");
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
+            {
+                Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(25));
+                Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.VarReport());
+                Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.TimingReport());
+            }
         }
 
         private static async Task RunDomPerfAsync()

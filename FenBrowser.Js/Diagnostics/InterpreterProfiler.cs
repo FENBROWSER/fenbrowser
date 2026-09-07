@@ -363,7 +363,7 @@ public static class InterpreterProfiler
         var frequency = (double)System.Diagnostics.Stopwatch.Frequency;
         var rawMs = 1000.0 * slowTicks / frequency;
         var overheadTicks = TimestampOverheadTicks * slowSamples;
-        var netTicks = slowTicks - overheadTicks;
+        var netTicks = Math.Max(0, slowTicks - overheadTicks);
         var netMs = 1000.0 * netTicks / frequency;
         var execMs = 1000.0 * execTicks / frequency;
         // Summing threads answers "how much execution happened"; it does not

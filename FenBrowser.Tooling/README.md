@@ -84,6 +84,16 @@ dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -- 
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -- js-perf property-access
 ```
 
+Set `FEN_FENJS_PROFILE=1` to append the existing interpreter opcode, adjacent-pair,
+function, and identifier-resolution profile to stdout for the selected scenario.
+The structured timing report is still written under `Results/performance/`.
+
+```powershell
+$env:FEN_FENJS_PROFILE = '1'
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -- js-perf property-access
+Remove-Item Env:FEN_FENJS_PROFILE
+```
+
 Run deterministic DOM mutation and event-dispatch benchmarks:
 
 ```powershell

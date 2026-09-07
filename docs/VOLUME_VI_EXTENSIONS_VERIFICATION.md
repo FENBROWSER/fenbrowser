@@ -2856,6 +2856,7 @@ Verification:
 
 - `FenBrowser.Tooling js-perf [scenario]` accepts an optional exact scenario name, such as `property-access` or `prototype-chain`, and rejects unknown names instead of silently running a different workload.
 - Scenario selection uses the same benchmark runner and structured report schema as the complete suite. Report filenames include milliseconds so repeated short-lived comparison processes cannot overwrite one another.
+- With `FEN_FENJS_PROFILE=1`, the same command appends the interpreter's opcode, adjacent-pair, function, and identifier-resolution reports to stdout. The opt-in profile is diagnostic evidence; its instrumented timing is not a replacement for the uninstrumented benchmark report.
 - The isolated mode was used to investigate the fixed-order prototype-chain timing anomaly during arguments-object optimization. Five fresh processes per implementation separated scenario behavior from cross-scenario static/JIT warm state.
 - `FenBrowser.Tooling/README.md` records the command form; generated reports remain under ignored `Results/performance/`.
 
