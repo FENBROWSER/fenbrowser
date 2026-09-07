@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net.Http;
 
@@ -41,6 +41,35 @@ internal static class CaptchaScriptInstrumentation
             // the outside: no listeners, no requests, a widget stuck loading.
             // Record what actually threw, in the realm where it threw.
             window.__fenErrorLog = [];
+
+            // Chrome removes recaptcha-checkbox-disabled and
+            // recaptcha-checkbox-loading 98ms after the anchor receives its own
+            // setup message, before any of the heavy work runs. Ours never
+            // removes them. Sampling the class from outside cannot say when it
+            // should have changed, because the engine lock keeps outside probes
+            // from running at all for seconds at a time - so record the
+            // transitions from inside the frame, on the frame's own clock.
+            window.__fenClassLog = [];
+            (function () {
+                var started = Date.now();
+                var last = null;
+                var tick = function () {
+                    try {
+                        var el = document.getElementById('recaptcha-anchor');
+                        if (el && el.className !== last) {
+                            last = el.className;
+                            if (window.__fenClassLog.length < 40) {
+                                window.__fenClassLog.push((Date.now() - started) + 'ms ' + last);
+                            }
+                        }
+                    } catch (e) { }
+                };
+                try {
+                    setInterval(tick, 50);
+                    tick();
+                } catch (e) { }
+            })();
+
             var note = function (what) {
                 try {
                     if (window.__fenErrorLog.length < 40) { window.__fenErrorLog.push(String(what)); }
@@ -187,6 +216,42 @@ internal static class CaptchaScriptInstrumentation
                         logPost('port-start', '', '-', null);
                         return portStart.apply(this, arguments);
                     };
+
+                    // Outgoing port traffic was recorded; incoming was not, so
+                    // a channel that is written to and never answered looked
+                    // exactly like one that is working. The widget goes into
+                    // its loading state while it waits for a reply, so whether
+                    // one ever arrives is the whole question.
+                    var portAdd = MessagePort.prototype.addEventListener;
+                    if (typeof portAdd === 'function') {
+                        MessagePort.prototype.addEventListener = function (type, fn, opts) {
+                            if (type === 'message' && typeof fn === 'function') {
+                                var wrapped = function (ev) {
+                                    logPost('port-recv', ev && ev.data, '-', null);
+                                    return fn.apply(this, arguments);
+                                };
+                                return portAdd.call(this, type, wrapped, opts);
+                            }
+                            return portAdd.apply(this, arguments);
+                        };
+                    }
+
+                    try {
+                        Object.defineProperty(MessagePort.prototype, 'onmessage', {
+                            configurable: true,
+                            set: function (fn) {
+                                var self = this;
+                                if (typeof fn === 'function') {
+                                    portAdd.call(self, 'message', function (ev) {
+                                        logPost('port-recv', ev && ev.data, '-', null);
+                                        return fn.apply(self, arguments);
+                                    });
+                                    try { self.start(); } catch (e) { }
+                                }
+                            },
+                            get: function () { return undefined; }
+                        });
+                    } catch (e) { note('portonmessage-hook-threw:' + e); }
                 }
             } catch (e) { note('portpost-hook-threw:' + e); }
             try {

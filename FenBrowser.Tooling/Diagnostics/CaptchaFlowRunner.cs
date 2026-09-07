@@ -223,6 +223,14 @@ internal static class CaptchaFlowRunner
         "if(!l.length)return 'no errors recorded';" +
         "return l.length+' entries: '+l.join(' | ');})()";
 
+    // Every class the anchor checkbox held, timestamped inside the frame.
+    // Chrome reaches its final class 98ms in; this says where ours stops.
+    private const string ReadClassLogScript =
+        "(function(){var l=window.__fenClassLog;" +
+        "if(!l)return 'prologue not installed in this realm';" +
+        "if(!l.length)return 'checkbox never appeared';" +
+        "return l.length+' states: '+l.join(' | ');})()";
+
     // Says whether a silent frame tried to open its channel and was not
     // heard, or never tried at all.
     private const string ReadPostLogScript =
@@ -467,6 +475,7 @@ internal static class CaptchaFlowRunner
         await RunInFrameAsync(host, anchorFrameId, ReadClickRecorderScript, "clicks seen").ConfigureAwait(false);
         await RunInFrameAsync(host, anchorFrameId, ReadListenerLogScript, "listeners registered").ConfigureAwait(false);
         await RunInFrameAsync(host, anchorFrameId, ReadErrorLogScript, "errors on anchor").ConfigureAwait(false);
+        await RunInFrameAsync(host, anchorFrameId, ReadClassLogScript, "checkbox states").ConfigureAwait(false);
         await RunInFrameAsync(host, anchorFrameId, ReadPostLogScript, "posts on anchor").ConfigureAwait(false);
         await RunInFrameAsync(host, anchorFrameId, ReadPrologueNetLogScript, "bundle-net on anchor").ConfigureAwait(false);
         var dumped = new HashSet<string>(StringComparer.Ordinal);
@@ -626,6 +635,7 @@ internal static class CaptchaFlowRunner
             await RunInFrameAsync(host, frameId, ReadNetworkRecorderScript, "netlog " + kind).ConfigureAwait(false);
             await RunInFrameAsync(host, frameId, ReadListenerLogScript, "listeners " + kind).ConfigureAwait(false);
             await RunInFrameAsync(host, frameId, ReadErrorLogScript, "errors " + kind).ConfigureAwait(false);
+            await RunInFrameAsync(host, frameId, ReadClassLogScript, "checkbox " + kind).ConfigureAwait(false);
             await RunInFrameAsync(host, frameId, ReadPostLogScript, "posts " + kind).ConfigureAwait(false);
             await RunInFrameAsync(host, frameId, ReadPrologueNetLogScript, "bundle-net " + kind).ConfigureAwait(false);
         }
