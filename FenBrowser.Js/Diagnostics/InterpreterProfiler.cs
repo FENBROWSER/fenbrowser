@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using System.Text;
 using FenBrowser.Js.Bytecode;
 
@@ -12,15 +12,20 @@ namespace FenBrowser.Js.Diagnostics;
 // Counts are per-opcode and per-function so a report answers both "which
 // operation dominates" and "whose code is running", which together locate a
 // hot loop without a native profiler attached to the browser process.
+//
+// All counters live in per-thread state. A page runs script on more than one
+// thread (a Worker is a second one), and the report is pulled by a watchdog
+// timer on a threadpool thread while script is still running - so a single
+// shared Dictionary is written by the interpreter and read by the reporter at
+// the same time, which corrupts it and fails the script job that happened to
+// be executing. Per-thread state removes the sharing; the only cross-thread
+// contact left is the merge at report time, which takes each state's lock.
 public static class InterpreterProfiler
 {
     public static readonly bool Enabled = string.Equals(
         Environment.GetEnvironmentVariable("FEN_FENJS_PROFILE"),
         "1",
         StringComparison.Ordinal);
-
-    private static readonly long[] OpCodeCounts = new long[512];
-    private static long _total;
 
     // Adjacent pairs, indexed [previous * PairStride + current]. A histogram
     // says which operation dominates; only pairs say whether that operation is
@@ -31,21 +36,95 @@ public static class InterpreterProfiler
     // page is that kind of data movement, so the distinction decides whether a
     // peephole pass is worth writing.
     private const int PairStride = 256;
-    private static readonly long[] OpCodePairCounts = new long[PairStride * PairStride];
-    private static int _previousOpCode = -1;
-    private static object? _previousFunction;
 
-    public static long Total => Interlocked.Read(ref _total);
+    private sealed class FunctionStat
+    {
+        public long Instructions;
+        public long Entries;
+    }
 
-    public static void RecordOpCode(OpCode opCode)
+    // One of these per script thread. Only its owning thread writes the
+    // counters; the reporting thread reads them, taking Gate for the parts
+    // that are not a single aligned 64-bit field.
+    private sealed class ThreadState
+    {
+        public readonly object Gate = new();
+        public readonly long[] OpCodeCounts = new long[512];
+        public readonly long[] OpCodePairCounts = new long[PairStride * PairStride];
+        public readonly long[] DeoptCounts = new long[512];
+        public readonly Dictionary<object, FunctionStat> FunctionCounts =
+            new(ReferenceEqualityComparer.Instance);
+
+        public long Total;
+        public long DeoptTotal;
+        public int PreviousOpCode = -1;
+        public object? PreviousFunction;
+        public long CurrentFunctionInstructions;
+
+        public long VarGlobal;
+        public long VarLocal;
+        public long VarDepth;
+    }
+
+    [ThreadStatic]
+    private static ThreadState? _state;
+
+    // Every state ever created, so a report can merge threads that are busy or
+    // already finished. Only touched when a thread first records something.
+    private static readonly List<ThreadState> AllStates = new();
+
+    private static ThreadState State
+    {
+        get
+        {
+            var state = _state;
+            if (state is null)
+            {
+                state = new ThreadState();
+                _state = state;
+                lock (AllStates)
+                {
+                    AllStates.Add(state);
+                }
+            }
+
+            return state;
+        }
+    }
+
+    private static ThreadState[] SnapshotStates()
+    {
+        lock (AllStates)
+        {
+            return AllStates.ToArray();
+        }
+    }
+
+    public static long Total
+    {
+        get
+        {
+            long total = 0;
+            foreach (var state in SnapshotStates())
+            {
+                total += Interlocked.Read(ref state.Total);
+            }
+
+            return total;
+        }
+    }
+
+    public static void RecordOpCode(OpCode opCode) => RecordOpCode(State, opCode);
+
+    private static void RecordOpCode(ThreadState state, OpCode opCode)
     {
         var index = (int)opCode;
-        if ((uint)index < (uint)OpCodeCounts.Length)
+        if ((uint)index < (uint)state.OpCodeCounts.Length)
         {
-            OpCodeCounts[index]++;
+            state.OpCodeCounts[index]++;
         }
 
-        _total++;
+        state.Total++;
     }
 
     /// <summary>
@@ -56,68 +135,61 @@ public static class InterpreterProfiler
     /// </summary>
     public static void RecordOpCode(OpCode opCode, object function)
     {
-        RecordOpCode(opCode);
+        var state = State;
+        RecordOpCode(state, opCode);
 
         var index = (int)opCode;
-        if (ReferenceEquals(function, _previousFunction))
+        if (ReferenceEquals(function, state.PreviousFunction))
         {
-            if ((uint)index < PairStride && _previousOpCode >= 0)
+            if ((uint)index < PairStride && state.PreviousOpCode >= 0)
             {
-                OpCodePairCounts[(_previousOpCode * PairStride) + index]++;
+                state.OpCodePairCounts[(state.PreviousOpCode * PairStride) + index]++;
             }
         }
         else
         {
             // Control reached another body: bank what the last one ran before
             // starting a tally for this one.
-            BankCurrentFunction();
-            _previousFunction = function;
-            RecordFunctionEntry(function);
+            lock (state.Gate)
+            {
+                BankCurrentFunction(state);
+                state.PreviousFunction = function;
+                RecordFunctionEntry(state, function);
+            }
         }
 
-        _currentFunctionInstructions++;
-        _previousOpCode = (uint)index < PairStride ? index : -1;
+        state.CurrentFunctionInstructions++;
+        state.PreviousOpCode = (uint)index < PairStride ? index : -1;
     }
 
     // Instructions banked against the body that ran them. Attributing on every
     // step would mean a hash lookup per instruction; control stays inside one
     // body for long stretches, so this keeps a running tally and pays the
     // lookup only when the function changes.
-    private sealed class FunctionStat
+    private static void BankCurrentFunction(ThreadState state)
     {
-        public long Instructions;
-        public long Entries;
-    }
-
-    private static readonly Dictionary<object, FunctionStat> FunctionCounts =
-        new(ReferenceEqualityComparer.Instance);
-
-    private static long _currentFunctionInstructions;
-
-    private static void BankCurrentFunction()
-    {
-        if (_previousFunction is null || _currentFunctionInstructions == 0)
+        if (state.PreviousFunction is null || state.CurrentFunctionInstructions == 0)
         {
-            _currentFunctionInstructions = 0;
+            state.CurrentFunctionInstructions = 0;
             return;
         }
 
-        if (!FunctionCounts.TryGetValue(_previousFunction, out var stat))
+        if (!state.FunctionCounts.TryGetValue(state.PreviousFunction, out var stat))
         {
             stat = new FunctionStat();
-            FunctionCounts[_previousFunction] = stat;
+            state.FunctionCounts[state.PreviousFunction] = stat;
         }
 
-        stat.Instructions += _currentFunctionInstructions;
-        _currentFunctionInstructions = 0;
+        stat.Instructions += state.CurrentFunctionInstructions;
+        state.CurrentFunctionInstructions = 0;
     }
 
-    private static void RecordFunctionEntry(object function)
+    private static void RecordFunctionEntry(ThreadState state, object function)
     {
-        if (!FunctionCounts.TryGetValue(function, out var stat))
+        if (!state.FunctionCounts.TryGetValue(function, out var stat))
         {
             stat = new FunctionStat();
-            FunctionCounts[function] = stat;
+            state.FunctionCounts[function] = stat;
         }
 
         stat.Entries++;
@@ -180,22 +252,27 @@ public static class InterpreterProfiler
 
     // Where identifier reads actually land, and how many scopes they walk
     // past first - the two facts that decide which cache is worth building.
-    private static long _varGlobal;
-    private static long _varLocal;
-    private static long _varDepth;
-
     public static void RecordVarResolve(bool onObjectRecord, int depth)
     {
-        if (onObjectRecord) _varGlobal++; else _varLocal++;
-        _varDepth += depth;
+        var state = State;
+        if (onObjectRecord) state.VarGlobal++; else state.VarLocal++;
+        state.VarDepth += depth;
     }
 
     public static string VarReport()
     {
-        var total = _varGlobal + _varLocal;
+        long global = 0, local = 0, depth = 0;
+        foreach (var state in SnapshotStates())
+        {
+            global += state.VarGlobal;
+            local += state.VarLocal;
+            depth += state.VarDepth;
+        }
+
+        var total = global + local;
         if (total == 0) return "[FenJsProfile] no identifier reads recorded";
-        return $"[FenJsProfile] identifier reads={total:N0} onGlobalObject={100.0*_varGlobal/total:F1}% " +
-               $"inLocalScope={100.0*_varLocal/total:F1}% avgScopesWalked={(double)_varDepth/total:F2}";
+        return $"[FenJsProfile] identifier reads={total:N0} onGlobalObject={100.0 * global / total:F1}% " +
+               $"inLocalScope={100.0 * local / total:F1}% avgScopesWalked={(double)depth / total:F2}";
     }
 
     // Compiled code that had to call an interpreter helper anyway. The JIT emits
@@ -203,31 +280,38 @@ public static class InterpreterProfiler
     // the operator costs a call plus a run-time switch instead of a few
     // instructions. A CPU profile shows the helpers are hot but not which
     // operator sends work to them, and that is the fact a fix needs.
-    private static readonly long[] DeoptCounts = new long[512];
-    private static long _deoptTotal;
-
     public static void RecordJitDeopt(OpCode opCode)
     {
+        var state = State;
         var index = (int)opCode;
-        if ((uint)index < (uint)DeoptCounts.Length)
+        if ((uint)index < (uint)state.DeoptCounts.Length)
         {
-            DeoptCounts[index]++;
+            state.DeoptCounts[index]++;
         }
 
-        _deoptTotal++;
+        state.DeoptTotal++;
     }
 
     public static void Reset()
     {
-        Array.Clear(OpCodeCounts);
-        Array.Clear(OpCodePairCounts);
-        Array.Clear(DeoptCounts);
-        _previousOpCode = -1;
-        _previousFunction = null;
-        FunctionCounts.Clear();
-        _currentFunctionInstructions = 0;
-        Interlocked.Exchange(ref _total, 0);
-        Interlocked.Exchange(ref _deoptTotal, 0);
+        foreach (var state in SnapshotStates())
+        {
+            lock (state.Gate)
+            {
+                Array.Clear(state.OpCodeCounts);
+                Array.Clear(state.OpCodePairCounts);
+                Array.Clear(state.DeoptCounts);
+                state.FunctionCounts.Clear();
+                state.PreviousOpCode = -1;
+                state.PreviousFunction = null;
+                state.CurrentFunctionInstructions = 0;
+                state.Total = 0;
+                state.DeoptTotal = 0;
+                state.VarGlobal = 0;
+                state.VarLocal = 0;
+                state.VarDepth = 0;
+            }
+        }
     }
 
     // Renders the top opcodes and functions by share of total executed
@@ -235,9 +319,58 @@ public static class InterpreterProfiler
     // rather than as raw counters.
     public static string Report(int top = 20)
     {
-        var total = Total;
+        var states = SnapshotStates();
         var builder = new StringBuilder();
-        builder.Append("[FenJsProfile] total instructions=").Append(total).AppendLine();
+
+        var opCodeCounts = new long[512];
+        var deoptCounts = new long[512];
+        var pairCounts = new long[PairStride * PairStride];
+        var functions = new Dictionary<object, FunctionStat>(ReferenceEqualityComparer.Instance);
+        long total = 0;
+        long deoptTotal = 0;
+
+        foreach (var state in states)
+        {
+            total += state.Total;
+            deoptTotal += state.DeoptTotal;
+            for (var i = 0; i < opCodeCounts.Length; i++) opCodeCounts[i] += state.OpCodeCounts[i];
+            for (var i = 0; i < deoptCounts.Length; i++) deoptCounts[i] += state.DeoptCounts[i];
+            for (var i = 0; i < pairCounts.Length; i++) pairCounts[i] += state.OpCodePairCounts[i];
+
+            // Merge under the owner's gate: it is still executing, and its
+            // dictionary must not be enumerated while it inserts.
+            lock (state.Gate)
+            {
+                foreach (var (function, stat) in state.FunctionCounts)
+                {
+                    if (!functions.TryGetValue(function, out var merged))
+                    {
+                        merged = new FunctionStat();
+                        functions[function] = merged;
+                    }
+
+                    merged.Instructions += stat.Instructions;
+                    merged.Entries += stat.Entries;
+                }
+
+                // Whatever the thread is running right now has not been banked
+                // yet. Add it to the merged view rather than banking it here,
+                // so a report never mutates another thread's tally.
+                if (state.PreviousFunction is { } running && state.CurrentFunctionInstructions > 0)
+                {
+                    if (!functions.TryGetValue(running, out var pending))
+                    {
+                        pending = new FunctionStat();
+                        functions[running] = pending;
+                    }
+
+                    pending.Instructions += state.CurrentFunctionInstructions;
+                }
+            }
+        }
+
+        builder.Append("[FenJsProfile] total instructions=").Append(total)
+            .Append(" scriptThreads=").Append(states.Length).AppendLine();
 
         if (total == 0)
         {
@@ -246,11 +379,11 @@ public static class InterpreterProfiler
 
         builder.AppendLine("  -- by opcode --");
         var opcodes = new List<(OpCode Op, long Count)>();
-        for (var i = 0; i < OpCodeCounts.Length; i++)
+        for (var i = 0; i < opCodeCounts.Length; i++)
         {
-            if (OpCodeCounts[i] > 0)
+            if (opCodeCounts[i] > 0)
             {
-                opcodes.Add(((OpCode)i, OpCodeCounts[i]));
+                opcodes.Add(((OpCode)i, opCodeCounts[i]));
             }
         }
 
@@ -262,22 +395,18 @@ public static class InterpreterProfiler
                 .Append("  ").Append((100.0 * count / total).ToString("F2")).AppendLine("%");
         }
 
-        // Bank whatever the currently-running body has accumulated so a report
-        // taken mid-run does not omit the function that is hot right now.
-        BankCurrentFunction();
-
-        if (FunctionCounts.Count > 0)
+        if (functions.Count > 0)
         {
             builder.AppendLine("  -- by function (self, interpreted only) --");
-            var functions = new List<(string Name, long Instructions, long Entries, int Size)>();
-            foreach (var (function, stat) in FunctionCounts)
+            var ranked = new List<(string Name, long Instructions, long Entries, int Size)>();
+            foreach (var (function, stat) in functions)
             {
                 var size = function is BytecodeFunction bytecode ? bytecode.InstructionArray.Length : 0;
-                functions.Add((DescribeFunction(function), stat.Instructions, stat.Entries, size));
+                ranked.Add((DescribeFunction(function), stat.Instructions, stat.Entries, size));
             }
 
-            functions.Sort(static (a, b) => b.Instructions.CompareTo(a.Instructions));
-            foreach (var (name, instructions, entries, size) in functions.Take(top))
+            ranked.Sort(static (a, b) => b.Instructions.CompareTo(a.Instructions));
+            foreach (var (name, instructions, entries, size) in ranked.Take(top))
             {
                 builder.Append("    ")
                     .Append(name.Length > 52 ? name.Substring(0, 52) : name.PadRight(52))
@@ -289,29 +418,15 @@ public static class InterpreterProfiler
             }
         }
 
-        var pairs = new List<(int Previous, int Current, long Count)>();
-        for (var previous = 0; previous < PairStride; previous++)
-        {
-            var rowStart = previous * PairStride;
-            for (var current = 0; current < PairStride; current++)
-            {
-                var count = OpCodePairCounts[rowStart + current];
-                if (count > 0)
-                {
-                    pairs.Add((previous, current, count));
-                }
-            }
-        }
-
-        if (_deoptTotal > 0)
+        if (deoptTotal > 0)
         {
             builder.AppendLine("  -- compiled code falling back to an interpreter helper --");
             var deopts = new List<(OpCode Op, long Count)>();
-            for (var i = 0; i < DeoptCounts.Length; i++)
+            for (var i = 0; i < deoptCounts.Length; i++)
             {
-                if (DeoptCounts[i] > 0)
+                if (deoptCounts[i] > 0)
                 {
-                    deopts.Add(((OpCode)i, DeoptCounts[i]));
+                    deopts.Add(((OpCode)i, deoptCounts[i]));
                 }
             }
 
@@ -321,6 +436,20 @@ public static class InterpreterProfiler
                 builder.Append("    ").Append(op.ToString().PadRight(28))
                     .Append(count.ToString().PadLeft(14))
                     .Append("  ").Append((100.0 * count / total).ToString("F2")).AppendLine("% of all instructions");
+            }
+        }
+
+        var pairs = new List<(int Previous, int Current, long Count)>();
+        for (var previous = 0; previous < PairStride; previous++)
+        {
+            var rowStart = previous * PairStride;
+            for (var current = 0; current < PairStride; current++)
+            {
+                var count = pairCounts[rowStart + current];
+                if (count > 0)
+                {
+                    pairs.Add((previous, current, count));
+                }
             }
         }
 
