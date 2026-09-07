@@ -269,6 +269,11 @@ static int ExecuteSource(
             Console.Error.Write(FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(25));
             Console.Error.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.VarReport());
             Console.Error.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.TimingReport());
+            // Bytes the CLR actually handed out, as opposed to slots an engine
+            // counter says were requested: a pooled allocation costs nothing
+            // here, and only this number tells the two apart.
+            Console.Error.WriteLine(FormattableString.Invariant(
+                $"[FenJsProfile] clrAllocated={GC.GetTotalAllocatedBytes(precise: true) / (1024.0 * 1024.0):F1}MB gen0={GC.CollectionCount(0)} gen1={GC.CollectionCount(1)} gen2={GC.CollectionCount(2)}"));
         }
     }
 

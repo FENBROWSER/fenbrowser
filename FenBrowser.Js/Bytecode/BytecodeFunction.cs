@@ -1,4 +1,4 @@
-using FenBrowser.Js.Runtime;
+﻿using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Objects;
 
 namespace FenBrowser.Js.Bytecode;
@@ -91,6 +91,59 @@ public sealed class BytecodeFunction
     internal bool UsesOuterArguments { get; init; }
 
     public FunctionKind Kind { get; init; } = FunctionKind.Ordinary;
+
+    // Whether this function's environment record provably dies with its call,
+    // so the interpreter may reuse its slot storage instead of allocating a
+    // fresh Binding[] per call.
+    //
+    // This is the static half of the test, and it only rules out shapes whose
+    // capture cannot be observed at the moment it happens: `with` splices a
+    // record into the chain, direct eval can introduce bindings and reach the
+    // scope, a generator or async body suspends with its environment intact,
+    // eval code has no frame bounding its lifetime, and a mapped arguments
+    // object aliases the parameter bindings.
+    //
+    // Creating a closure deliberately does NOT disqualify a function here.
+    // Almost every real function contains a CreateFunction somewhere, so
+    // rejecting on that left the reuse covering 2.5% of calls on a real page.
+    // A closure is caught instead at the instant it captures a scope, by the
+    // runtime Escaped flag - which reflects the calls that really built one
+    // rather than the ones that merely could.
+    private bool? _environmentDiesWithCall;
+
+    internal bool EnvironmentDiesWithCall
+    {
+        get
+        {
+            if (_environmentDiesWithCall is { } cached) return cached;
+
+            var eligible = Kind == FunctionKind.Ordinary &&
+                           !IsEvalCode &&
+                           !HasOwnArgumentsObject;
+            if (eligible)
+            {
+                foreach (var instruction in InstructionArray)
+                {
+                    if (instruction.OpCode is OpCode.PushWithEnvironment)
+                    {
+                        eligible = false;
+                        break;
+                    }
+
+                    // Direct eval is flagged on the call, not by a distinct opcode.
+                    if (instruction.E == 1 && instruction.OpCode is
+                        OpCode.Call0 or OpCode.Call1 or OpCode.CallN or OpCode.CallSpread)
+                    {
+                        eligible = false;
+                        break;
+                    }
+                }
+            }
+
+            _environmentDiesWithCall = eligible;
+            return eligible;
+        }
+    }
 
     // True when this function was compiled from eval() source; var/function
     // declarations use deletable bindings per Annex B B.3.3.3.

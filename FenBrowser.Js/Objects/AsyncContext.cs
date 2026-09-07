@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
@@ -41,6 +41,9 @@ public sealed class AsyncContext : JsObject
 		Registers = registers;
 		Environment = environment;
 		OuterEnvironment = environment;
+        // Capturing a scope is what makes it outlive the call that built it, so
+        // the frame's teardown must not reclaim its slot storage.
+        FenBrowser.Js.Environments.EnvironmentRecord.MarkEscapedChain(environment);
 	}
 
 	public override void Trace(IHeapTracer tracer)

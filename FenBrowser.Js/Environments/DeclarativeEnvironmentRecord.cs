@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Heap;
 
@@ -28,6 +28,22 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     private bool[]? _slotPresent;
 
     internal void AttachSlotStorage(object owner, IReadOnlyDictionary<string, int> slotMap, int slotCount)
+        => AttachSlotStorage(owner, slotMap, slotCount, null, null);
+
+    /// <summary>
+    /// Attaches slot storage, optionally over arrays the caller already holds.
+    /// A Binding is 40 bytes, so a function that declares 200 variables costs
+    /// 8KB of slot storage per call whether or not it ever assigns them - and
+    /// that allocation, not the register file beside it, is what a call to a
+    /// machine-generated function actually spends. Supplied arrays must be
+    /// cleared and at least <paramref name="slotCount"/> long.
+    /// </summary>
+    internal void AttachSlotStorage(
+        object owner,
+        IReadOnlyDictionary<string, int> slotMap,
+        int slotCount,
+        Binding[]? bindings,
+        bool[]? present)
     {
         if (slotCount <= 0)
         {
@@ -36,8 +52,39 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
 
         _slotOwner = owner;
         _slotMap = slotMap;
-        _slotBindings = new Binding[slotCount];
-        _slotPresent = new bool[slotCount];
+        _slotBindings = bindings is not null && bindings.Length >= slotCount
+            ? bindings
+            : new Binding[slotCount];
+        _slotPresent = present is not null && present.Length >= slotCount
+            ? present
+            : new bool[slotCount];
+    }
+
+    /// <summary>
+    /// Hands the slot arrays back and leaves this record holding none, so a
+    /// caller that knows the record is dead can reuse them. Returns false when
+    /// the record does not own storage for <paramref name="owner"/>, which
+    /// keeps a caller from taking arrays out from under a different frame.
+    /// </summary>
+    internal bool TryDetachSlotStorage(object owner, out Binding[]? bindings, out bool[]? present)
+    {
+        if (!ReferenceEquals(_slotOwner, owner) || _slotBindings is null || _slotPresent is null)
+        {
+            bindings = null;
+            present = null;
+            return false;
+        }
+
+        bindings = _slotBindings;
+        present = _slotPresent;
+        // Clearing the owner first means any later lookup misses the slot path
+        // and falls back to the dictionary rather than reading arrays that now
+        // belong to another call.
+        _slotOwner = null;
+        _slotMap = null;
+        _slotBindings = null;
+        _slotPresent = null;
+        return true;
     }
 
     /// <summary>

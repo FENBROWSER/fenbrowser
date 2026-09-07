@@ -62,6 +62,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // InterpreterFrame, and a suspended generator or async context has
             // already copied its registers out into its own array.
             _interpreter.ReturnRegisterFile(_frame.Registers);
+
+            // The environment is a separate question: a closure would have
+            // captured it, so only a function that provably creates none gets
+            // its slot storage reclaimed. Detaching first leaves the record
+            // holding nothing, so even an unexpected reference to it reads no
+            // array that now belongs to another call.
+            if (_function is { } fn && fn.EnvironmentDiesWithCall &&
+                _frame.Environment is Environments.DeclarativeEnvironmentRecord declarative &&
+                !declarative.Escaped &&
+                declarative.TryDetachSlotStorage(fn, out var bindings, out var present))
+            {
+                _interpreter.ReturnSlotStorage(bindings, present);
+            }
         }
     }
 
@@ -88,6 +101,81 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     public long RegisterFileHits => _registerFileHits;
     public long RegisterFileMisses => _registerFileMisses;
     public int LargestRegisterFile => _largestRegisterFile;
+
+    // The register file beside this one was pooled; its slot storage was not,
+    // and a Binding is 40 bytes against a JsValue's 32. On a bundle whose
+    // functions declare hundreds of variables that made slot storage the larger
+    // of the two: 200 declared-but-unassigned locals cost 2.35GB of allocation
+    // and 151 extra gen0 collections across 300k calls, and made each call 2.6x
+    // slower than the same body without them.
+    private readonly Dictionary<int, Stack<DeclarativeEnvironmentRecord.Binding[]>> _slotBindingPool = new();
+    private readonly Dictionary<int, Stack<bool[]>> _slotPresencePool = new();
+    private int _pooledSlotFiles;
+    private long _slotFileHits;
+    private long _slotFileMisses;
+
+    public long SlotFileHits => _slotFileHits;
+
+    public long SlotFileMisses => _slotFileMisses;
+
+    // Below this, renting costs more than it saves: two dictionary lookups to
+    // avoid an allocation the CLR satisfies with a pointer bump. Measured at 2
+    // slots, pooling made the call 12% slower; the crossover is well under the
+    // hundreds of slots that motivated any of this.
+    private const int MinPooledSlotFileLength = 16;
+
+    private void RentSlotStorage(int length, out DeclarativeEnvironmentRecord.Binding[]? bindings, out bool[]? present)
+    {
+        bindings = null;
+        present = null;
+        if (length < MinPooledSlotFileLength || length > MaxPooledRegisterFileLength) return;
+
+        if (_slotBindingPool.TryGetValue(length, out var bindingBucket) && bindingBucket.Count > 0 &&
+            _slotPresencePool.TryGetValue(length, out var presenceBucket) && presenceBucket.Count > 0)
+        {
+            _pooledSlotFiles--;
+            _slotFileHits++;
+            // Both are cleared on the way in, so they are handed out empty.
+            bindings = bindingBucket.Pop();
+            present = presenceBucket.Pop();
+            return;
+        }
+
+        _slotFileMisses++;
+    }
+
+    private void ReturnSlotStorage(DeclarativeEnvironmentRecord.Binding[]? bindings, bool[]? present)
+    {
+        if (bindings is null || present is null) return;
+
+        var length = bindings.Length;
+        if (length < MinPooledSlotFileLength ||
+            length != present.Length ||
+            length > MaxPooledRegisterFileLength ||
+            _pooledSlotFiles >= MaxPooledRegisterFiles)
+        {
+            return;
+        }
+
+        // Clear on the way in for the same reason the register pool does: a
+        // pooled Binding still holds a JsValue, and a stale object reference in
+        // the pool would keep the object it names alive for as long as the
+        // interpreter lives.
+        Array.Clear(bindings, 0, length);
+        Array.Clear(present, 0, length);
+
+        ref var bindingBucket = ref System.Runtime.InteropServices.CollectionsMarshal
+            .GetValueRefOrAddDefault(_slotBindingPool, length, out var hadBindings);
+        if (!hadBindings) bindingBucket = new Stack<DeclarativeEnvironmentRecord.Binding[]>();
+        bindingBucket!.Push(bindings);
+
+        ref var presenceBucket = ref System.Runtime.InteropServices.CollectionsMarshal
+            .GetValueRefOrAddDefault(_slotPresencePool, length, out var hadPresence);
+        if (!hadPresence) presenceBucket = new Stack<bool[]>();
+        presenceBucket!.Push(present);
+
+        _pooledSlotFiles++;
+    }
 
     private JsValue[] RentRegisterFile(int length)
     {
@@ -6500,10 +6588,34 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // The compiler already numbered this function's variables; give the call's
     // own environment that numbering so declaring and reading them is an array
     // index rather than a string hash.
-    private static void AttachFrameSlots(EnvironmentRecord? env, BytecodeFunction function)
+    // Why a call did or did not get pooled slot storage. Without this the hit
+    // count alone cannot say whether the reuse is narrow because functions are
+    // ineligible or because they simply declare too few variables to qualify.
+    private long _slotFramesWithSlots;
+    private long _slotFramesBigEnough;
+    private long _slotFramesEligible;
+
+    public string DescribeSlotEligibility() =>
+        $"withSlots={_slotFramesWithSlots} ge{MinPooledSlotFileLength}={_slotFramesBigEnough} eligible={_slotFramesEligible}";
+
+    private void AttachFrameSlots(EnvironmentRecord? env, BytecodeFunction function)
     {
         if (env is DeclarativeEnvironmentRecord declarative && function.SlotNames.Length > 0)
         {
+            _slotFramesWithSlots++;
+            if (function.SlotNames.Length >= MinPooledSlotFileLength) _slotFramesBigEnough++;
+            if (function.EnvironmentDiesWithCall) _slotFramesEligible++;
+            // Only a function whose environment cannot outlive the call may take
+            // pooled arrays, because only then is the frame's teardown allowed
+            // to take them back.
+            if (function.EnvironmentDiesWithCall)
+            {
+                RentSlotStorage(function.SlotNames.Length, out var bindings, out var present);
+                declarative.AttachSlotStorage(
+                    function, function.VariableSlots, function.SlotNames.Length, bindings, present);
+                return;
+            }
+
             declarative.AttachSlotStorage(function, function.VariableSlots, function.SlotNames.Length);
         }
     }

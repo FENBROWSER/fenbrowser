@@ -1,4 +1,4 @@
-using FenBrowser.Js.Heap;
+﻿using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Environments;
@@ -18,6 +18,27 @@ namespace FenBrowser.Js.Environments;
 // override the abstract operations.
 public abstract class EnvironmentRecord
 {
+    // Whether anything that can outlive the running call holds this record: a
+    // closure, a generator, or an async context. A call's slot storage may only
+    // be reused once its record is dead, and static analysis answers that far
+    // too rarely to be useful - almost every real function creates a closure
+    // somewhere, but only a fraction of calls actually reach that code. This
+    // records what happened rather than what might.
+    internal bool Escaped;
+
+    /// <summary>
+    /// Marks this record and its enclosing scopes as captured. The walk stops at
+    /// the first record already marked: everything above it was marked by the
+    /// capture that set it, so the chain above is already correct.
+    /// </summary>
+    internal static void MarkEscapedChain(EnvironmentRecord? env)
+    {
+        for (var current = env; current is not null && !current.Escaped; current = current.OuterEnv)
+        {
+            current.Escaped = true;
+        }
+    }
+
     protected EnvironmentRecord(EnvironmentRecord? outerEnv)
     {
         OuterEnv = outerEnv;

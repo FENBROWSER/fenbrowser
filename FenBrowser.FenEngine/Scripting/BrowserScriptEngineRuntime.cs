@@ -2075,6 +2075,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 $"slowestJob={_interpreter.SlowestJobMilliseconds:F0}ms/{_interpreter.SlowestJobInstructions}instr " +
                 $"natives=[{_interpreter.DescribeNativeCallCost()}] " +
                 $"nativeRooting={_interpreter.NativeRootingMilliseconds:F0}ms/{_interpreter.NativeRootedCalls} " +
+                $"slotPool=[hit={_interpreter.SlotFileHits} miss={_interpreter.SlotFileMisses}] " +
+                $"slotElig=[{_interpreter.DescribeSlotEligibility()}] " +
                 $"topCalled=[{_interpreter.DescribeNativeCallCounts()}] " +
                 // Whether the JIT tiered in at all decides how to read every
                 // number above it: 70M instructions is a different problem when
