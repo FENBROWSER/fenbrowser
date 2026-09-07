@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
@@ -175,11 +175,13 @@ public sealed class GcRootingHygieneTests
         var interpreter = new BytecodeInterpreter();
         interpreter.Heap.YoungAllocationsPerMinorGc = 8;
 
-        var result = Exec(interpreter,
+        // `await` suspends unconditionally, so the pushes land in microtasks
+        // that drain between the two Execute calls.
+        _ = Exec(interpreter,
             "var seen = []; " +
             "async function f(x) { var v = await x; seen.push(v); return v; } " +
-            "f(Promise.resolve(7)); f(Promise.resolve(8)); " +
-            "seen.join(',');");
+            "f(Promise.resolve(7)); f(Promise.resolve(8));");
+        var result = Exec(interpreter, "seen.join(',');");
         Assert.Equal("7,8", result.AsString());
     }
 

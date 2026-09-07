@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Promises;
@@ -12,10 +12,13 @@ public sealed partial class BytecodeInterpreter
 {
 
     // ECMA-262 27.7.5.2 Await(value).
-    // If the awaited value is a settled promise, return (or throw) its result
-    // immediately so the interpreter can continue without suspension. If the
-    // promise is pending, save the frame state to the AsyncContext and attach
-    // fulfill/reject handlers that will resume execution when the promise settles.
+    // Await ALWAYS suspends. PerformPromiseThen queues the resumption as a
+    // microtask job even when the promise is already settled, so the code after
+    // an `await` never runs before the rest of the current synchronous script.
+    // The old settled fast-path returned the result inline, which made
+    //   async f(){ log(1); await 0; log(2); }  log(3); f(); log(4);
+    // print 3,1,2,4 instead of 3,1,4,2 - every microtask observer disagreed with
+    // us about ordering (audit JSRT-003).
     private JsValue AwaitValue(InterpreterFrame frame, JsValue value, int destReg)
     {
         var awaitedPromise = PromiseResolveStatic(value);
@@ -25,18 +28,21 @@ public sealed partial class BytecodeInterpreter
             return value;
         }
 
-        if (instance.Promise.State == PromiseState.Fulfilled)
-            return instance.Promise.GetResultUnchecked();
-
-        if (instance.Promise.State == PromiseState.Rejected)
-            throw new JsThrownException(instance.Promise.GetResultUnchecked());
-
         if (frame.AsyncContext is null)
         {
+            // Nothing to suspend into: this is not a real async activation, so
+            // keep the historical inline behaviour rather than failing the whole
+            // evaluation.
+            if (instance.Promise.State == PromiseState.Fulfilled)
+                return instance.Promise.GetResultUnchecked();
+
+            if (instance.Promise.State == PromiseState.Rejected)
+                throw new JsThrownException(instance.Promise.GetResultUnchecked());
+
             throw new JsThrownException(CreateTypeError("Pending await is not supported in this execution context."));
         }
 
-        // Pending â€” suspend the async frame.
+        // Suspend the async frame and resume from the microtask job.
         SaveAsyncState(frame, destReg);
 
         var ctx = frame.AsyncContext!;

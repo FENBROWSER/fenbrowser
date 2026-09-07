@@ -1,4 +1,4 @@
-using FenBrowser.Js.AstValidation;
+﻿using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Parser;
@@ -126,10 +126,39 @@ public sealed class AsyncFunctionRuntimeTests
         Assert.Equal(99d, Run("var side = 0; async function f() { side = 99; return await 42; } f(); side;").AsNumber());
     }
 
+    // `await` suspends even on an already-settled value, so the assignment
+    // after it runs in a microtask - not before the calling script finishes.
     [Fact]
     public void CodeAfterAwaitExecutes()
     {
-        Assert.Equal(42d, Run("var side = 0; async function f() { var x = await 42; side = x; } f(); side;").AsNumber());
+        Assert.Equal(42d, RunThenRead(
+            "var side = 0; async function f() { var x = await 42; side = x; } f();",
+            "side;").AsNumber());
+    }
+
+    [Fact]
+    public void CodeAfterAwaitDoesNotRunBeforeCallerFinishes()
+    {
+        Assert.Equal(0d, Run("var side = 0; async function f() { var x = await 42; side = x; } f(); side;").AsNumber());
+    }
+
+    // ECMA-262 27.7.5.2: Await always queues its resumption, so the synchronous
+    // remainder of the script observes only what ran before the first `await`.
+    [Fact]
+    public void AwaitOnSettledValueStillYieldsToCaller()
+    {
+        Assert.Equal("3,1,4", Run(
+            "var log = []; async function f(){ log.push(1); await 0; log.push(2); } " +
+            "log.push(3); f(); log.push(4); log.join(',');").AsString());
+    }
+
+    [Fact]
+    public void AwaitResumesBeforeLaterMicrotasksQueuedAfterIt()
+    {
+        Assert.Equal("3,1,4,2,m", RunThenRead(
+            "var log = []; async function f(){ log.push(1); await 0; log.push(2); } " +
+            "log.push(3); f(); log.push(4); Promise.resolve().then(function(){ log.push('m'); });",
+            "log.join(',');").AsString());
     }
 
     // === await inside try/catch ===
@@ -137,7 +166,7 @@ public sealed class AsyncFunctionRuntimeTests
     [Fact]
     public void AwaitInsideTryCatchBody()
     {
-        var result = Run(@"
+        var result = RunThenRead(@"
             var captured = 'none';
             async function f() {
                 try {
@@ -148,8 +177,7 @@ public sealed class AsyncFunctionRuntimeTests
                 }
             }
             f();
-            captured;
-        ");
+        ", "captured;");
         Assert.Equal("ok-number", result.AsString());
     }
 }
