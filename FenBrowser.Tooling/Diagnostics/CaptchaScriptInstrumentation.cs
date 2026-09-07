@@ -31,8 +31,16 @@ internal static class CaptchaScriptInstrumentation
             // window at all. Anything that reaches for one throws before the
             // bundle gets to run, so address the global directly.
             var window = globalThis;
-            if (typeof document === 'undefined' || !document) { return; }
             if (window.__fenPrologueInstalled) { return; }
+
+            // In a worker there is no document, and everything below that
+            // touches one has to be skipped - but bailing out entirely left the
+            // worker realm with no error capture at all, which is exactly where
+            // the trail goes cold: the anchor's message reaches the worker, its
+            // handler runs, and no reply is ever produced. Install the error
+            // hooks there and report them back over the worker's own channel.
+            if (typeof document === 'undefined' || !document) { return; }
+
             window.__fenPrologueInstalled = 1;
             if (!window.__fenListenerLog) { window.__fenListenerLog = []; }
 
@@ -206,14 +214,28 @@ internal static class CaptchaScriptInstrumentation
             } catch (e) { note('childsweep-threw:' + e); }
             try {
                 if (typeof MessagePort === 'function' && MessagePort.prototype) {
+                    // "a port was written to and never answered" is only
+                    // actionable once you know which port. Number them, and
+                    // carry the number on every event.
+                    window.__fenPortSeq = 0;
+                    var portId = function (p) {
+                        try {
+                            if (p.__fenPortId === undefined) {
+                                p.__fenPortId = ++window.__fenPortSeq;
+                            }
+                            return p.__fenPortId;
+                        } catch (e) { return '?'; }
+                    };
+                    window.__fenPortId = portId;
+
                     var portPost = MessagePort.prototype.postMessage;
                     MessagePort.prototype.postMessage = function (d, t) {
-                        logPost('port', d, '-', t);
+                        logPost('port#' + portId(this), d, '-', t);
                         return portPost.apply(this, arguments);
                     };
                     var portStart = MessagePort.prototype.start;
                     MessagePort.prototype.start = function () {
-                        logPost('port-start', '', '-', null);
+                        logPost('port-start#' + portId(this), '', '-', null);
                         return portStart.apply(this, arguments);
                     };
 
@@ -226,8 +248,9 @@ internal static class CaptchaScriptInstrumentation
                     if (typeof portAdd === 'function') {
                         MessagePort.prototype.addEventListener = function (type, fn, opts) {
                             if (type === 'message' && typeof fn === 'function') {
+                                var self = this;
                                 var wrapped = function (ev) {
-                                    logPost('port-recv', ev && ev.data, '-', null);
+                                    logPost('port-recv#' + portId(self), ev && ev.data, '-', null);
                                     return fn.apply(this, arguments);
                                 };
                                 return portAdd.call(this, type, wrapped, opts);
@@ -243,7 +266,7 @@ internal static class CaptchaScriptInstrumentation
                                 var self = this;
                                 if (typeof fn === 'function') {
                                     portAdd.call(self, 'message', function (ev) {
-                                        logPost('port-recv', ev && ev.data, '-', null);
+                                        logPost('port-recv#' + portId(self), ev && ev.data, '-', null);
                                         return fn.apply(self, arguments);
                                     });
                                     try { self.start(); } catch (e) { }
@@ -292,14 +315,60 @@ internal static class CaptchaScriptInstrumentation
                             }
                         }
                     } catch (e) { match = 'compare-threw'; }
+                    var portIds = '';
+                    try {
+                        if (ev.ports && ev.ports.length && window.__fenPortId) {
+                            for (var pi = 0; pi < ev.ports.length; pi++) {
+                                portIds += (pi ? ',' : '') + '#' + window.__fenPortId(ev.ports[pi]);
+                            }
+                        }
+                    } catch (e) { portIds = 'id-threw'; }
                     note('msg data=' + String(ev.data).slice(0, 20) +
-                        ' ports=' + (ev.ports ? ev.ports.length : 'none') +
+                        ' ports=' + (ev.ports ? ev.ports.length : 'none') + portIds +
                         ' source=' + (ev.source === window ? 'self' :
                             (ev.source === null ? 'null' :
                                 (ev.source === undefined ? 'undefined' : match))) +
                         ' origin=' + ev.origin);
                 });
             } catch (e) { note('message-probe-threw:' + e); }
+            try {
+                if (typeof Worker === 'function' && Worker.prototype) {
+                    var workerPost = Worker.prototype.postMessage;
+                    Worker.prototype.postMessage = function (d, t) {
+                        var ids = '';
+                        try {
+                            var list = (t && t.length) ? t : (d && d.length !== undefined && d.constructor === Array ? [] : []);
+                            for (var wi = 0; wi < list.length; wi++) {
+                                if (window.__fenPortId && list[wi] instanceof MessagePort) {
+                                    ids += (wi ? ',' : '') + '#' + window.__fenPortId(list[wi]);
+                                }
+                            }
+                        } catch (e) { ids = '?'; }
+                        logPost('worker-post' + (ids ? ' ports=' + ids : ''), d, '-', t);
+                        return workerPost.apply(this, arguments);
+                    };
+
+                    var workerAdd = Worker.prototype.addEventListener;
+                    Worker.prototype.addEventListener = function (type, fn, opts) {
+                        if (type === 'message' && typeof fn === 'function') {
+                            var wrapped = function (ev) {
+                                var ids = '';
+                                try {
+                                    if (ev.ports && ev.ports.length && window.__fenPortId) {
+                                        for (var wj = 0; wj < ev.ports.length; wj++) {
+                                            ids += (wj ? ',' : '') + '#' + window.__fenPortId(ev.ports[wj]);
+                                        }
+                                    }
+                                } catch (e) { ids = '?'; }
+                                logPost('worker-recv' + (ids ? ' ports=' + ids : ''), ev && ev.data, '-', null);
+                                return fn.apply(this, arguments);
+                            };
+                            return workerAdd.call(this, type, wrapped, opts);
+                        }
+                        return workerAdd.apply(this, arguments);
+                    };
+                }
+            } catch (e) { note('worker-probe-threw:' + e); }
 
             // Chrome fetches /recaptcha/api2/webworker during set-up and we never
             // do, because our Worker is a stub that swallows everything. Record
