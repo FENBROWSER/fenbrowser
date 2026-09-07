@@ -1,4 +1,4 @@
-using FenBrowser.Js.Objects;
+﻿using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Heap;
@@ -907,6 +907,9 @@ public sealed class JsHeap
         _roots.PopTo(mark);
     }
 
+    // Called once per bytecode instruction, so the common answer - no
+    // collection pending - has to be a field test and nothing more.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void CollectAtSafePointIfRequested()
     {
         if (!_minorCollectionPending) return;

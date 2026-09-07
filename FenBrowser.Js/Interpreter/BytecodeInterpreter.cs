@@ -1817,6 +1817,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             frame.SlotBindings = ownSlots.SlotBindingsFor(function);
             frame.SlotPresence = ownSlots.SlotPresenceFor(function);
         }
+        // Hoisted once per activation. Registers is a get-only property
+        // assigned in the frame's constructor, so the array cannot change
+        // underneath the loop; reloading it through the frame on every
+        // operand access is a field load the dispatch cannot afford at
+        // two or three accesses per instruction.
+        var registers = frame.Registers;
         // Audit �1: pin this frame's registers/env into the GC root set for
         // its execution lifetime. Dispose pops on every return path (normal
         // return, exception, generator yield) via using-scope semantics.
@@ -1854,7 +1860,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             Array.Copy(ownerGenerator.Registers, frame.Registers, frame.Registers.Length);
             frame.InstructionPointer = ownerGenerator.InstructionPointer;
             if (ownerGenerator.YieldDestReg >= 0)
-                frame.Registers[ownerGenerator.YieldDestReg] = ownerGenerator.SentValue;
+                registers[ownerGenerator.YieldDestReg] = ownerGenerator.SentValue;
             ownerGenerator.YieldDestReg = -1;
             // Restore exception handler stack so try/catch blocks survive yield.
             // ToArray returns top-first; push in reverse to reconstruct original.
@@ -1882,7 +1888,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             Array.Copy(asyncContext.Registers, frame.Registers, frame.Registers.Length);
             frame.InstructionPointer = asyncContext.InstructionPointer;
             if (asyncContext.AwaitDestReg >= 0)
-                frame.Registers[asyncContext.AwaitDestReg] = asyncContext.SentValue;
+                registers[asyncContext.AwaitDestReg] = asyncContext.SentValue;
             asyncContext.AwaitDestReg = -1;
             var savedCatch = asyncContext.SavedCatchHandlers;
 			var savedFinally = asyncContext.SavedFinallyHandlers;
@@ -1988,7 +1994,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var hasBudget = InstructionBudget > 0;
         var hasWallClock = _wallClockDeadlineTicks != 0 || InterruptCallback is not null;
         var checkBudgetAndWallClock = hasBudget || hasWallClock;
-        while (frame.InstructionPointer < instructions.Length)
+        // The array is fixed for the life of the activation, so its length is a
+        // loop invariant the bounds check no longer has to re-derive.
+        var instructionCount = instructions.Length;
+        while (frame.InstructionPointer < instructionCount)
         {
             _heap.CollectAtSafePointIfRequested();
             if (checkBudgetAndWallClock)
@@ -2057,7 +2066,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 continue;
             }
 
-            var ins = instructions[frame.InstructionPointer++];
+            ref readonly var ins = ref instructions[frame.InstructionPointer++];
             if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
             {
                 FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordOpCode(ins.OpCode, function);
@@ -2065,10 +2074,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             switch (ins.OpCode)
             {
                 case OpCode.LoadConst:
-                    frame.Registers[ins.A] = function.Constants[ins.B];
+                    registers[ins.A] = function.Constants[ins.B];
                     break;
                 case OpCode.LoadVar:
-                    frame.Registers[ins.A] = LoadName(frame, ins.B);
+                    registers[ins.A] = LoadName(frame, ins.B);
                     break;
                 case OpCode.LoadThis:
                     if (function.IsDerivedConstructor &&
@@ -2082,7 +2091,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                                   function.Instructions[currentIp - 1].OpCode == OpCode.LoadSuperConstructor;
                         if (isSuperReceiverLoad)
                         {
-                            frame.Registers[ins.A] = frame.ThisValue;
+                            registers[ins.A] = frame.ThisValue;
                             break;
                         }
                         else
@@ -2107,39 +2116,39 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     if (resolvedThisResult == BindingOpResult.Ok)
                     {
-                        frame.Registers[ins.A] = boundThis;
+                        registers[ins.A] = boundThis;
                     }
                     else
                     {
-                        frame.Registers[ins.A] = frame.ThisValue;
+                        registers[ins.A] = frame.ThisValue;
                     }
                     break;
                 case OpCode.StoreVar:
-                    StoreName(frame, ins.B, frame.Registers[ins.A]);
+                    StoreName(frame, ins.B, registers[ins.A]);
                     break;
                 case OpCode.InitVar:
-                    InitializeName(frame, ins.B, frame.Registers[ins.A]);
+                    InitializeName(frame, ins.B, registers[ins.A]);
                     break;
                 case OpCode.StoreVarTop:
-                    StoreNameInVariableEnvironment(frame, ins.B, frame.Registers[ins.A]);
+                    StoreNameInVariableEnvironment(frame, ins.B, registers[ins.A]);
                     break;
                 case OpCode.PreResolveVar:
                     PreResolveBinding(frame, ins.B);
                     break;
                 case OpCode.StoreResolvedVar:
-                    StoreToResolvedBinding(frame, ins.B, frame.Registers[ins.A]);
+                    StoreToResolvedBinding(frame, ins.B, registers[ins.A]);
                     break;
                 case OpCode.Move:
-                    frame.Registers[ins.A] = frame.Registers[ins.B];
+                    registers[ins.A] = registers[ins.B];
                     break;
                 case OpCode.SetFunctionName:
-                    ApplyFunctionName(frame.Registers[ins.A], frame.Registers[ins.B], prefix: null);
+                    ApplyFunctionName(registers[ins.A], registers[ins.B], prefix: null);
                     break;
                 case OpCode.SetElemDefine:
                 {
-                    var obj = _heap.GetObject(ResolveObjectHandle(frame.Registers[ins.A]));
-                    var keyValue = frame.Registers[ins.B];
-                    var val = frame.Registers[ins.C];
+                    var obj = _heap.GetObject(ResolveObjectHandle(registers[ins.A]));
+                    var keyValue = registers[ins.B];
+                    var val = registers[ins.C];
                     if (keyValue.Tag == JsValueTag.Symbol)
                     {
                         obj.DefineOwnSymbolProperty(keyValue.AsSymbolId(), new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
@@ -2178,12 +2187,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // ECMA-262 15.7.10 step 27: convert to property key via
                     // ToPropertyKey so errors (ReferenceError, TypeError from
                     // @@toPrimitive) surface at class-definition time.
-                    var rawKey = frame.Registers[ins.A];
+                    var rawKey = registers[ins.A];
                     var propKey = ToPropertyKey(rawKey);
                     var keyValue = rawKey.Tag == JsValueTag.Symbol
                         ? rawKey
                         : JsValue.FromString(propKey);
-                    var ctorValue = frame.Registers[ins.B];
+                    var ctorValue = registers[ins.B];
                     if (ctorValue.Tag == JsValueTag.Object)
                     {
                         var ctorObj = _heap.GetObject(ctorValue.AsObjectHandle());
@@ -2212,7 +2221,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             key = calleeFn.ComputedFieldKeys[idx];
                         }
                     }
-                    frame.Registers[ins.A] = key;
+                    registers[ins.A] = key;
                     break;
                 }
                 case OpCode.Jump:
@@ -2237,7 +2246,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     frame.InstructionPointer = ins.A;
                     break;
                 case OpCode.JumpIfFalse:
-                    if (!IsTruthy(frame.Registers[ins.A]))
+                    if (!IsTruthy(registers[ins.A]))
                     {
                         if (ins.B < frame.InstructionPointer - 1 && function.BackEdges < int.MaxValue)
                         {
@@ -2269,12 +2278,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                     break;
                 case OpCode.Throw:
-                    ThrowOrHandle(frame, frame.Registers[ins.A]);
+                    ThrowOrHandle(frame, registers[ins.A]);
                     break;
                 case OpCode.NewObject:
                 {
                     var handle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
-                    frame.Registers[ins.A] = JsValue.FromObject(handle);
+                    registers[ins.A] = JsValue.FromObject(handle);
                     break;
                 }
                 case OpCode.CopyDataProperties:
@@ -2282,20 +2291,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // ECMA-262 13.2.5.5 object spread `{ ...src }`: copy own
                     // enumerable string+symbol properties from the source into the
                     // target object literal. null/undefined source is a no-op.
-                    CopyDataPropertiesInto(frame.Registers[ins.A], frame.Registers[ins.B]);
+                    CopyDataPropertiesInto(registers[ins.A], registers[ins.B]);
                     break;
                 }
                 case OpCode.NewArray:
                 {
                     var obj = CreateArrayObject(Array.Empty<JsValue>());
                     var handle = _heap.AllocateObject(obj, AllocationSite.Current());
-                    frame.Registers[ins.A] = JsValue.FromObject(handle);
+                    registers[ins.A] = JsValue.FromObject(handle);
                     break;
                 }
                 case OpCode.NewRegExp:
                 {
                     var rawText = function.Constants[ins.B].AsString();
-                    frame.Registers[ins.A] = NewRegExpLiteral(rawText);
+                    registers[ins.A] = NewRegExpLiteral(rawText);
                     break;
                 }
                 case OpCode.DefineGetter:
@@ -2335,22 +2344,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     HandleLoadSuperElement(frame, ins);
                     break;
                 case OpCode.DynamicImport:
-                    frame.Registers[ins.A] = HandleDynamicImport(frame.Registers[ins.B], frame.Registers[ins.C], frame.Environment);
+                    registers[ins.A] = HandleDynamicImport(registers[ins.B], registers[ins.C], frame.Environment);
                     break;
                 case OpCode.ImportMeta:
-                    frame.Registers[ins.A] = HandleImportMeta(frame.Environment);
+                    registers[ins.A] = HandleImportMeta(frame.Environment);
                     break;
                 case OpCode.ImportSource:
-                    frame.Registers[ins.A] = HandleImportSource(frame.Registers[ins.B], frame.Registers[ins.C]);
+                    registers[ins.A] = HandleImportSource(registers[ins.B], registers[ins.C]);
                     break;
                 case OpCode.ImportDefer:
-                    frame.Registers[ins.A] = HandleImportDefer(frame.Registers[ins.B], frame.Registers[ins.C]);
+                    registers[ins.A] = HandleImportDefer(registers[ins.B], registers[ins.C]);
                     break;
                 case OpCode.LoadSuperConstructor:
                     HandleLoadSuperConstructor(frame, ins);
                     break;
                 case OpCode.LoadNewTarget:
-                    frame.Registers[ins.A] = frame.NewTarget;
+                    registers[ins.A] = frame.NewTarget;
                     break;
                 case OpCode.InitThisBinding:
                 {
@@ -2379,7 +2388,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     SaveGeneratorState(frame, ins.A);
 
                     var resultObj = CreateOrdinaryObject();
-                    resultObj.DefineOwnProperty("value", new JsPropertyDescriptor(frame.Registers[ins.B], Writable: true, Enumerable: true, Configurable: true));
+                    resultObj.DefineOwnProperty("value", new JsPropertyDescriptor(registers[ins.B], Writable: true, Enumerable: true, Configurable: true));
                     resultObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
                     return JsValue.FromObject(_heap.AllocateObject(resultObj, AllocationSite.Current()));
                 }
@@ -2401,7 +2410,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         try
                         {
                             // GetIterator(operand) — ECMA-262 7.4.1.
-                            var operand = frame.Registers[ins.B];
+                            var operand = registers[ins.B];
                             var iteratorSymId = GetWellKnownSymbolId("iterator");
                             if (iteratorSymId == 0)
                                 throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
@@ -2607,7 +2616,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             break;
                         }
 
-                        frame.Registers[ins.A] = innerValue;
+                        registers[ins.A] = innerValue;
                         break;
                     }
 
@@ -2683,7 +2692,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // so the JS try/catch mechanism can intercept it.
                     try
                     {
-                        var bindingValue = ToObjectValue(frame.Registers[ins.A]);
+                        var bindingValue = ToObjectValue(registers[ins.A]);
                         var bindingHandle = bindingValue.AsObjectHandle();
                         var adapter = CreateBindingAdapter(bindingHandle);
                         var withEnv = StampEnvironment(new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, frame.Environment));
@@ -2722,8 +2731,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     try
                     {
-                        var result = AwaitValue(frame, frame.Registers[ins.B], ins.A);
-                        frame.Registers[ins.A] = result;
+                        var result = AwaitValue(frame, registers[ins.B], ins.A);
+                        registers[ins.A] = result;
                     }
                     catch (JsThrownException ex)
                     {
@@ -2741,8 +2750,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.SetPrototype:
                 {
-                    var childValue = frame.Registers[ins.A];
-                    var parentValue = frame.Registers[ins.B];
+                    var childValue = registers[ins.A];
+                    var parentValue = registers[ins.B];
                     if (childValue.Tag != JsValueTag.Object)
                     {
                         ThrowOrHandle(frame, CreateTypeError("SetPrototype requires an object target."));
@@ -2775,7 +2784,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.ValidateClassHeritage:
                 {
-                    var heritage = frame.Registers[ins.A];
+                    var heritage = registers[ins.A];
                     if (heritage.Tag != JsValueTag.Null &&
                         (heritage.Tag != JsValueTag.Object ||
                          !IsConstructableTarget(heritage.AsObjectHandle())))
@@ -2787,9 +2796,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.SetPropByName:
                 {
-                    var receiverValue = frame.Registers[ins.A];
+                    var receiverValue = registers[ins.A];
                     var prop = function.PropertyNames[ins.B];
-                    var value = frame.Registers[ins.C];
+                    var value = registers[ins.C];
 
                     if (receiverValue.Tag == JsValueTag.HostObject)
                     {
@@ -2857,17 +2866,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.GetPropByName:
                 {
-                    var receiver = frame.Registers[ins.B];
+                    var receiver = registers[ins.B];
                     var prop = function.PropertyNames[ins.C];
                     var icOffset = frame.InstructionPointer - 1;
                     if (TryGetLoadIC(function, icOffset, receiver, prop, out var icResult))
                     {
-                        frame.Registers[ins.A] = icResult;
+                        registers[ins.A] = icResult;
                         break;
                     }
                     try
                     {
-                        frame.Registers[ins.A] = GetReceiverProperty(receiver, prop);
+                        registers[ins.A] = GetReceiverProperty(receiver, prop);
                         PopulateLoadIC(function, icOffset, receiver, prop);
                     }
                     catch (JsThrownException ex)
@@ -2878,7 +2887,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.DeletePropByName:
                 {
-                    var receiver = frame.Registers[ins.B];
+                    var receiver = registers[ins.B];
                     // ECMA-262 13.5.1.2: delete of a property reference does
                     // ToObject(base) first, so `delete null.x` / `delete undefined.x`
                     // throw TypeError. Other primitives box harmlessly (delete of a
@@ -2892,7 +2901,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                     if (receiver.Tag != JsValueTag.Object)
                     {
-                        frame.Registers[ins.A] = JsValue.FromBoolean(true);
+                        registers[ins.A] = JsValue.FromBoolean(true);
                         break;
                     }
 
@@ -2907,7 +2916,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             break;
                         }
 
-                        frame.Registers[ins.A] = JsValue.FromBoolean(deleted);
+                        registers[ins.A] = JsValue.FromBoolean(deleted);
                         break;
                     }
                     var deletedProp = obj.DeleteProperty(prop);
@@ -2917,15 +2926,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         break;
                     }
 
-                    frame.Registers[ins.A] = JsValue.FromBoolean(deletedProp);
+                    registers[ins.A] = JsValue.FromBoolean(deletedProp);
                     break;
                 }
                 case OpCode.SetElem:
                     PerformSetElement(
                         frame,
-                        frame.Registers[ins.A],
-                        frame.Registers[ins.B],
-                        frame.Registers[ins.C],
+                        registers[ins.A],
+                        registers[ins.B],
+                        registers[ins.C],
                         function.IsStrictMode);
                     break;
                 case OpCode.SpreadAppend:
@@ -2933,10 +2942,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // ECMA-262 13.2.4.1 / 13.3.7.1 — expand the iterable in C into the
                     // array in A starting at the numeric next-index held in B, then
                     // write the updated index back to B.
-                    var targetHandle = ResolveObjectHandle(frame.Registers[ins.A]);
+                    var targetHandle = ResolveObjectHandle(registers[ins.A]);
                     var targetObj = _heap.GetObject(targetHandle);
-                    var startIndex = (int)frame.Registers[ins.B].AsNumber();
-                    var values = CollectSpreadValues(frame.Registers[ins.C]);
+                    var startIndex = (int)registers[ins.B].AsNumber();
+                    var values = CollectSpreadValues(registers[ins.C]);
 
                     var rootMark = _heap.RootCount;
                     try
@@ -2953,7 +2962,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         for (var k = 0; k < values.Count; k++)
                         {
                             var key = (startIndex + k).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                            _ = SetPropertyValue(targetHandle, targetObj, key, values[k], frame.Registers[ins.A]);
+                            _ = SetPropertyValue(targetHandle, targetObj, key, values[k], registers[ins.A]);
                         }
                     }
                     finally
@@ -2961,12 +2970,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         _heap.PopRootsTo(rootMark);
                     }
 
-                    frame.Registers[ins.B] = JsValue.FromNumber(startIndex + values.Count);
+                    registers[ins.B] = JsValue.FromNumber(startIndex + values.Count);
                     break;
                 }
                 case OpCode.DeleteElem:
                 {
-                    var receiver = frame.Registers[ins.B];
+                    var receiver = registers[ins.B];
                     // ECMA-262 13.5.1.2: ToObject(base) happens before the key is
                     // coerced, so `delete null[x]` throws TypeError before x's
                     // toString runs.
@@ -2979,12 +2988,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                     if (receiver.Tag != JsValueTag.Object)
                     {
-                        frame.Registers[ins.A] = JsValue.FromBoolean(true);
+                        registers[ins.A] = JsValue.FromBoolean(true);
                         break;
                     }
 
                     var obj = ResolveObject(receiver);
-                    var keyValueDel = frame.Registers[ins.C];
+                    var keyValueDel = registers[ins.C];
                     if (keyValueDel.Tag == JsValueTag.Symbol)
                     {
                         var deletedSymbol = obj.DeleteSymbolProperty(keyValueDel.AsSymbolId());
@@ -2994,7 +3003,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             break;
                         }
 
-                        frame.Registers[ins.A] = JsValue.FromBoolean(deletedSymbol);
+                        registers[ins.A] = JsValue.FromBoolean(deletedSymbol);
                         break;
                     }
                     var key = ToPropertyKey(keyValueDel);
@@ -3005,12 +3014,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         break;
                     }
 
-                    frame.Registers[ins.A] = JsValue.FromBoolean(deletedKey);
+                    registers[ins.A] = JsValue.FromBoolean(deletedKey);
                     break;
                 }
                 case OpCode.EnumerateKeys:
                 {
-                    frame.Registers[ins.A] = CreateForInIterator(frame.Registers[ins.B]);
+                    registers[ins.A] = CreateForInIterator(registers[ins.B]);
                     break;
                 }
                 case OpCode.EnumerateValues:
@@ -3022,7 +3031,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         // C=1: strict GetIterator (destructuring) — array-likes
                         // without @@iterator throw instead of falling back.
-                        frame.Registers[ins.A] = CreateForOfIteratorState(frame.Registers[ins.B], requireIterable: ins.C == 1);
+                        registers[ins.A] = CreateForOfIteratorState(registers[ins.B], requireIterable: ins.C == 1);
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
@@ -3032,7 +3041,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // Lazy mode calls the user .next(), which can throw.
                     try
                     {
-                        var iter = ResolveObject(frame.Registers[ins.B]) as ForOfIteratorObject
+                        var iter = ResolveObject(registers[ins.B]) as ForOfIteratorObject
                             ?? throw new InvalidOperationException("Invalid for-of iterator object.");
                         if (ForOfStepDone(iter, out var value))
                         {
@@ -3040,7 +3049,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         }
                         else
                         {
-                            frame.Registers[ins.A] = value;
+                            registers[ins.A] = value;
                         }
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
@@ -3057,7 +3066,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // wins).
                     try
                     {
-                        if (ResolveObject(frame.Registers[ins.B]) is ForOfIteratorObject closing)
+                        if (ResolveObject(registers[ins.B]) is ForOfIteratorObject closing)
                         {
                             CloseForOfIteratorState(closing, suppressErrors: ins.C == 1);
                         }
@@ -3073,7 +3082,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.ForInNext:
                 {
-                    var iterator = ResolveObject(frame.Registers[ins.B]) as ForInIteratorObject
+                    var iterator = ResolveObject(registers[ins.B]) as ForInIteratorObject
                         ?? throw new InvalidOperationException("Invalid for-in iterator object.");
                     if (!iterator.TryMoveNext(out var key))
                     {
@@ -3081,7 +3090,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         break;
                     }
 
-                    frame.Registers[ins.A] = JsValue.FromString(key);
+                    registers[ins.A] = JsValue.FromString(key);
                     break;
                 }
                 // H.5 — private field ops with brand validation.
@@ -3089,9 +3098,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 // Brand is a class-unique token stored in function.BrandTokens[ins.D].
                 case OpCode.DefinePrivateField:
                 {
-                    var target = frame.Registers[ins.A];
+                    var target = registers[ins.A];
                     var name = function.PropertyNames[ins.B];
-                    var value = frame.Registers[ins.C];
+                    var value = registers[ins.C];
                     var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
                     if (target.Tag == JsValueTag.HostObject)
                     {
@@ -3111,7 +3120,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.GetPrivateField:
                 {
-                    var objVal = frame.Registers[ins.B];
+                    var objVal = registers[ins.B];
                     var name = function.PropertyNames[ins.C];
                     var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
                     if (objVal.Tag == JsValueTag.HostObject)
@@ -3123,7 +3132,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                 ThrowOrHandle(frame, CreateTypeError("Cannot read private field from an object whose class did not declare it."));
                                 break;
                             }
-                            frame.Registers[ins.A] = hostPrivateValue;
+                            registers[ins.A] = hostPrivateValue;
                         }
                         catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                         break;
@@ -3144,14 +3153,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         ThrowOrHandle(frame, CreateTypeError("Cannot read private field from an object whose class did not declare it."));
                         break;
                     }
-                    frame.Registers[ins.A] = privateValue;
+                    registers[ins.A] = privateValue;
                     break;
                 }
                 case OpCode.SetPrivateField:
                 {
-                    var objVal = frame.Registers[ins.A];
+                    var objVal = registers[ins.A];
                     var name = function.PropertyNames[ins.B];
-                    var value = frame.Registers[ins.C];
+                    var value = registers[ins.C];
                     var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
                     if (objVal.Tag == JsValueTag.HostObject)
                     {
@@ -3181,8 +3190,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.GetElem:
                 {
-                    var receiver = frame.Registers[ins.B];
-                    var keyValue = frame.Registers[ins.C];
+                    var receiver = registers[ins.B];
+                    var keyValue = registers[ins.C];
                     try
                     {
                         // ECMA-262 13.3.2.1: GetValue requires RequireObjectCoercible
@@ -3199,14 +3208,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                         if (keyValue.Tag == JsValueTag.Symbol)
                         {
-                            frame.Registers[ins.A] = GetReceiverSymbolProperty(receiver, keyValue.AsSymbolId());
+                            registers[ins.A] = GetReceiverSymbolProperty(receiver, keyValue.AsSymbolId());
                         }
                         else if (TryGetDenseElement(receiver, keyValue, out var denseElement))
                         {
                             // A dense array element is an own data property, so the
                             // answer is the slot itself: no key to build, no table to
                             // walk, no prototype chain to consider.
-                            frame.Registers[ins.A] = denseElement;
+                            registers[ins.A] = denseElement;
                         }
                         else
                         {
@@ -3218,12 +3227,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             if (keyValue.Tag == JsValueTag.String &&
                                 TryGetElemStringIC(function, icOffsetElem, receiver, keyValue.AsString(), out var elemResult))
                             {
-                                frame.Registers[ins.A] = elemResult;
+                                registers[ins.A] = elemResult;
                             }
                             else
                             {
                                 var propKey = ToPropertyKey(keyValue);
-                                frame.Registers[ins.A] = GetReceiverProperty(receiver, propKey);
+                                registers[ins.A] = GetReceiverProperty(receiver, propKey);
                                 if (keyValue.Tag == JsValueTag.String)
                                 {
                                     PopulateGetElemStringIC(function, icOffsetElem, receiver, propKey);
@@ -3243,7 +3252,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var nested = function.NestedFunctions[ins.B];
                     // Capture the current lexical EnvironmentRecord so closures
                     // resolve free identifiers through the env chain.
-                    frame.Registers[ins.A] = CreateFunctionObject(nested, frame.Environment);
+                    registers[ins.A] = CreateFunctionObject(nested, frame.Environment);
                     break;
                 }
                 case OpCode.Call0:
@@ -3251,7 +3260,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     StoreCallResult(
                         frame,
                         ins.A,
-                        frame.Registers[ins.B],
+                        registers[ins.B],
                         Array.Empty<JsValue>(),
                         JsValue.Undefined,
                         allowDirectEval: ins.E == DirectEvalCallFlag,
@@ -3263,8 +3272,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     StoreCallResult(
                         frame,
                         ins.A,
-                        frame.Registers[ins.B],
-                        new[] { frame.Registers[ins.C] },
+                        registers[ins.B],
+                        new[] { registers[ins.C] },
                         JsValue.Undefined,
                         allowDirectEval: ins.E == DirectEvalCallFlag,
                         icOffset: frame.InstructionPointer - 1);
@@ -3272,12 +3281,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.CallMethod0:
                 {
-                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], Array.Empty<JsValue>(), frame.Registers[ins.C], icOffset: frame.InstructionPointer - 1);
+                    StoreCallResult(frame, ins.A, registers[ins.B], Array.Empty<JsValue>(), registers[ins.C], icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.CallMethod1:
                 {
-                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], new[] { frame.Registers[ins.D] }, frame.Registers[ins.C], icOffset: frame.InstructionPointer - 1);
+                    StoreCallResult(frame, ins.A, registers[ins.B], new[] { registers[ins.D] }, registers[ins.C], icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.CallMethodN:
@@ -3285,10 +3294,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var callArgs = new JsValue[ins.E];
                     for (var i = 0; i < ins.E; i++)
                     {
-                        callArgs[i] = frame.Registers[ins.D + i];
+                        callArgs[i] = registers[ins.D + i];
                     }
 
-                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], callArgs, frame.Registers[ins.C], icOffset: frame.InstructionPointer - 1);
+                    StoreCallResult(frame, ins.A, registers[ins.B], callArgs, registers[ins.C], icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.CallN:
@@ -3297,7 +3306,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var callArgs = new JsValue[ins.D];
                     for (var i = 0; i < ins.D; i++)
                     {
-                        callArgs[i] = frame.Registers[ins.C + i];
+                        callArgs[i] = registers[ins.C + i];
                     }
 
                     if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled)
@@ -3308,7 +3317,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     StoreCallResult(
                         frame,
                         ins.A,
-                        frame.Registers[ins.B],
+                        registers[ins.B],
                         callArgs,
                         JsValue.Undefined,
                         allowDirectEval: ins.E == DirectEvalCallFlag,
@@ -3317,14 +3326,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.TailCall0:
                     _tailCallRequested = true;
-                    _tailCallee = frame.Registers[ins.B];
+                    _tailCallee = registers[ins.B];
                     _tailArgs = Array.Empty<JsValue>();
                     _tailThis = JsValue.Undefined;
                     return JsValue.Undefined;
                 case OpCode.TailCall1:
                     _tailCallRequested = true;
-                    _tailCallee = frame.Registers[ins.B];
-                    _tailArgs = new[] { frame.Registers[ins.C] };
+                    _tailCallee = registers[ins.B];
+                    _tailArgs = new[] { registers[ins.C] };
                     _tailThis = JsValue.Undefined;
                     return JsValue.Undefined;
                 case OpCode.TailCallN:
@@ -3332,10 +3341,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var tailArgs = new JsValue[ins.D];
                     for (var i = 0; i < ins.D; i++)
                     {
-                        tailArgs[i] = frame.Registers[ins.C + i];
+                        tailArgs[i] = registers[ins.C + i];
                     }
                     _tailCallRequested = true;
-                    _tailCallee = frame.Registers[ins.B];
+                    _tailCallee = registers[ins.B];
                     _tailArgs = tailArgs;
                     _tailThis = JsValue.Undefined;
                     return JsValue.Undefined;
@@ -3343,7 +3352,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.CallSpread:
                 {
                     // ECMA-262 13.3.7.1 — unpack a spread array into individual args.
-                    var spreadArray = frame.Registers[ins.C];
+                    var spreadArray = registers[ins.C];
                     var unpackedArgs = Array.Empty<JsValue>();
                     if (spreadArray.Tag == JsValueTag.Object)
                     {
@@ -3361,11 +3370,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             }
                         }
                     }
-                    var thisVal = ins.D != 0 ? frame.Registers[ins.D] : JsValue.Undefined;
+                    var thisVal = ins.D != 0 ? registers[ins.D] : JsValue.Undefined;
                     StoreCallResult(
                         frame,
                         ins.A,
-                        frame.Registers[ins.B],
+                        registers[ins.B],
                         unpackedArgs,
                         thisVal,
                         allowDirectEval: ins.E == DirectEvalCallFlag);
@@ -3374,7 +3383,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.ConstructSpread:
                 {
                     // ECMA-262 13.3.5.1 — unpack a spread array into constructor args.
-                    var spreadArray = frame.Registers[ins.C];
+                    var spreadArray = registers[ins.C];
                     var unpackedArgs = Array.Empty<JsValue>();
                     if (spreadArray.Tag == JsValueTag.Object)
                     {
@@ -3392,17 +3401,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         }
                     }
 
-                    StoreConstructResult(frame, ins.A, frame.Registers[ins.B], unpackedArgs);
+                    StoreConstructResult(frame, ins.A, registers[ins.B], unpackedArgs);
                     break;
                 }
                 case OpCode.Construct0:
                 {
-                    StoreConstructResult(frame, ins.A, frame.Registers[ins.B], Array.Empty<JsValue>());
+                    StoreConstructResult(frame, ins.A, registers[ins.B], Array.Empty<JsValue>());
                     break;
                 }
                 case OpCode.Construct1:
                 {
-                    StoreConstructResult(frame, ins.A, frame.Registers[ins.B], new[] { frame.Registers[ins.C] });
+                    StoreConstructResult(frame, ins.A, registers[ins.B], new[] { registers[ins.C] });
                     break;
                 }
                 case OpCode.ConstructN:
@@ -3410,35 +3419,35 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var ctorArgs = new JsValue[ins.D];
                     for (var i = 0; i < ins.D; i++)
                     {
-                        ctorArgs[i] = frame.Registers[ins.C + i];
+                        ctorArgs[i] = registers[ins.C + i];
                     }
 
-                    StoreConstructResult(frame, ins.A, frame.Registers[ins.B], ctorArgs);
+                    StoreConstructResult(frame, ins.A, registers[ins.B], ctorArgs);
                     break;
                 }
                 case OpCode.Not:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(!IsTruthy(frame.Registers[ins.B]));
+                    registers[ins.A] = JsValue.FromBoolean(!IsTruthy(registers[ins.B]));
                     break;
                 case OpCode.Pos:
                     try
                     {
-                        frame.Registers[ins.A] = JsValue.FromNumberCompact(ToNumber(frame.Registers[ins.B]));
+                        registers[ins.A] = JsValue.FromNumberCompact(ToNumber(registers[ins.B]));
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Neg:
                     try
                     {
-                        var numeric = ToNumericValue(frame.Registers[ins.B]);
+                        var numeric = ToNumericValue(registers[ins.B]);
                         if (numeric.Tag == JsValueTag.BigInt)
-                            frame.Registers[ins.A] = JsValue.FromBigInt(-numeric.AsBigInt());
+                            registers[ins.A] = JsValue.FromBigInt(-numeric.AsBigInt());
                         else
-                            frame.Registers[ins.A] = JsValue.FromNumberCompact(-numeric.AsNumber());
+                            registers[ins.A] = JsValue.FromNumberCompact(-numeric.AsNumber());
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Void:
-                    frame.Registers[ins.A] = JsValue.Undefined;
+                    registers[ins.A] = JsValue.Undefined;
                     break;
                 case OpCode.ToNumeric:
                     // ToNumeric can run user code (valueOf/toString via ToPrimitive)
@@ -3446,7 +3455,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // frame handler stack.
                     try
                     {
-                        frame.Registers[ins.A] = ToNumericValue(frame.Registers[ins.B]);
+                        registers[ins.A] = ToNumericValue(registers[ins.B]);
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
@@ -3455,96 +3464,96 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // throw — route through the frame handler stack.
                     try
                     {
-                        frame.Registers[ins.A] = JsValue.FromString(ToStringValue(frame.Registers[ins.B]));
+                        registers[ins.A] = JsValue.FromString(ToStringValue(registers[ins.B]));
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Increment:
-                    frame.Registers[ins.A] = StepNumeric(frame.Registers[ins.B], +1);
+                    registers[ins.A] = StepNumeric(registers[ins.B], +1);
                     break;
                 case OpCode.Decrement:
-                    frame.Registers[ins.A] = StepNumeric(frame.Registers[ins.B], -1);
+                    registers[ins.A] = StepNumeric(registers[ins.B], -1);
                     break;
                 case OpCode.Delete:
-                    frame.Registers[ins.A] = DeleteName(frame, ins.B);
+                    registers[ins.A] = DeleteName(frame, ins.B);
                     break;
                 case OpCode.TypeOf:
-                    frame.Registers[ins.A] = JsValue.FromString(TypeOfValue(frame.Registers[ins.B]));
+                    registers[ins.A] = JsValue.FromString(TypeOfValue(registers[ins.B]));
                     break;
                 case OpCode.TypeOfName:
-                    frame.Registers[ins.A] = JsValue.FromString(TypeOfName(frame, ins.B));
+                    registers[ins.A] = JsValue.FromString(TypeOfName(frame, ins.B));
                     break;
                 case OpCode.Add:
                 {
-                    var addL = frame.Registers[ins.B];
-                    var addR = frame.Registers[ins.C];
+                    var addL = registers[ins.B];
+                    var addR = registers[ins.C];
                     if (IsFastNumeric(addL) && IsFastNumeric(addR))
                     {
-                        frame.Registers[ins.A] = FastNumberResult(addL.AsNumber() + addR.AsNumber());
+                        registers[ins.A] = FastNumberResult(addL.AsNumber() + addR.AsNumber());
                         break;
                     }
 
-                    try { frame.Registers[ins.A] = Add(addL, addR); }
+                    try { registers[ins.A] = Add(addL, addR); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.Sub:
                 {
-                    var subL = frame.Registers[ins.B];
-                    var subR = frame.Registers[ins.C];
+                    var subL = registers[ins.B];
+                    var subR = registers[ins.C];
                     if (IsFastNumeric(subL) && IsFastNumeric(subR))
                     {
-                        frame.Registers[ins.A] = FastNumberResult(subL.AsNumber() - subR.AsNumber());
+                        registers[ins.A] = FastNumberResult(subL.AsNumber() - subR.AsNumber());
                         break;
                     }
 
-                    try { frame.Registers[ins.A] = BigIntArith(subL, subR, "subtraction", (a, b) => a - b, (a, b) => a - b); }
+                    try { registers[ins.A] = BigIntArith(subL, subR, "subtraction", (a, b) => a - b, (a, b) => a - b); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.Mul:
                 {
-                    var mulL = frame.Registers[ins.B];
-                    var mulR = frame.Registers[ins.C];
+                    var mulL = registers[ins.B];
+                    var mulR = registers[ins.C];
                     if (IsFastNumeric(mulL) && IsFastNumeric(mulR))
                     {
-                        frame.Registers[ins.A] = FastNumberResult(mulL.AsNumber() * mulR.AsNumber());
+                        registers[ins.A] = FastNumberResult(mulL.AsNumber() * mulR.AsNumber());
                         break;
                     }
 
-                    try { frame.Registers[ins.A] = BigIntArith(mulL, mulR, "multiplication", (a, b) => a * b, (a, b) => a * b); }
+                    try { registers[ins.A] = BigIntArith(mulL, mulR, "multiplication", (a, b) => a * b, (a, b) => a * b); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.Mod:
-                    try { frame.Registers[ins.A] = BigIntArith(frame.Registers[ins.B], frame.Registers[ins.C], "modulo", (a, b) => a % b, (a, b) => a % b); }
+                    try { registers[ins.A] = BigIntArith(registers[ins.B], registers[ins.C], "modulo", (a, b) => a % b, (a, b) => a % b); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Div:
-                    try { frame.Registers[ins.A] = BigIntArith(frame.Registers[ins.B], frame.Registers[ins.C], "division", (a, b) => a / b, (a, b) => a / b); }
+                    try { registers[ins.A] = BigIntArith(registers[ins.B], registers[ins.C], "division", (a, b) => a / b, (a, b) => a / b); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Exp:
-                    try { frame.Registers[ins.A] = ExponentiationOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
+                    try { registers[ins.A] = ExponentiationOp(registers[ins.B], registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Eq:
-                    try { frame.Registers[ins.A] = JsValue.FromBoolean(AreEqual(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    try { registers[ins.A] = JsValue.FromBoolean(AreEqual(registers[ins.B], registers[ins.C])); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Neq:
-                    try { frame.Registers[ins.A] = JsValue.FromBoolean(!AreEqual(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    try { registers[ins.A] = JsValue.FromBoolean(!AreEqual(registers[ins.B], registers[ins.C])); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.StrictEq:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(AreStrictlyEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    registers[ins.A] = JsValue.FromBoolean(AreStrictlyEqual(registers[ins.B], registers[ins.C]));
                     break;
                 case OpCode.StrictNeq:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(!AreStrictlyEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    registers[ins.A] = JsValue.FromBoolean(!AreStrictlyEqual(registers[ins.B], registers[ins.C]));
                     break;
                 case OpCode.In:
                 {
-                    var rhs = frame.Registers[ins.C];
+                    var rhs = registers[ins.C];
                     if (rhs.Tag != JsValueTag.Object && rhs.Tag != JsValueTag.HostObject)
                     {
                         ThrowTypeError(frame, $"Right-hand side of 'in' must be an object (got {rhs.Tag}).");
@@ -3554,7 +3563,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     bool has;
                     if (rhs.Tag == JsValueTag.HostObject)
                     {
-                        var keyValue = frame.Registers[ins.B];
+                        var keyValue = registers[ins.B];
                         if (keyValue.Tag == JsValueTag.Symbol)
                         {
                             // Symbols are unlikely on host objects; fall through to false.
@@ -3577,7 +3586,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     else
                     {
                         var obj = ResolveObject(rhs);
-                        var keyValue = frame.Registers[ins.B];
+                        var keyValue = registers[ins.B];
                         if (keyValue.Tag == JsValueTag.Symbol)
                         {
                             has = HasSymbolProperty(obj, keyValue.AsSymbolId());
@@ -3588,81 +3597,81 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             has = HasPropertyIncludingProxy(obj, key);
                         }
                     }
-                    frame.Registers[ins.A] = JsValue.FromBoolean(has);
+                    registers[ins.A] = JsValue.FromBoolean(has);
                     break;
                 }
                 case OpCode.InstanceOf:
                 {
-                    if (TryInstanceOf(frame, frame.Registers[ins.B], frame.Registers[ins.C], out var instanceOfResult))
+                    if (TryInstanceOf(frame, registers[ins.B], registers[ins.C], out var instanceOfResult))
                     {
-                        frame.Registers[ins.A] = JsValue.FromBoolean(instanceOfResult);
+                        registers[ins.A] = JsValue.FromBoolean(instanceOfResult);
                     }
 
                     break;
                 }
                 case OpCode.Lt:
                 {
-                    var ltL = frame.Registers[ins.B];
-                    var ltR = frame.Registers[ins.C];
+                    var ltL = registers[ins.B];
+                    var ltR = registers[ins.C];
                     if (IsFastNumeric(ltL) && IsFastNumeric(ltR))
                     {
-                        frame.Registers[ins.A] = JsValue.FromBoolean(ltL.AsNumber() < ltR.AsNumber());
+                        registers[ins.A] = JsValue.FromBoolean(ltL.AsNumber() < ltR.AsNumber());
                         break;
                     }
 
-                    try { frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThan(ltL, ltR)); }
+                    try { registers[ins.A] = JsValue.FromBoolean(IsLessThan(ltL, ltR)); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.Gt:
-                    try { frame.Registers[ins.A] = JsValue.FromBoolean(IsGreaterThan(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    try { registers[ins.A] = JsValue.FromBoolean(IsGreaterThan(registers[ins.B], registers[ins.C])); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Le:
-                    try { frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThanOrEqual(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    try { registers[ins.A] = JsValue.FromBoolean(IsLessThanOrEqual(registers[ins.B], registers[ins.C])); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Ge:
-                    try { frame.Registers[ins.A] = JsValue.FromBoolean(IsGreaterThanOrEqual(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    try { registers[ins.A] = JsValue.FromBoolean(IsGreaterThanOrEqual(registers[ins.B], registers[ins.C])); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.And:
-                    frame.Registers[ins.A] = IsTruthy(frame.Registers[ins.B]) ? frame.Registers[ins.C] : frame.Registers[ins.B];
+                    registers[ins.A] = IsTruthy(registers[ins.B]) ? registers[ins.C] : registers[ins.B];
                     break;
                 case OpCode.Or:
-                    frame.Registers[ins.A] = IsTruthy(frame.Registers[ins.B]) ? frame.Registers[ins.B] : frame.Registers[ins.C];
+                    registers[ins.A] = IsTruthy(registers[ins.B]) ? registers[ins.B] : registers[ins.C];
                     break;
                 case OpCode.BitAnd:
-                    try { frame.Registers[ins.A] = BitwiseAndOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
+                    try { registers[ins.A] = BitwiseAndOp(registers[ins.B], registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.BitOr:
-                    try { frame.Registers[ins.A] = BitwiseOrOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
+                    try { registers[ins.A] = BitwiseOrOp(registers[ins.B], registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.BitXor:
-                    try { frame.Registers[ins.A] = BitwiseXorOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
+                    try { registers[ins.A] = BitwiseXorOp(registers[ins.B], registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.BitNot:
-                    try { frame.Registers[ins.A] = BitwiseNotOp(frame.Registers[ins.B]); }
+                    try { registers[ins.A] = BitwiseNotOp(registers[ins.B]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.ShiftLeft:
-                    try { frame.Registers[ins.A] = LeftShiftOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
+                    try { registers[ins.A] = LeftShiftOp(registers[ins.B], registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.ShiftRight:
-                    try { frame.Registers[ins.A] = RightShiftOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
+                    try { registers[ins.A] = RightShiftOp(registers[ins.B], registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.UnsignedShiftRight:
-                    try { frame.Registers[ins.A] = UnsignedRightShiftOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
+                    try { registers[ins.A] = UnsignedRightShiftOp(registers[ins.B], registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Return:
                 {
-                    var returnValue = frame.Registers[ins.A];
+                    var returnValue = registers[ins.A];
                     if (function.IsDerivedConstructor &&
                         !IsConstructorReturnObject(returnValue) &&
                         frame.Environment is FunctionEnvironmentRecord derivedEnv)
