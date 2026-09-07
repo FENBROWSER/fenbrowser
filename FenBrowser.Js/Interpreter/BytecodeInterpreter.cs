@@ -15749,7 +15749,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return success;
     }
 
-    private static uint ToUint32(double number)
+    private static uint ToUint32(double number) => ToUint32Bits(number);
+
+    // ECMA-262 7.1.7 ToUint32: truncate toward zero, then reduce modulo 2^32.
+    // Every step is exact in double arithmetic because 2^32 is a power of two,
+    // which a cast through long is not: it saturates past 2^63 and its
+    // out-of-range result is platform-defined besides.
+    private static uint ToUint32Bits(double number)
     {
         if (double.IsNaN(number) || double.IsInfinity(number) || number == 0d)
         {
@@ -15757,18 +15763,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var truncated = Math.Truncate(number);
-        var modulo = truncated % 4294967296.0;
-        if (modulo < 0)
-        {
-            modulo += 4294967296.0;
-        }
-
-        return (uint)modulo;
+        return (uint)(truncated - (Math.Floor(truncated / 4294967296d) * 4294967296d));
     }
 
     [MayExecuteJs]
     private bool SetSymbolPropertyValue(ObjectHandle ownerHandle, JsObject obj, long symbolId, JsValue value, JsValue receiver)
     {
+        if (obj is ProxyObject symbolSetProxy)
+        {
+            return ProxySet(symbolSetProxy, receiver, ResolveSymbol(symbolId), value);
+        }
+
         if (obj.TryGetOwnSymbolProperty(symbolId, out var ownDescriptor))
         {
             return SetSymbolPropertyFromDescriptor(ownerHandle, obj, symbolId, ownDescriptor, value, receiver);
@@ -20090,12 +20095,12 @@ fallbackArraySpecies:
         // DataView setter value-wrapping helpers: per SetViewValue, integer values
         // are converted via ToNumber → Web IDL conversion (modular wrapping), not
         // C# checked casts that throw OverflowException.
-        sbyte WrapInt8(double v) => unchecked((sbyte)(int)(long)v);
-        byte WrapUint8(double v) => unchecked((byte)(int)(long)v);
-        short WrapInt16(double v) => unchecked((short)(int)(long)v);
-        ushort WrapUint16(double v) => unchecked((ushort)(uint)(long)v);
-        int WrapInt32(double v) => unchecked((int)(long)v);
-        uint WrapUint32(double v) => unchecked((uint)(long)v);
+        sbyte WrapInt8(double v) => unchecked((sbyte)ToUint32Bits(v));
+        byte WrapUint8(double v) => unchecked((byte)ToUint32Bits(v));
+        short WrapInt16(double v) => unchecked((short)ToUint32Bits(v));
+        ushort WrapUint16(double v) => unchecked((ushort)ToUint32Bits(v));
+        int WrapInt32(double v) => unchecked((int)ToUint32Bits(v));
+        uint WrapUint32(double v) => ToUint32Bits(v);
         float WrapFloat32(double v) => (float)v;
 
         DefineNativePrototypeMethod(protoHandle, proto, "setInt8", (thisValue, args) =>

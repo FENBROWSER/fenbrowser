@@ -1872,7 +1872,11 @@ public static class JitCompiler
             case JsValueTag.Number:
                 var d = v.AsNumber();
                 if (double.IsNaN(d) || double.IsInfinity(d)) { n = 0; return true; }
-                n = unchecked((int)(uint)d);
+                // Spec ToInt32: truncate then reduce modulo 2^32. A direct cast
+                // is out-of-range for |d| >= 2^32 and .NET leaves that result
+                // platform-defined, so x64 and ARM64 disagreed.
+                var truncated = Math.Truncate(d);
+                n = unchecked((int)(uint)(truncated - (Math.Floor(truncated / 4294967296d) * 4294967296d)));
                 return true;
             case JsValueTag.Boolean: n = v.AsBoolean() ? 1 : 0; return true;
             case JsValueTag.Null: n = 0; return true;

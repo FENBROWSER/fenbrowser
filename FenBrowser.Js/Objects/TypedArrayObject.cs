@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Runtime;
 
@@ -321,19 +321,24 @@ public abstract class TypedArrayObject : TypedArrayView
     }
 
     // ECMA-262 7.1.6 ToInt32
-    private static int ConvertToInt32(JsValue v)
-    {
-        var d = v.AsNumber();
-        if (double.IsNaN(d) || double.IsInfinity(d)) return 0;
-        return (int)(long)d;
-    }
+    private static int ConvertToInt32(JsValue v) => unchecked((int)ConvertToUint32(v));
 
-    // ECMA-262 7.1.12 ToUint8 (used for Uint8 and Uint8Clamped via ClampToUint8)
-    private static uint ConvertToUint32(JsValue v)
+    // ECMA-262 7.1.7 ToUint32 (ToInt32 above is the same value reinterpreted;
+    // ToUint8/ToUint16 are this truncated further by the callers).
+    private static uint ConvertToUint32(JsValue v) => ToUint32Bits(v.AsNumber());
+
+    // Truncate toward zero, then reduce modulo 2^32. Routing through a long
+    // saturated instead of wrapping - every |value| >= 2^63 landed on
+    // long.MinValue, so `new Int32Array(1)[0] = 1e21` stored -1 where the spec
+    // says -559939584 - and the cast's out-of-range behaviour is not even the
+    // same on x64 and ARM64. 2^32 is a power of two, so each step here is exact
+    // in double arithmetic.
+    private static uint ToUint32Bits(double d)
     {
-        var d = v.AsNumber();
-        if (double.IsNaN(d) || double.IsInfinity(d)) return 0;
-        return (uint)(long)d;
+        if (double.IsNaN(d) || double.IsInfinity(d) || d == 0d) return 0u;
+        var truncated = Math.Truncate(d);
+        var modulo = truncated - (Math.Floor(truncated / 4294967296d) * 4294967296d);
+        return (uint)modulo;
     }
 
     // ECMA-262 7.1.10 ToUint8Clamp
