@@ -839,7 +839,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     internal BrowserHostLifetimeSnapshot GetHostLifetimeSnapshotForTest()
     {
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             var table = _interpreter?.HostObjectTable;
             lock (_webSocketHosts)
@@ -862,7 +862,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     public BrowserScriptLoadingSnapshot GetScriptLoadingSnapshot()
     {
-        lock (_scriptLoadingLock)
+        using (ScriptEngineLockProbe.Hold(_scriptLoadingLock))
         {
             return _lastScriptLoadingSnapshot?.Clone() ?? new BrowserScriptLoadingSnapshot();
         }
@@ -872,7 +872,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         var readyState = GetDocumentReadyState();
         var pendingHostTimers = _fenJsTimers.Count;
-        lock (_eventLoopLock)
+        using (ScriptEngineLockProbe.Hold(_eventLoopLock))
         {
             var snapshot = _lastEventLoopSnapshot?.Clone() ?? new BrowserEventLoopSnapshot();
             snapshot.PendingHostTimers = pendingHostTimers;
@@ -1353,7 +1353,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             var inputTimeoutMs = ResolveFenJsInputEventTimeoutMs();
             return RunFenJsWithLargeStack(() =>
             {
-                lock (_fenJsLock)
+                using (ScriptEngineLockProbe.Hold(_fenJsLock))
                 {
                     var currentDocument = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
                     var windowContext = _parentRealmOwner != null &&
@@ -1435,7 +1435,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             var inputTimeoutMs = ResolveFenJsInputEventTimeoutMs();
             return await RunFenJsWithLargeStackAsync(() =>
             {
-                lock (_fenJsLock)
+                using (ScriptEngineLockProbe.Hold(_fenJsLock))
                 {
                     var currentDocument = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
                     var windowContext = _parentRealmOwner != null &&
@@ -1519,7 +1519,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         if (CanEvaluateWithFenJs(script))
         {
-            lock (_fenJsLock)
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
             {
                 CollectFenJsHeapAtSafeBoundary();
             }
@@ -1589,7 +1589,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         // promises, and async state survive.  The host hooks' document
         // reference is kept alive by BindFenJsDomContext on initial load.
         if (domRoot == null) return;
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             _currentDomRoot = domRoot;
             if (baseUri != null) _currentBaseUri = baseUri;
@@ -1638,7 +1638,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         await frameRealm.SetDomAsync(domRoot, baseUri).ConfigureAwait(false);
 
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             var frameDocument = domRoot as Document ?? domRoot?.OwnerDocument;
             var proxy = GetOrCreateIFrameContentWindow(frameElement, frameDocument, baseUri);
@@ -1742,7 +1742,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return;
         }
 
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             var proxy = GetOrCreateIFrameContentWindow(frame);
             CopyFrameRealmObservables(realm, proxy);
@@ -1925,7 +1925,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         {
             return RunFenJsWithLargeStack(() =>
             {
-                lock (_fenJsLock)
+                using (ScriptEngineLockProbe.Hold(_fenJsLock))
                 {
                     // If the session was reset between dispatch and now, the
                     // compiler/interpreter are gone â€” bail cleanly.
@@ -2580,7 +2580,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private void BeginScriptLoadingSnapshot(Node domRoot, Uri baseUri)
     {
         _currentNavigationId = LogContext.CurrentCorrelationId;
-        lock (_scriptLoadingLock)
+        using (ScriptEngineLockProbe.Hold(_scriptLoadingLock))
         {
             _lastScriptLoadingSnapshot = new BrowserScriptLoadingSnapshot
             {
@@ -2599,7 +2599,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return;
         }
 
-        lock (_scriptLoadingLock)
+        using (ScriptEngineLockProbe.Hold(_scriptLoadingLock))
         {
             _lastScriptLoadingSnapshot ??= new BrowserScriptLoadingSnapshot();
             update(_lastScriptLoadingSnapshot);
@@ -2628,7 +2628,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             StartedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)
         };
 
-        lock (_scriptLoadingLock)
+        using (ScriptEngineLockProbe.Hold(_scriptLoadingLock))
         {
             _lastScriptLoadingSnapshot ??= new BrowserScriptLoadingSnapshot();
             _lastScriptLoadingSnapshot.Scripts.Add(record);
@@ -2665,7 +2665,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             StartedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)
         };
 
-        lock (_scriptLoadingLock)
+        using (ScriptEngineLockProbe.Hold(_scriptLoadingLock))
         {
             _lastScriptLoadingSnapshot ??= new BrowserScriptLoadingSnapshot();
             _lastScriptLoadingSnapshot.Scripts.Add(record);
@@ -2681,7 +2681,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return;
         }
 
-        lock (_scriptLoadingLock)
+        using (ScriptEngineLockProbe.Hold(_scriptLoadingLock))
         {
             update(record);
         }
@@ -2879,7 +2879,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         _diagnosticPromiseRejectionTracker?.Reset();
         _callbackFunctionProvenance.Clear();
         _pendingPromiseRejectionDiagnostics.Clear();
-        lock (_eventLoopLock)
+        using (ScriptEngineLockProbe.Hold(_eventLoopLock))
         {
             _lastEventLoopSnapshot = new BrowserEventLoopSnapshot
             {
@@ -2904,7 +2904,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         var readyState = GetDocumentReadyState();
         var pendingHostTimers = _fenJsTimers.Count;
-        lock (_eventLoopLock)
+        using (ScriptEngineLockProbe.Hold(_eventLoopLock))
         {
             _lastEventLoopSnapshot ??= new BrowserEventLoopSnapshot();
             update(_lastEventLoopSnapshot);
@@ -2918,7 +2918,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         var timestamp = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
         var readyState = GetDocumentReadyState();
         var pendingHostTimers = _fenJsTimers.Count;
-        lock (_eventLoopLock)
+        using (ScriptEngineLockProbe.Hold(_eventLoopLock))
         {
             _lastEventLoopSnapshot ??= new BrowserEventLoopSnapshot();
             _lastEventLoopSnapshot.Events.Add(new BrowserEventLoopRecord
@@ -4040,7 +4040,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         RunFenJsWithLargeStack<object>(() =>
         {
-            lock (_fenJsLock)
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
             {
                 _fenJsEvaluationCount++;
                 Uri moduleBase = moduleUri ?? _currentBaseUri;
@@ -4289,7 +4289,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         FenJsBrowserScriptEngine realm;
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             if (!_iframeRealms.TryGetValue(element, out realm))
             {
@@ -4308,7 +4308,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private FenJsBrowserScriptEngine[] DetachFrameRealms()
     {
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             var realms = _iframeRealms
                 .Select(entry => entry.Value)
@@ -4354,7 +4354,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private void CloseOwnedMessagePorts()
     {
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             foreach (var endpoint in _messagePortEndpoints.Values.Distinct())
             {
@@ -4769,7 +4769,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         {
             RunFenJsWithLargeStack<object>(() =>
             {
-                lock (_fenJsLock)
+                using (ScriptEngineLockProbe.Hold(_fenJsLock))
                 {
                     if (_interpreter == null)
                     {
@@ -4829,7 +4829,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         {
             RunFenJsWithLargeStack<object>(() =>
             {
-                lock (_fenJsLock)
+                using (ScriptEngineLockProbe.Hold(_fenJsLock))
                 {
                     if (_interpreter == null || worker.PageObject.Tag != JsValueTag.Object)
                     {
@@ -4936,7 +4936,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         // and runs inline, so the lock is taken once, on a single thread, reentrantly.
         RunFenJsWithLargeStack<object>(() =>
         {
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             CloseOwnedMessagePorts();
             foreach (var timerEntry in _fenJsTimers.ToArray())
@@ -5118,7 +5118,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         // second thread that deadlocks on the lock we hold here.
         RunFenJsWithLargeStack<object>(() =>
         {
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             _currentDomRoot = domRoot;
             _currentBaseUri = baseUri;
@@ -5147,7 +5147,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         RunFenJsWithLargeStack<object>(() =>
         {
-            lock (_fenJsLock)
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
             {
                 _currentDomRoot = domRoot;
                 _currentBaseUri = baseUri;
@@ -8459,7 +8459,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private string GetLifecycleMilestone(string readyState)
     {
-        lock (_eventLoopLock)
+        using (ScriptEngineLockProbe.Hold(_eventLoopLock))
         {
             if (_lastEventLoopSnapshot?.LoadFired == true)
             {
@@ -8557,7 +8557,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             RunFenJsWithLargeStack<object>(() =>
             {
                 SetFenJsWorkerPhase("callback:waiting-interpreter-lock");
-                lock (_fenJsLock)
+                using (ScriptEngineLockProbe.Hold(_fenJsLock))
                 {
                     SetFenJsWorkerPhase("callback:validating-context");
                     TraceFenJsCallbackStage("stage-2-validating-context", origin, callbackId, callbackProvenance);
@@ -13570,7 +13570,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private void SetDocumentReadyState(string documentReadyState)
     {
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             _documentReadyState = string.IsNullOrWhiteSpace(documentReadyState)
                 ? "loading"
@@ -13580,7 +13580,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private Element GetCurrentScriptElement()
     {
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             return _currentScriptElement;
         }
@@ -13588,7 +13588,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private BrowserScriptLoadingRecord GetCurrentScriptRecord()
     {
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             return _currentScriptRecord;
         }
@@ -13596,7 +13596,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private void SetCurrentScriptElement(Element scriptElement, BrowserScriptLoadingRecord scriptRecord = null)
     {
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             _currentScriptElement = scriptElement;
             _currentScriptRecord = scriptElement == null ? null : scriptRecord;
@@ -15566,7 +15566,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         RunFenJsWithLargeStack<object>(() =>
                         {
                             SetFenJsWorkerPhase("messageport:waiting-interpreter-lock");
-                            lock (_fenJsLock)
+                            using (ScriptEngineLockProbe.Hold(_fenJsLock))
                             {
                                 SetFenJsWorkerPhase("messageport:importing-ports");
                                 // Import transferred ports in the receiving realm only after
@@ -16100,7 +16100,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         QueueOnDeliveryTail(() =>
         {
-            lock (_fenJsLock)
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
             {
                 var ports = ImportTransferredMessagePorts(transferredEndpoints);
                 using var constructionWindow = _interpreter.Heap.BeginConstructionWindow();
@@ -16142,7 +16142,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         QueueOnDeliveryTail(
             () =>
             {
-                lock (_fenJsLock)
+                using (ScriptEngineLockProbe.Hold(_fenJsLock))
                 {
                     RefreshEmbeddedParentFrameTable();
                 }
@@ -16217,7 +16217,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         _ = Task.Factory.StartNew(
             () => RunFenJsWithLargeStack<object>(() =>
             {
-                lock (_fenJsLock)
+                using (ScriptEngineLockProbe.Hold(_fenJsLock))
                 {
                     if (_embeddedParentWindowListeners.Count == 0 ||
                         _embeddedParentWindowProxy.Tag != JsValueTag.Object)
@@ -16335,7 +16335,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         QueueOnDeliveryTail(() =>
         {
-            lock (_fenJsLock)
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
             {
                 var sourceWindow = GetOrCreateIFrameContentWindow(frame);
                 var ports = ImportTransferredMessagePorts(transferredEndpoints);
@@ -16389,7 +16389,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         QueueOnDeliveryTail(() =>
         {
-            lock (_fenJsLock)
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
             {
                 var ports = ImportTransferredMessagePorts(transferredEndpoints);
                 QueueWindowMessage(
@@ -16430,7 +16430,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         QueueOnDeliveryTail(() =>
         {
-            lock (_fenJsLock)
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
             {
                 var ports = ImportTransferredMessagePorts(transferredEndpoints);
                 // Use the exposedWindow the parent already registered for this iframe
@@ -16531,7 +16531,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private Dictionary<string, object> CaptureObservableWindowProperties()
     {
         var result = new Dictionary<string, object>(StringComparer.Ordinal);
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             if (_fenJsGlobalThis.Tag != JsValueTag.Object || _interpreter == null)
             {
@@ -17138,7 +17138,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         {
                         RunFenJsWithLargeStack<object>(() =>
                         {
-                            lock (_fenJsLock)
+                            using (ScriptEngineLockProbe.Hold(_fenJsLock))
                             {
                                 using (ActivateWindowCallbackContext(targetWindow, listeners))
                                 {
@@ -17757,7 +17757,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         var changed = false;
         var dispatchResize = false;
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             changed = Math.Abs(_windowWidth - width) > 0.001 || Math.Abs(_windowHeight - height) > 0.001;
             _windowWidth = width;
@@ -17823,7 +17823,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         var scroll = FrameScrollReader?.Invoke(frameElement) ?? (0d, 0d);
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             var proxy = GetStoredHostPropertyOrUndefined(frameElement, "__fenIframeContentWindow");
             if (proxy.Tag == JsValueTag.Object)
@@ -17837,7 +17837,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private void UpdateOwnedScroll(double x, double y)
     {
         var changed = false;
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             var previousX = ReadGlobalValueOrUndefined("scrollX");
             var previousY = ReadGlobalValueOrUndefined("scrollY");
@@ -17888,7 +17888,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                     RunFenJsWithLargeStack<object>(() =>
                     {
-                        lock (_fenJsLock)
+                        using (ScriptEngineLockProbe.Hold(_fenJsLock))
                         {
                             var eventValue = _interpreter.AllocateObject(new Dictionary<string, JsValue>
                             {
@@ -18047,7 +18047,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                 try
                 {
-                    lock (_fenJsLock)
+                    using (ScriptEngineLockProbe.Hold(_fenJsLock))
                     {
                         // Wrap the attribute value in a function that receives
                         // `event` as its parameter â€” matches what real browsers
@@ -18485,7 +18485,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         // be pinned for the whole invocation; reading it back in the finally
         // block would otherwise restore a value a collection may have swept.
         JsValue previousEvent;
-        lock (_fenJsLock)
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             previousEvent = _interpreter.TryReadGlobalValue("event", out var existingEvent)
                 ? existingEvent
@@ -18495,7 +18495,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         using var pins = PinFenJsValues(callback, thisValue, eventValue, previousEvent);
         RunFenJsWithLargeStack<object>(() =>
         {
-            lock (_fenJsLock)
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
             {
                 _interpreter.RegisterGlobalValue("event", eventValue);
                 try
@@ -18576,7 +18576,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         RunFenJsWithLargeStack<object>(() =>
         {
-            lock (_fenJsLock)
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
             {
                 var previousEvent = _interpreter.TryReadGlobalValue("event", out var existingEvent)
                     ? existingEvent
