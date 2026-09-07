@@ -56,6 +56,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         public void Dispose()
         {
+            var teardownSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
             _interpreter._activeFrames.Pop();
             if (_function is not null) _function.ActiveActivations--;
             // The frame is unreachable from here: nothing stores an
@@ -75,6 +76,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 _interpreter.ReturnSlotStorage(bindings, present);
             }
+
+            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.Teardown, teardownSample);
         }
     }
 
@@ -92,6 +95,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Bounds the pool's own footprint. Depth rarely passes a few hundred, and a
     // file is only kept if it can be handed straight back out.
     private const int MaxPooledRegisterFiles = 512;
+    private const int MaxPooledSlotFiles = 2048;
     private const int MaxPooledRegisterFileLength = 4096;
 
     private long _registerFileHits;
@@ -108,8 +112,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // of the two: 200 declared-but-unassigned locals cost 2.35GB of allocation
     // and 151 extra gen0 collections across 300k calls, and made each call 2.6x
     // slower than the same body without them.
-    private readonly Dictionary<int, Stack<DeclarativeEnvironmentRecord.Binding[]>> _slotBindingPool = new();
-    private readonly Dictionary<int, Stack<bool[]>> _slotPresencePool = new();
+    // Indexed by length rather than keyed by it. The dictionary this replaced
+    // cost two hash lookups per call, which is why pooling small slot files was
+    // a net loss and they were excluded - and small is what real code is: 97% of
+    // calls on a real page declare fewer than 16 variables, so the exclusion
+    // skipped almost every call it was meant to help. A bucket array is a bounds
+    // check and an index, cheap enough that the floor can come off.
+    private readonly Stack<DeclarativeEnvironmentRecord.Binding[]>?[] _slotBindingPool =
+        new Stack<DeclarativeEnvironmentRecord.Binding[]>?[MaxPooledSlotFileLength + 1];
+
+    private readonly Stack<bool[]>?[] _slotPresencePool = new Stack<bool[]>?[MaxPooledSlotFileLength + 1];
     private int _pooledSlotFiles;
     private long _slotFileHits;
     private long _slotFileMisses;
@@ -118,20 +130,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     public long SlotFileMisses => _slotFileMisses;
 
-    // Below this, renting costs more than it saves: two dictionary lookups to
-    // avoid an allocation the CLR satisfies with a pointer bump. Measured at 2
-    // slots, pooling made the call 12% slower; the crossover is well under the
-    // hundreds of slots that motivated any of this.
-    private const int MinPooledSlotFileLength = 16;
+    private const int MaxPooledSlotFileLength = 4096;
 
     private void RentSlotStorage(int length, out DeclarativeEnvironmentRecord.Binding[]? bindings, out bool[]? present)
     {
         bindings = null;
         present = null;
-        if (length < MinPooledSlotFileLength || length > MaxPooledRegisterFileLength) return;
+        if ((uint)length > MaxPooledSlotFileLength || length == 0) return;
 
-        if (_slotBindingPool.TryGetValue(length, out var bindingBucket) && bindingBucket.Count > 0 &&
-            _slotPresencePool.TryGetValue(length, out var presenceBucket) && presenceBucket.Count > 0)
+        var bindingBucket = _slotBindingPool[length];
+        var presenceBucket = _slotPresencePool[length];
+        if (bindingBucket is { Count: > 0 } && presenceBucket is { Count: > 0 })
         {
             _pooledSlotFiles--;
             _slotFileHits++;
@@ -149,10 +158,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (bindings is null || present is null) return;
 
         var length = bindings.Length;
-        if (length < MinPooledSlotFileLength ||
+        if ((uint)length > MaxPooledSlotFileLength ||
+            length == 0 ||
             length != present.Length ||
-            length > MaxPooledRegisterFileLength ||
-            _pooledSlotFiles >= MaxPooledRegisterFiles)
+            _pooledSlotFiles >= MaxPooledSlotFiles)
         {
             return;
         }
@@ -164,16 +173,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         Array.Clear(bindings, 0, length);
         Array.Clear(present, 0, length);
 
-        ref var bindingBucket = ref System.Runtime.InteropServices.CollectionsMarshal
-            .GetValueRefOrAddDefault(_slotBindingPool, length, out var hadBindings);
-        if (!hadBindings) bindingBucket = new Stack<DeclarativeEnvironmentRecord.Binding[]>();
-        bindingBucket!.Push(bindings);
-
-        ref var presenceBucket = ref System.Runtime.InteropServices.CollectionsMarshal
-            .GetValueRefOrAddDefault(_slotPresencePool, length, out var hadPresence);
-        if (!hadPresence) presenceBucket = new Stack<bool[]>();
-        presenceBucket!.Push(present);
-
+        var bindingBucket = _slotBindingPool[length] ??=
+            new Stack<DeclarativeEnvironmentRecord.Binding[]>();
+        var presenceBucket = _slotPresencePool[length] ??= new Stack<bool[]>();
+        bindingBucket.Push(bindings);
+        presenceBucket.Push(present);
         _pooledSlotFiles++;
     }
 
@@ -1624,6 +1628,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             FenBrowser.Js.Diagnostics.InterpreterProfiler.EnterExecute(_callDepth);
         }
+
+        var callTotalSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
         try
         {
             while (true)
@@ -1664,6 +1670,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         finally
         {
+            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.CallTotal, callTotalSample);
             if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
             {
                 FenBrowser.Js.Diagnostics.InterpreterProfiler.ExitExecute(_callDepth);
@@ -1694,6 +1701,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         //   Non-strict functions: null/undefined → global object (step 6),
         //     any other primitive → boxed with ToObject (step 7).
         // Arrow functions have no own `this`; derived constructors bind it via super().
+        var prologueSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
+        var thisSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
         if (function.Kind != FunctionKind.Arrow
             && !function.IsDerivedConstructor)
         {
@@ -1713,6 +1722,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 thisValue = CreateObjectFromValue(thisValue);
             }
         }
+
+        if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.ThisBinding, thisSample);
 
         EnvironmentRecord? frameEnv;
         if (frameEnvironment is not null)
@@ -1747,13 +1758,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // arrow functions — which read `this` via GetThisEnvironment — can
             // observe it. Previously this lived only in frame.ThisValue, which
             // is invisible to an inner arrow's own frame.
+            var envSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
             var functionEnv = StampEnvironment(new FunctionEnvironmentRecord(
                 ThisBindingStatus.Uninitialized,
                 callee?.SelfHandle is { } sh ? JsValue.FromObject(sh) : JsValue.Undefined,
                 JsValue.Undefined, callee?.HomeObject, outerEnvironment));
+            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.EnvironmentCreate, envSample);
+
             // Attach before anything is bound: a binding created first would go
             // to the dictionary and then be shadowed by its own empty slot.
+            var slotSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
             AttachFrameSlots(functionEnv, function);
+            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.SlotAttach, slotSample);
+
+            var bindSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
             _ = functionEnv.BindThisValue(thisValue);
             // ECMA-262 15.2.5: a named function expression binds its own name (immutably)
             // in scope of its body so it can reference itself (e.g. for recursion).
@@ -1765,6 +1783,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 _ = functionEnv.CreateImmutableBinding(selfName, strict: function.IsStrictMode);
                 _ = functionEnv.InitializeBinding(selfName, JsValue.FromObject(selfHandle));
             }
+            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.BindThisAndName, bindSample);
             frameEnv = functionEnv;
         }
         // Every call allocates a register file, and a JsValue is 32 bytes with a
@@ -1773,6 +1792,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // "GC pauses dominate" into a number that can be attacked.
         _framesCreated++;
         _registerSlotsAllocated += function.RegisterCount;
+        var frameSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
         var frame = new InterpreterFrame(
             function,
             thisValue,
@@ -1786,6 +1806,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             frameEnvRecord.OwnerHeap = _heap;
         }
+
+        if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.FrameCreate, frameSample);
         // Audit �1: pin this frame's registers/env into the GC root set for
         // its execution lifetime. Dispose pops on every return path (normal
         // return, exception, generator yield) via using-scope semantics.
@@ -1870,6 +1892,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         else
         {
+            var paramSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
             // Pre-create env bindings for locally-bound names that the spec mandates the
             // function-environment record holds: each formal parameter, and `arguments`
             // when the function gets its own arguments object. We deliberately do NOT
@@ -1922,10 +1945,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 _ = frame.Environment.CreateAndInitializeBinding("arguments", argumentsObject, deletable: false);
             }
 
+            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.ParameterBinding, paramSample);
+
+            var declSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
             ValidateDeclarationInstantiation(function, frame);
             InstantiateVarDeclarations(function, frame);
             InstantiateLexicalDeclarations(function, frame);
+            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.Declarations, declSample);
         }
+
+        if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.Prologue, prologueSample);
 
 #if !PUBLISH_AOT
         // Tier 4 #24: if a JIT delegate is available, run it instead of
@@ -3255,10 +3284,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.CallN:
                 {
+                    var argSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
                     var callArgs = new JsValue[ins.D];
                     for (var i = 0; i < ins.D; i++)
                     {
                         callArgs[i] = frame.Registers[ins.C + i];
+                    }
+
+                    if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled)
+                    {
+                        FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.ArgumentArray, argSample);
                     }
 
                     StoreCallResult(
@@ -6596,14 +6631,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private long _slotFramesEligible;
 
     public string DescribeSlotEligibility() =>
-        $"withSlots={_slotFramesWithSlots} ge{MinPooledSlotFileLength}={_slotFramesBigEnough} eligible={_slotFramesEligible}";
+        $"withSlots={_slotFramesWithSlots} pooled={_slotFramesBigEnough} eligible={_slotFramesEligible}";
 
     private void AttachFrameSlots(EnvironmentRecord? env, BytecodeFunction function)
     {
         if (env is DeclarativeEnvironmentRecord declarative && function.SlotNames.Length > 0)
         {
             _slotFramesWithSlots++;
-            if (function.SlotNames.Length >= MinPooledSlotFileLength) _slotFramesBigEnough++;
+            if (function.SlotNames.Length <= MaxPooledSlotFileLength) _slotFramesBigEnough++;
             if (function.EnvironmentDiesWithCall) _slotFramesEligible++;
             // Only a function whose environment cannot outlive the call may take
             // pooled arrays, because only then is the frame's teardown allowed

@@ -269,6 +269,11 @@ static int ExecuteSource(
             Console.Error.Write(FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(25));
             Console.Error.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.VarReport());
             Console.Error.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.TimingReport());
+        }
+
+        if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled)
+        {
+            Console.Error.Write(FenBrowser.Js.Diagnostics.CallPathProfiler.Report());
             // Bytes the CLR actually handed out, as opposed to slots an engine
             // counter says were requested: a pooled allocation costs nothing
             // here, and only this number tells the two apart.
