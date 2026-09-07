@@ -32,6 +32,50 @@ public sealed class ClosureEnvironmentTraceTests
         Assert.Equal(7, marker.AsNumber());
     }
 
+    [Fact]
+    public void PendingPromiseFinallyKeepsCapturedCallbackAliveAcrossMajorCollection()
+    {
+        var heap = new JsHeap { YoungAllocationsPerMinorGc = 0 };
+        var interpreter = new BytecodeInterpreter(heap);
+        Run(interpreter, """
+            var __resolve;
+            var __result = -1;
+            var __pending = new Promise(function (resolve) { __resolve = resolve; });
+            (function () {
+                function Marker() {}
+                Marker.prototype.marker = 42;
+                __pending.finally(function () { __result = Marker.prototype.marker; });
+            })();
+            """);
+
+        heap.CollectGarbage();
+        Run(interpreter, "__resolve(null);");
+
+        Assert.Equal(42, Run(interpreter, "__result;").AsNumber());
+    }
+
+    [Fact]
+    public void RejectedPromiseFinallyKeepsCapturedCallbackAliveAcrossMajorCollection()
+    {
+        var heap = new JsHeap { YoungAllocationsPerMinorGc = 0 };
+        var interpreter = new BytecodeInterpreter(heap);
+        Run(interpreter, """
+            var __reject;
+            var __result = -1;
+            var __pending = new Promise(function (_, reject) { __reject = reject; });
+            (function () {
+                function Marker() {}
+                Marker.prototype.marker = 42;
+                __pending.finally(function () { __result = Marker.prototype.marker; }).catch(function () {});
+            })();
+            """);
+
+        heap.CollectGarbage();
+        Run(interpreter, "__reject(null);");
+
+        Assert.Equal(42, Run(interpreter, "__result;").AsNumber());
+    }
+
     private static JsValue Run(BytecodeInterpreter interpreter, string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

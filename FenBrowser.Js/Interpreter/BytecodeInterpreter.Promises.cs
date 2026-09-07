@@ -1221,13 +1221,13 @@ public sealed partial class BytecodeInterpreter
         {
             _ = CallFunction(onFinally, Array.Empty<JsValue>(), JsValue.Undefined);
             return args.Count > 0 ? args[0] : JsValue.Undefined;
-        }, length: 1);
+        }, length: 1, capturedRoots: new[] { onFinally });
 
         var catchFinally = new NativeFunctionObject("", (_, args) =>
         {
             _ = CallFunction(onFinally, Array.Empty<JsValue>(), JsValue.Undefined);
             throw new JsThrownException(args.Count > 0 ? args[0] : JsValue.Undefined);
-        }, length: 1);
+        }, length: 1, capturedRoots: new[] { onFinally });
 
         var thenHandle = _heap.AllocateObject(thenFinally, AllocationSite.Current());
         var catchHandle = _heap.AllocateObject(catchFinally, AllocationSite.Current());

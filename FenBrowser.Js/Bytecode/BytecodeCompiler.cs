@@ -109,6 +109,12 @@ public sealed class BytecodeCompiler
     // resolve at any depth. Not reset by CompileProgramCore.
     internal string? _rawSource;
     private int _nextRegister = 1;
+
+    // The file has to be as large as the most registers ever live at once, not
+    // as large as the counter happens to be when compilation ends - the counter
+    // is wound back at every statement boundary now, so it no longer reports
+    // that maximum on its own.
+    private int _highWaterRegister = 1;
     private FunctionKind _currentFunctionKind = FunctionKind.Ordinary;
     private bool _isStrictMode;
     private bool _captureCompletionValue;
@@ -225,6 +231,7 @@ public sealed class BytecodeCompiler
         _nestingSeq = 0;
         _name = name;
         _nextRegister = 1;
+        _highWaterRegister = 1;
         _currentFunctionKind = functionKind;
         _isStrictMode = inheritedStrictMode || program.Kind == ProgramKind.Module || HasUseStrictDirective(program.Body);
         _captureCompletionValue = captureCompletionValue;
@@ -321,7 +328,7 @@ public sealed class BytecodeCompiler
             UsesRestrictedArgumentsObject = needsOwnArgumentsObject && (_isStrictMode || !hasSimpleParameterList),
             UsesOuterArguments = !hasOwnArgumentsObject && referencesArguments,
             NestedFunctions = _nestedFunctions.ToArray(),
-            RegisterCount = Math.Max(2, _nextRegister),
+            RegisterCount = NoteRegisterFile(Math.Max(2, _highWaterRegister)),
             BrandTokens = _brandTokens.ToArray(),
             PrologueEndIp = prologueEndIp,
         };
@@ -519,12 +526,20 @@ public sealed class BytecodeCompiler
                 }
                 break;
             case ExpressionStatementNode exprStmt:
+            {
+                var exprMark = _nextRegister;
                 var exprReg = CompileExpression(exprStmt.Expression);
                 if (_captureCompletionValue)
                 {
                     _instructions.Add(new Instruction(OpCode.Move, 0, exprReg, 0));
                 }
+
+                // The value has been consumed - either moved to the completion
+                // register or discarded - so every temporary this statement
+                // took is dead.
+                ReleaseRegistersTo(exprMark);
                 break;
+            }
             case IfStatementNode ifStmt:
                 EmitCompletionReset();
                 CompileIfStatement(ifStmt);
@@ -4933,7 +4948,69 @@ public sealed class BytecodeCompiler
         return valueReg;
     }
 
-    private int AllocateRegister() => _nextRegister++;
+    // What the allocator actually produced, so a change to it can be checked
+    // without running a whole page: the register file is per function, and its
+    // size is the thing being optimised.
+    private static long _functionsCompiled;
+    private static long _registersAllocated;
+    private static int _largestRegisterFile;
+
+    private static int NoteRegisterFile(int count)
+    {
+        System.Threading.Interlocked.Increment(ref _functionsCompiled);
+        System.Threading.Interlocked.Add(ref _registersAllocated, count);
+        if (count > _largestRegisterFile) _largestRegisterFile = count;
+        return count;
+    }
+
+    public static string RegisterAllocationReport() =>
+        _functionsCompiled == 0
+            ? "[FenJsRegs] nothing compiled"
+            : FormattableString.Invariant(
+                $"[FenJsRegs] functions={_functionsCompiled} avgRegisters={(double)_registersAllocated / _functionsCompiled:F1} largest={_largestRegisterFile}");
+
+    private int AllocateRegister()
+    {
+        var register = _nextRegister++;
+        if (_nextRegister > _highWaterRegister)
+        {
+            _highWaterRegister = _nextRegister;
+        }
+
+        return register;
+    }
+
+    // Registers were handed out by bumping a counter that never came back down,
+    // so a function's register file was as large as the total number of
+    // temporaries its body ever mentioned - reCAPTCHA's averaged 206 and one
+    // reached 40,736. That file is 32 bytes a slot, is cleared on every return,
+    // and every slot is a GC root scanned on every minor collection, so the
+    // count is paid on each call and each collection rather than once.
+    //
+    // Variables do not live in registers - LoadVar/StoreVar reach through
+    // environment slots - so a register only ever holds an expression
+    // temporary. Anything allocated while compiling a statement is therefore
+    // dead once that statement is compiled, and the counter can be wound back
+    // to where the statement started. Registers an enclosing construct holds
+    // across the statement (a loop's iterator, a catch parameter) were
+    // allocated before the mark was taken and are below it.
+    // Set FEN_JS_NO_REGREUSE=1 to keep the old bump-only behaviour, so the
+    // trade can be measured in one build rather than across two.
+    private static readonly bool RegisterReuseDisabled =
+        string.Equals(Environment.GetEnvironmentVariable("FEN_JS_NO_REGREUSE"), "1", StringComparison.Ordinal);
+
+    private void ReleaseRegistersTo(int mark)
+    {
+        if (RegisterReuseDisabled)
+        {
+            return;
+        }
+
+        if (_nextRegister > mark)
+        {
+            _nextRegister = mark;
+        }
+    }
 
     // ECMA-262: IfStatement, every IterationStatement, SwitchStatement,
     // WithStatement, TryStatement, and LabelledStatement evaluate to

@@ -284,6 +284,7 @@ static int ExecuteSource(
             // here, and only this number tells the two apart.
             Console.Error.WriteLine(FormattableString.Invariant(
                 $"[FenJsProfile] clrAllocated={GC.GetTotalAllocatedBytes(precise: true) / (1024.0 * 1024.0):F1}MB gen0={GC.CollectionCount(0)} gen1={GC.CollectionCount(1)} gen2={GC.CollectionCount(2)}"));
+            Console.Error.WriteLine(FenBrowser.Js.Bytecode.BytecodeCompiler.RegisterAllocationReport());
         }
     }
 

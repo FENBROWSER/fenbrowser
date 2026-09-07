@@ -44,6 +44,28 @@ public sealed class FunctionEnvironmentRecord : DeclarativeEnvironmentRecord
     // top-level functions.
     public ObjectHandle? HomeObject { get; }
 
+    internal override void AttachOwnerHeap(JsHeap heap)
+    {
+        base.AttachOwnerHeap(heap);
+
+        // These slots are populated by the constructor before the record can
+        // be stamped with its owning heap. Register any Young values now so a
+        // closure retaining this record through an Old function cannot lose
+        // its callee/new.target/super state at the next minor collection.
+        if (FunctionObject.Tag == JsValueTag.Object)
+        {
+            RememberBindingStore(FunctionObject.AsObjectHandle());
+        }
+        if (NewTarget.Tag == JsValueTag.Object)
+        {
+            RememberBindingStore(NewTarget.AsObjectHandle());
+        }
+        if (HomeObject is { } homeObject)
+        {
+            RememberBindingStore(homeObject);
+        }
+    }
+
     public override bool HasThisBinding => ThisBindingStatus != ThisBindingStatus.Lexical;
 
     public override bool HasSuperBinding => HasThisBinding && HomeObject is not null;

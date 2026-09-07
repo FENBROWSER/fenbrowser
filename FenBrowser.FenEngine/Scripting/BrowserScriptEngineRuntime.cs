@@ -680,7 +680,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private string _currentNavigationId;
     private string _documentReadyState = "loading";
     private int _fenJsEvaluationCount;
-    private long _fenJsAllocationCountAtLastBoundaryGc;
     private int _dynamicScriptTraceCounter;
     private readonly object _scriptLoadingLock = new();
     private BrowserScriptLoadingSnapshot _lastScriptLoadingSnapshot = new();
@@ -2041,8 +2040,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // this budget only backstops per-item runaway loops.
     private const int FenJsBrowserTaskInstructionBudget = 2_000_000_000;
     private const int FenJsBrowserParserMaxRecursionDepth = 1024;
-    private const int FenJsBoundaryGcAllocationThreshold = 4_096;
-
     private void CollectFenJsHeapAtSafeBoundary()
     {
         if (_interpreter == null || _interpreter.IsExecuting)
@@ -2051,13 +2048,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         var heap = _interpreter.Heap;
-        if (heap.AllocationCount - _fenJsAllocationCountAtLastBoundaryGc < FenJsBoundaryGcAllocationThreshold)
+        var previousMinorCount = heap.MinorCollectionCount;
+        var previousMajorCount = heap.GcCollectionCount;
+        heap.CollectAtSafePointIfRequested();
+        if (heap.MinorCollectionCount == previousMinorCount &&
+            heap.GcCollectionCount == previousMajorCount)
         {
             return;
         }
 
-        heap.CollectGarbage();
-        _fenJsAllocationCountAtLastBoundaryGc = heap.AllocationCount;
         ReportFenJsRootAudit(heap);
 
         // Attributing a slow callback needs to distinguish script from
@@ -4983,7 +4982,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 MaxCallDepth = 1024,
                 ParserMaxRecursionDepth = FenJsBrowserParserMaxRecursionDepth
             };
-            _fenJsAllocationCountAtLastBoundaryGc = 0;
             _interpreter.Heap.AddRootSource(this);
             EnsureFenJsHeapDiagnosticSink();
             ConfigureFenJsMicrotaskTracing(_interpreter);

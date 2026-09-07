@@ -1,6 +1,9 @@
+using System.Reflection;
 using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
 using Xunit;
@@ -61,6 +64,32 @@ public sealed class RememberedSetPrecisionTests
         // handle.
         var marker = Run(interpreter, "__get().marker;");
         Assert.Equal(42, marker.AsNumber());
+    }
+
+    [Fact]
+    public void FunctionEnvironmentConstructionRemembersYoungInternalSlots()
+    {
+        var (_, heap) = CreateEngine();
+        var function = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var newTarget = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var homeObject = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var environment = new FunctionEnvironmentRecord(
+            ThisBindingStatus.Uninitialized,
+            JsValue.FromObject(function),
+            JsValue.FromObject(newTarget),
+            homeObject,
+            outerEnv: null);
+
+        var attach = typeof(FunctionEnvironmentRecord).GetMethod(
+            "AttachOwnerHeap",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(attach);
+        attach.Invoke(environment, new object[] { heap });
+        heap.MinorCollect();
+
+        Assert.True(heap.IsLiveObjectHandle(function));
+        Assert.True(heap.IsLiveObjectHandle(newTarget));
+        Assert.True(heap.IsLiveObjectHandle(homeObject));
     }
 
     [Fact]
