@@ -2301,6 +2301,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 FenBrowser.Core.EngineLogCompat.Warn(
                                     FenBrowser.Js.Diagnostics.InterpreterProfiler.VarReport(),
                                     FenBrowser.Core.Logging.LogCategory.JavaScript);
+                                // ...and this says what that walking costs, which
+                                // is what decides whether building the cache beats
+                                // the other candidates.
+                                FenBrowser.Core.EngineLogCompat.Warn(
+                                    FenBrowser.Js.Diagnostics.InterpreterProfiler.TimingReport(),
+                                    FenBrowser.Core.Logging.LogCategory.JavaScript);
                             }
                         },
                         null,

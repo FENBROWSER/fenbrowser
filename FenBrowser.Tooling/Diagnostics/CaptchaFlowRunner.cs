@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Globalization;
 using FenBrowser.FenEngine.Rendering;
 
@@ -510,6 +510,7 @@ internal static class CaptchaFlowRunner
         {
             Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(25));
             Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.VarReport());
+            Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.TimingReport());
         }
 
         Console.WriteLine(solved ? "[captcha] RESULT solved" : "[captcha] RESULT unsolved");

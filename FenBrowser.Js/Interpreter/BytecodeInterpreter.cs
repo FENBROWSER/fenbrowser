@@ -1490,6 +1490,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         _callDepth++;
+        if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
+        {
+            FenBrowser.Js.Diagnostics.InterpreterProfiler.EnterExecute(_callDepth);
+        }
         try
         {
             while (true)
@@ -1530,6 +1534,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         finally
         {
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
+            {
+                FenBrowser.Js.Diagnostics.InterpreterProfiler.ExitExecute(_callDepth);
+            }
+
             _callDepth--;
         }
     }
@@ -6511,6 +6520,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // function (whose params now live on FunctionEnvironmentRecord since
             // B.6.4) read the live outer binding rather than the stale snapshot.
             var probeDepth = 0;
+            var walkStartTicks = FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled
+                ? FenBrowser.Js.Diagnostics.InterpreterProfiler.StartSample()
+                : 0L;
             for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
             {
                 var status = env.TryLookupBinding(name, strict: frame.Function.IsStrictMode, out var envValue);
@@ -6523,6 +6535,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
                 {
                     FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordVarResolve(env is GlobalEnvironmentRecord or ObjectEnvironmentRecord, probeDepth);
+                    FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordVarSlowPath(walkStartTicks);
                 }
 
                 if (status == BindingOpResult.Ok)

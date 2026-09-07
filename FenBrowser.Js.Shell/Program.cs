@@ -268,6 +268,7 @@ static int ExecuteSource(
         {
             Console.Error.Write(FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(25));
             Console.Error.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.VarReport());
+            Console.Error.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.TimingReport());
         }
     }
 

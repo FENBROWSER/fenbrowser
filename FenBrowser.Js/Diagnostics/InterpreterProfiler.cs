@@ -64,6 +64,11 @@ public static class InterpreterProfiler
         public long VarGlobal;
         public long VarLocal;
         public long VarDepth;
+        public long VarSlowTicks;
+        public long VarSlowSamples;
+
+        public long ExecTicks;
+        public long ExecStart;
     }
 
     [ThreadStatic]
@@ -275,6 +280,101 @@ public static class InterpreterProfiler
                $"inLocalScope={100.0 * local / total:F1}% avgScopesWalked={(double)depth / total:F2}";
     }
 
+    // How long the name-keyed chain walk actually costs. Counting how often a
+    // slow path runs says nothing about whether replacing it is worth the
+    // work: the answer is a fraction of running time, and only a clock gives
+    // that. Reading the clock is itself not free, so the cost of one read-pair
+    // is measured once at startup and subtracted from every sample before the
+    // share is reported - otherwise the instrument's own overhead would be
+    // attributed to the thing it is measuring, and a cheap path sampled often
+    // would look expensive purely because it was sampled.
+    private static readonly double TimestampOverheadTicks = MeasureTimestampOverhead();
+
+    private static long _timestampSink;
+
+    private static double MeasureTimestampOverhead()
+    {
+        if (!Enabled) return 0;
+
+        const int Iterations = 200_000;
+        // Warm the path so JIT compilation of GetTimestamp is not billed to it.
+        for (var i = 0; i < 10_000; i++)
+        {
+            _timestampSink += System.Diagnostics.Stopwatch.GetTimestamp();
+        }
+
+        var start = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (var i = 0; i < Iterations; i++)
+        {
+            var first = System.Diagnostics.Stopwatch.GetTimestamp();
+            var second = System.Diagnostics.Stopwatch.GetTimestamp();
+            _timestampSink += second - first;
+        }
+
+        var elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - start;
+        return (double)elapsed / Iterations;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static long StartSample() => System.Diagnostics.Stopwatch.GetTimestamp();
+
+    public static void RecordVarSlowPath(long startTicks)
+    {
+        var state = State;
+        state.VarSlowTicks += System.Diagnostics.Stopwatch.GetTimestamp() - startTicks;
+        state.VarSlowSamples++;
+    }
+
+    /// <summary>
+    /// Brackets the outermost interpreter activation. <paramref name="depth"/>
+    /// is the call depth after entering, so 1 is the outermost frame; nested
+    /// calls are already inside the window and must not restart the clock.
+    /// </summary>
+    public static void EnterExecute(int depth)
+    {
+        if (depth != 1) return;
+        State.ExecStart = System.Diagnostics.Stopwatch.GetTimestamp();
+    }
+
+    public static void ExitExecute(int depth)
+    {
+        if (depth != 1) return;
+        var state = State;
+        if (state.ExecStart == 0) return;
+        state.ExecTicks += System.Diagnostics.Stopwatch.GetTimestamp() - state.ExecStart;
+        state.ExecStart = 0;
+    }
+
+    public static string TimingReport()
+    {
+        long slowTicks = 0, slowSamples = 0, execTicks = 0;
+        foreach (var state in SnapshotStates())
+        {
+            slowTicks += state.VarSlowTicks;
+            slowSamples += state.VarSlowSamples;
+            execTicks += state.ExecTicks;
+        }
+
+        if (slowSamples == 0)
+        {
+            return "[FenJsProfile] no identifier slow-path samples recorded";
+        }
+
+        var frequency = (double)System.Diagnostics.Stopwatch.Frequency;
+        var rawMs = 1000.0 * slowTicks / frequency;
+        var overheadTicks = TimestampOverheadTicks * slowSamples;
+        var netTicks = slowTicks - overheadTicks;
+        var netMs = 1000.0 * netTicks / frequency;
+        var execMs = 1000.0 * execTicks / frequency;
+        var share = execMs > 0 ? 100.0 * netMs / execMs : 0.0;
+        var perSampleNs = 1e9 * netTicks / frequency / slowSamples;
+
+        return $"[FenJsProfile] identifier slow path: samples={slowSamples:N0} " +
+               $"raw={rawMs:F1}ms measurementOverhead={1000.0 * overheadTicks / frequency:F1}ms " +
+               $"net={netMs:F1}ms ({perSampleNs:F0}ns each) " +
+               $"interpretedExecution={execMs:F1}ms shareOfExecution={share:F2}%";
+    }
+
     // Compiled code that had to call an interpreter helper anyway. The JIT emits
     // an inline fast path per operator behind a type guard; when the guard fails
     // the operator costs a call plus a run-time switch instead of a few
@@ -310,6 +410,10 @@ public static class InterpreterProfiler
                 state.VarGlobal = 0;
                 state.VarLocal = 0;
                 state.VarDepth = 0;
+                state.VarSlowTicks = 0;
+                state.VarSlowSamples = 0;
+                state.ExecTicks = 0;
+                state.ExecStart = 0;
             }
         }
     }
