@@ -16331,9 +16331,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         for (var i = 0; i < elements.Count; i++)
         {
-            // ECMA-262 7.3.17 CreateDataProperty: [[DefineOwnProperty]] with
-            // { Writable, Enumerable, Configurable } = true so setters on
-            // Array.prototype are never invoked (CreateArrayFromList spec).
+            // ECMA-262 7.3.17 CreateDataProperty: a plain writable, enumerable,
+            // configurable data property, so setters on Array.prototype are
+            // never invoked (CreateArrayFromList).
+            //
+            // Appending to the dense vector is that same property, reached
+            // without going through the key. The DefineOwnProperty call below
+            // ends up in the vector anyway, but only after formatting the index
+            // into a string and parsing it back to an integer to recognise it -
+            // an allocation and a parse per element, on the path every array
+            // literal, Array.of/from, slice, concat, map, filter and flat takes.
+            // The object is fresh and filled front to back, so the append is
+            // always in range; it only declines once something has forced the
+            // array off the dense representation, and then the general path is
+            // still correct.
+            if (obj.TryDenseAppend(elements[i]))
+            {
+                continue;
+            }
+
             _ = obj.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 new JsPropertyDescriptor(elements[i], Writable: true, Enumerable: true, Configurable: true));
         }
@@ -23042,6 +23058,35 @@ fallbackArraySpecies:
             return;
         }
 
+        // Writing an integer index into a dense array is the single most common
+        // element store a page makes, and the general path below spends four
+        // operations on it: ToPropertyKey formats the index into a string,
+        // SetPropertyValue hashes that string, IsCanonicalIntegerIndex parses it
+        // back to an integer, and "length" is then written as another
+        // string-keyed property. The vector can answer all of it directly.
+        //
+        // Only in-range or append-at-the-end writes qualify, and only while the
+        // array is still dense - TryDenseSet declines anything else, and the
+        // general path then runs exactly as before. A receiver that is not the
+        // array itself (a proxy or a subclass forwarding here) is excluded, so
+        // this cannot skip a trap or an inherited setter that the spec would
+        // have consulted; the vector only ever holds plain data properties.
+        if (obj is ArrayObject fastArray &&
+            receiverValue.Tag == JsValueTag.Object &&
+            receiverValue.AsObjectHandle().Equals(ownerHandle) &&
+            TryGetArrayIndexFast(keyValue, out var fastIndex) &&
+            fastArray.TryDenseSet(fastIndex, value))
+        {
+            var grownLength = (double)fastIndex + 1;
+            if (!fastArray.TryGetOwnProperty("length", out var fastLen) ||
+                fastLen.Value.AsNumber() < grownLength)
+            {
+                _ = fastArray.SetProperty("length", JsValue.FromNumber(grownLength));
+            }
+
+            return;
+        }
+
         var key = ToPropertyKey(keyValue);
         try
         {
@@ -23085,6 +23130,48 @@ fallbackArraySpecies:
                 _ = obj.SetProperty("length", JsValue.FromNumber(nextLength));
             }
         }
+    }
+
+    /// <summary>
+    /// Recognises a value that is already an array index without routing it
+    /// through a string. Int32 is the tag the compiler emits for a literal
+    /// index; a Number qualifies only when it is a non-negative integer that
+    /// round-trips, which is exactly the canonical-index rule the string form
+    /// would have applied after formatting and reparsing it.
+    /// </summary>
+    private static bool TryGetArrayIndexFast(JsValue key, out uint index)
+    {
+        switch (key.Tag)
+        {
+            case JsValueTag.Int32:
+            {
+                var value = key.AsInt32();
+                if (value >= 0)
+                {
+                    index = (uint)value;
+                    return true;
+                }
+
+                break;
+            }
+
+            case JsValueTag.Number:
+            {
+                var value = key.AsNumber();
+                // uint.MaxValue is not a valid array index (10.4.2), and the
+                // comparison also rejects NaN and both infinities.
+                if (value >= 0 && value < uint.MaxValue && Math.Truncate(value) == value)
+                {
+                    index = (uint)value;
+                    return true;
+                }
+
+                break;
+            }
+        }
+
+        index = 0;
+        return false;
     }
 
     internal void SetElemForJit(InterpreterFrame frame, int ownerReg, int keyReg, int valueReg)
