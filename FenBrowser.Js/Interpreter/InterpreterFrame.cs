@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
@@ -43,6 +43,21 @@ public sealed class InterpreterFrame
 	public JsValue[] Registers { get; }
 
 	public EnvironmentRecord Environment { get; set; }
+
+	// LoadVar is a quarter of everything a real page executes, and each one
+	// re-derived the same three facts: that the frame's environment is
+	// declarative, that it owns this function's slots, and where its arrays
+	// live - a type check and two calls before any variable was read. The JIT
+	// already hoists this per loop; the interpreter did it per instruction.
+	//
+	// The environment is captured alongside the arrays because it changes:
+	// entering a block, a catch, or a `with` pushes a record that does not own
+	// these slots. Comparing the captured record against the frame's current one
+	// is a single reference test, and a mismatch simply falls through to the
+	// general path, so correctness does not depend on the cache being fresh.
+	internal DeclarativeEnvironmentRecord? SlotEnvironment;
+	internal DeclarativeEnvironmentRecord.Binding[]? SlotBindings;
+	internal bool[]? SlotPresence;
 
 	public Stack<int> CatchHandlers => _catchHandlers ??= new Stack<int>();
 	public Stack<int> FinallyHandlers => _finallyHandlers ??= new Stack<int>();

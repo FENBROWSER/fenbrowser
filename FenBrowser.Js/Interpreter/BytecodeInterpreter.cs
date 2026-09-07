@@ -1808,6 +1808,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.FrameCreate, frameSample);
+
+        // Resolve the slot arrays once for this activation. Every LoadVar and
+        // StoreVar in the body then reaches them through one reference compare.
+        if (frame.Environment is DeclarativeEnvironmentRecord ownSlots && ownSlots.OwnsSlotsOf(function))
+        {
+            frame.SlotEnvironment = ownSlots;
+            frame.SlotBindings = ownSlots.SlotBindingsFor(function);
+            frame.SlotPresence = ownSlots.SlotPresenceFor(function);
+        }
         // Audit �1: pin this frame's registers/env into the GC root set for
         // its execution lifetime. Dispose pops on every return path (normal
         // return, exception, generator yield) via using-scope semantics.
@@ -6688,7 +6697,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     internal JsValue LoadName(InterpreterFrame frame, int slot)
     {
         // The frame's own environment numbers its variables exactly as this
-        // function's bytecode does, so the slot answers directly.
+        // function's bytecode does, so the slot answers directly. Taking the
+        // arrays from the frame rather than re-deriving them from the
+        // environment is what makes that a couple of array reads; the reference
+        // test is what keeps it correct when a block or catch record is on top.
+        var cachedBindings = frame.SlotBindings;
+        if (cachedBindings is not null &&
+            ReferenceEquals(frame.Environment, frame.SlotEnvironment) &&
+            (uint)slot < (uint)cachedBindings.Length &&
+            frame.SlotPresence![slot])
+        {
+            ref var cached = ref cachedBindings[slot];
+            if (cached.IsInitialized)
+            {
+                return cached.Value;
+            }
+
+            ThrowBindingFailure(
+                frame,
+                BindingOpResult.TdzAccess,
+                SlotNameTable.GetName(frame.Function, slot) ?? "?",
+                assignment: false);
+            return JsValue.Undefined;
+        }
+
         if (frame.Environment is DeclarativeEnvironmentRecord own && own.OwnsSlotsOf(frame.Function) &&
             own.TryGetAtSlot(slot, out var slotValue, out var slotStatus))
         {
