@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
@@ -156,6 +156,15 @@ public sealed class ArrayObject : JsObject
                 new JsPropertyDescriptor(_dense[i], Writable: true, Enumerable: true, Configurable: true));
         }
 
+        // "length" was answered from _denseCount while the vector was in use and
+        // was never stored; it has to become a real property now, with the
+        // attributes 10.4.2 requires of it.
+        base.DefineOwnProperty(LengthKey, new JsPropertyDescriptor(
+            JsValue.FromNumber(_denseCount),
+            Writable: _lengthWritable,
+            Enumerable: false,
+            Configurable: false));
+
         _dense = Array.Empty<JsValue>();
         _denseCount = 0;
     }
@@ -175,6 +184,17 @@ public sealed class ArrayObject : JsObject
 
     public override bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
     {
+        if (!_denseAbandoned && string.Equals(key, LengthKey, StringComparison.Ordinal))
+        {
+            if (TryApplyDenseLength(descriptor, out var applied))
+            {
+                return applied;
+            }
+
+            Materialise();
+            return base.DefineOwnProperty(key, descriptor);
+        }
+
         if (!_denseAbandoned && IsArrayIndexKey(key, out var index))
         {
             if (IsDenseRepresentable(descriptor) && index <= (uint)_denseCount && Extensible)
@@ -191,8 +211,33 @@ public sealed class ArrayObject : JsObject
         return base.DefineOwnProperty(key, descriptor);
     }
 
+    // 10.4.2.1: an Array length is always present, writable by default, never
+    // enumerable and never configurable. While the vector is in use its value is
+    // exactly _denseCount - the vector is hole-free and holds 0..Count-1 - so
+    // storing it as a property would mean a shape transition and a property-slot
+    // allocation per array, and a slot write on every append. A fresh array
+    // literal paid two array allocations and two Array.Copy calls for that one
+    // property before holding a single element. Answer it from the count instead,
+    // so a dense array carries no shape-tracked properties at all.
+    private const string LengthKey = "length";
+
+    // Object.defineProperty can make length non-writable while the array is still
+    // dense; that is representable without giving the vector up, so it is kept
+    // here rather than forcing a Materialise.
+    private bool _lengthWritable = true;
+
     public override bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
+        if (!_denseAbandoned && string.Equals(key, LengthKey, StringComparison.Ordinal))
+        {
+            descriptor = new JsPropertyDescriptor(
+                JsValue.FromNumber(_denseCount),
+                Writable: _lengthWritable,
+                Enumerable: false,
+                Configurable: false);
+            return true;
+        }
+
         if (!_denseAbandoned && IsArrayIndexKey(key, out var index) && index < (uint)_denseCount)
         {
             descriptor = new JsPropertyDescriptor(
@@ -203,8 +248,99 @@ public sealed class ArrayObject : JsObject
         return base.TryGetOwnProperty(key, out descriptor);
     }
 
+    public override bool SetProperty(string key, JsValue value)
+    {
+        if (!_denseAbandoned && string.Equals(key, LengthKey, StringComparison.Ordinal))
+        {
+            if (!_lengthWritable)
+            {
+                return false;
+            }
+
+            if (TryApplyDenseLength(
+                    new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false),
+                    out var applied))
+            {
+                return applied;
+            }
+
+            Materialise();
+            return base.SetProperty(key, value);
+        }
+
+        return base.SetProperty(key, value);
+    }
+
+    /// <summary>
+    /// Applies a write to length that the vector can represent. Returns false
+    /// when it cannot, leaving the caller to materialise: growing past the count
+    /// would introduce holes, and an accessor or a configurable/enumerable
+    /// length is not an array length at all.
+    /// </summary>
+    private bool TryApplyDenseLength(in JsPropertyDescriptor descriptor, out bool applied)
+    {
+        applied = false;
+
+        if (descriptor.IsAccessor ||
+            (descriptor.HasEnumerable && descriptor.Enumerable) ||
+            (descriptor.HasConfigurable && descriptor.Configurable))
+        {
+            return false;
+        }
+
+        if (descriptor.HasWritable && !descriptor.Writable)
+        {
+            // Freezing the length is representable; the vector still describes
+            // every element, it just may no longer be resized through length.
+            _lengthWritable = false;
+        }
+
+        if (!descriptor.HasValue)
+        {
+            applied = true;
+            return true;
+        }
+
+        var requested = descriptor.Value.Tag switch
+        {
+            JsValueTag.Int32 => descriptor.Value.AsInt32(),
+            JsValueTag.Number => descriptor.Value.AsNumber(),
+            _ => double.NaN,
+        };
+
+        if (double.IsNaN(requested) || requested < 0 || requested > uint.MaxValue ||
+            Math.Truncate(requested) != requested)
+        {
+            // A non-numeric or out-of-range length is a RangeError the base
+            // class already raises correctly.
+            return false;
+        }
+
+        var target = (uint)requested;
+        if (target == (uint)_denseCount)
+        {
+            applied = true;
+            return true;
+        }
+
+        if (target < (uint)_denseCount)
+        {
+            applied = TryDenseTruncate(target);
+            return applied;
+        }
+
+        // Growing leaves holes, which the vector cannot represent.
+        return false;
+    }
+
     public override bool DeleteProperty(string key)
     {
+        if (!_denseAbandoned && string.Equals(key, LengthKey, StringComparison.Ordinal))
+        {
+            // 10.4.2: length is never configurable.
+            return false;
+        }
+
         if (!_denseAbandoned && IsArrayIndexKey(key, out var index) && index < (uint)_denseCount)
         {
             // Removing the last element keeps the vector hole-free; removing any
@@ -240,6 +376,20 @@ public sealed class ArrayObject : JsObject
         foreach (var pair in base.EnumerateOwnProperties())
         {
             yield return pair;
+        }
+
+        // While dense, length is not in the base table but is still an own
+        // property, and getOwnPropertyNames must see it. It sorts after the
+        // index keys, which is where 10.1.11.1 puts a non-index string key.
+        if (!_denseAbandoned)
+        {
+            yield return new KeyValuePair<string, JsPropertyDescriptor>(
+                LengthKey,
+                new JsPropertyDescriptor(
+                    JsValue.FromNumber(_denseCount),
+                    Writable: _lengthWritable,
+                    Enumerable: false,
+                    Configurable: false));
         }
     }
 
