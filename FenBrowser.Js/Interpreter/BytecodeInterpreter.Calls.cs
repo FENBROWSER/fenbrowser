@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
@@ -435,6 +435,13 @@ public sealed partial class BytecodeInterpreter
             // CreateTypeError, AllocateObject), object-tagged values on the
             // C# stack could be reclaimed and resurface as "Stale heap handle"
             // on the next access. Pin them for the duration of the call.
+            // Rooting a call is not free, and on a bundle that makes millions of
+            // them the bookkeeping can cost more than the bodies it protects.
+            // Time the whole block and subtract the body: what is left is this
+            // machinery's own cost, and unlike the body it never re-enters JS,
+            // so the total sums exactly rather than nesting.
+            var blockStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            var nativeBodyTicks = 0L;
             var rootMark = _heap.RootCount;
             try
             {
@@ -452,7 +459,8 @@ public sealed partial class BytecodeInterpreter
                 }
                 finally
                 {
-                    NoteNativeCall(native, System.Diagnostics.Stopwatch.GetTimestamp() - nativeStart);
+                    nativeBodyTicks = System.Diagnostics.Stopwatch.GetTimestamp() - nativeStart;
+                    NoteNativeCall(native, nativeBodyTicks);
                     _heap.EndNativeExecution();
                 }
             }
@@ -464,6 +472,8 @@ public sealed partial class BytecodeInterpreter
                 // every throwing native call). Ownership of the thrown value passes
                 // to ThrowOrHandle, which pins it before any allocation can run.
                 _heap.PopRootsTo(rootMark);
+                NoteNativeCallRooting(
+                    System.Diagnostics.Stopwatch.GetTimestamp() - blockStart - nativeBodyTicks);
             }
         }
 

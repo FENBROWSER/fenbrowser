@@ -1254,6 +1254,48 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _nativeCallCost[name] = (entry.Ticks + ticks, entry.Calls + 1);
     }
 
+    // Self time of the GC rooting that brackets every native call: pinning the
+    // callee, receiver and arguments, opening the allocation scope, and
+    // unwinding the roots afterwards. Excludes the body, and the machinery
+    // never re-enters JS, so this total is exact rather than nested.
+    private long _nativeRootingTicks;
+    private long _nativeRootedCalls;
+
+    internal void NoteNativeCallRooting(long ticks)
+    {
+        _nativeRootingTicks += ticks;
+        _nativeRootedCalls++;
+    }
+
+    public double NativeRootingMilliseconds =>
+        _nativeRootingTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+    public long NativeRootedCalls => _nativeRootedCalls;
+
+    /// <summary>
+    /// The most-called built-ins, worst first. Ranking by time answers "what is
+    /// slow"; a built-in called a million times for a microsecond each never
+    /// appears there, yet costs more than anything that does. Only the count
+    /// finds that shape.
+    /// </summary>
+    public string DescribeNativeCallCounts(int top = 8)
+    {
+        if (_nativeCallCost.Count == 0) return "none";
+        var freq = System.Diagnostics.Stopwatch.Frequency;
+        var rows = new List<(string Name, long Ticks, long Calls)>();
+        foreach (var (name, entry) in _nativeCallCost) rows.Add((name, entry.Ticks, entry.Calls));
+        rows.Sort(static (a, b) => b.Calls.CompareTo(a.Calls));
+        var text = new System.Text.StringBuilder();
+        for (var i = 0; i < rows.Count && i < top; i++)
+        {
+            if (i > 0) text.Append(' ');
+            text.Append(rows[i].Name).Append('=').Append(rows[i].Calls)
+                .Append('/').Append((rows[i].Ticks * 1000.0 / freq).ToString("F0")).Append("ms");
+        }
+
+        return text.ToString();
+    }
+
     /// <summary>The costliest built-ins on this interpreter, worst first.</summary>
     public string DescribeNativeCallCost(int top = 6)
     {

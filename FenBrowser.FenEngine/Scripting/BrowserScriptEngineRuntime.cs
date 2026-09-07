@@ -2074,6 +2074,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 $"instructions={_interpreter.TotalInstructionsExecuted} " +
                 $"slowestJob={_interpreter.SlowestJobMilliseconds:F0}ms/{_interpreter.SlowestJobInstructions}instr " +
                 $"natives=[{_interpreter.DescribeNativeCallCost()}] " +
+                $"nativeRooting={_interpreter.NativeRootingMilliseconds:F0}ms/{_interpreter.NativeRootedCalls} " +
+                $"topCalled=[{_interpreter.DescribeNativeCallCounts()}] " +
                 // Whether the JIT tiered in at all decides how to read every
                 // number above it: 70M instructions is a different problem when
                 // the compiler took the hot function than when it refused it.
