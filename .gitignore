@@ -56,6 +56,7 @@ bld/
 !scripts/test262_report.py
 !scripts/temporal_triage.py
 !scripts/temporal_msg.py
+!scripts/chrome_captcha_probe.py
 *.log
 *.png
 wpt/
