@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using System.Text;
 using FenBrowser.Js.Bytecode;
 
@@ -366,13 +366,24 @@ public static class InterpreterProfiler
         var netTicks = slowTicks - overheadTicks;
         var netMs = 1000.0 * netTicks / frequency;
         var execMs = 1000.0 * execTicks / frequency;
+        // Summing threads answers "how much execution happened"; it does not
+        // answer "how long was the page waiting", because threads overlap. Per
+        // thread, the largest is the one that could have been the critical path.
+        var perThread = new StringBuilder();
+        foreach (var state in SnapshotStates())
+        {
+            if (state.ExecTicks == 0) continue;
+            if (perThread.Length > 0) perThread.Append(',');
+            perThread.Append((1000.0 * state.ExecTicks / frequency).ToString("F0")).Append("ms");
+        }
+
         var share = execMs > 0 ? 100.0 * netMs / execMs : 0.0;
         var perSampleNs = 1e9 * netTicks / frequency / slowSamples;
 
         return $"[FenJsProfile] identifier slow path: samples={slowSamples:N0} " +
                $"raw={rawMs:F1}ms measurementOverhead={1000.0 * overheadTicks / frequency:F1}ms " +
                $"net={netMs:F1}ms ({perSampleNs:F0}ns each) " +
-               $"interpretedExecution={execMs:F1}ms shareOfExecution={share:F2}%";
+               $"interpretedExecution={execMs:F1}ms perThread=[{perThread}] shareOfExecution={share:F2}%";
     }
 
     // Compiled code that had to call an interpreter helper anyway. The JIT emits
