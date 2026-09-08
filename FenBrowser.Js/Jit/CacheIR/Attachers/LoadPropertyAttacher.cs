@@ -1,4 +1,4 @@
-using FenBrowser.Js.Objects;
+﻿using FenBrowser.Js.Objects;
 
 namespace FenBrowser.Js.Jit.CacheIR.Attachers;
 
@@ -25,13 +25,7 @@ internal static class LoadPropertyAttacher
         var shape = receiver.CurrentShape;
         if (!shape.TryGetSlot(key, out var slot)) return null;
 
-        var properties = receiver.PropertyArray;
-        if ((uint)slot >= (uint)properties.Length ||
-            properties[slot] is not { } descriptor ||
-            descriptor.IsAccessor)
-        {
-            return null;
-        }
+        if (!receiver.TryReadDataSlot(slot, out _)) return null;
 
         var writer = new CacheIRWriter();
         writer.GuardNotExotic();

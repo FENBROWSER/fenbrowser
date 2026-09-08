@@ -103,11 +103,7 @@ internal sealed class CacheIRProgram
             return false;
         }
 
-        var properties = receiver.PropertyArray;
-        if ((uint)slot < (uint)properties.Length &&
-            properties[slot] is { } descriptor &&
-            !descriptor.IsAccessor &&
-            descriptor.Writable)
+        if (receiver.IsWritableDataSlot(slot))
         {
             return true;
         }
@@ -127,13 +123,8 @@ internal sealed class CacheIRProgram
             return false;
         }
 
-        var properties = receiver.PropertyArray;
-        var slot = _resultSlot;
-        if ((uint)slot < (uint)properties.Length &&
-            properties[slot] is { } descriptor &&
-            !descriptor.IsAccessor)
+        if (receiver.TryReadDataSlot(_resultSlot, out result))
         {
-            result = descriptor.Value;
             return true;
         }
 
@@ -187,18 +178,6 @@ internal sealed class CacheIRProgram
         return CacheRunResult.Miss;
     }
 
-    private static CacheRunResult LoadSlot(JsObject receiver, int slot, out JsValue result)
-    {
-        var properties = receiver.PropertyArray;
-        if ((uint)slot >= (uint)properties.Length ||
-            properties[slot] is not { } descriptor ||
-            descriptor.IsAccessor)
-        {
-            result = JsValue.Undefined;
-            return CacheRunResult.Stale;
-        }
-
-        result = descriptor.Value;
-        return CacheRunResult.Hit;
-    }
+    private static CacheRunResult LoadSlot(JsObject receiver, int slot, out JsValue result) =>
+        receiver.TryReadDataSlot(slot, out result) ? CacheRunResult.Hit : CacheRunResult.Stale;
 }

@@ -1,4 +1,4 @@
-using FenBrowser.Js.Heap;
+﻿using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Objects;
@@ -28,18 +28,41 @@ public class JsObject : ITraceable
     // (empty) and transitions each time DefineOwnProperty adds a new property.
     private Shape _shape = Shape.Root;
 
-    // Flat property storage indexed by Shape slot. Grows on property addition.
-    // Deleted properties are set to null so slot indices stay valid.
-    private JsPropertyDescriptor?[] _properties = Array.Empty<JsPropertyDescriptor?>();
+    // Flat property storage indexed by Shape slot, split so that a data
+    // property costs a value and a byte. A descriptor carries both accessor
+    // halves and four "was this field supplied" flags as well as the value,
+    // which made one property a little over a hundred bytes and an object of
+    // four properties over four hundred -- for storage that is a value and
+    // three attribute bits in almost every case. An accessor is rare enough to
+    // keep its halves in a side table, and the flags say which slots have one.
+    private Slot[] _slots = [];
+    private Dictionary<int, AccessorPair>? _accessors;
 
-    // ECMA-262 10.1.11.1: own string keys enumerate in property-creation order. A
-    // deleted-then-readded property counts as a *new* creation and must move to the
-    // end. Shapes reuse the original slot (to keep inline caches valid), so the shape
-    // chain alone no longer reflects creation order after a delete+re-add. This
-    // parallel per-slot sequence number records the true creation order; a re-add
-    // gets a fresh number so it sorts last. Indexed by Shape slot, grows with
-    // _properties. 0 = unassigned (slot never held a live property).
-    private int[] _insertionSeq = Array.Empty<int>();
+    // ECMA-262 10.1.11.1: own string keys enumerate in property-creation order.
+    // A deleted-then-readded property counts as a new creation and must move to
+    // the end, and a shape reuses the original slot so inline caches stay valid,
+    // so the shape chain alone stops reflecting creation order after a delete.
+    // Sequence 0 means the slot never held a live property.
+    private struct Slot
+    {
+        public JsValue Value;
+        public int InsertionSeq;
+        public PropertyFlags Flags;
+    }
+
+    [Flags]
+    private enum PropertyFlags : byte
+    {
+        None = 0,
+        Present = 1,
+        Writable = 2,
+        Enumerable = 4,
+        Configurable = 8,
+        Accessor = 16,
+    }
+
+    private readonly record struct AccessorPair(JsValue Get, JsValue Set);
+
     private int _nextSeq = 1;
 
     // Symbol-keyed own properties (unchanged — symbols are not shape-tracked).
@@ -116,9 +139,90 @@ public class JsObject : ITraceable
         }
     }
 
-    // Internal accessors for inline caches.
+    // Internal accessors for inline caches. A cache never wants a descriptor --
+    // it wants the value, and to know that reading it is unobservable -- so
+    // these answer without materialising one.
     internal Shape CurrentShape => _shape;
-    internal JsPropertyDescriptor?[] PropertyArray => _properties;
+
+    /// <summary>Reads a slot holding a plain data property.</summary>
+    internal bool TryReadDataSlot(int slot, out JsValue value)
+    {
+        if ((uint)slot < (uint)_slots.Length &&
+            (_slots[slot].Flags & (PropertyFlags.Present | PropertyFlags.Accessor)) == PropertyFlags.Present)
+        {
+            value = _slots[slot].Value;
+            return true;
+        }
+
+        value = JsValue.Undefined;
+        return false;
+    }
+
+    /// <summary>Whether a slot holds a data property a store may write through.</summary>
+    internal bool IsWritableDataSlot(int slot) =>
+        (uint)slot < (uint)_slots.Length &&
+        (_slots[slot].Flags & (PropertyFlags.Present | PropertyFlags.Accessor | PropertyFlags.Writable)) ==
+            (PropertyFlags.Present | PropertyFlags.Writable);
+
+    /// <summary>
+    /// Writes a slot the caller has already established is a writable data
+    /// property. The write barrier belongs to the caller, which holds the
+    /// object's handle.
+    /// </summary>
+    internal void WriteDataSlot(int slot, JsValue value) => _slots[slot].Value = value;
+
+    private bool TryReadSlot(int slot, out JsPropertyDescriptor descriptor)
+    {
+        if ((uint)slot >= (uint)_slots.Length || (_slots[slot].Flags & PropertyFlags.Present) == 0)
+        {
+            descriptor = default;
+            return false;
+        }
+
+        var flags = _slots[slot].Flags;
+        descriptor = (flags & PropertyFlags.Accessor) != 0
+            ? JsPropertyDescriptor.Accessor(
+                _accessors![slot].Get,
+                _accessors[slot].Set,
+                (flags & PropertyFlags.Enumerable) != 0,
+                (flags & PropertyFlags.Configurable) != 0)
+            : new JsPropertyDescriptor(
+                _slots[slot].Value,
+                (flags & PropertyFlags.Writable) != 0,
+                (flags & PropertyFlags.Enumerable) != 0,
+                (flags & PropertyFlags.Configurable) != 0);
+        return true;
+    }
+
+    private void WriteSlot(int slot, in JsPropertyDescriptor descriptor)
+    {
+        var flags = PropertyFlags.Present;
+        if (descriptor.Enumerable) flags |= PropertyFlags.Enumerable;
+        if (descriptor.Configurable) flags |= PropertyFlags.Configurable;
+
+        if (descriptor.IsAccessor)
+        {
+            flags |= PropertyFlags.Accessor;
+            (_accessors ??= new Dictionary<int, AccessorPair>())[slot] =
+                new AccessorPair(descriptor.Get, descriptor.Set);
+            _slots[slot].Value = JsValue.Undefined;
+        }
+        else
+        {
+            if (descriptor.Writable) flags |= PropertyFlags.Writable;
+            _slots[slot].Value = descriptor.Value;
+            _accessors?.Remove(slot);
+        }
+
+        _slots[slot].Flags = flags;
+    }
+
+    private void ClearSlot(int slot)
+    {
+        _slots[slot].Flags = PropertyFlags.None;
+        _slots[slot].Value = JsValue.Undefined;
+        _accessors?.Remove(slot);
+    }
 
     public void PreventExtensions()
     {
@@ -129,8 +233,7 @@ public class JsObject : ITraceable
     public virtual bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
     {
         if (_shape.TryGetSlot(key, out var existingSlot) &&
-            existingSlot < _properties.Length &&
-            _properties[existingSlot] is { } current)
+            TryReadSlot(existingSlot, out var current))
         {
             // ECMA-262 10.1.11.2 ValidateAndApplyPropertyDescriptor
             // Step 4: current.[[Configurable]] is false
@@ -171,7 +274,7 @@ public class JsObject : ITraceable
             }
 
             // Step 9: apply the descriptor
-            _properties[existingSlot] = descriptor;
+            WriteSlot(existingSlot, descriptor);
             BarrierIfObject(descriptor.Value);
             if (descriptor.IsAccessor)
             {
@@ -185,8 +288,8 @@ public class JsObject : ITraceable
         if (_shape.TryGetSlot(key, out var deletedSlot))
         {
             EnsurePropertyStorage(deletedSlot);
-            _insertionSeq[deletedSlot] = _nextSeq++;
-            _properties[deletedSlot] = descriptor;
+            _slots[deletedSlot].InsertionSeq = _nextSeq++;
+            WriteSlot(deletedSlot, descriptor);
             BarrierIfObject(descriptor.Value);
             if (descriptor.IsAccessor)
             {
@@ -204,8 +307,8 @@ public class JsObject : ITraceable
         _shape = _shape.TransitionTo(key);
         var slot = _shape.PropertyCount - 1;
         EnsurePropertyStorage(slot);
-        _properties[slot] = descriptor;
-        _insertionSeq[slot] = _nextSeq++;
+        WriteSlot(slot, descriptor);
+        _slots[slot].InsertionSeq = _nextSeq++;
         BarrierIfObject(descriptor.Value);
         if (descriptor.IsAccessor)
         {
@@ -229,20 +332,17 @@ public class JsObject : ITraceable
 
     private void EnsurePropertyStorage(int slot)
     {
-        if (slot < _properties.Length)
+        if (slot < _slots.Length)
         {
             return;
         }
 
         var newLen = Math.Max(
-            Math.Max(_properties.Length * 2, slot + 1),
+            Math.Max(_slots.Length * 2, slot + 1),
             InitialPropertyCapacity);
-        var bigger = new JsPropertyDescriptor?[newLen];
-        Array.Copy(_properties, bigger, _properties.Length);
-        _properties = bigger;
-        var biggerSeq = new int[newLen];
-        Array.Copy(_insertionSeq, biggerSeq, _insertionSeq.Length);
-        _insertionSeq = biggerSeq;
+        var bigger = new Slot[newLen];
+        Array.Copy(_slots, bigger, _slots.Length);
+        _slots = bigger;
     }
 
     // Own property lookup via Shape → slot → array. Null slot = deleted.
@@ -250,13 +350,11 @@ public class JsObject : ITraceable
     // (indexed character access) on demand.
     public virtual bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
-        if (_shape.TryGetSlot(key, out var slot) &&
-            slot < _properties.Length &&
-            _properties[slot] is { } desc)
+        if (_shape.TryGetSlot(key, out var slot) && TryReadSlot(slot, out descriptor))
         {
-            descriptor = desc;
             return true;
         }
+
         descriptor = default;
         return false;
     }
@@ -283,12 +381,12 @@ public class JsObject : ITraceable
             }
             else
             {
-                // Chain order is shape-transition order; _insertionSeq is the true
+                // Chain order is shape-transition order; the slot sequence is the true
                 // creation order. They diverge only after a delete+re-add, in which
                 // case the seq for this slot won't match its chain position.
-                if (stringKeys is { Count: > 0 } && _insertionSeq[slot] < stringKeys[^1].seq)
+                if (stringKeys is { Count: > 0 } && _slots[slot].InsertionSeq < stringKeys[^1].seq)
                     deleteReordered = true;
-                (stringKeys ??= new List<(int, string, int)>()).Add((_insertionSeq[slot], key, slot));
+                (stringKeys ??= new List<(int, string, int)>()).Add((_slots[slot].InsertionSeq, key, slot));
             }
         }
 
@@ -298,7 +396,7 @@ public class JsObject : ITraceable
         {
             foreach (var (key, slot) in chain)
             {
-                if (_properties[slot] is { } desc)
+                if (TryReadSlot(slot, out var desc))
                     yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
             }
 
@@ -310,7 +408,7 @@ public class JsObject : ITraceable
             integerKeys.Sort((a, b) => a.idx.CompareTo(b.idx));
             foreach (var (_, key, slot) in integerKeys)
             {
-                if (_properties[slot] is { } desc)
+                if (TryReadSlot(slot, out var desc))
                     yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
             }
         }
@@ -321,7 +419,7 @@ public class JsObject : ITraceable
                 stringKeys.Sort((a, b) => a.seq.CompareTo(b.seq));
             foreach (var (_, key, slot) in stringKeys)
             {
-                if (_properties[slot] is { } desc)
+                if (TryReadSlot(slot, out var desc))
                     yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
             }
         }
@@ -447,10 +545,10 @@ public class JsObject : ITraceable
 
     public virtual bool SetProperty(string key, JsValue value)
     {
-        if (_shape.TryGetSlot(key, out var slot) && _properties[slot] is { } existing)
+        if (_shape.TryGetSlot(key, out var slot) && TryReadSlot(slot, out var existing))
         {
-            if (!existing.Writable) return false;
-            _properties[slot] = existing with { Value = value };
+            if (existing.IsAccessor || !existing.Writable) return false;
+            _slots[slot].Value = value;
             BarrierIfObject(value);
             return true;
         }
@@ -459,10 +557,10 @@ public class JsObject : ITraceable
 
     public virtual bool DeleteProperty(string key)
     {
-        if (_shape.TryGetSlot(key, out var slot) && _properties[slot] is { } existing)
+        if (_shape.TryGetSlot(key, out var slot) && TryReadSlot(slot, out var existing))
         {
             if (!existing.Configurable) return false;
-            _properties[slot] = null;
+            ClearSlot(slot);
             return true;
         }
         return true;
@@ -481,17 +579,27 @@ public class JsObject : ITraceable
     /// Property slots this object carries, live or emptied. The collector walks
     /// every one of them, so this is what marking actually costs.
     /// </summary>
-    internal int PropertySlotCount => _properties.Length;
+    internal int PropertySlotCount => _slots.Length;
 
     public virtual void Trace(IHeapTracer tracer)
     {
         if (PrototypeHandle is { } proto)
             tracer.Trace(proto);
 
-        foreach (var descriptor in _properties)
+        for (var slot = 0; slot < _slots.Length; slot++)
         {
-            if (descriptor is { } d)
-                TraceDescriptor(tracer, d);
+            var flags = _slots[slot].Flags;
+            if ((flags & PropertyFlags.Present) == 0) continue;
+            if ((flags & PropertyFlags.Accessor) != 0)
+            {
+                var accessor = _accessors![slot];
+                if (accessor.Get.Tag == JsValueTag.Object) tracer.Trace(accessor.Get.AsObjectHandle());
+                if (accessor.Set.Tag == JsValueTag.Object) tracer.Trace(accessor.Set.AsObjectHandle());
+            }
+            else if (_slots[slot].Value.Tag == JsValueTag.Object)
+            {
+                tracer.Trace(_slots[slot].Value.AsObjectHandle());
+            }
         }
 
         // Symbol-keyed properties hold live references too — e.g. an object's

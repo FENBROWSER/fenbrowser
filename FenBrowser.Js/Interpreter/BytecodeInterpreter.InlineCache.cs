@@ -69,9 +69,8 @@ public sealed partial class BytecodeInterpreter
     /// </summary>
     private void CommitCachedStore(JsObject obj, ObjectHandle ownerHandle, int slot, string key, JsValue value)
     {
-        var updated = obj.PropertyArray[slot]!.Value with { Value = value };
-        obj.PropertyArray[slot] = updated;
-        WriteDescriptorBarrier(ownerHandle, updated);
+        obj.WriteDataSlot(slot, value);
+        if (value.Tag == JsValueTag.Object) _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
         MarkFunctionInstancePrototypeAssignment(obj, key, value);
     }
 
