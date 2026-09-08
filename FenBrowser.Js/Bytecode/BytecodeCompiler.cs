@@ -385,6 +385,27 @@ public sealed class BytecodeCompiler
 
     private void CompileStatement(StatementNode stmt)
     {
+        // Only expression statements used to wind the allocator back, so every
+        // other kind — `var` declarations and `return` above all, which is most
+        // of what minified code is made of — left its temporaries allocated for
+        // the rest of the function. That made a function's register file grow
+        // with the number of statements in it rather than with the largest one:
+        // reCAPTCHA's biggest function reached 37,775 slots, and a call pays for
+        // the whole file whether it runs one statement or all of them.
+        //
+        // A register only ever holds an expression temporary — variables are
+        // reached through environment slots — so everything allocated while
+        // compiling a statement is dead once that statement is compiled. What an
+        // enclosing construct holds across this statement (a loop's iterator, a
+        // catch parameter, the completion register) was allocated before the
+        // mark and sits below it, so it survives untouched.
+        var statementMark = _nextRegister;
+        CompileStatementCore(stmt);
+        ReleaseRegistersTo(statementMark);
+    }
+
+    private void CompileStatementCore(StatementNode stmt)
+    {
         switch (stmt)
         {
             case BlockStatementNode block:
@@ -532,17 +553,14 @@ public sealed class BytecodeCompiler
                 break;
             case ExpressionStatementNode exprStmt:
             {
-                var exprMark = _nextRegister;
                 var exprReg = CompileExpression(exprStmt.Expression);
                 if (_captureCompletionValue)
                 {
+                    // Consume the value into the completion register before the
+                    // caller winds the allocator back over exprReg.
                     _instructions.Add(new Instruction(OpCode.Move, 0, exprReg, 0));
                 }
 
-                // The value has been consumed - either moved to the completion
-                // register or discarded - so every temporary this statement
-                // took is dead.
-                ReleaseRegistersTo(exprMark);
                 break;
             }
             case IfStatementNode ifStmt:
