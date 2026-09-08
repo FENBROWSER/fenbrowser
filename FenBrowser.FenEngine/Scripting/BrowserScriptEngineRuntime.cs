@@ -1424,7 +1424,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     {
                         return _interpreter.RunWithExecutionBudget(
                             inputTimeoutMs,
-                            FenJsBrowserTaskInstructionBudget,
+                            FenJsBrowserInstructionBudget,
                             () =>
                             {
                                 var eventValue = CreateBrowserDomEventValue(element, eventName, eventInit, out var dispatchState);
@@ -1445,7 +1445,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             });
                     }
                 }
-            }, inputTimeoutMs, FenJsBrowserTaskInstructionBudget, prioritize: true);
+            }, inputTimeoutMs, FenJsBrowserInstructionBudget, prioritize: true);
         }
         catch (JsThrownException ex) when (IsFenJsInputEventTimeout(ex))
         {
@@ -1506,7 +1506,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     {
                         return _interpreter.RunWithExecutionBudget(
                             inputTimeoutMs,
-                            FenJsBrowserTaskInstructionBudget,
+                            FenJsBrowserInstructionBudget,
                             () =>
                             {
                                 var eventValue = CreateBrowserDomEventValue(element, eventName, eventInit, out var dispatchState);
@@ -1527,7 +1527,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             });
                     }
                 }
-            }, inputTimeoutMs, FenJsBrowserTaskInstructionBudget, prioritize: true).ConfigureAwait(false);
+            }, inputTimeoutMs, FenJsBrowserInstructionBudget, prioritize: true).ConfigureAwait(false);
         }
         catch (JsThrownException ex) when (IsFenJsInputEventTimeout(ex))
         {
@@ -2002,7 +2002,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return parsed;
         }
 
-        return FenJsBrowserTaskInstructionBudget;
+        return FenJsBrowserInstructionBudget;
     }
 
     // Diagnostic knob: FEN_FENJS_GC_STRESS=before-every-alloc|after-every-alloc|random
@@ -2155,14 +2155,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // compiler's TryEnsureSufficientExecutionStack guard still aborts catchably
     // if even this is exceeded, rather than crashing the process.
     private const int FenJsLargeStackBytes = 256 * 1024 * 1024;
-    private const int FenJsBrowserInstructionBudget = 100_000_000;
-    // Event/timer callbacks on real pages can be deliberately CPU-heavy —
-    // reCAPTCHA's post-click signal collection burns >100M interpreter
-    // instructions by design (proof-of-work style toast) and used to die with
-    // "Maximum instruction budget exceeded", rejecting the verification
-    // promise chain. The wall-clock script timeout remains the runaway guard;
-    // this budget only backstops per-item runaway loops.
-    private const int FenJsBrowserTaskInstructionBudget = 2_000_000_000;
+    // A real page's own scripts are deliberately CPU-heavy, and an interpreter
+    // counts instructions a native engine never would. Google's search page
+    // spends over 100M interpreter instructions in one inline script, and
+    // reCAPTCHA's post-click signal collection burns more than that again by
+    // design. Both used to die with "Maximum instruction budget exceeded" --
+    // the callback path was raised for the second case, and the page-script
+    // path was left behind for the first, which killed the script mid-run and
+    // left the page believing scripting was unavailable.
+    //
+    // The wall-clock script timeout is the runaway guard. This only backstops
+    // a loop that spins without ever yielding, so one value serves both.
+    private const int FenJsBrowserInstructionBudget = 2_000_000_000;
     private const int FenJsBrowserParserMaxRecursionDepth = 1024;
     private void CollectFenJsHeapAtSafeBoundary()
     {
