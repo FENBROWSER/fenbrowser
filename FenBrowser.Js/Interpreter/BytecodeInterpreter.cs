@@ -2014,6 +2014,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // pre-bind every VariableSlots entry: the inner compiler also allocates slots
             // for free variable references, and creating local bindings for those would
             // shadow the outer chain that LoadName/StoreName walks.
+            // Settled once for the activation rather than re-tested per
+            // parameter: a bundle whose functions take twenty of them paid a
+            // type test and an ownership call for each one.
+            var parameterSlots = function.ParameterSlots;
+            var slotEnvironment = frame.Environment as DeclarativeEnvironmentRecord;
+            if (slotEnvironment is not null && !slotEnvironment.OwnsSlotsOf(function))
+            {
+                slotEnvironment = null;
+            }
+
             for (var i = 0; i < function.ParameterNames.Count; i++)
             {
                 var paramName = function.ParameterNames[i];
@@ -2041,11 +2051,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     paramValue = i < args.Count ? args[i] : JsValue.Undefined;
                 }
 
-                if (frame.Environment is DeclarativeEnvironmentRecord paramEnv &&
-                    paramEnv.OwnsSlotsOf(function) && i < function.ParameterSlots.Length &&
-                    function.ParameterSlots[i] >= 0)
+                if (slotEnvironment is not null &&
+                    (uint)i < (uint)parameterSlots.Length &&
+                    parameterSlots[i] >= 0)
                 {
-                    paramEnv.DeclareAtSlot(function.ParameterSlots[i], paramValue, deletable: false, overwrite: true);
+                    slotEnvironment.DeclareAtSlot(parameterSlots[i], paramValue, deletable: false, overwrite: true);
                 }
                 else
                 {
