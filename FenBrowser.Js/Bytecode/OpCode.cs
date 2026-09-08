@@ -328,4 +328,11 @@ public enum OpCode : byte
 		// Store a value at a compiler-known non-negative array index without
 		// materialising the index in a register. A=array reg, B=index, C=value reg.
 		SetElemByIndex,
+
+		// Read `obj[<literal>]` where the key is a literal the compiler already
+		// holds in the constant pool. The generic form spends a register and a
+		// LoadConst dispatch on a key that never changes; on a real bundle that
+		// pair is one of the most executed sequences there is.
+		// A=dest reg, B=object reg, C=constant index.
+		GetElemConst,
 	}

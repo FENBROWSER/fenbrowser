@@ -3294,9 +3294,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 }
                 case OpCode.GetElem:
+                case OpCode.GetElemConst:
                 {
                     var receiver = registers[ins.B];
-                    var keyValue = registers[ins.C];
+                    var keyValue = ins.OpCode == OpCode.GetElemConst
+                        ? function.Constants[ins.C]
+                        : registers[ins.C];
                     try
                     {
                         // ECMA-262 13.3.2.1: GetValue requires RequireObjectCoercible
@@ -23223,10 +23226,15 @@ fallbackArraySpecies:
         }
     }
 
+    internal void GetElemConstForJit(InterpreterFrame frame, int destReg, int receiverReg, int constantIndex, int icOffset)
+        => GetElemWithKeyForJit(frame, destReg, receiverReg, frame.Function.Constants[constantIndex], icOffset);
+
     internal void GetElemForJit(InterpreterFrame frame, int destReg, int receiverReg, int keyReg, int icOffset)
+        => GetElemWithKeyForJit(frame, destReg, receiverReg, frame.Registers[keyReg], icOffset);
+
+    private void GetElemWithKeyForJit(InterpreterFrame frame, int destReg, int receiverReg, JsValue keyValue, int icOffset)
     {
         var receiver = frame.Registers[receiverReg];
-        var keyValue = frame.Registers[keyReg];
         try
         {
             if (keyValue.Tag == JsValueTag.Symbol)

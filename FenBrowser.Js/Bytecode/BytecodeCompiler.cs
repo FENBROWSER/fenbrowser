@@ -3332,8 +3332,19 @@ public sealed class BytecodeCompiler
                 var dest = AllocateRegister();
                 if (member.Computed)
                 {
-                    var keyReg = CompileExpression(member.PropertyExpression!);
-                    _instructions.Add(new Instruction(OpCode.GetElem, dest, objectReg, keyReg));
+                    // A literal key is already in the constant pool, so loading it
+                    // into a register first only buys a second dispatch. The object
+                    // is evaluated before the key either way, and a literal has no
+                    // side effects, so folding it in keeps the evaluation order.
+                    if (TryGetLiteralKeyConstant(member.PropertyExpression!, out var keyConst))
+                    {
+                        _instructions.Add(new Instruction(OpCode.GetElemConst, dest, objectReg, keyConst));
+                    }
+                    else
+                    {
+                        var keyReg = CompileExpression(member.PropertyExpression!);
+                        _instructions.Add(new Instruction(OpCode.GetElem, dest, objectReg, keyReg));
+                    }
                 }
                 else if (TryGetComputedFieldIndex(member.Property, out var fieldIdx))
                 {
@@ -5516,6 +5527,30 @@ public sealed class BytecodeCompiler
     {
         _constants.Add(value);
         return _constants.Count - 1;
+    }
+
+    /// <summary>
+    /// Interns a computed member key that is a plain literal, so the read can
+    /// name the constant directly instead of staging it in a register.
+    /// Only number and string literals qualify: they are exactly the keys the
+    /// property lookup already understands, and neither can observe when it is
+    /// evaluated. Anything else (including BigInt, which is not a valid index
+    /// and coerces differently) keeps the general path.
+    /// </summary>
+    private bool TryGetLiteralKeyConstant(ExpressionNode key, out int constantIndex)
+    {
+        switch (key)
+        {
+            case NumericLiteralExpressionNode number:
+                constantIndex = AddConstant(JsValue.FromNumberCompact(number.Value));
+                return true;
+            case StringLiteralExpressionNode str:
+                constantIndex = AddConstant(JsValue.FromString(str.Value));
+                return true;
+            default:
+                constantIndex = -1;
+                return false;
+        }
     }
 
     private int GetOrCreateVariableSlot(string name)

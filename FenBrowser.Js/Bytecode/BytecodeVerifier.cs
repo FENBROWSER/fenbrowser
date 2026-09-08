@@ -348,6 +348,11 @@ public sealed class BytecodeVerifier
                 }
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
+            case OpCode.GetElemConst:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateConstantIndex(function, ip, ins.C);
+                break;
             case OpCode.CopyDataProperties:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
