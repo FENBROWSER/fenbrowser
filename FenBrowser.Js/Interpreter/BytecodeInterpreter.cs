@@ -1957,53 +1957,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // because those were already done on the first .next() call.
         if (ownerGenerator != null && ownerGenerator.InstructionPointer > 0)
         {
-            Array.Copy(ownerGenerator.Registers, frame.Registers, frame.Registers.Length);
-            frame.InstructionPointer = ownerGenerator.InstructionPointer;
-            if (ownerGenerator.YieldDestReg >= 0)
-                registers[ownerGenerator.YieldDestReg] = ownerGenerator.SentValue;
-            ownerGenerator.YieldDestReg = -1;
-            // Restore exception handler stack so try/catch blocks survive yield.
-            // ToArray returns top-first; push in reverse to reconstruct original.
-            var savedCatch = ownerGenerator.SavedCatchHandlers;
-			var savedFinally = ownerGenerator.SavedFinallyHandlers;
-			var savedHandlerEnvs = ownerGenerator.SavedHandlerEnvironments;
-
-    for (var i = savedCatch.Length - 1; i >= 0; i--)
-            {
-                frame.CatchHandlers.Push(savedCatch[i]);
-                frame.FinallyHandlers.Push(savedFinally[i]);
-            }
-            for (var i = savedHandlerEnvs.Length - 1; i >= 0; i--)
-            {
-                frame.HandlerEnvironments.Push(savedHandlerEnvs[i]);
-            }
-            frame.PendingException = ownerGenerator.PendingException;
-            frame.PendingReturn = ownerGenerator.PendingReturn;
+            ResumeSuspendedFrame(frame, registers, ownerGenerator, asyncContext: null);
         }
         else if (asyncContext != null && asyncContext.InstructionPointer > 0)
         {
-            // Async resume: restore saved IP, registers, and environment so
-            // execution continues after the Await that suspended this frame.
-            // ECMA-262 27.7.5.3 AwaitFulfilled / AwaitRejected.
-            Array.Copy(asyncContext.Registers, frame.Registers, frame.Registers.Length);
-            frame.InstructionPointer = asyncContext.InstructionPointer;
-            if (asyncContext.AwaitDestReg >= 0)
-                registers[asyncContext.AwaitDestReg] = asyncContext.SentValue;
-            asyncContext.AwaitDestReg = -1;
-            var savedCatch = asyncContext.SavedCatchHandlers;
-			var savedFinally = asyncContext.SavedFinallyHandlers;
-			var savedHandlerEnvs = asyncContext.SavedHandlerEnvironments;
-
-    for (var i = savedCatch.Length - 1; i >= 0; i--)
-            {
-                frame.CatchHandlers.Push(savedCatch[i]);
-                frame.FinallyHandlers.Push(savedFinally[i]);
-            }
-            for (var i = savedHandlerEnvs.Length - 1; i >= 0; i--)
-            {
-                frame.HandlerEnvironments.Push(savedHandlerEnvs[i]);
-            }
-            frame.PendingException = asyncContext.PendingException;
+            ResumeSuspendedFrame(frame, registers, ownerGenerator: null, asyncContext);
         }
         else
         {
@@ -3862,6 +3820,73 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var obj = new JsObject();
         obj.SetPrototype(EnsureObjectPrototype());
         return obj;
+    }
+
+    /// <summary>
+    /// Restores a generator or async frame to where it suspended: registers,
+    /// instruction pointer, the value the suspension was resumed with, and the
+    /// handler stacks a try block was standing in.
+    /// </summary>
+    /// <remarks>
+    /// Out of line on purpose. This is one call in many thousands, and its
+    /// locals would otherwise widen the stack frame every ordinary call sets up.
+    /// </remarks>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static void ResumeSuspendedFrame(
+        InterpreterFrame frame,
+        JsValue[] registers,
+        GeneratorObject? ownerGenerator,
+        AsyncContext? asyncContext)
+    {
+        JsValue[] savedRegisters;
+        int instructionPointer;
+        int destinationRegister;
+        JsValue sentValue;
+        int[] savedCatch;
+        int[] savedFinally;
+        EnvironmentRecord[] savedHandlerEnvironments;
+
+        if (ownerGenerator is not null)
+        {
+            savedRegisters = ownerGenerator.Registers;
+            instructionPointer = ownerGenerator.InstructionPointer;
+            destinationRegister = ownerGenerator.YieldDestReg;
+            sentValue = ownerGenerator.SentValue;
+            savedCatch = ownerGenerator.SavedCatchHandlers;
+            savedFinally = ownerGenerator.SavedFinallyHandlers;
+            savedHandlerEnvironments = ownerGenerator.SavedHandlerEnvironments;
+            ownerGenerator.YieldDestReg = -1;
+            frame.PendingException = ownerGenerator.PendingException;
+            frame.PendingReturn = ownerGenerator.PendingReturn;
+        }
+        else
+        {
+            savedRegisters = asyncContext!.Registers;
+            instructionPointer = asyncContext.InstructionPointer;
+            destinationRegister = asyncContext.AwaitDestReg;
+            sentValue = asyncContext.SentValue;
+            savedCatch = asyncContext.SavedCatchHandlers;
+            savedFinally = asyncContext.SavedFinallyHandlers;
+            savedHandlerEnvironments = asyncContext.SavedHandlerEnvironments;
+            asyncContext.AwaitDestReg = -1;
+            frame.PendingException = asyncContext.PendingException;
+        }
+
+        Array.Copy(savedRegisters, frame.Registers, frame.Registers.Length);
+        frame.InstructionPointer = instructionPointer;
+        if (destinationRegister >= 0) registers[destinationRegister] = sentValue;
+
+        // Saved top-first, so pushing in reverse rebuilds the original order.
+        for (var i = savedCatch.Length - 1; i >= 0; i--)
+        {
+            frame.CatchHandlers.Push(savedCatch[i]);
+            frame.FinallyHandlers.Push(savedFinally[i]);
+        }
+
+        for (var i = savedHandlerEnvironments.Length - 1; i >= 0; i--)
+        {
+            frame.HandlerEnvironments.Push(savedHandlerEnvironments[i]);
+        }
     }
 
     private JsValue CreateArgumentsObject(IReadOnlyList<JsValue> args, bool restricted, JsFunctionObject? callee)

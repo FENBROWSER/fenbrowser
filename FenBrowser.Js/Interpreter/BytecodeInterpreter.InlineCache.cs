@@ -143,7 +143,8 @@ public sealed partial class BytecodeInterpreter
     // CallFunction is skipped. Bound functions still need to merge args, so
     // they take the slow path; only NativeFunction and ordinary
     // JsFunction monomorphic call sites benefit.
-    private bool TryDispatchCallIC(BytecodeFunction fn, int offset, JsValue callee, CallArgs args, JsValue thisValue, out JsValue result)
+    private bool TryDispatchCallIC(
+        BytecodeFunction fn, int offset, JsValue callee, in CallArgs args, JsValue thisValue, out JsValue result)
     {
         result = JsValue.Undefined;
         if (callee.Tag != JsValueTag.Object) return false;
@@ -175,7 +176,7 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
-    private JsValue CallOrdinaryFunctionFast(JsFunctionObject fn, CallArgs args, JsValue thisValue)
+    private JsValue CallOrdinaryFunctionFast(JsFunctionObject fn, in CallArgs args, JsValue thisValue)
     {
         var bcFn = fn.Function;
         bcFn.Invocations++;

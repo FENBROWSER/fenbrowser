@@ -676,7 +676,7 @@ public sealed partial class BytecodeInterpreter
         }
     }
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    private JsValue ThrowCallTargetIsNullish(JsValue value, CallArgs args, JsValue thisValue)
+    private JsValue ThrowCallTargetIsNullish(JsValue value, in CallArgs args, JsValue thisValue)
     {
         throw new JsThrownException(CreateTypeError(
             "Cannot read properties of " +
@@ -689,7 +689,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue ThrowCallTargetIsNullish(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
         => ThrowCallTargetIsNullish(value, new CallArgs(args), thisValue);
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    private JsValue ThrowCallTargetIsNotCallable(JsValue value, CallArgs args, JsValue thisValue)
+    private JsValue ThrowCallTargetIsNotCallable(JsValue value, in CallArgs args, JsValue thisValue)
     {
         throw new JsThrownException(CreateTypeError(
             "Value is not callable. " + DescribeCallee(value) +
