@@ -12654,6 +12654,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private ObjectHandle EnsureObjectPrototype()
     {
+        // Answered by a field once the constructor has been built; the
+        // materialiser is far too large to inline, so asking it every time
+        // spent a call to learn nothing.
+        if (_objectPrototypeHandle is { } cached)
+        {
+            return cached;
+        }
+
         _ = EnsureObjectConstructor();
         return _objectPrototypeHandle!.Value;
     }
@@ -16082,6 +16090,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private ObjectHandle EnsureArrayPrototype()
     {
+        // Every array literal and every internal array creation asks for this,
+        // and the constructor materialiser it used to go through is far too
+        // large for the JIT to inline — so the answer, which is one field after
+        // the first call, cost a call into a method that does nothing.
+        if (_arrayPrototypeHandle is { } cached)
+        {
+            return cached;
+        }
+
         _ = EnsureArrayConstructor();
         return _arrayPrototypeHandle!.Value;
     }
@@ -18664,6 +18681,14 @@ fallbackArraySpecies:
 
     private ObjectHandle EnsureBooleanPrototype()
     {
+        // Answered by a field once the constructor has been built; the
+        // materialiser is far too large to inline, so asking it every time
+        // spent a call to learn nothing.
+        if (_booleanPrototypeHandle is { } cached)
+        {
+            return cached;
+        }
+
         _ = EnsureBooleanConstructor();
         return _booleanPrototypeHandle!.Value;
     }
@@ -18736,6 +18761,14 @@ fallbackArraySpecies:
 
     private ObjectHandle EnsureNumberPrototype()
     {
+        // Answered by a field once the constructor has been built; the
+        // materialiser is far too large to inline, so asking it every time
+        // spent a call to learn nothing.
+        if (_numberPrototypeHandle is { } cached)
+        {
+            return cached;
+        }
+
         _ = EnsureNumberConstructor();
         return _numberPrototypeHandle!.Value;
     }
