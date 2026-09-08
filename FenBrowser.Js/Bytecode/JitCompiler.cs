@@ -126,6 +126,15 @@ public static class JitCompiler
     public static long LambdaCompileTicks;
     public static long PrepareTicks;
 
+    // Tree-build time is what is left of a compile after LambdaCompiler and
+    // PrepareDelegate, and it used to be derived by reading those two totals
+    // before and after. With more than one compiler thread those totals also
+    // move for everyone else, so the subtraction reported another thread's work
+    // as negative time. Each thread now keeps its own running totals and
+    // subtracts only its own.
+    [ThreadStatic] private static long _threadLambdaTicks;
+    [ThreadStatic] private static long _threadPrepareTicks;
+
     // How long a request sat in the queue before the compiler reached it. A
     // delegate that arrives after the page has stopped calling the function is
     // worth nothing no matter how fast it was to produce, and only this says
@@ -203,18 +212,48 @@ public static class JitCompiler
     private static void Publish(BytecodeFunction function, JitDelegate? compiled) =>
         System.Threading.Volatile.Write(ref function.JitDelegate, compiled);
 
+    // How many threads drain the compile queue. One was a bottleneck of its
+    // own: LambdaCompiler costs around 70ms a function, and a bundle that tiers
+    // up a hundred of them serialised seven and a half seconds of compilation
+    // behind a single thread while the page was trying to run. The wait is what
+    // matters rather than the total - a delegate that arrives after the page has
+    // stopped calling the function is worth nothing - and on the captcha page
+    // requests accumulated 55 seconds of queue wait between them.
+    //
+    // Compilation is embarrassingly parallel: requests are independent, the
+    // delegate is published with a single volatile write, and every counter the
+    // compiler keeps is either interlocked or behind its own lock. The cap keeps
+    // this from taking the machine over on a page that tiers up hundreds of
+    // functions; FEN_JIT_THREADS overrides it for measurement.
+    private static readonly int CompilerThreadCount = ResolveCompilerThreadCount();
+
+    private static int ResolveCompilerThreadCount()
+    {
+        if (int.TryParse(Environment.GetEnvironmentVariable("FEN_JIT_THREADS"), out var configured) &&
+            configured > 0)
+        {
+            return Math.Min(configured, 16);
+        }
+
+        // Leave the machine room for the JS thread, the renderer and the host.
+        return Math.Clamp(Environment.ProcessorCount / 4, 1, 4);
+    }
+
     private static void EnsureCompilerThread()
     {
         if (Interlocked.Exchange(ref _compilerStarted, 1) == 1) return;
 
-        // Expression-tree compilation recurses with the shape of the function
-        // it is compiling, so it gets the same large stack the JS worker runs on.
-        var thread = new System.Threading.Thread(CompilerLoop, 16 * 1024 * 1024)
+        for (var i = 0; i < CompilerThreadCount; i++)
         {
-            IsBackground = true,
-            Name = "fenjs-jit",
-        };
-        thread.Start();
+            // Expression-tree compilation recurses with the shape of the function
+            // it is compiling, so it gets the same large stack the JS worker runs on.
+            var thread = new System.Threading.Thread(CompilerLoop, 16 * 1024 * 1024)
+            {
+                IsBackground = true,
+                Name = "fenjs-jit-" + i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            };
+            thread.Start();
+        }
     }
 
     private static void CompilerLoop()
@@ -366,14 +405,14 @@ public static class JitCompiler
         // any opcode in the function lacks an emitter — the interpreter
         // takes over.
         var emitStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        var lambdaBefore = Interlocked.Read(ref LambdaCompileTicks);
-        var prepareBefore = Interlocked.Read(ref PrepareTicks);
+        var lambdaBefore = _threadLambdaTicks;
+        var prepareBefore = _threadPrepareTicks;
         var emitted = TryEmitExpressionTree(function);
         Interlocked.Add(
             ref TreeBuildTicks,
             System.Diagnostics.Stopwatch.GetTimestamp() - emitStart
-                - (Interlocked.Read(ref LambdaCompileTicks) - lambdaBefore)
-                - (Interlocked.Read(ref PrepareTicks) - prepareBefore));
+                - (_threadLambdaTicks - lambdaBefore)
+                - (_threadPrepareTicks - prepareBefore));
         if (emitted is not null)
         {
             Interlocked.Increment(ref CompileSuccesses);
@@ -897,7 +936,9 @@ public static class JitCompiler
         {
             var lambdaStart = System.Diagnostics.Stopwatch.GetTimestamp();
             var compiled = PreferInterpretation ? lambda.Compile(preferInterpretation: true) : lambda.Compile();
-            Interlocked.Add(ref LambdaCompileTicks, System.Diagnostics.Stopwatch.GetTimestamp() - lambdaStart);
+            var lambdaElapsed = System.Diagnostics.Stopwatch.GetTimestamp() - lambdaStart;
+            Interlocked.Add(ref LambdaCompileTicks, lambdaElapsed);
+            _threadLambdaTicks += lambdaElapsed;
             // Compile() hands back a delegate over a DynamicMethod whose IL the
             // CLR has not turned into machine code yet; it does that on the
             // first invocation. That invocation is on the thread running the
@@ -911,7 +952,9 @@ public static class JitCompiler
             {
                 var prepareStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 PrepareForFirstCall(compiled);
-                Interlocked.Add(ref PrepareTicks, System.Diagnostics.Stopwatch.GetTimestamp() - prepareStart);
+                var prepareElapsed = System.Diagnostics.Stopwatch.GetTimestamp() - prepareStart;
+                Interlocked.Add(ref PrepareTicks, prepareElapsed);
+                _threadPrepareTicks += prepareElapsed;
             }
 
             function.OsrEntryPoints = loopHeaders.Count > 0 ? loopHeaders : null;
