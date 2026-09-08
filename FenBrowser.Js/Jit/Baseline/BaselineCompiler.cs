@@ -76,6 +76,17 @@ internal static class BaselineCompiler
         private LocalBuilder _lhs = null!, _rhs = null!, _environment = null!, _slot = null!;
         private LocalBuilder _receiver = null!, _program = null!, _shape = null!, _cached = null!;
 
+        // One CLR local per register, so an operand is a local rather than a
+        // bounds-checked read of a 24-byte struct out of the frame's array.
+        private LocalBuilder[] _registerLocals = [];
+        private RegisterLiveness _liveness = null!;
+        private readonly HashSet<int> _handlerTargets = [];
+
+        // Registers this opcode's own emission has already left in a local. The
+        // frame is stale for those until the next spill, so reading them back
+        // after a call would undo the write.
+        private readonly List<int> _localWrites = [];
+
         private Label[] _labels = [];
         private Label _dispatch, _exit;
         private bool _routable;
@@ -102,6 +113,7 @@ internal static class BaselineCompiler
             var resumePoints = CollectResumePoints();
             _routable = resumePoints.Count > 0;
             var charges = ChargeLoopHeaders();
+            _liveness = RegisterLiveness.Compute(instructions, function.RegisterCount, _handlerTargets);
 
             DeclareLocals();
             EmitPrologue();
@@ -131,17 +143,25 @@ internal static class BaselineCompiler
                 // still measures work rather than iterations.
                 if (ip == 0 || charges.ContainsKey(ip))
                 {
+                    // The budget check collects at a safe point, so the frame has
+                    // to hold everything the tracer needs before it runs.
+                    SpillLiveIn(ip);
                     il.Arg(0);
                     il.Int(charges.TryGetValue(ip, out var charge) ? charge : 1);
                     il.Call(MiCheckExecutionBudgetCharged);
                 }
 
                 var instruction = instructions[ip];
+                var safepoint = IsSafepoint(instruction.OpCode);
+                _localWrites.Clear();
+                if (safepoint) SpillLiveIn(ip);
                 if (!TryEmit(instruction, ip))
                 {
                     Refuse(instruction.OpCode);
                     return false;
                 }
+
+                if (safepoint) ReloadLiveOut(ip);
 
                 EmitRoutedThrowCheck(instruction.OpCode);
             }
@@ -184,12 +204,13 @@ internal static class BaselineCompiler
                         LoopHeaders.Add(instruction.B);
                         break;
                     case OpCode.PushHandler:
-                        if (InRange(instruction.A)) resumePoints.Add(instruction.A);
-                        if (InRange(instruction.D)) resumePoints.Add(instruction.D);
+                        if (InRange(instruction.A)) _handlerTargets.Add(instruction.A);
+                        if (InRange(instruction.D)) _handlerTargets.Add(instruction.D);
                         break;
                 }
             }
 
+            resumePoints.UnionWith(_handlerTargets);
             resumePoints.UnionWith(LoopHeaders);
             return resumePoints;
 
@@ -236,6 +257,9 @@ internal static class BaselineCompiler
             _shape = il.Local(typeof(Shape));
             _cached = il.Local(typeof(JsValue));
 
+            _registerLocals = new LocalBuilder[function.RegisterCount];
+            for (var r = 0; r < _registerLocals.Length; r++) _registerLocals[r] = il.Local(typeof(JsValue));
+
             _labels = new Label[instructions.Length];
             for (var ip = 0; ip < _labels.Length; ip++) _labels[ip] = il.DefineLabel();
         }
@@ -267,15 +291,37 @@ internal static class BaselineCompiler
             il.Store(_resumeIp);
         }
 
+        /// <summary>
+        /// Routes an entering frame to where it left off. Each target gets a stub
+        /// that reads the registers live there out of the frame first: a frame
+        /// arriving here holds its values in the array, and the body reads them
+        /// from locals. A back edge reaches the same instruction without passing
+        /// through the stub, so a loop pays nothing for this.
+        /// </summary>
         private void EmitResumeDispatch(HashSet<int> resumePoints)
         {
-            // Anything else, including zero, falls through to the top.
+            var top = il.DefineLabel();
+            var stubs = new List<(int Target, Label Stub)>(resumePoints.Count);
             foreach (var target in resumePoints)
             {
+                var stub = il.DefineLabel();
+                stubs.Add((target, stub));
                 il.Load(_resumeIp);
                 il.Int(target);
-                il.Branch(OpCodes.Beq, _labels[target]);
+                il.Branch(OpCodes.Beq, stub);
             }
+
+            // Anything else, including zero, falls through to the top.
+            il.Branch(OpCodes.Br, top);
+            foreach (var (target, stub) in stubs)
+            {
+                il.Mark(stub);
+                ReloadLiveIn(target);
+                il.Branch(OpCodes.Br, _labels[target]);
+            }
+
+            il.Mark(top);
+            ReloadLiveIn(0);
         }
 
         /// <summary>
@@ -377,24 +423,99 @@ internal static class BaselineCompiler
 
         // ---- operand access --------------------------------------------
 
-        // Addressed rather than indexed: one bounds check, and the 24-byte
-        // value is copied in place instead of through the stack.
-        private void PushRegister(int index)
+        private void PushRegister(int index) => il.Load(_registerLocals[index]);
+
+        private static void BeginSetRegister(int index) => _ = index;
+
+        private void EndSetRegister(int index)
+        {
+            _localWrites.Add(index);
+            il.Store(_registerLocals[index]);
+        }
+
+        // The frame's array is what the collector traces and what a frame
+        // entering or leaving compiled code reads, so these are the two points
+        // where the locals and the array have to agree.
+        private void SpillRegister(int index)
+        {
+            il.Load(_registers);
+            il.Int(index);
+            il.LoadElementAddress(typeof(JsValue));
+            il.Load(_registerLocals[index]);
+            il.StoreObject(typeof(JsValue));
+        }
+
+        private void ReloadRegister(int index)
         {
             il.Load(_registers);
             il.Int(index);
             il.LoadElementAddress(typeof(JsValue));
             il.LoadObject(typeof(JsValue));
+            il.Store(_registerLocals[index]);
         }
 
-        private void BeginSetRegister(int index)
+        /// <summary>
+        /// Starts a branch the fast path did not take. What the fast path wrote to
+        /// a local it wrote on the other side of the branch, so it says nothing
+        /// about what this one has to read back.
+        /// </summary>
+        private void BeginColdBranch() => _localWrites.Clear();
+
+        private void SpillLiveIn(int ip)
         {
-            il.Load(_registers);
-            il.Int(index);
-            il.LoadElementAddress(typeof(JsValue));
+            for (var r = 0; r < _registerLocals.Length; r++)
+            {
+                if (_liveness.IsLiveIn(ip, r)) SpillRegister(r);
+            }
         }
 
-        private void EndSetRegister() => il.StoreObject(typeof(JsValue));
+        private void ReloadLiveIn(int ip)
+        {
+            for (var r = 0; r < _registerLocals.Length; r++)
+            {
+                if (_liveness.IsLiveIn(ip, r)) ReloadRegister(r);
+            }
+        }
+
+        /// <summary>
+        /// Reads back the registers a call may have left in the frame: those it
+        /// can write, that something still reads, and that this opcode has not
+        /// already put in a local itself.
+        /// </summary>
+        private void ReloadLiveOut(int ip)
+        {
+            for (var r = 0; r < _registerLocals.Length; r++)
+            {
+                if (_liveness.IsLiveOut(ip, r) &&
+                    _liveness.IsWrittenBack(ip, r) &&
+                    !_localWrites.Contains(r))
+                {
+                    ReloadRegister(r);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Whether an opcode's compiled form always leaves the method. The ones
+        /// that answer false either touch nothing but locals and labels, or keep
+        /// their call on a branch that spills for itself.
+        /// </summary>
+        private static bool IsSafepoint(OpCode op) => op switch
+        {
+            OpCode.Nop or OpCode.LoadConst or OpCode.Move or OpCode.Jump or
+            OpCode.JumpIfFalse or OpCode.Return or OpCode.LoadNewTarget or
+            OpCode.PushHandler or OpCode.PopHandler or
+            OpCode.Add or OpCode.Sub or OpCode.Mul or OpCode.Div or OpCode.Mod or OpCode.Exp or
+            OpCode.Eq or OpCode.Neq or OpCode.StrictEq or OpCode.StrictNeq or
+            OpCode.Lt or OpCode.Gt or OpCode.Le or OpCode.Ge or OpCode.And or OpCode.Or or
+            OpCode.BitAnd or OpCode.BitOr or OpCode.BitXor or
+            OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.UnsignedShiftRight or
+            OpCode.Not or OpCode.Pos or OpCode.Neg or OpCode.Void or OpCode.TypeOf or
+            OpCode.BitNot or OpCode.ToNumeric or OpCode.Increment or OpCode.Decrement or
+            OpCode.LoadVar or OpCode.StoreVar or
+            OpCode.GetPropByName or OpCode.SetPropByName => false,
+            _ => true,
+        };
 
         private void PushTag(LocalBuilder value)
         {
@@ -436,21 +557,21 @@ internal static class BaselineCompiler
                     il.Int(ins.B);
                     il.LoadElementAddress(typeof(JsValue));
                     il.LoadObject(typeof(JsValue));
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.Move:
                     if (!Register(ins.A) || !Register(ins.B)) return false;
                     BeginSetRegister(ins.A);
                     PushRegister(ins.B);
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.LoadVar:
-                    return TryEmitLoadVar(ins, Register);
+                    return TryEmitLoadVar(ins, ip, Register);
 
                 case OpCode.StoreVar:
-                    return TryEmitStoreVar(ins, Register);
+                    return TryEmitStoreVar(ins, ip, Register);
 
                 case OpCode.InitVar:
                     if (!Register(ins.A)) return false;
@@ -504,7 +625,7 @@ internal static class BaselineCompiler
                     il.Arg(1);
                     il.Int(ip);
                     il.Call(MiLoadThis);
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.LoadNewTarget:
@@ -512,7 +633,7 @@ internal static class BaselineCompiler
                     BeginSetRegister(ins.A);
                     il.Arg(1);
                     il.Get(PiNewTarget);
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.NewObject:
@@ -520,7 +641,7 @@ internal static class BaselineCompiler
                     BeginSetRegister(ins.A);
                     il.Arg(0);
                     il.Call(MiNewObject);
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.NewArray:
@@ -529,7 +650,7 @@ internal static class BaselineCompiler
                     il.Arg(0);
                     il.Int(ins.B);
                     il.Call(MiNewArray);
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.InitThisBinding:
@@ -575,7 +696,7 @@ internal static class BaselineCompiler
                     il.Int(ins.B);
                     il.Call(MiTypeOfName);
                     il.Call(MiJsValueFromString);
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.CreateFunction:
@@ -585,7 +706,7 @@ internal static class BaselineCompiler
                     il.Arg(1);
                     il.Int(ins.B);
                     il.Call(MiCreateFunctionFromNested);
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.NewRegExp:
@@ -595,7 +716,7 @@ internal static class BaselineCompiler
                     il.Arg(1);
                     il.Int(ins.B);
                     il.Call(MiNewRegExp);
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.Throw:
@@ -636,7 +757,8 @@ internal static class BaselineCompiler
                             function.PropertyNames[ins.C],
                             EnsureSite(function.EnsureLoadCacheSites(), ip)),
                         ins.A,
-                        ins.B);
+                        ins.B,
+                        ip);
                     return true;
                 }
 
@@ -649,6 +771,7 @@ internal static class BaselineCompiler
                         PoolPropertySite(name, EnsureSite(function.EnsureStoreCacheSites(), ip)),
                         ins.A,
                         ins.C,
+                        ip,
                         // The only key whose store carries bookkeeping beyond the
                         // write, and it is known here rather than compared at run
                         // time.
@@ -721,13 +844,13 @@ internal static class BaselineCompiler
                      OpCode.BitAnd or OpCode.BitOr or OpCode.BitXor or
                      OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.UnsignedShiftRight:
                     if (!Register(ins.A) || !Register(ins.B) || !Register(ins.C)) return false;
-                    EmitBinary(ins);
+                    EmitBinary(ins, ip);
                     return true;
 
                 case OpCode.Not or OpCode.Pos or OpCode.Neg or OpCode.Void or OpCode.TypeOf or
                      OpCode.BitNot or OpCode.ToNumeric or OpCode.Increment or OpCode.Decrement:
                     if (!Register(ins.A) || !Register(ins.B)) return false;
-                    EmitUnary(ins);
+                    EmitUnary(ins, ip);
                     return true;
 
                 case OpCode.In:
@@ -753,7 +876,7 @@ internal static class BaselineCompiler
                     il.Arg(1);
                     il.Int(ins.B);
                     il.Call(MiEnumerateKeys);
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.EnumerateValues:
@@ -763,7 +886,7 @@ internal static class BaselineCompiler
                     il.Arg(1);
                     il.Int(ins.B);
                     il.Call(MiEnumerateValues);
-                    EndSetRegister();
+                    EndSetRegister(ins.A);
                     return true;
 
                 case OpCode.ForOfNext:
@@ -881,7 +1004,7 @@ internal static class BaselineCompiler
         /// program does not cover, a stale slot, an accessor and a proxy all
         /// leave by the one path where the specification's ordering still holds.
         /// </summary>
-        private void EmitCachedLoad(int pooled, int dest, int receiver)
+        private void EmitCachedLoad(int pooled, int dest, int receiver, int ip)
         {
             var miss = il.DefineLabel();
             var done = il.DefineLabel();
@@ -906,10 +1029,12 @@ internal static class BaselineCompiler
 
             BeginSetRegister(dest);
             il.Load(_cached);
-            EndSetRegister();
+            EndSetRegister(dest);
             il.Branch(OpCodes.Br, done);
 
             il.Mark(miss);
+            BeginColdBranch();
+            SpillLiveIn(ip);
             il.Arg(0);
             il.Arg(1);
             il.Int(dest);
@@ -917,11 +1042,12 @@ internal static class BaselineCompiler
             PushPooled(_namePool, pooled);
             PushPooled(_sitePool, pooled);
             il.Call(MiLoadPropertyMiss);
+            ReloadLiveOut(ip);
             il.Mark(done);
         }
 
         /// <summary>The write half, guarded the same way.</summary>
-        private void EmitCachedStore(int pooled, int receiver, int value, bool marksPrototype)
+        private void EmitCachedStore(int pooled, int receiver, int value, int ip, bool marksPrototype)
         {
             var miss = il.DefineLabel();
             var done = il.DefineLabel();
@@ -969,6 +1095,8 @@ internal static class BaselineCompiler
             il.Branch(OpCodes.Br, done);
 
             il.Mark(miss);
+            BeginColdBranch();
+            SpillLiveIn(ip);
             il.Arg(0);
             il.Arg(1);
             il.Int(receiver);
@@ -976,6 +1104,7 @@ internal static class BaselineCompiler
             il.Int(value);
             PushPooled(_sitePool, pooled);
             il.Call(MiStorePropertyMiss);
+            ReloadLiveOut(ip);
             il.Mark(done);
         }
 
@@ -1083,7 +1212,7 @@ internal static class BaselineCompiler
 
         // ---- variable slots --------------------------------------------
 
-        private bool TryEmitLoadVar(Instruction ins, Func<int, bool> register)
+        private bool TryEmitLoadVar(Instruction ins, int ip, Func<int, bool> register)
         {
             if (!register(ins.A) || ins.B < 0) return false;
 
@@ -1095,21 +1224,23 @@ internal static class BaselineCompiler
             BeginSetRegister(ins.A);
             il.Load(_slot);
             il.Get(PiBindingValue);
-            EndSetRegister();
+            EndSetRegister(ins.A);
             il.Branch(OpCodes.Br, done);
 
             il.Mark(slow);
+            BeginColdBranch();
+            SpillLiveIn(ip);
             BeginSetRegister(ins.A);
             il.Arg(0);
             il.Arg(1);
             il.Int(ins.B);
             il.Call(MiLoadSlotFast);
-            EndSetRegister();
+            EndSetRegister(ins.A);
             il.Mark(done);
             return true;
         }
 
-        private bool TryEmitStoreVar(Instruction ins, Func<int, bool> register)
+        private bool TryEmitStoreVar(Instruction ins, int ip, Func<int, bool> register)
         {
             if (!register(ins.A) || ins.B < 0) return false;
 
@@ -1146,6 +1277,8 @@ internal static class BaselineCompiler
             il.Branch(OpCodes.Br, done);
 
             il.Mark(slow);
+            BeginColdBranch();
+            SpillLiveIn(ip);
             il.Arg(0);
             il.Arg(1);
             il.Int(ins.B);
@@ -1186,11 +1319,11 @@ internal static class BaselineCompiler
 
         // ---- operators -------------------------------------------------
 
-        private void EmitBinary(Instruction ins)
+        private void EmitBinary(Instruction ins, int ip)
         {
             if (!HasFastPath(ins.OpCode))
             {
-                EmitBinarySlow(ins);
+                EmitBinarySlow(ins, ip);
                 return;
             }
 
@@ -1216,19 +1349,23 @@ internal static class BaselineCompiler
 
             BeginSetRegister(ins.A);
             EmitBinaryFast(ins.OpCode);
-            EndSetRegister();
+            EndSetRegister(ins.A);
             il.Branch(OpCodes.Br, done);
 
             il.Mark(slow);
-            EmitBinarySlow(ins);
+            EmitBinarySlow(ins, ip);
             il.Mark(done);
         }
 
         private static bool HasFastPath(OpCode op) => op is not (OpCode.And or OpCode.Or or OpCode.Div
             or OpCode.Mod or OpCode.Exp);
 
-        private void EmitBinarySlow(Instruction ins)
+        // A general operator reads its operands out of the frame and writes its
+        // result back there, so the locals and the array have to agree across it.
+        private void EmitBinarySlow(Instruction ins, int ip)
         {
+            BeginColdBranch();
+            SpillLiveIn(ip);
             il.Arg(0);
             il.Arg(1);
             il.Int((int)ins.OpCode);
@@ -1236,6 +1373,7 @@ internal static class BaselineCompiler
             il.Int(ins.B);
             il.Int(ins.C);
             il.Call(MiApplyBinop);
+            ReloadLiveOut(ip);
         }
 
         private void EmitBinaryFast(OpCode op)
@@ -1359,11 +1497,11 @@ internal static class BaselineCompiler
             il.Op(OpCodes.Ceq);
         }
 
-        private void EmitUnary(Instruction ins)
+        private void EmitUnary(Instruction ins, int ip)
         {
             if (ins.OpCode is OpCode.Void or OpCode.TypeOf or OpCode.BitNot)
             {
-                EmitUnarySlow(ins);
+                EmitUnarySlow(ins, ip);
                 return;
             }
 
@@ -1386,22 +1524,25 @@ internal static class BaselineCompiler
 
             BeginSetRegister(ins.A);
             EmitUnaryFast(ins.OpCode);
-            EndSetRegister();
+            EndSetRegister(ins.A);
             il.Branch(OpCodes.Br, done);
 
             il.Mark(slow);
-            EmitUnarySlow(ins);
+            EmitUnarySlow(ins, ip);
             il.Mark(done);
         }
 
-        private void EmitUnarySlow(Instruction ins)
+        private void EmitUnarySlow(Instruction ins, int ip)
         {
+            BeginColdBranch();
+            SpillLiveIn(ip);
             il.Arg(0);
             il.Arg(1);
             il.Int((int)ins.OpCode);
             il.Int(ins.A);
             il.Int(ins.B);
             il.Call(MiApplyUnaryOp);
+            ReloadLiveOut(ip);
         }
 
         /// <summary>
