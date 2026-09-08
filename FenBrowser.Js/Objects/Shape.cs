@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 
 namespace FenBrowser.Js.Objects;
 
@@ -42,6 +42,20 @@ public class Shape
     private readonly ChainMap _chain;
     private readonly ConcurrentDictionary<string, WeakReference<Shape>> _transitions = new(StringComparer.Ordinal);
     private int _transitionOperations;
+
+    // The transition this shape was asked for last. An object literal, a
+    // constructor and a class body all add the same properties in the same
+    // order every time they run, so the answer is almost always the previous
+    // one -- and giving it costs a reference compare instead of a dictionary
+    // lookup and a weak-reference dereference, which is the whole cost of
+    // adding a property to a fresh object.
+    //
+    // The pair is one object so a reader cannot see a key from one transition
+    // beside the shape of another. Holding the target strongly keeps at most
+    // one chain per shape alive: the one being used.
+    private sealed record HotTransition(string Key, Shape Target);
+
+    private HotTransition? _hotTransition;
 
     public int PropertyCount { get; }
 
@@ -100,10 +114,19 @@ public class Shape
     {
         ArgumentNullException.ThrowIfNull(property);
 
+        // Property names come from a function's own table, so the same site
+        // offers the same instance every time and reference equality is the
+        // test that matters. Anything else falls through to the map.
+        if (_hotTransition is { } hot && ReferenceEquals(hot.Key, property))
+        {
+            return hot.Target;
+        }
+
         if (_transitions.TryGetValue(property, out var weak))
         {
             if (weak.TryGetTarget(out var existing))
             {
+                _hotTransition = new HotTransition(property, existing);
                 return existing;
             }
 
@@ -117,6 +140,7 @@ public class Shape
             {
                 if (weak.TryGetTarget(out var existing))
                 {
+                    _hotTransition = new HotTransition(property, existing);
                     return existing;
                 }
 
@@ -125,6 +149,7 @@ public class Shape
 
             var next = new Shape(this, property);
             _transitions[property] = new WeakReference<Shape>(next);
+            _hotTransition = new HotTransition(property, next);
 
             if (Interlocked.Increment(ref _transitionOperations) % TransitionPruneInterval == 0)
             {
