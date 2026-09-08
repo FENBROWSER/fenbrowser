@@ -279,6 +279,58 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     }
 
     // Declaring a parameter or a hoisted var at a known slot: an array write.
+    /// <summary>
+    /// Hoists a function's declared <c>var</c>s into their slots in one pass.
+    /// ECMA-262 10.2.11 FunctionDeclarationInstantiation creates every declared
+    /// var and sets it to undefined before the body runs, so this is on the
+    /// entry path of every single call — and doing it one name at a time cost a
+    /// call, two null tests and a bounds test each, which on a minified bundle
+    /// (where functions declare dozens of vars and a call may touch none of
+    /// them) was the largest single thing a call paid for.
+    ///
+    /// A slot a parameter already filled is left alone, which is what
+    /// <c>function f(a) { var a; }</c> requires. The hoisted value is undefined
+    /// and so never an object reference, so no store barrier is owed.
+    ///
+    /// Answers false when this record does not hold slot storage for
+    /// <paramref name="owner"/>, leaving the caller its by-name path.
+    /// </summary>
+    internal bool TryDeclareHoistedVarsAtSlots(object owner, int[] slots)
+    {
+        if (!ReferenceEquals(_slotOwner, owner))
+        {
+            return false;
+        }
+
+        var bindings = _slotBindings;
+        var present = _slotPresent;
+        if (bindings is null || present is null)
+        {
+            return false;
+        }
+
+        var hoisted = new Binding(
+            Value: JsValue.Undefined,
+            IsMutable: true,
+            IsInitialized: true,
+            IsStrict: false,
+            IsDeletable: false);
+
+        for (var i = 0; i < slots.Length; i++)
+        {
+            var slot = slots[i];
+            if ((uint)slot >= (uint)bindings.Length || present[slot])
+            {
+                continue;
+            }
+
+            bindings[slot] = hoisted;
+            present[slot] = true;
+        }
+
+        return true;
+    }
+
     internal void DeclareAtSlot(int slot, JsValue value, bool deletable, bool overwrite)
     {
         if ((uint)slot >= (uint)(_slotBindings?.Length ?? 0))

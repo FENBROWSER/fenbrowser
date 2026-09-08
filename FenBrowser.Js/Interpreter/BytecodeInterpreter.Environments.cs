@@ -50,6 +50,15 @@ public sealed partial class BytecodeInterpreter
             slotted.OwnsSlotsOf(function))
         {
             var slots = function.VarSlots;
+
+            // The ordinary shape — every var has a slot — is the whole array in
+            // one pass with the storage hoisted out of the loop.
+            if (function.AllVarSlotsMapped &&
+                slotted.TryDeclareHoistedVarsAtSlots(function, slots))
+            {
+                return;
+            }
+
             for (var i = 0; i < slots.Length; i++)
             {
                 if (slots[i] >= 0)

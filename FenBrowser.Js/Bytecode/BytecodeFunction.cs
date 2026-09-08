@@ -45,6 +45,24 @@ public sealed class BytecodeFunction
 
     internal int[] VarSlots => _varSlots ??= MapSlots(VarDeclarationNames);
 
+    // A var whose name has no slot has to be created through the environment by
+    // name. That is rare, but the entry path cannot find out per call without
+    // re-walking the array it is trying to avoid walking, so settle it once.
+    internal bool AllVarSlotsMapped => _allVarSlotsMapped ??= ComputeAllVarSlotsMapped();
+
+    private bool? _allVarSlotsMapped;
+
+    private bool ComputeAllVarSlotsMapped()
+    {
+        var slots = VarSlots;
+        for (var i = 0; i < slots.Length; i++)
+        {
+            if (slots[i] < 0) return false;
+        }
+
+        return true;
+    }
+
     private int[] MapSlots(IReadOnlyList<string> names)
     {
         var slots = new int[names.Count];
