@@ -215,6 +215,18 @@ public class JsObject : ITraceable
         return true;
     }
 
+    // A property table that starts empty and doubles reaches four slots by way
+    // of one, two and four, so an object with three properties allocated three
+    // descriptor arrays and three sequence arrays and copied between them twice
+    // — before holding anything. A descriptor is a little over a hundred bytes
+    // (a value and both accessor halves are JsValues), which made those
+    // discarded steps the larger part of what a small object cost: an object of
+    // three properties allocated about 1.2KB, most of it thrown away on the way.
+    // Starting at four covers most objects in one allocation and costs nothing
+    // for the ones that stay smaller, since the array is sized in slots the
+    // object was always going to grow into.
+    private const int InitialPropertyCapacity = 4;
+
     private void EnsurePropertyStorage(int slot)
     {
         if (slot < _properties.Length)
@@ -222,7 +234,9 @@ public class JsObject : ITraceable
             return;
         }
 
-        var newLen = Math.Max(_properties.Length * 2, slot + 1);
+        var newLen = Math.Max(
+            Math.Max(_properties.Length * 2, slot + 1),
+            InitialPropertyCapacity);
         var bigger = new JsPropertyDescriptor?[newLen];
         Array.Copy(_properties, bigger, _properties.Length);
         _properties = bigger;

@@ -32,6 +32,7 @@ bld/
 *.js
 !FenBrowser.Js/
 !scripts/bench_obfuscated_vm.js
+!scripts/bench_call_shape.js
 *.ps1
 !scripts/ci/verify-volume-doc-references.ps1
 !scripts/ci/run-parser-fuzz-regressions.ps1
