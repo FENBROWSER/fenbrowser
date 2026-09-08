@@ -1,5 +1,7 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Heap;
+using FenBrowser.Js.Jit.CacheIR;
+using FenBrowser.Js.Jit.CacheIR.Attachers;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 
@@ -8,41 +10,38 @@ namespace FenBrowser.Js.Interpreter;
 // Plan §31: inline cache helpers. Data-property-only fast path for now.
 public sealed partial class BytecodeInterpreter
 {
-    private bool TryGetLoadIC(BytecodeFunction fn, int offset, JsValue receiver, string key, out JsValue result)
+    // A site reading a fixed name has its key in the bytecode, so its programs
+    // guard the shape alone; obj[k] sites guard the key as well.
+    private bool TryRunLoadSite(BytecodeFunction fn, int offset, JsValue receiver, string key, out JsValue result)
     {
-        if (receiver.Tag != JsValueTag.Object || fn.LoadICs is null ||
-            (uint)offset >= (uint)fn.LoadICs.Length || fn.LoadICs[offset] is not { } ic)
+        var sites = fn.LoadCacheSites;
+        if (receiver.Tag != JsValueTag.Object || sites is null ||
+            (uint)offset >= (uint)sites.Length || sites[offset] is not { } site)
         { result = JsValue.Undefined; return false; }
 
-        var obj = _heap.GetObject(receiver.AsObjectHandle());
-        if (obj is ProxyObject or ModuleNamespaceObject)
-        { result = JsValue.Undefined; return false; }
-        if (!ic.TryGet(obj, key, out var slot) || obj.PropertyArray[slot] is not { } desc)
-        { result = JsValue.Undefined; return false; }
-
-        if (desc.IsAccessor)
-        {
-            ic.InvalidateShape(obj.CurrentShape);
-            result = JsValue.Undefined;
-            return false;
-        }
-
-        result = desc.Value;
-        return true;
+        return site.TryRun(_heap.GetObject(receiver.AsObjectHandle()), key, out result);
     }
 
-    private void PopulateLoadIC(BytecodeFunction fn, int offset, JsValue receiver, string key)
+    private void AttachLoadSite(BytecodeFunction fn, int offset, JsValue receiver, string key, bool keyVariesAtSite)
     {
         if (receiver.Tag != JsValueTag.Object) return;
-        var obj = _heap.GetObject(receiver.AsObjectHandle());
-        if (obj is ProxyObject or ModuleNamespaceObject) return;
-        if (!obj.CurrentShape.TryGetSlot(key, out var slot) || obj.PropertyArray[slot] is not { } desc) return;
-        if (desc.IsAccessor) return; // accessors not cached yet
 
-        var caches = fn.EnsureLoadICs();
-        if ((uint)offset >= (uint)caches.Length) return;
-        (caches[offset] ??= new PolymorphicInlineCache()).Add(obj.CurrentShape, key, slot);
+        var sites = fn.EnsureLoadCacheSites();
+        if ((uint)offset >= (uint)sites.Length) return;
+
+        var site = sites[offset] ??= new CacheIRSite();
+        if (site.IsMegamorphic) return;
+
+        var program = LoadPropertyAttacher.TryAttach(
+            _heap.GetObject(receiver.AsObjectHandle()), key, keyVariesAtSite);
+        if (program is not null) site.Attach(program);
     }
+
+    private bool TryGetLoadIC(BytecodeFunction fn, int offset, JsValue receiver, string key, out JsValue result)
+        => TryRunLoadSite(fn, offset, receiver, key, out result);
+
+    private void PopulateLoadIC(BytecodeFunction fn, int offset, JsValue receiver, string key)
+        => AttachLoadSite(fn, offset, receiver, key, keyVariesAtSite: false);
 
     // Store IC fast path: receiver is a plain object whose current shape carries
     // `key` as a writable, non-accessor own data property. Updates the slot in
@@ -94,23 +93,10 @@ public sealed partial class BytecodeInterpreter
     // key value is a String at runtime (the common `obj["foo"]` case).
     // Integer-indexed array access remains on the slow path.
     private bool TryGetElemStringIC(BytecodeFunction fn, int offset, JsValue receiver, string key, out JsValue result)
-    {
-        if (receiver.Tag != JsValueTag.Object || fn.LoadICs is null ||
-            (uint)offset >= (uint)fn.LoadICs.Length || fn.LoadICs[offset] is not { } ic)
-        { result = JsValue.Undefined; return false; }
-
-        var obj = _heap.GetObject(receiver.AsObjectHandle());
-        if (obj is ProxyObject or ModuleNamespaceObject) { result = JsValue.Undefined; return false; }
-        if (!ic.TryGet(obj, key, out var slot) || obj.PropertyArray[slot] is not { } desc)
-        { result = JsValue.Undefined; return false; }
-        if (desc.IsAccessor) { ic.InvalidateShape(obj.CurrentShape); result = JsValue.Undefined; return false; }
-
-        result = desc.Value;
-        return true;
-    }
+        => TryRunLoadSite(fn, offset, receiver, key, out result);
 
     private void PopulateGetElemStringIC(BytecodeFunction fn, int offset, JsValue receiver, string key)
-        => PopulateLoadIC(fn, offset, receiver, key);
+        => AttachLoadSite(fn, offset, receiver, key, keyVariesAtSite: true);
 
     // Tier 4 #20 Call IC: monomorphic cache of the resolved callee handle at
     // each call site. On a hit the dispatch path is fixed (NativeFunction,

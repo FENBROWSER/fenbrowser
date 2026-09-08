@@ -23166,40 +23166,25 @@ fallbackArraySpecies:
     // entry is allocated at JIT compile time), so the JIT can safely
     // embed the reference as a closed-over constant.
     internal void GetPropByNameForJit_Direct(
-        InterpreterFrame frame, int destReg, int receiverReg, string prop, PolymorphicInlineCache ic)
+        InterpreterFrame frame, int destReg, int receiverReg, string prop,
+        FenBrowser.Js.Jit.CacheIR.CacheIRSite site)
     {
         var receiver = frame.Registers[receiverReg];
-        if (receiver.Tag == JsValueTag.Object)
+        if (receiver.Tag == JsValueTag.Object &&
+            site.TryRun(_heap.GetObject(receiver.AsObjectHandle()), prop, out var cached))
         {
-            var obj = _heap.GetObject(receiver.AsObjectHandle());
-            if (obj is not ModuleNamespaceObject &&
-                ic.TryGet(obj, prop, out var slot) &&
-                obj.PropertyArray[slot] is { } desc)
-            {
-                if (desc.IsAccessor)
-                {
-                    ic.InvalidateShape(obj.CurrentShape);
-                }
-                else
-                {
-                    frame.Registers[destReg] = desc.Value;
-                    return;
-                }
-            }
+            frame.Registers[destReg] = cached;
+            return;
         }
+
         try
         {
             frame.Registers[destReg] = GetReceiverProperty(receiver, prop);
-            if (receiver.Tag == JsValueTag.Object)
+            if (receiver.Tag == JsValueTag.Object && !site.IsMegamorphic)
             {
-                var obj = _heap.GetObject(receiver.AsObjectHandle());
-                if (obj is not ModuleNamespaceObject &&
-                    obj.CurrentShape.TryGetSlot(prop, out var freshSlot) &&
-                    obj.PropertyArray[freshSlot] is { } freshDesc &&
-                    !freshDesc.IsAccessor)
-                {
-                    ic.Add(obj.CurrentShape, prop, freshSlot);
-                }
+                var program = FenBrowser.Js.Jit.CacheIR.Attachers.LoadPropertyAttacher.TryAttach(
+                    _heap.GetObject(receiver.AsObjectHandle()), prop, keyVariesAtSite: false);
+                if (program is not null) site.Attach(program);
             }
         }
         catch (JsThrownException ex)

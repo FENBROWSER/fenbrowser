@@ -213,12 +213,12 @@ public sealed class BytecodeFunction
     // cost about as much as the cache saved. The offset is already a dense
     // index into this function's instructions, so an array is the natural
     // store: one bounds check and one load.
-    internal PolymorphicInlineCache?[]? LoadICs { get; set; }
+    internal FenBrowser.Js.Jit.CacheIR.CacheIRSite?[]? LoadCacheSites { get; set; }
     internal PolymorphicInlineCache?[]? StoreICs { get; set; }
     internal CallICEntry?[]? CallICs { get; set; }
 
-    internal PolymorphicInlineCache?[] EnsureLoadICs() =>
-        LoadICs ??= new PolymorphicInlineCache?[InstructionArray.Length];
+    internal FenBrowser.Js.Jit.CacheIR.CacheIRSite?[] EnsureLoadCacheSites() =>
+        LoadCacheSites ??= new FenBrowser.Js.Jit.CacheIR.CacheIRSite?[InstructionArray.Length];
 
     internal PolymorphicInlineCache?[] EnsureStoreICs() =>
         StoreICs ??= new PolymorphicInlineCache?[InstructionArray.Length];
@@ -339,7 +339,7 @@ public sealed class BytecodeFunction
 
             // Explicitly document the execution-local reset rather than relying on
             // default field initialization as the cache contract evolves.
-            LoadICs = null,
+            LoadCacheSites = null,
             StoreICs = null,
             CallICs = null,
             Invocations = 0,

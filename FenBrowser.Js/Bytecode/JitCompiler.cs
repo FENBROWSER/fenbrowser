@@ -1943,15 +1943,15 @@ public static class JitCompiler
     // Pre-allocate a Load IC for the given instruction offset so the JIT
     // can embed the reference as a Constant. Returns the existing IC if
     // one was populated by prior interpreted runs.
-    private static PolymorphicInlineCache EnsureLoadIC(BytecodeFunction function, int icOffset)
+    private static FenBrowser.Js.Jit.CacheIR.CacheIRSite EnsureLoadIC(BytecodeFunction function, int icOffset)
     {
-        var caches = function.EnsureLoadICs();
-        if ((uint)icOffset >= (uint)caches.Length)
+        var sites = function.EnsureLoadCacheSites();
+        if ((uint)icOffset >= (uint)sites.Length)
         {
-            return new PolymorphicInlineCache();
+            return new FenBrowser.Js.Jit.CacheIR.CacheIRSite();
         }
 
-        return caches[icOffset] ??= new PolymorphicInlineCache();
+        return sites[icOffset] ??= new FenBrowser.Js.Jit.CacheIR.CacheIRSite();
     }
 
     private static PolymorphicInlineCache EnsureStoreIC(BytecodeFunction function, int icOffset)
