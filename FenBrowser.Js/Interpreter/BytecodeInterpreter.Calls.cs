@@ -373,7 +373,7 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
-    private JsValue CallFunction(JsValue value, CallArgs args, JsValue thisValue)
+    private JsValue CallFunction(JsValue value, in CallArgs args, JsValue thisValue)
     {
         if (!FenBrowser.Js.Diagnostics.CallTargetProfiler.Enabled)
         {
@@ -402,7 +402,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
         => CallFunction(value, new CallArgs(args.Count > 4 ? args.ToArray() : args), thisValue);
 
-    private JsValue CallFunctionCore(JsValue value, CallArgs args, JsValue thisValue)
+    private JsValue CallFunctionCore(JsValue value, in CallArgs args, JsValue thisValue)
     {
         if (value.Tag == JsValueTag.Undefined || value.Tag == JsValueTag.Null)
         {
@@ -961,7 +961,7 @@ public sealed partial class BytecodeInterpreter
         InterpreterFrame frame,
         int destinationRegister,
         JsValue callee,
-        CallArgs args,
+        in CallArgs args,
         JsValue thisValue,
         bool allowDirectEval = false,
         int icOffset = -1)

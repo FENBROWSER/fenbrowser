@@ -1687,7 +1687,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     [MayExecuteJs]
     private JsValue ExecuteInternal(
         BytecodeFunction function,
-        CallArgs args,
+        in CallArgs args,
         JsValue thisValue,
         EnvironmentRecord? outerEnvironment = null,
         EnvironmentRecord? frameEnvironment = null,
@@ -1709,41 +1709,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var callTotalSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
         try
         {
-            while (true)
-            {
-                var result = ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment, callee, ownerGenerator, asyncContext);
-
-                if (_tailCallRequested)
-                {
-                    _tailCallRequested = false;
-                    var tailCallee = _tailCallee;
-                    var tailArgs = _tailArgs!;
-                    var tailThis = _tailThis;
-
-                    _tailCallee = default;
-                    _tailArgs = null;
-                    _tailThis = default;
-
-                    var target = ResolveObject(tailCallee);
-                    if (target is not JsFunctionObject targetFunction ||
-                        targetFunction.Kind is FunctionKind.Constructor or FunctionKind.Async or FunctionKind.Generator or FunctionKind.AsyncGenerator)
-                    {
-                        return CallFunction(tailCallee, tailArgs, tailThis);
-                    }
-
-                    function = targetFunction.Function;
-                    args = new CallArgs(tailArgs);
-                    thisValue = tailThis;
-                    outerEnvironment = targetFunction.OuterEnvironment;
-                    frameEnvironment = null;
-                    callee = targetFunction;
-                    ownerGenerator = null;
-                    asyncContext = null;
-                    continue;
-                }
-
-                return result;
-            }
+            var result = ExecuteInternalCore(
+                function, in args, thisValue, outerEnvironment, frameEnvironment, callee, ownerGenerator, asyncContext);
+            return _tailCallRequested ? RunTailCallChain() : result;
         }
         finally
         {
@@ -1762,9 +1730,58 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     [MayExecuteJs]
+    /// <summary>
+    /// Continues a proper tail call, and any tail call that one makes in turn.
+    /// </summary>
+    /// <remarks>
+    /// This half needs variables it can rebind, which is why it is not the loop
+    /// it used to be inside <see cref="ExecuteInternal"/>. A CallArgs holds four
+    /// JsValues inline and every one of them can carry an object reference, so
+    /// passing the struct by value costs a write-barriered move at each level of
+    /// the call chain — the single largest cost this interpreter had on a real
+    /// page. Keeping the rebinding here lets the ordinary path, which is every
+    /// call that is not a tail call, take its arguments by reference.
+    /// </remarks>
+    private JsValue RunTailCallChain()
+    {
+        while (true)
+        {
+            _tailCallRequested = false;
+            var tailCallee = _tailCallee;
+            var tailArgs = _tailArgs!;
+            var tailThis = _tailThis;
+
+            _tailCallee = default;
+            _tailArgs = null;
+            _tailThis = default;
+
+            var target = ResolveObject(tailCallee);
+            if (target is not JsFunctionObject targetFunction ||
+                targetFunction.Kind is FunctionKind.Constructor or FunctionKind.Async or FunctionKind.Generator or FunctionKind.AsyncGenerator)
+            {
+                return CallFunction(tailCallee, tailArgs, tailThis);
+            }
+
+            var result = ExecuteInternalCore(
+                targetFunction.Function,
+                new CallArgs(tailArgs),
+                tailThis,
+                targetFunction.OuterEnvironment,
+                frameEnvironment: null,
+                callee: targetFunction,
+                ownerGenerator: null,
+                asyncContext: null);
+
+            if (!_tailCallRequested)
+            {
+                return result;
+            }
+        }
+    }
+
     private JsValue ExecuteInternalCore(
         BytecodeFunction function,
-        CallArgs args,
+        in CallArgs args,
         JsValue thisValue,
         EnvironmentRecord? outerEnvironment = null,
         EnvironmentRecord? frameEnvironment = null,
@@ -3859,7 +3876,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 Writable: true,
                 Enumerable: true,
                 Configurable: true);
-            _ = obj.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture), descriptor);
+            _ = obj.DefineOwnProperty(JsIndexKeys.For(i), descriptor);
             WriteDescriptorBarrier(handle, descriptor);
         }
 
@@ -4021,7 +4038,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             var idx = iter.Index++;
-            var key = idx.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(idx);
             JsValue value;
             switch (iter.Kind)
             {
@@ -6227,11 +6244,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 var lobj = _heap.GetObject(argsList.AsObjectHandle());
                 var len = GetArrayLength(lobj);
-                callArgs = new JsValue[len];
-                for (var i = 0; i < len; i++)
+                callArgs = len == 0 ? Array.Empty<JsValue>() : new JsValue[len];
+                if (!TryReadDenseElements(lobj, len, callArgs))
                 {
-                    var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    TryGetPropertyValue(lobj, argsList, k, out callArgs[i]);
+                    for (var i = 0; i < len; i++)
+                    {
+                        TryGetPropertyValue(lobj, argsList, JsIndexKeys.For(i), out callArgs[i]);
+                    }
                 }
             }
             else if (argsList.Tag == JsValueTag.Undefined || argsList.Tag == JsValueTag.Null)
@@ -6276,7 +6295,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 callArgs = new JsValue[len];
                 for (var i = 0; i < len; i++)
                 {
-                    var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    var k = JsIndexKeys.For(i);
                     TryGetPropertyValue(lobj, argumentsList, k, out callArgs[i]);
                 }
             }
@@ -8899,7 +8918,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         for (var i = 1; i < nCaptures; i++)
         {
             var value = match.GetGroup(i) is { } group ? JsValue.FromString(group) : JsValue.Undefined;
-            _ = result.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ = result.DefineOwnProperty(JsIndexKeys.For(i),
                 new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
         }
 
@@ -8935,7 +8954,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     indexValue = JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current()));
                 }
 
-                _ = indices.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                _ = indices.DefineOwnProperty(JsIndexKeys.For(i),
                     new JsPropertyDescriptor(indexValue, Writable: true, Enumerable: true, Configurable: true));
             }
             _ = indices.DefineOwnProperty("length", new JsPropertyDescriptor(JsValue.FromNumber(nCaptures), Writable: true, Enumerable: false, Configurable: false));
@@ -10429,7 +10448,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var keys = new List<JsValue>(len);
             for (var i = 0; i < len; i++)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var key = JsIndexKeys.For(i);
                 if (!TryGetPropertyValue(listObj, result, key, out var item))
                 {
                     continue;
@@ -12266,7 +12285,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var value = ConvertJsonElement(item);
             var descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
-            _ = obj.DefineOwnProperty(index.ToString(System.Globalization.CultureInfo.InvariantCulture), descriptor);
+            _ = obj.DefineOwnProperty(JsIndexKeys.For(index), descriptor);
             WriteDescriptorBarrier(handle, descriptor);
             index++;
         }
@@ -12363,7 +12382,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var len = (long)LengthOfArrayLikeAsDouble(rObj, args[1]);
                 for (long i = 0; i < len; i++)
                 {
-                    var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    var k = JsIndexKeys.For(i);
                     if (!TryGetPropertyValue(rObj, args[1], k, out var item)) continue;
                     // ECMA-262 25.5.2.1: an element contributes a key when it is a
                     // String/Number primitive, or a String/Number wrapper object
@@ -12604,7 +12623,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var parts = new string[length];
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             var hasValue = TryGetPropertyValue(obj, receiver, key, out var value);
             // ECMA-262 25.5.2 step 4 of SerializeJSONArray - ReplacerFunction also
             // applies to array elements (with index as the key string).
@@ -14505,11 +14524,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var obj = _heap.GetObject(argsArray.AsObjectHandle());
             var length = GetArrayLength(obj);
-            callArgs = new JsValue[length];
-            for (var i = 0; i < length; i++)
+            callArgs = length == 0 ? Array.Empty<JsValue>() : new JsValue[length];
+            if (!TryReadDenseElements(obj, length, callArgs))
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                TryGetPropertyValue(obj, argsArray, key, out callArgs[i]);
+                for (var i = 0; i < length; i++)
+                {
+                    TryGetPropertyValue(obj, argsArray, JsIndexKeys.For(i), out callArgs[i]);
+                }
             }
         }
         else if (argsArray.Tag == JsValueTag.HostObject)
@@ -14526,7 +14547,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             callArgs = new JsValue[length];
             for (var i = 0; i < length; i++)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var key = JsIndexKeys.For(i);
                 callArgs[i] = GetReceiverProperty(argsArray, key);
             }
         }
@@ -16389,7 +16410,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var length = (int)Math.Min(lenDouble, int.MaxValue);
                 for (var i = 0; i < length; i++)
                 {
-                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    var key = JsIndexKeys.For(i);
                     TryGetPropertyValue(obj, source, key, out var v);
                     if (mapFn.HasValue)
                     {
@@ -16411,7 +16432,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 a = _heap.GetObject(resultValue.AsObjectHandle());
                 for (var k = 0; k < items.Count; k++)
                 {
-                    CreateDataPropertyOrThrow(a, k.ToString(System.Globalization.CultureInfo.InvariantCulture), items[k]);
+                    CreateDataPropertyOrThrow(a, JsIndexKeys.For(k), items[k]);
                 }
                 _ = a.SetProperty("length", JsValue.FromNumber(items.Count));
             }
@@ -16514,7 +16535,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             for (var i = 0; i < site.Raw.Count; i++)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var key = JsIndexKeys.For(i);
                 var cookedValue = site.Cooked[i] is { } cooked
                     ? JsValue.FromString(cooked)
                     : JsValue.Undefined;
@@ -16632,7 +16653,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 continue;
             }
 
-            _ = obj.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ = obj.DefineOwnProperty(JsIndexKeys.For(i),
                 new JsPropertyDescriptor(elements[i], Writable: true, Enumerable: true, Configurable: true));
         }
 
@@ -16888,7 +16909,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         TryGetPropertyValue(obj, thisValue, "0", out var first);
         for (var i = 1; i < length; i++)
         {
-            var fromKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var fromKey = JsIndexKeys.For(i);
             var toKey = (i - 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
             if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
             {
@@ -16922,7 +16943,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             for (var i = length - 1; i >= 0; i--)
             {
-                var fromKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var fromKey = JsIndexKeys.For(i);
                 var toKey = (i + insert).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
                 {
@@ -16937,7 +16958,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         for (var i = 0; i < insert; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             SetOrThrow(ownerHandle, obj, key, args[i]);
         }
 
@@ -16975,7 +16996,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var w = 0;
         for (var i = 0; i < start; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             result[w++] = TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined;
         }
         for (var i = 0; i < insertCount; i++)
@@ -16984,7 +17005,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         for (var i = start + skip; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             result[w++] = TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined;
         }
 
@@ -17014,7 +17035,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             else
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var key = JsIndexKeys.For(i);
                 result[i] = TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined;
             }
         }
@@ -17037,7 +17058,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var items = new List<JsValue>(length);
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             items.Add(TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined);
         }
 
@@ -17146,7 +17167,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         for (var i = start; i < end; i++)
         {
             // 23.1.3.7 fill uses Set(...,true): a frozen/non-writable target throws.
-            SetOrThrow(ownerHandle, obj, i.ToString(System.Globalization.CultureInfo.InvariantCulture), value);
+            SetOrThrow(ownerHandle, obj, JsIndexKeys.For(i), value);
         }
 
         return receiver;
@@ -17271,7 +17292,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.Undefined;
         }
 
-        var key = idx.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var key = JsIndexKeys.For(idx);
         return GetReceiverProperty(thisValue, key);
     }
 
@@ -17287,7 +17308,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         RequireCallable(callback, "Array.prototype.findLast");
         for (var i = length - 1; i >= 0; i--)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             var v = GetReceiverProperty(receiver, key);
             if (IsTruthy(InvokeArrayCallback(callback, v, JsValue.FromNumber(i), receiver, thisArg)))
             {
@@ -17309,7 +17330,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         RequireCallable(callback, "Array.prototype.findLastIndex");
         for (var i = length - 1; i >= 0; i--)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             var v = GetReceiverProperty(receiver, key);
             if (IsTruthy(InvokeArrayCallback(callback, v, JsValue.FromNumber(i), receiver, thisArg)))
             {
@@ -17382,7 +17403,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             for (var i = newLength; i < length; i++)
             {
-                DeleteOrThrow(obj, i.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                DeleteOrThrow(obj, JsIndexKeys.For(i));
             }
         }
         else if (insertCount > deleteCount)
@@ -17444,7 +17465,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var holeCount = 0;
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (!TryGetPropertyValue(obj, thisValue, key, out var v))
             {
                 holeCount++;
@@ -17499,7 +17520,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // (frozen array, non-configurable element) surface as a TypeError.
         for (var i = 0; i < present.Count; i++)
         {
-            SetOrThrow(ownerHandle, obj, i.ToString(System.Globalization.CultureInfo.InvariantCulture), present[i]);
+            SetOrThrow(ownerHandle, obj, JsIndexKeys.For(i), present[i]);
         }
 
         for (var i = 0; i < undefinedCount; i++)
@@ -17589,7 +17610,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         for (var i = fromIndex; i >= 0; i--)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (TryGetPropertyValue(obj, thisValue, key, out var value) && AreStrictlyEqual(value, target))
             {
                 return JsValue.FromNumber(i);
@@ -17628,7 +17649,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var length = GetArrayLength(source);
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (!TryGetPropertyValue(source, receiver, key, out var element))
             {
                 continue;   // skip holes per spec step 5.b.ii
@@ -17660,7 +17681,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var items = new List<JsValue>();
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 continue;
@@ -17695,7 +17716,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         RequireCallable(callback, "Array.prototype.every");
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 continue;
@@ -17722,7 +17743,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         RequireCallable(callback, "Array.prototype.some");
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 continue;
@@ -17750,7 +17771,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         RequireCallable(callback, "Array.prototype.find");
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             var v = GetReceiverProperty(receiver, key);
             if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
             {
@@ -17773,7 +17794,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         RequireCallable(callback, "Array.prototype.findIndex");
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             var v = GetReceiverProperty(receiver, key);
             if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
             {
@@ -17819,7 +17840,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var found = false;
             while (i != end)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var key = JsIndexKeys.For(i);
                 if (TryGetPropertyValue(obj, receiver, key, out var v))
                 {
                     accumulator = v;
@@ -17842,7 +17863,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         while (i != end)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 var callArgs = new[]
@@ -17914,7 +17935,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var hostLength = GetHostArrayLikeLength(receiver);
             for (var i = 0; i < hostLength; i++)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var key = JsIndexKeys.For(i);
                 var v = GetReceiverProperty(receiver, key);
                 if (v.Tag == JsValueTag.Undefined)
                 {
@@ -17931,7 +17952,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var length = GetArrayLength(obj);
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 continue;   // skip holes per spec
@@ -17953,6 +17974,37 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         return checked((int)Math.Min(Math.Truncate(number), int.MaxValue));
+    }
+
+    /// <summary>
+    /// Fills <paramref name="destination"/> from a dense array's own vector.
+    /// </summary>
+    /// <remarks>
+    /// ECMA-262 7.3.18 CreateListFromArrayLike reads each index as a property,
+    /// which means naming it and walking the ordinary lookup. A dense array owns
+    /// every index below its length outright, so for the shape real code
+    /// actually passes — <c>f.apply(this, arr)</c> — both the name and the walk
+    /// are pure overhead. Answers false for anything else so the caller keeps
+    /// the fully observable path.
+    /// </remarks>
+    private static bool TryReadDenseElements(JsObject obj, int length, JsValue[] destination)
+    {
+        if (length == 0)
+        {
+            return true;
+        }
+
+        if (obj is not ArrayObject { IsDense: true } dense || dense.DenseCount != length)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < length; i++)
+        {
+            _ = dense.TryDenseGet((uint)i, out destination[i]);
+        }
+
+        return true;
     }
 
     private JsValue ArrayPrototypeMap(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -17986,7 +18038,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 items.Add(JsValue.Undefined);   // spec: preserves length, holes become undefined-ish
@@ -18010,7 +18062,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var items = new List<JsValue>();
         for (var i = 0; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 continue;   // skip holes
@@ -18039,7 +18091,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var items = new List<JsValue>();
         for (var i = start; i < end; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             items.Add(TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined);
         }
 
@@ -18108,7 +18160,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var length = (int)rawLength;
             for (var i = 0; i < length; i++)
             {
-                var sourceKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var sourceKey = JsIndexKeys.For(i);
                 if (HasPropertyIncludingProxy(obj, sourceKey))
                 {
                     var subElement = GetReceiverProperty(value, sourceKey);
@@ -18223,7 +18275,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var resultObj = _heap.GetObject(result.AsObjectHandle());
                     for (var i = 0; i < items.Count; i++)
                     {
-                        var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        var key = JsIndexKeys.For(i);
                         // ECMA-262 7.3.7 CreateDataPropertyOrThrow:
                         //   Let success be ? CreateDataProperty(O, P, V).
                         //   If success is false, throw a TypeError exception.
@@ -18412,7 +18464,7 @@ fallbackArraySpecies:
             var values = new string[length];
             for (var i = 0; i < length; i++)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var key = JsIndexKeys.For(i);
                 var value = GetReceiverProperty(thisValue, key);
                 if (value.Tag is JsValueTag.Undefined or JsValueTag.Null)
                 {
@@ -18457,7 +18509,7 @@ fallbackArraySpecies:
 
         for (var i = fromIndex; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             if (TryGetPropertyValue(obj, thisValue, key, out var value) && AreStrictlyEqual(value, target))
             {
                 return JsValue.FromNumber(i);
@@ -18501,7 +18553,7 @@ fallbackArraySpecies:
 
         for (var i = start; i < length; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var key = JsIndexKeys.For(i);
             var value = GetReceiverProperty(receiver, key);
             if (SameValueZero(value, target))
             {
@@ -19539,7 +19591,7 @@ fallbackArraySpecies:
                 var length = GetArrayLength(sourceObj);
                 for (var i = 0; i < length; i++)
                 {
-                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    var key = JsIndexKeys.For(i);
                     if (!TryGetPropertyValue(sourceObj, value, key, out var v)) continue;
                     var cloned = StructuredCloneValue(v, memo);
                     arr.SetProperty(key, cloned);
@@ -20413,7 +20465,7 @@ fallbackArraySpecies:
             var length = GetArrayLength(obj);
             for (var i = 0; i < length; i++)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var key = JsIndexKeys.For(i);
                 TryGetPropertyValue(obj, source, key, out var v);
                 if (mapFn.HasValue)
                 {
@@ -20559,7 +20611,7 @@ fallbackArraySpecies:
                 var view = CreateTypedArrayInstance(elementType, buf, 0, len * elementSize);
                 for (var i = 0; i < len; i++)
                 {
-                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    var key = JsIndexKeys.For(i);
                     var element = srcObj.TryGetProperty(key, ResolvePrototypeDelegate, out var d) ? d.Value : JsValue.Undefined;
                     view.SetElement(i, NormalizeTypedArrayElementValue(elementType, element));
                 }
@@ -20805,7 +20857,7 @@ fallbackArraySpecies:
 
             for (var i = 0; i < srcLength; i++)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var key = JsIndexKeys.For(i);
                 if (!TryGetPropertyValue(sourceObj, sourceValue, key, out var element))
                     element = JsValue.Undefined;
                 self.SetElement(targetOffset + i, NormalizeTypedArrayElementValue(self.ElementType, element));
@@ -22365,7 +22417,7 @@ fallbackArraySpecies:
             var sb = new System.Text.StringBuilder();
             for (var i = 0; i < rawLen; i++)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var key = JsIndexKeys.For(i);
                 if (TryGetPropertyValue(rawObj, rawValue, key, out var seg))
                 {
                     sb.Append(ToStringValue(seg));
