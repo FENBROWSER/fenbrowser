@@ -6786,6 +6786,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         value.Tag is JsValueTag.Int32 or JsValueTag.Number;
 
     /// <summary>
+    /// ECMA-262 7.1.6 ToInt32 for a value already known to be numeric. An
+    /// integer-tagged value is already the answer; anything else goes the
+    /// modulo-2^32 route, which is also what NaN and the infinities need.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal static int NumericToInt32(JsValue value) =>
+        value.Tag == JsValueTag.Int32
+            ? value.AsInt32()
+            : FenBrowser.Js.Builtins.MathHelpers.ToInt32(value.AsNumber());
+
+    /// <summary>
     /// Numeric fast paths shared by the dispatch loop and the JIT's compiled
     /// body. Both operands being numbers is the overwhelmingly common case, and
     /// it settles every one of these operators without entering the generic
@@ -6827,6 +6838,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             case OpCode.StrictEq: result = JsValue.FromBoolean(a == b); return true;
             case OpCode.Neq:
             case OpCode.StrictNeq: result = JsValue.FromBoolean(a != b); return true;
+            // The bitwise operators coerce through ToInt32 (ECMA-262 13.9,
+            // 13.12), so a number reaches them however it happens to be tagged.
+            case OpCode.BitAnd:
+                result = JsValue.FromInt32(MathHelpers.ToInt32(a) & MathHelpers.ToInt32(b)); return true;
+            case OpCode.BitOr:
+                result = JsValue.FromInt32(MathHelpers.ToInt32(a) | MathHelpers.ToInt32(b)); return true;
+            case OpCode.BitXor:
+                result = JsValue.FromInt32(MathHelpers.ToInt32(a) ^ MathHelpers.ToInt32(b)); return true;
+            case OpCode.ShiftLeft:
+                result = JsValue.FromInt32(MathHelpers.ToInt32(a) << (MathHelpers.ToInt32(b) & 31)); return true;
+            case OpCode.ShiftRight:
+                result = JsValue.FromInt32(MathHelpers.ToInt32(a) >> (MathHelpers.ToInt32(b) & 31)); return true;
+            case OpCode.UnsignedShiftRight:
+                result = FastNumberResult((double)((uint)MathHelpers.ToInt32(a) >> (MathHelpers.ToInt32(b) & 31)));
+                return true;
             default: result = JsValue.Undefined; return false;
         }
     }
