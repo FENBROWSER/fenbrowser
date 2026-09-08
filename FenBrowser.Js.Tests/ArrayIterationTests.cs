@@ -82,6 +82,12 @@ public sealed class ArrayIterationTests
     }
 
     [Fact]
+    public void MapAcceptsBoundFunctionCallback()
+    {
+        Assert.Equal(6, RunNum("var f = function(v){ return this.n + v; }; var b = f.bind({n:5}); [1].map(b)[0];"));
+    }
+
+    [Fact]
     public void NonFunctionCallbackThrows()
     {
         Assert.Throws<JsThrownException>(() => RunNum("[1,2,3].forEach(42);"));

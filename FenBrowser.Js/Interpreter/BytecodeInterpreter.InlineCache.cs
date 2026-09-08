@@ -10,7 +10,8 @@ public sealed partial class BytecodeInterpreter
 {
     private bool TryGetLoadIC(BytecodeFunction fn, int offset, JsValue receiver, string key, out JsValue result)
     {
-        if (receiver.Tag != JsValueTag.Object || fn.LoadICs is null || !fn.LoadICs.TryGetValue(offset, out var ic))
+        if (receiver.Tag != JsValueTag.Object || fn.LoadICs is null ||
+            (uint)offset >= (uint)fn.LoadICs.Length || fn.LoadICs[offset] is not { } ic)
         { result = JsValue.Undefined; return false; }
 
         var obj = _heap.GetObject(receiver.AsObjectHandle());
@@ -38,10 +39,9 @@ public sealed partial class BytecodeInterpreter
         if (!obj.CurrentShape.TryGetSlot(key, out var slot) || obj.PropertyArray[slot] is not { } desc) return;
         if (desc.IsAccessor) return; // accessors not cached yet
 
-        fn.LoadICs ??= new();
-        if (!fn.LoadICs.TryGetValue(offset, out var ic))
-        { ic = new PolymorphicInlineCache(); fn.LoadICs[offset] = ic; }
-        ic.Add(obj.CurrentShape, key, slot);
+        var caches = fn.EnsureLoadICs();
+        if ((uint)offset >= (uint)caches.Length) return;
+        (caches[offset] ??= new PolymorphicInlineCache()).Add(obj.CurrentShape, key, slot);
     }
 
     // Store IC fast path: receiver is a plain object whose current shape carries
@@ -51,7 +51,8 @@ public sealed partial class BytecodeInterpreter
     // invalidated (made non-writable, deleted, or turned into an accessor).
     private bool TryStoreIC(BytecodeFunction fn, int offset, ObjectHandle ownerHandle, JsValue receiver, string key, JsValue value)
     {
-        if (receiver.Tag != JsValueTag.Object || fn.StoreICs is null || !fn.StoreICs.TryGetValue(offset, out var ic))
+        if (receiver.Tag != JsValueTag.Object || fn.StoreICs is null ||
+            (uint)offset >= (uint)fn.StoreICs.Length || fn.StoreICs[offset] is not { } ic)
             return false;
 
         var obj = _heap.GetObject(receiver.AsObjectHandle());
@@ -83,10 +84,9 @@ public sealed partial class BytecodeInterpreter
         if (!obj.CurrentShape.TryGetSlot(key, out var slot) || obj.PropertyArray[slot] is not { } desc) return;
         if (desc.IsAccessor || !desc.Writable) return;
 
-        fn.StoreICs ??= new();
-        if (!fn.StoreICs.TryGetValue(offset, out var ic))
-        { ic = new PolymorphicInlineCache(); fn.StoreICs[offset] = ic; }
-        ic.Add(obj.CurrentShape, key, slot);
+        var caches = fn.EnsureStoreICs();
+        if ((uint)offset >= (uint)caches.Length) return;
+        (caches[offset] ??= new PolymorphicInlineCache()).Add(obj.CurrentShape, key, slot);
     }
 
     // Tier 4 #20 GetElem IC: same shape/key/slot lookup as the LoadIC, but
@@ -95,7 +95,8 @@ public sealed partial class BytecodeInterpreter
     // Integer-indexed array access remains on the slow path.
     private bool TryGetElemStringIC(BytecodeFunction fn, int offset, JsValue receiver, string key, out JsValue result)
     {
-        if (receiver.Tag != JsValueTag.Object || fn.LoadICs is null || !fn.LoadICs.TryGetValue(offset, out var ic))
+        if (receiver.Tag != JsValueTag.Object || fn.LoadICs is null ||
+            (uint)offset >= (uint)fn.LoadICs.Length || fn.LoadICs[offset] is not { } ic)
         { result = JsValue.Undefined; return false; }
 
         var obj = _heap.GetObject(receiver.AsObjectHandle());
@@ -117,12 +118,13 @@ public sealed partial class BytecodeInterpreter
     // CallFunction is skipped. Bound functions still need to merge args, so
     // they take the slow path; only NativeFunction and ordinary
     // JsFunction monomorphic call sites benefit.
-    private bool TryDispatchCallIC(BytecodeFunction fn, int offset, JsValue callee, IReadOnlyList<JsValue> args, JsValue thisValue, out JsValue result)
+    private bool TryDispatchCallIC(BytecodeFunction fn, int offset, JsValue callee, CallArgs args, JsValue thisValue, out JsValue result)
     {
         result = JsValue.Undefined;
         if (callee.Tag != JsValueTag.Object) return false;
-        fn.CallICs ??= new();
-        if (!fn.CallICs.TryGetValue(offset, out var entry)) return false;
+        var caches = fn.CallICs;
+        if (caches is null || (uint)offset >= (uint)caches.Length ||
+            caches[offset] is not { } entry) return false;
         if (entry.Megamorphic) return false;
 
         var handle = callee.AsObjectHandle().ToInt64();
@@ -133,11 +135,6 @@ public sealed partial class BytecodeInterpreter
         {
             case CallICKind.Native:
                 if (obj is not NativeFunctionObject) { entry.Megamorphic = true; return false; }
-                // Do not call NativeFunctionObject.Call directly here. CallFunction's
-                // native branch pins object-valued `this`/arguments as temporary heap
-                // roots before invoking C# code, because a native callback can allocate
-                // and trigger a minor collection while those handles exist only on the
-                // CLR stack. Bypassing that boundary caused IC-dependent stale handles.
                 entry.Hits++;
                 result = CallFunction(callee, args, thisValue);
                 return true;
@@ -145,15 +142,29 @@ public sealed partial class BytecodeInterpreter
                 if (obj is not JsFunctionObject jfn ||
                     jfn.Kind != Objects.FunctionKind.Ordinary)
                 { entry.Megamorphic = true; return false; }
-                // Fall back to CallFunction for the ordinary case: it owns
-                // arity-binding, strict-this conversion, and frame setup. The
-                // IC still saved the type-discrimination cascade.
-                result = CallFunction(callee, args, thisValue);
                 entry.Hits++;
+                result = CallOrdinaryFunctionFast(jfn, args, thisValue);
                 return true;
             default:
                 return false;
         }
+    }
+
+    private JsValue CallOrdinaryFunctionFast(JsFunctionObject fn, CallArgs args, JsValue thisValue)
+    {
+        var bcFn = fn.Function;
+        bcFn.Invocations++;
+#if !PUBLISH_AOT
+        const int BackEdgeScale = 100;
+        if (!bcFn.JitCompileAttempted &&
+            (long)bcFn.Invocations * BackEdgeScale + bcFn.BackEdges
+                >= (long)JitCompiler.TierUpThreshold * BackEdgeScale)
+        {
+            bcFn.JitCompileAttempted = true;
+            JitCompiler.RequestCompile(bcFn);
+        }
+#endif
+        return ExecuteInternal(bcFn, args, thisValue, ResolveFunctionOuterEnvironment(fn), callee: fn);
     }
 
     private void PopulateCallIC(BytecodeFunction fn, int offset, JsValue callee)
@@ -165,13 +176,15 @@ public sealed partial class BytecodeInterpreter
         else if (obj is JsFunctionObject f && f.Kind == Objects.FunctionKind.Ordinary) kind = CallICKind.OrdinaryFunction;
         else return; // Proxy, bound, async, generator — not cached.
 
-        fn.CallICs ??= new();
+        var caches = fn.EnsureCallICs();
+        if ((uint)offset >= (uint)caches.Length) return;
         var handle = callee.AsObjectHandle().ToInt64();
-        if (fn.CallICs.TryGetValue(offset, out var entry))
+        if (caches[offset] is { } entry)
         {
             if (entry.CalleeHandle != handle) entry.Megamorphic = true;
             return;
         }
-        fn.CallICs[offset] = new CallICEntry { CalleeHandle = handle, Kind = kind };
+
+        caches[offset] = new CallICEntry { CalleeHandle = handle, Kind = kind };
     }
 }

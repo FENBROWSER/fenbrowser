@@ -189,9 +189,24 @@ public sealed class BytecodeFunction
     // compiled template stored by BytecodeCache. Property ICs hold Shapes and call
     // ICs hold heap-local ObjectHandle values, so sharing them across interpreters
     // can make one heap consume another heap's feedback.
-    internal Dictionary<int, PolymorphicInlineCache>? LoadICs { get; set; }
-    internal Dictionary<int, PolymorphicInlineCache>? StoreICs { get; set; }
-    internal Dictionary<int, CallICEntry>? CallICs { get; set; }
+    // Indexed by instruction offset, not keyed by it. Every property read,
+    // property write and call consulted its cache through a dictionary lookup,
+    // and on a bundle that runs tens of millions of them the hash of the key
+    // cost about as much as the cache saved. The offset is already a dense
+    // index into this function's instructions, so an array is the natural
+    // store: one bounds check and one load.
+    internal PolymorphicInlineCache?[]? LoadICs { get; set; }
+    internal PolymorphicInlineCache?[]? StoreICs { get; set; }
+    internal CallICEntry?[]? CallICs { get; set; }
+
+    internal PolymorphicInlineCache?[] EnsureLoadICs() =>
+        LoadICs ??= new PolymorphicInlineCache?[InstructionArray.Length];
+
+    internal PolymorphicInlineCache?[] EnsureStoreICs() =>
+        StoreICs ??= new PolymorphicInlineCache?[InstructionArray.Length];
+
+    internal CallICEntry?[] EnsureCallICs() =>
+        CallICs ??= new CallICEntry?[InstructionArray.Length];
 
     // Tier 4 #24 JIT bookkeeping. This is also execution-local feedback and must be
     // reset when a cached template is materialized for another compilation request.
@@ -199,13 +214,6 @@ public sealed class BytecodeFunction
     internal int BackEdges;
 #if !PUBLISH_AOT
     internal bool JitCompileAttempted;
-
-    // How many frames for this function are on the interpreter's active stack.
-    // The JIT entry test asks "is this a recursive activation?" on every call it
-    // is eligible for, and answering that by scanning the whole frame stack made
-    // the question cost O(call depth) per call - on a deeply nested bundle, the
-    // dominant part of the test. The frame scope maintains this instead.
-    internal int ActiveActivations;
 
     /// <summary>
     /// Loop headers the JIT body can be entered at while a frame is already

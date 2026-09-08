@@ -306,6 +306,16 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     {
     }
 
+    internal void ResetDeclarativeState(EnvironmentRecord? outerEnv)
+    {
+        _bindings?.Clear();
+        _slotOwner = null;
+        _slotMap = null;
+        _slotBindings = null;
+        _slotPresent = null;
+        ResetLifetime(outerEnv);
+    }
+
     // GetBindingValue already answers NotFound for an absent binding here, so
     // one dictionary probe settles both questions. ModuleEnvironmentRecord and
     // FunctionEnvironmentRecord inherit this; their GetBindingValue overrides

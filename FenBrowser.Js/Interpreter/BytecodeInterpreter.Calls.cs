@@ -6,19 +6,170 @@ using FenBrowser.Js.Environments;
 
 namespace FenBrowser.Js.Interpreter;
 
-// Call/construct/spread helpers extracted from BytecodeInterpreter.cs as part of
-// audit section 2 slice 3. Pure file move, no semantic change.
+internal readonly struct CallArgs : IReadOnlyList<JsValue>
+{
+    private readonly JsValue _arg0;
+    private readonly JsValue _arg1;
+    private readonly JsValue _arg2;
+    private readonly JsValue _arg3;
+    private readonly JsValue[]? _arrayArgs;
+    private readonly int _count;
+
+    public CallArgs(JsValue arg0)
+    {
+        _arg0 = arg0;
+        _arg1 = default;
+        _arg2 = default;
+        _arg3 = default;
+        _arrayArgs = null;
+        _count = 1;
+    }
+
+    public CallArgs(JsValue arg0, JsValue arg1)
+    {
+        _arg0 = arg0;
+        _arg1 = arg1;
+        _arg2 = default;
+        _arg3 = default;
+        _arrayArgs = null;
+        _count = 2;
+    }
+
+    public CallArgs(JsValue arg0, JsValue arg1, JsValue arg2)
+    {
+        _arg0 = arg0;
+        _arg1 = arg1;
+        _arg2 = arg2;
+        _arg3 = default;
+        _arrayArgs = null;
+        _count = 3;
+    }
+
+    public CallArgs(JsValue arg0, JsValue arg1, JsValue arg2, JsValue arg3)
+    {
+        _arg0 = arg0;
+        _arg1 = arg1;
+        _arg2 = arg2;
+        _arg3 = arg3;
+        _arrayArgs = null;
+        _count = 4;
+    }
+
+    public CallArgs(JsValue[] args)
+    {
+        _arg0 = args.Length is > 0 and <= 4 ? args[0] : default;
+        _arg1 = args.Length is > 1 and <= 4 ? args[1] : default;
+        _arg2 = args.Length is > 2 and <= 4 ? args[2] : default;
+        _arg3 = args.Length is > 3 and <= 4 ? args[3] : default;
+        _arrayArgs = args.Length > 4 ? args : null;
+        _count = args.Length;
+    }
+
+    public CallArgs(IReadOnlyList<JsValue> args)
+    {
+        _arg0 = args.Count is > 0 and <= 4 ? args[0] : default;
+        _arg1 = args.Count is > 1 and <= 4 ? args[1] : default;
+        _arg2 = args.Count is > 2 and <= 4 ? args[2] : default;
+        _arg3 = args.Count is > 3 and <= 4 ? args[3] : default;
+        _arrayArgs = args.Count > 4
+            ? args as JsValue[] ?? args.ToArray()
+            : null;
+        _count = args.Count;
+    }
+
+    public int Count => _count;
+
+    public JsValue this[int index]
+    {
+        get
+        {
+            if (_arrayArgs is not null)
+            {
+                return (uint)index < (uint)_count ? _arrayArgs[index] : JsValue.Undefined;
+            }
+
+            return index switch
+            {
+                0 => _arg0,
+                1 => _arg1,
+                2 => _arg2,
+                3 => _arg3,
+                _ => JsValue.Undefined
+            };
+        }
+    }
+
+    public IEnumerator<JsValue> GetEnumerator()
+    {
+        if (_arrayArgs is not null)
+        {
+            for (var i = 0; i < _arrayArgs.Length; i++) yield return _arrayArgs[i];
+            yield break;
+        }
+
+        if (_count > 0) yield return _arg0;
+        if (_count > 1) yield return _arg1;
+        if (_count > 2) yield return _arg2;
+        if (_count > 3) yield return _arg3;
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public static implicit operator CallArgs(JsValue[] args) => new(args);
+    public static CallArgs Empty => default;
+
+    public static CallArgs FromRegisters(JsValue[] registers, int start, int count)
+    {
+        return count switch
+        {
+            0 => Empty,
+            1 => new CallArgs(registers[start]),
+            2 => new CallArgs(registers[start], registers[start + 1]),
+            3 => new CallArgs(registers[start], registers[start + 1], registers[start + 2]),
+            4 => new CallArgs(registers[start], registers[start + 1], registers[start + 2], registers[start + 3]),
+            _ => CopyRegisters(registers, start, count),
+        };
+    }
+
+    public static CallArgs FromList(IReadOnlyList<JsValue> values, int start, int count)
+    {
+        return count switch
+        {
+            0 => Empty,
+            1 => new CallArgs(values[start]),
+            2 => new CallArgs(values[start], values[start + 1]),
+            3 => new CallArgs(values[start], values[start + 1], values[start + 2]),
+            4 => new CallArgs(values[start], values[start + 1], values[start + 2], values[start + 3]),
+            _ => CopyList(values, start, count),
+        };
+    }
+
+    private static CallArgs CopyRegisters(JsValue[] registers, int start, int count)
+    {
+        var args = new JsValue[count];
+        Array.Copy(registers, start, args, 0, count);
+        return new CallArgs(args);
+    }
+
+    private static CallArgs CopyList(IReadOnlyList<JsValue> values, int start, int count)
+    {
+        var args = new JsValue[count];
+        for (var i = 0; i < count; i++) args[i] = values[start + i];
+        return new CallArgs(args);
+    }
+}
+
 public sealed partial class BytecodeInterpreter
 {
     // Tier 4 #24: JIT helpers for the call/construct opcode family.
-    // Each builds the args array on the heap (matching how the
-    // interpreter does it) and dispatches through StoreCallResult /
+    // Small argument lists stay inline in CallArgs; only calls with more than
+    // four arguments allocate an array. Dispatch then uses StoreCallResult /
     // StoreConstructResult. icOffset is the call-site offset for the
     // Call IC; passed as a JIT-compile-time constant.
     internal void Call0ForJit(InterpreterFrame frame, int destReg, int calleeReg, int directEvalFlag, int icOffset)
     {
         StoreCallResult(frame, destReg, frame.Registers[calleeReg],
-            Array.Empty<JsValue>(), JsValue.Undefined,
+            CallArgs.Empty, JsValue.Undefined,
             allowDirectEval: directEvalFlag == DirectEvalCallFlag, icOffset: icOffset);
     }
 
@@ -26,15 +177,14 @@ public sealed partial class BytecodeInterpreter
     internal void Call1ForJit(InterpreterFrame frame, int destReg, int calleeReg, int argReg, int directEvalFlag, int icOffset)
     {
         StoreCallResult(frame, destReg, frame.Registers[calleeReg],
-            new[] { frame.Registers[argReg] }, JsValue.Undefined,
+            new CallArgs(frame.Registers[argReg]), JsValue.Undefined,
             allowDirectEval: directEvalFlag == DirectEvalCallFlag, icOffset: icOffset);
     }
 
 
     internal void CallNForJit(InterpreterFrame frame, int destReg, int calleeReg, int argStartReg, int argCount, int directEvalFlag, int icOffset)
     {
-        var callArgs = new JsValue[argCount];
-        for (var i = 0; i < argCount; i++) callArgs[i] = frame.Registers[argStartReg + i];
+        var callArgs = CallArgs.FromRegisters(frame.Registers, argStartReg, argCount);
         StoreCallResult(frame, destReg, frame.Registers[calleeReg], callArgs, JsValue.Undefined,
             allowDirectEval: directEvalFlag == DirectEvalCallFlag, icOffset: icOffset);
     }
@@ -43,21 +193,20 @@ public sealed partial class BytecodeInterpreter
     internal void CallMethod0ForJit(InterpreterFrame frame, int destReg, int calleeReg, int thisReg, int icOffset)
     {
         StoreCallResult(frame, destReg, frame.Registers[calleeReg],
-            Array.Empty<JsValue>(), frame.Registers[thisReg], icOffset: icOffset);
+            CallArgs.Empty, frame.Registers[thisReg], icOffset: icOffset);
     }
 
 
     internal void CallMethod1ForJit(InterpreterFrame frame, int destReg, int calleeReg, int thisReg, int argReg, int icOffset)
     {
         StoreCallResult(frame, destReg, frame.Registers[calleeReg],
-            new[] { frame.Registers[argReg] }, frame.Registers[thisReg], icOffset: icOffset);
+            new CallArgs(frame.Registers[argReg]), frame.Registers[thisReg], icOffset: icOffset);
     }
 
 
     internal void CallMethodNForJit(InterpreterFrame frame, int destReg, int calleeReg, int thisReg, int argStartReg, int argCount, int icOffset)
     {
-        var callArgs = new JsValue[argCount];
-        for (var i = 0; i < argCount; i++) callArgs[i] = frame.Registers[argStartReg + i];
+        var callArgs = CallArgs.FromRegisters(frame.Registers, argStartReg, argCount);
         StoreCallResult(frame, destReg, frame.Registers[calleeReg], callArgs, frame.Registers[thisReg], icOffset: icOffset);
     }
 
@@ -224,23 +373,40 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
-    private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
+    private JsValue CallFunction(JsValue value, CallArgs args, JsValue thisValue)
     {
-        var result = CallFunctionCore(value, args, thisValue);
-        PinReturnValue(result, value);
-        return result;
+        if (!FenBrowser.Js.Diagnostics.CallTargetProfiler.Enabled)
+        {
+            var fastResult = CallFunctionCore(value, args, thisValue);
+            PinReturnValue(fastResult, value);
+            return fastResult;
+        }
+
+        var target = CaptureCallTargetForDiagnostics(value);
+        var previousTarget = Volatile.Read(ref _diagnosticActiveCallTarget);
+        Volatile.Write(ref _diagnosticActiveCallTarget, target);
+        var sample = FenBrowser.Js.Diagnostics.CallTargetProfiler.Begin(target);
+        try
+        {
+            var result = CallFunctionCore(value, args, thisValue);
+            PinReturnValue(result, value);
+            return result;
+        }
+        finally
+        {
+            FenBrowser.Js.Diagnostics.CallTargetProfiler.End(sample);
+            Volatile.Write(ref _diagnosticActiveCallTarget, previousTarget);
+        }
     }
 
-    private JsValue CallFunctionCore(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
+    private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
+        => CallFunction(value, new CallArgs(args.Count > 4 ? args.ToArray() : args), thisValue);
+
+    private JsValue CallFunctionCore(JsValue value, CallArgs args, JsValue thisValue)
     {
         if (value.Tag == JsValueTag.Undefined || value.Tag == JsValueTag.Null)
         {
-            throw new JsThrownException(CreateTypeError(
-                "Cannot read properties of " +
-                (value.Tag == JsValueTag.Undefined ? "undefined" : "null") +
-                " while resolving call target. this=" + DescribeValueShort(thisValue) +
-                " arg0=" + (args.Count > 0 ? DescribeValueShort(args[0]) : "<none>") +
-                " " + DescribeFrameStack()));
+            return ThrowCallTargetIsNullish(value, args, thisValue);
         }
 
         var obj = ResolveObject(value);
@@ -272,130 +438,17 @@ public sealed partial class BytecodeInterpreter
 
             if (fn.Kind == FunctionKind.Async)
             {
-                var capability = NewPromiseCapability();
-
-                // Create an AsyncContext to hold suspended state. If the body
-                // never awaits, the context is unused and the fast path applies.
-                var registers = new JsValue[fn.Function.RegisterCount];
-                for (var i = 0; i < registers.Length; i++)
-                    registers[i] = JsValue.Undefined;
-                var asyncCtx = new AsyncContext(fn.Function, registers, fn.OuterEnvironment)
-                {
-                    ThisValue = thisValue
-                };
-                var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
-                asyncCtx.SelfHandle = ctxHandle;
-
-                // Store capability handles so ResumeAsyncFunction can settle
-                // the outer promise when the body eventually completes.
-                asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
-                    ? capability.Promise.AsObjectHandle()
-                    : null;
-                asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
-                    ? capability.Resolve.AsObjectHandle()
-                    : null;
-                asyncCtx.CapabilityReject = capability.Reject.Tag == JsValueTag.Object
-                    ? capability.Reject.AsObjectHandle()
-                    : null;
-
-                try
-                {
-                    var result = ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn, asyncContext: asyncCtx);
-
-                    if (asyncCtx.IsSuspended)
-                    {
-                        // Body suspended at an await — resume callbacks already
-                        // attached. Audit JSRT-004: do NOT push a permanent root
-                        // here. Liveness now flows through the awaited promise's
-                        // reactions → resume callback capturedRoots → ctxHandle,
-                        // and through frame.AsyncContext while a frame is active.
-                        return capability.Promise;
-                    }
-
-                    // Body completed without suspension (no await encountered,
-                    // or all awaited promises were already settled).
-                    _ = CallFunction(capability.Resolve, new[] { result }, JsValue.Undefined);
-                }
-                catch (JsThrownException ex)
-                {
-                    if (asyncCtx.IsSuspended)
-                    {
-                        _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
-                        return capability.Promise;
-                    }
-
-                    _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
-                }
-
-                return capability.Promise;
+                return CallAsyncFunctionBody(fn, args, thisValue);
             }
 
             if (fn.Kind == FunctionKind.Generator)
             {
-                // ECMA-262 27.5.1.1 â€” calling a generator returns a GeneratorObject.
-                // Spec runs FunctionDeclarationInstantiation (i.e. parameter binding,
-                // including destructuring) synchronously before returning the
-                // generator. If the function carries a PrologueEnd marker we run
-                // the prologue here and let the generator suspend at the marker.
-                var registers = new JsValue[fn.Function.RegisterCount];
-                for (var i = 0; i < registers.Length; i++)
-                    registers[i] = JsValue.Undefined;
-                var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
-                for (var i = 0; i < paramCount; i++)
-                    registers[i + 1] = args[i]; // register 0 is return slot, params start at 1
-
-                var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
-                genObj.ThisValue = thisValue;
-                genObj.InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args);
-                genObj.SelfHandle = fn.SelfHandle;
-                // ECMA-262 14.4.11: FunctionDeclarationInstantiation runs
-                // before OrdinaryCreateFromConstructor. Since our prologue
-                // performs param binding (including default-param side-effects
-                // that may mutate g.prototype), we allocate with a default
-                // prototype, run the prologue, then set the correct prototype
-                // per GetPrototypeFromConstructor.
-                genObj.SetPrototype(GetGlobalPrototype("GeneratorPrototype"));
-                var genHandle = _heap.AllocateObject(genObj, AllocationSite.Current());
-                if (fn.Function.PrologueEndIp > 0)
-                {
-                    RunGeneratorPrologue(genObj, fn.Function);
-                }
-                // Read g.prototype AFTER FunctionDeclarationInstantiation so
-                // default-param mutations (e.g. g.prototype = null) take effect.
-                var genProtoValue = GetReceiverProperty(value, "prototype");
-                if (genProtoValue.Tag == JsValueTag.Object)
-                    genObj.SetPrototype(genProtoValue.AsObjectHandle());
-                return JsValue.FromObject(genHandle);
+                return CallGeneratorFunctionBody(value, fn, args, thisValue);
             }
 
             if (fn.Kind == FunctionKind.AsyncGenerator)
             {
-                var registers = new JsValue[fn.Function.RegisterCount];
-                for (var i = 0; i < registers.Length; i++)
-                    registers[i] = JsValue.Undefined;
-                var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
-                for (var i = 0; i < paramCount; i++)
-                    registers[i + 1] = args[i];
-
-                var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment)
-                {
-                    ThisValue = thisValue,
-                    IsAsyncGenerator = true,
-                    InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args),
-                    SelfHandle = fn.SelfHandle
-                };
-                genObj.SetPrototype(EnsureAsyncGeneratorPrototype());
-                var genHandle = _heap.AllocateObject(genObj, AllocationSite.Current());
-                if (fn.Function.PrologueEndIp > 0)
-                {
-                    RunGeneratorPrologue(genObj, fn.Function);
-                }
-                // Read g.prototype AFTER FunctionDeclarationInstantiation so
-                // default-param mutations (e.g. g.prototype = null) take effect.
-                var asyncGenProtoValue = GetReceiverProperty(value, "prototype");
-                if (asyncGenProtoValue.Tag == JsValueTag.Object)
-                    genObj.SetPrototype(asyncGenProtoValue.AsObjectHandle());
-                return JsValue.FromObject(genHandle);
+                return CallAsyncGeneratorFunctionBody(value, fn, args, thisValue);
             }
 
             // Tier 4 #24: tier-up counter. The JIT delegate is invoked
@@ -427,61 +480,225 @@ public sealed partial class BytecodeInterpreter
 
         if (obj is NativeFunctionObject native)
         {
-            // ECMA-262 native function calls execute in C# without a bytecode
-            // InterpreterFrame on top of the call stack, so the JS heap's GC
-            // root walk (which traverses _activeFrames) cannot see the JsValue
-            // arguments and `thisValue` we are about to hand the native body.
-            // If the native callback triggers an auto-MinorCollect (e.g. via
-            // CreateTypeError, AllocateObject), object-tagged values on the
-            // C# stack could be reclaimed and resurface as "Stale heap handle"
-            // on the next access. Pin them for the duration of the call.
-            // Rooting a call is not free, and on a bundle that makes millions of
-            // them the bookkeeping can cost more than the bodies it protects.
-            // Time the whole block and subtract the body: what is left is this
-            // machinery's own cost, and unlike the body it never re-enters JS,
-            // so the total sums exactly rather than nesting.
-            var blockStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            var nativeBodyTicks = 0L;
-            var rootMark = _heap.RootCount;
+            return CallNativeFunctionBody(native, value, args, thisValue);
+        }
+
+        return ThrowCallTargetIsNotCallable(value, args, thisValue);
+    }
+
+    // ECMA-262 27.7.5.1 AsyncFunction [[Call]]. Kept out of the dispatcher: it
+    // is one branch in a hundred calls, and its locals would otherwise widen
+    // every ordinary call's stack frame.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private JsValue CallAsyncFunctionBody(JsFunctionObject fn, IReadOnlyList<JsValue> args, JsValue thisValue)
+    {
+        var capability = NewPromiseCapability();
+
+        // Create an AsyncContext to hold suspended state. If the body
+        // never awaits, the context is unused and the fast path applies.
+        var registers = new JsValue[fn.Function.RegisterCount];
+        for (var i = 0; i < registers.Length; i++)
+            registers[i] = JsValue.Undefined;
+        var asyncCtx = new AsyncContext(fn.Function, registers, fn.OuterEnvironment)
+        {
+            ThisValue = thisValue
+        };
+        var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
+        asyncCtx.SelfHandle = ctxHandle;
+
+        // Store capability handles so ResumeAsyncFunction can settle
+        // the outer promise when the body eventually completes.
+        asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
+            ? capability.Promise.AsObjectHandle()
+            : null;
+        asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
+            ? capability.Resolve.AsObjectHandle()
+            : null;
+        asyncCtx.CapabilityReject = capability.Reject.Tag == JsValueTag.Object
+            ? capability.Reject.AsObjectHandle()
+            : null;
+
+        try
+        {
+            var result = ExecuteInternal(fn.Function, new CallArgs(args), thisValue, fn.OuterEnvironment, callee: fn, asyncContext: asyncCtx);
+
+            if (asyncCtx.IsSuspended)
+            {
+                // Body suspended at an await — resume callbacks already
+                // attached. Audit JSRT-004: do NOT push a permanent root
+                // here. Liveness now flows through the awaited promise's
+                // reactions → resume callback capturedRoots → ctxHandle,
+                // and through frame.AsyncContext while a frame is active.
+                return capability.Promise;
+            }
+
+            // Body completed without suspension (no await encountered,
+            // or all awaited promises were already settled).
+            _ = CallFunction(capability.Resolve, new[] { result }, JsValue.Undefined);
+        }
+        catch (JsThrownException ex)
+        {
+            if (asyncCtx.IsSuspended)
+            {
+                _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+                return capability.Promise;
+            }
+
+            _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+        }
+
+        return capability.Promise;
+    }
+
+    // ECMA-262 27.5.1.1 generator [[Call]] - returns a GeneratorObject.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private JsValue CallGeneratorFunctionBody(JsValue value, JsFunctionObject fn, IReadOnlyList<JsValue> args, JsValue thisValue)
+    {
+        // ECMA-262 27.5.1.1 â€” calling a generator returns a GeneratorObject.
+        // Spec runs FunctionDeclarationInstantiation (i.e. parameter binding,
+        // including destructuring) synchronously before returning the
+        // generator. If the function carries a PrologueEnd marker we run
+        // the prologue here and let the generator suspend at the marker.
+        var registers = new JsValue[fn.Function.RegisterCount];
+        for (var i = 0; i < registers.Length; i++)
+            registers[i] = JsValue.Undefined;
+        var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
+        for (var i = 0; i < paramCount; i++)
+            registers[i + 1] = args[i]; // register 0 is return slot, params start at 1
+
+        var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
+        genObj.ThisValue = thisValue;
+        genObj.InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args);
+        genObj.SelfHandle = fn.SelfHandle;
+        // ECMA-262 14.4.11: FunctionDeclarationInstantiation runs
+        // before OrdinaryCreateFromConstructor. Since our prologue
+        // performs param binding (including default-param side-effects
+        // that may mutate g.prototype), we allocate with a default
+        // prototype, run the prologue, then set the correct prototype
+        // per GetPrototypeFromConstructor.
+        genObj.SetPrototype(GetGlobalPrototype("GeneratorPrototype"));
+        var genHandle = _heap.AllocateObject(genObj, AllocationSite.Current());
+        if (fn.Function.PrologueEndIp > 0)
+        {
+            RunGeneratorPrologue(genObj, fn.Function);
+        }
+        // Read g.prototype AFTER FunctionDeclarationInstantiation so
+        // default-param mutations (e.g. g.prototype = null) take effect.
+        var genProtoValue = GetReceiverProperty(value, "prototype");
+        if (genProtoValue.Tag == JsValueTag.Object)
+            genObj.SetPrototype(genProtoValue.AsObjectHandle());
+        return JsValue.FromObject(genHandle);
+    }
+
+    // ECMA-262 27.6 async generator [[Call]].
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private JsValue CallAsyncGeneratorFunctionBody(JsValue value, JsFunctionObject fn, IReadOnlyList<JsValue> args, JsValue thisValue)
+    {
+        var registers = new JsValue[fn.Function.RegisterCount];
+        for (var i = 0; i < registers.Length; i++)
+            registers[i] = JsValue.Undefined;
+        var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
+        for (var i = 0; i < paramCount; i++)
+            registers[i + 1] = args[i];
+
+        var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment)
+        {
+            ThisValue = thisValue,
+            IsAsyncGenerator = true,
+            InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args),
+            SelfHandle = fn.SelfHandle
+        };
+        genObj.SetPrototype(EnsureAsyncGeneratorPrototype());
+        var genHandle = _heap.AllocateObject(genObj, AllocationSite.Current());
+        if (fn.Function.PrologueEndIp > 0)
+        {
+            RunGeneratorPrologue(genObj, fn.Function);
+        }
+        // Read g.prototype AFTER FunctionDeclarationInstantiation so
+        // default-param mutations (e.g. g.prototype = null) take effect.
+        var asyncGenProtoValue = GetReceiverProperty(value, "prototype");
+        if (asyncGenProtoValue.Tag == JsValueTag.Object)
+            genObj.SetPrototype(asyncGenProtoValue.AsObjectHandle());
+        return JsValue.FromObject(genHandle);
+    }
+
+    // ECMA-262 native [[Call]], with the root pinning a native body needs.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private JsValue CallNativeFunctionBody(NativeFunctionObject native, JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
+    {
+        // ECMA-262 native function calls execute in C# without a bytecode
+        // InterpreterFrame on top of the call stack, so the JS heap's GC
+        // root walk (which traverses _activeFrames) cannot see the JsValue
+        // arguments and `thisValue` we are about to hand the native body.
+        // If the native callback triggers an auto-MinorCollect (e.g. via
+        // CreateTypeError, AllocateObject), object-tagged values on the
+        // C# stack could be reclaimed and resurface as "Stale heap handle"
+        // on the next access. Pin them for the duration of the call.
+        // Rooting a call is not free, and on a bundle that makes millions of
+        // them the bookkeeping can cost more than the bodies it protects.
+        // Time the whole block and subtract the body: what is left is this
+        // machinery's own cost, and unlike the body it never re-enters JS,
+        // so the total sums exactly rather than nesting.
+        var blockStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        var nativeBodyTicks = 0L;
+        var rootMark = _heap.RootCount;
+        try
+        {
+            PinIfObject(value);
+            PinIfObject(thisValue);
+            for (var i = 0; i < args.Count; i++) PinIfObject(args[i]);
+            // Fresh objects allocated inside the native body may live only
+            // in C# locals across nested safe-point collections; the heap's
+            // scoped allocation pin covers exactly this window.
+            _heap.BeginNativeExecution();
+            var nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
-                PinIfObject(value);
-                PinIfObject(thisValue);
-                for (var i = 0; i < args.Count; i++) PinIfObject(args[i]);
-                // Fresh objects allocated inside the native body may live only
-                // in C# locals across nested safe-point collections; the heap's
-                // scoped allocation pin covers exactly this window.
-                _heap.BeginNativeExecution();
-                var nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();
-                try
-                {
-                    return native.Call(thisValue, args);
-                }
-                finally
-                {
-                    nativeBodyTicks = System.Diagnostics.Stopwatch.GetTimestamp() - nativeStart;
-                    NoteNativeCall(native, nativeBodyTicks);
-                    _heap.EndNativeExecution();
-                }
+                return native.Call(thisValue, args);
             }
             finally
             {
-                // Audit JSRT-002: pop THIS call's pins on every path. A thrown
-                // JsThrownException must NOT re-anchor the window above fresh pins
-                // (that made this finally a no-op and leaked thisValue+args roots on
-                // every throwing native call). Ownership of the thrown value passes
-                // to ThrowOrHandle, which pins it before any allocation can run.
-                _heap.PopRootsTo(rootMark);
-                NoteNativeCallRooting(
-                    System.Diagnostics.Stopwatch.GetTimestamp() - blockStart - nativeBodyTicks);
+                nativeBodyTicks = System.Diagnostics.Stopwatch.GetTimestamp() - nativeStart;
+                NoteNativeCall(native, nativeBodyTicks);
+                _heap.EndNativeExecution();
             }
         }
-
+        finally
+        {
+            // Audit JSRT-002: pop THIS call's pins on every path. A thrown
+            // JsThrownException must NOT re-anchor the window above fresh pins
+            // (that made this finally a no-op and leaked thisValue+args roots on
+            // every throwing native call). Ownership of the thrown value passes
+            // to ThrowOrHandle, which pins it before any allocation can run.
+            _heap.PopRootsTo(rootMark);
+            NoteNativeCallRooting(
+                System.Diagnostics.Stopwatch.GetTimestamp() - blockStart - nativeBodyTicks);
+        }
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private JsValue ThrowCallTargetIsNullish(JsValue value, CallArgs args, JsValue thisValue)
+    {
+        throw new JsThrownException(CreateTypeError(
+            "Cannot read properties of " +
+            (value.Tag == JsValueTag.Undefined ? "undefined" : "null") +
+            " while resolving call target. this=" + DescribeValueShort(thisValue) +
+            " arg0=" + (args.Count > 0 ? DescribeValueShort(args[0]) : "<none>") +
+            " " + DescribeFrameStack()));
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private JsValue ThrowCallTargetIsNullish(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
+        => ThrowCallTargetIsNullish(value, new CallArgs(args), thisValue);
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private JsValue ThrowCallTargetIsNotCallable(JsValue value, CallArgs args, JsValue thisValue)
+    {
         throw new JsThrownException(CreateTypeError(
             "Value is not callable. " + DescribeCallee(value) +
             " this=" + DescribeValueShort(thisValue) +
             " arg0=" + (args.Count > 0 ? DescribeValueShort(args[0]) : "<none>")));
     }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private JsValue ThrowCallTargetIsNotCallable(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
+        => ThrowCallTargetIsNotCallable(value, new CallArgs(args), thisValue);
 
     private string KeyText(JsValue v)
     {
@@ -744,7 +961,7 @@ public sealed partial class BytecodeInterpreter
         InterpreterFrame frame,
         int destinationRegister,
         JsValue callee,
-        IReadOnlyList<JsValue> args,
+        CallArgs args,
         JsValue thisValue,
         bool allowDirectEval = false,
         int icOffset = -1)
@@ -770,11 +987,6 @@ public sealed partial class BytecodeInterpreter
             try
             {
                 var superResult = ConstructFunction(callee, args, frame.NewTarget);
-                // Store the constructed instance as frame.ThisValue so the
-                // InitThisBinding opcode (emitted right after super() in the
-                // derived constructor bytecode) can bind it into the
-                // FunctionEnvironmentRecord. Only objects can be bound as this;
-                // non-object results from super() trigger a TypeError elsewhere.
                 if (IsConstructorReturnObject(superResult))
                     frame.ThisValue = superResult;
                 frame.Registers[destinationRegister] = superResult;
@@ -789,7 +1001,25 @@ public sealed partial class BytecodeInterpreter
 
         try
         {
-            // Tier 4 #20: try the Call IC fast path before the generic dispatch.
+            // Function.prototype.call is a transparent call trampoline. Once
+            // property lookup has resolved the exact builtin, dispatch the
+            // target directly instead of entering a native-call rooting scope
+            // only to re-enter CallFunction. The caller frame already roots
+            // thisValue and every argument register for the nested call.
+            // User replacements cannot take this path because their handle is
+            // different from the installed intrinsic handle.
+            if (_functionCallMethodHandle is { } functionCallHandle &&
+                callee.Tag == JsValueTag.Object &&
+                callee.AsObjectHandle() == functionCallHandle)
+            {
+                var targetThis = args.Count > 0 ? args[0] : JsValue.Undefined;
+                var targetArgs = args.Count > 1
+                    ? CallArgs.FromList(args, 1, args.Count - 1)
+                    : CallArgs.Empty;
+                frame.Registers[destinationRegister] = CallFunction(thisValue, targetArgs, targetThis);
+                return;
+            }
+
             if (icOffset >= 0 &&
                 TryDispatchCallIC(frame.Function, icOffset, callee, args, thisValue, out var icResult))
             {
@@ -813,6 +1043,16 @@ public sealed partial class BytecodeInterpreter
             ThrowOrHandle(frame, ex.Value);
         }
     }
+
+    private void StoreCallResult(
+        InterpreterFrame frame,
+        int destinationRegister,
+        JsValue callee,
+        IReadOnlyList<JsValue> args,
+        JsValue thisValue,
+        bool allowDirectEval = false,
+        int icOffset = -1)
+        => StoreCallResult(frame, destinationRegister, callee, new CallArgs(args), thisValue, allowDirectEval, icOffset);
 
 
     private void StoreConstructResult(InterpreterFrame frame, int destinationRegister, JsValue constructor, IReadOnlyList<JsValue> args)
@@ -888,7 +1128,7 @@ public sealed partial class BytecodeInterpreter
         _pendingNewTarget = newTarget.Tag == JsValueTag.Undefined
             ? JsValue.Undefined
             : newTarget;
-        var result = ExecuteInternal(callee.Function, args, defaultInstance, ResolveFunctionOuterEnvironment(callee), callee: callee);
+        var result = ExecuteInternal(callee.Function, new CallArgs(args), defaultInstance, ResolveFunctionOuterEnvironment(callee), callee: callee);
         ApplyDefaultHostObjectPrototypeIfUnset(result, newTarget);
         return IsConstructorReturnObject(result) ? result : defaultInstance;
     }

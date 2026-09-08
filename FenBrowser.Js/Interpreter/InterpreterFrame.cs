@@ -37,10 +37,10 @@ public sealed class InterpreterFrame
 		Environment = environment ?? new DeclarativeEnvironmentRecord(outerEnv: null);
 	}
 
-	public BytecodeFunction Function { get; }
+	public BytecodeFunction Function { get; private set; }
 	public JsValue ThisValue { get; set; }
 
-	public JsValue[] Registers { get; }
+	public JsValue[] Registers { get; private set; }
 
 	public EnvironmentRecord Environment { get; set; }
 
@@ -99,4 +99,31 @@ public sealed class InterpreterFrame
 	public GeneratorObject? OwnerGenerator { get; set; }
 
 	public AsyncContext? AsyncContext { get; set; }
+
+	internal void Reset(
+		BytecodeFunction function,
+		JsValue thisValue,
+		EnvironmentRecord? environment,
+		JsValue[] registers)
+	{
+		Function = function;
+		ThisValue = thisValue;
+		Registers = registers;
+		Environment = environment ?? new DeclarativeEnvironmentRecord(outerEnv: null);
+		SlotEnvironment = null;
+		SlotBindings = null;
+		SlotPresence = null;
+		_catchHandlers?.Clear();
+		_finallyHandlers?.Clear();
+		_handlerEnvironments?.Clear();
+		PendingException = null;
+		PendingReturn = null;
+		ThrowRoutedToHandler = false;
+		InstructionPointer = 0;
+		CalleeFunctionObject = null;
+		NewTarget = JsValue.Undefined;
+		SuperConstructorHandle = null;
+		OwnerGenerator = null;
+		AsyncContext = null;
+	}
 }

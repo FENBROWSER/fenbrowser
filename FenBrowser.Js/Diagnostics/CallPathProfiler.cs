@@ -21,6 +21,9 @@ public static class CallPathProfiler
     public static readonly bool Enabled = string.Equals(
         Environment.GetEnvironmentVariable("FEN_FENJS_CALLPROF"),
         "1",
+        StringComparison.Ordinal) || string.Equals(
+        Environment.GetEnvironmentVariable("FEN_FENJS_DEEP_TRACE"),
+        "1",
         StringComparison.Ordinal);
 
     public enum Stage

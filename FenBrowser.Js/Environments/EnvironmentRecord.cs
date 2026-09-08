@@ -46,7 +46,16 @@ public abstract class EnvironmentRecord
 
     // The outer (enclosing) Environment Record in the lexical environment chain, or
     // null for the outermost global record.
-    public EnvironmentRecord? OuterEnv { get; }
+    public EnvironmentRecord? OuterEnv { get; private set; }
+
+    // A function environment that was never captured can be reused by a later
+    // activation. Clear its lifetime state while retaining heap ownership; the
+    // owning interpreter and heap never change for a pooled record.
+    internal void ResetLifetime(EnvironmentRecord? outerEnv)
+    {
+        OuterEnv = outerEnv;
+        Escaped = false;
+    }
 
     // Generational-GC bookkeeping. Environment records are not heap cells, so
     // an object stored into a binding of a record reachable only through Old

@@ -51,14 +51,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _interpreter = interpreter;
             _frame = frame;
             _function = frame.Function;
-            if (_function is not null) _function.ActiveActivations++;
             interpreter._activeFrames.Push(frame);
         }
         public void Dispose()
         {
             var teardownSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
             _interpreter._activeFrames.Pop();
-            if (_function is not null) _function.ActiveActivations--;
             // The frame is unreachable from here: nothing stores an
             // InterpreterFrame, and a suspended generator or async context has
             // already copied its registers out into its own array.
@@ -71,11 +69,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // array that now belongs to another call.
             if (_function is { } fn && fn.EnvironmentDiesWithCall &&
                 _frame.Environment is Environments.DeclarativeEnvironmentRecord declarative &&
-                !declarative.Escaped &&
-                declarative.TryDetachSlotStorage(fn, out var bindings, out var present))
+                !declarative.Escaped)
             {
-                _interpreter.ReturnSlotStorage(bindings, present);
+                if (declarative.TryDetachSlotStorage(fn, out var bindings, out var present))
+                {
+                    _interpreter.ReturnSlotStorage(bindings, present);
+                }
+
+                if (declarative is Environments.FunctionEnvironmentRecord functionEnvironment)
+                {
+                    _interpreter.ReturnFunctionEnvironment(functionEnvironment);
+                }
             }
+
+            _interpreter.ReturnFrame(_frame);
 
             if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.Teardown, teardownSample);
         }
@@ -90,21 +97,92 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Frames nest, so the live count per size is the call depth: a small
     // free list per size class serves almost every call after the first few.
     private readonly Dictionary<int, Stack<JsValue[]>> _registerFilePool = new();
+    private readonly Stack<InterpreterFrame> _framePool = new();
+    private readonly Stack<FunctionEnvironmentRecord> _functionEnvironmentPool = new();
     private int _pooledRegisterFiles;
 
     // Bounds the pool's own footprint. Depth rarely passes a few hundred, and a
     // file is only kept if it can be handed straight back out.
     private const int MaxPooledRegisterFiles = 512;
     private const int MaxPooledSlotFiles = 2048;
+    private const int MaxPooledFunctionEnvironments = 128;
     private const int MaxPooledRegisterFileLength = 4096;
 
     private long _registerFileHits;
     private long _registerFileMisses;
+    private long _framePoolHits;
+    private long _framePoolMisses;
     private int _largestRegisterFile;
 
     public long RegisterFileHits => _registerFileHits;
     public long RegisterFileMisses => _registerFileMisses;
     public int LargestRegisterFile => _largestRegisterFile;
+    public long FramePoolHits => _framePoolHits;
+    public long FramePoolMisses => _framePoolMisses;
+
+    private FunctionEnvironmentRecord RentFunctionEnvironment(
+        JsValue functionObject,
+        ObjectHandle? homeObject,
+        EnvironmentRecord? outerEnvironment)
+    {
+        if (_functionEnvironmentPool.TryPop(out var environment))
+        {
+            environment.Reset(
+                ThisBindingStatus.Uninitialized,
+                functionObject,
+                JsValue.Undefined,
+                homeObject,
+                outerEnvironment);
+            return environment;
+        }
+
+        return new FunctionEnvironmentRecord(
+            ThisBindingStatus.Uninitialized,
+            functionObject,
+            JsValue.Undefined,
+            homeObject,
+            outerEnvironment);
+    }
+
+    private void ReturnFunctionEnvironment(FunctionEnvironmentRecord environment)
+    {
+        environment.Reset(
+            ThisBindingStatus.Uninitialized,
+            JsValue.Undefined,
+            JsValue.Undefined,
+            null,
+            null);
+        if (_functionEnvironmentPool.Count < MaxPooledFunctionEnvironments)
+        {
+            _functionEnvironmentPool.Push(environment);
+        }
+    }
+
+    private InterpreterFrame RentFrame(
+        BytecodeFunction function,
+        JsValue thisValue,
+        EnvironmentRecord? environment,
+        JsValue[] registers)
+    {
+        if (_framePool.Count == 0)
+        {
+            _framePoolMisses++;
+            return new InterpreterFrame(function, thisValue, environment, registers);
+        }
+
+        _framePoolHits++;
+        var frame = _framePool.Pop();
+        frame.Reset(function, thisValue, environment, registers);
+        return frame;
+    }
+
+    private void ReturnFrame(InterpreterFrame frame)
+    {
+        if (_framePool.Count < MaxPooledRegisterFiles)
+        {
+            _framePool.Push(frame);
+        }
+    }
 
     // The register file beside this one was pooled; its slot storage was not,
     // and a Binding is 40 bytes against a JsValue's 32. On a bundle whose
@@ -1606,16 +1684,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     public int? ParserMaxRecursionDepth { get; set; }
 
-    // The caller's own frame is already on the stack when this is asked, so a
-    // second activation means the call is recursive. Counted by ActiveFrameScope
-    // rather than found by scanning, which made it O(call depth) per call.
-    private static bool IsRecursiveFunctionActivation(BytecodeFunction function) =>
-        function.ActiveActivations > 1;
-
     [MayExecuteJs]
     private JsValue ExecuteInternal(
         BytecodeFunction function,
-        IReadOnlyList<JsValue> args,
+        CallArgs args,
         JsValue thisValue,
         EnvironmentRecord? outerEnvironment = null,
         EnvironmentRecord? frameEnvironment = null,
@@ -1660,7 +1732,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
 
                     function = targetFunction.Function;
-                    args = tailArgs;
+                    args = new CallArgs(tailArgs);
                     thisValue = tailThis;
                     outerEnvironment = targetFunction.OuterEnvironment;
                     frameEnvironment = null;
@@ -1682,13 +1754,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             _callDepth--;
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimingEnabled && _callDepth == 0)
+            {
+                FenBrowser.Js.Diagnostics.InterpreterProfiler.EndOpBatch();
+            }
         }
     }
 
     [MayExecuteJs]
     private JsValue ExecuteInternalCore(
         BytecodeFunction function,
-        IReadOnlyList<JsValue> args,
+        CallArgs args,
         JsValue thisValue,
         EnvironmentRecord? outerEnvironment = null,
         EnvironmentRecord? frameEnvironment = null,
@@ -1764,10 +1840,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // observe it. Previously this lived only in frame.ThisValue, which
             // is invisible to an inner arrow's own frame.
             var envSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-            var functionEnv = StampEnvironment(new FunctionEnvironmentRecord(
-                ThisBindingStatus.Uninitialized,
+            var functionEnv = StampEnvironment(RentFunctionEnvironment(
                 callee?.SelfHandle is { } sh ? JsValue.FromObject(sh) : JsValue.Undefined,
-                JsValue.Undefined, callee?.HomeObject, outerEnvironment));
+                callee?.HomeObject,
+                outerEnvironment));
             if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.EnvironmentCreate, envSample);
 
             // Attach before anything is bound: a binding created first would go
@@ -1798,12 +1874,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _framesCreated++;
         _registerSlotsAllocated += function.RegisterCount;
         var frameSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-        var frame = new InterpreterFrame(
+        var frame = RentFrame(
             function,
             thisValue,
             frameEnv,
-            RentRegisterFile(function.RegisterCount))
-        { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator, AsyncContext = asyncContext };
+            RentRegisterFile(function.RegisterCount));
+        frame.CalleeFunctionObject = callee;
+        frame.OwnerGenerator = ownerGenerator;
+        frame.AsyncContext = asyncContext;
         // Safety net: cover frame environments created without StampEnvironment
         // (InterpreterFrame's null-env fallback) so no store can miss the
         // remembered-environment set.
@@ -1981,7 +2059,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // the dispatch loop. The delegate executes the entire function
         // body and returns the function's return value. Exceptions
         // propagate via JsThrownException same as the interpreter.
-        if (JitCompiler.Enabled && function.JitDelegate is { } jitFn && !IsRecursiveFunctionActivation(function))
+        if (JitCompiler.Enabled && function.JitDelegate is { } jitFn)
         {
             return jitFn(this, frame, 0);
         }
@@ -2072,10 +2150,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             ref readonly var ins = ref instructions[frame.InstructionPointer++];
+            TraceInstructionProgress(function, frame.InstructionPointer - 1, ins.OpCode);
             if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
             {
                 FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordOpCode(ins.OpCode, function);
             }
+
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimingEnabled)
+            {
+                FenBrowser.Js.Diagnostics.InterpreterProfiler.BeginOp(ins.OpCode);
+            }
+
             switch (ins.OpCode)
             {
                 case OpCode.LoadConst:
@@ -3273,7 +3358,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         frame,
                         ins.A,
                         registers[ins.B],
-                        Array.Empty<JsValue>(),
+                        CallArgs.Empty,
                         JsValue.Undefined,
                         allowDirectEval: ins.E == DirectEvalCallFlag,
                         icOffset: frame.InstructionPointer - 1);
@@ -3285,7 +3370,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         frame,
                         ins.A,
                         registers[ins.B],
-                        new[] { registers[ins.C] },
+                        new CallArgs(registers[ins.C]),
                         JsValue.Undefined,
                         allowDirectEval: ins.E == DirectEvalCallFlag,
                         icOffset: frame.InstructionPointer - 1);
@@ -3293,21 +3378,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.CallMethod0:
                 {
-                    StoreCallResult(frame, ins.A, registers[ins.B], Array.Empty<JsValue>(), registers[ins.C], icOffset: frame.InstructionPointer - 1);
+                    StoreCallResult(frame, ins.A, registers[ins.B], CallArgs.Empty, registers[ins.C], icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.CallMethod1:
                 {
-                    StoreCallResult(frame, ins.A, registers[ins.B], new[] { registers[ins.D] }, registers[ins.C], icOffset: frame.InstructionPointer - 1);
+                    StoreCallResult(frame, ins.A, registers[ins.B], new CallArgs(registers[ins.D]), registers[ins.C], icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.CallMethodN:
                 {
-                    var callArgs = new JsValue[ins.E];
-                    for (var i = 0; i < ins.E; i++)
-                    {
-                        callArgs[i] = registers[ins.D + i];
-                    }
+                    var callArgs = CallArgs.FromRegisters(registers, ins.D, ins.E);
 
                     StoreCallResult(frame, ins.A, registers[ins.B], callArgs, registers[ins.C], icOffset: frame.InstructionPointer - 1);
                     break;
@@ -3315,11 +3396,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.CallN:
                 {
                     var argSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-                    var callArgs = new JsValue[ins.D];
-                    for (var i = 0; i < ins.D; i++)
-                    {
-                        callArgs[i] = registers[ins.C + i];
-                    }
+                    var callArgs = CallArgs.FromRegisters(registers, ins.C, ins.D);
 
                     if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled)
                     {
@@ -6896,8 +6973,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // anywhere else the two would disagree about where execution resumes.
         if (function.JitDelegate is not { } compiled ||
             function.OsrEntryPoints is not { } entries ||
-            !entries.Contains(targetIp) ||
-            IsRecursiveFunctionActivation(function))
+            !entries.Contains(targetIp))
         {
             if (OsrTraceEnabled && function.BackEdges == OsrBackEdgeThreshold)
             {
@@ -6906,8 +6982,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     $"compiled={function.JitDelegate is not null} " +
                     $"entries={function.OsrEntryPoints?.Count ?? -1} " +
                     $"rejections=[{JitCompiler.DescribeRejections()}] " +
-                    $"hasTarget={function.OsrEntryPoints?.Contains(targetIp) ?? false} " +
-                    $"recursive={IsRecursiveFunctionActivation(function)}");
+                    $"hasTarget={function.OsrEntryPoints?.Contains(targetIp) ?? false}");
             }
 
             return false;
@@ -14574,15 +14649,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var thisArgument = args.Count > 0 ? args[0] : JsValue.Undefined;
         if (args.Count <= 1)
         {
-            return CallFunction(thisValue, Array.Empty<JsValue>(), thisArgument);
+            return CallFunction(thisValue, CallArgs.Empty, thisArgument);
         }
 
-        var callArgs = new JsValue[args.Count - 1];
-        for (var i = 1; i < args.Count; i++)
-        {
-            callArgs[i - 1] = args[i];
-        }
-
+        var callArgs = CallArgs.FromList(args, 1, args.Count - 1);
         return CallFunction(thisValue, callArgs, thisArgument);
     }
 
@@ -17790,8 +17860,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     // Shared callback-invoker for forEach/map/filter/find/etc. Calls
-    // callback(value, index, receiverArray) with the given thisArg, sparing each
-    // caller from repeating the args allocation and CallFunction routing.
+    // callback(value, index, receiverArray) with the given thisArg. Every caller
+    // performs RequireCallable before iteration starts, so repeating the heap
+    // lookup and callable test here only taxes every element. CallArgs keeps the
+    // three arguments inline instead of allocating a JsValue[] per callback.
     private JsValue InvokeArrayCallback(
         JsValue callback,
         JsValue value,
@@ -17807,19 +17879,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         JsValue receiver,
         JsValue thisArg)
     {
-        if (callback.Tag != JsValueTag.Object)
-        {
-            throw new JsThrownException(CreateTypeError("Array callback is not a function."));
-        }
-
-        var resolved = _heap.GetObject(callback.AsObjectHandle());
-        if (resolved is not JsFunctionObject && resolved is not NativeFunctionObject)
-        {
-            throw new JsThrownException(CreateTypeError("Array callback is not a function."));
-        }
-
-        var args = new[] { value, index, receiver };
-        var result = CallFunction(callback, args, thisArg);
+        var result = CallFunction(callback, new CallArgs(value, index, receiver), thisArg);
         PinIfObject(result);
         return result;
     }
@@ -17890,6 +17950,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // a length beyond the array-length limit, before the callback runs.
         ThrowIfArrayLengthExceedsLimit(lengthD);
         var items = new List<JsValue>(length);
+
+        // Dense arrays own every index below length. Reading their vector
+        // directly avoids formatting and parsing an index string plus walking
+        // the ordinary property path for every element. Exotic/sparse arrays
+        // retain the fully observable property lookup below.
+        if (obj is ArrayObject { IsDense: true } dense && dense.DenseCount == length)
+        {
+            for (var i = 0; i < length; i++)
+            {
+                _ = dense.TryDenseGet((uint)i, out var value);
+                items.Add(InvokeArrayCallback(callback, value, i, receiver, thisArg));
+            }
+
+            return ArraySpeciesCreate(receiver, items);
+        }
+
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);

@@ -33,16 +33,31 @@ public sealed class FunctionEnvironmentRecord : DeclarativeEnvironmentRecord
 
     // The function that produced this environment. Stored as a JsValue so it can carry
     // either an object handle (regular functions) or a host-function reference.
-    public JsValue FunctionObject { get; }
+    public JsValue FunctionObject { get; private set; }
 
     // The value passed to the function via `new` (or undefined when called normally).
     // Surfaced to the runtime as `new.target`.
-    public JsValue NewTarget { get; }
+    public JsValue NewTarget { get; private set; }
 
     // The object on which this function was defined as a method; used as the [[Home]]
     // for `super` lookups (9.1.1.3.5 GetSuperBase). Null for arrow functions and
     // top-level functions.
-    public ObjectHandle? HomeObject { get; }
+    public ObjectHandle? HomeObject { get; private set; }
+
+    internal void Reset(
+        ThisBindingStatus thisBindingStatus,
+        JsValue functionObject,
+        JsValue newTarget,
+        ObjectHandle? homeObject,
+        EnvironmentRecord? outerEnv)
+    {
+        ResetDeclarativeState(outerEnv);
+        ThisBindingStatus = thisBindingStatus;
+        FunctionObject = functionObject;
+        NewTarget = newTarget;
+        HomeObject = homeObject;
+        _thisValue = JsValue.Undefined;
+    }
 
     internal override void AttachOwnerHeap(JsHeap heap)
     {

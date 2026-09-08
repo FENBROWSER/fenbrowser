@@ -65,19 +65,29 @@ public sealed class JsHeap
     // manually). Default is conservative — large enough that test suites
     // don't pay nursery overhead unnecessarily, small enough that long
     // allocation-heavy runs see periodic minor sweeps.
-    // A minor collection every 4096 young allocations is far too eager for a
-    // real page: Google's robot check ran 299 of them inside a single
-    // callback, which was about a fifth of that callback's 22 seconds. Eight
-    // times the budget is still only a few megabytes of nursery before a
-    // collection, and it takes that to roughly forty.
-    public int YoungAllocationsPerMinorGc { get; set; } = 131072;
+    // Budget set by the CLR, not by this collector. A JS cell that outlives its
+    // nursery is promoted by the *CLR* too - its HeapCell, payload and nursery
+    // entry all survive gen0 - and CLR gen1/gen2 collections are what a wide
+    // budget actually buys. Measured on google.com/recaptcha/api2/demo with a
+    // 131072 budget: 380MB/s allocated, 30 gen0/s, 29 gen1/s, 5-7 gen2/s, and
+    // 13-37% of wall time inside the CLR collector. Dropping the budget so the
+    // nursery fits inside gen0 (8192 cells, a couple of megabytes) lets the same
+    // garbage die where it is cheapest: the page's longest blocking JS job goes
+    // from a median of 11.6s to 10.0s, and an allocation-heavy microbenchmark
+    // from 3159ms to 2323ms.
+    //
+    // Majors are then counted per allocation rather than per minor: 512 minors
+    // at this budget is the same 4.2M allocations between major collections that
+    // 32 minors bought at the old one, so a smaller nursery does not silently
+    // buy sixteen times the full-heap walks.
+    public int YoungAllocationsPerMinorGc { get; set; } = 8192;
     public bool DeferAutomaticCollectionUntilSafePoint { get; set; }
     // Long-running browser workloads can keep temporary objects alive across
     // enough nursery collections to promote them. Without a periodic major
     // collection those dead Old cells accumulate until the whole JS realm is
     // discarded (for example, during reCAPTCHA MessagePort/promise churn).
     // Zero disables the automatic major collection cadence.
-    public int MinorCollectionsPerMajorGc { get; set; } = 32;
+    public int MinorCollectionsPerMajorGc { get; set; } = 512;
 
     // Only a major collection reclaims Old cells, and only a major drains the
     // remembered-environment set - which is a root set, so until one runs, an
@@ -666,7 +676,29 @@ public sealed class JsHeap
         return $"ownedBy=none-of-{others.Count}-other-heaps";
     }
 
+    // Every heap read goes through this. The diagnostic that describes a stale
+    // handle builds a long interpolated string out of a dozen fields, and while
+    // it lived in this method's body the JIT had to carry all of that - and a
+    // stack frame sized for it - into the hot path, where it could never be
+    // inlined. The check itself is a bounds test and two compares; the report
+    // is cold and now lives on its own.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private HeapCell ValidateHandle(int index, int generation, HeapCellKind expectedKind)
+    {
+        if ((uint)index < (uint)_cells.Count)
+        {
+            var cell = _cells[index];
+            if (cell is not null && cell.Generation == generation && cell.Kind == expectedKind)
+            {
+                return cell;
+            }
+        }
+
+        return ThrowInvalidHandle(index, generation, expectedKind);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private HeapCell ThrowInvalidHandle(int index, int generation, HeapCellKind expectedKind)
     {
         if ((uint)index >= (uint)_cells.Count)
         {
@@ -684,12 +716,7 @@ public sealed class JsHeap
                 $"Stale heap handle. heap#{HeapId} idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] allocSite={allocSite} rootCtx={(_rootTraceContext.Length == 0 ? "<not-a-root-walk>" : _rootTraceContext)} {DescribeHandleOwner(index, generation)} rememberedEnvs={_rememberedEnvironments.Count} envRegs={_rememberedEnvironmentRegistrations} envScanMarks={_rememberedEnvironmentScanMarks} minor#{_minorGcCount} major#{_gcCollectionCount}");
         }
 
-        if (cell.Kind != expectedKind)
-        {
-            throw new JsEngineFatalException($"Heap handle kind mismatch. Expected {expectedKind}, actual {cell.Kind}.");
-        }
-
-        return cell;
+        throw new JsEngineFatalException($"Heap handle kind mismatch. Expected {expectedKind}, actual {cell.Kind}.");
     }
 
     public void WriteBarrier(ObjectHandle owner, ObjectHandle child)

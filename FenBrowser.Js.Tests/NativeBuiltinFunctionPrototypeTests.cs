@@ -45,4 +45,27 @@ public sealed class NativeBuiltinFunctionPrototypeTests
             Error.prototype.toString.apply({ name: 'X', message: 'Y' }) === 'X: Y';
             """));
     }
+
+    [Fact]
+    public void FunctionPrototypeCallPreservesReceiverAndArguments()
+    {
+        Assert.True(RunBoolean("""
+            function collect(a, b, c, d, e) {
+                'use strict';
+                return this.tag + ':' + a + b + c + d + e;
+            }
+            collect.call({ tag: 'ok' }, 1, 2, 3, 4, 5) === 'ok:12345' &&
+            (function () { 'use strict'; return this; }).call(null) === null;
+            """));
+    }
+
+    [Fact]
+    public void ReplacedCallPropertyDoesNotUseFunctionPrototypeIntrinsic()
+    {
+        Assert.True(RunBoolean("""
+            function target() { return 'target'; }
+            target.call = function (value) { return this === target && value === 7; };
+            target.call(7);
+            """));
+    }
 }

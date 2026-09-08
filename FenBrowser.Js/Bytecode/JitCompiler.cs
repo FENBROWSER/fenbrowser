@@ -700,13 +700,6 @@ public static class JitCompiler
         for (var i = 0; i < function.Instructions.Count; i++)
         {
             var op = function.Instructions[i].OpCode;
-            // A finally block resumes at an offset picked at run time, or
-            // completes the function outright; neither is expressible yet.
-            if (op == OpCode.EndFinally)
-            {
-                NoteRejection(op);
-                return null;
-            }
             // Frame-suspending ops can't be JIT'd — they need IP save/restore
             // across delegate boundaries which the JIT lambda doesn't model.
             if (op == OpCode.Yield || op == OpCode.YieldStar ||
@@ -1889,24 +1882,24 @@ public static class JitCompiler
     // one was populated by prior interpreted runs.
     private static PolymorphicInlineCache EnsureLoadIC(BytecodeFunction function, int icOffset)
     {
-        function.LoadICs ??= new();
-        if (!function.LoadICs.TryGetValue(icOffset, out var ic))
+        var caches = function.EnsureLoadICs();
+        if ((uint)icOffset >= (uint)caches.Length)
         {
-            ic = new PolymorphicInlineCache();
-            function.LoadICs[icOffset] = ic;
+            return new PolymorphicInlineCache();
         }
-        return ic;
+
+        return caches[icOffset] ??= new PolymorphicInlineCache();
     }
 
     private static PolymorphicInlineCache EnsureStoreIC(BytecodeFunction function, int icOffset)
     {
-        function.StoreICs ??= new();
-        if (!function.StoreICs.TryGetValue(icOffset, out var ic))
+        var caches = function.EnsureStoreICs();
+        if ((uint)icOffset >= (uint)caches.Length)
         {
-            ic = new PolymorphicInlineCache();
-            function.StoreICs[icOffset] = ic;
+            return new PolymorphicInlineCache();
         }
-        return ic;
+
+        return caches[icOffset] ??= new PolymorphicInlineCache();
     }
 }
 #endif // !PUBLISH_AOT

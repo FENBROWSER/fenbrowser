@@ -22,10 +22,26 @@ namespace FenBrowser.Js.Diagnostics;
 // contact left is the merge at report time, which takes each state's lock.
 public static class InterpreterProfiler
 {
+    private static readonly bool DeepTraceEnabled = string.Equals(
+        Environment.GetEnvironmentVariable("FEN_FENJS_DEEP_TRACE"),
+        "1",
+        StringComparison.Ordinal);
+
     public static readonly bool Enabled = string.Equals(
         Environment.GetEnvironmentVariable("FEN_FENJS_PROFILE"),
         "1",
-        StringComparison.Ordinal);
+        StringComparison.Ordinal) || DeepTraceEnabled;
+
+    // Per-opcode self time, enabled by FEN_FENJS_OPTIME=1. Counting which
+    // opcode runs most says nothing about where a page's seconds went: a
+    // histogram cannot separate an opcode that is executed ten million times
+    // for twenty nanoseconds each from one executed a hundred thousand times
+    // for two microseconds. Kept behind its own switch because it takes a
+    // timestamp per instruction, which the plain histogram does not.
+    public static readonly bool OpTimingEnabled = string.Equals(
+        Environment.GetEnvironmentVariable("FEN_FENJS_OPTIME"),
+        "1",
+        StringComparison.Ordinal) || DeepTraceEnabled;
 
     // Adjacent pairs, indexed [previous * PairStride + current]. A histogram
     // says which operation dominates; only pairs say whether that operation is
@@ -69,6 +85,16 @@ public static class InterpreterProfiler
 
         public long ExecTicks;
         public long ExecStart;
+
+        // Self time per opcode. The clock is read once per instruction: that
+        // reading both closes the previous opcode and opens this one, so a
+        // nested call's own instructions close the call opcode at frame setup
+        // and the time of the callee's body is billed to the callee's opcodes,
+        // not to the call.
+        public readonly long[] OpTicks = new long[512];
+        public readonly long[] OpSamples = new long[512];
+        public int PendingOp = -1;
+        public long PendingStart;
     }
 
     [ThreadStatic]
@@ -403,6 +429,122 @@ public static class InterpreterProfiler
         state.DeoptTotal++;
     }
 
+    /// <summary>
+    /// Closes the previous instruction's self time and opens this one's, with a
+    /// single clock read. Call it immediately before dispatching an opcode.
+    /// </summary>
+    public static void BeginOp(OpCode opCode)
+    {
+        var state = State;
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var pending = state.PendingOp;
+        if (pending >= 0)
+        {
+            state.OpTicks[pending] += now - state.PendingStart;
+            state.OpSamples[pending]++;
+        }
+
+        var index = (int)opCode;
+        state.PendingOp = (uint)index < (uint)state.OpTicks.Length ? index : -1;
+        state.PendingStart = now;
+    }
+
+    /// <summary>
+    /// Closes the last instruction of a top-level job. Without this the opcode
+    /// that ended the job stays open across the thread's idle wait and is
+    /// billed every millisecond until the next job starts, which made the
+    /// final Return of each job look like the most expensive opcode in the
+    /// engine by two orders of magnitude.
+    /// </summary>
+    public static void EndOpBatch()
+    {
+        var state = State;
+        var pending = state.PendingOp;
+        if (pending < 0)
+        {
+            return;
+        }
+
+        state.OpTicks[pending] += System.Diagnostics.Stopwatch.GetTimestamp() - state.PendingStart;
+        state.OpSamples[pending]++;
+        state.PendingOp = -1;
+    }
+
+    /// <summary>
+    /// Per-opcode self time, most expensive first. Each sample paid for one
+    /// clock read, so that cost is subtracted per sample rather than left to
+    /// inflate whichever opcode ran most often.
+    /// </summary>
+    public static string OpTimeReport(int top = 25)
+    {
+        if (!OpTimingEnabled)
+        {
+            return "[FenJsOpTime] disabled (set FEN_FENJS_OPTIME=1)";
+        }
+
+        var ticks = new long[512];
+        var samples = new long[512];
+        foreach (var state in SnapshotStates())
+        {
+            lock (state.Gate)
+            {
+                for (var i = 0; i < ticks.Length; i++)
+                {
+                    ticks[i] += state.OpTicks[i];
+                    samples[i] += state.OpSamples[i];
+                }
+            }
+        }
+
+        var frequency = (double)System.Diagnostics.Stopwatch.Frequency;
+        double totalNet = 0;
+        long totalSamples = 0;
+        var net = new double[ticks.Length];
+        for (var i = 0; i < ticks.Length; i++)
+        {
+            if (samples[i] == 0) continue;
+            net[i] = Math.Max(0, ticks[i] - TimestampOverheadTicks * samples[i]);
+            totalNet += net[i];
+            totalSamples += samples[i];
+        }
+
+        if (totalSamples == 0)
+        {
+            return "[FenJsOpTime] no samples";
+        }
+
+        var order = new List<int>();
+        for (var i = 0; i < ticks.Length; i++)
+        {
+            if (samples[i] > 0) order.Add(i);
+        }
+
+        order.Sort((a, b) => net[b].CompareTo(net[a]));
+
+        var builder = new StringBuilder();
+        builder.Append("[FenJsOpTime] self time per opcode, overhead-corrected. total=")
+            .Append((1000.0 * totalNet / frequency).ToString("F0"))
+            .Append("ms over ")
+            .Append(totalSamples.ToString("N0"))
+            .Append(" instructions (")
+            .Append((1e9 * totalNet / frequency / totalSamples).ToString("F1"))
+            .AppendLine("ns each)");
+        builder.AppendLine("    opcode                              count        ms     ns/op    share");
+        foreach (var index in order.Take(top))
+        {
+            var ms = 1000.0 * net[index] / frequency;
+            builder.Append("    ")
+                .Append(((OpCode)index).ToString().PadRight(28))
+                .Append(samples[index].ToString("N0").PadLeft(12))
+                .Append(ms.ToString("F0").PadLeft(10))
+                .Append((1e9 * net[index] / frequency / samples[index]).ToString("F0").PadLeft(10))
+                .Append((100.0 * net[index] / totalNet).ToString("F2").PadLeft(8))
+                .AppendLine("%");
+        }
+
+        return builder.ToString();
+    }
+
     public static void Reset()
     {
         foreach (var state in SnapshotStates())
@@ -421,6 +563,10 @@ public static class InterpreterProfiler
                 state.VarGlobal = 0;
                 state.VarLocal = 0;
                 state.VarDepth = 0;
+                Array.Clear(state.OpTicks);
+                Array.Clear(state.OpSamples);
+                state.PendingOp = -1;
+                state.PendingStart = 0;
                 state.VarSlowTicks = 0;
                 state.VarSlowSamples = 0;
                 state.ExecTicks = 0;
