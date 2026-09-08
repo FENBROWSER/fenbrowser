@@ -74,6 +74,13 @@ public static class JitCompiler
     public static readonly bool Enabled =
         !string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_DISABLE"), "1", StringComparison.Ordinal);
 
+    /// <summary>
+    /// Set FEN_JIT_BASELINE=0 to fall back to expression trees, which is how a
+    /// baseline change is measured against the emitter it replaces.
+    /// </summary>
+    public static readonly bool BaselineEnabled =
+        !string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_BASELINE"), "0", StringComparison.Ordinal);
+
     // JIT-compiled body. Runs to completion inside the caller-set-up
     // InterpreterFrame and returns the function's return value. Throws
     // JsThrownException for uncaught exceptions, same as ExecuteInternal.
@@ -126,6 +133,7 @@ public static class JitCompiler
     public static long TreeBuildTicks;
     public static long LambdaCompileTicks;
     public static long PrepareTicks;
+    public static long BaselineEmitTicks;
 
     // Tree-build time is what is left of a compile after LambdaCompiler and
     // PrepareDelegate, and it used to be derived by reading those two totals
@@ -145,6 +153,9 @@ public static class JitCompiler
 
     public static double TreeBuildMilliseconds =>
         TreeBuildTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+    public static double BaselineEmitMilliseconds =>
+        BaselineEmitTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
     public static double LambdaCompileMilliseconds =>
         LambdaCompileTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
@@ -321,11 +332,14 @@ public static class JitCompiler
             .Append(" mode=").Append(PreferInterpretation ? "interpreted-lambda" : "emitted-il")
             .AppendLine();
         text.Append("[FenJsJit] total=").Append(CompileMilliseconds.ToString("F1"))
+            .Append("ms  ilEmit=").Append(BaselineEmitMilliseconds.ToString("F1"))
             .Append("ms  treeBuild=").Append(TreeBuildMilliseconds.ToString("F1"))
             .Append("ms  lambdaCompile=").Append(LambdaCompileMilliseconds.ToString("F1"))
             .Append("ms  prepareDelegate=").Append(PrepareMilliseconds.ToString("F1"))
             .Append("ms  queueWait=").Append(QueueWaitMilliseconds.ToString("F1"))
             .Append("ms over ").Append(Interlocked.Read(ref QueuedRequests)).AppendLine(" requests");
+        text.Append("[FenJsJit] baselineRefusals=[")
+            .Append(Jit.Baseline.BaselineCompiler.DescribeRefusals()).AppendLine("]");
 
         (string Name, double Ms, int InvocationsAtCompile, BytecodeFunction Function)[] log;
         lock (CompiledLogGate) log = CompiledLog.ToArray();
@@ -400,11 +414,27 @@ public static class JitCompiler
             return folded;
         }
 
-        // Path 2: Expression-tree codegen. Compiles a per-function
-        // delegate that runs the same dispatch as ExecuteInternal but
-        // with each opcode bound at JIT-compile time. Bails to null if
-        // any opcode in the function lacks an emitter — the interpreter
-        // takes over.
+        // Path 2: direct IL. Emits the same dispatch ExecuteInternal runs
+        // with every opcode bound at compile time, straight into a
+        // DynamicMethod so the IL RyuJIT receives is ours to shape.
+        if (BaselineEnabled)
+        {
+            var baselineStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            var baseline = Jit.Baseline.BaselineCompiler.TryCompile(function);
+            Interlocked.Add(ref BaselineEmitTicks, System.Diagnostics.Stopwatch.GetTimestamp() - baselineStart);
+            if (baseline is not null)
+            {
+                var prepareStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                PrepareForFirstCall(baseline);
+                Interlocked.Add(ref PrepareTicks, System.Diagnostics.Stopwatch.GetTimestamp() - prepareStart);
+                Interlocked.Increment(ref CompileSuccesses);
+                return baseline;
+            }
+        }
+
+        // Path 3: Expression-tree codegen, for whatever the baseline emitter
+        // still turns away. Bails to null if any opcode in the function lacks
+        // an emitter — the interpreter takes over.
         var emitStart = System.Diagnostics.Stopwatch.GetTimestamp();
         var lambdaBefore = _threadLambdaTicks;
         var prepareBefore = _threadPrepareTicks;

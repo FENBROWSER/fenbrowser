@@ -239,6 +239,9 @@ public sealed class BytecodeFunction
     /// </summary>
     internal HashSet<int>? OsrEntryPoints;
     internal JitCompiler.JitDelegate? JitDelegate;
+
+    /// <summary>Object operands the compiled body indexes. Set before the delegate is published.</summary>
+    internal FenBrowser.Js.Jit.Baseline.BaselinePool? BaselinePool;
 #endif
 
     public int InvocationsObserved => Invocations;
@@ -347,6 +350,7 @@ public sealed class BytecodeFunction
 #if !PUBLISH_AOT
             JitCompileAttempted = false,
             JitDelegate = null,
+            BaselinePool = null,
 #endif
         };
     }

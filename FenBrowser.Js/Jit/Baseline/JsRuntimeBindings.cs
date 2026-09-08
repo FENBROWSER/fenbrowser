@@ -241,5 +241,24 @@ internal static class JsRuntimeBindings
     internal static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
     internal static readonly PropertyInfo PiThisValue = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.ThisValue))!;
     internal static readonly PropertyInfo PiNewTarget = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.NewTarget))!;
+
+    internal static readonly PropertyInfo PiJsValueUndefined =
+        typeof(JsValue).GetProperty(nameof(JsValue.Undefined))!;
+
+    internal static readonly ConstructorInfo CtorInstruction =
+        typeof(Instruction).GetConstructor(
+            [typeof(OpCode), typeof(int), typeof(int), typeof(int), typeof(int), typeof(int)])!;
+
+    internal static readonly FieldInfo FiBaselinePool = typeof(BytecodeFunction)
+        .GetField("BaselinePool", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly FieldInfo FiPoolConstants = typeof(BaselinePool)
+        .GetField(nameof(BaselinePool.Constants), BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly FieldInfo FiPoolNames = typeof(BaselinePool)
+        .GetField(nameof(BaselinePool.Names), BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly FieldInfo FiPoolSites = typeof(BaselinePool)
+        .GetField(nameof(BaselinePool.Sites), BindingFlags.Instance | BindingFlags.NonPublic)!;
 }
 #endif
