@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Target: **100% pass rate**. Refresh batched store: `FRESH=1 bash scripts/run_full_batched.sh`
 
 ```
-test262: 49157/52933 = 92.87% (3776 fail)
-Top clusters: intl402(685) staging(477) Temporal(268) module-code(182) TypedArray(173) class(156+91) TypedArrayCtors(138) import(114) for-of(78) String(76) Function(66) assignment-dstr(63) Atomics(62) Object(62) compound-assign(55) eval-code(41)
+test262: 49936/53483 = 93.37% (3547 fail)
+Top clusters: staging(404) Temporal(260+138) Atomics(182) Iterator(166) TypedArray(147) class(147+87) NumberFormat(135) DateTimeFormat(122) Array(110) TypedArrayCtors(98) import-defer(91) for-of(78) ShadowRealm(64) Object(63) assignment(59) compound-assign(55)
 ```
 
 ## ⚠️ Current Reality (read first — the tree has diverged from older docs)
