@@ -20,23 +20,31 @@ public readonly struct JsValue : IEquatable<JsValue>
     private static long _nextSymbolId;
 
     public readonly JsValueTag Tag;
-    private readonly long _payload;
-    private readonly double _number;
+    // A value is either a Number or it is not, so the double and the scalar
+    // payload were never both live: Number is the only tag that reads the
+    // double, and every other payload-carrying tag reads the integer. Holding
+    // one eight-byte field instead of two takes JsValue from 32 bytes to 24,
+    // which is a quarter off every register file, every argument copy, every
+    // property slot and everything the collector walks.
+    private readonly long _bits;
     private readonly object? _reference;
 
-    private JsValue(JsValueTag tag, long payload, double number, object? reference = null)
+    private JsValue(JsValueTag tag, long payload, object? reference)
     {
         Tag = tag;
-        _payload = payload;
-        _number = number;
+        _bits = payload;
         _reference = reference;
     }
 
-    public static JsValue Undefined => new(JsValueTag.Undefined, 0, 0);
-    public static JsValue Null => new(JsValueTag.Null, 0, 0);
-    public static JsValue FromBoolean(bool value) => new(JsValueTag.Boolean, value ? 1 : 0, 0);
-    public static JsValue FromInt32(int value) => new(JsValueTag.Int32, value, 0);
-    public static JsValue FromNumber(double value) => new(JsValueTag.Number, 0, value);
+    private long _payload => _bits;
+
+    private double _number => BitConverter.Int64BitsToDouble(_bits);
+
+    public static JsValue Undefined => new(JsValueTag.Undefined, 0, null);
+    public static JsValue Null => new(JsValueTag.Null, 0, null);
+    public static JsValue FromBoolean(bool value) => new(JsValueTag.Boolean, value ? 1 : 0, null);
+    public static JsValue FromInt32(int value) => new(JsValueTag.Int32, value, null);
+    public static JsValue FromNumber(double value) => new(JsValueTag.Number, BitConverter.DoubleToInt64Bits(value), null);
 
     /// <summary>
     /// A number tagged the way the engine's fast paths expect: Int32 when the
@@ -58,13 +66,13 @@ public readonly struct JsValue : IEquatable<JsValue>
 
         return FromNumber(value);
     }
-    public static JsValue FromObject(ObjectHandle handle) => new(JsValueTag.Object, handle.ToInt64(), 0);
-    public static JsValue FromHostObject(HostObjectHandle handle) => new(JsValueTag.HostObject, handle.ToInt64(), 0);
+    public static JsValue FromObject(ObjectHandle handle) => new(JsValueTag.Object, handle.ToInt64(), null);
+    public static JsValue FromHostObject(HostObjectHandle handle) => new(JsValueTag.HostObject, handle.ToInt64(), null);
 
     public static JsValue FromString(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return new JsValue(JsValueTag.String, 0, 0, value);
+        return new JsValue(JsValueTag.String, 0, value);
     }
 
     public bool AsBoolean() => Tag == JsValueTag.Boolean && _payload != 0;
@@ -150,7 +158,7 @@ public readonly struct JsValue : IEquatable<JsValue>
             return FromString(left.AsString() + right.AsString());
         }
 
-        return new JsValue(JsValueTag.String, 0, 0, new ConsString(leftPart, rightPart, total));
+        return new JsValue(JsValueTag.String, 0, new ConsString(leftPart, rightPart, total));
     }
 
     // Symbol identity remains a unique scalar. The optional description is carried by
@@ -158,7 +166,7 @@ public readonly struct JsValue : IEquatable<JsValue>
     public static JsValue FromSymbol(string? description = null)
     {
         var id = Interlocked.Increment(ref _nextSymbolId);
-        return new JsValue(JsValueTag.Symbol, id, 0, new SymbolRecord(id, description));
+        return new JsValue(JsValueTag.Symbol, id, new SymbolRecord(id, description));
     }
 
     public long AsSymbolId()
@@ -179,7 +187,7 @@ public readonly struct JsValue : IEquatable<JsValue>
     }
 
     public static JsValue FromBigInt(BigInteger value) =>
-        new(JsValueTag.BigInt, 0, 0, value);
+        new(JsValueTag.BigInt, 0, value);
 
     public BigInteger AsBigInt()
     {
