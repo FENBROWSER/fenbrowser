@@ -832,6 +832,67 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _runtimeProfile = JavaScriptRuntimeProfile.Balanced;
         ResetFenJsSession();
+        // Every engine registers itself so a run can be summarised after it
+        // ends. The per-collection [FenJsGc] line only appears when a
+        // collection happened to land at a safepoint, which makes it useless
+        // for comparing one run against another: a run that allocated less
+        // reports fewer lines, not better numbers.
+        lock (LiveEnginesGate)
+        {
+            LiveEngines.Add(new WeakReference<FenJsBrowserScriptEngine>(this));
+        }
+    }
+
+    private static readonly object LiveEnginesGate = new object();
+    private static readonly List<WeakReference<FenJsBrowserScriptEngine>> LiveEngines = new();
+
+    /// <summary>
+    /// One line per realm describing what its interpreter actually did: the
+    /// instructions it ran, where its native time went, and what the collector
+    /// cost. Written at the end of a run so two runs can be compared directly.
+    /// </summary>
+    internal static string DescribeAllEngines()
+    {
+        List<WeakReference<FenJsBrowserScriptEngine>> engines;
+        lock (LiveEnginesGate)
+        {
+            engines = new List<WeakReference<FenJsBrowserScriptEngine>>(LiveEngines);
+        }
+
+        var text = new StringBuilder();
+        var index = 0;
+        foreach (var reference in engines)
+        {
+            if (!reference.TryGetTarget(out var engine)) continue;
+            var line = engine.DescribeEngine(index++);
+            if (line is not null) text.AppendLine(line);
+        }
+
+        return text.Length == 0 ? "[FenJsEngine] no live engines" : text.ToString();
+    }
+
+    private string DescribeEngine(int index)
+    {
+        var interpreter = _interpreter;
+        if (interpreter is null) return null;
+        var heap = interpreter.Heap;
+        if (interpreter.TotalInstructionsExecuted == 0) return null;
+
+        return string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"[FenJsEngine] #{index} {(_parentRealmOwner is null ? "top" : "frame")} " +
+            $"instructions={interpreter.TotalInstructionsExecuted} " +
+            $"microtasks={interpreter.MicrotaskJobsRun} ({interpreter.MicrotaskMilliseconds:F0}ms) " +
+            $"slowestJob={interpreter.SlowestJobMilliseconds:F0}ms/{interpreter.SlowestJobInstructions}instr " +
+            $"gc=[major={heap.GcCollectionCount} ({heap.MajorGcMilliseconds:F0}ms) " +
+            $"minor={heap.MinorCollectionCount} ({heap.MinorGcMilliseconds:F0}ms)] " +
+            $"frames={interpreter.FramesCreated} " +
+            $"regMB={interpreter.RegisterBytesAllocated / (1024.0 * 1024.0):F0} " +
+            $"regPerFrame={(interpreter.FramesCreated == 0 ? 0 : interpreter.RegisterBytesAllocated / interpreter.FramesCreated)} " +
+            $"nativeRooting={interpreter.NativeRootingMilliseconds:F0}ms/{interpreter.NativeRootedCalls} " +
+            $"natives=[{interpreter.DescribeNativeCallCost()}] " +
+            $"topCalled=[{interpreter.DescribeNativeCallCounts()}] " +
+            $"url={_currentBaseUri?.AbsoluteUri ?? "<none>"}");
     }
 
     internal int FenJsEvaluationCount => _fenJsEvaluationCount;

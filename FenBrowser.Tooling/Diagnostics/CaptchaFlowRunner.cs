@@ -537,6 +537,11 @@ internal static class CaptchaFlowRunner
             Console.Write(FenBrowser.Js.Bytecode.JitCompiler.Report());
         }
 
+        // Always, not behind a switch: comparing two runs of this harness is the
+        // whole point of it, and the per-collection engine line only appears
+        // when a collection happened to land at a safepoint.
+        Console.Write(FenBrowser.FenEngine.Scripting.BrowserScriptEngineDiagnostics.EngineReport());
+
         Console.WriteLine(solved ? "[captcha] RESULT solved" : "[captcha] RESULT unsolved");
         return solved ? 0 : 1;
     }

@@ -158,6 +158,19 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
 
+        private static void AppendSiteRow(StringBuilder text, string site, SiteStat stat, double frequency)
+        {
+            text.Append("    ")
+                .Append((site.Length > 36 ? site.Substring(0, 36) : site).PadRight(38))
+                .Append(stat.Acquisitions.ToString().PadLeft(8))
+                .Append(stat.Contended.ToString().PadLeft(10))
+                .Append((1000.0 * stat.HoldTicks / frequency).ToString("F0").PadLeft(11))
+                .Append((1000.0 * stat.MaxHoldTicks / frequency).ToString("F0").PadLeft(11))
+                .Append((1000.0 * stat.WaitTicks / frequency).ToString("F0").PadLeft(11))
+                .Append((1000.0 * stat.MaxWaitTicks / frequency).ToString("F0").PadLeft(11))
+                .AppendLine();
+        }
+
         internal static string Report(int top = 20)
         {
             if (!Enabled) return "[FenJsLock] probe disabled (set FEN_FENJS_LOCKPROBE=1)";
@@ -193,17 +206,23 @@ namespace FenBrowser.FenEngine.Scripting
 
             for (var i = 0; i < snapshot.Length && i < top; i++)
             {
-                var site = snapshot[i].Key;
-                var stat = snapshot[i].Value;
-                text.Append("    ")
-                    .Append((site.Length > 36 ? site.Substring(0, 36) : site).PadRight(38))
-                    .Append(stat.Acquisitions.ToString().PadLeft(8))
-                    .Append(stat.Contended.ToString().PadLeft(10))
-                    .Append((1000.0 * stat.HoldTicks / frequency).ToString("F0").PadLeft(11))
-                    .Append((1000.0 * stat.MaxHoldTicks / frequency).ToString("F0").PadLeft(11))
-                    .Append((1000.0 * stat.WaitTicks / frequency).ToString("F0").PadLeft(11))
-                    .Append((1000.0 * stat.MaxWaitTicks / frequency).ToString("F0").PadLeft(11))
-                    .AppendLine();
+                AppendSiteRow(text, snapshot[i].Key, snapshot[i].Value, frequency);
+            }
+
+            // Held and waited answer different questions, and a site can be
+            // enormous in one and absent from the other: whoever holds the lock
+            // is the cause, but whoever waits on it is the symptom being paid
+            // for. Ranking only by hold time hid a site waiting twelve seconds
+            // below the twentieth row, so both orders are printed.
+            Array.Sort(snapshot, (a, b) => b.Value.WaitTicks.CompareTo(a.Value.WaitTicks));
+            if (snapshot[0].Value.WaitTicks > 0)
+            {
+                text.AppendLine("    -- by time spent waiting --");
+                for (var i = 0; i < snapshot.Length && i < top; i++)
+                {
+                    if (snapshot[i].Value.WaitTicks == 0) break;
+                    AppendSiteRow(text, snapshot[i].Key, snapshot[i].Value, frequency);
+                }
             }
 
             (string Site, string Label, double Ms, double AtMs)[] holds;
@@ -239,5 +258,8 @@ namespace FenBrowser.FenEngine.Scripting
     public static class BrowserScriptEngineDiagnostics
     {
         public static string LockReport() => ScriptEngineLockProbe.Report();
+
+        /// <summary>What each realm's interpreter did over the run.</summary>
+        public static string EngineReport() => FenJsBrowserScriptEngine.DescribeAllEngines();
     }
 }

@@ -41,7 +41,21 @@ public static class InterpreterProfiler
     public static readonly bool OpTimingEnabled = string.Equals(
         Environment.GetEnvironmentVariable("FEN_FENJS_OPTIME"),
         "1",
-        StringComparison.Ordinal) || DeepTraceEnabled;
+        StringComparison.Ordinal) || DeepTraceEnabled ||
+        string.Equals(
+            Environment.GetEnvironmentVariable("FEN_FENJS_OPALLOC"),
+            "1",
+            StringComparison.Ordinal);
+
+    // Managed bytes per opcode, enabled by FEN_FENJS_OPALLOC=1. A page whose
+    // time is spent in the collector needs to know which operation produced the
+    // garbage, and neither a count nor a duration answers that: an opcode can
+    // be fast every time it runs and still be the reason the heap is churning.
+    // Rides on the op-timing boundary, so it turns that on as well.
+    public static readonly bool OpAllocationEnabled = string.Equals(
+        Environment.GetEnvironmentVariable("FEN_FENJS_OPALLOC"),
+        "1",
+        StringComparison.Ordinal);
 
     // Adjacent pairs, indexed [previous * PairStride + current]. A histogram
     // says which operation dominates; only pairs say whether that operation is
@@ -93,8 +107,13 @@ public static class InterpreterProfiler
         // not to the call.
         public readonly long[] OpTicks = new long[512];
         public readonly long[] OpSamples = new long[512];
+        // Managed bytes charged to each opcode, on the same open/close boundary
+        // as the ticks. Time says which opcode is slow; bytes say whether it is
+        // slow because it is allocating, which is a different fix.
+        public readonly long[] OpBytes = new long[512];
         public int PendingOp = -1;
         public long PendingStart;
+        public long PendingBytes;
     }
 
     [ThreadStatic]
@@ -437,16 +456,22 @@ public static class InterpreterProfiler
     {
         var state = State;
         var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var bytes = OpAllocationEnabled ? GC.GetAllocatedBytesForCurrentThread() : 0;
         var pending = state.PendingOp;
         if (pending >= 0)
         {
             state.OpTicks[pending] += now - state.PendingStart;
             state.OpSamples[pending]++;
+            if (OpAllocationEnabled)
+            {
+                state.OpBytes[pending] += bytes - state.PendingBytes;
+            }
         }
 
         var index = (int)opCode;
         state.PendingOp = (uint)index < (uint)state.OpTicks.Length ? index : -1;
         state.PendingStart = now;
+        state.PendingBytes = bytes;
     }
 
     /// <summary>
@@ -467,6 +492,11 @@ public static class InterpreterProfiler
 
         state.OpTicks[pending] += System.Diagnostics.Stopwatch.GetTimestamp() - state.PendingStart;
         state.OpSamples[pending]++;
+        if (OpAllocationEnabled)
+        {
+            state.OpBytes[pending] += GC.GetAllocatedBytesForCurrentThread() - state.PendingBytes;
+        }
+
         state.PendingOp = -1;
     }
 
@@ -484,6 +514,7 @@ public static class InterpreterProfiler
 
         var ticks = new long[512];
         var samples = new long[512];
+        var bytes = new long[512];
         foreach (var state in SnapshotStates())
         {
             lock (state.Gate)
@@ -492,6 +523,7 @@ public static class InterpreterProfiler
                 {
                     ticks[i] += state.OpTicks[i];
                     samples[i] += state.OpSamples[i];
+                    bytes[i] += state.OpBytes[i];
                 }
             }
         }
@@ -542,6 +574,55 @@ public static class InterpreterProfiler
                 .AppendLine("%");
         }
 
+        if (OpAllocationEnabled)
+        {
+            builder.Append(OpAllocationSection(bytes, samples, top));
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// Managed bytes charged to each opcode, largest first. Ordered separately
+    /// from time because the opcode that allocates most is often not the one
+    /// that takes longest — the cost of the garbage lands later, in a
+    /// collection somebody else pays for.
+    /// </summary>
+    private static string OpAllocationSection(long[] bytes, long[] samples, int top)
+    {
+        long totalBytes = 0;
+        var order = new List<int>();
+        for (var i = 0; i < bytes.Length; i++)
+        {
+            if (bytes[i] <= 0) continue;
+            totalBytes += bytes[i];
+            order.Add(i);
+        }
+
+        if (totalBytes == 0)
+        {
+            return "  -- no managed allocation recorded --" + Environment.NewLine;
+        }
+
+        order.Sort((a, b) => bytes[b].CompareTo(bytes[a]));
+
+        var builder = new StringBuilder();
+        builder.Append("[FenJsOpAlloc] managed bytes per opcode. total=")
+            .Append((totalBytes / (1024.0 * 1024.0)).ToString("F0"))
+            .AppendLine("MB");
+        builder.AppendLine("    opcode                              count        MB  bytes/op    share");
+        foreach (var index in order.Take(top))
+        {
+            var perOp = samples[index] > 0 ? (double)bytes[index] / samples[index] : 0.0;
+            builder.Append("    ")
+                .Append(((OpCode)index).ToString().PadRight(28))
+                .Append(samples[index].ToString("N0").PadLeft(12))
+                .Append((bytes[index] / (1024.0 * 1024.0)).ToString("F0").PadLeft(10))
+                .Append(perOp.ToString("F0").PadLeft(10))
+                .Append((100.0 * bytes[index] / totalBytes).ToString("F2").PadLeft(8))
+                .AppendLine("%");
+        }
+
         return builder.ToString();
     }
 
@@ -565,8 +646,10 @@ public static class InterpreterProfiler
                 state.VarDepth = 0;
                 Array.Clear(state.OpTicks);
                 Array.Clear(state.OpSamples);
+                Array.Clear(state.OpBytes);
                 state.PendingOp = -1;
                 state.PendingStart = 0;
+                state.PendingBytes = 0;
                 state.VarSlowTicks = 0;
                 state.VarSlowSamples = 0;
                 state.ExecTicks = 0;
