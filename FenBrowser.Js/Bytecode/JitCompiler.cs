@@ -573,6 +573,10 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.GetPropByNameForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiGetPropByNameDirect = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.GetPropByNameForJit_Direct), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiTryLoadPropertyCached = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.TryLoadPropertyCached), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiLoadPropertyMiss = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.LoadPropertyMiss), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiSetPropByName = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.SetPropByNameForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiSetPropByNameDirect = typeof(BytecodeInterpreter)
@@ -1478,9 +1482,18 @@ public static class JitCompiler
                 {
                     var propConst = function.PropertyNames[ins.C];
                     var icConst = EnsureLoadIC(function, ip);
-                    body.Add(Expression.Call(interp, MiGetPropByNameDirect, frame,
-                        Expression.Constant(ins.A), Expression.Constant(ins.B),
-                        Expression.Constant(propConst), Expression.Constant(icConst)));
+                    var destConst = Expression.Constant(ins.A);
+                    var recvConst = Expression.Constant(ins.B);
+                    var nameConst = Expression.Constant(propConst);
+                    var siteConst = Expression.Constant(icConst);
+
+                    // The guard is small enough to be inlined here; only a miss
+                    // leaves the compiled method.
+                    body.Add(Expression.IfThen(
+                        Expression.Not(Expression.Call(interp, MiTryLoadPropertyCached, frame,
+                            destConst, recvConst, nameConst, siteConst)),
+                        Expression.Call(interp, MiLoadPropertyMiss, frame,
+                            destConst, recvConst, nameConst, siteConst)));
                 }
                 return true;
             case OpCode.SetPropByName:

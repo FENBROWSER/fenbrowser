@@ -32,6 +32,9 @@ internal sealed class CacheIRSite
         }
     }
 
+    /// <summary>The first attached program, for callers that inline the guard themselves.</summary>
+    internal CacheIRProgram? First => _p0;
+
     internal bool TryRun(JsObject receiver, string key, out JsValue result)
     {
         // Hoisted once for the whole site: both are the same for every program
@@ -51,6 +54,13 @@ internal sealed class CacheIRSite
         result = JsValue.Undefined;
         return false;
     }
+
+    /// <summary>True when some attached program already covers this receiver.</summary>
+    internal bool Covers(Shape shape, string? key) =>
+        (_p0 is { } a && a.Guards(shape, key)) ||
+        (_p1 is { } b && b.Guards(shape, key)) ||
+        (_p2 is { } c && c.Guards(shape, key)) ||
+        (_p3 is { } d && d.Guards(shape, key));
 
     internal void Attach(CacheIRProgram program)
     {

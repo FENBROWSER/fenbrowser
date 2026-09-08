@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
@@ -237,6 +237,72 @@ public sealed class CacheIRLoadTests
                 "Object.setPrototypeOf(a, { x: 'other' });" +
                 "out.push(read(a));" +
                 "out.join('|');"));
+    }
+
+    [Fact]
+    public void PolymorphicSiteStaysCorrectOnceTheFunctionIsCompiled()
+    {
+        // Compiled code inlines the guard for the first attached program only,
+        // so a site rotating between shapes reaches the miss path on most reads.
+        // If that path re-attached a shape the site already held, the site would
+        // exhaust its capacity and every read would go generic.
+        Assert.Equal(
+            "ok",
+            RunString(
+                "function read(o) { return o.x; }" +
+                "var a = { x: 1 };" +
+                "var b = { p: 0, x: 2 };" +
+                "var c = { q: 0, r: 0, x: 3 };" +
+                "var want = [1, 2, 3];" +
+                "var os = [a, b, c];" +
+                "for (var i = 0; i < 900; i++) {" +
+                "  var k = i % 3;" +
+                "  if (read(os[k]) !== want[k]) { throw new Error('wrong at ' + i); }" +
+                "}" +
+                "'ok';"));
+    }
+
+    [Fact]
+    public void MonomorphicSiteStaysCorrectAcrossManyCompiledCalls()
+    {
+        Assert.Equal(
+            900d,
+            RunNumber(
+                "function read(o) { return o.x; }" +
+                "var a = { x: 1 };" +
+                "var total = 0;" +
+                "for (var i = 0; i < 900; i++) total += read(a);" +
+                "total;"));
+    }
+
+    [Fact]
+    public void CompiledSiteHonoursAnAccessorInstalledLate()
+    {
+        // The same invalidation, but after the function has tiered up.
+        Assert.Equal(
+            "1|getter",
+            RunString(
+                "function read(o) { return o.x; }" +
+                "var a = { x: 1 };" +
+                "for (var i = 0; i < 900; i++) read(a);" +
+                "var before = read(a);" +
+                "Object.defineProperty(a, 'x', { get: function () { return 'getter'; } });" +
+                "before + '|' + read(a);"));
+    }
+
+    [Fact]
+    public void CompiledSiteStillRoutesProxiesThroughTheirTrap()
+    {
+        Assert.Equal(
+            300d,
+            RunNumber(
+                "function read(o) { return o.x; }" +
+                "var plain = { x: 1 };" +
+                "for (var i = 0; i < 900; i++) read(plain);" +
+                "var hits = 0;" +
+                "var p = new Proxy({ x: 1 }, { get: function (t, k) { hits++; return t[k]; } });" +
+                "for (var i = 0; i < 300; i++) read(p);" +
+                "hits;"));
     }
 
     [Fact]

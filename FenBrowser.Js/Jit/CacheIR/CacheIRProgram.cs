@@ -52,6 +52,10 @@ internal sealed class CacheIRProgram
         }
     }
 
+    internal bool Guards(Shape shape, string? key) =>
+        ReferenceEquals(_guardedShape, shape) &&
+        (_guardedKey is null || string.Equals(_guardedKey, key, StringComparison.Ordinal));
+
     internal int Length => _ops.Length;
 
     internal CacheOp OpAt(int index) => _ops[index];

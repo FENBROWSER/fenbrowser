@@ -23165,16 +23165,43 @@ fallbackArraySpecies:
     // is stable for the lifetime of the function (the dispatch dictionary
     // entry is allocated at JIT compile time), so the JIT can safely
     // embed the reference as a closed-over constant.
-    internal void GetPropByNameForJit_Direct(
+    // Split so the guard can be inlined into compiled code. Held together with
+    // the miss path it was one method far past RyuJIT's inlining budget, so a
+    // cached read cost a call into generic code no matter how simple the answer
+    // was. The two halves are emitted as a branch by the compiler.
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal bool TryLoadPropertyCached(
         InterpreterFrame frame, int destReg, int receiverReg, string prop,
         FenBrowser.Js.Jit.CacheIR.CacheIRSite site)
     {
         var receiver = frame.Registers[receiverReg];
-        if (receiver.Tag == JsValueTag.Object &&
-            site.TryRun(_heap.GetObject(receiver.AsObjectHandle()), prop, out var cached))
+        if (receiver.Tag != JsValueTag.Object) return false;
+
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (obj is ProxyObject or ModuleNamespaceObject) return false;
+        if (site.First is not { } program) return false;
+        if (!program.TryHit(obj, obj.CurrentShape, prop, out var cached)) return false;
+
+        frame.Registers[destReg] = cached;
+        return true;
+    }
+
+    internal void LoadPropertyMiss(
+        InterpreterFrame frame, int destReg, int receiverReg, string prop,
+        FenBrowser.Js.Jit.CacheIR.CacheIRSite site)
+    {
+        var receiver = frame.Registers[receiverReg];
+        if (receiver.Tag == JsValueTag.Object)
         {
-            frame.Registers[destReg] = cached;
-            return;
+            // The inlined guard only tries the first program, so a polymorphic
+            // site finishes its scan here before anything generic runs.
+            var receiverObject = _heap.GetObject(receiver.AsObjectHandle());
+            if (site.TryRun(receiverObject, prop, out var cached))
+            {
+                frame.Registers[destReg] = cached;
+                return;
+            }
         }
 
         try
@@ -23182,14 +23209,28 @@ fallbackArraySpecies:
             frame.Registers[destReg] = GetReceiverProperty(receiver, prop);
             if (receiver.Tag == JsValueTag.Object && !site.IsMegamorphic)
             {
-                var program = FenBrowser.Js.Jit.CacheIR.Attachers.LoadPropertyAttacher.TryAttach(
-                    _heap.GetObject(receiver.AsObjectHandle()), prop, keyVariesAtSite: false);
-                if (program is not null) site.Attach(program);
+                var target = _heap.GetObject(receiver.AsObjectHandle());
+                if (!site.Covers(target.CurrentShape, prop))
+                {
+                    var program = FenBrowser.Js.Jit.CacheIR.Attachers.LoadPropertyAttacher.TryAttach(
+                        target, prop, keyVariesAtSite: false);
+                    if (program is not null) site.Attach(program);
+                }
             }
         }
         catch (JsThrownException ex)
         {
             ThrowOrHandle(frame, ex.Value);
+        }
+    }
+
+    internal void GetPropByNameForJit_Direct(
+        InterpreterFrame frame, int destReg, int receiverReg, string prop,
+        FenBrowser.Js.Jit.CacheIR.CacheIRSite site)
+    {
+        if (!TryLoadPropertyCached(frame, destReg, receiverReg, prop, site))
+        {
+            LoadPropertyMiss(frame, destReg, receiverReg, prop, site);
         }
     }
 
