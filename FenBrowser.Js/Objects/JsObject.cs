@@ -65,8 +65,104 @@ public class JsObject : ITraceable
 
     private int _nextSeq = 1;
 
-    // Symbol-keyed own properties (unchanged — symbols are not shape-tracked).
-    private Dictionary<long, JsPropertyDescriptor>? _symbolProperties;
+    // Symbol-keyed own properties. Not shape-tracked, so they carry their own
+    // key, but stored the same compact way: an object that has any is almost
+    // always carrying one -- an arguments object's @@iterator, a collection's
+    // @@toStringTag -- and a dictionary for a single entry cost more than the
+    // object it hung off. A deleted entry keeps its place so that the accessor
+    // table's indices stay valid; symbol deletion is rare enough to afford it.
+    private SymbolProperty[]? _symbolProperties;
+    private int _symbolCount;
+
+    private struct SymbolProperty
+    {
+        public long Key;
+        public JsValue Value;
+        public PropertyFlags Flags;
+    }
+
+    // An accessor's two halves live in the same side table as a string
+    // property's, under an index no slot can take.
+    private static int AccessorKeyForSymbol(int index) => -1 - index;
+
+    private bool TryFindSymbol(long symbolId, out int index)
+    {
+        var entries = _symbolProperties;
+        if (entries is not null)
+        {
+            for (var i = 0; i < _symbolCount; i++)
+            {
+                if (entries[i].Key == symbolId && (entries[i].Flags & PropertyFlags.Present) != 0)
+                {
+                    index = i;
+                    return true;
+                }
+            }
+        }
+
+        index = -1;
+        return false;
+    }
+
+    private JsPropertyDescriptor ReadSymbol(int index)
+    {
+        var flags = _symbolProperties![index].Flags;
+        if ((flags & PropertyFlags.Accessor) != 0)
+        {
+            var accessor = _accessors![AccessorKeyForSymbol(index)];
+            return JsPropertyDescriptor.Accessor(
+                accessor.Get,
+                accessor.Set,
+                (flags & PropertyFlags.Enumerable) != 0,
+                (flags & PropertyFlags.Configurable) != 0);
+        }
+
+        return new JsPropertyDescriptor(
+            _symbolProperties[index].Value,
+            (flags & PropertyFlags.Writable) != 0,
+            (flags & PropertyFlags.Enumerable) != 0,
+            (flags & PropertyFlags.Configurable) != 0);
+    }
+
+    private void WriteSymbol(int index, long symbolId, in JsPropertyDescriptor descriptor)
+    {
+        var flags = PropertyFlags.Present;
+        if (descriptor.Enumerable) flags |= PropertyFlags.Enumerable;
+        if (descriptor.Configurable) flags |= PropertyFlags.Configurable;
+
+        if (descriptor.IsAccessor)
+        {
+            flags |= PropertyFlags.Accessor;
+            (_accessors ??= new Dictionary<int, AccessorPair>())[AccessorKeyForSymbol(index)] =
+                new AccessorPair(descriptor.Get, descriptor.Set);
+            _symbolProperties![index].Value = JsValue.Undefined;
+        }
+        else
+        {
+            if (descriptor.Writable) flags |= PropertyFlags.Writable;
+            _symbolProperties![index].Value = descriptor.Value;
+            _accessors?.Remove(AccessorKeyForSymbol(index));
+        }
+
+        _symbolProperties[index].Key = symbolId;
+        _symbolProperties[index].Flags = flags;
+    }
+
+    private int AppendSymbolSlot()
+    {
+        if (_symbolProperties is null)
+        {
+            _symbolProperties = new SymbolProperty[2];
+        }
+        else if (_symbolCount == _symbolProperties.Length)
+        {
+            var bigger = new SymbolProperty[_symbolCount * 2];
+            Array.Copy(_symbolProperties, bigger, _symbolCount);
+            _symbolProperties = bigger;
+        }
+
+        return _symbolCount++;
+    }
 
     // Plan H.5: private field brand. Each class with private members gets a unique
     // brand Symbol stored here. The constructor stamps it; private field access
@@ -453,8 +549,9 @@ public class JsObject : ITraceable
     // Symbol-keyed property access.
     public bool DefineOwnSymbolProperty(long symbolId, JsPropertyDescriptor descriptor)
     {
-        if (_symbolProperties is not null && _symbolProperties.TryGetValue(symbolId, out var existing))
+        if (TryFindSymbol(symbolId, out var index))
         {
+            var existing = ReadSymbol(index);
             if (!existing.Configurable)
             {
                 if (descriptor.Configurable) return false;
@@ -475,7 +572,7 @@ public class JsObject : ITraceable
                     !JsValueSameValue(descriptor.Set, existing.Set))
                     return false;
             }
-            _symbolProperties[symbolId] = descriptor;
+            WriteSymbol(index, symbolId, descriptor);
             BarrierIfObject(descriptor.Value);
             if (descriptor.IsAccessor)
             {
@@ -487,8 +584,7 @@ public class JsObject : ITraceable
 
         if (!Extensible) return false;
 
-        _symbolProperties ??= new Dictionary<long, JsPropertyDescriptor>();
-        _symbolProperties[symbolId] = descriptor;
+        WriteSymbol(AppendSymbolSlot(), symbolId, descriptor);
         BarrierIfObject(descriptor.Value);
         if (descriptor.IsAccessor)
         {
@@ -500,18 +596,26 @@ public class JsObject : ITraceable
 
     public bool TryGetOwnSymbolProperty(long symbolId, out JsPropertyDescriptor descriptor)
     {
-        if (_symbolProperties is not null && _symbolProperties.TryGetValue(symbolId, out descriptor))
+        if (TryFindSymbol(symbolId, out var index))
+        {
+            descriptor = ReadSymbol(index);
             return true;
+        }
+
         descriptor = default;
         return false;
     }
 
     public IEnumerable<KeyValuePair<long, JsPropertyDescriptor>> EnumerateOwnSymbolProperties()
     {
-        if (_symbolProperties is null)
-            yield break;
-        foreach (var pair in _symbolProperties)
-            yield return pair;
+        if (_symbolProperties is null) yield break;
+        for (var i = 0; i < _symbolCount; i++)
+        {
+            if ((_symbolProperties[i].Flags & PropertyFlags.Present) != 0)
+            {
+                yield return new KeyValuePair<long, JsPropertyDescriptor>(_symbolProperties[i].Key, ReadSymbol(i));
+            }
+        }
     }
 
     public bool TryGetSymbolProperty(long symbolId, Func<ObjectHandle, JsObject> prototypeResolver, out JsPropertyDescriptor descriptor)
@@ -526,10 +630,13 @@ public class JsObject : ITraceable
 
     public bool DeleteSymbolProperty(long symbolId)
     {
-        if (_symbolProperties is null) return false;
-        if (_symbolProperties.TryGetValue(symbolId, out var existing) && !existing.Configurable)
-            return false;
-        return _symbolProperties.Remove(symbolId);
+        if (!TryFindSymbol(symbolId, out var index)) return false;
+        if (!ReadSymbol(index).Configurable) return false;
+
+        _symbolProperties![index].Flags = PropertyFlags.None;
+        _symbolProperties[index].Value = JsValue.Undefined;
+        _accessors?.Remove(AccessorKeyForSymbol(index));
+        return true;
     }
 
     // Full property lookup: own + prototype chain walk.
@@ -606,10 +713,20 @@ public class JsObject : ITraceable
         // [Symbol.iterator] method. Omitting them let the GC reclaim the target
         // (a generator's @@iterator function, say) and surfaced as a "Stale heap
         // handle." on the next for-of over that object.
-        if (_symbolProperties is not null)
+        for (var i = 0; i < _symbolCount; i++)
         {
-            foreach (var pair in _symbolProperties)
-                TraceDescriptor(tracer, pair.Value);
+            var flags = _symbolProperties![i].Flags;
+            if ((flags & PropertyFlags.Present) == 0) continue;
+            if ((flags & PropertyFlags.Accessor) != 0)
+            {
+                var accessor = _accessors![AccessorKeyForSymbol(i)];
+                if (accessor.Get.Tag == JsValueTag.Object) tracer.Trace(accessor.Get.AsObjectHandle());
+                if (accessor.Set.Tag == JsValueTag.Object) tracer.Trace(accessor.Set.AsObjectHandle());
+            }
+            else if (_symbolProperties[i].Value.Tag == JsValueTag.Object)
+            {
+                tracer.Trace(_symbolProperties[i].Value.AsObjectHandle());
+            }
         }
     }
 
