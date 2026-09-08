@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Cache;
@@ -488,6 +488,14 @@ namespace FenBrowser.Host
             string lastPublishedCursor = null;
             string lastPublishedHref = null;
             bool hasFrameViewport = false;
+            // The navigation in flight, if any. A navigation is not awaited by
+            // the message loop: the broker asks for a frame roughly every 33ms
+            // while a page loads, and those requests are what put the first
+            // paint on screen. Awaiting here left them unread in the pipe until
+            // the load finished, so the window stayed blank for the whole load
+            // - 5.5s on google.com against 0.9s for the same engine in-process.
+            // Navigations still run one at a time by chaining onto this task.
+            Task pendingNavigation = Task.CompletedTask;
             float lastFrameViewportWidth = 1280f;
             float lastFrameViewportHeight = 720f;
             float lastFrameScrollY = 0f;
@@ -1114,30 +1122,24 @@ namespace FenBrowser.Host
                     {
                         var payload = RendererIpc.DeserializePayload<RendererNavigatePayload>(envelope);
                         var url = payload?.Url ?? string.Empty;
-                        correlationBinder.BeginNavigation(payload?.NavigationCorrelationId);
-                        if (!string.IsNullOrWhiteSpace(url))
+                        var navigationCorrelationId = payload?.NavigationCorrelationId;
+                        var navigateIsUserInput = payload?.IsUserInput ?? false;
+                        var navigateCorrelation = envelope.CorrelationId;
+                        if (payload != null && payload.ViewportWidth > 1f && payload.ViewportHeight > 1f)
                         {
-                            if (payload.ViewportWidth > 1f && payload.ViewportHeight > 1f)
-                            {
-                                browser.UpdateViewportHint(payload.ViewportWidth, payload.ViewportHeight);
-                            }
-
-                            if (payload.IsUserInput)
-                                await browser.NavigateUserInputAsync(url).ConfigureAwait(false);
-                            else
-                                await browser.NavigateAsync(url).ConfigureAwait(false);
+                            browser.UpdateViewportHint(payload.ViewportWidth, payload.ViewportHeight);
                         }
 
-                        // The envelope's navigation has been initiated: a later
-                        // engine navigation started inside the child (script,
-                        // input) binds no correlation.
-                        correlationBinder.EndNavigation();
-                        SendRendererEnvelope(writer, new RendererIpcEnvelope
-                        {
-                            Type = RendererIpcMessageType.Ack.ToString(),
-                            TabId = tabId,
-                            CorrelationId = envelope.CorrelationId
-                        });
+                        pendingNavigation = RunChildNavigationAsync(
+                            pendingNavigation,
+                            browser,
+                            correlationBinder,
+                            writer,
+                            tabId,
+                            url,
+                            navigateIsUserInput,
+                            navigationCorrelationId,
+                            navigateCorrelation);
                         continue;
                     }
 
@@ -1874,6 +1876,62 @@ namespace FenBrowser.Host
             catch
             {
                 return false;
+            }
+        }
+
+        // Runs one navigation without holding up the child's message loop, and
+        // after whatever navigation preceded it so two never overlap. The Ack
+        // still reports real completion; the broker uses it only for latency,
+        // so reporting it late costs nothing and reporting it early would lie.
+        private static async Task RunChildNavigationAsync(
+            Task previous,
+            FenBrowser.FenEngine.Rendering.BrowserHost browser,
+            RendererNavigationCorrelationBinder correlationBinder,
+            StreamWriter writer,
+            int tabId,
+            string url,
+            bool isUserInput,
+            string navigationCorrelationId,
+            string ackCorrelationId)
+        {
+            try
+            {
+                await previous.ConfigureAwait(false);
+            }
+            catch
+            {
+                // A failed navigation must not stop the one after it.
+            }
+
+            try
+            {
+                correlationBinder.BeginNavigation(navigationCorrelationId);
+                if (!string.IsNullOrWhiteSpace(url))
+                {
+                    if (isUserInput)
+                        await browser.NavigateUserInputAsync(url).ConfigureAwait(false);
+                    else
+                        await browser.NavigateAsync(url).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(
+                    LogSubsystem.ProcessIsolation,
+                    LogSeverity.Warn,
+                    $"[RendererChild] Navigation to '{url}' failed: {ex.Message}");
+            }
+            finally
+            {
+                // The envelope's navigation is done: a later engine navigation
+                // started inside the child (script, input) binds no correlation.
+                correlationBinder.EndNavigation();
+                SendRendererEnvelope(writer, new RendererIpcEnvelope
+                {
+                    Type = RendererIpcMessageType.Ack.ToString(),
+                    TabId = tabId,
+                    CorrelationId = ackCorrelationId
+                });
             }
         }
 
