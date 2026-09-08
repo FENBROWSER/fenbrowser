@@ -2063,8 +2063,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
             }
 
-            if (function.HasOwnArgumentsObject &&
-                !function.ParameterNames.Contains("arguments", StringComparer.Ordinal))
+            if (function.HasOwnArgumentsObject && !function.ArgumentsShadowedByParameter)
             {
                 var argumentsObject = CreateArgumentsObject(args, function.UsesRestrictedArgumentsObject, callee);
                 _ = frame.Environment.CreateAndInitializeBinding("arguments", argumentsObject, deletable: false);
@@ -3892,15 +3891,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // ECMA-262 10.4.4.6/.7 step: %arguments%[@@iterator] is the same function
         // object as %Array.prototype.values%, so spread/for-of over arguments works.
-        var arrayProto = _heap.GetObject(EnsureArrayPrototype());
-        if (arrayProto.TryGetOwnProperty("values", out var argValuesDesc))
+        if (TryGetArrayValuesIntrinsic(out var argValues))
         {
             var iterDescriptor = new JsPropertyDescriptor(
-                argValuesDesc.Value,
+                argValues,
                 Writable: true,
                 Enumerable: false,
                 Configurable: true);
-            _ = obj.DefineOwnSymbolProperty(GetWellKnownSymbolId("iterator"), iterDescriptor);
+            _ = obj.DefineOwnSymbolProperty(IteratorSymbolId, iterDescriptor);
             WriteDescriptorBarrier(handle, iterDescriptor);
         }
 
@@ -3929,6 +3927,35 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         return JsValue.FromObject(handle);
+    }
+
+    // %Array.prototype.values% and @@iterator, each resolved once. The
+    // specification hands an arguments object the intrinsic, not whatever
+    // Array.prototype.values holds when the call is made, so reading the
+    // property per call was the wrong function after a script replaced it -- and
+    // it was about a quarter of what building an arguments object cost. Both
+    // are reachable from the global object, and the handle field is traced with
+    // the other cached intrinsics.
+    private ObjectHandle? _arrayValuesIntrinsicHandle;
+    private long _iteratorSymbolIdCache;
+
+    private long IteratorSymbolId =>
+        _iteratorSymbolIdCache != 0
+            ? _iteratorSymbolIdCache
+            : _iteratorSymbolIdCache = GetWellKnownSymbolId("iterator");
+
+    private bool TryGetArrayValuesIntrinsic(out JsValue values)
+    {
+        // Materialising Array.prototype records the intrinsic on the way past.
+        _ = EnsureArrayPrototype();
+        if (_arrayValuesIntrinsicHandle is { } cached)
+        {
+            values = JsValue.FromObject(cached);
+            return true;
+        }
+
+        values = JsValue.Undefined;
+        return false;
     }
 
     private JsValue ResolveRestrictedFunctionThrower(JsFunctionObject? callee)
@@ -16199,6 +16226,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // for-of over the iterator itself works.
         var valuesHandle = DefineNativePrototypeMethod(prototypeHandle, prototype, "values",
             (t, a) => { _ = a; return CreateArrayIterator(t, ArrayIteratorKind.Value); });
+        // Taken here rather than read back later: an arguments object is handed
+        // the intrinsic, and by the time one is built a script may already have
+        // replaced the property this came from.
+        _arrayValuesIntrinsicHandle = valuesHandle;
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "keys",
             (t, a) => { _ = a; return CreateArrayIterator(t, ArrayIteratorKind.Key); });
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "entries",

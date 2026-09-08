@@ -23,6 +23,14 @@ public sealed class BytecodeFunction
     // index it directly.
     private Instruction[]? _instructionArray;
 
+    // Whether a formal parameter named "arguments" shadows the arguments
+    // object. Fixed by the parameter list, so it is settled once instead of
+    // scanning the list on every call.
+    private bool? _argumentsShadowedByParameter;
+
+    internal bool ArgumentsShadowedByParameter =>
+        _argumentsShadowedByParameter ??= ParameterNames.Contains("arguments", StringComparer.Ordinal);
+
     internal Instruction[] InstructionArray =>
         _instructionArray ??= Instructions as Instruction[] ?? System.Linq.Enumerable.ToArray(Instructions);
 
