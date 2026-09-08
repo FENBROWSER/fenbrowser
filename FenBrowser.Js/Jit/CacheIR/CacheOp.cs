@@ -1,4 +1,4 @@
-namespace FenBrowser.Js.Jit.CacheIR;
+﻿namespace FenBrowser.Js.Jit.CacheIR;
 
 /// <summary>
 /// Operations a cache program is built from. Every program is a sequence of
@@ -17,6 +17,22 @@ internal enum CacheOp : byte
 
     /// <summary>Reads the own data property at a known slot and terminates.</summary>
     LoadSlotResult,
+
+    /// <summary>Fails unless the receiver routes writes through itself.</summary>
+    GuardNotProxy,
+
+    /// <summary>
+    /// Fails on an array. Emitted only for the key "length", whose write on an
+    /// array may delete elements and so can never be a slot store.
+    /// </summary>
+    GuardNotArray,
+
+    /// <summary>
+    /// Yields the writable own data slot to store into, and terminates. The
+    /// write itself belongs to the caller: barriers and the heap are not this
+    /// layer's concern.
+    /// </summary>
+    StoreSlotResult,
 }
 
 internal enum CacheRunResult : byte

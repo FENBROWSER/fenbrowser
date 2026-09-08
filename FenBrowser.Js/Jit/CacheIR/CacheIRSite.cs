@@ -55,6 +55,24 @@ internal sealed class CacheIRSite
         return false;
     }
 
+    internal bool TryResolveStore(JsObject receiver, string key, out int slot)
+    {
+        if (receiver is ProxyObject)
+        {
+            slot = -1;
+            return false;
+        }
+
+        var shape = receiver.CurrentShape;
+        if (_p0 is { } p0 && p0.TryHitStore(receiver, shape, key, out slot)) return true;
+        if (_p1 is { } p1 && p1.TryHitStore(receiver, shape, key, out slot)) return true;
+        if (_p2 is { } p2 && p2.TryHitStore(receiver, shape, key, out slot)) return true;
+        if (_p3 is { } p3 && p3.TryHitStore(receiver, shape, key, out slot)) return true;
+
+        slot = -1;
+        return false;
+    }
+
     /// <summary>True when some attached program already covers this receiver.</summary>
     internal bool Covers(Shape shape, string? key) =>
         (_p0 is { } a && a.Guards(shape, key)) ||

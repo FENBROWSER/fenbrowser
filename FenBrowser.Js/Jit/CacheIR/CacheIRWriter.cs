@@ -1,4 +1,4 @@
-using FenBrowser.Js.Objects;
+﻿using FenBrowser.Js.Objects;
 
 namespace FenBrowser.Js.Jit.CacheIR;
 
@@ -30,6 +30,25 @@ internal sealed class CacheIRWriter
         _ops.Add(CacheOp.GuardKey);
         _args.Add(_keys.Count);
         _keys.Add(key);
+    }
+
+    internal void GuardNotProxy()
+    {
+        _ops.Add(CacheOp.GuardNotProxy);
+        _args.Add(0);
+    }
+
+    internal void GuardNotArray()
+    {
+        _ops.Add(CacheOp.GuardNotArray);
+        _args.Add(0);
+    }
+
+    internal void StoreSlotResult(int slot)
+    {
+        if (slot < 0) throw new ArgumentOutOfRangeException(nameof(slot));
+        _ops.Add(CacheOp.StoreSlotResult);
+        _args.Add(slot);
     }
 
     internal void LoadSlotResult(int slot)

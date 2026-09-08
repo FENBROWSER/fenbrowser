@@ -579,6 +579,10 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.LoadPropertyMiss), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiSetPropByName = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.SetPropByNameForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiTryStorePropertyCached = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.TryStorePropertyCached), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiStorePropertyMiss = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.StorePropertyMiss), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiSetPropByNameDirect = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.SetPropByNameForJit_Direct), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiDeletePropByName = typeof(BytecodeInterpreter)
@@ -1503,9 +1507,16 @@ public static class JitCompiler
                 {
                     var propConst = function.PropertyNames[ins.B];
                     var icConst = EnsureStoreIC(function, ip);
-                    body.Add(Expression.Call(interp, MiSetPropByNameDirect, frame,
-                        Expression.Constant(ins.A), Expression.Constant(propConst),
-                        Expression.Constant(ins.C), Expression.Constant(icConst)));
+                    var recvConst = Expression.Constant(ins.A);
+                    var nameConst = Expression.Constant(propConst);
+                    var valueConst = Expression.Constant(ins.C);
+                    var siteConst = Expression.Constant(icConst);
+
+                    body.Add(Expression.IfThen(
+                        Expression.Not(Expression.Call(interp, MiTryStorePropertyCached, frame,
+                            recvConst, nameConst, valueConst, siteConst)),
+                        Expression.Call(interp, MiStorePropertyMiss, frame,
+                            recvConst, nameConst, valueConst, siteConst)));
                 }
                 return true;
             case OpCode.DeletePropByName:
@@ -1967,15 +1978,15 @@ public static class JitCompiler
         return sites[icOffset] ??= new FenBrowser.Js.Jit.CacheIR.CacheIRSite();
     }
 
-    private static PolymorphicInlineCache EnsureStoreIC(BytecodeFunction function, int icOffset)
+    private static FenBrowser.Js.Jit.CacheIR.CacheIRSite EnsureStoreIC(BytecodeFunction function, int icOffset)
     {
-        var caches = function.EnsureStoreICs();
-        if ((uint)icOffset >= (uint)caches.Length)
+        var sites = function.EnsureStoreCacheSites();
+        if ((uint)icOffset >= (uint)sites.Length)
         {
-            return new PolymorphicInlineCache();
+            return new FenBrowser.Js.Jit.CacheIR.CacheIRSite();
         }
 
-        return caches[icOffset] ??= new PolymorphicInlineCache();
+        return sites[icOffset] ??= new FenBrowser.Js.Jit.CacheIR.CacheIRSite();
     }
 }
 #endif // !PUBLISH_AOT

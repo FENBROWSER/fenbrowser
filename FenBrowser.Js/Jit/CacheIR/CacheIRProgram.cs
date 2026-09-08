@@ -28,6 +28,8 @@ internal sealed class CacheIRProgram
     private Shape? _guardedShape;
     private readonly string? _guardedKey;
     private readonly int _resultSlot;
+    private readonly bool _isStore;
+    private readonly bool _guardsArray;
 
     /// <summary>Set when a guarded slot stopped being a plain data property.</summary>
     internal bool IsStale { get; private set; }
@@ -40,15 +42,29 @@ internal sealed class CacheIRProgram
         _keys = keys;
         _resultSlot = -1;
 
-        if (ops.Length is 3 or 4 &&
-            ops[0] == CacheOp.GuardNotExotic &&
+        if (ops.Length >= 3 &&
+            ops[0] is CacheOp.GuardNotExotic or CacheOp.GuardNotProxy &&
             ops[1] == CacheOp.GuardShape &&
-            ops[^1] == CacheOp.LoadSlotResult &&
-            (ops.Length == 3 || ops[2] == CacheOp.GuardKey))
+            ops[^1] is CacheOp.LoadSlotResult or CacheOp.StoreSlotResult)
         {
-            _guardedShape = shapes[args[1]];
-            _guardedKey = ops.Length == 4 ? keys[args[2]] : null;
-            _resultSlot = args[^1];
+            var wellFormed = true;
+            for (var i = 2; i < ops.Length - 1; i++)
+            {
+                if (ops[i] == CacheOp.GuardKey) _guardedKey = keys[args[i]];
+                else if (ops[i] == CacheOp.GuardNotArray) _guardsArray = true;
+                else wellFormed = false;
+            }
+
+            if (wellFormed)
+            {
+                _guardedShape = shapes[args[1]];
+                _resultSlot = args[^1];
+                _isStore = ops[^1] == CacheOp.StoreSlotResult;
+            }
+            else
+            {
+                _guardedKey = null;
+            }
         }
     }
 
@@ -71,10 +87,40 @@ internal sealed class CacheIRProgram
     /// established that the receiver is not exotic, so a hit is one reference
     /// compare, an optional key compare and a slot read.
     /// </summary>
+    /// <summary>
+    /// The store counterpart of <see cref="TryHit"/>: yields the slot to write,
+    /// leaving the write and its barriers to the caller.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryHitStore(JsObject receiver, Shape shape, string key, out int slot)
+    {
+        slot = _resultSlot;
+        if (!_isStore ||
+            !ReferenceEquals(_guardedShape, shape) ||
+            (_guardsArray && receiver is ArrayObject) ||
+            (_guardedKey is { } guardedKey && !string.Equals(key, guardedKey, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        var properties = receiver.PropertyArray;
+        if ((uint)slot < (uint)properties.Length &&
+            properties[slot] is { } descriptor &&
+            !descriptor.IsAccessor &&
+            descriptor.Writable)
+        {
+            return true;
+        }
+
+        MarkStale();
+        return false;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryHit(JsObject receiver, Shape shape, string key, out JsValue result)
     {
-        if (!ReferenceEquals(_guardedShape, shape) ||
+        if (_isStore ||
+            !ReferenceEquals(_guardedShape, shape) ||
             (_guardedKey is { } guardedKey && !string.Equals(key, guardedKey, StringComparison.Ordinal)))
         {
             result = JsValue.Undefined;
@@ -110,6 +156,14 @@ internal sealed class CacheIRProgram
             {
                 case CacheOp.GuardNotExotic:
                     if (receiver is ProxyObject or ModuleNamespaceObject) goto miss;
+                    break;
+
+                case CacheOp.GuardNotProxy:
+                    if (receiver is ProxyObject) goto miss;
+                    break;
+
+                case CacheOp.GuardNotArray:
+                    if (receiver is ArrayObject) goto miss;
                     break;
 
                 case CacheOp.GuardShape:

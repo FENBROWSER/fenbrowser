@@ -23236,8 +23236,30 @@ fallbackArraySpecies:
 
     // Audit doc �3.1 first slice � direct-IC variant. See
     // GetPropByNameForJit_Direct for the contract.
-    internal void SetPropByNameForJit_Direct(
-        InterpreterFrame frame, int receiverReg, string prop, int valueReg, PolymorphicInlineCache ic)
+    // Split for the same reason as the property load: held together with the
+    // miss path this was one method the inliner would never take.
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    internal bool TryStorePropertyCached(
+        InterpreterFrame frame, int receiverReg, string prop, int valueReg,
+        FenBrowser.Js.Jit.CacheIR.CacheIRSite site)
+    {
+        var receiverValue = frame.Registers[receiverReg];
+        if (receiverValue.Tag != JsValueTag.Object) return false;
+
+        var handle = receiverValue.AsObjectHandle();
+        var obj = _heap.GetObject(handle);
+        if (obj is ProxyObject) return false;
+        if (site.First is not { } program) return false;
+        if (!program.TryHitStore(obj, obj.CurrentShape, prop, out var slot)) return false;
+
+        CommitCachedStore(obj, handle, slot, prop, frame.Registers[valueReg]);
+        return true;
+    }
+
+    internal void StorePropertyMiss(
+        InterpreterFrame frame, int receiverReg, string prop, int valueReg,
+        FenBrowser.Js.Jit.CacheIR.CacheIRSite site)
     {
         var receiverValue = frame.Registers[receiverReg];
         var value = frame.Registers[valueReg];
@@ -23252,21 +23274,12 @@ fallbackArraySpecies:
         var ownerHandle = ResolveObjectHandle(receiverValue);
         if (receiverValue.Tag == JsValueTag.Object)
         {
-            var obj = _heap.GetObject(receiverValue.AsObjectHandle());
-            if (obj is not ProxyObject && ic.TryGet(obj, prop, out var slot) &&
-                obj.PropertyArray[slot] is { } desc)
+            // The inlined guard tries one program; finish the site's scan here.
+            var receiverObject = _heap.GetObject(receiverValue.AsObjectHandle());
+            if (site.TryResolveStore(receiverObject, prop, out var slot))
             {
-                if (desc.IsAccessor || !desc.Writable)
-                {
-                    ic.InvalidateShape(obj.CurrentShape);
-                }
-                else
-                {
-                    var updated = desc with { Value = value };
-                    obj.PropertyArray[slot] = updated;
-                    WriteDescriptorBarrier(ownerHandle, updated);
-                    return;
-                }
+                CommitCachedStore(receiverObject, ownerHandle, slot, prop, value);
+                return;
             }
         }
 
@@ -23283,13 +23296,11 @@ fallbackArraySpecies:
             if (receiverValue.Tag == JsValueTag.Object)
             {
                 var obj = _heap.GetObject(receiverValue.AsObjectHandle());
-                if (obj is not ProxyObject &&
-                    obj.CurrentShape.TryGetSlot(prop, out var freshSlot) &&
-                    obj.PropertyArray[freshSlot] is { } freshDesc &&
-                    !freshDesc.IsAccessor &&
-                    freshDesc.Writable)
+                if (!site.IsMegamorphic && !site.Covers(obj.CurrentShape, prop))
                 {
-                    ic.Add(obj.CurrentShape, prop, freshSlot);
+                    var program = FenBrowser.Js.Jit.CacheIR.Attachers.StorePropertyAttacher.TryAttach(
+                        obj, prop, keyVariesAtSite: false);
+                    if (program is not null) site.Attach(program);
                 }
             }
         }
@@ -23629,6 +23640,17 @@ fallbackArraySpecies:
             index,
             frame.Registers[valueReg],
             frame.Function.IsStrictMode);
+
+
+    internal void SetPropByNameForJit_Direct(
+        InterpreterFrame frame, int receiverReg, string prop, int valueReg,
+        FenBrowser.Js.Jit.CacheIR.CacheIRSite site)
+    {
+        if (!TryStorePropertyCached(frame, receiverReg, prop, valueReg, site))
+        {
+            StorePropertyMiss(frame, receiverReg, prop, valueReg, site);
+        }
+    }
 
     internal void DeleteElemForJit(InterpreterFrame frame, int destReg, int receiverReg, int keyReg)
     {

@@ -50,42 +50,46 @@ public sealed partial class BytecodeInterpreter
     // invalidated (made non-writable, deleted, or turned into an accessor).
     private bool TryStoreIC(BytecodeFunction fn, int offset, ObjectHandle ownerHandle, JsValue receiver, string key, JsValue value)
     {
-        if (receiver.Tag != JsValueTag.Object || fn.StoreICs is null ||
-            (uint)offset >= (uint)fn.StoreICs.Length || fn.StoreICs[offset] is not { } ic)
+        var sites = fn.StoreCacheSites;
+        if (receiver.Tag != JsValueTag.Object || sites is null ||
+            (uint)offset >= (uint)sites.Length || sites[offset] is not { } site)
             return false;
 
         var obj = _heap.GetObject(receiver.AsObjectHandle());
-        if (obj is ProxyObject) return false;
-        // ECMA-262 10.4.2.4: writing an Array's "length" is an exotic operation that
-        // may delete out-of-range elements. Never short-circuit it through the IC.
-        if (obj is ArrayObject && key == "length") return false;
-        if (!ic.TryGet(obj, key, out var slot) || obj.PropertyArray[slot] is not { } desc)
-            return false;
-        if (desc.IsAccessor || !desc.Writable)
-        {
-            ic.InvalidateShape(obj.CurrentShape);
-            return false;
-        }
+        if (!site.TryResolveStore(obj, key, out var slot)) return false;
 
-        var updated = desc with { Value = value };
+        CommitCachedStore(obj, ownerHandle, slot, key, value);
+        return true;
+    }
+
+    /// <summary>
+    /// Performs a store the cache has already proved safe. The write, its
+    /// barrier and the prototype-assignment bookkeeping live here rather than in
+    /// the cache program, which knows nothing of the heap.
+    /// </summary>
+    private void CommitCachedStore(JsObject obj, ObjectHandle ownerHandle, int slot, string key, JsValue value)
+    {
+        var updated = obj.PropertyArray[slot]!.Value with { Value = value };
         obj.PropertyArray[slot] = updated;
         WriteDescriptorBarrier(ownerHandle, updated);
         MarkFunctionInstancePrototypeAssignment(obj, key, value);
-        return true;
     }
 
     private void PopulateStoreIC(BytecodeFunction fn, int offset, JsValue receiver, string key)
     {
         if (receiver.Tag != JsValueTag.Object) return;
-        var obj = _heap.GetObject(receiver.AsObjectHandle());
-        if (obj is ProxyObject) return;
-        if (obj is ArrayObject && key == "length") return;
-        if (!obj.CurrentShape.TryGetSlot(key, out var slot) || obj.PropertyArray[slot] is not { } desc) return;
-        if (desc.IsAccessor || !desc.Writable) return;
 
-        var caches = fn.EnsureStoreICs();
-        if ((uint)offset >= (uint)caches.Length) return;
-        (caches[offset] ??= new PolymorphicInlineCache()).Add(obj.CurrentShape, key, slot);
+        var sites = fn.EnsureStoreCacheSites();
+        if ((uint)offset >= (uint)sites.Length) return;
+
+        var site = sites[offset] ??= new CacheIRSite();
+        if (site.IsMegamorphic) return;
+
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (site.Covers(obj.CurrentShape, key)) return;
+
+        var program = StorePropertyAttacher.TryAttach(obj, key, keyVariesAtSite: false);
+        if (program is not null) site.Attach(program);
     }
 
     // Tier 4 #20 GetElem IC: same shape/key/slot lookup as the LoadIC, but
