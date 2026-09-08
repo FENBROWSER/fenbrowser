@@ -3,6 +3,7 @@ using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Environments;
+using FenBrowser.Js.Diagnostics;
 
 namespace FenBrowser.Js.Interpreter;
 
@@ -560,7 +561,6 @@ public sealed partial class BytecodeInterpreter
     }
 
     // ECMA-262 native [[Call]], with the root pinning a native body needs.
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private JsValue CallNativeFunctionBody(NativeFunctionObject native, JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
         // ECMA-262 native function calls execute in C# without a bytecode
@@ -571,13 +571,8 @@ public sealed partial class BytecodeInterpreter
         // CreateTypeError, AllocateObject), object-tagged values on the
         // C# stack could be reclaimed and resurface as "Stale heap handle"
         // on the next access. Pin them for the duration of the call.
-        // Rooting a call is not free, and on a bundle that makes millions of
-        // them the bookkeeping can cost more than the bodies it protects.
-        // Time the whole block and subtract the body: what is left is this
-        // machinery's own cost, and unlike the body it never re-enters JS,
-        // so the total sums exactly rather than nesting.
-        var blockStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        var nativeBodyTicks = 0L;
+        if (NativeCallStats.Enabled) return CallNativeFunctionBodyMeasured(native, value, args, thisValue);
+
         var rootMark = _heap.RootCount;
         try
         {
@@ -587,6 +582,44 @@ public sealed partial class BytecodeInterpreter
             // Fresh objects allocated inside the native body may live only
             // in C# locals across nested safe-point collections; the heap's
             // scoped allocation pin covers exactly this window.
+            _heap.BeginNativeExecution();
+            try
+            {
+                return native.Call(thisValue, args);
+            }
+            finally
+            {
+                _heap.EndNativeExecution();
+            }
+        }
+        finally
+        {
+            // Audit JSRT-002: pop THIS call's pins on every path. A thrown
+            // JsThrownException must NOT re-anchor the window above fresh pins
+            // (that made this finally a no-op and leaked thisValue+args roots on
+            // every throwing native call). Ownership of the thrown value passes
+            // to ThrowOrHandle, which pins it before any allocation can run.
+            _heap.PopRootsTo(rootMark);
+        }
+    }
+
+    // The same call, with the per-builtin accounting the diagnostics line
+    // reports. Two reads of the performance counter and a dictionary keyed by
+    // the builtin's name cost more than a short builtin's whole body, so the
+    // measurement is a separate path a page opts into rather than a tax every
+    // page pays. Timing the block and subtracting the body leaves the rooting
+    // machinery's own cost, which never re-enters JS and so sums exactly.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private JsValue CallNativeFunctionBodyMeasured(NativeFunctionObject native, JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
+    {
+        var blockStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        var nativeBodyTicks = 0L;
+        var rootMark = _heap.RootCount;
+        try
+        {
+            PinIfObject(value);
+            PinIfObject(thisValue);
+            for (var i = 0; i < args.Count; i++) PinIfObject(args[i]);
             _heap.BeginNativeExecution();
             var nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();
             try
@@ -602,16 +635,12 @@ public sealed partial class BytecodeInterpreter
         }
         finally
         {
-            // Audit JSRT-002: pop THIS call's pins on every path. A thrown
-            // JsThrownException must NOT re-anchor the window above fresh pins
-            // (that made this finally a no-op and leaked thisValue+args roots on
-            // every throwing native call). Ownership of the thrown value passes
-            // to ThrowOrHandle, which pins it before any allocation can run.
             _heap.PopRootsTo(rootMark);
             NoteNativeCallRooting(
                 System.Diagnostics.Stopwatch.GetTimestamp() - blockStart - nativeBodyTicks);
         }
     }
+
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private JsValue ThrowCallTargetIsNullish(JsValue value, in CallArgs args, JsValue thisValue)
     {

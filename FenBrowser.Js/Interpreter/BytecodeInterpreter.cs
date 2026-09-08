@@ -1455,6 +1455,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     /// </summary>
     public string DescribeNativeCallCounts(int top = 8)
     {
+        if (!FenBrowser.Js.Diagnostics.NativeCallStats.Enabled) return "off(FEN_FENJS_NATIVE_STATS=1)";
         if (_nativeCallCost.Count == 0) return "none";
         var freq = System.Diagnostics.Stopwatch.Frequency;
         var rows = new List<(string Name, long Ticks, long Calls)>();
