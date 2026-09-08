@@ -435,6 +435,10 @@ public class BrowserIntegration : IDisposable
                 EngineLogBridge.Info(
                     "[BrowserIntegration] Released outgoing document CSS caches; reusable parse/font caches retained",
                     LogCategory.General);
+
+                // Clear favicon on navigation start so spinner shows cleanly (like Edge)
+                FaviconChanged?.Invoke(null);
+
                 RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserHost.LoadingChanged");
             }
             LoadingChanged?.Invoke(loading);
