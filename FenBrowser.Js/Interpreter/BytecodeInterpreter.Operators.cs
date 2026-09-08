@@ -259,6 +259,16 @@ public sealed partial class BytecodeInterpreter
     }
 
     // Applies bitwise AND: ToNumeric both, BigInt native, else ToInt32.
+    // ECMA-262 defines every one of these to produce a value already inside the
+    // int32 range, so the result is tagged Int32 rather than Number. That tag is
+    // not cosmetic: the compiled fast path for a bitwise operator is guarded on
+    // both operands being Int32, and a chain like `(h ^ y) + (h & 1023)` feeds
+    // each result straight into the next operator. Handing back Number made the
+    // second operator in every chain miss its fast path and call an interpreter
+    // helper instead - 12% of everything the captcha page executed was compiled
+    // code bailing out this way, almost all of it on these operators. The
+    // literal operands were already tagged Int32 for the same reason; the
+    // operators themselves were not.
     private JsValue BitwiseAndOp(JsValue left, JsValue right)
     {
         var lnum = ToNumericValue(left);
@@ -267,7 +277,7 @@ public sealed partial class BytecodeInterpreter
             return JsValue.FromBigInt(lnum.AsBigInt() & rnum.AsBigInt());
         if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
             throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
-        return JsValue.FromNumber(MathHelpers.ToInt32(ToNumber(lnum)) & MathHelpers.ToInt32(ToNumber(rnum)));
+        return JsValue.FromInt32(MathHelpers.ToInt32(ToNumber(lnum)) & MathHelpers.ToInt32(ToNumber(rnum)));
     }
 
     // Applies bitwise OR.
@@ -279,7 +289,7 @@ public sealed partial class BytecodeInterpreter
             return JsValue.FromBigInt(lnum.AsBigInt() | rnum.AsBigInt());
         if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
             throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
-        return JsValue.FromNumber(MathHelpers.ToInt32(ToNumber(lnum)) | MathHelpers.ToInt32(ToNumber(rnum)));
+        return JsValue.FromInt32(MathHelpers.ToInt32(ToNumber(lnum)) | MathHelpers.ToInt32(ToNumber(rnum)));
     }
 
     // Applies bitwise XOR.
@@ -291,7 +301,7 @@ public sealed partial class BytecodeInterpreter
             return JsValue.FromBigInt(lnum.AsBigInt() ^ rnum.AsBigInt());
         if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
             throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
-        return JsValue.FromNumber(MathHelpers.ToInt32(ToNumber(lnum)) ^ MathHelpers.ToInt32(ToNumber(rnum)));
+        return JsValue.FromInt32(MathHelpers.ToInt32(ToNumber(lnum)) ^ MathHelpers.ToInt32(ToNumber(rnum)));
     }
 
     // Applies bitwise NOT: ToNumeric, BigInt ~, else ~ToInt32.
@@ -300,7 +310,7 @@ public sealed partial class BytecodeInterpreter
         var numeric = ToNumericValue(value);
         if (numeric.Tag == JsValueTag.BigInt)
             return JsValue.FromBigInt(~numeric.AsBigInt());
-        return JsValue.FromNumber(~MathHelpers.ToInt32(ToNumber(numeric)));
+        return JsValue.FromInt32(~MathHelpers.ToInt32(ToNumber(numeric)));
     }
 
     // Applies left shift.
@@ -314,7 +324,7 @@ public sealed partial class BytecodeInterpreter
             throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
         var sl = MathHelpers.ToInt32(ToNumber(lnum));
         var sc = (int)(MathHelpers.ToUint32(ToNumber(rnum)) & 0x1F);
-        return JsValue.FromNumber(sl << sc);
+        return JsValue.FromInt32(sl << sc);
     }
 
     // Applies signed right shift.
@@ -328,7 +338,7 @@ public sealed partial class BytecodeInterpreter
             throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
         var sr = MathHelpers.ToInt32(ToNumber(lnum));
         var sc = (int)(MathHelpers.ToUint32(ToNumber(rnum)) & 0x1F);
-        return JsValue.FromNumber(sr >> sc);
+        return JsValue.FromInt32(sr >> sc);
     }
 
     // Applies unsigned right shift: BigInt throws TypeError.
@@ -340,7 +350,7 @@ public sealed partial class BytecodeInterpreter
             throw new JsThrownException(CreateTypeError("BigInt does not support unsigned right shift."));
         var u = MathHelpers.ToUint32(ToNumber(lnum));
         var sc = (int)(MathHelpers.ToUint32(ToNumber(rnum)) & 0x1F);
-        return JsValue.FromNumber(u >> sc);
+        return JsValue.FromNumberCompact(u >> sc);
     }
 
     // Applies exponentiation with proper ToNumeric coercion.
