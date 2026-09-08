@@ -1,4 +1,5 @@
-﻿using FenBrowser.Js.Bytecode;
+﻿using System.Runtime.CompilerServices;
+using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Jit.CacheIR;
 using FenBrowser.Js.Jit.CacheIR.Attachers;
@@ -60,6 +61,41 @@ public sealed partial class BytecodeInterpreter
 
         CommitCachedStore(obj, ownerHandle, slot, key, value);
         return true;
+    }
+
+    /// <summary>
+    /// The object a cached load may read from: one that does not route property
+    /// access through a handler. Null for everything else, so a compiled guard
+    /// turns those away on a single test.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal JsObject? CacheableLoadReceiver(JsValue receiver)
+    {
+        if (receiver.Tag != JsValueTag.Object) return null;
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        return obj is ProxyObject or ModuleNamespaceObject ? null : obj;
+    }
+
+    /// <summary>
+    /// The store counterpart. A module namespace refuses every write, which the
+    /// general path already reports, so only a proxy has to be turned away here.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal JsObject? CacheableStoreReceiver(JsValue receiver)
+    {
+        if (receiver.Tag != JsValueTag.Object) return null;
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        return obj is ProxyObject ? null : obj;
+    }
+
+    /// <summary>The barrier a compiled store takes after writing a slot itself.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void CachedStoreBarrier(JsValue receiver, JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(receiver.AsObjectHandle(), value.AsObjectHandle());
+        }
     }
 
     /// <summary>

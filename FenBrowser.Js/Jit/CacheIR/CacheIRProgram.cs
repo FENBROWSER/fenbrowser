@@ -68,6 +68,21 @@ internal sealed class CacheIRProgram
         }
     }
 
+    /// <summary>
+    /// The shape a load program guards, when the program is one a compiled body
+    /// can check for itself: a load, with no key to compare. Null once the
+    /// program has gone stale, so a compiled guard fails closed on the same
+    /// test it already makes.
+    /// </summary>
+    internal Shape? InlineLoadShape => !_isStore && _guardedKey is null ? _guardedShape : null;
+
+    /// <summary>The store counterpart, which also declines the array-length form.</summary>
+    internal Shape? InlineStoreShape =>
+        _isStore && _guardedKey is null && !_guardsArray ? _guardedShape : null;
+
+    /// <summary>The slot a guarded program reads or writes.</summary>
+    internal int ResultSlot => _resultSlot;
+
     internal bool Guards(Shape shape, string? key) =>
         ReferenceEquals(_guardedShape, shape) &&
         (_guardedKey is null || string.Equals(_guardedKey, key, StringComparison.Ordinal));

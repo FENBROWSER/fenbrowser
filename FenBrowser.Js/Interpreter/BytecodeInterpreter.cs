@@ -15681,7 +15681,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return true;
     }
 
-    private void MarkFunctionInstancePrototypeAssignment(JsObject owner, string key, JsValue value)
+    internal void MarkFunctionInstancePrototypeAssignment(JsObject owner, string key, JsValue value)
     {
         if (owner is JsFunctionObject &&
             string.Equals(key, "prototype", StringComparison.Ordinal) &&

@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
@@ -260,5 +260,44 @@ internal static class JsRuntimeBindings
 
     internal static readonly FieldInfo FiPoolSites = typeof(BaselinePool)
         .GetField(nameof(BaselinePool.Sites), BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    // The pieces a compiled body needs to run a cache program's guards itself.
+    // Each is small enough for RyuJIT to inline, which is the whole point of
+    // emitting the guard rather than calling something that performs it.
+    internal static readonly MethodInfo MiCacheableLoadReceiver = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CacheableLoadReceiver), BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly MethodInfo MiCacheableStoreReceiver = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CacheableStoreReceiver), BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly MethodInfo MiCachedStoreBarrier = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CachedStoreBarrier), BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly MethodInfo MiMarkPrototypeAssignment = typeof(BytecodeInterpreter)
+        .GetMethod("MarkFunctionInstancePrototypeAssignment", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly PropertyInfo PiSiteFirst = typeof(FenBrowser.Js.Jit.CacheIR.CacheIRSite)
+        .GetProperty("First", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly PropertyInfo PiInlineLoadShape = typeof(FenBrowser.Js.Jit.CacheIR.CacheIRProgram)
+        .GetProperty("InlineLoadShape", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly PropertyInfo PiInlineStoreShape = typeof(FenBrowser.Js.Jit.CacheIR.CacheIRProgram)
+        .GetProperty("InlineStoreShape", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly PropertyInfo PiResultSlot = typeof(FenBrowser.Js.Jit.CacheIR.CacheIRProgram)
+        .GetProperty("ResultSlot", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly PropertyInfo PiObjectShape = typeof(FenBrowser.Js.Objects.JsObject)
+        .GetProperty("CurrentShape", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly MethodInfo MiTryReadDataSlot = typeof(FenBrowser.Js.Objects.JsObject)
+        .GetMethod("TryReadDataSlot", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly MethodInfo MiIsWritableDataSlot = typeof(FenBrowser.Js.Objects.JsObject)
+        .GetMethod("IsWritableDataSlot", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    internal static readonly MethodInfo MiWriteDataSlot = typeof(FenBrowser.Js.Objects.JsObject)
+        .GetMethod("WriteDataSlot", BindingFlags.Instance | BindingFlags.NonPublic)!;
 }
 #endif

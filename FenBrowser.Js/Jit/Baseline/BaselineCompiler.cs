@@ -1,9 +1,10 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Reflection.Emit;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Jit.CacheIR;
+using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 using static FenBrowser.Js.Jit.Baseline.JsRuntimeBindings;
 using OpCode = FenBrowser.Js.Bytecode.OpCode;
@@ -73,6 +74,7 @@ internal static class BaselineCompiler
         private LocalBuilder _registers = null!, _constants = null!, _namePool = null!, _sitePool = null!;
         private LocalBuilder _slotBindings = null!, _resumeIp = null!, _returnValue = null!;
         private LocalBuilder _lhs = null!, _rhs = null!, _environment = null!, _slot = null!;
+        private LocalBuilder _receiver = null!, _program = null!, _shape = null!, _cached = null!;
 
         private Label[] _labels = [];
         private Label _dispatch, _exit;
@@ -229,6 +231,10 @@ internal static class BaselineCompiler
             _rhs = il.Local(typeof(JsValue));
             _environment = il.Local(typeof(DeclarativeEnvironmentRecord));
             _slot = il.Local(BindingType.MakeByRefType());
+            _receiver = il.Local(typeof(JsObject));
+            _program = il.Local(typeof(CacheIRProgram));
+            _shape = il.Local(typeof(Shape));
+            _cached = il.Local(typeof(JsValue));
 
             _labels = new Label[instructions.Length];
             for (var ip = 0; ip < _labels.Length; ip++) _labels[ip] = il.DefineLabel();
@@ -625,12 +631,12 @@ internal static class BaselineCompiler
                 {
                     if (!Register(ins.A) || !Register(ins.B)) return false;
                     if ((uint)ins.C >= (uint)function.PropertyNames.Count) return false;
-                    var pooled = PoolPropertySite(function.PropertyNames[ins.C], EnsureSite(function.EnsureLoadCacheSites(), ip));
-                    var hit = il.DefineLabel();
-                    EmitCachedProperty(MiTryLoadPropertyCached, pooled, ins.A, ins.B);
-                    il.Branch(OpCodes.Brtrue, hit);
-                    EmitCachedProperty(MiLoadPropertyMiss, pooled, ins.A, ins.B);
-                    il.Mark(hit);
+                    EmitCachedLoad(
+                        PoolPropertySite(
+                            function.PropertyNames[ins.C],
+                            EnsureSite(function.EnsureLoadCacheSites(), ip)),
+                        ins.A,
+                        ins.B);
                     return true;
                 }
 
@@ -638,12 +644,15 @@ internal static class BaselineCompiler
                 {
                     if (!Register(ins.A) || !Register(ins.C)) return false;
                     if ((uint)ins.B >= (uint)function.PropertyNames.Count) return false;
-                    var pooled = PoolPropertySite(function.PropertyNames[ins.B], EnsureSite(function.EnsureStoreCacheSites(), ip));
-                    var hit = il.DefineLabel();
-                    EmitCachedStore(MiTryStorePropertyCached, pooled, ins.A, ins.C);
-                    il.Branch(OpCodes.Brtrue, hit);
-                    EmitCachedStore(MiStorePropertyMiss, pooled, ins.A, ins.C);
-                    il.Mark(hit);
+                    var name = function.PropertyNames[ins.B];
+                    EmitCachedStore(
+                        PoolPropertySite(name, EnsureSite(function.EnsureStoreCacheSites(), ip)),
+                        ins.A,
+                        ins.C,
+                        // The only key whose store carries bookkeeping beyond the
+                        // write, and it is known here rather than compared at run
+                        // time.
+                        marksPrototype: string.Equals(name, "prototype", StringComparison.Ordinal));
                     return true;
                 }
 
@@ -865,26 +874,134 @@ internal static class BaselineCompiler
             return true;
         }
 
-        private void EmitCachedProperty(MethodInfo target, int pooled, int dest, int receiver)
+        /// <summary>
+        /// A cached property read, with the cache program's guards written out
+        /// here rather than performed by something this calls. Every guard fails
+        /// closed to the same miss helper the interpreter uses, so a shape the
+        /// program does not cover, a stale slot, an accessor and a proxy all
+        /// leave by the one path where the specification's ordering still holds.
+        /// </summary>
+        private void EmitCachedLoad(int pooled, int dest, int receiver)
         {
+            var miss = il.DefineLabel();
+            var done = il.DefineLabel();
+
+            PushRegister(receiver);
+            il.Store(_lhs);
+            il.Arg(0);
+            il.Load(_lhs);
+            il.Call(MiCacheableLoadReceiver);
+            il.Store(_receiver);
+            il.Load(_receiver);
+            il.Branch(OpCodes.Brfalse, miss);
+
+            EmitGuardShape(pooled, PiInlineLoadShape, miss);
+
+            il.Load(_receiver);
+            il.Load(_program);
+            il.Get(PiResultSlot);
+            il.LoadAddress(_cached);
+            il.Call(MiTryReadDataSlot);
+            il.Branch(OpCodes.Brfalse, miss);
+
+            BeginSetRegister(dest);
+            il.Load(_cached);
+            EndSetRegister();
+            il.Branch(OpCodes.Br, done);
+
+            il.Mark(miss);
             il.Arg(0);
             il.Arg(1);
             il.Int(dest);
             il.Int(receiver);
             PushPooled(_namePool, pooled);
             PushPooled(_sitePool, pooled);
-            il.Call(target);
+            il.Call(MiLoadPropertyMiss);
+            il.Mark(done);
         }
 
-        private void EmitCachedStore(MethodInfo target, int pooled, int receiver, int value)
+        /// <summary>The write half, guarded the same way.</summary>
+        private void EmitCachedStore(int pooled, int receiver, int value, bool marksPrototype)
         {
+            var miss = il.DefineLabel();
+            var done = il.DefineLabel();
+            var slot = il.Local(typeof(int));
+
+            PushRegister(receiver);
+            il.Store(_lhs);
+            il.Arg(0);
+            il.Load(_lhs);
+            il.Call(MiCacheableStoreReceiver);
+            il.Store(_receiver);
+            il.Load(_receiver);
+            il.Branch(OpCodes.Brfalse, miss);
+
+            EmitGuardShape(pooled, PiInlineStoreShape, miss);
+
+            il.Load(_program);
+            il.Get(PiResultSlot);
+            il.Store(slot);
+            il.Load(_receiver);
+            il.Load(slot);
+            il.Call(MiIsWritableDataSlot);
+            il.Branch(OpCodes.Brfalse, miss);
+
+            PushRegister(value);
+            il.Store(_rhs);
+            il.Load(_receiver);
+            il.Load(slot);
+            il.Load(_rhs);
+            il.Call(MiWriteDataSlot);
+            il.Arg(0);
+            il.Load(_lhs);
+            il.Load(_rhs);
+            il.Call(MiCachedStoreBarrier);
+
+            if (marksPrototype)
+            {
+                il.Arg(0);
+                il.Load(_receiver);
+                PushPooled(_namePool, pooled);
+                il.Load(_rhs);
+                il.Call(MiMarkPrototypeAssignment);
+            }
+
+            il.Branch(OpCodes.Br, done);
+
+            il.Mark(miss);
             il.Arg(0);
             il.Arg(1);
             il.Int(receiver);
             PushPooled(_namePool, pooled);
             il.Int(value);
             PushPooled(_sitePool, pooled);
-            il.Call(target);
+            il.Call(MiStorePropertyMiss);
+            il.Mark(done);
+        }
+
+        /// <summary>
+        /// Takes the site's first program and branches to <paramref name="miss"/>
+        /// unless it guards the receiver's current shape. A program that has gone
+        /// stale reports no shape, so it leaves by the same branch.
+        /// </summary>
+        private void EmitGuardShape(int pooled, PropertyInfo inlineShape, Label miss)
+        {
+            PushPooled(_sitePool, pooled);
+            il.Get(PiSiteFirst);
+            il.Store(_program);
+            il.Load(_program);
+            il.Branch(OpCodes.Brfalse, miss);
+
+            il.Load(_program);
+            il.Get(inlineShape);
+            il.Store(_shape);
+            il.Load(_shape);
+            il.Branch(OpCodes.Brfalse, miss);
+
+            il.Load(_receiver);
+            il.Get(PiObjectShape);
+            il.Load(_shape);
+            il.Branch(OpCodes.Bne_Un, miss);
         }
 
         private void EmitInstruction(Instruction ins)
