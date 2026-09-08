@@ -6,111 +6,72 @@ using FenBrowser.Js.Environments;
 
 namespace FenBrowser.Js.Interpreter;
 
+/// <summary>
+/// One call's arguments, as a window onto where they already are.
+/// </summary>
+/// <remarks>
+/// A call site's arguments are already contiguous in the caller's register
+/// file, so this names that range rather than copying it. The struct that did
+/// copy held four inline <see cref="JsValue"/>s — 112 bytes carrying four
+/// object references — and every hop of a call passed it through a
+/// write-barriered bulk move, which measured a third of engine time on a
+/// bundle-shaped workload. Three fields fit in registers and copy for free.
+///
+/// The window is only valid for the call it describes. That is safe because a
+/// caller's registers cannot change while the callee runs: only the caller's
+/// own instruction stream writes them, and it is suspended.
+/// </remarks>
 internal readonly struct CallArgs : IReadOnlyList<JsValue>
 {
-    private readonly JsValue _arg0;
-    private readonly JsValue _arg1;
-    private readonly JsValue _arg2;
-    private readonly JsValue _arg3;
-    private readonly JsValue[]? _arrayArgs;
+    private readonly JsValue[]? _values;
+    private readonly int _start;
     private readonly int _count;
 
-    public CallArgs(JsValue arg0)
+    private CallArgs(JsValue[]? values, int start, int count)
     {
-        _arg0 = arg0;
-        _arg1 = default;
-        _arg2 = default;
-        _arg3 = default;
-        _arrayArgs = null;
-        _count = 1;
+        _values = values;
+        _start = start;
+        _count = count;
+    }
+
+    public CallArgs(JsValue arg0)
+        : this([arg0], 0, 1)
+    {
     }
 
     public CallArgs(JsValue arg0, JsValue arg1)
+        : this([arg0, arg1], 0, 2)
     {
-        _arg0 = arg0;
-        _arg1 = arg1;
-        _arg2 = default;
-        _arg3 = default;
-        _arrayArgs = null;
-        _count = 2;
     }
 
     public CallArgs(JsValue arg0, JsValue arg1, JsValue arg2)
+        : this([arg0, arg1, arg2], 0, 3)
     {
-        _arg0 = arg0;
-        _arg1 = arg1;
-        _arg2 = arg2;
-        _arg3 = default;
-        _arrayArgs = null;
-        _count = 3;
     }
 
     public CallArgs(JsValue arg0, JsValue arg1, JsValue arg2, JsValue arg3)
+        : this([arg0, arg1, arg2, arg3], 0, 4)
     {
-        _arg0 = arg0;
-        _arg1 = arg1;
-        _arg2 = arg2;
-        _arg3 = arg3;
-        _arrayArgs = null;
-        _count = 4;
     }
 
     public CallArgs(JsValue[] args)
+        : this(args, 0, args.Length)
     {
-        _arg0 = args.Length is > 0 and <= 4 ? args[0] : default;
-        _arg1 = args.Length is > 1 and <= 4 ? args[1] : default;
-        _arg2 = args.Length is > 2 and <= 4 ? args[2] : default;
-        _arg3 = args.Length is > 3 and <= 4 ? args[3] : default;
-        _arrayArgs = args.Length > 4 ? args : null;
-        _count = args.Length;
     }
 
     public CallArgs(IReadOnlyList<JsValue> args)
+        : this(args as JsValue[] ?? args.ToArray(), 0, args.Count)
     {
-        _arg0 = args.Count is > 0 and <= 4 ? args[0] : default;
-        _arg1 = args.Count is > 1 and <= 4 ? args[1] : default;
-        _arg2 = args.Count is > 2 and <= 4 ? args[2] : default;
-        _arg3 = args.Count is > 3 and <= 4 ? args[3] : default;
-        _arrayArgs = args.Count > 4
-            ? args as JsValue[] ?? args.ToArray()
-            : null;
-        _count = args.Count;
     }
 
     public int Count => _count;
 
     public JsValue this[int index]
-    {
-        get
-        {
-            if (_arrayArgs is not null)
-            {
-                return (uint)index < (uint)_count ? _arrayArgs[index] : JsValue.Undefined;
-            }
-
-            return index switch
-            {
-                0 => _arg0,
-                1 => _arg1,
-                2 => _arg2,
-                3 => _arg3,
-                _ => JsValue.Undefined
-            };
-        }
-    }
+        => (uint)index < (uint)_count ? _values![_start + index] : JsValue.Undefined;
 
     public IEnumerator<JsValue> GetEnumerator()
     {
-        if (_arrayArgs is not null)
-        {
-            for (var i = 0; i < _arrayArgs.Length; i++) yield return _arrayArgs[i];
-            yield break;
-        }
-
-        if (_count > 0) yield return _arg0;
-        if (_count > 1) yield return _arg1;
-        if (_count > 2) yield return _arg2;
-        if (_count > 3) yield return _arg3;
+        for (var i = 0; i < _count; i++) yield return _values![_start + i];
     }
 
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
@@ -118,44 +79,20 @@ internal readonly struct CallArgs : IReadOnlyList<JsValue>
     public static implicit operator CallArgs(JsValue[] args) => new(args);
     public static CallArgs Empty => default;
 
+    // The arguments a bytecode call site passes are already laid out in the
+    // caller's registers, so this is the whole of argument marshalling.
     public static CallArgs FromRegisters(JsValue[] registers, int start, int count)
-    {
-        return count switch
-        {
-            0 => Empty,
-            1 => new CallArgs(registers[start]),
-            2 => new CallArgs(registers[start], registers[start + 1]),
-            3 => new CallArgs(registers[start], registers[start + 1], registers[start + 2]),
-            4 => new CallArgs(registers[start], registers[start + 1], registers[start + 2], registers[start + 3]),
-            _ => CopyRegisters(registers, start, count),
-        };
-    }
+        => new(registers, start, count);
 
     public static CallArgs FromList(IReadOnlyList<JsValue> values, int start, int count)
-    {
-        return count switch
-        {
-            0 => Empty,
-            1 => new CallArgs(values[start]),
-            2 => new CallArgs(values[start], values[start + 1]),
-            3 => new CallArgs(values[start], values[start + 1], values[start + 2]),
-            4 => new CallArgs(values[start], values[start + 1], values[start + 2], values[start + 3]),
-            _ => CopyList(values, start, count),
-        };
-    }
+        => values is JsValue[] array ? new(array, start, count) : CopyList(values, start, count);
 
-    private static CallArgs CopyRegisters(JsValue[] registers, int start, int count)
-    {
-        var args = new JsValue[count];
-        Array.Copy(registers, start, args, 0, count);
-        return new CallArgs(args);
-    }
-
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private static CallArgs CopyList(IReadOnlyList<JsValue> values, int start, int count)
     {
         var args = new JsValue[count];
         for (var i = 0; i < count; i++) args[i] = values[start + i];
-        return new CallArgs(args);
+        return new CallArgs(args, 0, count);
     }
 }
 
