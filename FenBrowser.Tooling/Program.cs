@@ -445,9 +445,16 @@ namespace FenBrowser.Tooling
 
             // Serve reCAPTCHA's own bundle with a recorder in front of it, so the
             // run can say what the widget asked for rather than only what it left.
+            // Instrumenting the widget's own 844KB bundle is a rewrite of it,
+            // and lean mode exists to leave the page exactly as the network
+            // served it.
+            var lean = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_CAPTCHA_LEAN"), "1", StringComparison.Ordinal);
             var options = new FenBrowser.FenEngine.Rendering.BrowserHostOptions
             {
-                ScriptOverrideProvider = FenBrowser.Tooling.Diagnostics.CaptchaScriptInstrumentation.TryInstrument
+                ScriptOverrideProvider = lean
+                    ? null
+                    : FenBrowser.Tooling.Diagnostics.CaptchaScriptInstrumentation.TryInstrument
             };
             using var host = new FenBrowser.FenEngine.Rendering.BrowserHost(isPrivate: false, options: options);
             host.UpdateViewportHint(DebugSiteViewportWidth, DebugSiteViewportHeight);

@@ -14,6 +14,19 @@ internal static class CaptchaFlowRunner
 {
     private const string AnchorFrameSelector = "iframe[src*='recaptcha']";
 
+    // The probes below cost engine time, and the engine time they cost comes
+    // out of the same twenty-second budget the widget gives itself to finish
+    // setting up. Dumping a frame's source concatenates the text of every
+    // script in it, and reCAPTCHA's is 844KB, so one dump is a sizeable job on
+    // its own: the diagnostic evaluations held the script engine for 4.5 of the
+    // 20 seconds, right across the window being measured. Lean mode runs the
+    // flow — navigate, click, watch the widget — and nothing else, so a timing
+    // question can be asked without the asking changing the answer.
+    private static readonly bool Lean = string.Equals(
+        Environment.GetEnvironmentVariable("FEN_CAPTCHA_LEAN"),
+        "1",
+        StringComparison.Ordinal);
+
     // Runs inside the anchor frame.
     private const string AnchorStateScript =
         "(function(){" +
@@ -444,9 +457,12 @@ internal static class CaptchaFlowRunner
         Console.WriteLine($"[captcha] before: {await StateLineAsync(host, anchorFrameId).ConfigureAwait(false)}");
 
         var instrumented = new HashSet<string>(StringComparer.Ordinal);
-        await EnsureNetworkRecordersAsync(host, instrumented).ConfigureAwait(false);
+        if (!Lean) await EnsureNetworkRecordersAsync(host, instrumented).ConfigureAwait(false);
 
-        await RunInFrameAsync(host, anchorFrameId, InstallClickRecorderScript, "click-recorder").ConfigureAwait(false);
+        if (!Lean)
+        {
+            await RunInFrameAsync(host, anchorFrameId, InstallClickRecorderScript, "click-recorder").ConfigureAwait(false);
+        }
         // reCAPTCHA rebuilds its anchor iframe (a fresh cb= each time), so ids
         // resolved while waiting can name a frame that is no longer the live one.
         // Re-resolve both right before clicking.
@@ -472,14 +488,17 @@ internal static class CaptchaFlowRunner
         }
 
         await Task.Delay(1500).ConfigureAwait(false);
-        await RunInFrameAsync(host, anchorFrameId, ReadClickRecorderScript, "clicks seen").ConfigureAwait(false);
-        await RunInFrameAsync(host, anchorFrameId, ReadListenerLogScript, "listeners registered").ConfigureAwait(false);
-        await RunInFrameAsync(host, anchorFrameId, ReadErrorLogScript, "errors on anchor").ConfigureAwait(false);
-        await RunInFrameAsync(host, anchorFrameId, ReadClassLogScript, "checkbox states").ConfigureAwait(false);
-        await RunInFrameAsync(host, anchorFrameId, ReadPostLogScript, "posts on anchor").ConfigureAwait(false);
-        await RunInFrameAsync(host, anchorFrameId, ReadPrologueNetLogScript, "bundle-net on anchor").ConfigureAwait(false);
         var dumped = new HashSet<string>(StringComparer.Ordinal);
-        await DumpFramesAsync(host, "click", dumped).ConfigureAwait(false);
+        if (!Lean)
+        {
+            await RunInFrameAsync(host, anchorFrameId, ReadClickRecorderScript, "clicks seen").ConfigureAwait(false);
+            await RunInFrameAsync(host, anchorFrameId, ReadListenerLogScript, "listeners registered").ConfigureAwait(false);
+            await RunInFrameAsync(host, anchorFrameId, ReadErrorLogScript, "errors on anchor").ConfigureAwait(false);
+            await RunInFrameAsync(host, anchorFrameId, ReadClassLogScript, "checkbox states").ConfigureAwait(false);
+            await RunInFrameAsync(host, anchorFrameId, ReadPostLogScript, "posts on anchor").ConfigureAwait(false);
+            await RunInFrameAsync(host, anchorFrameId, ReadPrologueNetLogScript, "bundle-net on anchor").ConfigureAwait(false);
+            await DumpFramesAsync(host, "click", dumped).ConfigureAwait(false);
+        }
 
         var deadline = DateTime.UtcNow.AddMilliseconds(observeMs);
         string last = string.Empty;
@@ -487,8 +506,12 @@ internal static class CaptchaFlowRunner
         while (DateTime.UtcNow < deadline)
         {
             await Task.Delay(1000).ConfigureAwait(false);
-            await EnsureNetworkRecordersAsync(host, instrumented).ConfigureAwait(false);
-            await DumpFramesAsync(host, "observe", dumped).ConfigureAwait(false);
+            if (!Lean)
+            {
+                await EnsureNetworkRecordersAsync(host, instrumented).ConfigureAwait(false);
+                await DumpFramesAsync(host, "observe", dumped).ConfigureAwait(false);
+            }
+
             var line = await StateLineAsync(host, anchorFrameId).ConfigureAwait(false);
             if (!string.Equals(line, last, StringComparison.Ordinal))
             {
@@ -511,7 +534,7 @@ internal static class CaptchaFlowRunner
             await RunInFrameAsync(host, anchorFrameId, JsClickAnchorScript, "js-click anchor").ConfigureAwait(false);
         }
 
-        await ReportNetworkRecordersAsync(host).ConfigureAwait(false);
+        if (!Lean) await ReportNetworkRecordersAsync(host).ConfigureAwait(false);
         DumpConsole(console);
         // With FEN_FENJS_PROFILE=1 the engine counts executed opcodes; print
         // the mix so the slow path is chosen from data rather than a guess.
