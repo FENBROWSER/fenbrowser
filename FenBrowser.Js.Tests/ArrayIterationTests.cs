@@ -9,6 +9,18 @@ namespace FenBrowser.Js.Tests;
 public sealed class ArrayIterationTests
 {
     [Fact]
+    public void ArrayLiteralCarriesItsKnownDenseCapacityInBytecode()
+    {
+        var function = new BytecodeCompiler().CompileScript(
+            new SourceText("var values = [1, 2, 3, 4, 5]; values.length;"));
+
+        var allocation = Assert.Single(function.Instructions, instruction =>
+            instruction.OpCode == OpCode.NewArray);
+
+        Assert.Equal(5, allocation.B);
+    }
+
+    [Fact]
     public void MapKeepsObjectResultsAliveAcrossAutomaticCollections()
     {
         var interpreter = new BytecodeInterpreter();

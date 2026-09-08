@@ -202,8 +202,12 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
             case OpCode.NewObject:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                break;
             case OpCode.NewArray:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                if (ins.B < 0)
+                    throw new InvalidOperationException($"Invalid array capacity {ins.B} at ip {ip}.");
                 break;
             case OpCode.NewRegExp:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

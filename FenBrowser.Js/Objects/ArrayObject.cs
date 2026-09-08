@@ -24,7 +24,7 @@ namespace FenBrowser.Js.Objects;
 // dense, only speed does.
 public sealed class ArrayObject : JsObject
 {
-    private JsValue[] _dense = Array.Empty<JsValue>();
+    private JsValue[] _dense;
     private int _denseCount;
     private bool _denseAbandoned;
 
@@ -32,6 +32,14 @@ public sealed class ArrayObject : JsObject
     internal int DenseCount => _denseAbandoned ? 0 : _denseCount;
 
     internal bool IsDense => !_denseAbandoned;
+
+    public ArrayObject(int initialCapacity = 0)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(initialCapacity);
+        _dense = initialCapacity == 0
+            ? Array.Empty<JsValue>()
+            : new JsValue[initialCapacity];
+    }
 
     /// <summary>
     /// Appends to the dense vector. Returns false when this array is no longer

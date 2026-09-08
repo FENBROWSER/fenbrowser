@@ -2386,7 +2386,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.NewArray:
                 {
-                    var obj = CreateArrayObject(Array.Empty<JsValue>());
+                    var obj = CreateArrayObject(ins.B);
                     var handle = _heap.AllocateObject(obj, AllocationSite.Current());
                     registers[ins.A] = JsValue.FromObject(handle);
                     break;
@@ -16536,6 +16536,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsObject CreateArrayObject(IReadOnlyList<JsValue> elements)
         => CreateArrayObject(elements, JsValue.Undefined);
 
+    private JsObject CreateArrayObject(int initialCapacity)
+    {
+        var obj = new ArrayObject(initialCapacity);
+        obj.SetPrototype(EnsureArrayPrototype());
+        return obj;
+    }
+
     // ECMA-262 23.1.1.1: Array(len) / Array(...items) when called via `new`.
     // If newTarget differs from the Array constructor, the returned object
     // must inherit from newTarget.prototype (subclassing support).
@@ -23544,9 +23551,9 @@ fallbackArraySpecies:
         return JsValue.FromObject(handle);
     }
 
-    internal JsValue NewArrayForJit()
+    internal JsValue NewArrayForJit(int initialCapacity)
     {
-        var obj = CreateArrayObject(Array.Empty<JsValue>());
+        var obj = CreateArrayObject(initialCapacity);
         var handle = _heap.AllocateObject(obj, AllocationSite.Current());
         return JsValue.FromObject(handle);
     }

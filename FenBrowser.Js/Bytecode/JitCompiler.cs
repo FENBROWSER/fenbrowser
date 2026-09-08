@@ -1309,9 +1309,10 @@ public static class JitCompiler
                 return true;
             case OpCode.NewArray:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0) return false;
                 body.Add(Expression.Assign(
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
-                    Expression.Call(interp, MiNewArray)));
+                    Expression.Call(interp, MiNewArray, Expression.Constant(ins.B))));
                 return true;
             case OpCode.InitThisBinding:
                 body.Add(Expression.Call(interp, MiInitThisBinding, frame));

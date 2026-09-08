@@ -3982,7 +3982,11 @@ public sealed class BytecodeCompiler
                 }
 
                 var dest = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.NewArray, dest, 0, 0));
+                // B carries the literal's statically known capacity. The
+                // array's observable length is still zero until SetElem/the
+                // length fixup below; this only avoids repeatedly growing and
+                // copying the dense backing vector for hot literals.
+                _instructions.Add(new Instruction(OpCode.NewArray, dest, arr.Elements.Count, 0));
                 var hasSpread = false;
                 for (var i = 0; i < arr.Elements.Count; i++)
                 {
@@ -4901,7 +4905,9 @@ public sealed class BytecodeCompiler
     private int BuildSpreadArray(IReadOnlyList<ExpressionNode> elements)
     {
         var arr = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.NewArray, arr, 0, 0));
+        // Spread may add more entries, but the syntax's element count is a
+        // useful lower bound and costs nothing observable.
+        _instructions.Add(new Instruction(OpCode.NewArray, arr, elements.Count, 0));
 
         var idxReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.LoadConst, idxReg, AddConstant(JsValue.FromNumberCompact(0)), 0));
@@ -5254,7 +5260,7 @@ public sealed class BytecodeCompiler
     private int CompileTemplateStringArray(IReadOnlyList<string> parts)
     {
         var arrayReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.NewArray, arrayReg, 0, 0));
+        _instructions.Add(new Instruction(OpCode.NewArray, arrayReg, parts.Count, 0));
         for (var i = 0; i < parts.Count; i++)
         {
             var indexReg = AllocateRegister();
