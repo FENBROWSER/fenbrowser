@@ -1673,7 +1673,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         realm.CookieWriteBridge = CookieWriteBridge;
         realm.RequestRender = () =>
         {
-            SyncFrameRealmObservables(realm._embeddingFrameElement, realm);
+            // Never wait for the parent's lock here: this runs while the child
+            // frame's own script is trying to make progress.
+            SyncFrameRealmObservables(realm._embeddingFrameElement, realm, waitForParentLock: false);
             RequestRender?.Invoke();
         };
         realm.FlushPendingLayout = FlushPendingLayout;
@@ -1736,21 +1738,77 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         TryGetFrameRealm(document, out var realm) ? realm.Evaluate(script) : null;
 
     private void SyncFrameRealmObservables(Element frame, FenJsBrowserScriptEngine realm)
+        => SyncFrameRealmObservables(frame, realm, waitForParentLock: true);
+
+    /// <summary>
+    /// Publishes a child frame's expando globals onto the parent's view of
+    /// <c>iframe.contentWindow</c>.
+    /// </summary>
+    /// <remarks>
+    /// The snapshot is always taken before the parent lock. The child render
+    /// path already enters these realms in child-to-parent order; taking them in
+    /// the reverse order here can stall the parent event loop behind a busy
+    /// frame.
+    ///
+    /// <paramref name="waitForParentLock"/> is what the render path turns off.
+    /// The parent holds its lock for as long as its own script runs — on the
+    /// reCAPTCHA demo a single setTimeout callback held it for nine seconds —
+    /// and a child frame asking to render is the child delivering its own
+    /// script. Waiting there serialises the child behind the parent: the child
+    /// blocked on 489 of 921 publishes for 21 seconds in total, which is what
+    /// stalled the captcha handshake for thirteen seconds at a time and let the
+    /// widget's own twenty-second watchdog fire.
+    ///
+    /// Skipping is safe because this is a cache refresh rather than a step in
+    /// any algorithm: the parent can only read these values while holding the
+    /// lock it is currently holding, renders follow one another closely enough
+    /// that the next one republishes, and the authoritative sync points (a
+    /// document being set, a frame being attached) still publish unconditionally.
+    /// </remarks>
+    private void SyncFrameRealmObservables(
+        Element frame,
+        FenJsBrowserScriptEngine realm,
+        bool waitForParentLock)
     {
         if (frame == null || realm == null)
         {
             return;
         }
 
-        // Always snapshot the child before taking the parent lock. The child render
-        // path already enters these realms in child-to-parent order; taking them in
-        // the reverse order here can stall the parent event loop behind a busy frame.
         var observables = realm.CaptureObservableWindowProperties();
-        using (ScriptEngineLockProbe.Hold(_fenJsLock))
+
+        if (waitForParentLock)
         {
-            var proxy = GetOrCreateIFrameContentWindow(frame);
-            CopyFrameRealmObservables(realm, proxy, observables);
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
+            {
+                PublishFrameRealmObservables(frame, realm, observables);
+            }
+
+            return;
         }
+
+        if (!Monitor.TryEnter(_fenJsLock))
+        {
+            return;
+        }
+
+        try
+        {
+            PublishFrameRealmObservables(frame, realm, observables);
+        }
+        finally
+        {
+            Monitor.Exit(_fenJsLock);
+        }
+    }
+
+    private void PublishFrameRealmObservables(
+        Element frame,
+        FenJsBrowserScriptEngine realm,
+        Dictionary<string, object> observables)
+    {
+        var proxy = GetOrCreateIFrameContentWindow(frame);
+        CopyFrameRealmObservables(realm, proxy, observables);
     }
 
     private async Task SetDomAsyncCore(
