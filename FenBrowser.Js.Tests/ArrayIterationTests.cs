@@ -21,6 +21,23 @@ public sealed class ArrayIterationTests
     }
 
     [Fact]
+    public void ArrayLiteralStoresCompilerKnownIndexesWithoutIndexRegisters()
+    {
+        var function = new BytecodeCompiler().CompileScript(
+            new SourceText("var values = [1, 2, 3, 4, 5]; values.length;"));
+
+        var stores = function.Instructions
+            .Where(instruction => instruction.OpCode == OpCode.SetElemByIndex)
+            .ToArray();
+
+        Assert.Equal(5, stores.Length);
+        for (var i = 0; i < stores.Length; i++)
+        {
+            Assert.Equal(i, stores[i].B);
+        }
+    }
+
+    [Fact]
     public void MapKeepsObjectResultsAliveAcrossAutomaticCollections()
     {
         var interpreter = new BytecodeInterpreter();

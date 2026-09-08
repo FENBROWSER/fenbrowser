@@ -544,6 +544,8 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.GetElemForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiSetElem = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.SetElemForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiSetElemByIndex = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.SetElemByIndexForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiDeleteElem = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.DeleteElemForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiCall0 = typeof(BytecodeInterpreter)
@@ -1468,6 +1470,13 @@ public static class JitCompiler
                 if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
                 if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
                 body.Add(Expression.Call(interp, MiSetElem, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
+                return true;
+            case OpCode.SetElemByIndex:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0) return false;
+                if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiSetElemByIndex, frame,
                     Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
                 return true;
             case OpCode.DeleteElem:

@@ -340,6 +340,14 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
+            case OpCode.SetElemByIndex:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                if (ins.B < 0)
+                {
+                    throw new InvalidOperationException($"Invalid array index {ins.B} at ip {ip}.");
+                }
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
             case OpCode.CopyDataProperties:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");

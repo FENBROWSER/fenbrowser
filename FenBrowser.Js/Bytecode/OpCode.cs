@@ -324,4 +324,8 @@ public enum OpCode : byte
 		// hands the tag the same object on every evaluation.
 		// A=dest reg, B=index into BytecodeFunction.TemplateSites.
 		GetTemplateObject,
+
+		// Store a value at a compiler-known non-negative array index without
+		// materialising the index in a register. A=array reg, B=index, C=value reg.
+		SetElemByIndex,
 	}

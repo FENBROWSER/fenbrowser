@@ -4004,10 +4004,7 @@ public sealed class BytecodeCompiler
                     }
 
                     var valueReg = CompileExpression(arr.Elements[i]);
-                    var indexReg = AllocateRegister();
-                    var ci = AddConstant(JsValue.FromNumberCompact(i));
-                    _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, ci, 0));
-                    _instructions.Add(new Instruction(OpCode.SetElem, dest, indexReg, valueReg));
+                    _instructions.Add(new Instruction(OpCode.SetElemByIndex, dest, i, valueReg));
                 }
 
                 // Fix the length to the element count so trailing holes (e.g. `[1, , ]`)
@@ -5263,11 +5260,8 @@ public sealed class BytecodeCompiler
         _instructions.Add(new Instruction(OpCode.NewArray, arrayReg, parts.Count, 0));
         for (var i = 0; i < parts.Count; i++)
         {
-            var indexReg = AllocateRegister();
-            var indexConst = AddConstant(JsValue.FromNumberCompact(i));
-            _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, indexConst, 0));
             var valueReg = LoadStringConstant(parts[i]);
-            _instructions.Add(new Instruction(OpCode.SetElem, arrayReg, indexReg, valueReg));
+            _instructions.Add(new Instruction(OpCode.SetElemByIndex, arrayReg, i, valueReg));
         }
 
         return arrayReg;

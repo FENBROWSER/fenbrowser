@@ -3032,6 +3032,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         registers[ins.C],
                         function.IsStrictMode);
                     break;
+                case OpCode.SetElemByIndex:
+                    PerformSetElementByIndex(
+                        frame,
+                        registers[ins.A],
+                        ins.B,
+                        registers[ins.C],
+                        function.IsStrictMode);
+                    break;
                 case OpCode.SpreadAppend:
                 {
                     // ECMA-262 13.2.4.1 / 13.3.7.1 — expand the iterable in C into the
@@ -23469,6 +23477,37 @@ fallbackArraySpecies:
             frame,
             frame.Registers[ownerReg],
             frame.Registers[keyReg],
+            frame.Registers[valueReg],
+            frame.Function.IsStrictMode);
+
+    private void PerformSetElementByIndex(
+        InterpreterFrame frame,
+        JsValue receiverValue,
+        int index,
+        JsValue value,
+        bool strict)
+    {
+        // SetElemByIndex is emitted only for compiler-owned array construction.
+        // Sequential literals stay entirely in the dense vector; holes or any
+        // unexpected receiver fall through to the complete property semantics.
+        if (receiverValue.Tag == JsValueTag.Object)
+        {
+            var ownerHandle = receiverValue.AsObjectHandle();
+            if (_heap.GetObject(ownerHandle) is ArrayObject array &&
+                array.TryDenseSet((uint)index, value))
+            {
+                return;
+            }
+        }
+
+        PerformSetElement(frame, receiverValue, JsValue.FromInt32(index), value, strict);
+    }
+
+    internal void SetElemByIndexForJit(InterpreterFrame frame, int ownerReg, int index, int valueReg)
+        => PerformSetElementByIndex(
+            frame,
+            frame.Registers[ownerReg],
+            index,
             frame.Registers[valueReg],
             frame.Function.IsStrictMode);
 
