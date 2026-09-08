@@ -33,6 +33,10 @@ internal static class RendererChildEnvironment
         // FEN_TARGET_*) must never appear.
         "FEN_LOG_PRESET",
         "FEN_FENJS_PROFILE",
+        "FEN_FENJS_DEEP_TRACE",
+        "FEN_FENJS_CALLTARGET_TRACE",
+        "FEN_FENJS_CALLPROF",
+        "FEN_FENJS_OPTIME",
         "FEN_FENJS_PIN_AUDIT",
         "FEN_FENJS_MICROTASK_TRACE",
         "FEN_FENJS_GC_SWEEPLOG",

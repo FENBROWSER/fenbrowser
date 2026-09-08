@@ -19,6 +19,7 @@ internal static class CaptchaScriptInstrumentation
 {
     private const string InstrumentedMarker = "recaptcha__en.js";
 
+
     private static readonly HttpClient Http = new();
     private static readonly Dictionary<string, string> Cache = new(StringComparer.Ordinal);
     private static readonly object Gate = new();
@@ -314,6 +315,15 @@ internal static class CaptchaScriptInstrumentation
                                 break;
                             }
                         }
+                        if (match === 'no-iframe-match' && parent && parent !== window && parent.document) {
+                            var pfs = parent.document.getElementsByTagName('iframe');
+                            for (var j = 0; j < pfs.length; j++) {
+                                if (pfs[j].contentWindow === ev.source) {
+                                    match = 'parent:' + (pfs[j].id || pfs[j].name || ('iframe#' + j));
+                                    break;
+                                }
+                            }
+                        }
                     } catch (e) { match = 'compare-threw'; }
                     var portIds = '';
                     try {
@@ -501,6 +511,7 @@ internal static class CaptchaScriptInstrumentation
             Console.WriteLine($"[captcha] could not fetch bundle to instrument: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
+
 
         var instrumented = Prologue + bundle;
         lock (Gate)

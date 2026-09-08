@@ -40,6 +40,7 @@ public sealed class RendererChildEnvironmentTests
     {
         var startInfo = new ProcessStartInfo();
         startInfo.Environment["FEN_FENJS_PROFILE"] = "1";
+        startInfo.Environment["FEN_FENJS_DEEP_TRACE"] = "1";
         startInfo.Environment["FEN_LOG_PRESET"] = "developer";
         startInfo.Environment["FEN_JIT_DISABLE"] = "1";
         startInfo.Environment["FEN_AUTOMATION_MODE"] = "1";
@@ -47,6 +48,7 @@ public sealed class RendererChildEnvironmentTests
         RendererChildEnvironment.ResetToSafeBase(startInfo);
 
         Assert.Equal("1", startInfo.Environment["FEN_FENJS_PROFILE"]);
+        Assert.Equal("1", startInfo.Environment["FEN_FENJS_DEEP_TRACE"]);
         Assert.Equal("developer", startInfo.Environment["FEN_LOG_PRESET"]);
         Assert.Equal("1", startInfo.Environment["FEN_JIT_DISABLE"]);
         Assert.Equal("1", startInfo.Environment["FEN_AUTOMATION_MODE"]);

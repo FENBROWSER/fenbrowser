@@ -62,6 +62,43 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("true", Eval(world, world.SecondFrameDocument, "String(parent.frames[1] === window)"));
         }
 
+        // HTML gives same-origin sibling browsing contexts full access to each
+        // other's Document. reCAPTCHA's anchor frame gates its entire
+        // challenge-frame channel on `parent.frames['c-<id>'].document` being
+        // readable, so a sibling that answered undefined there was
+        // indistinguishable from one that was never created.
+        [Fact]
+        public async Task SameOriginSiblingExposesItsDocument()
+        {
+            var world = await CreateTwoFrameDocumentAsync();
+
+            Assert.Equal(
+                "object",
+                Eval(world, world.FirstFrameDocument, "typeof parent.frames['second-frame'].document"));
+            Assert.Equal(
+                "second-body",
+                Eval(world, world.FirstFrameDocument, "parent.frames['second-frame'].document.body.id"));
+            Assert.Equal(
+                "first-body",
+                Eval(world, world.SecondFrameDocument, "parent.frames['first-frame'].document.body.id"));
+        }
+
+        // The same-origin check is the whole guard: a sibling from another
+        // origin must stay opaque.
+        [Fact]
+        public async Task CrossOriginSiblingDoesNotExposeItsDocument()
+        {
+            var world = await CreateTwoFrameDocumentAsync();
+            await AddFrameAsync(world, "third", "third-frame", "https://other.test/third");
+
+            Assert.Equal(
+                "third-frame",
+                Eval(world, world.FirstFrameDocument, "parent.frames['third-frame'].name"));
+            Assert.Equal(
+                "undefined",
+                Eval(world, world.FirstFrameDocument, "typeof parent.frames['third-frame'].document"));
+        }
+
         [Fact]
         public async Task PostMessageToSibling_ArrivesInThatSiblingsRealm()
         {
@@ -124,6 +161,63 @@ namespace FenBrowser.Tests.Scripting
                     "parent.frames['late-frame'] ? parent.frames['late-frame'].name : ''",
                     "late-frame"));
             Assert.NotNull(lateDocument);
+        }
+
+        [Fact]
+        public async Task SiblingPostingDuringInitialization_HasPublishedSourceIdentity()
+        {
+            var world = await CreateSingleFrameDocumentAsync();
+            Eval(
+                world,
+                world.FirstFrameDocument,
+                "globalThis.__sourceMatch = null;" +
+                "window.addEventListener('message', function (event) {" +
+                "  if (event.data !== 'recaptcha-setup') return;" +
+                "  globalThis.__sourceMatch = event.source === parent.frames['late-frame'];" +
+                "  if (__sourceMatch && event.ports && event.ports[0]) {" +
+                "    event.ports[0].postMessage('challenge-ready');" +
+                "  }" +
+                "});");
+
+            var lateFrame = world.Document.CreateElement("iframe");
+            lateFrame.SetAttribute("id", "late");
+            lateFrame.SetAttribute("name", "late-frame");
+            lateFrame.SetAttribute("src", "https://parent.test/late");
+            world.Document.Body.AppendChild(lateFrame);
+
+            var lateUri = new Uri("https://parent.test/late");
+            var lateDocument = new HtmlParser(
+                "<html><body><script>" +
+                "globalThis.__reply = null;" +
+                "var channel = new MessageChannel();" +
+                "channel.port1.onmessage = function (event) { globalThis.__reply = event.data; };" +
+                "parent.frames['first-frame'].postMessage(" +
+                "  'recaptcha-setup', '*', [channel.port2]);" +
+                "</script></body></html>",
+                lateUri).Parse();
+            lateFrame.AppendChild(lateDocument);
+
+            await world.Engine.SetSubdocumentDomAsync(lateDocument.DocumentElement, lateUri);
+            var updatedWorld = world with { SecondFrameDocument = lateDocument };
+
+            Assert.Equal(
+                "true",
+                await WaitForValueAsync(
+                    updatedWorld,
+                    world.FirstFrameDocument,
+                    "String(parent.document.getElementById('late').contentWindow === parent.frames['late-frame'])",
+                    "true"));
+
+            Assert.Equal(
+                "true",
+                await WaitForValueAsync(
+                    updatedWorld,
+                    world.FirstFrameDocument,
+                    "String(globalThis.__sourceMatch)",
+                    "true"));
+            Assert.Equal(
+                "challenge-ready",
+                await WaitForValueAsync(updatedWorld, lateDocument, "globalThis.__reply"));
         }
 
         // The port half of a sibling message. reCAPTCHA's challenge frame opens a

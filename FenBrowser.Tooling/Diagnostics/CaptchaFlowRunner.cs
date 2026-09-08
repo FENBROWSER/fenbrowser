@@ -522,6 +522,11 @@ internal static class CaptchaFlowRunner
             Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.TimingReport());
         }
 
+        if (FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimingEnabled)
+        {
+            Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimeReport(30));
+        }
+
         if (string.Equals(Environment.GetEnvironmentVariable("FEN_FENJS_LOCKPROBE"), "1", StringComparison.Ordinal))
         {
             Console.Write(FenBrowser.FenEngine.Scripting.BrowserScriptEngineDiagnostics.LockReport());

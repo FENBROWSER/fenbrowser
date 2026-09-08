@@ -1637,11 +1637,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         await frameRealm.SetDomAsync(domRoot, baseUri).ConfigureAwait(false);
 
+        var observables = frameRealm.CaptureObservableWindowProperties();
         using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             var frameDocument = domRoot as Document ?? domRoot?.OwnerDocument;
             var proxy = GetOrCreateIFrameContentWindow(frameElement, frameDocument, baseUri);
-            CopyFrameRealmObservables(frameRealm, proxy);
+            CopyFrameRealmObservables(frameRealm, proxy, observables);
         }
 
         RefreshChildFrameTables();
@@ -1741,10 +1742,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return;
         }
 
+        // Always snapshot the child before taking the parent lock. The child render
+        // path already enters these realms in child-to-parent order; taking them in
+        // the reverse order here can stall the parent event loop behind a busy frame.
+        var observables = realm.CaptureObservableWindowProperties();
         using (ScriptEngineLockProbe.Hold(_fenJsLock))
         {
             var proxy = GetOrCreateIFrameContentWindow(frame);
-            CopyFrameRealmObservables(realm, proxy);
+            CopyFrameRealmObservables(realm, proxy, observables);
         }
     }
 
@@ -2257,14 +2262,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     using var longRunningProbe = new Timer(
                         _ =>
                         {
-                            if (workItem.Completion.Task.IsCompleted)
+                            try
                             {
-                                return;
-                            }
+                                if (workItem.Completion.Task.IsCompleted)
+                                {
+                                    return;
+                                }
 
                             var elapsedMs = Math.Max(0, Environment.TickCount64 - startedTick);
                             var instructions = interpreter?.InstructionsExecuted ?? 0;
                             var heap = interpreter?.Heap;
+                            var managedAllocated = GC.GetTotalAllocatedBytes(precise: false);
+                            var managedMemory = GC.GetTotalMemory(forceFullCollection: false);
                             FenBrowser.Core.EngineLogCompat.Warn(
                                 $"[FenJsWorker] StillRunning id={workItem.Sequence} kind={workItem.Kind} " +
                                 $"phase={workItem.Phase} elapsedMs={elapsedMs} instructions={instructions} " +
@@ -2289,6 +2298,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 $"dirtyCards={heap?.RememberedSetEdgeCount ?? 0} " +
                                 $"rememberedEnvs={heap?.RememberedEnvironmentCount ?? 0}] " +
                                 $"roots=[{heap?.LastMinorRootBreakdown ?? string.Empty}] " +
+                                $"clr=[allocatedMB={managedAllocated / (1024.0 * 1024.0):F0} " +
+                                $"managedMB={managedMemory / (1024.0 * 1024.0):F0} " +
+                                $"gen0={GC.CollectionCount(0)} gen1={GC.CollectionCount(1)} gen2={GC.CollectionCount(2)}] " +
+                                $"execution=[{interpreter?.CaptureExecutionDiagnosticSnapshot() ?? "<no-interpreter>"}] " +
                                 $"inputQueue={_fenJsInputWorkQueue.Count} normalQueue={_fenJsWorkQueue.Count} " +
                                 $"documentId={workItem.DocumentId} url={workItem.Url}",
                                 FenBrowser.Core.Logging.LogCategory.JavaScript);
@@ -2311,10 +2324,36 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                     FenBrowser.Js.Diagnostics.InterpreterProfiler.TimingReport(),
                                     FenBrowser.Core.Logging.LogCategory.JavaScript);
                             }
+                            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimingEnabled)
+                            {
+                                FenBrowser.Core.EngineLogCompat.Warn(
+                                    FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimeReport(40),
+                                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                            }
+                            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled)
+                            {
+                                FenBrowser.Core.EngineLogCompat.Warn(
+                                    FenBrowser.Js.Diagnostics.CallPathProfiler.Report(),
+                                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                            }
+                                if (FenBrowser.Js.Diagnostics.CallTargetProfiler.Enabled)
+                                {
+                                    FenBrowser.Core.EngineLogCompat.Warn(
+                                        FenBrowser.Js.Diagnostics.CallTargetProfiler.Report(40),
+                                        FenBrowser.Core.Logging.LogCategory.JavaScript);
+                                }
+                            }
+                            catch (Exception diagnosticException)
+                            {
+                                FenBrowser.Core.EngineLogCompat.Warn(
+                                    $"[FenJsWorker] ProbeFailed id={workItem.Sequence} " +
+                                    $"errorType={diagnosticException.GetType().Name} error={diagnosticException.Message}",
+                                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                            }
                         },
                         null,
-                        dueTime: LongRunningProbeDueMs,
-                        period: LongRunningProbePeriodMs);
+                        dueTime: IsFenJsDeepTraceEnabled ? 500 : LongRunningProbeDueMs,
+                        period: IsFenJsDeepTraceEnabled ? 1_000 : LongRunningProbePeriodMs);
                     var result = interpreter == null
                         ? workItem.Work()
                         : interpreter.RunWithExecutionBudget(
@@ -5402,6 +5441,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // completion line key off the same number so a run can be read as pairs.
     private const int LongRunningProbeDueMs = 2_000;
     private const int LongRunningProbePeriodMs = 5_000;
+    private static readonly bool IsFenJsDeepTraceEnabled = string.Equals(
+        Environment.GetEnvironmentVariable("FEN_FENJS_DEEP_TRACE"),
+        "1",
+        StringComparison.Ordinal);
 
     private JsValue CreateTopWindowPostMessageFunction()
     {
@@ -7911,7 +7954,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // bound per-job detail while retaining periodic execution samples.
     private void ConfigureFenJsMicrotaskTracing(BytecodeInterpreter interpreter)
     {
-        if (!string.Equals(
+        if (!IsFenJsDeepTraceEnabled && !string.Equals(
                 Environment.GetEnvironmentVariable("FEN_FENJS_MICROTASK_TRACE"),
                 "1",
                 StringComparison.Ordinal))
@@ -7921,15 +7964,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         interpreter.MicrotaskTraceDetailedJobLimit = ResolveFenJsMicrotaskTraceSetting(
             "FEN_FENJS_MICROTASK_TRACE_JOB_LIMIT",
-            defaultValue: 2_000,
+            defaultValue: IsFenJsDeepTraceEnabled ? 10_000 : 2_000,
             minimumValue: 0);
         interpreter.MicrotaskTraceJobSampleInterval = ResolveFenJsMicrotaskTraceSetting(
             "FEN_FENJS_MICROTASK_TRACE_JOB_SAMPLE_INTERVAL",
-            defaultValue: 250,
+            defaultValue: IsFenJsDeepTraceEnabled ? 100 : 250,
             minimumValue: 0);
         interpreter.MicrotaskTraceExecutionSampleIntervalMs = ResolveFenJsMicrotaskTraceSetting(
             "FEN_FENJS_MICROTASK_TRACE_SAMPLE_MS",
-            defaultValue: 500,
+            defaultValue: IsFenJsDeepTraceEnabled ? 250 : 500,
             minimumValue: 100);
         interpreter.MicrotaskTraceSink = trace =>
         {
@@ -14930,6 +14973,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private JsValue GetIFrameContentWindowForCurrentContext(Element iframe)
     {
+        // A same-origin child realm can reach iframe elements in its parent's
+        // document (for example through parent.document). Those elements must
+        // expose the same realm-local WindowProxy objects as parent.frames;
+        // creating an independent iframe window here breaks strict identity
+        // checks such as event.source === iframe.contentWindow.
+        if (_embeddingFrameElement != null &&
+            _embeddedParentWindowProxy.Tag == JsValueTag.Object &&
+            ReferenceEquals(iframe?.OwnerDocument, _embeddingFrameElement.OwnerDocument))
+        {
+            return ReferenceEquals(iframe, _embeddingFrameElement)
+                ? _fenJsGlobalThis
+                : GetOrCreateSiblingWindowProxy(iframe, _embeddedParentWindowProxy);
+        }
+
         var window = GetOrCreateIFrameContentWindow(iframe);
         if (CanCurrentContextAccessIFrameDocument(iframe))
         {
@@ -16028,6 +16085,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             _interpreter.SetObjectProperty(proxy, "location", CreatePlainLocationObject(href));
         }
 
+        DefineSiblingWindowProxyDocument(frame, proxy);
+
         var owner = _parentRealmOwner;
         var sourceFrame = _embeddingFrameElement;
         _interpreter.SetObjectProperty(
@@ -16063,6 +16122,76 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         _siblingWindowProxies[frame] = proxy;
         return proxy;
+    }
+
+    /// <summary>
+    /// Publishes a same-origin sibling's document on the realm-local
+    /// WindowProxy. HTML gives same-origin sibling browsing contexts full
+    /// access to each other's Document; with the property missing,
+    /// `parent.frames[name].document` answered undefined and a sibling that is
+    /// genuinely reachable read as one that was never created. reCAPTCHA's
+    /// anchor frame gates its entire challenge-frame channel on exactly that
+    /// read, so the challenge frame's setup handshake arrived with nobody
+    /// listening for it.
+    /// It has to be a live accessor: the proxy is minted as soon as the frame
+    /// element joins the tree, which is well before that frame has a document,
+    /// and the sibling can also navigate afterwards. The Document is a host
+    /// object both realms share, so each realm wraps it with a handle of its
+    /// own; no handle is ever carried across heaps.
+    /// </summary>
+    private void DefineSiblingWindowProxyDocument(Element frame, JsValue proxy)
+    {
+        if (frame == null || proxy.Tag != JsValueTag.Object || _interpreter == null)
+        {
+            return;
+        }
+
+        _interpreter.Heap.GetObject(proxy.AsObjectHandle()).DefineOwnProperty(
+            "document",
+            JsPropertyDescriptor.Accessor(
+                _interpreter.AllocateNativeFunction(
+                    "get document",
+                    (_, _) =>
+                    {
+                        if (!CanCurrentContextAccessIFrameDocument(frame))
+                        {
+                            return JsValue.Undefined;
+                        }
+
+                        var siblingDocument = FindFrameContentDocument(frame);
+                        return siblingDocument == null
+                            ? JsValue.Undefined
+                            : ToHostOrNull(siblingDocument, HostObjectKind.DomDocument);
+                    },
+                    length: 0),
+                JsValue.Undefined,
+                Enumerable: true,
+                Configurable: true));
+    }
+
+    /// <summary>
+    /// The Document a frame element currently hosts, or null while the frame
+    /// has not produced one. Unlike <see cref="GetOrCreateIFrameContentDocument"/>
+    /// this never fabricates a placeholder document and never caches a handle on
+    /// the element: the element is shared by every realm that can see the frame,
+    /// so a handle cached from one heap would be read back from another.
+    /// </summary>
+    private static Document FindFrameContentDocument(Element frame)
+    {
+        for (var child = frame.FirstChild; child != null; child = child.NextSibling)
+        {
+            if (child is Document frameDocument)
+            {
+                return frameDocument;
+            }
+
+            if (child is Element frameRoot && frameRoot.OwnerDocument != null)
+            {
+                return frameRoot.OwnerDocument;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -16104,6 +16233,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             {
                 var ports = ImportTransferredMessagePorts(transferredEndpoints);
                 using var constructionWindow = _interpreter.Heap.BeginConstructionWindow();
+                // A newly attached sibling can postMessage while its own startup
+                // scripts are still running, before the normal post-load refresh
+                // reaches existing realms. Publish the current table before
+                // exposing event.source so identity checks against parent.frames
+                // observe the same WindowProxy.
+                RefreshEmbeddedParentFrameTable();
                 var source = GetOrCreateSiblingWindowProxy(sourceFrame, _embeddedParentWindowProxy);
                 QueueWindowMessage(
                     _fenJsGlobalThis,
@@ -16510,14 +16645,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
     }
 
-    private void CopyFrameRealmObservables(FenJsBrowserScriptEngine realm, JsValue proxy)
+    private void CopyFrameRealmObservables(
+        FenJsBrowserScriptEngine realm,
+        JsValue proxy,
+        IReadOnlyDictionary<string, object> observables)
     {
         var frame = realm._embeddingFrameElement;
         var sameOrigin = IsSameOriginFrameAccess(
             frame,
             realm._currentBaseUri?.AbsoluteUri,
             GetParentDocumentUri(frame));
-        foreach (var (name, value) in realm.CaptureObservableWindowProperties())
+        foreach (var (name, value) in observables)
         {
             var converted = ConvertObjectToJsValue(value);
             _interpreter.SetObjectProperty(proxy, name, converted);

@@ -68,6 +68,66 @@ public sealed class IFrameInterpreterIsolationTests
     }
 
     [Fact]
+    public async Task FrameObservableSync_DoesNotHoldParentLockWhileChildRealmIsBusy()
+    {
+        var parentUri = new Uri("https://same.test/page");
+        var parentDocument = new HtmlParser(
+            "<html><body><iframe id='child' src='/frame'></iframe></body></html>",
+            parentUri).Parse();
+        var engine = CreateEngine();
+        await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+        var childUri = new Uri("https://same.test/frame");
+        var childDocument = new HtmlParser("<html><body></body></html>", childUri).Parse();
+        var frame = Assert.IsType<Element>(parentDocument.GetElementById("child"));
+        frame.AppendChild(childDocument);
+        await engine.SetSubdocumentDomAsync(childDocument.DocumentElement, childUri);
+
+        var childEngine = GetSubdocumentEngine(engine, frame);
+        var childLock = GetInterpreterLock(childEngine);
+        var parentLock = GetInterpreterLock(engine);
+        var childLocked = new ManualResetEventSlim();
+        var releaseChild = new ManualResetEventSlim();
+        var syncStarted = new ManualResetEventSlim();
+        var syncMethod = typeof(FenJsBrowserScriptEngine).GetMethod(
+            "SyncFrameRealmObservables",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(syncMethod);
+
+        var holdChild = Task.Run(() =>
+        {
+            lock (childLock)
+            {
+                childLocked.Set();
+                releaseChild.Wait();
+            }
+        });
+        Assert.True(childLocked.Wait(TimeSpan.FromSeconds(1)));
+
+        var sync = Task.Run(() =>
+        {
+            syncStarted.Set();
+            syncMethod.Invoke(engine, new object[] { frame, childEngine });
+        });
+
+        try
+        {
+            Assert.True(syncStarted.Wait(TimeSpan.FromSeconds(1)));
+            await Task.Delay(50);
+            Assert.True(Monitor.TryEnter(parentLock, TimeSpan.FromSeconds(1)));
+            Monitor.Exit(parentLock);
+        }
+        finally
+        {
+            releaseChild.Set();
+            await Task.WhenAll(holdChild, sync);
+            childLocked.Dispose();
+            releaseChild.Dispose();
+            syncStarted.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task AttachedFrame_PostMessageStructuredDataCrossesRealmBoundary()
     {
         var parentUri = new Uri("https://parent.test/page");

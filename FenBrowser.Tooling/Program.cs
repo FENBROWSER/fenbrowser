@@ -280,6 +280,11 @@ namespace FenBrowser.Tooling
                 Environment.Exit(1);
             }
 
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimingEnabled)
+            {
+                Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimeReport(30));
+            }
+
             Console.WriteLine("[jstime] DONE");
         }
 
@@ -433,6 +438,10 @@ namespace FenBrowser.Tooling
             var observeMs = args.Length > 3 && int.TryParse(args[3], out var parsedObserve) ? parsedObserve : 90000;
 
             CssEngineConfig.CurrentEngine = CssEngineType.Custom;
+            // The captcha command is itself the repro harness. Persist the
+            // engine/event-loop stream so a deep-trace run is self-contained
+            // under logs/ and does not depend on console capture or a wrapper.
+            ConfigureDebugSiteFileLogging();
 
             // Serve reCAPTCHA's own bundle with a recorder in front of it, so the
             // run can say what the widget asked for rather than only what it left.
@@ -3323,6 +3332,11 @@ namespace FenBrowser.Tooling
                 Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.Report(25));
                 Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.VarReport());
                 Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.TimingReport());
+            }
+
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimingEnabled)
+            {
+                Console.WriteLine(FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimeReport(30));
             }
         }
 
