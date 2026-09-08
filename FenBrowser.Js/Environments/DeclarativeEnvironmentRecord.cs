@@ -176,9 +176,10 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         var bindings = _slotBindings;
         if (bindings is not null &&
             ReferenceEquals(_slotOwner, owner) &&
-            (uint)slot < (uint)bindings.Length &&
-            _slotPresent![slot])
+            (uint)slot < (uint)bindings.Length)
         {
+            // An absent slot is a default Binding, so it reads as
+            // uninitialized: presence needs no array of its own here.
             ref var binding = ref bindings[slot];
             if (binding.IsInitialized)
             {
@@ -202,8 +203,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         var bindings = _slotBindings;
         if (bindings is not null &&
             ReferenceEquals(_slotOwner, owner) &&
-            (uint)slot < (uint)bindings.Length &&
-            _slotPresent![slot])
+            (uint)slot < (uint)bindings.Length)
         {
             ref var binding = ref bindings[slot];
             if (binding.IsInitialized && binding.IsMutable)

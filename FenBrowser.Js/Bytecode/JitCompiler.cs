@@ -700,10 +700,6 @@ public static class JitCompiler
         typeof(FenBrowser.Js.Environments.DeclarativeEnvironmentRecord)
             .GetMethod("SlotBindingsFor", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
-    private static readonly MethodInfo MiSlotPresenceFor =
-        typeof(FenBrowser.Js.Environments.DeclarativeEnvironmentRecord)
-            .GetMethod("SlotPresenceFor", BindingFlags.Instance | BindingFlags.NonPublic)!;
-
     private static readonly Type BindingArrayType =
         typeof(FenBrowser.Js.Environments.DeclarativeEnvironmentRecord)
             .GetMethod("SlotBindingsFor", BindingFlags.Instance | BindingFlags.NonPublic)!.ReturnType;
@@ -784,7 +780,6 @@ public static class JitCompiler
 
         var resumeIpLocal = Expression.Variable(typeof(int), "resumeIp");
         var slotBindingsLocal = Expression.Variable(BindingArrayType, "slotBindings");
-        var slotPresentLocal = Expression.Variable(typeof(bool[]), "slotPresent");
 
         // Deriving the frame's slot storage costs a cast, an identity check and
         // a call. None of it changes while the environment does not, so do it
@@ -800,14 +795,9 @@ public static class JitCompiler
                     typeof(FenBrowser.Js.Environments.DeclarativeEnvironmentRecord))),
                 Expression.IfThenElse(
                     Expression.Equal(envLocal, Expression.Constant(null, envLocal.Type)),
-                    Expression.Block(
-                        Expression.Assign(slotBindingsLocal, Expression.Constant(null, BindingArrayType)),
-                        Expression.Assign(slotPresentLocal, Expression.Constant(null, typeof(bool[])))),
-                    Expression.Block(
-                        Expression.Assign(slotBindingsLocal, Expression.Call(
-                            envLocal, MiSlotBindingsFor, Expression.Property(frameParam, PiFunction))),
-                        Expression.Assign(slotPresentLocal, Expression.Call(
-                            envLocal, MiSlotPresenceFor, Expression.Property(frameParam, PiFunction))))));
+                    Expression.Assign(slotBindingsLocal, Expression.Constant(null, BindingArrayType)),
+                    Expression.Assign(slotBindingsLocal, Expression.Call(
+                        envLocal, MiSlotBindingsFor, Expression.Property(frameParam, PiFunction)))));
         }
 
         var body = new List<Expression>();
@@ -877,7 +867,7 @@ public static class JitCompiler
 
             var ins = function.Instructions[i];
             if (!TryEmitOpcode(function, ins, i, interpParam, frameParam, registersLocal, constantsLocal,
-                    slotBindingsLocal, slotPresentLocal, RefreshSlots, resumeIpLocal, dispatchLabel,
+                    slotBindingsLocal, RefreshSlots, resumeIpLocal, dispatchLabel,
                     resumePoints.Count > 0, instructionLabels, returnLabel, body))
             {
                 NoteRejection(ins.OpCode);
@@ -930,7 +920,7 @@ public static class JitCompiler
 
         var full = Expression.Block(
             typeof(JsValue),
-            new[] { registersLocal, constantsLocal, resumeIpLocal, slotBindingsLocal, slotPresentLocal },
+            new[] { registersLocal, constantsLocal, resumeIpLocal, slotBindingsLocal },
             Expression.Assign(registersLocal, Expression.Property(frameParam, PiRegisters)),
             Expression.Assign(constantsLocal, Expression.Property(Expression.Property(frameParam, PiFunction), PiConstants)),
             Expression.Assign(resumeIpLocal, startIpParam),
@@ -1222,7 +1212,7 @@ public static class JitCompiler
         BytecodeFunction function, Instruction ins, int ip,
         ParameterExpression interp, ParameterExpression frame,
         ParameterExpression registers, ParameterExpression constants,
-        ParameterExpression slotBindings, ParameterExpression slotPresent, Func<Expression> refreshSlots,
+        ParameterExpression slotBindings, Func<Expression> refreshSlots,
         ParameterExpression resumeIp, LabelTarget dispatchLabel, bool hasResumePoints,
         LabelTarget[] labels, LabelTarget returnLabel, List<Expression> body)
     {
@@ -1254,14 +1244,13 @@ public static class JitCompiler
                 // copying the binding out: a property read there takes the
                 // element's address, and the copy costs more than re-indexing.
                 var element = Expression.ArrayAccess(slotBindings, slotIndex);
-                // bindings != null && (uint)slot < length && present[slot] && initialized
+                // An absent slot holds a default Binding, so it reads as
+                // uninitialized and the last test turns it away.
                 var usable = Expression.AndAlso(
                     Expression.AndAlso(
                         Expression.NotEqual(slotBindings, Expression.Constant(null, slotBindings.Type)),
                         Expression.LessThan(slotIndex, Expression.ArrayLength(slotBindings))),
-                    Expression.AndAlso(
-                        Expression.ArrayIndex(slotPresent, slotIndex),
-                        Expression.Property(element, PiBindingInitialized)));
+                    Expression.Property(element, PiBindingInitialized));
                 body.Add(Expression.Assign(
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
                     Expression.Condition(
@@ -1285,11 +1274,9 @@ public static class JitCompiler
                         Expression.AndAlso(
                             Expression.NotEqual(slotBindings, Expression.Constant(null, slotBindings.Type)),
                             Expression.LessThan(storeSlot, Expression.ArrayLength(slotBindings))),
-                        Expression.AndAlso(
-                            Expression.ArrayIndex(slotPresent, storeSlot),
-                            Expression.NotEqual(
-                                Expression.Field(storeValue, FiValueTag),
-                                Expression.Constant(JsValueTag.Object)))),
+                        Expression.NotEqual(
+                            Expression.Field(storeValue, FiValueTag),
+                            Expression.Constant(JsValueTag.Object))),
                     Expression.AndAlso(
                         Expression.Property(storeElement, PiBindingInitialized),
                         Expression.Property(storeElement, PiBindingMutable)));
