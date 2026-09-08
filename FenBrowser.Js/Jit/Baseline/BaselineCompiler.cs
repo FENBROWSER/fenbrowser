@@ -1357,8 +1357,7 @@ internal static class BaselineCompiler
             il.Mark(done);
         }
 
-        private static bool HasFastPath(OpCode op) => op is not (OpCode.And or OpCode.Or or OpCode.Div
-            or OpCode.Mod or OpCode.Exp);
+        private static bool HasFastPath(OpCode op) => op is not (OpCode.And or OpCode.Or or OpCode.Exp);
 
         // A general operator reads its operands out of the frame and writes its
         // result back there, so the locals and the array have to agree across it.
@@ -1393,6 +1392,16 @@ internal static class BaselineCompiler
                 case OpCode.Mul:
                     PushNumbers();
                     il.Op(OpCodes.Mul);
+                    il.Call(MiFastNumberResult);
+                    return;
+                case OpCode.Div:
+                    PushNumbers();
+                    il.Op(OpCodes.Div);
+                    il.Call(MiFastNumberResult);
+                    return;
+                case OpCode.Mod:
+                    PushNumbers();
+                    il.Op(OpCodes.Rem);
                     il.Call(MiFastNumberResult);
                     return;
                 case OpCode.Lt:

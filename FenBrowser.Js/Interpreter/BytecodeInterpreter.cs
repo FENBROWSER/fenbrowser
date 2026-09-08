@@ -6812,6 +6812,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             case OpCode.Add: result = FastNumberResult(a + b); return true;
             case OpCode.Sub: result = FastNumberResult(a - b); return true;
             case OpCode.Mul: result = FastNumberResult(a * b); return true;
+            // Division and remainder follow the same IEEE rules in both
+            // languages, including a zero divisor and a negative zero result,
+            // which FromNumberCompact keeps as a Number rather than an Int32.
+            case OpCode.Div: result = FastNumberResult(a / b); return true;
+            case OpCode.Mod: result = FastNumberResult(a % b); return true;
             case OpCode.Lt: result = JsValue.FromBoolean(a < b); return true;
             case OpCode.Gt: result = JsValue.FromBoolean(a > b); return true;
             case OpCode.Le: result = JsValue.FromBoolean(a <= b); return true;
