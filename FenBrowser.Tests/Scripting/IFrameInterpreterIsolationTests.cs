@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Threading;
@@ -89,9 +89,15 @@ public sealed class IFrameInterpreterIsolationTests
         var childLocked = new ManualResetEventSlim();
         var releaseChild = new ManualResetEventSlim();
         var syncStarted = new ManualResetEventSlim();
+        // Name the two-argument overload: the render path calls a three-argument
+        // one that is allowed to give up on the parent lock, and asking for the
+        // name alone now matches both.
         var syncMethod = typeof(FenJsBrowserScriptEngine).GetMethod(
             "SyncFrameRealmObservables",
-            BindingFlags.Instance | BindingFlags.NonPublic);
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            types: new[] { typeof(Element), typeof(FenJsBrowserScriptEngine) },
+            modifiers: null);
         Assert.NotNull(syncMethod);
 
         var holdChild = Task.Run(() =>
