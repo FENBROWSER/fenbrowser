@@ -1133,15 +1133,38 @@ public sealed partial class BytecodeInterpreter
         return IsConstructorReturnObject(result) ? result : defaultInstance;
     }
 
+    private const string RealmGlobalKey = "__realmGlobal__";
+
+    // The last shape that turned out to carry no realm marker. A shape's own
+    // keys are fixed for its lifetime, so one remembered shape answers for
+    // every function built the same way, and defining the marker on a function
+    // changes its shape and so misses this.
+    private Objects.Shape? _shapeWithoutRealmGlobal;
+
+    /// <summary>
+    /// The environment a call to <paramref name="function"/> runs under.
+    /// </summary>
+    /// <remarks>
+    /// A realm facade marks the functions it hands out by defining
+    /// <c>__realmGlobal__</c> directly on them, so an own-property test answers
+    /// this. Asking for the property instead walked the whole prototype chain
+    /// to miss at the end of it, on every JS-to-JS call -- around a fifth of
+    /// what a call cost.
+    /// </remarks>
     private EnvironmentRecord? ResolveFunctionOuterEnvironment(JsFunctionObject function)
     {
-        if (function.OwnerHandle is { } handle &&
-            TryGetPropertyValue(function, JsValue.FromObject(handle), "__realmGlobal__", out var realmGlobal) &&
-            realmGlobal.Tag == JsValueTag.Object)
+        var shape = function.CurrentShape;
+        if (!ReferenceEquals(shape, _shapeWithoutRealmGlobal))
         {
-            return StampEnvironment(new GlobalEnvironmentRecord(
-                CreateBindingAdapter(realmGlobal.AsObjectHandle()),
-                realmGlobal));
+            if (function.TryGetOwnProperty(RealmGlobalKey, out var marker) &&
+                marker.Value.Tag == JsValueTag.Object)
+            {
+                return StampEnvironment(new GlobalEnvironmentRecord(
+                    CreateBindingAdapter(marker.Value.AsObjectHandle()),
+                    marker.Value));
+            }
+
+            _shapeWithoutRealmGlobal = shape;
         }
 
         return function.OuterEnvironment;
