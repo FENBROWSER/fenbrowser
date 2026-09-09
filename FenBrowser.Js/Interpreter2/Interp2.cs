@@ -76,6 +76,22 @@ internal sealed class Interp2
 
     private int _depth;
 
+    /// <summary>
+    /// Instructions still to dispatch before the next guard check, carried
+    /// across frames and across re-entries.
+    /// </summary>
+    /// <remarks>
+    /// It cannot live only in the dispatch loop's locals. A program whose work
+    /// is a native builtin calling a short JavaScript callback - an array method
+    /// with a predicate, a proxy trap, a sort comparator - enters the loop
+    /// afresh for every call, and a per-entry countdown would restart at the
+    /// full interval each time and never reach zero. That is a script the
+    /// wall-clock deadline can never stop, which is the one thing these checks
+    /// exist to prevent. Found by a test262 case that spins a proxy trap 2^32
+    /// times.
+    /// </remarks>
+    private int _guardCountdown = GuardCheckInterval;
+
     internal Interp2(BytecodeInterpreter host) => _host = host;
 
     /// <summary>Live value-stack slots, for the collector's root walk.</summary>
@@ -138,10 +154,25 @@ internal sealed class Interp2
 
     private JsValue Run(int entryDepth)
     {
-        var heap = _host.Heap;
         var guarded = _host.Interp2HasGuards;
-        var guardCountdown = GuardCheckInterval;
-        long dispatched = 0;
+        var guardCountdown = _guardCountdown;
+        try
+        {
+            return Dispatch(entryDepth, guarded, ref guardCountdown);
+        }
+        finally
+        {
+            // Hand the remaining budget back so the next entry continues it
+            // rather than starting over. One try/finally per outermost entry,
+            // not per call - the whole point of this loop is that a call does
+            // not need one.
+            _guardCountdown = guardCountdown;
+        }
+    }
+
+    private JsValue Dispatch(int entryDepth, bool guarded, ref int guardCountdown)
+    {
+        var heap = _host.Heap;
 
         // The frame's hot fields live in locals for the length of its execution
         // and are written back only when a call or a return changes which frame
@@ -172,12 +203,7 @@ internal sealed class Interp2
             if (guarded && --guardCountdown <= 0)
             {
                 guardCountdown = GuardCheckInterval;
-                _host.Interp2Guard(dispatched + GuardCheckInterval);
-                dispatched = 0;
-            }
-            else if (guarded)
-            {
-                dispatched++;
+                _host.Interp2Guard(GuardCheckInterval);
             }
 
             switch (ins.OpCode)
