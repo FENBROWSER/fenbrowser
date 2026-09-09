@@ -2883,67 +2883,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 }
                 case OpCode.SetPropByName:
-                {
-                    var receiverValue = registers[ins.A];
-                    var prop = function.PropertyNames[ins.B];
-                    var value = registers[ins.C];
-
-                    if (receiverValue.Tag == JsValueTag.HostObject)
-                    {
-                        try { SetHostObjectProperty(receiverValue, prop, value); }
-                        catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
-                        break;
-                    }
-
-                    // ECMA-262 6.2.5.5 PutValue: ToObject on the base, which is a
-                    // TypeError for null and undefined -- and a catchable one.
-                    // ResolveObjectHandle raises it from outside every try below,
-                    // so it escaped the frame entirely and no handler ever saw it.
-                    if (receiverValue.Tag is JsValueTag.Null or JsValueTag.Undefined)
-                    {
-                        var unsettableKind = receiverValue.Tag == JsValueTag.Null ? "null" : "undefined";
-                        ThrowOrHandle(frame, CreateTypeError(
-                            $"Cannot set properties of {unsettableKind} (setting '{prop}')."));
-                        break;
-                    }
-
-                    var ownerHandle = ResolveObjectHandle(receiverValue);
-                    var icOffsetStore = frame.InstructionPointer - 1;
-                    if (receiverValue.Tag == JsValueTag.Object &&
-                        TryStoreIC(function, icOffsetStore, ownerHandle, receiverValue, prop, value))
-                    {
-                        break;
-                    }
-                    var obj = _heap.GetObject(ownerHandle);
-                    if (obj is ProxyObject proxySet)
-                    {
-                        // ECMA-262 6.2.5.4 PutValue: a [[Set]] that returns false (here
-                        // the proxy "set" trap returned a falsy value) throws a TypeError
-                        // in strict-mode code, exactly like the ordinary-object path below.
-                        try
-                        {
-                            var proxyOk = ProxySet(proxySet, receiverValue, prop, value);
-                            if (!proxyOk && function.IsStrictMode)
-                            {
-                                ThrowOrHandle(frame, CreateTypeError($"Cannot assign to read-only property '{prop}'."));
-                            }
-                        }
-                        catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
-                        break;
-                    }
                     try
                     {
-                        var ok = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
-                        if (!ok && function.IsStrictMode)
-                        {
-                            // ECMA-262 6.2.5.4 PutValue: strict-mode writes that
-                            // return false (non-writable data, missing setter,
-                            // non-extensible) throw TypeError.
-                            ThrowOrHandle(frame, CreateTypeError($"Cannot assign to read-only property '{prop}'."));
-                            break;
-                        }
-                        if (receiverValue.Tag == JsValueTag.Object)
-                            PopulateStoreIC(function, icOffsetStore, receiverValue, prop);
+                        SetPropertyByNameCore(
+                            function,
+                            frame.InstructionPointer - 1,
+                            registers[ins.A],
+                            function.PropertyNames[ins.B],
+                            registers[ins.C],
+                            function.IsStrictMode);
                     }
                     catch (JsThrownException ex)
                     {
@@ -2951,7 +2899,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
 
                     break;
-                }
                 case OpCode.GetPropByName:
                 {
                     var receiver = registers[ins.B];
@@ -23554,8 +23501,19 @@ fallbackArraySpecies:
     /// from its buffer. One write left the array reporting a length of one, and
     /// every loop over it stopped after a single pass.
     /// </summary>
-    internal void PerformSetElement(
-        InterpreterFrame frame,
+    /// <summary>
+    /// ECMA-262 13.15.2 / 6.2.5.5 PutValue for a computed member assignment,
+    /// with no dependence on which loop is running it.
+    /// </summary>
+    /// <remarks>
+    /// This raises a <see cref="JsThrownException"/> where it used to route the
+    /// error through the frame's handler stack, and the frame-taking wrapper
+    /// below does the routing instead. Every route site here was immediately
+    /// followed by a return, so the two are the same sequence of observable
+    /// steps - and the semantics now belong to one method that both execution
+    /// loops call rather than to the old loop's dispatch.
+    /// </remarks>
+    internal void SetElementCore(
         JsValue receiverValue,
         JsValue keyValue,
         JsValue value,
@@ -23563,29 +23521,20 @@ fallbackArraySpecies:
     {
         if (receiverValue.Tag == JsValueTag.HostObject)
         {
-            try
+            if (keyValue.Tag != JsValueTag.Symbol)
             {
-                if (keyValue.Tag != JsValueTag.Symbol)
-                {
-                    SetHostObjectProperty(receiverValue, ToPropertyKey(keyValue), value);
-                }
-            }
-            catch (JsThrownException ex)
-            {
-                ThrowOrHandle(frame, ex.Value);
+                SetHostObjectProperty(receiverValue, ToPropertyKey(keyValue), value);
             }
 
             return;
         }
 
-        // Same as the named form: ToObject on the base is a catchable TypeError
-        // for null and undefined, and raising it from ResolveObjectHandle put it
-        // outside every try below.
+        // ToObject on the base is a catchable TypeError for null and undefined,
+        // and it has to be raised before the key is coerced.
         if (receiverValue.Tag is JsValueTag.Null or JsValueTag.Undefined)
         {
             var unsettableKind = receiverValue.Tag == JsValueTag.Null ? "null" : "undefined";
-            ThrowOrHandle(frame, CreateTypeError($"Cannot set properties of {unsettableKind}."));
-            return;
+            throw new JsThrownException(CreateTypeError($"Cannot set properties of {unsettableKind}."));
         }
 
         var ownerHandle = ResolveObjectHandle(receiverValue);
@@ -23604,41 +23553,18 @@ fallbackArraySpecies:
             };
             if (taKey != null && IsCanonicalIntegerIndex(taKey, out var taSetIdx))
             {
-                // The coercion can run user code and can throw; keep it inside the
-                // try so the throw routes through ThrowOrHandle and stays catchable.
-                try
-                {
-                    var coerced = NormalizeTypedArrayElementValue(taSet.ElementType, value);
-                    taSet.SetElement(taSetIdx, coerced);
-                }
-                catch (JsThrownException ex)
-                {
-                    ThrowOrHandle(frame, ex.Value);
-                }
-
+                var coerced = NormalizeTypedArrayElementValue(taSet.ElementType, value);
+                taSet.SetElement(taSetIdx, coerced);
                 return;
             }
         }
 
         if (keyValue.Tag == JsValueTag.Symbol)
         {
-            // A setter or a Proxy set trap can throw; keep it inside the try so
-            // the throw routes through ThrowOrHandle and an enclosing JS
-            // try/catch can see it.
-            bool symbolOk;
-            try
-            {
-                symbolOk = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, receiverValue);
-            }
-            catch (JsThrownException ex)
-            {
-                ThrowOrHandle(frame, ex.Value);
-                return;
-            }
-
+            var symbolOk = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, receiverValue);
             if (!symbolOk && strict)
             {
-                ThrowTypeError(frame, "Cannot assign to symbol-keyed property.");
+                throw new JsThrownException(CreateTypeError("Cannot assign to symbol-keyed property."));
             }
 
             return;
@@ -23674,34 +23600,25 @@ fallbackArraySpecies:
         }
 
         var key = ToPropertyKey(keyValue);
-        try
+        var ok = SetPropertyValue(ownerHandle, obj, key, value, receiverValue);
+        if (!ok)
         {
-            var ok = SetPropertyValue(ownerHandle, obj, key, value, receiverValue);
-            if (!ok)
+            // ECMA-262 12.2.5.2: array literal elements must be created as own
+            // data properties even when the prototype has a non-writable
+            // property at the same index -- but only when the index is not
+            // already an own property, so assigning to an existing
+            // non-writable element still fails.
+            if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out _) &&
+                !obj.TryGetOwnProperty(key, out _))
             {
-                // ECMA-262 12.2.5.2: array literal elements must be created as own
-                // data properties even when the prototype has a non-writable
-                // property at the same index -- but only when the index is not
-                // already an own property, so assigning to an existing
-                // non-writable element still fails.
-                if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out _) &&
-                    !obj.TryGetOwnProperty(key, out _))
-                {
-                    ok = obj.DefineOwnProperty(key,
-                        new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
-                }
-            }
-
-            if (!ok && strict)
-            {
-                ThrowOrHandle(frame, CreateTypeError($"Cannot assign to read-only property '{key}'."));
-                return;
+                ok = obj.DefineOwnProperty(key,
+                    new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
             }
         }
-        catch (JsThrownException ex)
+
+        if (!ok && strict)
         {
-            ThrowOrHandle(frame, ex.Value);
-            return;
+            throw new JsThrownException(CreateTypeError($"Cannot assign to read-only property '{key}'."));
         }
 
         // ECMA-262 10.4.2.1 ArraySetLength coupling: writing a canonical array
@@ -23715,6 +23632,96 @@ fallbackArraySpecies:
             {
                 _ = obj.SetProperty("length", JsValue.FromNumber(nextLength));
             }
+        }
+    }
+
+    /// <summary>
+    /// ECMA-262 13.15.2 / 6.2.5.5 PutValue for an assignment to a literal
+    /// property name, through the same per-call-site store cache the dispatch
+    /// loop populates. Raises rather than routing, so both execution loops can
+    /// call it and each can decide what an escaping error means.
+    /// </summary>
+    internal void SetPropertyByNameCore(
+        BytecodeFunction function,
+        int icOffset,
+        JsValue receiverValue,
+        string prop,
+        JsValue value,
+        bool strict)
+    {
+        if (receiverValue.Tag == JsValueTag.HostObject)
+        {
+            SetHostObjectProperty(receiverValue, prop, value);
+            return;
+        }
+
+        // ECMA-262 6.2.5.5 PutValue: ToObject on the base, which is a TypeError
+        // for null and undefined -- and a catchable one, so it is raised here
+        // rather than from inside ResolveObjectHandle.
+        if (receiverValue.Tag is JsValueTag.Null or JsValueTag.Undefined)
+        {
+            var unsettableKind = receiverValue.Tag == JsValueTag.Null ? "null" : "undefined";
+            throw new JsThrownException(CreateTypeError(
+                $"Cannot set properties of {unsettableKind} (setting '{prop}')."));
+        }
+
+        var ownerHandle = ResolveObjectHandle(receiverValue);
+        if (receiverValue.Tag == JsValueTag.Object &&
+            TryStoreIC(function, icOffset, ownerHandle, receiverValue, prop, value))
+        {
+            return;
+        }
+
+        var obj = _heap.GetObject(ownerHandle);
+        if (obj is ProxyObject proxySet)
+        {
+            // ECMA-262 6.2.5.4 PutValue: a [[Set]] that returns false (here the
+            // proxy "set" trap returning a falsy value) throws a TypeError in
+            // strict-mode code, exactly like the ordinary-object path below.
+            var proxyOk = ProxySet(proxySet, receiverValue, prop, value);
+            if (!proxyOk && strict)
+            {
+                throw new JsThrownException(CreateTypeError($"Cannot assign to read-only property '{prop}'."));
+            }
+
+            return;
+        }
+
+        var ok = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
+
+        // ECMA-262 6.2.5.4 PutValue: strict-mode writes that return false
+        // (non-writable data, missing setter, non-extensible) throw. A sloppy
+        // one is silently dropped and the site is still cached, which is what
+        // the dispatch loop did before this moved out of it.
+        if (!ok && strict)
+        {
+            throw new JsThrownException(CreateTypeError($"Cannot assign to read-only property '{prop}'."));
+        }
+
+        if (receiverValue.Tag == JsValueTag.Object)
+        {
+            PopulateStoreIC(function, icOffset, receiverValue, prop);
+        }
+    }
+
+    /// <summary>
+    /// The dispatch-loop form: run the store, and route anything it raises
+    /// through this frame's handler stack so an enclosing JS try/catch sees it.
+    /// </summary>
+    internal void PerformSetElement(
+        InterpreterFrame frame,
+        JsValue receiverValue,
+        JsValue keyValue,
+        JsValue value,
+        bool strict)
+    {
+        try
+        {
+            SetElementCore(receiverValue, keyValue, value, strict);
+        }
+        catch (JsThrownException ex)
+        {
+            ThrowOrHandle(frame, ex.Value);
         }
     }
 
@@ -23768,12 +23775,7 @@ fallbackArraySpecies:
             frame.Registers[valueReg],
             frame.Function.IsStrictMode);
 
-    private void PerformSetElementByIndex(
-        InterpreterFrame frame,
-        JsValue receiverValue,
-        int index,
-        JsValue value,
-        bool strict)
+    internal void SetElementByIndexCore(JsValue receiverValue, int index, JsValue value, bool strict)
     {
         // SetElemByIndex is emitted only for compiler-owned array construction.
         // Sequential literals stay entirely in the dense vector; holes or any
@@ -23788,7 +23790,24 @@ fallbackArraySpecies:
             }
         }
 
-        PerformSetElement(frame, receiverValue, JsValue.FromInt32(index), value, strict);
+        SetElementCore(receiverValue, JsValue.FromInt32(index), value, strict);
+    }
+
+    private void PerformSetElementByIndex(
+        InterpreterFrame frame,
+        JsValue receiverValue,
+        int index,
+        JsValue value,
+        bool strict)
+    {
+        try
+        {
+            SetElementByIndexCore(receiverValue, index, value, strict);
+        }
+        catch (JsThrownException ex)
+        {
+            ThrowOrHandle(frame, ex.Value);
+        }
     }
 
     internal void SetElemByIndexForJit(InterpreterFrame frame, int ownerReg, int index, int valueReg)
