@@ -457,6 +457,7 @@ public sealed class FrameLayout
             OpCode.InitVar, OpCode.PreResolveVar, OpCode.StoreResolvedVar,
             OpCode.Move, OpCode.Jump, OpCode.JumpIfFalse,
             OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,
+            OpCode.PushHandler, OpCode.PopHandler, OpCode.EndFinally,
             OpCode.CreateFunction,
 
             // Arithmetic, coercion and comparison.

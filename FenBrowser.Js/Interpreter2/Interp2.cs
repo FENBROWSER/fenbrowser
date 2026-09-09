@@ -81,16 +81,28 @@ internal sealed class Interp2
     /// across frames and across re-entries.
     /// </summary>
     /// <remarks>
-    /// It cannot live only in the dispatch loop's locals. A program whose work
-    /// is a native builtin calling a short JavaScript callback - an array method
-    /// with a predicate, a proxy trap, a sort comparator - enters the loop
-    /// afresh for every call, and a per-entry countdown would restart at the
-    /// full interval each time and never reach zero. That is a script the
-    /// wall-clock deadline can never stop, which is the one thing these checks
-    /// exist to prevent. Found by a test262 case that spins a proxy trap 2^32
-    /// times.
+    /// It cannot live in the dispatch loop's locals. A program whose work is a
+    /// native builtin calling a short JavaScript callback - an array method with
+    /// a predicate, a proxy trap, a sort comparator - enters the loop afresh for
+    /// every call, and a per-entry countdown would restart at the full interval
+    /// each time and never reach zero. That is a script the wall-clock deadline
+    /// can never stop, which is the one thing these checks exist to prevent.
+    /// Found by a test262 case that spins a proxy trap 2^32 times.
+    ///
+    /// It is only read when something is actually watching - a budget, a
+    /// deadline or an interrupt - so an unguarded run pays nothing for it.
     /// </remarks>
     private int _guardCountdown = GuardCheckInterval;
+
+    /// <summary>
+    /// Open `try` entries across every live frame, as (catch ip, finally ip)
+    /// pairs. One shared array rather than a stack per frame: entering a try is
+    /// then two array writes, which is the operation that actually runs - a
+    /// handler is used only when something throws.
+    /// </summary>
+    private int[] _handlers = new int[128];
+
+    private int _handlerTop;
 
     internal Interp2(BytecodeInterpreter host) => _host = host;
 
@@ -124,6 +136,25 @@ internal sealed class Interp2
         public int Base;
         public int Ip;
         public int ReturnSlot;
+
+        /// <summary>
+        /// This frame's slice of the shared handler stack: where its innermost
+        /// enclosing `try` entries begin, and how many are open. Handlers are
+        /// pushed and popped far more often than they are used, so they are two
+        /// integers in a shared array rather than an object per frame.
+        /// </summary>
+        public int HandlerBase;
+
+        public int HandlerCount;
+
+        /// <summary>
+        /// An exception on its way through a `finally` that has no `catch`. It
+        /// is re-raised when the finally block ends, unless the block itself
+        /// completes abruptly first.
+        /// </summary>
+        public JsValue PendingException;
+
+        public bool HasPendingException;
     }
 
     /// <summary>
@@ -134,10 +165,31 @@ internal sealed class Interp2
     {
         var entryDepth = _depth;
         var entryTop = _stackTop;
+        var entryHandlerTop = _handlerTop;
         try
         {
             PushFrame(callee, layout, args, thisValue, returnSlot: -1);
-            return Run(entryDepth);
+            while (true)
+            {
+                try
+                {
+                    return Dispatch(entryDepth);
+                }
+                catch (JsThrownException thrown) when (!thrown.IsUncatchableByScript)
+                {
+                    // Every throw arrives here as a CLR exception, whether it
+                    // came from a `throw` in this loop, from a getter three
+                    // frames down, or from the old loop running a callee this
+                    // one declined. One place to unwind from means the dispatch
+                    // itself carries no exception handling at all - and the
+                    // handler region is around the outermost entry rather than
+                    // around the loop, which is worth about 5% of it.
+                    if (!TryRouteThrow(entryDepth, thrown.Value))
+                    {
+                        throw;
+                    }
+                }
+            }
         }
         finally
         {
@@ -147,32 +199,16 @@ internal sealed class Interp2
             // are no longer traced and are cleared by whatever pushes next.
             _depth = entryDepth;
             _stackTop = entryTop;
+            _handlerTop = entryHandlerTop;
         }
     }
 
     // ---------------------------------------------------------------- dispatch
 
-    private JsValue Run(int entryDepth)
-    {
-        var guarded = _host.Interp2HasGuards;
-        var guardCountdown = _guardCountdown;
-        try
-        {
-            return Dispatch(entryDepth, guarded, ref guardCountdown);
-        }
-        finally
-        {
-            // Hand the remaining budget back so the next entry continues it
-            // rather than starting over. One try/finally per outermost entry,
-            // not per call - the whole point of this loop is that a call does
-            // not need one.
-            _guardCountdown = guardCountdown;
-        }
-    }
-
-    private JsValue Dispatch(int entryDepth, bool guarded, ref int guardCountdown)
+    private JsValue Dispatch(int entryDepth)
     {
         var heap = _host.Heap;
+        var guarded = _host.Interp2HasGuards;
 
         // The frame's hot fields live in locals for the length of its execution
         // and are written back only when a call or a return changes which frame
@@ -200,9 +236,14 @@ internal sealed class Interp2
         {
             ref readonly var ins = ref code[ip++];
 
-            if (guarded && --guardCountdown <= 0)
+            // The countdown is a field, not a local, so it survives this frame
+            // ending and this method being re-entered. A program whose work is a
+            // native builtin calling a short JavaScript callback would otherwise
+            // restart it at the full interval on every call and never be
+            // stoppable by the wall-clock deadline.
+            if (guarded && --_guardCountdown <= 0)
             {
-                guardCountdown = GuardCheckInterval;
+                _guardCountdown = GuardCheckInterval;
                 _host.Interp2Guard(GuardCheckInterval);
             }
 
@@ -319,15 +360,71 @@ internal sealed class Interp2
                     break;
 
                 case OpCode.Throw:
-                    // No frame on this loop carries a handler yet - the layout
-                    // refuses any body containing a `try` - so a throw leaves
-                    // the loop and the entry frame's finally unwinds the stack.
+                    // Raised rather than routed here, so that a `throw` and an
+                    // exception out of a getter take exactly one path.
+                    _frames[_depth - 1].Ip = ip;
                     throw new JsThrownException(stack[frameBase + ins.A]);
+
+                case OpCode.PushHandler:
+                {
+                    ref var entering = ref _frames[_depth - 1];
+                    if (entering.HandlerCount == 0)
+                    {
+                        entering.HandlerBase = _handlerTop;
+                    }
+
+                    if (_handlerTop + 2 > _handlers.Length)
+                    {
+                        Array.Resize(ref _handlers, _handlers.Length * 2);
+                    }
+
+                    _handlers[_handlerTop] = ins.A;
+                    _handlers[_handlerTop + 1] = ins.D;
+                    _handlerTop += 2;
+                    entering.HandlerCount++;
+                    break;
+                }
+
+                case OpCode.PopHandler:
+                {
+                    ref var leaving = ref _frames[_depth - 1];
+                    if (leaving.HandlerCount > 0)
+                    {
+                        leaving.HandlerCount--;
+                        _handlerTop = leaving.HandlerBase + leaving.HandlerCount * 2;
+                    }
+
+                    break;
+                }
+
+                case OpCode.EndFinally:
+                {
+                    // ECMA-262 14.15.3: a finally block that completes normally
+                    // hands the abrupt completion it interrupted back on.
+                    ref var finishing = ref _frames[_depth - 1];
+                    if (!finishing.HasPendingException)
+                    {
+                        break;
+                    }
+
+                    var pending = finishing.PendingException;
+                    finishing.HasPendingException = false;
+                    finishing.PendingException = JsValue.Undefined;
+                    finishing.Ip = ip;
+                    throw new JsThrownException(pending);
+                }
 
                 case OpCode.Return:
                 {
                     var returnValue = stack[frameBase + ins.A];
-                    var returnSlot = _frames[_depth - 1].ReturnSlot;
+                    ref var returning = ref _frames[_depth - 1];
+                    var returnSlot = returning.ReturnSlot;
+                    if (returning.HandlerCount > 0)
+                    {
+                        _handlerTop = returning.HandlerBase;
+                        returning.HandlerCount = 0;
+                    }
+
                     _depth--;
                     _stackTop = frameBase;
                     if (_depth == entryDepth)
@@ -813,6 +910,10 @@ internal sealed class Interp2
         frame.Base = window;
         frame.Ip = 0;
         frame.ReturnSlot = returnSlot;
+        frame.HandlerBase = _handlerTop;
+        frame.HandlerCount = 0;
+        frame.PendingException = JsValue.Undefined;
+        frame.HasPendingException = false;
 
         DeclarativeEnvironmentRecord? context = null;
         if (layout.HasContext)
@@ -879,6 +980,58 @@ internal sealed class Interp2
         return frame.OuterEnv;
     }
 
+    /// <summary>
+    /// Find the innermost `try` covering the throw, discard everything between
+    /// it and where the throw happened, and continue there.
+    /// </summary>
+    /// <remarks>
+    /// Unwinding is the same operation a return is: cut the frame stack and the
+    /// value stack back to the frame that will carry on. Frames left above are
+    /// simply no longer traced. The thrown value goes into register 0 of that
+    /// frame, which is where the compiler's catch block expects to read it, and
+    /// which is a traced slot - so it is rooted from the moment it is stored
+    /// with no separate pin to release.
+    /// </remarks>
+    private bool TryRouteThrow(int entryDepth, JsValue value)
+    {
+        for (var depth = _depth; depth > entryDepth; depth--)
+        {
+            ref var frame = ref _frames[depth - 1];
+            while (frame.HandlerCount > 0)
+            {
+                frame.HandlerCount--;
+                var entry = frame.HandlerBase + frame.HandlerCount * 2;
+                var catchIp = _handlers[entry];
+                var finallyIp = _handlers[entry + 1];
+                _handlerTop = entry;
+
+                if (catchIp < 0 && finallyIp < 0)
+                {
+                    continue;
+                }
+
+                _depth = depth;
+                _stackTop = frame.Base + frame.Layout.WindowSize;
+                _stack[frame.Base] = value;
+
+                if (catchIp >= 0)
+                {
+                    frame.Ip = catchIp;
+                }
+                else
+                {
+                    frame.PendingException = value;
+                    frame.HasPendingException = true;
+                    frame.Ip = finallyIp;
+                }
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static string? NameOfSlot(FrameLayout layout, int slot)
         => (uint)slot < (uint)layout.SlotNames.Length ? layout.SlotNames[slot] : null;
 
@@ -929,6 +1082,13 @@ internal sealed class Interp2
             // reachable, the running frame is the only thing keeping the values
             // in it alive.
             frame.Context?.Trace(tracer);
+
+            // An exception travelling through a finally block is held nowhere
+            // else while the block runs.
+            if (frame.HasPendingException && frame.PendingException.Tag == JsValueTag.Object)
+            {
+                tracer.TraceRoot("interp2.frame.pendingException", frame.PendingException.AsObjectHandle());
+            }
         }
     }
 }
