@@ -31,6 +31,11 @@ internal sealed class CacheIRProgram
     private readonly bool _isStore;
     private readonly bool _guardsArray;
 
+    // The one program that guards no shape, because what it reads is not in
+    // one. Recognised here for the same reason the others are: so the hot path
+    // is a type test rather than a walk of the op list.
+    private readonly bool _isDenseArrayLength;
+
     /// <summary>Set when a guarded slot stopped being a plain data property.</summary>
     internal bool IsStale { get; private set; }
 
@@ -41,6 +46,14 @@ internal sealed class CacheIRProgram
         _shapes = shapes;
         _keys = keys;
         _resultSlot = -1;
+
+        if (ops.Length == 2 &&
+            ops[0] == CacheOp.GuardDenseArray &&
+            ops[1] == CacheOp.LoadArrayLengthResult)
+        {
+            _isDenseArrayLength = true;
+            return;
+        }
 
         if (ops.Length >= 3 &&
             ops[0] is CacheOp.GuardNotExotic or CacheOp.GuardNotProxy &&
@@ -84,6 +97,7 @@ internal sealed class CacheIRProgram
     internal int ResultSlot => _resultSlot;
 
     internal bool Guards(Shape shape, string? key) =>
+        !_isDenseArrayLength &&
         ReferenceEquals(_guardedShape, shape) &&
         (_guardedKey is null || string.Equals(_guardedKey, key, StringComparison.Ordinal));
 
@@ -130,6 +144,20 @@ internal sealed class CacheIRProgram
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryHit(JsObject receiver, Shape shape, string key, out JsValue result)
     {
+        if (_isDenseArrayLength)
+        {
+            // The site's key is fixed at "length" when it was attached, so
+            // there is nothing to compare but the receiver's state.
+            if (receiver is ArrayObject { IsDense: true } array)
+            {
+                result = JsValue.FromNumber(array.DenseCount);
+                return true;
+            }
+
+            result = JsValue.Undefined;
+            return false;
+        }
+
         if (_isStore ||
             !ReferenceEquals(_guardedShape, shape) ||
             (_guardedKey is { } guardedKey && !string.Equals(key, guardedKey, StringComparison.Ordinal)))
@@ -179,6 +207,14 @@ internal sealed class CacheIRProgram
                 case CacheOp.GuardKey:
                     if (!string.Equals(key, _keys[_args[i]], StringComparison.Ordinal)) goto miss;
                     break;
+
+                case CacheOp.GuardDenseArray:
+                    if (receiver is not ArrayObject { IsDense: true }) goto miss;
+                    break;
+
+                case CacheOp.LoadArrayLengthResult:
+                    result = JsValue.FromNumber(((ArrayObject)receiver).DenseCount);
+                    return CacheRunResult.Hit;
 
                 case CacheOp.LoadSlotResult:
                     return LoadSlot(receiver, _args[i], out result);

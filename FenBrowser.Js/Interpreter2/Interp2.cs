@@ -200,6 +200,14 @@ internal sealed class Interp2
             _depth = entryDepth;
             _stackTop = entryTop;
             _handlerTop = entryHandlerTop;
+
+            // Close the last instruction of the job rather than leaving it open
+            // across the thread's idle wait, where it would be billed until the
+            // next job starts.
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimingEnabled && _depth == 0)
+            {
+                FenBrowser.Js.Diagnostics.InterpreterProfiler.EndOpBatch();
+            }
         }
     }
 
@@ -242,6 +250,16 @@ internal sealed class Interp2
             if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
             {
                 FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordOpCode(ins.OpCode, function);
+            }
+
+            // Per-opcode self time, on its own switch because it takes a
+            // timestamp per instruction. Counting which opcode runs most says
+            // nothing about where a page's seconds went - a lesson this loop
+            // learned by specialising the most frequent one and measuring no
+            // change at all.
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimingEnabled)
+            {
+                FenBrowser.Js.Diagnostics.InterpreterProfiler.BeginOp(ins.OpCode);
             }
 
             // The countdown is a field, not a local, so it survives this frame

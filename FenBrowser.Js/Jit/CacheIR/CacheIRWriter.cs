@@ -51,6 +51,18 @@ internal sealed class CacheIRWriter
         _args.Add(slot);
     }
 
+    internal void GuardDenseArray()
+    {
+        _ops.Add(CacheOp.GuardDenseArray);
+        _args.Add(0);
+    }
+
+    internal void LoadArrayLengthResult()
+    {
+        _ops.Add(CacheOp.LoadArrayLengthResult);
+        _args.Add(0);
+    }
+
     internal void LoadSlotResult(int slot)
     {
         if (slot < 0) throw new ArgumentOutOfRangeException(nameof(slot));

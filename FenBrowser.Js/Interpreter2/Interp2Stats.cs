@@ -19,6 +19,31 @@ namespace FenBrowser.Js.Interpreter2;
 /// more than an exact one that changes what it measures. The flag is off in
 /// every configuration that has not asked for it.
 /// </remarks>
+/// <summary>Where a named property actually lived, when its site could not answer.</summary>
+public enum PropertyMissKind
+{
+    /// <summary>The receiver was not an ordinary object - a primitive, a proxy, a host object.</summary>
+    NotCacheable,
+
+    /// <summary>
+    /// An own data property in a shape slot - the exact thing a site caches, so
+    /// a miss here is the site failing to hold enough shapes.
+    /// </summary>
+    OwnDataSlot,
+
+    /// <summary>An own accessor: reading it is a call into user code, never a slot.</summary>
+    OwnAccessor,
+
+    /// <summary>An own property the shape does not describe - no slot to cache.</summary>
+    OwnNotInShape,
+
+    /// <summary>Found on the prototype chain, which the cache refuses to attach for.</summary>
+    OnPrototype,
+
+    /// <summary>Not found anywhere; the read answers undefined.</summary>
+    Absent,
+}
+
 public static class Interp2Stats
 {
     private static readonly long[] BailoutCounts = new long[Enum.GetValues<Interp2Bailout>().Length];
@@ -31,6 +56,11 @@ public static class Interp2Stats
     private static long _callsInLoop;
     private static long _callsDelegated;
     private static long _callsDelegatedToDeclinedBody;
+    private static long _propertyReadsCached;
+    private static long _propertyReadsMissed;
+    private static long _elementReadsCached;
+    private static long _elementReadsMissed;
+    private static readonly long[] PropertyMissKinds = new long[Enum.GetValues<PropertyMissKind>().Length];
     private static long _maxDepth;
     private static long _maxStackSlots;
 
@@ -69,6 +99,39 @@ public static class Interp2Stats
 
     internal static void RecordCallInLoop() => _callsInLoop++;
 
+    /// <summary>
+    /// Whether a property read was answered by its site's shape cache. A read
+    /// that misses walks the object and its prototypes, which is roughly ten
+    /// times the work - so the hit rate, not the count, says what a page's
+    /// property access costs.
+    /// </summary>
+    internal static void RecordPropertyRead(bool cached)
+    {
+        if (cached) _propertyReadsCached++; else _propertyReadsMissed++;
+    }
+
+    /// <summary>Why a named property read could not be answered from its site.</summary>
+    internal static void RecordPropertyMiss(PropertyMissKind kind) => PropertyMissKinds[(int)kind]++;
+
+    private static readonly Dictionary<string, long> UncacheableKeys = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Which names are behind the misses a cache cannot describe. A count of
+    /// misses says there is something to fix; only the names say what.
+    /// </summary>
+    internal static void RecordUncacheableKey(string key)
+    {
+        if (UncacheableKeys.Count < 4096)
+        {
+            UncacheableKeys[key] = UncacheableKeys.TryGetValue(key, out var seen) ? seen + 1 : 1;
+        }
+    }
+
+    internal static void RecordElementRead(bool cached)
+    {
+        if (cached) _elementReadsCached++; else _elementReadsMissed++;
+    }
+
     internal static void RecordCallDelegated(bool calleeIsJavaScript)
     {
         _callsDelegated++;
@@ -85,6 +148,12 @@ public static class Interp2Stats
         _callsInLoop = 0;
         _callsDelegated = 0;
         _callsDelegatedToDeclinedBody = 0;
+        _propertyReadsCached = 0;
+        _propertyReadsMissed = 0;
+        _elementReadsCached = 0;
+        _elementReadsMissed = 0;
+        Array.Clear(PropertyMissKinds);
+        UncacheableKeys.Clear();
         _maxDepth = 0;
         _maxStackSlots = 0;
     }
@@ -110,6 +179,44 @@ public static class Interp2Stats
               .Append(" toNative=").Append(_callsDelegated - _callsDelegatedToDeclinedBody)
               .Append(']')
               .AppendLine();
+
+        var propertyReads = _propertyReadsCached + _propertyReadsMissed;
+        var elementReads = _elementReadsCached + _elementReadsMissed;
+        if (propertyReads + elementReads > 0)
+        {
+            report.Append("[interp2] o.name reads=").Append(propertyReads)
+                  .Append(" cached=").Append(_propertyReadsCached).Append(Percent(_propertyReadsCached, propertyReads))
+                  .Append("  o[k] reads=").Append(elementReads)
+                  .Append(" cached=").Append(_elementReadsCached).Append(Percent(_elementReadsCached, elementReads))
+                  .AppendLine();
+        }
+
+        var missTotal = 0L;
+        foreach (var count in PropertyMissKinds) missTotal += count;
+        if (missTotal > 0)
+        {
+            report.Append("[interp2] o.name misses:");
+            for (var i = 0; i < PropertyMissKinds.Length; i++)
+            {
+                if (PropertyMissKinds[i] == 0) continue;
+                report.Append(' ').Append((PropertyMissKind)i).Append('=').Append(PropertyMissKinds[i])
+                      .Append(Percent(PropertyMissKinds[i], missTotal));
+            }
+
+            report.AppendLine();
+
+            if (UncacheableKeys.Count > 0)
+            {
+                report.Append("[interp2] not-in-shape names:");
+                var top = UncacheableKeys.OrderByDescending(static pair => pair.Value).Take(12);
+                foreach (var (name, count) in top)
+                {
+                    report.Append(' ').Append(name).Append('=').Append(count);
+                }
+
+                report.AppendLine();
+            }
+        }
 
         var ranked = new List<(Interp2Bailout Reason, long Count)>();
         for (var i = 1; i < BailoutCounts.Length; i++)

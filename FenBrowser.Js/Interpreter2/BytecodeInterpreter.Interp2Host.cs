@@ -599,12 +599,71 @@ public sealed partial class BytecodeInterpreter
     {
         if (TryGetLoadIC(function, icOffset, receiver, key, out var cached))
         {
+            if (Interpreter2.Interp2Options.Log) Interpreter2.Interp2Stats.RecordPropertyRead(cached: true);
             return cached;
+        }
+
+        if (Interpreter2.Interp2Options.Log)
+        {
+            Interpreter2.Interp2Stats.RecordPropertyRead(cached: false);
+            Interpreter2.Interp2Stats.RecordPropertyMiss(ClassifyPropertyMiss(receiver, key));
         }
 
         var value = GetReceiverProperty(receiver, key);
         PopulateLoadIC(function, icOffset, receiver, key);
         return value;
+    }
+
+    /// <summary>
+    /// Where a name that missed its cache site actually lives. Diagnostic only,
+    /// and it repeats the lookup - so it runs under the coverage switch and
+    /// nowhere else.
+    /// </summary>
+    private Interpreter2.PropertyMissKind ClassifyPropertyMiss(JsValue receiver, string key)
+    {
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            return Interpreter2.PropertyMissKind.NotCacheable;
+        }
+
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (obj is ProxyObject or ModuleNamespaceObject)
+        {
+            return Interpreter2.PropertyMissKind.NotCacheable;
+        }
+
+        if (obj.TryGetOwnProperty(key, out var own))
+        {
+            // Only a property the shape describes and that reads as a plain
+            // data slot is one a site could have cached. An accessor never can
+            // be - reading it calls user code. A data property the shape does
+            // not describe is neither: it is a gap.
+            if (obj.CurrentShape.TryGetSlot(key, out var slot) && obj.TryReadDataSlot(slot, out _))
+            {
+                return Interpreter2.PropertyMissKind.OwnDataSlot;
+            }
+
+            if (own.IsAccessor)
+            {
+                return Interpreter2.PropertyMissKind.OwnAccessor;
+            }
+
+            Interpreter2.Interp2Stats.RecordUncacheableKey(key);
+            return Interpreter2.PropertyMissKind.OwnNotInShape;
+        }
+
+        for (var proto = obj.PrototypeHandle; proto is { } handle; )
+        {
+            var protoObj = _heap.GetObject(handle);
+            if (protoObj.TryGetOwnProperty(key, out _))
+            {
+                return Interpreter2.PropertyMissKind.OnPrototype;
+            }
+
+            proto = protoObj.PrototypeHandle;
+        }
+
+        return Interpreter2.PropertyMissKind.Absent;
     }
 
     /// <summary>ECMA-262 13.3.3 computed member access.</summary>
@@ -627,6 +686,7 @@ public sealed partial class BytecodeInterpreter
 
         if (TryGetDenseElement(receiver, key, out var element))
         {
+            if (Interpreter2.Interp2Options.Log) Interpreter2.Interp2Stats.RecordElementRead(cached: true);
             // A dense array element is an own data property: the slot itself is
             // the answer, with no key to build and no prototype chain to walk.
             return element;
@@ -635,9 +695,11 @@ public sealed partial class BytecodeInterpreter
         if (key.Tag == JsValueTag.String &&
             TryGetElemStringIC(function, icOffset, receiver, key.AsString(), out var cached))
         {
+            if (Interpreter2.Interp2Options.Log) Interpreter2.Interp2Stats.RecordElementRead(cached: true);
             return cached;
         }
 
+        if (Interpreter2.Interp2Options.Log) Interpreter2.Interp2Stats.RecordElementRead(cached: false);
         var propertyKey = ToPropertyKey(key);
         var value = GetReceiverProperty(receiver, propertyKey);
         if (key.Tag == JsValueTag.String)

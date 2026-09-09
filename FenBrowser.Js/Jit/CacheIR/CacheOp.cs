@@ -33,6 +33,21 @@ internal enum CacheOp : byte
     /// layer's concern.
     /// </summary>
     StoreSlotResult,
+
+    /// <summary>
+    /// Fails unless the receiver is an array still keeping its elements in the
+    /// dense vector - which is the only state in which its length is the
+    /// vector's count rather than a stored property.
+    /// </summary>
+    GuardDenseArray,
+
+    /// <summary>
+    /// Yields a dense array's length, and terminates. It is not a slot in any
+    /// shape - the array synthesises it from the vector - so no shape guard can
+    /// describe it and, before this, no site could cache it. On a real page
+    /// `length` is the most-read property there is: every loop bound reads one.
+    /// </summary>
+    LoadArrayLengthResult,
 }
 
 internal enum CacheRunResult : byte

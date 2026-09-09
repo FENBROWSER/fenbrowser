@@ -22,6 +22,20 @@ internal static class LoadPropertyAttacher
     {
         if (receiver is ProxyObject or ModuleNamespaceObject) return null;
 
+        // A dense array's length is the vector's count, not a property in its
+        // shape, so no shape guard can reach it and every read of it missed.
+        // It is the single most-read name on a real page - 1.76 million of the
+        // 4.16 million missed reads in one reCAPTCHA run, and nothing else in
+        // that table was above 40 thousand.
+        if (receiver is ArrayObject { IsDense: true } &&
+            string.Equals(key, "length", StringComparison.Ordinal))
+        {
+            var lengthWriter = new CacheIRWriter();
+            lengthWriter.GuardDenseArray();
+            lengthWriter.LoadArrayLengthResult();
+            return lengthWriter.Build();
+        }
+
         var shape = receiver.CurrentShape;
         if (!shape.TryGetSlot(key, out var slot)) return null;
 
