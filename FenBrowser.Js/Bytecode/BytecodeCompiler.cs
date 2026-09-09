@@ -368,13 +368,15 @@ public sealed class BytecodeCompiler
         return false;
     }
 
-    // Slice the exact source text for a function node from the original source,
-    // and propagate the source to the child compiler that produced `nested` so
-    // deeper-nested functions resolve too. `span` is an absolute offset into
-    // `_rawSource`. Returns the function unchanged for fluent use.
-    private BytecodeFunction AttachSource(BytecodeFunction nested, BytecodeCompiler child, SourceSpan span)
+    // Slice the exact source text for a function node from the original source.
+    // `span` is an absolute offset into `_rawSource`. The child compiler is
+    // handed `_rawSource` at construction rather than here: this runs after the
+    // child has already compiled, so setting it here left every function nested
+    // two or more deep with no source at all, and Function.prototype.toString
+    // reported the lot of them as "[native code]".
+    // Returns the function unchanged for fluent use.
+    private BytecodeFunction AttachSource(BytecodeFunction nested, SourceSpan span)
     {
-        child._rawSource = _rawSource;
         if (_rawSource is not null && span.Start >= 0 && span.Length > 0 &&
             span.Start + span.Length <= _rawSource.Length)
         {
@@ -687,7 +689,7 @@ public sealed class BytecodeCompiler
             functionDecl.ParameterBindings,
             out var prologueCount,
             functionDecl.ParameterDefaults);
-        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens };
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             functionDecl.Parameters,
@@ -700,7 +702,7 @@ public sealed class BytecodeCompiler
             captureCompletionValue: false,
             prologueStatementCount: prologueCount,
             parameterDefaults: functionDecl.ParameterDefaults);
-        AttachSource(nestedFunction, childCompiler, functionDecl.Span);
+        AttachSource(nestedFunction, functionDecl.Span);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
 
@@ -1421,7 +1423,7 @@ public sealed class BytecodeCompiler
         // a class expression or function expression in a field initializer).
         // Instead, the caller for the direct class constructor passes
         // FunctionKind.Constructor via explicitKind.
-        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames };
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _rawSource = _rawSource };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
@@ -1435,7 +1437,7 @@ public sealed class BytecodeCompiler
             captureCompletionValue: false,
             prologueStatementCount: prologueCount,
             parameterDefaults: fnExpr.ParameterDefaults);
-        AttachSource(nestedFunction, childCompiler, fnExpr.Span);
+        AttachSource(nestedFunction, fnExpr.Span);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
         var dest = AllocateRegister();
@@ -3765,7 +3767,7 @@ public sealed class BytecodeCompiler
                 // ECMA-262 NamedEvaluation: an anonymous function expression adopts
                 // the binding/assignment name; a named expression keeps its own name.
                 var fnExprName = fnExpr.Name ?? ConsumeNameHint();
-                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens };
+                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     fnExpr.Parameters,
@@ -3780,7 +3782,7 @@ public sealed class BytecodeCompiler
                     parameterDefaults: fnExpr.ParameterDefaults,
                     // A named function expression binds its own name inside its body.
                     bindOwnNameInBody: fnExpr.Name is { Length: > 0 });
-                AttachSource(nestedFunction, childCompiler, fnExpr.Span);
+                AttachSource(nestedFunction, fnExpr.Span);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -3825,7 +3827,7 @@ public sealed class BytecodeCompiler
                 // ECMA-262 NamedEvaluation: arrows are always anonymous, so they take
                 // the binding/assignment name when one is in scope, else the empty name.
                 var arrowName = ConsumeNameHint() ?? string.Empty;
-                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens };
+                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     arrow.Parameters,
@@ -3838,7 +3840,7 @@ public sealed class BytecodeCompiler
                     captureCompletionValue: false,
                     prologueStatementCount: arrowPrologueCount,
                     parameterDefaults: arrow.ParameterDefaults);
-                AttachSource(nestedFunction, childCompiler, arrow.Span);
+                AttachSource(nestedFunction, arrow.Span);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
