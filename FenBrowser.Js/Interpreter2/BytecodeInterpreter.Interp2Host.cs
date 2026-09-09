@@ -114,6 +114,16 @@ public sealed partial class BytecodeInterpreter
     internal JsValue Interp2Call(JsValue callee, in CallArgs args, JsValue thisValue)
         => CallFunction(callee, args, thisValue);
 
+    /// <summary>
+    /// A native called directly from a register window, skipping both the
+    /// re-resolution of a callee this loop has already resolved and the pinning
+    /// of arguments it is already holding somewhere the collector can see.
+    /// </summary>
+    internal JsValue Interp2CallNative(NativeFunctionObject native, in CallArgs args, JsValue thisValue)
+        => FenBrowser.Js.Diagnostics.NativeCallStats.Enabled
+            ? CallNativeFunctionBodyMeasured(native, JsValue.Undefined, args, thisValue)
+            : CallNativeWithRootedArguments(native, args, thisValue);
+
     /// <summary>ECMA-262 10.2.1.3 OrdinaryCallBindThis, steps 6-7 (sloppy mode).</summary>
     internal JsValue Interp2CoerceReceiver(JsValue thisValue)
     {

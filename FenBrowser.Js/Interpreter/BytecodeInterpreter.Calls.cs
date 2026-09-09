@@ -617,6 +617,40 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    /// <summary>
+    /// The same native call from a frame whose arguments the collector can
+    /// already see.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The pinning above exists because a native body runs with no interpreter
+    /// frame on the stack, so the root walk - which traverses the frame list -
+    /// cannot reach the callee, the receiver or the arguments while it runs.
+    /// That is not true of a call made from the register-window loop: all three
+    /// are slots in the caller's window, and the whole live window is traced as
+    /// one span for as long as the frame exists. Pinning them again is work
+    /// whose only effect is to add and remove root-set entries.
+    /// </para>
+    /// <para>
+    /// The scoped allocation pin stays. It covers something different - objects
+    /// the native body allocates and holds only in C# locals - which no frame
+    /// can see whichever loop made the call.
+    /// </para>
+    /// </remarks>
+    internal JsValue CallNativeWithRootedArguments(
+        NativeFunctionObject native, IReadOnlyList<JsValue> args, JsValue thisValue)
+    {
+        _heap.BeginNativeExecution();
+        try
+        {
+            return native.Call(thisValue, args);
+        }
+        finally
+        {
+            _heap.EndNativeExecution();
+        }
+    }
+
     // The same call, with the per-builtin accounting the diagnostics line
     // reports. Two reads of the performance counter and a dictionary keyed by
     // the builtin's name cost more than a short builtin's whole body, so the

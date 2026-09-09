@@ -858,18 +858,33 @@ internal sealed class Interp2
     private bool Call(JsValue calleeValue, JsValue thisValue, int argStart, int argCount, int returnSlot)
     {
         var calleeIsJavaScript = false;
-        if (calleeValue.Tag == JsValueTag.Object &&
-            _host.Heap.GetObject(calleeValue.AsObjectHandle()) is JsFunctionObject fn)
+        if (calleeValue.Tag == JsValueTag.Object)
         {
-            var layout = FrameLayout.For(fn.Function);
-            if (layout.Eligible)
+            var target = _host.Heap.GetObject(calleeValue.AsObjectHandle());
+            if (target is JsFunctionObject fn)
             {
-                if (Interp2Options.Log) Interp2Stats.RecordCallInLoop();
-                PushFrame(fn, layout, _stack, argStart, argCount, thisValue, returnSlot);
-                return true;
-            }
+                var layout = FrameLayout.For(fn.Function);
+                if (layout.Eligible)
+                {
+                    if (Interp2Options.Log) Interp2Stats.RecordCallInLoop();
+                    PushFrame(fn, layout, _stack, argStart, argCount, thisValue, returnSlot);
+                    return true;
+                }
 
-            calleeIsJavaScript = true;
+                calleeIsJavaScript = true;
+            }
+            else if (target is NativeFunctionObject native)
+            {
+                // More than half of every call a real page makes is this one,
+                // and the callee has just been resolved. Going back through the
+                // general entry would resolve it a second time and walk the
+                // proxy/bound/generator ladder to arrive here anyway.
+                if (Interp2Options.Log) Interp2Stats.RecordCallDelegated(calleeIsJavaScript: false);
+                var nativeResult = _host.Interp2CallNative(
+                    native, CallArgs.FromRegisters(_stack, argStart, argCount), thisValue);
+                _stack[returnSlot] = nativeResult;
+                return false;
+            }
         }
 
         // Splitting the delegated calls says which of two very different things
