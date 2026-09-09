@@ -85,6 +85,14 @@ public sealed class BytecodeFunction
     internal string?[] SlotNames =>
         _slotNames ??= FenBrowser.Js.Interpreter.SlotNameTable.BuildNames(this);
 
+    // The register-window interpreter's verdict on this body: whether its frame
+    // can be a slice of a shared stack, and where each parameter and variable
+    // sits in it. Cached on the function rather than in a side table because a
+    // call site reads it before every call, and a per-call weak-table probe is
+    // the sort of cost that loop exists to remove. Null until first asked for;
+    // computed by FrameLayout.For.
+    internal FenBrowser.Js.Interpreter2.FrameLayout? Interp2Layout;
+
 
     public IReadOnlyList<string> VarDeclarationNames { get; init; } = Array.Empty<string>();
 

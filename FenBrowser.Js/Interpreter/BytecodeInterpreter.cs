@@ -35,7 +35,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // a cell only reachable through a frame register can be reclaimed by an
     // auto-MinorCollect inside user code and surface as "Stale heap handle.".
     private readonly Stack<InterpreterFrame> _activeFrames = new();
-    public bool IsExecuting => _activeFrames.Count > 0;
+    // A frame may be on either loop, so "is JS running" is the union of the two.
+    public bool IsExecuting => _activeFrames.Count > 0 || _interp2 is { Depth: > 0 };
     // Browsers render an array that recursively contains itself as an empty
     // element while Array.prototype.join/toString is already processing that
     // same array. Without this guard, circular page data recurses indefinitely.
@@ -321,6 +322,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     void IHeapRootSource.TraceRoots(IHeapTracer tracer)
     {
+        // The register-window loop keeps its frames in one contiguous value
+        // stack, so its whole root set is a single linear span plus one receiver
+        // per activation. It is traced first and unconditionally: a frame it
+        // abandoned to an exception is unwound lazily, so "not currently
+        // executing" is not the same as "holds nothing".
+        _interp2?.TraceRoots(tracer);
+
         foreach (var frame in _activeFrames)
         {
             for (var i = 0; i < frame.Registers.Length; i++)

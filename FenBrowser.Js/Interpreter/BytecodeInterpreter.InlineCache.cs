@@ -179,6 +179,20 @@ public sealed partial class BytecodeInterpreter
     private JsValue CallOrdinaryFunctionFast(JsFunctionObject fn, in CallArgs args, JsValue thisValue)
     {
         var bcFn = fn.Function;
+
+        // The monomorphic call cache is a second door into an ordinary function
+        // body, so the register-window loop has to be reachable through it too -
+        // otherwise a call site would run one loop before it warmed up and the
+        // other afterwards.
+        if (Interpreter2.Interp2Options.Enabled)
+        {
+            var layout = Interpreter2.FrameLayout.For(bcFn);
+            if (layout.Eligible)
+            {
+                return Interp2Execute(fn, layout, args, thisValue);
+            }
+        }
+
         bcFn.Invocations++;
 #if !PUBLISH_AOT
         const int BackEdgeScale = 100;

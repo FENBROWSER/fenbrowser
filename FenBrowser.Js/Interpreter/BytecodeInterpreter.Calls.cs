@@ -413,6 +413,20 @@ public sealed partial class BytecodeInterpreter
                 JitCompiler.RequestCompile(bcFn);
             }
 #endif
+            // The register-window loop, when it is switched on and this body is
+            // one it can run. Both loops read this same bytecode and share the
+            // heap, the builtins and the inline caches, so a call can cross
+            // between them in either direction at any depth - which is what lets
+            // test262 run on both and say exactly what the new one changes.
+            if (Interpreter2.Interp2Options.Enabled)
+            {
+                var layout = Interpreter2.FrameLayout.For(bcFn);
+                if (layout.Eligible)
+                {
+                    return Interp2Execute(fn, layout, args, thisValue);
+                }
+            }
+
             return ExecuteInternal(fn.Function, args, thisValue, ResolveFunctionOuterEnvironment(fn), callee: fn);
         }
 
