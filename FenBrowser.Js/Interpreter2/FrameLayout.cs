@@ -109,6 +109,15 @@ public sealed class FrameLayout
     /// <summary>Window index each formal parameter is bound at, in declaration order.</summary>
     public int[] ParameterWindowIndex { get; }
 
+    /// <summary>
+    /// Whether two formals share a window slot, which sloppy mode allows:
+    /// `function f(x, a, b, x)` binds both x's to one slot and the last one
+    /// wins, so `f(1, 2)` leaves x undefined rather than 1. Binding only the
+    /// arguments that were supplied would leave the first x's value in place,
+    /// so a body shaped like this has every formal written, supplied or not.
+    /// </summary>
+    public bool HasDuplicateParameterSlots { get; private init; }
+
     /// <summary>Total <c>JsValue</c> slots one activation of this body occupies.</summary>
     public int WindowSize { get; }
 
@@ -253,11 +262,25 @@ public sealed class FrameLayout
         if (!function.AllVarSlotsMapped)
             return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
 
+        var duplicateParameters = false;
+        for (var i = 1; i < parameterWindowIndex.Length && !duplicateParameters; i++)
+        {
+            for (var j = 0; j < i; j++)
+            {
+                if (parameterWindowIndex[i] == parameterWindowIndex[j])
+                {
+                    duplicateParameters = true;
+                    break;
+                }
+            }
+        }
+
         return new FrameLayout(function, registerCount, slotCount, slotIsOwn, slotNames, parameterWindowIndex)
         {
             IsStrict = function.IsStrictMode,
             BindsThisLoosely = !function.IsStrictMode,
             HasFreeVariables = hasFreeVariables,
+            HasDuplicateParameterSlots = duplicateParameters,
         };
     }
 

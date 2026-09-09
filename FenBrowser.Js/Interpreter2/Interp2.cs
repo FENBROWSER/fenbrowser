@@ -541,10 +541,12 @@ internal sealed class Interp2
         var window = Reserve(layout);
         var stack = _stack;
         var parameterIndex = layout.ParameterWindowIndex;
-        var supplied = Math.Min(args.Count, parameterIndex.Length);
-        for (var i = 0; i < supplied; i++)
+        var bind = layout.HasDuplicateParameterSlots
+            ? parameterIndex.Length
+            : Math.Min(args.Count, parameterIndex.Length);
+        for (var i = 0; i < bind; i++)
         {
-            stack[window + parameterIndex[i]] = args[i];
+            stack[window + parameterIndex[i]] = i < args.Count ? args[i] : JsValue.Undefined;
         }
 
         Activate(callee, layout, thisValue, window, returnSlot);
@@ -562,10 +564,16 @@ internal sealed class Interp2
         var window = Reserve(layout);
         var stack = _stack;
         var parameterIndex = layout.ParameterWindowIndex;
-        var supplied = Math.Min(argCount, parameterIndex.Length);
-        for (var i = 0; i < supplied; i++)
+        // Missing formals are already undefined from the window clear, so the
+        // ordinary case binds only what was supplied. A body whose formals share
+        // a slot has to write every one of them, in order, or a duplicate's
+        // earlier value survives where the spec says the last one wins.
+        var bind = layout.HasDuplicateParameterSlots
+            ? parameterIndex.Length
+            : Math.Min(argCount, parameterIndex.Length);
+        for (var i = 0; i < bind; i++)
         {
-            stack[window + parameterIndex[i]] = argSource[argStart + i];
+            stack[window + parameterIndex[i]] = i < argCount ? argSource[argStart + i] : JsValue.Undefined;
         }
 
         Activate(callee, layout, thisValue, window, returnSlot);
