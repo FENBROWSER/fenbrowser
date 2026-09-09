@@ -17303,6 +17303,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // runs ToNumber → @@toPrimitive/valueOf, and throws a TypeError for Symbol
     // or BigInt), not read as a raw number. Negative values count from the end;
     // ±Infinity clamps to the ends.
+    /// <summary>
+    /// The element count a slice would produce, unclamped - the value
+    /// ArraySpeciesCreate is handed, and the one the array-length limit applies
+    /// to. <see cref="NormaliseSliceIndex"/> answers the same question for the
+    /// loop, where the range has already been proved to fit.
+    /// </summary>
+    private double SliceCount(IReadOnlyList<JsValue> args, double length)
+    {
+        var start = RelativeSliceIndex(args, 0, 0, length);
+        var end = RelativeSliceIndex(args, 1, length, length);
+        return Math.Max(end - start, 0);
+    }
+
+    private double RelativeSliceIndex(
+        IReadOnlyList<JsValue> args, int argIndex, double defaultValue, double length)
+    {
+        if (argIndex >= args.Count || args[argIndex].Tag == JsValueTag.Undefined)
+        {
+            return Math.Clamp(defaultValue, 0, length);
+        }
+
+        var relative = ToIntegerOrInfinity(args[argIndex]);
+        if (double.IsNegativeInfinity(relative)) return 0;
+        if (relative < 0) return Math.Max(length + relative, 0);
+        return Math.Min(relative, length);
+    }
+
     private int NormaliseSliceIndex(IReadOnlyList<JsValue> args, int argIndex, int defaultValue, int length)
     {
         if (argIndex >= args.Count || args[argIndex].Tag == JsValueTag.Undefined)
@@ -18206,7 +18233,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeSlice(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var obj = ToObject(thisValue);
+        var lengthDouble = GetArrayLengthDouble(obj);
         var length = GetArrayLength(obj);
+
+        // ECMA-262 23.1.3.28 step 8: ArraySpeciesCreate(O, count) runs before
+        // any element is read, so a count past the array-length limit is a
+        // RangeError that no property access precedes. The count has to be
+        // worked out in double space to see that: a `length` of 2^32 clamps to
+        // int.MaxValue, which is inside the limit, and the loop below would then
+        // read two billion elements out of an object that reports whatever it
+        // likes - a proxy can make that unbounded work from a single call.
+        ThrowIfArrayLengthExceedsLimit(SliceCount(args, lengthDouble));
+
         var start = NormaliseSliceIndex(args, 0, 0, length);
         var end = NormaliseSliceIndex(args, 1, length, length);
 
