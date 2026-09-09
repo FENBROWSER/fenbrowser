@@ -4580,6 +4580,43 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             globalThis.WorkerGlobalScope = function WorkerGlobalScope() { };
             globalThis.DedicatedWorkerGlobalScope = function DedicatedWorkerGlobalScope() { };
 
+            // Having the names is not the same as being one. A library asks
+            // `self instanceof WorkerGlobalScope` or reads
+            // Object.prototype.toString.call(self) before it decides it may
+            // touch a document, and both still answered Window. The host makes
+            // the global object, so it cannot be moved onto
+            // WorkerGlobalScope.prototype -- teach the constructors to
+            // recognise it instead. `instanceof` consults Symbol.hasInstance
+            // first (ECMA-262 13.10.2), which is the supported way to answer
+            // for an exotic global.
+            (function () {
+                var scopes = [globalThis.WorkerGlobalScope, globalThis.DedicatedWorkerGlobalScope];
+                for (var s = 0; s < scopes.length; s++) {
+                    try {
+                        Object.defineProperty(scopes[s], Symbol.hasInstance, {
+                            value: function (candidate) { return candidate === globalThis; },
+                            configurable: true
+                        });
+                    } catch (e) { }
+                }
+                try {
+                    Object.defineProperty(globalThis, Symbol.toStringTag, {
+                        value: 'DedicatedWorkerGlobalScope',
+                        configurable: true,
+                        enumerable: false,
+                        writable: false
+                    });
+                } catch (e) { }
+                try {
+                    Object.defineProperty(globalThis, 'constructor', {
+                        value: globalThis.DedicatedWorkerGlobalScope,
+                        configurable: true,
+                        enumerable: false,
+                        writable: true
+                    });
+                } catch (e) { }
+            })();
+
             globalThis.self = globalThis;
             globalThis.onmessage = null;
             globalThis.onmessageerror = null;
