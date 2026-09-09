@@ -13906,9 +13906,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         var capture = false;
         var once = false;
+        var signal = JsValue.Undefined;
         if (args.Count >= 3)
         {
-            ParseEventListenerOptions(args[2], out capture, out once);
+            ParseEventListenerOptions(args[2], out capture, out once, out _, out signal);
+        }
+
+        // DOM 2.7 step 2: an already-aborted signal means the listener is never
+        // added at all.
+        var hasSignal = signal.Tag == JsValueTag.Object;
+        if (hasSignal && ReadJsBoolProperty(signal, "aborted"))
+        {
+            return;
         }
 
         // DOM 2.7 "add an event listener" step 4: a listener whose type, callback
@@ -13926,7 +13935,47 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             }
         }
 
-        listeners.Add(new BrowserEventListener(type, callback, capture, once));
+        var listener = new BrowserEventListener(type, callback, capture, once);
+        listeners.Add(listener);
+
+        // DOM 2.7 step 5: aborting the signal removes the listener. Nothing was
+        // watching the signal before, so { signal } read as a no-op and the
+        // handler kept firing after abort() -- the one teardown mechanism that
+        // does not need the original callback to be kept around, and the reason
+        // it is what modern code reaches for.
+        if (!hasSignal)
+        {
+            return;
+        }
+
+        var addToSignal = ReadJsProperty(signal, "addEventListener");
+        if (!_interpreter.CanCallValue(addToSignal))
+        {
+            return;
+        }
+
+        var remover = _interpreter.AllocateNativeFunction(
+            "__fenAbortEventListener",
+            (_, _) =>
+            {
+                listeners.Remove(listener);
+                return JsValue.Undefined;
+            },
+            length: 1);
+
+        try
+        {
+            _interpreter.InvokeFunction(
+                addToSignal,
+                new[] { JsValue.FromString("abort"), remover },
+                signal);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Debug(
+                $"[FenJsBridge] Could not observe an AbortSignal for '{type}': {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
     }
 
     private bool CanInvokeBrowserEventListener(JsValue callback)
