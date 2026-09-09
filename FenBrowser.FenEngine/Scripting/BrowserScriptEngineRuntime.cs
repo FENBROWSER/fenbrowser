@@ -4565,7 +4565,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // being a worker.
     private const string DedicatedWorkerBootstrapScript = @"
         (function () {
-            var listeners = [];
 
             // The realm was given a document so that its Web API globals get
             // installed, but a worker must not look like a window: scripts pick
@@ -4649,22 +4648,90 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     }
                 }
             };
+            // A worker global is an EventTarget like any other. This one took
+            // only 'message', dropped every other type on the floor, and never
+            // looked at the options argument -- so error and unhandledrejection
+            // handlers silently did not exist, once and signal did nothing, and
+            // the passive feature-detect probe never ran its getter.
+            var byType = Object.create(null);
+            var flatten = function (options) {
+                if (typeof options === 'boolean') {
+                    return { capture: options, once: false, passive: false, signal: null };
+                }
+                if (!options || typeof options !== 'object') {
+                    return { capture: false, once: false, passive: false, signal: null };
+                }
+                // Read every member: the conversion is observable and pages
+                // detect passive support by watching for it.
+                return {
+                    capture: Boolean(options.capture),
+                    once: Boolean(options.once),
+                    passive: Boolean(options.passive),
+                    signal: options.signal || null
+                };
+            };
+            var fire = function (type, event) {
+                var list = byType[type];
+                if (!list) { return; }
+                var snapshot = list.slice();
+                for (var i = 0; i < snapshot.length; i++) {
+                    var entry = snapshot[i];
+                    if (entry.once) {
+                        var live = byType[type];
+                        var at = live ? live.indexOf(entry) : -1;
+                        if (at >= 0) { live.splice(at, 1); }
+                    }
+                    entry.callback.call(globalThis, event);
+                }
+            };
+            // options is optional, so WebIDL reports length 2; keep it off the
+            // parameter list rather than let the arity drift.
             globalThis.addEventListener = function (type, callback) {
-                if (typeof callback !== 'function' || String(type) !== 'message') { return; }
-                if (listeners.indexOf(callback) < 0) { listeners.push(callback); }
+                if (typeof callback !== 'function') { return; }
+                var flat = flatten(arguments[2]);
+                if (flat.signal && flat.signal.aborted) { return; }
+                var key = String(type);
+                var list = byType[key] || (byType[key] = []);
+                for (var i = 0; i < list.length; i++) {
+                    if (list[i].callback === callback && list[i].capture === flat.capture) { return; }
+                }
+                var entry = {
+                    callback: callback,
+                    capture: flat.capture,
+                    once: flat.once,
+                    passive: flat.passive
+                };
+                list.push(entry);
+                if (flat.signal && typeof flat.signal.addEventListener === 'function') {
+                    flat.signal.addEventListener('abort', function () {
+                        var live = byType[key];
+                        if (!live) { return; }
+                        var at = live.indexOf(entry);
+                        if (at >= 0) { live.splice(at, 1); }
+                    });
+                }
             };
             globalThis.removeEventListener = function (type, callback) {
-                var at = listeners.indexOf(callback);
-                if (at >= 0) { listeners.splice(at, 1); }
+                var capture = flatten(arguments[2]).capture;
+                var list = byType[String(type)];
+                if (!list) { return; }
+                for (var i = list.length - 1; i >= 0; i--) {
+                    if (list[i].callback === callback && list[i].capture === capture) {
+                        list.splice(i, 1);
+                    }
+                }
+            };
+            globalThis.dispatchEvent = function (event) {
+                if (!event || typeof event.type !== 'string') { return true; }
+                if (!event.target) { event.target = globalThis; }
+                fire(event.type, event);
+                return !event.defaultPrevented;
             };
             globalThis.__fenWorkerDeliver = function (event) {
                 if (typeof globalThis.onmessage === 'function') {
                     globalThis.onmessage(event);
                 }
-                var snapshot = listeners.slice();
-                for (var i = 0; i < snapshot.length; i++) {
-                    snapshot[i].call(globalThis, event);
-                }
+                fire('message', event);
             };
         })();
         ";
