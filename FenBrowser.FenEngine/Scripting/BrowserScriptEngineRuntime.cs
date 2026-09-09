@@ -13911,6 +13911,21 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             ParseEventListenerOptions(args[2], out capture, out once);
         }
 
+        // DOM 2.7 "add an event listener" step 4: a listener whose type, callback
+        // and capture flag all match one already on the target is not appended.
+        // Without this, code that registers defensively -- the same handler on
+        // every render, say -- got a second registration each time and the handler
+        // ran once per registration.
+        foreach (var existing in listeners)
+        {
+            if (string.Equals(existing.Type, type, StringComparison.Ordinal) &&
+                existing.Capture == capture &&
+                existing.Callback.Equals(callback))
+            {
+                return;
+            }
+        }
+
         listeners.Add(new BrowserEventListener(type, callback, capture, once));
     }
 
