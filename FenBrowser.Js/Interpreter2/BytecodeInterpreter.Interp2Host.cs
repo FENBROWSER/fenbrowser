@@ -308,6 +308,9 @@ public sealed partial class BytecodeInterpreter
         FrameLayout layout, int slot, int icOffset, EnvironmentRecord? outerEnvironment, string name)
     {
         var strict = layout.IsStrict;
+        var walkStartTicks = FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled
+            ? FenBrowser.Js.Diagnostics.InterpreterProfiler.StartSample()
+            : 0L;
         var hops = 0;
         for (var env = outerEnvironment; env is not null; env = env.OuterEnv, hops++)
         {
@@ -320,6 +323,16 @@ public sealed partial class BytecodeInterpreter
             if (status != BindingOpResult.Ok)
             {
                 throw Interp2BindingFailure(status, name, assignment: false);
+            }
+
+            // Only the reads that missed the site cache are counted, which is
+            // the point: the cache is meant to make this rare, so the number
+            // reported is how often it failed to.
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
+            {
+                FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordVarResolve(
+                    env is GlobalEnvironmentRecord or ObjectEnvironmentRecord, hops);
+                FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordVarSlowPath(walkStartTicks);
             }
 
             RecordFreeSlotSite(layout, slot, icOffset, hops, env, name);

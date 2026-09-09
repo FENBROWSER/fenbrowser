@@ -236,6 +236,14 @@ internal sealed class Interp2
         {
             ref readonly var ins = ref code[ip++];
 
+            // The opcode histogram, on the same switch the dispatch loop uses, so
+            // a page can be profiled on either loop. Enabled is a static
+            // readonly bool, so with the switch off the JIT drops all of this.
+            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
+            {
+                FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordOpCode(ins.OpCode, function);
+            }
+
             // The countdown is a field, not a local, so it survives this frame
             // ending and this method being re-entered. A program whose work is a
             // native builtin calling a short JavaScript callback would otherwise
