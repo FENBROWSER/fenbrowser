@@ -32,6 +32,12 @@ internal static class RendererChildEnvironment
         // per-child wiring variables (FEN_RENDERER_*, FEN_NETWORK_*,
         // FEN_TARGET_*) must never appear.
         "FEN_LOG_PRESET",
+        // Which execution loop runs page script, and its coverage report. The
+        // script runs here and nowhere else, so a host that selects the
+        // register-window loop and does not forward the choice runs the old one
+        // and reports the new one's numbers.
+        "FEN_JS_INTERPRETER",
+        "FEN_JS_INTERP2_LOG",
         "FEN_FENJS_PROFILE",
         "FEN_FENJS_DEEP_TRACE",
         "FEN_FENJS_CALLTARGET_TRACE",
