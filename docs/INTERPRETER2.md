@@ -272,6 +272,20 @@ been.
   the callee and the pinning of arguments the collector can already see through
   the window. Measured zero. Kept anyway - it removes work that is provably
   redundant on this loop, and the path it replaces did the same lookup twice.
+- **Checking the guards at back edges and calls** instead of on every
+  instruction. The browser always sets an instruction budget, so the check ran on
+  all 104M of them; moving it to the ~10% of instructions that can begin
+  unbounded work should have been free. It measured slightly *worse* and added
+  sixteen call sites. Reverted, and the guarantee it was moving around now has
+  tests: `Interpreter2GuardTests`.
+
+Four attempts, three reverted, and between them they moved the page by nothing.
+That is the finding, not a failure of the attempts: after the frame, call,
+variable and allocation costs were taken out, **the job's remaining 4.3 seconds
+is 104M instructions at ~41ns with no dominant term left in it.** The two
+nameable items still in the property-miss table - string-primitive receivers and
+prototype loads - price out at 30-60ms each. Nothing on this workload is worth
+more than about 100ms any more.
 
 The lesson is the one the perf handoff already states and this work had to learn
 again: **a count is not a cost.** `FEN_FENJS_OPTIME=1` now works on this loop
@@ -284,10 +298,11 @@ The unimplemented-opcode table is effectively empty: 537 bodies across twenty
 opcodes, none over 160. What is left is one thing and then a different kind of
 work.
 
-1. **Property reads whose receiver is not an ordinary object** - 56% of what
-   still misses a cache site on the page, and mostly string primitives
-   (`s.length`, `s.charCodeAt`) and host objects. A boxed primitive is
-   re-created per read today.
+1. **Property reads whose receiver is not an ordinary object** - 55% of what
+   still misses a cache site on the page. It is two names: `length` (675k,
+   already answered without flattening) and `charCodeAt` (670k, which walks to
+   String.prototype through the global-prototype table on every read). Worth
+   about 30ms; it needs the cache to accept a non-object receiver at all.
 2. **Prototype loads** - 38% of the remaining misses. The cache refuses anything
    off the prototype chain, which is every method call on a class instance. It
    needs a guard on the receiver's [[Prototype]] as well as its shape, because
