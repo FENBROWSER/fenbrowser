@@ -136,6 +136,10 @@ public abstract class TypedArrayObject : TypedArrayView
     // ECMA-262 10.4.5.2 [[GetOwnProperty]] (P). Canonical numeric strings are
     // intercepted before OrdinaryGetOwnProperty, including invalid indices such as
     // "-0", negatives, fractions, NaN/Infinity, and out-of-range integers.
+    /// <summary>Integer indices route to the buffer, not the property table.</summary>
+    public override bool MayGainOwnPropertyOutsideShape(string key)
+        => TryCanonicalNumericIndexString(key, out _) || string.Equals(key, "length", StringComparison.Ordinal);
+
     public override bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
         if (TryCanonicalNumericIndexString(key, out var numericIndex))

@@ -59,6 +59,9 @@ public sealed class ModuleNamespaceObject : JsObject
         PreventExtensions();
     }
 
+    /// <summary>Every name routes through the module's own bindings.</summary>
+    public override bool MayGainOwnPropertyOutsideShape(string key) => true;
+
     public override bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
         if (_environment is not null &&

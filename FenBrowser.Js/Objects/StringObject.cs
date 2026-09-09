@@ -20,6 +20,10 @@ public sealed class StringObject : JsObject
 
     public string Value { get; }
 
+    /// <summary>Character indices are synthesised, not stored.</summary>
+    public override bool MayGainOwnPropertyOutsideShape(string key)
+        => IsArrayIndexKey(key, out _) || string.Equals(key, "length", StringComparison.Ordinal);
+
     public override bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
         // Ordinary own properties (length, user-added) win first.

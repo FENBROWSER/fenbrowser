@@ -1,4 +1,5 @@
 ﻿using FenBrowser.Js.Objects;
+using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Jit.CacheIR;
 
@@ -9,6 +10,10 @@ internal sealed class CacheIRWriter
     private readonly List<int> _args = new(4);
     private readonly List<Shape> _shapes = new(1);
     private readonly List<string> _keys = new(1);
+
+    private ObjectHandle? _protoHandle;
+    private JsObject? _holder;
+    private Shape? _holderShape;
 
     internal void GuardNotExotic()
     {
@@ -51,6 +56,28 @@ internal sealed class CacheIRWriter
         _args.Add(slot);
     }
 
+    /// <summary>
+    /// The prototype-chain form, written as one call because its three parts
+    /// are only ever correct together: the receiver's own layout, the identity
+    /// of its prototype, and that prototype's layout.
+    /// </summary>
+    internal void LoadFromPrototype(ObjectHandle protoHandle, JsObject holder, Shape holderShape, int slot)
+    {
+        ArgumentNullException.ThrowIfNull(holder);
+        ArgumentNullException.ThrowIfNull(holderShape);
+        if (slot < 0) throw new ArgumentOutOfRangeException(nameof(slot));
+
+        _ops.Add(CacheOp.GuardProto);
+        _args.Add(0);
+        _ops.Add(CacheOp.GuardHolderShape);
+        _args.Add(0);
+        _ops.Add(CacheOp.LoadHolderSlotResult);
+        _args.Add(slot);
+        _protoHandle = protoHandle;
+        _holder = holder;
+        _holderShape = holderShape;
+    }
+
     internal void GuardDenseArray()
     {
         _ops.Add(CacheOp.GuardDenseArray);
@@ -74,5 +101,8 @@ internal sealed class CacheIRWriter
         _ops.ToArray(),
         _args.ToArray(),
         _shapes.Count == 0 ? Array.Empty<Shape>() : _shapes.ToArray(),
-        _keys.Count == 0 ? Array.Empty<string>() : _keys.ToArray());
+        _keys.Count == 0 ? Array.Empty<string>() : _keys.ToArray(),
+        _protoHandle ?? default,
+        _holder,
+        _holderShape);
 }

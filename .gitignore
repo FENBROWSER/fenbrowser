@@ -34,6 +34,7 @@ bld/
 !scripts/bench_obfuscated_vm.js
 !scripts/bench_call_shape.js
 !scripts/bench/b_array_length.js
+!scripts/bench/b_prototype_read.js
 *.ps1
 !scripts/ci/verify-volume-doc-references.ps1
 !scripts/ci/run-parser-fuzz-regressions.ps1

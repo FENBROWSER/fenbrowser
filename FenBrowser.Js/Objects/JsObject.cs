@@ -444,6 +444,25 @@ public class JsObject : ITraceable
     // Own property lookup via Shape → slot → array. Null slot = deleted.
     // Virtual so exotic objects (String) can synthesise computed properties
     // (indexed character access) on demand.
+    /// <summary>
+    /// Whether an own property could appear under this name without the shape
+    /// changing to say so.
+    /// </summary>
+    /// <remarks>
+    /// True only for the names an exotic object answers from somewhere the
+    /// shape does not describe - an array's dense vector, a string's
+    /// characters, a typed array's buffer. A property cache guards a receiver by
+    /// its shape, so for those names the guard could not see one appear, and a
+    /// program that assumed the receiver does not have the name would keep
+    /// answering from the prototype after it did.
+    ///
+    /// It is asked per name rather than per object because the distinction is
+    /// per name: an array can grow a `2`, and it can grow a `length`, but it can
+    /// never grow a `push` outside its shape - and `push` is the read that
+    /// matters, because it is on the prototype.
+    /// </remarks>
+    public virtual bool MayGainOwnPropertyOutsideShape(string key) => false;
+
     public virtual bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
         if (_shape.TryGetSlot(key, out var slot) && TryReadSlot(slot, out descriptor))

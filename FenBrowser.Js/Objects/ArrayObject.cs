@@ -234,6 +234,10 @@ public sealed class ArrayObject : JsObject
     // here rather than forcing a Materialise.
     private bool _lengthWritable = true;
 
+    /// <summary>An index can appear in the dense vector, and length tracks it.</summary>
+    public override bool MayGainOwnPropertyOutsideShape(string key)
+        => IsArrayIndexKey(key, out _) || string.Equals(key, "length", StringComparison.Ordinal);
+
     public override bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
         if (!_denseAbandoned && string.Equals(key, LengthKey, StringComparison.Ordinal))

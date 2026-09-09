@@ -34,7 +34,7 @@ public sealed partial class BytecodeInterpreter
         if (site.IsMegamorphic) return;
 
         var program = LoadPropertyAttacher.TryAttach(
-            _heap.GetObject(receiver.AsObjectHandle()), key, keyVariesAtSite);
+            _heap.GetObject(receiver.AsObjectHandle()), key, keyVariesAtSite, _heap.GetObject);
         if (program is not null) site.Attach(program);
     }
 

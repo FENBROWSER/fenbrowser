@@ -36,16 +36,50 @@ internal sealed class CacheIRProgram
     // is a type test rather than a walk of the op list.
     private readonly bool _isDenseArrayLength;
 
+    // The prototype form. The holder is held directly, which is safe because
+    // the guard proves the receiver still points at it: a cell that was freed
+    // and reused would not match the handle, since a handle carries the
+    // generation as well as the index.
+    private readonly bool _isProtoLoad;
+    private readonly ObjectHandle _protoHandle;
+    private readonly JsObject? _holder;
+    private Shape? _holderShape;
+
     /// <summary>Set when a guarded slot stopped being a plain data property.</summary>
     internal bool IsStale { get; private set; }
 
-    internal CacheIRProgram(CacheOp[] ops, int[] args, Shape[] shapes, string[] keys)
+    internal CacheIRProgram(
+        CacheOp[] ops,
+        int[] args,
+        Shape[] shapes,
+        string[] keys,
+        ObjectHandle protoHandle = default,
+        JsObject? holder = null,
+        Shape? holderShape = null)
     {
         _ops = ops;
         _args = args;
         _shapes = shapes;
         _keys = keys;
         _resultSlot = -1;
+        _protoHandle = protoHandle;
+        _holder = holder;
+        _holderShape = holderShape;
+
+        if (ops.Length == 5 &&
+            ops[0] == CacheOp.GuardNotExotic &&
+            ops[1] == CacheOp.GuardShape &&
+            ops[2] == CacheOp.GuardProto &&
+            ops[3] == CacheOp.GuardHolderShape &&
+            ops[4] == CacheOp.LoadHolderSlotResult &&
+            holder is not null &&
+            holderShape is not null)
+        {
+            _isProtoLoad = true;
+            _guardedShape = shapes[args[1]];
+            _resultSlot = args[4];
+            return;
+        }
 
         if (ops.Length == 2 &&
             ops[0] == CacheOp.GuardDenseArray &&
@@ -98,6 +132,7 @@ internal sealed class CacheIRProgram
 
     internal bool Guards(Shape shape, string? key) =>
         !_isDenseArrayLength &&
+        !_isProtoLoad &&
         ReferenceEquals(_guardedShape, shape) &&
         (_guardedKey is null || string.Equals(_guardedKey, key, StringComparison.Ordinal));
 
@@ -158,6 +193,25 @@ internal sealed class CacheIRProgram
             return false;
         }
 
+        if (_isProtoLoad)
+        {
+            // The receiver's own layout is unchanged, so nothing of its own
+            // shadows the name; its prototype is the same object; and that
+            // object's layout is unchanged, so the property is still in the
+            // slot it was found in.
+            if (ReferenceEquals(_guardedShape, shape) &&
+                receiver.PrototypeHandle is { } proto &&
+                proto.Equals(_protoHandle) &&
+                ReferenceEquals(_holder!.CurrentShape, _holderShape) &&
+                _holder.TryReadDataSlot(_resultSlot, out result))
+            {
+                return true;
+            }
+
+            result = JsValue.Undefined;
+            return false;
+        }
+
         if (_isStore ||
             !ReferenceEquals(_guardedShape, shape) ||
             (_guardedKey is { } guardedKey && !string.Equals(key, guardedKey, StringComparison.Ordinal)))
@@ -180,6 +234,7 @@ internal sealed class CacheIRProgram
     {
         IsStale = true;
         _guardedShape = null;
+        _holderShape = null;
     }
 
     internal CacheRunResult Run(JsObject receiver, string key, out JsValue result)
@@ -207,6 +262,18 @@ internal sealed class CacheIRProgram
                 case CacheOp.GuardKey:
                     if (!string.Equals(key, _keys[_args[i]], StringComparison.Ordinal)) goto miss;
                     break;
+
+                case CacheOp.GuardProto:
+                    if (receiver.PrototypeHandle is not { } runProto ||
+                        !runProto.Equals(_protoHandle)) goto miss;
+                    break;
+
+                case CacheOp.GuardHolderShape:
+                    if (!ReferenceEquals(_holder?.CurrentShape, _holderShape)) goto miss;
+                    break;
+
+                case CacheOp.LoadHolderSlotResult:
+                    return LoadSlot(_holder!, _args[i], out result);
 
                 case CacheOp.GuardDenseArray:
                     if (receiver is not ArrayObject { IsDense: true }) goto miss;

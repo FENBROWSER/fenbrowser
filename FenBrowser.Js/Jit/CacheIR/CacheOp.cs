@@ -42,6 +42,27 @@ internal enum CacheOp : byte
     GuardDenseArray,
 
     /// <summary>
+    /// Fails unless the receiver's [[Prototype]] is still the object it was at
+    /// attach time. Shapes here do not encode the prototype, so reassigning it
+    /// leaves the shape alone and this is the only thing that catches it.
+    /// </summary>
+    GuardProto,
+
+    /// <summary>
+    /// Fails unless the object holding the property still has the layout it had
+    /// at attach time - so the property is still the same one, in the same slot.
+    /// </summary>
+    GuardHolderShape,
+
+    /// <summary>
+    /// Reads a known slot of the object that holds the property, rather than of
+    /// the receiver, and terminates. This is what makes a method call on a class
+    /// instance cacheable: the method is on the prototype, and before this every
+    /// such read walked the chain.
+    /// </summary>
+    LoadHolderSlotResult,
+
+    /// <summary>
     /// Yields a dense array's length, and terminates. It is not a slot in any
     /// shape - the array synthesises it from the vector - so no shape guard can
     /// describe it and, before this, no site could cache it. On a real page
