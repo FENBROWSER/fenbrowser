@@ -34,8 +34,8 @@ frame, no `try`/`finally`, no depth bookkeeping, and a call depth bounded by an
 integer rather than by the host's native stack.
 
 The collector sees the whole loop as one linear span (`[0, _stackTop)`) plus one
-receiver and callee per activation. Nothing above the stack top is traced, which
-is why a popped window needs no clearing and a pushed one does.
+receiver, callee and context record per activation. Nothing above the stack top
+is traced, which is why a popped window needs no clearing and a pushed one does.
 
 ## The gate
 
@@ -46,11 +46,11 @@ bailout. A loop that can abandon a half-executed frame has to rebuild the old
 loop's state out of its own, and that reconstruction is where an engine of this
 shape grows its subtlest bugs.
 
-Refused, and run on the old loop unchanged: generators, async bodies, arrows,
-class constructors, `eval` code, `arguments`, rest parameters, named function
-expressions, `with`, direct `eval`, `let`/`const` (no hole value yet),
-`try` (no handler stack yet), and any body whose variables a closure could
-observe.
+Refused, and run on the old loop unchanged: generators, async bodies, class
+constructors, `eval` code, `arguments`, rest parameters, named function
+expressions, `with`, direct `eval`, `let`/`const` (no hole value yet), `try` (no
+handler stack yet), `for-in`/`for-of`, and any body whose nested functions need
+the enclosing `arguments`, `new.target` or `super`.
 
 ## Semantics live in one place
 
@@ -70,17 +70,71 @@ nested function's slot table lists every identifier it mentions, its declaration
 are its parameters, vars and lexical names, and what is left is what it reaches
 outwards for - closed transitively over its own nested functions.
 
-So the question is not "does this body make a closure" but "could a closure it
-makes ever read one of its variables". When the answer is no, the closure is
-handed the environment the body itself closed over, and every name it does reach
-for resolves exactly where it did before. `this`, `arguments`, `new.target` and
-`super` are tracked alongside the names as the same question about the bindings
-that are not identifiers.
+So the question is not "does this body make a closure" but "which of its
+variables could a closure it makes read". Those - and only those - move out of
+the window into a record the closures share; every other variable stays a
+register. That is what V8 and SpiderMonkey call **context allocation**, and it
+costs one environment record per call to a body that is captured from, which is
+what the old loop paid on every call to every body. A body nothing captures from
+gets no record at all and is handed the environment it closed over itself.
 
-This is the conservative half of what V8 and SpiderMonkey do. They go further:
-when a variable *is* captured, only that variable moves to a heap context and the
-rest stay in registers. Here one captured variable sends the whole body back to
-the old loop.
+The record is a `FunctionEnvironmentRecord`, not a plain declarative one, because
+it is the call's *variable* environment rather than a block inside it, and code
+walking the chain asks which it is - a direct `eval` declaring `var x` looks
+outwards for the nearest variable environment and treats every declarative record
+it passes as a block. An arrow is the exception: its record must be one that
+`this` resolves straight through, so it gets a plain declarative one.
+
+`this`, `arguments`, `new.target` and `super` are the same question about the
+bindings that are not identifiers. A nested arrow that reads `this` makes the
+enclosing body keep a record so there is something to find it on; `arguments`,
+`new.target` and `super` are still refused.
+
+## Where a free identifier lives
+
+Reading a variable a function does not declare was the most expensive ordinary
+operation in the engine: **107ns**, against 27ns for a property read on an object
+already in a register. The cost is not the walk - on a real page the chain
+averages 1.55 links - it is that each link is a string-keyed dictionary lookup,
+and the name has to be recovered from the slot index before any of it can begin.
+
+Lexical scoping is static, so the answer does not move: a given identifier in a
+given function resolves the same number of links out, in the same kind of record,
+on every call. `FreeSlotSite` caches that per (function, slot) in two shapes:
+
+- a binding in a record that numbers its variables by slot, where the cached
+  index makes the read an array access; and
+- a property of the global object, where the shape-guarded load cache the engine
+  already uses for `o.x` does the work.
+
+Neither is trusted. The slot form re-checks that the record at the cached depth
+still numbers slots for the same function; the global form checks a lexical
+version counter on the global record - so a later top-level `let` shadowing the
+property invalidates it - and then runs the shape guard. A stale entry misses and
+takes the walk; it never answers. The bodies that could change a chain's shape,
+`with` and direct `eval`, are refused by the layout long before this.
+
+The result is **+8ns** over the same read via a local, and it drags everything
+else down with it, because reading a global was hiding inside most other
+operations: the callee's name in a call, `Math` before `Math.floor`, the array
+before `arr[i]`.
+
+## Guard rails
+
+An instruction budget, a wall-clock deadline and an embedder interrupt are
+sampled every 4096 dispatched instructions rather than tested on every one. The
+countdown lives on the loop, not in the dispatch's locals, and is carried across
+frames and re-entries - a native builtin calling a short JavaScript callback (an
+array predicate, a proxy trap, a sort comparator) re-enters the loop for every
+call, and a per-entry countdown would restart at the full interval each time and
+never fire. Call depth is bounded by `MaxCallDepth` exactly as on the old loop,
+the value stack by `Interp2Options.MaxValueStackSlots`, and one frame's window by
+`MaxFrameWindow`; each raises a catchable RangeError rather than growing.
+
+Every host call in the dispatch re-reads the value stack afterwards. A property
+read can run a getter, an operator can run a `valueOf`, a delegated call runs
+whatever it likes, and any of them can re-enter deeply enough to grow the stack -
+which replaces the array the loop was holding in a local.
 
 ## Running it
 
@@ -105,56 +159,64 @@ because each was written to isolate one cost and they avoid what is hard.
 
 Measured on `test/language` (118k function bodies, 23,730 tests):
 
-| | eligible functions | calls staying in the loop |
-|---|---|---|
-| first working version | 7.6% | 2.0% |
-| + property writes, `typeof`, `throw`, `new` | 29.5% | 22.8% |
-| + closures that capture nothing | **44.6%** | 7.0%\* |
-
-\* the ratio fell because the number of calls *made from inside* the loop grew
-12x; the absolute count staying in the loop rose 1161 → 4161.
+| | eligible functions |
+|---|---|
+| first working version | 7.6% |
+| + property writes, `typeof`, `throw`, `new` | 29.5% |
+| + closures that capture nothing | 44.6% |
+| + context allocation for the ones that do | 72.2% |
+| + arrow functions | **75.9%** |
 
 Speed, against the old loop **with its JIT enabled**:
 
 | | old loop | new loop |
 |---|---|---|
-| empty call | 400-438ns | **128-142ns** |
-| + 2 arguments | +116-146ns | +32-53ns |
-| + 110 declared locals | +188-208ns | +34-48ns |
-| whole call ladder | 1073-1100ns | **475-502ns** |
-| `b_bundle_calls` (bundle-shaped mix) | 680-705ns/call | **331-353ns/call** |
-
-Against the interpreter alone (`FEN_JIT_DISABLE=1`) the empty call goes
-509ns → 137ns.
+| empty call | 438ns | **136ns** |
+| + 2 arguments | +146ns | +31ns |
+| + 110 declared locals | +180ns | +38ns |
+| + a `Math.floor` call | +280ns | +108ns |
+| free-variable read | +107ns | **+8ns** |
+| array element read | +218ns | +123ns |
+| whole call ladder | 1046ns | **308ns** |
+| `b_bundle_calls` (bundle-shaped mix) | 674ns/call | **236ns/call** |
 
 **Where the new loop loses**: tight single-frame loops, because there the old
 loop's JIT compiles the body and the new loop has no tier-up.
-`b_property_read`'s bare loop is 41ns old against 80ns new; `b_working_set` is
-126ns against 143ns. The new loop wins wherever calls are involved and loses
-where a JIT-compiled loop runs uninterrupted.
+`b_property_read`'s bare loop is 41ns old against 80ns new. The new loop wins
+wherever calls or free variables are involved and loses where a JIT-compiled loop
+runs uninterrupted.
 
-**Correctness**: `FenBrowser.Js.Tests` 3389 passing on both loops. Identical
-test262 result sets on both for the whole of `test/language` (22663/23730), plus
-`built-ins/{Object,Promise,JSON}`, `built-ins/String/prototype`,
-`built-ins/Array/prototype/{map,filter,reduce,push}` and
-`built-ins/Function/prototype/bind`.
+**Correctness**: `FenBrowser.Js.Tests` 3411 passing on both loops, including
+`Interpreter2ParityTests`, which runs each program on both loops in the same
+process and compares. Identical test262 result sets on both for the whole of
+`test/language` (22663/23730), `language/statements/class`,
+`language/global-code`, and `built-ins/{Object,Promise,Function,JSON,eval,Math,
+Number,Array,String,Proxy,Reflect}`.
 
 ## What is next, in order of measured value
 
-1. **Context allocation** - `CapturedVariable` is 32.8k of the 118k bodies, by
-   far the largest remaining decline. The captured names are already computed by
-   `CaptureAnalysis`; the work is to give those slots a heap record per call and
-   leave the rest in registers, rather than sending the whole body back.
+1. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
+   15.1k). The first two suspend, which means copying a window out and back; the
+   third needs `super` and field initialisers.
 2. **`try`/`catch`/`finally`** (`PushHandler`, 5.8k). Needs a per-frame handler
    stack, which the window model has room for. A `catch (e)` binding also needs
-   `EnterScope`, so this and item 3 are the same piece of work.
-3. **Block scopes and `let`/`const`** (`EnterScope`, `LexicalDeclarations`).
+   `EnterScope`, so this and item 4 are the same piece of work.
+3. **`arguments`** (3.9k).
+4. **Block scopes and `let`/`const`** (`EnterScope`, `LexicalDeclarations`).
    Needs a hole value distinct from `undefined` so the temporal dead zone stays
    observable, and needs to know which slots belong to which scope - the one
    place where the compiler would have to say more than it does today.
-4. **`for-in` / `for-of`** (`EnumerateKeys` 1.8k, `EnumerateValues` 543).
-5. **Arrows** (part of `NotOrdinaryFunction`, 19.8k with generators and async).
-   An arrow has no `this` of its own, so it needs the enclosing frame to supply
-   one - reachable once item 1 exists.
+5. **`for-in` / `for-of`** (`EnumerateKeys` 1.8k, `EnumerateValues` 0.7k).
 6. **Tier-up**, once coverage is high enough that the loop is on the critical
-   path: the loop currently gives up the JIT's win on hot single-frame loops.
+   path: it currently gives up the JIT's win on hot single-frame loops.
+
+Two defects in the **old** loop that this work surfaced and did not fix:
+
+- An uncatchable error - the instruction budget, the wall-clock deadline, the
+  embedder interrupt - loses that flag when it is routed through a frame's
+  handler stack, so `try`/`catch` can swallow it. It is why
+  `built-ins/Array/prototype/slice/create-proxied-array-invalid-len` passes there
+  and timed out here: both loops spin the proxy trap identically, and only one of
+  them could be stopped.
+- `ArraySpeciesCreate` does not raise the RangeError that test expects, on either
+  loop, so the array methods walk a 2^32-length proxy element by element.
