@@ -900,7 +900,10 @@ namespace FenBrowser.Host
                 bool faviconChanged = false,
                 bool urlChanged = false)
             {
-                if (!handshakeComplete)
+                // Allow favicon/title metadata to be sent even before handshake completes
+                // for better perceived loading performance. Only block URL changes pre-handshake.
+                bool isCriticalMetadata = faviconChanged || !string.IsNullOrWhiteSpace(title);
+                if (!handshakeComplete && !isCriticalMetadata)
                 {
                     return;
                 }
