@@ -55,6 +55,7 @@ public sealed class FrameLayout
         Function = function;
         Bailout = bailout;
         BailoutOpCode = bailoutOpCode;
+        Code = Array.Empty<Instruction>();
         SlotIsOwn = Array.Empty<bool>();
         SlotNames = Array.Empty<string?>();
         ParameterWindowIndex = Array.Empty<int>();
@@ -70,8 +71,10 @@ public sealed class FrameLayout
     {
         Function = function;
         Bailout = Interp2Bailout.None;
+        Code = function.InstructionArray;
         RegisterCount = registerCount;
         SlotCount = slotCount;
+        WindowSize = registerCount + slotCount;
         SlotIsOwn = slotIsOwn;
         SlotNames = slotNames;
         ParameterWindowIndex = parameterWindowIndex;
@@ -107,7 +110,22 @@ public sealed class FrameLayout
     public int[] ParameterWindowIndex { get; }
 
     /// <summary>Total <c>JsValue</c> slots one activation of this body occupies.</summary>
-    public int WindowSize => RegisterCount + SlotCount;
+    public int WindowSize { get; }
+
+    /// <summary>
+    /// The body's instructions. Held here so entering a frame reads one field
+    /// rather than going through the function's lazily-materialised array
+    /// property, and so a frame record need not carry its own copy.
+    /// </summary>
+    public Instruction[] Code { get; }
+
+    /// <summary>
+    /// Whether any identifier in this body resolves outside it. A body with
+    /// none never consults the scope chain, so its frame does not need the
+    /// closure environment resolved - which is a shape check and sometimes a
+    /// property probe saved on every call to a leaf function.
+    /// </summary>
+    public bool HasFreeVariables { get; private init; }
 
     /// <summary>
     /// Sloppy-mode bodies coerce their receiver on entry (ECMA-262 10.2.1.3
@@ -184,10 +202,13 @@ public sealed class FrameLayout
             declared.Add(function.VarDeclarationNames[i]);
 
         var slotIsOwn = new bool[slotCount];
+        var hasFreeVariables = false;
         for (var slot = 0; slot < slotCount; slot++)
         {
             var name = slotNames[slot];
-            slotIsOwn[slot] = name is not null && declared.Contains(name);
+            var own = name is not null && declared.Contains(name);
+            slotIsOwn[slot] = own;
+            hasFreeVariables |= !own;
         }
 
         var instructions = function.InstructionArray;
@@ -236,6 +257,7 @@ public sealed class FrameLayout
         {
             IsStrict = function.IsStrictMode,
             BindsThisLoosely = !function.IsStrictMode,
+            HasFreeVariables = hasFreeVariables,
         };
     }
 

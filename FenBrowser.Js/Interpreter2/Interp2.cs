@@ -92,14 +92,11 @@ internal sealed class Interp2
     /// </summary>
     private struct Frame
     {
-        public BytecodeFunction Function;
         public FrameLayout Layout;
-        public Instruction[] Code;
         public JsFunctionObject? Callee;
         public EnvironmentRecord? OuterEnv;
         public JsValue This;
         public int Base;
-        public int SlotBase;
         public int Ip;
         public int ReturnSlot;
     }
@@ -151,11 +148,11 @@ internal sealed class Interp2
 
         {
             ref var f = ref _frames[_depth - 1];
-            function = f.Function;
             layout = f.Layout;
-            code = f.Code;
+            function = layout.Function;
+            code = layout.Code;
             frameBase = f.Base;
-            slotBase = f.SlotBase;
+            slotBase = frameBase + layout.RegisterCount;
             ip = f.Ip;
         }
 
@@ -433,11 +430,11 @@ internal sealed class Interp2
             {
                 stack = _stack;
                 ref var f = ref _frames[_depth - 1];
-                function = f.Function;
                 layout = f.Layout;
-                code = f.Code;
+                function = layout.Function;
+                code = layout.Code;
                 frameBase = f.Base;
-                slotBase = f.SlotBase;
+                slotBase = frameBase + layout.RegisterCount;
                 ip = f.Ip;
             }
         }
@@ -558,20 +555,20 @@ internal sealed class Interp2
         // ECMA-262 10.2.1.3 OrdinaryCallBindThis: a strict body takes its
         // receiver as it comes, a sloppy one substitutes the global object for
         // null/undefined and boxes any other primitive.
-        if (layout.BindsThisLoosely)
+        if (layout.BindsThisLoosely && thisValue.Tag != JsValueTag.Object)
         {
             thisValue = _host.Interp2CoerceReceiver(thisValue);
         }
 
         ref var frame = ref _frames[_depth++];
-        frame.Function = layout.Function;
         frame.Layout = layout;
-        frame.Code = layout.Function.InstructionArray;
         frame.Callee = callee;
-        frame.OuterEnv = _host.Interp2OuterEnvironment(callee);
+        // A body with no free identifiers never consults the scope chain, and
+        // resolving the closure environment is a shape check and sometimes a
+        // property probe - real cost on a leaf function that has no use for it.
+        frame.OuterEnv = layout.HasFreeVariables ? _host.Interp2OuterEnvironment(callee) : null;
         frame.This = thisValue;
         frame.Base = window;
-        frame.SlotBase = window + layout.RegisterCount;
         frame.Ip = 0;
         frame.ReturnSlot = returnSlot;
 
