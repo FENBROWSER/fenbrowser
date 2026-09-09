@@ -128,6 +128,96 @@ public sealed partial class BytecodeInterpreter
     internal EnvironmentRecord? Interp2OuterEnvironment(JsFunctionObject callee)
         => ResolveFunctionOuterEnvironment(callee);
 
+    // ---------------------------------------------------- captured variables
+
+    /// <summary>
+    /// The heap record that holds the variables of one activation that some
+    /// closure made inside it can read.
+    /// </summary>
+    /// <remarks>
+    /// It is a record for this function's slot numbering, so a variable that
+    /// lives here is reached by the same slot index the bytecode already
+    /// carries, and a closure resolving the name by walking the chain finds it
+    /// where it would have found it before. Only the captured slots are
+    /// declared in it; every other name falls straight through to the
+    /// environment this body itself closed over.
+    ///
+    /// It is a FunctionEnvironmentRecord rather than a plain declarative one
+    /// because it is this call's *variable* environment, not a block inside it,
+    /// and code that walks the chain asks which it is: a direct eval declaring
+    /// `var x` walks outwards for the nearest variable environment and treats
+    /// every declarative record before it as a block, so a plain record here
+    /// made `var x` collide with the enclosing function's own x.
+    ///
+    /// The storage is not taken from the slot pool. A pooled file is handed back
+    /// when the frame that rented it tears down, and this record is created
+    /// precisely because it outlives the frame.
+    /// </remarks>
+    internal DeclarativeEnvironmentRecord Interp2CreateContext(
+        BytecodeFunction function,
+        JsFunctionObject callee,
+        JsValue thisValue,
+        EnvironmentRecord? outerEnvironment)
+    {
+        var context = StampEnvironment(new FunctionEnvironmentRecord(
+            ThisBindingStatus.Uninitialized,
+            callee.SelfHandle is { } selfHandle ? JsValue.FromObject(selfHandle) : JsValue.Undefined,
+            JsValue.Undefined,
+            callee.HomeObject,
+            outerEnvironment));
+        context.AttachSlotStorage(function, function.VariableSlots, function.SlotNames.Length);
+        _ = context.BindThisValue(thisValue);
+        return context;
+    }
+
+    internal static void Interp2DeclareContextSlot(
+        DeclarativeEnvironmentRecord context, int slot, JsValue value)
+        => context.DeclareAtSlot(slot, value, deletable: false, overwrite: true);
+
+    internal JsValue Interp2LoadContext(
+        DeclarativeEnvironmentRecord context, BytecodeFunction function, int slot, string? name, bool strict)
+    {
+        if (context.TryReadOwnSlot(function, slot, out var value))
+        {
+            return value;
+        }
+
+        if (context.TryGetAtSlot(slot, out var slotValue, out var status))
+        {
+            if (status == BindingOpResult.Ok)
+            {
+                return slotValue;
+            }
+
+            throw Interp2BindingFailure(status, name ?? "?", assignment: false);
+        }
+
+        // Defensive: every context slot is declared when the frame is entered,
+        // so this is unreachable unless the layout and the entry path disagree.
+        return Interp2LoadFree(context.OuterEnv, name, strict);
+    }
+
+    internal void Interp2StoreContext(
+        DeclarativeEnvironmentRecord context, BytecodeFunction function, int slot, JsValue value, string? name, bool strict)
+    {
+        if (context.TryWriteOwnSlot(function, slot, value))
+        {
+            return;
+        }
+
+        if (context.TrySetAtSlot(slot, value, strict, out var status))
+        {
+            if (status == BindingOpResult.Ok)
+            {
+                return;
+            }
+
+            throw Interp2BindingFailure(status, name ?? "?", assignment: true);
+        }
+
+        Interp2StoreFree(context.OuterEnv, name, value, strict);
+    }
+
     // ------------------------------------------------------- free identifiers
 
     /// <summary>

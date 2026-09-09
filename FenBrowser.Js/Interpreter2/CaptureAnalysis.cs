@@ -114,12 +114,20 @@ public static class CaptureAnalysis
     public static CaptureInfo For(BytecodeFunction function) => Compute(function, depth: 0);
 
     /// <summary>
-    /// Whether a body may keep its declared variables in registers even though
-    /// it creates functions: true when no function created inside it, at any
-    /// depth, reaches for anything the body would have held in its record.
+    /// Which of a body's own declarations a function created inside it could
+    /// read, at any depth. An empty set means every variable can stay in a
+    /// register; the names in it are the ones that need a heap binding.
     /// </summary>
-    public static bool NestedFunctionsCaptureNothing(BytecodeFunction function, IReadOnlySet<string> declaredNames)
+    /// <returns>
+    /// Null when a nested function reaches for something that is not an
+    /// identifier - the enclosing <c>this</c>, <c>arguments</c>,
+    /// <c>new.target</c> or <c>super</c>. Those live on a function environment
+    /// record rather than in the bindings, so the body has to keep a real one
+    /// and belongs on the old loop.
+    /// </returns>
+    public static HashSet<string>? CapturedNames(BytecodeFunction function, IReadOnlySet<string> declaredNames)
     {
+        var captured = new HashSet<string>(StringComparer.Ordinal);
         var nested = function.NestedFunctions;
         for (var i = 0; i < nested.Count; i++)
         {
@@ -129,19 +137,19 @@ public static class CaptureAnalysis
                 info.NeedsEnclosingNewTarget ||
                 info.NeedsEnclosingSuper)
             {
-                return false;
+                return null;
             }
 
             foreach (var name in info.FreeNames)
             {
                 if (declaredNames.Contains(name))
                 {
-                    return false;
+                    captured.Add(name);
                 }
             }
         }
 
-        return true;
+        return captured;
     }
 
     private static CaptureInfo Compute(BytecodeFunction function, int depth)

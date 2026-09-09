@@ -95,6 +95,14 @@ internal sealed class Interp2
         public FrameLayout Layout;
         public JsFunctionObject? Callee;
         public EnvironmentRecord? OuterEnv;
+
+        /// <summary>
+        /// The record holding this activation's captured variables, or null
+        /// when nothing created here can read one. It is also what a closure
+        /// made in this frame captures, so the closure and the frame see the
+        /// same variable.
+        /// </summary>
+        public DeclarativeEnvironmentRecord? Context;
         public JsValue This;
         public bool OuterEnvResolved;
         public int Base;
@@ -195,17 +203,21 @@ internal sealed class Interp2
                 case OpCode.LoadVar:
                 {
                     var slot = ins.B;
-                    if ((uint)slot < (uint)layout.SlotCount && layout.SlotIsOwn[slot])
+                    var home = HomeOfSlot(layout, slot);
+                    if (home == SlotHome.Register)
                     {
-                        // A variable this body declares is a register. There is
+                        // A variable no closure can read is a register. There is
                         // no binding record to consult, no presence bit to test
                         // and no name to translate back to.
                         stack[frameBase + ins.A] = stack[slotBase + slot];
                         break;
                     }
 
-                    var loaded = _host.Interp2LoadFree(
-                        OuterEnvironmentOf(_depth - 1), NameOfSlot(layout, slot), layout.IsStrict);
+                    var loaded = home == SlotHome.Context
+                        ? _host.Interp2LoadContext(
+                            _frames[_depth - 1].Context!, function, slot, NameOfSlot(layout, slot), layout.IsStrict)
+                        : _host.Interp2LoadFree(
+                            OuterEnvironmentOf(_depth - 1), NameOfSlot(layout, slot), layout.IsStrict);
                     stack = _stack;
                     stack[frameBase + ins.A] = loaded;
                     break;
@@ -226,17 +238,28 @@ internal sealed class Interp2
                 case OpCode.StoreResolvedVar:
                 {
                     var slot = ins.B;
-                    if ((uint)slot < (uint)layout.SlotCount && layout.SlotIsOwn[slot])
+                    var home = HomeOfSlot(layout, slot);
+                    if (home == SlotHome.Register)
                     {
                         stack[slotBase + slot] = stack[frameBase + ins.A];
                         break;
                     }
 
-                    _host.Interp2StoreFree(
-                        OuterEnvironmentOf(_depth - 1),
-                        NameOfSlot(layout, slot),
-                        stack[frameBase + ins.A],
-                        layout.IsStrict);
+                    if (home == SlotHome.Context)
+                    {
+                        _host.Interp2StoreContext(
+                            _frames[_depth - 1].Context!, function, slot, stack[frameBase + ins.A],
+                            NameOfSlot(layout, slot), layout.IsStrict);
+                    }
+                    else
+                    {
+                        _host.Interp2StoreFree(
+                            OuterEnvironmentOf(_depth - 1),
+                            NameOfSlot(layout, slot),
+                            stack[frameBase + ins.A],
+                            layout.IsStrict);
+                    }
+
                     stack = _stack;
                     break;
                 }
@@ -349,10 +372,15 @@ internal sealed class Interp2
                 case OpCode.TypeOfName:
                 {
                     var slot = ins.B;
-                    var typeName = (uint)slot < (uint)layout.SlotCount && layout.SlotIsOwn[slot]
-                        ? _host.Interp2TypeOfValue(stack[slotBase + slot])
-                        : _host.Interp2TypeOfFree(
-                            OuterEnvironmentOf(_depth - 1), NameOfSlot(layout, slot), layout.IsStrict);
+                    var home = HomeOfSlot(layout, slot);
+                    var typeName = home switch
+                    {
+                        SlotHome.Register => _host.Interp2TypeOfValue(stack[slotBase + slot]),
+                        SlotHome.Context => _host.Interp2TypeOfValue(_host.Interp2LoadContext(
+                            _frames[_depth - 1].Context!, function, slot, NameOfSlot(layout, slot), layout.IsStrict)),
+                        _ => _host.Interp2TypeOfFree(
+                            OuterEnvironmentOf(_depth - 1), NameOfSlot(layout, slot), layout.IsStrict),
+                    };
                     stack = _stack;
                     stack[frameBase + ins.A] = JsValue.FromString(typeName);
                     break;
@@ -424,7 +452,8 @@ internal sealed class Interp2
                 case OpCode.CreateFunction:
                 {
                     var closure = _host.Interp2CreateFunction(
-                        function.NestedFunctions[ins.B], OuterEnvironmentOf(_depth - 1));
+                        function.NestedFunctions[ins.B],
+                        _frames[_depth - 1].Context ?? OuterEnvironmentOf(_depth - 1));
                     stack = _stack;
                     stack[frameBase + ins.A] = closure;
                     break;
@@ -587,16 +616,23 @@ internal sealed class Interp2
         // shared helper keeps one binding routine rather than two.
         var window = Reserve(layout);
         var stack = _stack;
+        var context = Activate(callee, layout, thisValue, window, returnSlot);
         var parameterIndex = layout.ParameterWindowIndex;
         var bind = layout.HasDuplicateParameterSlots
             ? parameterIndex.Length
             : Math.Min(args.Count, parameterIndex.Length);
         for (var i = 0; i < bind; i++)
         {
-            stack[window + parameterIndex[i]] = i < args.Count ? args[i] : JsValue.Undefined;
+            var value = i < args.Count ? args[i] : JsValue.Undefined;
+            if (context is null || layout.SlotHomes[layout.ParameterSlots[i]] == SlotHome.Register)
+            {
+                stack[window + parameterIndex[i]] = value;
+            }
+            else
+            {
+                BytecodeInterpreter.Interp2DeclareContextSlot(context, layout.ParameterSlots[i], value);
+            }
         }
-
-        Activate(callee, layout, thisValue, window, returnSlot);
     }
 
     private void PushFrame(
@@ -609,21 +645,41 @@ internal sealed class Interp2
         int returnSlot)
     {
         var window = Reserve(layout);
+        var context = Activate(callee, layout, thisValue, window, returnSlot);
         var stack = _stack;
         var parameterIndex = layout.ParameterWindowIndex;
-        // Missing formals are already undefined from the window clear, so the
-        // ordinary case binds only what was supplied. A body whose formals share
-        // a slot has to write every one of them, in order, or a duplicate's
-        // earlier value survives where the spec says the last one wins.
+        // Missing formals are already undefined from the window clear (and from
+        // the context declaration), so the ordinary case binds only what was
+        // supplied. A body whose formals share a slot has to write every one of
+        // them, in order, or a duplicate's earlier value survives where the spec
+        // says the last one wins.
         var bind = layout.HasDuplicateParameterSlots
             ? parameterIndex.Length
             : Math.Min(argCount, parameterIndex.Length);
-        for (var i = 0; i < bind; i++)
+        if (context is null)
         {
-            stack[window + parameterIndex[i]] = i < argCount ? argSource[argStart + i] : JsValue.Undefined;
+            for (var i = 0; i < bind; i++)
+            {
+                stack[window + parameterIndex[i]] = i < argCount ? argSource[argStart + i] : JsValue.Undefined;
+            }
+
+            return;
         }
 
-        Activate(callee, layout, thisValue, window, returnSlot);
+        var parameterSlots = layout.ParameterSlots;
+        var slotHomes = layout.SlotHomes;
+        for (var i = 0; i < bind; i++)
+        {
+            var value = i < argCount ? argSource[argStart + i] : JsValue.Undefined;
+            if (slotHomes[parameterSlots[i]] == SlotHome.Register)
+            {
+                stack[window + parameterIndex[i]] = value;
+            }
+            else
+            {
+                BytecodeInterpreter.Interp2DeclareContextSlot(context, parameterSlots[i], value);
+            }
+        }
     }
 
     /// <summary>
@@ -659,7 +715,8 @@ internal sealed class Interp2
         return window;
     }
 
-    private void Activate(JsFunctionObject callee, FrameLayout layout, JsValue thisValue, int window, int returnSlot)
+    private DeclarativeEnvironmentRecord? Activate(
+        JsFunctionObject callee, FrameLayout layout, JsValue thisValue, int window, int returnSlot)
     {
         // ECMA-262 10.2.1.3 OrdinaryCallBindThis: a strict body takes its
         // receiver as it comes, a sloppy one substitutes the global object for
@@ -675,17 +732,41 @@ internal sealed class Interp2
         // A body with no free identifiers never consults the scope chain, and
         // resolving the closure environment is a shape check and sometimes a
         // property probe - real cost on a leaf function that has no use for it.
-        frame.OuterEnv = layout.HasFreeVariables ? _host.Interp2OuterEnvironment(callee) : null;
-        frame.OuterEnvResolved = layout.HasFreeVariables;
+        // A body that creates a closure needs it whatever else it does, because
+        // the closure has to be given something to chain to.
+        var needsOuterNow = layout.HasFreeVariables || layout.HasContext;
+        frame.OuterEnv = needsOuterNow ? _host.Interp2OuterEnvironment(callee) : null;
+        frame.OuterEnvResolved = needsOuterNow;
         frame.This = thisValue;
         frame.Base = window;
         frame.Ip = 0;
         frame.ReturnSlot = returnSlot;
 
+        DeclarativeEnvironmentRecord? context = null;
+        if (layout.HasContext)
+        {
+            // Hoisting: every captured variable exists, holding undefined, from
+            // the moment the body starts - the same state the window clear gives
+            // the ones that stayed in registers.
+            context = _host.Interp2CreateContext(layout.Function, callee, thisValue, frame.OuterEnv);
+            var homes = layout.SlotHomes;
+            for (var slot = 0; slot < homes.Length; slot++)
+            {
+                if (homes[slot] == SlotHome.Context)
+                {
+                    BytecodeInterpreter.Interp2DeclareContextSlot(context, slot, JsValue.Undefined);
+                }
+            }
+        }
+
+        frame.Context = context;
+
         if (Interp2Options.Log)
         {
             Interp2Stats.RecordFrameEntered(_depth, _stackTop);
         }
+
+        return context;
     }
 
     private void GrowStack(int required)
@@ -729,6 +810,14 @@ internal sealed class Interp2
     private static string? NameOfSlot(FrameLayout layout, int slot)
         => (uint)slot < (uint)layout.SlotNames.Length ? layout.SlotNames[slot] : null;
 
+    /// <summary>
+    /// Where a slot lives. An index the layout does not cover is treated as
+    /// free, which sends it to the scope chain - the answer the old loop gives
+    /// for a slot with no local binding.
+    /// </summary>
+    private static SlotHome HomeOfSlot(FrameLayout layout, int slot)
+        => (uint)slot < (uint)layout.SlotHomes.Length ? layout.SlotHomes[slot] : SlotHome.Free;
+
     // -------------------------------------------------------------- GC roots
 
     /// <summary>
@@ -762,6 +851,12 @@ internal sealed class Interp2
             {
                 tracer.TraceRoot("interp2.frame.callee", calleeHandle);
             }
+
+            // Captured variables are not in the window, so the span above does
+            // not reach them. Until a closure that holds this record is itself
+            // reachable, the running frame is the only thing keeping the values
+            // in it alive.
+            frame.Context?.Trace(tracer);
         }
     }
 }

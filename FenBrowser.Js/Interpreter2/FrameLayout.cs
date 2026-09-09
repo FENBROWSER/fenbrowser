@@ -17,7 +17,7 @@ public enum Interp2Bailout
     UnmappedSlot,
     UnsupportedOpCode,
     FreeVariableResolve,
-    CapturedVariable,
+    CapturedReceiver,
     DirectEval,
     FrameTooWide,
 }
@@ -47,6 +47,23 @@ public enum Interp2Bailout
 /// gate that is a single "yes" costs one cached field read per call and cannot
 /// be wrong halfway through.
 /// </remarks>
+/// <summary>Where a body's variable actually lives while it runs.</summary>
+public enum SlotHome : byte
+{
+    /// <summary>A slot in this frame's window - the ordinary case.</summary>
+    Register = 0,
+
+    /// <summary>
+    /// A binding in a heap record shared with the closures that read it. A
+    /// register cannot be shared, so a variable some nested function captures
+    /// has to live somewhere both can reach.
+    /// </summary>
+    Context = 1,
+
+    /// <summary>Declared somewhere else; resolved through the scope chain.</summary>
+    Free = 2,
+}
+
 public sealed class FrameLayout
 {
     private static readonly bool[] Supported = BuildSupportedOpCodeTable();
@@ -57,8 +74,9 @@ public sealed class FrameLayout
         Bailout = bailout;
         BailoutOpCode = bailoutOpCode;
         Code = Array.Empty<Instruction>();
-        SlotIsOwn = Array.Empty<bool>();
+        SlotHomes = Array.Empty<SlotHome>();
         SlotNames = Array.Empty<string?>();
+        ParameterSlots = Array.Empty<int>();
         ParameterWindowIndex = Array.Empty<int>();
     }
 
@@ -66,8 +84,9 @@ public sealed class FrameLayout
         BytecodeFunction function,
         int registerCount,
         int slotCount,
-        bool[] slotIsOwn,
+        SlotHome[] slotHomes,
         string?[] slotNames,
+        int[] parameterSlots,
         int[] parameterWindowIndex)
     {
         Function = function;
@@ -76,8 +95,9 @@ public sealed class FrameLayout
         RegisterCount = registerCount;
         SlotCount = slotCount;
         WindowSize = registerCount + slotCount;
-        SlotIsOwn = slotIsOwn;
+        SlotHomes = slotHomes;
         SlotNames = slotNames;
+        ParameterSlots = parameterSlots;
         ParameterWindowIndex = parameterWindowIndex;
     }
 
@@ -101,13 +121,26 @@ public sealed class FrameLayout
     /// <summary>Declared variable slots - the high half of the frame's window.</summary>
     public int SlotCount { get; }
 
-    /// <summary>Slots this body declares itself, and so keeps in its own window.</summary>
-    public bool[] SlotIsOwn { get; }
+    /// <summary>Where each slot lives: a register, the context record, or outside.</summary>
+    public SlotHome[] SlotHomes { get; }
+
+    /// <summary>
+    /// True when at least one variable is captured, so the frame allocates a
+    /// record on entry for those and only those.
+    /// </summary>
+    public bool HasContext { get; private init; }
 
     /// <summary>Slot-indexed names, for the slots that resolve through the outer chain.</summary>
     public string?[] SlotNames { get; }
 
-    /// <summary>Window index each formal parameter is bound at, in declaration order.</summary>
+    /// <summary>The slot each formal parameter names, in declaration order.</summary>
+    public int[] ParameterSlots { get; }
+
+    /// <summary>
+    /// Window index each formal parameter is bound at, in declaration order.
+    /// Meaningful only where the matching <see cref="SlotHomes"/> entry is
+    /// <see cref="SlotHome.Register"/>.
+    /// </summary>
     public int[] ParameterWindowIndex { get; }
 
     /// <summary>
@@ -212,13 +245,13 @@ public sealed class FrameLayout
             declared.Add(function.VarDeclarationNames[i]);
 
         var declaredNames = declared;
-        var slotIsOwn = new bool[slotCount];
+        var slotHomes = new SlotHome[slotCount];
         var hasFreeVariables = false;
         for (var slot = 0; slot < slotCount; slot++)
         {
             var name = slotNames[slot];
             var own = name is not null && declared.Contains(name);
-            slotIsOwn[slot] = own;
+            slotHomes[slot] = own ? SlotHome.Register : SlotHome.Free;
             hasFreeVariables |= !own;
         }
 
@@ -237,7 +270,7 @@ public sealed class FrameLayout
             // name the resolution has to be carried between two instructions,
             // which this loop has nowhere to put yet.
             if (ins.OpCode is OpCode.PreResolveVar or OpCode.StoreResolvedVar &&
-                ((uint)ins.B >= (uint)slotCount || !slotIsOwn[ins.B]))
+                ((uint)ins.B >= (uint)slotCount || slotHomes[ins.B] == SlotHome.Free))
             {
                 return new FrameLayout(function, Interp2Bailout.FreeVariableResolve);
             }
@@ -252,22 +285,40 @@ public sealed class FrameLayout
 
         // A closure is a function object plus the environment it captured, and
         // that environment exists only to resolve the names the closure does not
-        // declare itself. If no function created here reaches for anything this
-        // body declares, none of them can observe a register - so they are handed
-        // the environment this body itself closed over, and every name they do
-        // reach for resolves exactly where it did before.
-        if (makesClosures && !CaptureAnalysis.NestedFunctionsCaptureNothing(function, declaredNames))
-            return new FrameLayout(function, Interp2Bailout.CapturedVariable);
+        // declare itself. Those names are readable off the nested bytecode, so
+        // the ones this body declares - and only those - move out of the window
+        // into a record the closures share. A body no closure reads from gets no
+        // record at all, and is handed the environment it closed over itself.
+        var hasContext = false;
+        if (makesClosures)
+        {
+            var captured = CaptureAnalysis.CapturedNames(function, declaredNames);
+            if (captured is null)
+                return new FrameLayout(function, Interp2Bailout.CapturedReceiver);
+
+            for (var slot = 0; slot < slotCount; slot++)
+            {
+                if (slotHomes[slot] == SlotHome.Register &&
+                    slotNames[slot] is { } name &&
+                    captured.Contains(name))
+                {
+                    slotHomes[slot] = SlotHome.Context;
+                    hasContext = true;
+                }
+            }
+        }
 
         // Every parameter must have a slot of its own, or its binding would only
         // exist under a name this loop never creates a record for.
-        var parameterSlots = function.ParameterSlots;
+        var functionParameterSlots = function.ParameterSlots;
+        var layoutParameterSlots = new int[function.ParameterNames.Count];
         var parameterWindowIndex = new int[function.ParameterNames.Count];
         for (var i = 0; i < parameterWindowIndex.Length; i++)
         {
-            var slot = i < parameterSlots.Length ? parameterSlots[i] : -1;
-            if (slot < 0 || slot >= slotCount || !slotIsOwn[slot])
+            var slot = i < functionParameterSlots.Length ? functionParameterSlots[i] : -1;
+            if (slot < 0 || slot >= slotCount || slotHomes[slot] == SlotHome.Free)
                 return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
+            layoutParameterSlots[i] = slot;
             parameterWindowIndex[i] = registerCount + slot;
         }
 
@@ -289,12 +340,14 @@ public sealed class FrameLayout
             }
         }
 
-        return new FrameLayout(function, registerCount, slotCount, slotIsOwn, slotNames, parameterWindowIndex)
+        return new FrameLayout(
+            function, registerCount, slotCount, slotHomes, slotNames, layoutParameterSlots, parameterWindowIndex)
         {
             IsStrict = function.IsStrictMode,
             BindsThisLoosely = !function.IsStrictMode,
             HasFreeVariables = hasFreeVariables,
             HasDuplicateParameterSlots = duplicateParameters,
+            HasContext = hasContext,
         };
     }
 
