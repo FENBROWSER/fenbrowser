@@ -31,6 +31,14 @@ if [ ! -x "$EXE" ]; then
     exit 2
 fi
 
+# A slice path that does not exist is not an empty run: the runner falls back to
+# walking the whole tree in one process, which reached 23GB resident before it
+# was noticed. Refuse the typo instead.
+if [ ! -d "$ROOT/test/$SLICE" ]; then
+    echo "no such slice: $ROOT/test/$SLICE" >&2
+    exit 2
+fi
+
 mkdir -p "$OUT"
 
 run() {

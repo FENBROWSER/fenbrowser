@@ -354,6 +354,23 @@ internal sealed class Interp2
                         function, ip - 1, stack[frameBase + ins.B], function.Constants[ins.C]);
                     break;
 
+                case OpCode.SetPropByName:
+                    _host.Interp2SetPropertyByName(
+                        function, ip - 1, stack[frameBase + ins.A], function.PropertyNames[ins.B],
+                        stack[frameBase + ins.C], layout.IsStrict);
+                    break;
+
+                case OpCode.SetElem:
+                    _host.Interp2SetElement(
+                        stack[frameBase + ins.A], stack[frameBase + ins.B], stack[frameBase + ins.C],
+                        layout.IsStrict);
+                    break;
+
+                case OpCode.SetElemByIndex:
+                    _host.Interp2SetElementByIndex(
+                        stack[frameBase + ins.A], ins.B, stack[frameBase + ins.C], layout.IsStrict);
+                    break;
+
                 case OpCode.NewObject:
                     stack[frameBase + ins.A] = _host.Interp2NewObject();
                     break;

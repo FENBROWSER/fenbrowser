@@ -342,6 +342,19 @@ public sealed partial class BytecodeInterpreter
         return value;
     }
 
+    /// <summary>ECMA-262 13.15.2 assignment to a literal property name.</summary>
+    internal void Interp2SetPropertyByName(
+        BytecodeFunction function, int icOffset, JsValue receiver, string key, JsValue value, bool strict)
+        => SetPropertyByNameCore(function, icOffset, receiver, key, value, strict);
+
+    /// <summary>ECMA-262 13.15.2 assignment to a computed member.</summary>
+    internal void Interp2SetElement(JsValue receiver, JsValue key, JsValue value, bool strict)
+        => SetElementCore(receiver, key, value, strict);
+
+    /// <summary>Array-literal element store at a compiler-known index.</summary>
+    internal void Interp2SetElementByIndex(JsValue receiver, int index, JsValue value, bool strict)
+        => SetElementByIndexCore(receiver, index, value, strict);
+
     internal JsValue Interp2NewObject()
         => JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()));
 

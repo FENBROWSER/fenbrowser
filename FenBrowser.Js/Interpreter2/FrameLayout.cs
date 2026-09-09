@@ -307,8 +307,9 @@ public sealed class FrameLayout
             OpCode.BitAnd, OpCode.BitOr, OpCode.BitXor,
             OpCode.ShiftLeft, OpCode.ShiftRight, OpCode.UnsignedShiftRight,
 
-            // Property reads and object literals.
+            // Property reads, property writes and object literals.
             OpCode.GetPropByName, OpCode.GetElem, OpCode.GetElemConst,
+            OpCode.SetPropByName, OpCode.SetElem, OpCode.SetElemByIndex,
             OpCode.NewObject, OpCode.NewArray,
 
             // Calls.
