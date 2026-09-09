@@ -138,9 +138,19 @@ public static class CaptureAnalysis
         for (var i = 0; i < nested.Count; i++)
         {
             var info = Compute(nested[i], depth: 1);
-            if (info.NeedsEnclosingArguments ||
-                info.NeedsEnclosingNewTarget ||
-                info.NeedsEnclosingSuper)
+
+            // A nested arrow reading `arguments` is asking for a binding, not
+            // for state the record cannot hold - so a body that has its own
+            // arguments object can satisfy it the same way it satisfies a
+            // captured variable, provided its own bytecode names it and so gave
+            // it a slot.
+            if (info.NeedsEnclosingArguments &&
+                !(function.HasOwnArgumentsObject && function.VariableSlots.ContainsKey("arguments")))
+            {
+                return null;
+            }
+
+            if (info.NeedsEnclosingNewTarget || info.NeedsEnclosingSuper)
             {
                 return null;
             }

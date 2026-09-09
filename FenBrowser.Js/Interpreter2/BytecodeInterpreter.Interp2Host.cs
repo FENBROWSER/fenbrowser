@@ -646,6 +646,15 @@ public sealed partial class BytecodeInterpreter
     internal JsValue Interp2CreateFunction(BytecodeFunction nested, EnvironmentRecord? outerEnvironment)
         => CreateFunctionObject(nested, outerEnvironment);
 
+    /// <summary>
+    /// ECMA-262 10.4.4 CreateUnmappedArgumentsObject. This engine builds the
+    /// mapped form the same way - as a snapshot of the arguments rather than as
+    /// an alias of the parameter bindings - which is what lets a parameter stay
+    /// in a register in a body that has one.
+    /// </summary>
+    internal JsValue Interp2CreateArguments(in CallArgs args, bool restricted, JsFunctionObject callee)
+        => CreateArgumentsObject(args, restricted, callee);
+
     internal JsValue Interp2NewObject()
         => JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()));
 

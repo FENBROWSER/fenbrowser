@@ -146,6 +146,15 @@ public sealed class FrameLayout
     public int[] ParameterSlots { get; }
 
     /// <summary>
+    /// The slot holding this body's own <c>arguments</c> object, or -1 when it
+    /// has none. ECMA-262 10.2.11 creates it after the formals are bound.
+    /// </summary>
+    public int ArgumentsSlot { get; private init; } = -1;
+
+    /// <summary>ECMA-262 10.2.11: the strict form throws on `callee`.</summary>
+    public bool RestrictedArguments { get; private init; }
+
+    /// <summary>
     /// Window index each formal parameter is bound at, in declaration order.
     /// Meaningful only where the matching <see cref="SlotHomes"/> entry is
     /// <see cref="SlotHome.Register"/>.
@@ -230,9 +239,11 @@ public sealed class FrameLayout
             return new FrameLayout(function, Interp2Bailout.EvalCode);
         if (function.IsDerivedConstructor || function.IsClassConstructor)
             return new FrameLayout(function, Interp2Bailout.ClassConstructor);
-        // A mapped arguments object aliases the parameter bindings, and even an
-        // unmapped one has to be materialised out of them.
-        if (function.HasOwnArgumentsObject || function.UsesOuterArguments)
+        // An arrow reaching outwards for the enclosing `arguments` is refused;
+        // a body's own arguments object is not, because this engine builds it as
+        // a snapshot rather than as an alias of the parameter bindings, so a
+        // parameter can still be a register.
+        if (function.UsesOuterArguments)
             return new FrameLayout(function, Interp2Bailout.ArgumentsObject);
         // ECMA-262 15.2.5: a named function expression binds its own name in a
         // record of its own, between its parameters and its closure.
@@ -262,6 +273,13 @@ public sealed class FrameLayout
             declared.Add(function.ParameterNames[i]);
         for (var i = 0; i < function.VarDeclarationNames.Count; i++)
             declared.Add(function.VarDeclarationNames[i]);
+
+        // `arguments` is declared by the body having one, not by a declaration
+        // in it, so nothing above names it - but it is a variable of this frame
+        // like any other and has to be classified as one.
+        var ownsArguments = function.HasOwnArgumentsObject && !function.ArgumentsShadowedByParameter;
+        if (ownsArguments)
+            declared.Add("arguments");
 
         var declaredNames = declared;
         var slotHomes = new SlotHome[slotCount];
@@ -357,6 +375,16 @@ public sealed class FrameLayout
         if (!function.AllVarSlotsMapped)
             return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
 
+        // A body that has an arguments object but never names it needs no slot;
+        // one that names it must have got one, or there is nowhere to put it.
+        var argumentsSlot = -1;
+        if (ownsArguments && function.VariableSlots.TryGetValue("arguments", out var argumentsSlotIndex))
+        {
+            if ((uint)argumentsSlotIndex >= (uint)slotCount || slotHomes[argumentsSlotIndex] == SlotHome.Free)
+                return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
+            argumentsSlot = argumentsSlotIndex;
+        }
+
         var duplicateParameters = false;
         for (var i = 1; i < parameterWindowIndex.Length && !duplicateParameters; i++)
         {
@@ -379,6 +407,8 @@ public sealed class FrameLayout
             HasFreeVariables = hasFreeVariables,
             HasDuplicateParameterSlots = duplicateParameters,
             HasContext = hasContext,
+            ArgumentsSlot = argumentsSlot,
+            RestrictedArguments = function.UsesRestrictedArgumentsObject,
         };
     }
 

@@ -668,6 +668,8 @@ internal sealed class Interp2
                 BytecodeInterpreter.Interp2DeclareContextSlot(context, layout.ParameterSlots[i], value);
             }
         }
+
+        BindArgumentsObject(layout, callee, context, window, args);
     }
 
     private void PushFrame(
@@ -693,28 +695,63 @@ internal sealed class Interp2
             : Math.Min(argCount, parameterIndex.Length);
         if (context is null)
         {
+            // The ordinary shape: nothing is captured, so every formal is a
+            // window slot and the index is already computed.
             for (var i = 0; i < bind; i++)
             {
                 stack[window + parameterIndex[i]] = i < argCount ? argSource[argStart + i] : JsValue.Undefined;
             }
+        }
+        else
+        {
+            var parameterSlots = layout.ParameterSlots;
+            var slotHomes = layout.SlotHomes;
+            for (var i = 0; i < bind; i++)
+            {
+                var value = i < argCount ? argSource[argStart + i] : JsValue.Undefined;
+                if (slotHomes[parameterSlots[i]] == SlotHome.Register)
+                {
+                    stack[window + parameterIndex[i]] = value;
+                }
+                else
+                {
+                    BytecodeInterpreter.Interp2DeclareContextSlot(context, parameterSlots[i], value);
+                }
+            }
+        }
 
+        BindArgumentsObject(
+            layout, callee, context, window, CallArgs.FromRegisters(argSource, argStart, argCount));
+    }
+
+    /// <summary>
+    /// ECMA-262 10.2.11 FunctionDeclarationInstantiation: the arguments object
+    /// is created after the formals are bound, and lands wherever this body's
+    /// variables live.
+    /// </summary>
+    private void BindArgumentsObject(
+        FrameLayout layout,
+        JsFunctionObject callee,
+        DeclarativeEnvironmentRecord? context,
+        int window,
+        in CallArgs args)
+    {
+        var slot = layout.ArgumentsSlot;
+        if (slot < 0)
+        {
             return;
         }
 
-        var parameterSlots = layout.ParameterSlots;
-        var slotHomes = layout.SlotHomes;
-        for (var i = 0; i < bind; i++)
+        var argumentsObject = _host.Interp2CreateArguments(args, layout.RestrictedArguments, callee);
+        if (context is not null && layout.SlotHomes[slot] == SlotHome.Context)
         {
-            var value = i < argCount ? argSource[argStart + i] : JsValue.Undefined;
-            if (slotHomes[parameterSlots[i]] == SlotHome.Register)
-            {
-                stack[window + parameterIndex[i]] = value;
-            }
-            else
-            {
-                BytecodeInterpreter.Interp2DeclareContextSlot(context, parameterSlots[i], value);
-            }
+            BytecodeInterpreter.Interp2DeclareContextSlot(context, slot, argumentsObject);
+            return;
         }
+
+        // Allocating the object may have grown the value stack under a
+        // re-entrant call, so the window is addressed through the current array.
+        _stack[window + layout.RegisterCount + slot] = argumentsObject;
     }
 
     /// <summary>
