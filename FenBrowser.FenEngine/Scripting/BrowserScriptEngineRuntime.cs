@@ -18983,9 +18983,27 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     }
 
     private void ParseEventListenerOptions(JsValue options, out bool capture, out bool once)
+        => ParseEventListenerOptions(options, out capture, out once, out _, out _);
+
+    /// <summary>
+    /// DOM "flatten more" (dom.spec.whatwg.org #event-flatten-more). Converting the
+    /// argument to an AddEventListenerOptions dictionary reads every member, and
+    /// that read is observable: the standard way to ask whether a browser supports
+    /// passive listeners is to pass an object whose `passive` getter records that
+    /// it ran. Only capture and once were ever read here, so that detection
+    /// answered "not supported" everywhere, in every realm.
+    /// </summary>
+    private void ParseEventListenerOptions(
+        JsValue options,
+        out bool capture,
+        out bool once,
+        out bool passive,
+        out JsValue signal)
     {
         capture = false;
         once = false;
+        passive = false;
+        signal = JsValue.Undefined;
 
         switch (options.Tag)
         {
@@ -19002,8 +19020,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 capture = Math.Abs(options.AsNumber()) > 0;
                 return;
             case JsValueTag.Object:
+                // Dictionary member order, so a page that logs from its getters
+                // sees the same sequence a browser produces.
                 capture = ReadJsBoolProperty(options, "capture");
                 once = ReadJsBoolProperty(options, "once");
+                passive = ReadJsBoolProperty(options, "passive");
+                signal = ReadJsProperty(options, "signal");
                 return;
         }
     }
