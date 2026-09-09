@@ -1123,7 +1123,10 @@ internal sealed class Interp2
 
                 if (catchIp < 0 && finallyIp < 0)
                 {
-                    continue;
+                    // A handler with neither half is not one the compiler emits.
+                    // The dispatch loop abandons the frame in that case rather
+                    // than trying its outer entries, so this does the same.
+                    break;
                 }
 
                 _depth = depth;
