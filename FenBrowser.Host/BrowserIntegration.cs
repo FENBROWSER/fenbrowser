@@ -62,6 +62,7 @@ public class BrowserIntegration : IDisposable
     private bool _hasFirstStyledRender = false; // Track first styled render to avoid unstyled initial layout
     private bool _hasStableStyleSnapshot = false;
     private DateTime _lastNavigationTime = DateTime.Now; // Track navigation start time for timeout
+    private readonly HashSet<long> _seenNavigationIds = new();
     private float _scrollY = 0;
     private float _contentHeight = 0;
     private float _dpiScale = 1.0f;
@@ -576,9 +577,11 @@ public class BrowserIntegration : IDisposable
 
         if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current != null)
         {
-            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.FrameReceived += OnFrameReceivedFromRenderer;
-            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.MetadataChanged += OnMetadataChangedFromRenderer;
-            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.CursorChanged += OnCursorChangedFromRenderer;
+            var coordinator = FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current;
+            coordinator.FrameReceived += OnFrameReceivedFromRenderer;
+            coordinator.MetadataChanged += OnMetadataChangedFromRenderer;
+            coordinator.CursorChanged += OnCursorChangedFromRenderer;
+            coordinator.NavigationLifecycleReceived += OnNavigationLifecycleReceived;
         }
 
         // Wire CSS animation/transition engine → repaint loop.
@@ -957,9 +960,11 @@ public class BrowserIntegration : IDisposable
 
         if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current != null)
         {
-            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.FrameReceived -= OnFrameReceivedFromRenderer;
-            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.MetadataChanged -= OnMetadataChangedFromRenderer;
-            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.CursorChanged -= OnCursorChangedFromRenderer;
+            var coordinator = FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current;
+            coordinator.FrameReceived -= OnFrameReceivedFromRenderer;
+            coordinator.MetadataChanged -= OnMetadataChangedFromRenderer;
+            coordinator.CursorChanged -= OnCursorChangedFromRenderer;
+            coordinator.NavigationLifecycleReceived -= OnNavigationLifecycleReceived;
         }
 
         if (_browser?.Engine?.EventLoopCoordinator != null)
@@ -1444,6 +1449,67 @@ public class BrowserIntegration : IDisposable
         }
     }
 
+    internal void OnNavigationLifecycleReceived(int tabId, FenBrowser.Host.ProcessIsolation.RendererNavigationLifecyclePayload payload)
+    {
+        if (OwnerTab != null && OwnerTab.Id != tabId)
+        {
+            return;
+        }
+
+        if (payload == null || string.IsNullOrWhiteSpace(payload.Phase))
+        {
+            return;
+        }
+
+        var phase = payload.Phase;
+        var navId = payload.NavigationId;
+        EngineLogBridge.Info($"[BrowserIntegration] NavigationLifecycleReceived: tab={tabId} phase={phase} navId={navId} url={payload.EffectiveUrl}", LogCategory.Navigation);
+
+        // Track new navigation IDs - if we haven't seen this navigation before,
+        // it means navigation started (even if we didn't get a "Start" phase)
+        bool isNewNavigation = _seenNavigationIds.Add(navId);
+        if (isNewNavigation)
+        {
+            EngineLogBridge.Info($"[BrowserIntegration] New navigation detected via lifecycle: navId={navId}, setting IsLoading=true", LogCategory.Navigation);
+            if (!IsLoading)
+            {
+                IsLoading = true;
+                _lastNavigationTime = DateTime.Now;
+                LoadingChanged?.Invoke(true);
+                RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.NavigationLifecycleNew");
+            }
+        }
+
+        // Map renderer navigation phases to loading state
+        bool wasLoading = IsLoading;
+        bool newLoading = IsLoading;
+
+        switch (phase)
+        {
+            case "Start":
+            case "Pending":
+            case "Committed":
+                newLoading = true;
+                break;
+            case "Interactive":
+            case "Complete":
+            case "Failed":
+            case "Cancelled":
+                newLoading = false;
+                break;
+        }
+
+        if (wasLoading != newLoading)
+        {
+            EngineLogBridge.Info($"[BrowserIntegration] LoadingChanged via NavigationLifecycle: {wasLoading} -> {newLoading}", LogCategory.Navigation);
+            IsLoading = newLoading;
+            var handlers = LoadingChanged?.GetInvocationList();
+            EngineLogBridge.Debug($"[BrowserIntegration] LoadingChanged handlers count: {handlers?.Length ?? 0}", LogCategory.Navigation);
+            LoadingChanged?.Invoke(newLoading);
+            RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.NavigationLifecycle");
+        }
+    }
+
     public void HighlightElement(Element? element)
     {
         if (_highlightedElement != element)
@@ -1900,10 +1966,18 @@ public class BrowserIntegration : IDisposable
 
         try
         {
-            if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+            var isBrokered = FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true;
+            if (isBrokered)
             {
                 if (OwnerTab != null)
                 {
+                    // Set loading state immediately for brokered mode since we don't get
+                    // BrowserHost.LoadingChanged events from the renderer process
+                    IsLoading = true;
+                    _lastNavigationTime = DateTime.Now;
+                    LoadingChanged?.Invoke(true);
+                    RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.NavigationStart");
+
                     FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnNavigationRequested(OwnerTab, url, isUserInput, navigationCorrelationId);
                 }
                 return;
