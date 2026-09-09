@@ -405,11 +405,14 @@ public class BrowserIntegration : IDisposable
         
         _browser.LoadingChanged += (s, loading) =>
         {
+            var prevLoading = IsLoading;
             IsLoading = loading;
+            EngineLogBridge.Info($"[BrowserIntegration] LoadingChanged: {prevLoading} -> {loading} (source=BrowserHost)", LogCategory.Navigation);
             // Clear CSS caches on start of navigation to prevent memory buildup
             if (loading)
             {
                 _lastNavigationTime = DateTime.Now;
+                EngineLogBridge.Debug($"[BrowserIntegration] Navigation started, _lastNavigationTime set to {_lastNavigationTime}", LogCategory.Navigation);
                 _hasFirstStyledRender = false;
                 _hasStableStyleSnapshot = false;
                 var outgoingRoot = _root;
@@ -443,6 +446,10 @@ public class BrowserIntegration : IDisposable
                 FaviconChanged?.Invoke(null);
 
                 RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserHost.LoadingChanged");
+            }
+            else
+            {
+                EngineLogBridge.Debug($"[BrowserIntegration] Navigation completed, IsLoading=false", LogCategory.Navigation);
             }
             LoadingChanged?.Invoke(loading);
         };

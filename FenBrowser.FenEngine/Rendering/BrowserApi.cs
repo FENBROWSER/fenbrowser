@@ -649,6 +649,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private void TryInvokeLoadingChanged(bool loading)
         {
+            EngineLogCompat.Info($"[BrowserHost] TryInvokeLoadingChanged: {loading}", LogCategory.Navigation);
             try { LoadingChanged?.Invoke(this, loading); }
             catch (Exception ex) { TryLogWarn($"[BrowserHost] LoadingChanged handler failed: {ex.Message}", LogCategory.Navigation); }
         }
@@ -973,6 +974,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             _engine.LoadingChanged += (s, loading) =>
             {
+                EngineLogCompat.Info($"[BrowserHost] LoadingChanged event received: {loading}", LogCategory.Navigation);
                 TryInvokeLoadingChanged(loading);
             };
 

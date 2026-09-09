@@ -666,6 +666,7 @@ public void Dispose()
 
         private async Task RaiseLoadingChangedAsync(bool isLoading)
         {
+            EngineLogCompat.Info($"[CustomHtmlEngine] RaiseLoadingChangedAsync: {isLoading}", LogCategory.Navigation);
             var handler = LoadingChanged;
             if (handler == null) return;
             try
