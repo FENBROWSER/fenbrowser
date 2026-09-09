@@ -22,8 +22,17 @@ namespace FenBrowser.Js.Interpreter2;
 /// <summary>Where a named property actually lived, when its site could not answer.</summary>
 public enum PropertyMissKind
 {
-    /// <summary>The receiver was not an ordinary object - a primitive, a proxy, a host object.</summary>
-    NotCacheable,
+    /// <summary>A string primitive: `s.length`, `s.charCodeAt`, and everything else on one.</summary>
+    StringReceiver,
+
+    /// <summary>Some other primitive - a number, a boolean, a symbol.</summary>
+    OtherPrimitiveReceiver,
+
+    /// <summary>A host object: the DOM, and anything else the embedder owns.</summary>
+    HostReceiver,
+
+    /// <summary>A proxy or a module namespace, which routes access through itself.</summary>
+    ExoticReceiver,
 
     /// <summary>
     /// An own data property in a shape slot - the exact thing a site caches, so
@@ -114,6 +123,7 @@ public static class Interp2Stats
     internal static void RecordPropertyMiss(PropertyMissKind kind) => PropertyMissKinds[(int)kind]++;
 
     private static readonly Dictionary<string, long> UncacheableKeys = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, long> StringReceiverKeys = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Which names are behind the misses a cache cannot describe. A count of
@@ -124,6 +134,15 @@ public static class Interp2Stats
         if (UncacheableKeys.Count < 4096)
         {
             UncacheableKeys[key] = UncacheableKeys.TryGetValue(key, out var seen) ? seen + 1 : 1;
+        }
+    }
+
+    /// <summary>Which names a page reads off a string primitive.</summary>
+    internal static void RecordStringReceiverKey(string key)
+    {
+        if (StringReceiverKeys.Count < 4096)
+        {
+            StringReceiverKeys[key] = StringReceiverKeys.TryGetValue(key, out var seen) ? seen + 1 : 1;
         }
     }
 
@@ -154,6 +173,7 @@ public static class Interp2Stats
         _elementReadsMissed = 0;
         Array.Clear(PropertyMissKinds);
         UncacheableKeys.Clear();
+        StringReceiverKeys.Clear();
         _maxDepth = 0;
         _maxStackSlots = 0;
     }
@@ -210,6 +230,17 @@ public static class Interp2Stats
                 report.Append("[interp2] not-in-shape names:");
                 var top = UncacheableKeys.OrderByDescending(static pair => pair.Value).Take(12);
                 foreach (var (name, count) in top)
+                {
+                    report.Append(' ').Append(name).Append('=').Append(count);
+                }
+
+                report.AppendLine();
+            }
+
+            if (StringReceiverKeys.Count > 0)
+            {
+                report.Append("[interp2] on-string names:");
+                foreach (var (name, count) in StringReceiverKeys.OrderByDescending(static p => p.Value).Take(12))
                 {
                     report.Append(' ').Append(name).Append('=').Append(count);
                 }

@@ -621,15 +621,26 @@ public sealed partial class BytecodeInterpreter
     /// </summary>
     private Interpreter2.PropertyMissKind ClassifyPropertyMiss(JsValue receiver, string key)
     {
+        if (receiver.Tag == JsValueTag.String)
+        {
+            Interpreter2.Interp2Stats.RecordStringReceiverKey(key);
+            return Interpreter2.PropertyMissKind.StringReceiver;
+        }
+
+        if (receiver.Tag == JsValueTag.HostObject)
+        {
+            return Interpreter2.PropertyMissKind.HostReceiver;
+        }
+
         if (receiver.Tag != JsValueTag.Object)
         {
-            return Interpreter2.PropertyMissKind.NotCacheable;
+            return Interpreter2.PropertyMissKind.OtherPrimitiveReceiver;
         }
 
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         if (obj is ProxyObject or ModuleNamespaceObject)
         {
-            return Interpreter2.PropertyMissKind.NotCacheable;
+            return Interpreter2.PropertyMissKind.ExoticReceiver;
         }
 
         if (obj.TryGetOwnProperty(key, out var own))
