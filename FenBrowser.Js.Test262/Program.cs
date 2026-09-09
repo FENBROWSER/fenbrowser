@@ -122,4 +122,14 @@ if (progressFilePath == null &&
 }
 
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, runtimeSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv, test262Shallow, skip, progressFilePath);
+var exitCode = runner.Run(root, list, dryRun, parserSubset, runtimeSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv, test262Shallow, skip, progressFilePath);
+
+// test262 is the largest and most varied body of JavaScript this engine has,
+// so it is the honest place to ask how much of a real workload the
+// register-window loop can run and what is holding the rest back.
+if (FenBrowser.Js.Interpreter2.Interp2Options.Log)
+{
+    Console.Error.Write(FenBrowser.Js.Interpreter2.Interp2Stats.Report());
+}
+
+return exitCode;
