@@ -2047,10 +2047,37 @@ public void Dispose()
                 _activeBaseUri?.AbsoluteUri);
         }
 
-        private void FlushPendingLayoutForScript()
+private void FlushPendingLayoutForScript(Element element)
         {
             var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
-            if (root != null && (root.StyleDirty || root.ChildStyleDirty))
+            if (root == null)
+            {
+                return;
+            }
+
+            var renderer = _externalRenderer ?? _cachedRenderer;
+            if (renderer == null)
+            {
+                return;
+            }
+
+            // Find the nearest ancestor that establishes a formatting context
+            // to limit layout scope. GetComputedStyle is a cache lookup (no layout trigger).
+            var layoutRoot = FindLayoutRootForElement(element, root);
+            if (layoutRoot == null)
+            {
+                layoutRoot = root;
+            }
+
+            // Skip if nothing dirty in the layout root's subtree
+            bool isDirty = layoutRoot.StyleDirty || layoutRoot.ChildStyleDirty ||
+                           layoutRoot.LayoutDirty || layoutRoot.ChildLayoutDirty;
+            if (!isDirty)
+            {
+                return;
+            }
+
+            if (layoutRoot.StyleDirty || layoutRoot.ChildStyleDirty)
             {
                 ScheduleRecascade();
             }
@@ -2061,20 +2088,41 @@ public void Dispose()
                 pendingRecascade.GetAwaiter().GetResult();
             }
 
-            var renderer = _externalRenderer ?? _cachedRenderer;
-            if (root == null || renderer == null ||
-                (!root.StyleDirty && !root.ChildStyleDirty &&
-                 !root.LayoutDirty && !root.ChildLayoutDirty))
-            {
-                return;
-            }
-
             renderer.EnsureLayout(
-                root,
+                layoutRoot,
                 LastComputedStyles,
                 (float)(_activeViewportWidth ?? 1920),
                 (float)(_activeViewportHeight ?? GetPrimaryWindowHeight()),
                 _activeBaseUri?.AbsoluteUri);
+        }
+
+private Node FindLayoutRootForElement(Element element, Node documentRoot)
+        {
+            // Walk up from the element to find the nearest ancestor that establishes
+            // a formatting context. GetComputedStyle is a cache lookup (no layout trigger).
+            var current = element;
+            while (current != null && current != documentRoot)
+            {
+                var style = current.GetComputedStyle();
+                if (style != null)
+                {
+                    var display = style.Display?.ToLowerInvariant() ?? "block";
+                    // Elements that establish independent formatting contexts
+                    // Note: table-cell and table-caption are TABLE-INTERNAL, they participate
+                    // in the TABLE's formatting context. Only table/inline-table establishes
+                    // an independent table formatting context.
+                    if (display == "flex" || display == "inline-flex" ||
+                        display == "grid" || display == "inline-grid" ||
+                        display == "table" || display == "inline-table" ||
+                        display == "flow-root" ||
+                        (display == "block" && style.Overflow != "visible"))
+                    {
+                        return current;
+                    }
+                }
+                current = current.ParentElement;
+            }
+            return documentRoot;
         }
 
         /// <summary>

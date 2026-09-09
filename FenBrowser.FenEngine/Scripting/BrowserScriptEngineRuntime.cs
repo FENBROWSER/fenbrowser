@@ -336,7 +336,7 @@ public interface IBrowserScriptEngine
     Func<Uri, string> CookieReadBridge { get; set; }
     Action<Uri, string> CookieWriteBridge { get; set; }
     Action RequestRender { get; set; }
-    Action FlushPendingLayout { get; set; }
+Action<Element> FlushPendingLayout { get; set; }
     Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
 
     /// <summary>
@@ -968,7 +968,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     public Func<Uri, string> CookieReadBridge { get; set; }
     public Action<Uri, string> CookieWriteBridge { get; set; }
     public Action RequestRender { get; set; }
-    public Action FlushPendingLayout { get; set; }
+    public Action<Element> FlushPendingLayout { get; set; }
     public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
     public Func<Uri, Uri, string, Task<string>> ExternalScriptFetcherWithNonce { get; set; }
     public Func<Uri, Uri, Task<string>> WorkerScriptFetcher { get; set; }
@@ -12207,7 +12207,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return CreateComputedStyleObject(new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase));
                 }
 
-                FlushPendingLayout?.Invoke();
+                FlushPendingLayout?.Invoke(element);
                 return CreateComputedStyleObjectForElement(element);
             },
             length: 1);
@@ -20102,7 +20102,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     /// </summary>
     private JsValue ReadElementLayoutDimension(Element element, string property)
     {
-        FlushPendingLayout?.Invoke();
+        FlushPendingLayout?.Invoke(element);
         var isWidth = property is "offsetWidth" or "clientWidth" or "scrollWidth";
         var isHeight = property is "offsetHeight" or "clientHeight" or "scrollHeight";
         if (property is "clientWidth" or "clientHeight" &&
@@ -20171,7 +20171,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     /// </summary>
     private JsValue ReadElementBoundingClientRect(Element element)
     {
-        FlushPendingLayout?.Invoke();
+        FlushPendingLayout?.Invoke(element);
         var box = LayoutBoxResolver?.Invoke(element) as BoxModel;
         if (IsIFrameElement(element))
         {
@@ -20278,7 +20278,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private JsValue ReadElementClientRects(Element element)
     {
-        FlushPendingLayout?.Invoke();
+        FlushPendingLayout?.Invoke(element);
         var box = LayoutBoxResolver?.Invoke(element) as BoxModel;
         if (box == null)
         {
