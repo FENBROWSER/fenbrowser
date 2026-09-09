@@ -9810,19 +9810,63 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     function EventTarget() {
                         this._fenListeners = Object.create(null);
                     }
-                    EventTarget.prototype.addEventListener = function(type, callback, options) {
-                        if (typeof callback !== 'function') return;
-                        var listeners = this._fenListeners[type] || (this._fenListeners[type] = []);
-                        for (var i = 0; i < listeners.length; i++) {
-                            if (listeners[i].callback === callback) return;
+                    // Options were stored and never looked at, so once, signal and
+                    // the capture half of listener identity all did nothing here.
+                    // This is the EventTarget a worker gets, and the one behind
+                    // AbortSignal, WebSocket, BroadcastChannel and XMLHttpRequest.
+                    EventTarget.prototype._fenFlattenOptions = function (options) {
+                        // DOM 2.7 "flatten more": the dictionary conversion reads
+                        // every member, and passive support is detected by
+                        // watching for that read.
+                        if (typeof options === 'boolean') {
+                            return { capture: options, once: false, passive: false, signal: null };
                         }
-                        listeners.push({ callback: callback, options: options || {} });
+                        if (!options || typeof options !== 'object') {
+                            return { capture: false, once: false, passive: false, signal: null };
+                        }
+                        return {
+                            capture: Boolean(options.capture),
+                            once: Boolean(options.once),
+                            passive: Boolean(options.passive),
+                            signal: options.signal || null
+                        };
+                    };
+                    EventTarget.prototype.addEventListener = function(type, callback) {
+                        if (typeof callback !== 'function') return;
+                        var flat = this._fenFlattenOptions(arguments[2]);
+                        // DOM 2.7 step 2.
+                        if (flat.signal && flat.signal.aborted) return;
+                        var listeners = this._fenListeners[type] || (this._fenListeners[type] = []);
+                        // DOM 2.7 step 4: identity is type + callback + capture.
+                        for (var i = 0; i < listeners.length; i++) {
+                            if (listeners[i].callback === callback &&
+                                listeners[i].capture === flat.capture) return;
+                        }
+                        var entry = {
+                            callback: callback,
+                            capture: flat.capture,
+                            once: flat.once,
+                            passive: flat.passive
+                        };
+                        listeners.push(entry);
+                        // DOM 2.7 step 5.
+                        if (flat.signal && typeof flat.signal.addEventListener === 'function') {
+                            var target = this;
+                            flat.signal.addEventListener('abort', function () {
+                                var live = target._fenListeners[type];
+                                if (!live) return;
+                                var at = live.indexOf(entry);
+                                if (at >= 0) live.splice(at, 1);
+                            });
+                        }
                     };
                     EventTarget.prototype.removeEventListener = function(type, callback) {
+                        var capture = this._fenFlattenOptions(arguments[2]).capture;
                         var listeners = this._fenListeners[type];
                         if (!listeners) return;
                         for (var i = listeners.length - 1; i >= 0; i--) {
-                            if (listeners[i].callback === callback) listeners.splice(i, 1);
+                            if (listeners[i].callback === callback &&
+                                listeners[i].capture === capture) listeners.splice(i, 1);
                         }
                     };
                     EventTarget.prototype.dispatchEvent = function(event) {
@@ -9830,7 +9874,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         event.target = this;
                         var listeners = (this._fenListeners[event.type] || []).slice();
                         for (var i = 0; i < listeners.length; i++) {
-                            try { listeners[i].callback.call(this, event); } catch(e) {}
+                            var entry = listeners[i];
+                            // DOM 2.9 step 5: a once listener is removed before it
+                            // is called, so a handler that dispatches the same
+                            // event again does not re-enter it.
+                            if (entry.once) {
+                                var live = this._fenListeners[event.type];
+                                var at = live ? live.indexOf(entry) : -1;
+                                if (at >= 0) live.splice(at, 1);
+                            }
+                            try { entry.callback.call(this, event); } catch(e) {}
                         }
                         return !event.defaultPrevented;
                     };
