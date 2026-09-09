@@ -4954,8 +4954,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             EvaluateWithFenJsRaw("""
                 (function () {
                     var windowOnly = [
-                        'HTMLElement', 'Element', 'Node', 'NodeList', 'NamedNodeMap',
-                        'DocumentFragment', 'HTMLDocument', 'CharacterData', 'Attr',
+                        'Window', 'Document', 'HTMLDocument', 'DocumentType',
+                        'DOMImplementation', 'HTMLElement', 'Element', 'Node',
+                        'NodeList', 'NamedNodeMap', 'HTMLCollection', 'Attr',
+                        'DocumentFragment', 'CharacterData', 'Text', 'Comment',
+                        'CDATASection', 'ProcessingInstruction',
                         'ShadowRoot', 'Range', 'Selection', 'getSelection',
                         'DOMParser', 'XMLSerializer', 'XPathResult', 'NodeFilter',
                         'TreeWalker', 'NodeIterator', 'MutationObserver',
@@ -4963,13 +4966,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         'customElements', 'CustomElementRegistry',
                         'localStorage', 'sessionStorage', 'Storage',
                         'history', 'History', 'screen', 'Screen', 'visualViewport',
-                        'alert', 'confirm', 'prompt', 'print', 'open', 'close',
+                        'alert', 'confirm', 'prompt', 'print', 'open',
                         'focus', 'blur', 'scroll', 'scrollTo', 'scrollBy',
-                        'getComputedStyle', 'matchMedia', 'CSS', 'CSSStyleDeclaration',
-                        'Image', 'Audio', 'Option', 'HTMLImageElement',
+                        'getComputedStyle', 'matchMedia',
+                        'Image', 'Audio', 'Option',
                         'requestAnimationFrame', 'cancelAnimationFrame',
                         'requestIdleCallback', 'cancelIdleCallback',
-                        'getSelection', 'find', 'stop'
+                        'find', 'stop',
+                        // Every event a pointing device, a key or a page
+                        // transition produces. A worker has none of them.
+                        'UIEvent', 'MouseEvent', 'KeyboardEvent', 'WheelEvent',
+                        'PointerEvent', 'TouchEvent', 'Touch', 'TouchList',
+                        'FocusEvent', 'InputEvent', 'CompositionEvent',
+                        'DragEvent', 'ClipboardEvent', 'BeforeUnloadEvent',
+                        'PopStateEvent', 'HashChangeEvent', 'PageTransitionEvent',
+                        'AnimationEvent', 'TransitionEvent',
+                        // Window geometry, which is what a fingerprint reads
+                        // first and what a worker has none of.
+                        'innerWidth', 'innerHeight', 'outerWidth', 'outerHeight',
+                        'scrollX', 'scrollY', 'pageXOffset', 'pageYOffset',
+                        'screenX', 'screenY', 'screenLeft', 'screenTop',
+                        'devicePixelRatio', 'frames', 'frameElement', 'opener',
+                        'status', 'closed', 'menubar', 'toolbar', 'locationbar',
+                        'personalbar', 'scrollbars', 'statusbar'
                     ];
                     for (var i = 0; i < windowOnly.length; i++) {
                         try { delete globalThis[windowOnly[i]]; } catch (e) { }
@@ -4984,6 +5003,30 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         } catch (e) { }
                     }
 
+                    // The element interfaces are ninety-odd names and the set
+                    // grows with the DOM, so they go by prefix rather than by
+                    // enumeration: a list that has to be maintained is a list
+                    // that will be wrong again. Anything this realm installed
+                    // whose name says markup, styling or vector graphics has no
+                    // business in a worker.
+                    try {
+                        var installed = Object.getOwnPropertyNames(globalThis);
+                        for (var n = 0; n < installed.length; n++) {
+                            var name = installed[n];
+                            if (name.lastIndexOf('HTML', 0) !== 0 &&
+                                name.lastIndexOf('SVG', 0) !== 0 &&
+                                name.lastIndexOf('CSS', 0) !== 0) {
+                                continue;
+                            }
+
+                            try { delete globalThis[name]; } catch (e) { }
+                            try {
+                                if (typeof globalThis[name] !== 'undefined') {
+                                    globalThis[name] = undefined;
+                                }
+                            } catch (e) { }
+                        }
+                    } catch (e) { }
                 })()
                 """);
         }
