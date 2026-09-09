@@ -225,8 +225,8 @@ internal sealed class Interp2
                     var loaded = home == SlotHome.Context
                         ? _host.Interp2LoadContext(
                             _frames[_depth - 1].Context!, function, slot, NameOfSlot(layout, slot), layout.IsStrict)
-                        : _host.Interp2LoadFree(
-                            OuterEnvironmentOf(_depth - 1), NameOfSlot(layout, slot), layout.IsStrict);
+                        : _host.Interp2LoadFreeCached(
+                            layout, slot, ip - 1, OuterEnvironmentOf(_depth - 1));
                     stack = _stack;
                     stack[frameBase + ins.A] = loaded;
                     break;

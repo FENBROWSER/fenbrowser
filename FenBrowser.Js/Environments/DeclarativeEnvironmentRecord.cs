@@ -149,6 +149,16 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     internal bool OwnsSlotsOf(object owner) =>
         _slotOwner is not null && ReferenceEquals(_slotOwner, owner);
 
+    /// <summary>Whose slot numbering this record holds, or null if it holds none.</summary>
+    internal object? SlotOwner => _slotOwner;
+
+    /// <summary>
+    /// The slot this record numbers <paramref name="name"/> at. Lets a caller
+    /// that resolved a name once come back to the value by index rather than by
+    /// hashing the name again.
+    /// </summary>
+    internal bool TryGetSlotIndex(string name, out int slot) => TryFindSlot(name, out slot);
+
     private bool TryFindSlot(string name, out int slot)
     {
         if (_slotMap is not null && _slotMap.TryGetValue(name, out slot) &&

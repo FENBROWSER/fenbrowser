@@ -255,6 +255,120 @@ public sealed partial class BytecodeInterpreter
 
     /// <summary>
     /// ECMA-262 9.1.2.1 GetIdentifierReference for a name this body does not
+    /// declare, through the site cache that remembers where it resolved last
+    /// time.
+    /// </summary>
+    /// <remarks>
+    /// Both cached shapes are re-verified rather than trusted: the slot form
+    /// re-checks that the record at the cached depth still numbers slots for the
+    /// same function, and the global form checks the lexical version and then
+    /// runs a shape guard. A stale entry misses and takes the walk; it never
+    /// answers.
+    /// </remarks>
+    internal JsValue Interp2LoadFreeCached(
+        FrameLayout layout, int slot, int icOffset, EnvironmentRecord? outerEnvironment)
+    {
+        var name = slot < layout.SlotNames.Length ? layout.SlotNames[slot] : null;
+        if (name is null)
+        {
+            throw new JsThrownException(CreateReferenceError("Invalid variable slot."));
+        }
+
+        var sites = layout.FreeSites;
+        if (slot < sites.Length && sites[slot] is { } site)
+        {
+            var env = outerEnvironment;
+            for (var hop = site.Hops; hop > 0 && env is not null; hop--)
+            {
+                env = env.OuterEnv;
+            }
+
+            if (site.SlotOwner is { } owner)
+            {
+                if (env is DeclarativeEnvironmentRecord declarative &&
+                    declarative.TryReadOwnSlot(owner, site.TargetSlot, out var slotValue))
+                {
+                    return slotValue;
+                }
+            }
+            else if (env is GlobalEnvironmentRecord global &&
+                     global.LexicalVersion == site.LexicalVersion &&
+                     global.GlobalObjectHandle is { } globalHandle &&
+                     TryGetLoadIC(layout.Function, icOffset, JsValue.FromObject(globalHandle), name, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        return Interp2LoadFreeAndCache(layout, slot, icOffset, outerEnvironment, name);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private JsValue Interp2LoadFreeAndCache(
+        FrameLayout layout, int slot, int icOffset, EnvironmentRecord? outerEnvironment, string name)
+    {
+        var strict = layout.IsStrict;
+        var hops = 0;
+        for (var env = outerEnvironment; env is not null; env = env.OuterEnv, hops++)
+        {
+            var status = env.TryLookupBinding(name, strict, out var value);
+            if (status == BindingOpResult.NotFound)
+            {
+                continue;
+            }
+
+            if (status != BindingOpResult.Ok)
+            {
+                throw Interp2BindingFailure(status, name, assignment: false);
+            }
+
+            RecordFreeSlotSite(layout, slot, icOffset, hops, env, name);
+            return value;
+        }
+
+        throw new JsThrownException(CreateReferenceError($"{name} is not defined."));
+    }
+
+    /// <summary>
+    /// Remember where a name resolved, when the answer is one of the two shapes
+    /// worth caching. Anything else - an object environment, a record with no
+    /// slot numbering - is left uncached and walks every time.
+    /// </summary>
+    private void RecordFreeSlotSite(
+        FrameLayout layout, int slot, int icOffset, int hops, EnvironmentRecord env, string name)
+    {
+        var sites = layout.FreeSites;
+        if ((uint)slot >= (uint)sites.Length)
+        {
+            return;
+        }
+
+        if (env is GlobalEnvironmentRecord global)
+        {
+            // Only a property of the global object is cacheable this way; a
+            // top-level let/const lives on the record's lexical half, which the
+            // load cache cannot see. HasLexicalDeclaration separates them.
+            if (global.HasLexicalDeclaration(name) || global.GlobalObjectHandle is not { } handle)
+            {
+                return;
+            }
+
+            var receiver = JsValue.FromObject(handle);
+            PopulateLoadIC(layout.Function, icOffset, receiver, name);
+            sites[slot] = FreeSlotSite.OnGlobalObject(hops, global.LexicalVersion);
+            return;
+        }
+
+        if (env is DeclarativeEnvironmentRecord declarative &&
+            declarative.SlotOwner is { } owner &&
+            declarative.TryGetSlotIndex(name, out var targetSlot))
+        {
+            sites[slot] = FreeSlotSite.AtSlot(hops, owner, targetSlot);
+        }
+    }
+
+    /// <summary>
+    /// ECMA-262 9.1.2.1 GetIdentifierReference for a name this body does not
     /// declare. The walk starts at the closure's environment because a frame on
     /// the new loop has none of its own - everything it declares is a register,
     /// so there is nothing between it and its closure to shadow the name.

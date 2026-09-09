@@ -60,6 +60,24 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
 
     public override bool HasThisBinding => true;
 
+    /// <summary>
+    /// The global object itself, for a caller that wants to read a property off
+    /// it directly rather than through <see cref="GetBindingValue"/>.
+    /// </summary>
+    internal ObjectHandle? GlobalObjectHandle => _globalObject.AsObjectHandle;
+
+    /// <summary>
+    /// Bumped whenever the lexical half of this record gains or loses a binding.
+    /// </summary>
+    /// <remarks>
+    /// A top-level `let x` shadows a global object property of the same name, so
+    /// a cache that resolved x to the object has to notice when one appears.
+    /// Comparing an integer is what makes that check affordable; re-probing the
+    /// declarative dictionary on every read is the cost the cache exists to
+    /// avoid.
+    /// </remarks>
+    internal int LexicalVersion { get; private set; }
+
     public override bool HasSuperBinding => false;
 
     // 9.1.1.4.11 GetThisBinding: surface the configured [[GlobalThisValue]] without
@@ -89,6 +107,7 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
             return BindingOpResult.AlreadyDeclared;
         }
 
+        LexicalVersion++;
         return _declarativeRecord.CreateMutableBinding(name, deletable);
     }
 
@@ -102,6 +121,7 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
             return BindingOpResult.AlreadyDeclared;
         }
 
+        LexicalVersion++;
         return _declarativeRecord.CreateImmutableBinding(name, strict);
     }
 
@@ -173,6 +193,7 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
 
         if (_declarativeRecord.HasBinding(name))
         {
+            LexicalVersion++;
             return _declarativeRecord.DeleteBinding(name);
         }
 

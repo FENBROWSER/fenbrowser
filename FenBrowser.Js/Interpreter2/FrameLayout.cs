@@ -76,6 +76,7 @@ public sealed class FrameLayout
         Code = Array.Empty<Instruction>();
         SlotHomes = Array.Empty<SlotHome>();
         SlotNames = Array.Empty<string?>();
+        FreeSites = Array.Empty<FreeSlotSite?>();
         ParameterSlots = Array.Empty<int>();
         ParameterWindowIndex = Array.Empty<int>();
     }
@@ -97,6 +98,7 @@ public sealed class FrameLayout
         WindowSize = registerCount + slotCount;
         SlotHomes = slotHomes;
         SlotNames = slotNames;
+        FreeSites = HasAnyFree(slotHomes) ? new FreeSlotSite?[slotCount] : Array.Empty<FreeSlotSite?>();
         ParameterSlots = parameterSlots;
         ParameterWindowIndex = parameterWindowIndex;
     }
@@ -132,6 +134,13 @@ public sealed class FrameLayout
 
     /// <summary>Slot-indexed names, for the slots that resolve through the outer chain.</summary>
     public string?[] SlotNames { get; }
+
+    /// <summary>
+    /// Where each free identifier resolved last time, indexed by slot. Empty
+    /// when the body has no free identifiers. Entries are filled in on first
+    /// use and re-verified on every use.
+    /// </summary>
+    public FreeSlotSite?[] FreeSites { get; }
 
     /// <summary>The slot each formal parameter names, in declaration order.</summary>
     public int[] ParameterSlots { get; }
@@ -371,6 +380,16 @@ public sealed class FrameLayout
             HasDuplicateParameterSlots = duplicateParameters,
             HasContext = hasContext,
         };
+    }
+
+    private static bool HasAnyFree(SlotHome[] slotHomes)
+    {
+        for (var i = 0; i < slotHomes.Length; i++)
+        {
+            if (slotHomes[i] == SlotHome.Free) return true;
+        }
+
+        return false;
     }
 
     private static string?[] SlotNamesOf(BytecodeFunction function)
