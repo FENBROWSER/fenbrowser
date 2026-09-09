@@ -47,10 +47,10 @@ loop's state out of its own, and that reconstruction is where an engine of this
 shape grows its subtlest bugs.
 
 Refused, and run on the old loop unchanged: generators, async bodies, class
-constructors, `eval` code, `arguments`, rest parameters, named function
-expressions, `with`, direct `eval`, `let`/`const` (no hole value yet), `try` (no
-handler stack yet), `for-in`/`for-of`, and any body whose nested functions need
-the enclosing `arguments`, `new.target` or `super`.
+constructors, `eval` code, rest parameters, named function expressions, `with`,
+direct `eval`, function-level `let`/`const`, and any body whose nested functions
+need the enclosing `new.target` or `super`. As of the last measurement that is
+14.2% of the corpus, and 12.9 points of it is the first three.
 
 ## Semantics live in one place
 
@@ -87,8 +87,11 @@ it passes as a block. An arrow is the exception: its record must be one that
 
 `this`, `arguments`, `new.target` and `super` are the same question about the
 bindings that are not identifiers. A nested arrow that reads `this` makes the
-enclosing body keep a record so there is something to find it on; `arguments`,
-`new.target` and `super` are still refused.
+enclosing body keep a record so there is something to find it on, and so does one
+that reads `arguments` when the enclosing body has its own - this engine builds
+the arguments object as a snapshot rather than as an alias of the parameter
+bindings, so a parameter can still be a register in a body that has one.
+`new.target` and `super` from an enclosing scope are still refused.
 
 ## Where a free identifier lives
 
@@ -118,6 +121,30 @@ The result is **+8ns** over the same read via a local, and it drags everything
 else down with it, because reading a global was hiding inside most other
 operations: the callee's name in a call, `Math` before `Math.floor`, the array
 before `arr[i]`.
+
+## try, catch and block scopes
+
+Open `try` entries live as (catch ip, finally ip) pairs in one array shared by
+every live frame, each frame recording where its own start and how many are open,
+so entering a `try` is two array writes and a counter. Unwinding is the same
+operation a return is: cut the frame stack and the value stack back to the frame
+that carries on. The thrown value goes into register 0 of that frame, where the
+compiler's catch block reads it, and which is already traced.
+
+Every throw takes one path. A `throw` raises a CLR exception rather than routing
+itself, so it arrives where an exception from a getter three frames down or from
+the old loop arrives, and the dispatch carries no exception handling at all. The
+handler region sits around the outermost entry rather than around the dispatch
+loop, which is worth about 5% of it.
+
+A block scope is a slot in the window rather than a record, when the block cannot
+be told apart from a straight-line assignment. `EnterScope` carries the slot it
+introduces, whether it is a `const`, and whether it starts initialised, so the
+layout can check that the scopes nest, that no two nested scopes share a slot,
+that every instruction naming the slot falls inside the block, and that the
+binding is initialised before it can be read. That last one stands in for the
+temporal dead zone, which a register cannot represent - and it is exactly the
+shape the compiler emits for a catch binding.
 
 ## Guard rails
 
@@ -159,13 +186,17 @@ because each was written to isolate one cost and they avoid what is hard.
 
 Measured on `test/language` (118k function bodies, 23,730 tests):
 
-| | eligible functions |
-|---|---|
-| first working version | 7.6% |
-| + property writes, `typeof`, `throw`, `new` | 29.5% |
-| + closures that capture nothing | 44.6% |
-| + context allocation for the ones that do | 72.2% |
-| + arrow functions | **75.9%** |
+| | eligible functions | calls staying in the loop |
+|---|---|---|
+| first working version | 7.6% | 2.0% |
+| + property writes, `typeof`, `throw`, `new` | 29.5% | 22.8% |
+| + closures that capture nothing | 44.6% | — |
+| + context allocation for the ones that do | 72.2% | — |
+| + arrow functions | 75.9% | 9.8% |
+| + `arguments` | 77.5% | 21.9% |
+| + `try`/`catch`/`finally` and block scopes | 77.5% | 21.9% |
+| + `instanceof`, `in`, `delete` | 83.8% | 27.3% |
+| + `for-in`, `for-of` | **85.8%** | **28.9%** |
 
 Speed, against the old loop **with its JIT enabled**:
 
@@ -177,8 +208,8 @@ Speed, against the old loop **with its JIT enabled**:
 | + a `Math.floor` call | +280ns | +108ns |
 | free-variable read | +107ns | **+8ns** |
 | array element read | +218ns | +123ns |
-| whole call ladder | 1046ns | **308ns** |
-| `b_bundle_calls` (bundle-shaped mix) | 674ns/call | **236ns/call** |
+| whole call ladder | 1048ns | **324ns** |
+| `b_bundle_calls` (bundle-shaped mix) | 670ns/call | **245ns/call** |
 
 **Where the new loop loses**: tight single-frame loops, because there the old
 loop's JIT compiles the body and the new loop has no tier-up.
@@ -186,29 +217,37 @@ loop's JIT compiles the body and the new loop has no tier-up.
 wherever calls or free variables are involved and loses where a JIT-compiled loop
 runs uninterrupted.
 
-**Correctness**: `FenBrowser.Js.Tests` 3411 passing on both loops, including
-`Interpreter2ParityTests`, which runs each program on both loops in the same
-process and compares. Identical test262 result sets on both for the whole of
-`test/language` (22663/23730), `language/statements/class`,
-`language/global-code`, and `built-ins/{Object,Promise,Function,JSON,eval,Math,
-Number,Array,String,Proxy,Reflect}`.
+**Correctness**: `FenBrowser.Js.Tests` 3423 passing on both loops, including
+`Interpreter2ParityTests` - 34 programs run on both loops in the same process and
+compared against each other and against the expected answer. Identical test262
+result sets on both for the whole of `test/language` (22663/23730),
+`language/statements/{class,try,for-in,for-of,function}`,
+`language/arguments-object`, `language/global-code`,
+`language/expressions/{instanceof,in,delete,object,assignment}` and
+`built-ins/{Object,Array,String,Promise,Function,Proxy,Reflect,Map,Set,Date,
+Math,Number,JSON,Symbol,TypedArray,eval}`.
 
 ## What is next, in order of measured value
 
+The unimplemented-opcode table is effectively empty: 537 bodies across twenty
+opcodes, none over 160. What is left is one thing and then a different kind of
+work.
+
 1. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
-   15.1k). The first two suspend, which means copying a window out and back; the
-   third needs `super` and field initialisers.
-2. **`try`/`catch`/`finally`** (`PushHandler`, 5.8k). Needs a per-frame handler
-   stack, which the window model has room for. A `catch (e)` binding also needs
-   `EnterScope`, so this and item 4 are the same piece of work.
-3. **`arguments`** (3.9k).
-4. **Block scopes and `let`/`const`** (`EnterScope`, `LexicalDeclarations`).
-   Needs a hole value distinct from `undefined` so the temporal dead zone stays
-   observable, and needs to know which slots belong to which scope - the one
-   place where the compiler would have to say more than it does today.
-5. **`for-in` / `for-of`** (`EnumerateKeys` 1.8k, `EnumerateValues` 0.7k).
-6. **Tier-up**, once coverage is high enough that the loop is on the critical
-   path: it currently gives up the JIT's win on hot single-frame loops.
+   15.3k - 12.9% of the corpus, and all of what remains). The first two suspend,
+   which means copying a window out and back at a yield or an await; the third
+   needs `super` and field initialisers. Nothing else on the list is close.
+2. **Tier-up.** The loop gives up the JIT's win on hot single-frame loops -
+   41ns against 80ns on `b_property_read`'s bare loop - and that is now the only
+   place the old loop is faster. It matters once this one is on the critical
+   path.
+3. **Function-level `let`/`const`** (204 bodies) needs a hole value distinct
+   from `undefined` so the temporal dead zone stays observable. Block-level
+   `let`/`const` is already handled, because the compiler says which slot a
+   block introduces and the binding is initialised before it can be read.
+4. **Measure a real page.** Everything here is benchmarks and test262.
+   Eligibility on a minified bundle is unknown and is the number that decides
+   whether any of this reaches the user.
 
 Two defects in the **old** loop that this work surfaced and did not fix:
 
