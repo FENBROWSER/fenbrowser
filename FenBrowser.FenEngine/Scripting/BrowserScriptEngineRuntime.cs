@@ -4830,6 +4830,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         // alongside the DOM ones. An empty document the worker script cannot
         // reach is the smallest way to get a realm that actually works.
         realm.BindFenJsDomContext(new Document(), scriptUri, "complete");
+        realm.StripWindowOnlyGlobalsForWorker();
 
         realm._interpreter.RegisterGlobalValue(
             "__fenWorkerEmit",
@@ -4858,6 +4859,73 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return JsValue.Undefined;
                 }));
         return realm;
+    }
+
+    /// <summary>
+    /// A worker realm is built by binding the ordinary window context and then
+    /// leaving out <c>window</c> and <c>document</c>. Everything else the window
+    /// context installs stayed behind, so a worker advertised Element, Node,
+    /// getComputedStyle, localStorage, history, screen, Image, DOMParser,
+    /// MutationObserver, matchMedia and the rest -- none of which exist in a real
+    /// DedicatedWorkerGlobalScope (HTML 10.2.1).
+    ///
+    /// (The matching identity half -- toStringTag and instanceof -- lives in
+    /// <see cref="DedicatedWorkerBootstrapScript"/>, which runs after this and
+    /// is where the two scope constructors are defined.)
+    ///
+    /// Scripts feature-detect on exactly those. reCAPTCHA's bundle read them,
+    /// concluded it was running in a document, took the DOM path and dereferenced
+    /// a bare <c>document</c>. That threw inside an async message handler, so the
+    /// only trace was a promise that rejected with nobody listening: the anchor
+    /// frame waited for a reply that was never coming and its own 20s watchdog
+    /// eventually fired.
+    /// </summary>
+    private void StripWindowOnlyGlobalsForWorker()
+    {
+        try
+        {
+            EvaluateWithFenJsRaw("""
+                (function () {
+                    var windowOnly = [
+                        'HTMLElement', 'Element', 'Node', 'NodeList', 'NamedNodeMap',
+                        'DocumentFragment', 'HTMLDocument', 'CharacterData', 'Attr',
+                        'ShadowRoot', 'Range', 'Selection', 'getSelection',
+                        'DOMParser', 'XMLSerializer', 'XPathResult', 'NodeFilter',
+                        'TreeWalker', 'NodeIterator', 'MutationObserver',
+                        'MutationRecord', 'IntersectionObserver', 'ResizeObserver',
+                        'customElements', 'CustomElementRegistry',
+                        'localStorage', 'sessionStorage', 'Storage',
+                        'history', 'History', 'screen', 'Screen', 'visualViewport',
+                        'alert', 'confirm', 'prompt', 'print', 'open', 'close',
+                        'focus', 'blur', 'scroll', 'scrollTo', 'scrollBy',
+                        'getComputedStyle', 'matchMedia', 'CSS', 'CSSStyleDeclaration',
+                        'Image', 'Audio', 'Option', 'HTMLImageElement',
+                        'requestAnimationFrame', 'cancelAnimationFrame',
+                        'requestIdleCallback', 'cancelIdleCallback',
+                        'getSelection', 'find', 'stop'
+                    ];
+                    for (var i = 0; i < windowOnly.length; i++) {
+                        try { delete globalThis[windowOnly[i]]; } catch (e) { }
+                        // A global the host installed may not be configurable, in
+                        // which case delete is a silent no-op and the detection
+                        // still sees it. Overwrite with undefined so `typeof` and
+                        // a truthiness test both agree it is not there.
+                        try {
+                            if (typeof globalThis[windowOnly[i]] !== 'undefined') {
+                                globalThis[windowOnly[i]] = undefined;
+                            }
+                        } catch (e) { }
+                    }
+
+                })()
+                """);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Could not strip window-only globals from worker realm: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
     }
 
     /// <summary>Records a line for <see cref="DrainWorkerDiagnostics"/> to log.</summary>
