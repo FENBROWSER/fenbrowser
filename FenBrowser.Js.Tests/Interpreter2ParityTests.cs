@@ -101,6 +101,22 @@ public sealed class Interpreter2ParityTests
     [InlineData("function f() { { const c = 1; return c; } } f();", "1")]
     [InlineData("function f() { try { { const c = 1; c = 2; } } catch (e) { return e.constructor.name; } } f();",
                 "TypeError")]
+    // A named function expression can call itself by its own name.
+    [InlineData("var f = function fact(n) { return n <= 1 ? 1 : n * fact(n - 1); }; f(5);", "120")]
+    // The name is not visible outside it.
+    [InlineData("var f = function named() { return 1; }; typeof named;", "undefined")]
+    // Assigning to it is dropped in sloppy code and a TypeError in strict code.
+    [InlineData("var f = function n() { n = 1; return typeof n; }; f();", "function")]
+    [InlineData("var f = function n() { 'use strict'; try { n = 1; } catch (e) " +
+                "{ return e.constructor.name; } return 'no-throw'; }; f();", "TypeError")]
+    // A parameter of the same name shadows it.
+    [InlineData("var f = function n(n) { return n; }; f(7);", "7")]
+    // A closure inside it can read it.
+    [InlineData("var f = function outer() { var g = function () { return typeof outer; }; return g(); }; f();",
+                "function")]
+    // Regex literals.
+    [InlineData("function f() { return /a(b+)c/.exec('xabbbc')[1]; } f();", "bbb")]
+    [InlineData("function f() { var r = /x/g; return r.source + ':' + r.flags; } f();", "x:g")]
     public void BothLoopsAgree(string source, string expected)
     {
         var onOldLoop = RunOn(engine2: false, source);

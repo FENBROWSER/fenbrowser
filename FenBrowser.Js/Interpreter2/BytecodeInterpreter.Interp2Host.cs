@@ -464,6 +464,15 @@ public sealed partial class BytecodeInterpreter
         return "undefined";
     }
 
+    /// <summary>
+    /// ECMA-262 9.1.1.1.5: assigning to a named function expression's own name.
+    /// Its binding is immutable but not strict unless the function is, so the
+    /// write is a TypeError in strict code and is dropped in sloppy code.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    internal void Interp2ThrowSelfNameAssignment(string? name)
+        => throw new JsThrownException(CreateTypeError($"Assignment to constant variable '{name ?? "?"}'."));
+
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     internal void Interp2ThrowConstAssignment(string? name)
         => throw new JsThrownException(CreateTypeError($"Assignment to constant variable '{name ?? "?"}'."));
@@ -729,6 +738,9 @@ public sealed partial class BytecodeInterpreter
         {
         }
     }
+
+    /// <summary>ECMA-262 13.2.7 regular expression literal.</summary>
+    internal JsValue Interp2NewRegExp(string rawText) => NewRegExpLiteral(rawText);
 
     internal JsValue Interp2NewObject()
         => JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()));

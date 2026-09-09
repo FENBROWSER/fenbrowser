@@ -162,6 +162,14 @@ public sealed class FrameLayout
     public bool[] SlotIsConst { get; private init; } = Array.Empty<bool>();
 
     /// <summary>
+    /// The slot holding a named function expression's own name, or -1. ECMA-262
+    /// 15.2.5 binds it immutably so the body can call itself, which is why it
+    /// is not simply another var: assigning to it is a TypeError in strict code
+    /// and silently ignored in sloppy code - neither of which is a write.
+    /// </summary>
+    public int SelfNameSlot { get; private init; } = -1;
+
+    /// <summary>
     /// Window index each formal parameter is bound at, in declaration order.
     /// Meaningful only where the matching <see cref="SlotHomes"/> entry is
     /// <see cref="SlotHome.Register"/>.
@@ -252,10 +260,6 @@ public sealed class FrameLayout
         // parameter can still be a register.
         if (function.UsesOuterArguments)
             return new FrameLayout(function, Interp2Bailout.ArgumentsObject);
-        // ECMA-262 15.2.5: a named function expression binds its own name in a
-        // record of its own, between its parameters and its closure.
-        if (function.BindsOwnNameInBody)
-            return new FrameLayout(function, Interp2Bailout.BindsOwnName);
         if (function.RestParameterIndex >= 0)
             return new FrameLayout(function, Interp2Bailout.RestParameter);
         // let/const need a hole distinct from undefined to keep the temporal
@@ -296,6 +300,17 @@ public sealed class FrameLayout
         var ownsArguments = function.HasOwnArgumentsObject && !function.ArgumentsShadowedByParameter;
         if (ownsArguments)
             declared.Add("arguments");
+
+        // ECMA-262 15.2.5: a named function expression can see its own name,
+        // unless something in the body declares that name itself.
+        var selfName = function.BindsOwnNameInBody && function.Name is { Length: > 0 } candidate &&
+                       !declared.Contains(candidate) &&
+                       !function.LexicalDeclarationNames.Contains(candidate) &&
+                       !function.ConstDeclarationNames.Contains(candidate)
+            ? candidate
+            : null;
+        if (selfName is not null)
+            declared.Add(selfName);
 
         var declaredNames = declared;
         var slotHomes = new SlotHome[slotCount];
@@ -364,6 +379,15 @@ public sealed class FrameLayout
             // it on, so this body keeps one even when none of its variables are
             // captured. An arrow cannot supply it - its own record is one the
             // walk passes straight through - so it is refused instead.
+            // The self-name is bound to a slot, so a closure that reads it needs
+            // one to exist. A body that never mentions its own name has none -
+            // the old loop gives that case a binding by name instead.
+            if (selfName is not null && captured.Contains(selfName) &&
+                !function.VariableSlots.ContainsKey(selfName))
+            {
+                return new FrameLayout(function, Interp2Bailout.BindsOwnName);
+            }
+
             if (capturesReceiver)
             {
                 if (function.Kind == FunctionKind.Arrow)
@@ -421,6 +445,14 @@ public sealed class FrameLayout
             argumentsSlot = argumentsSlotIndex;
         }
 
+        var selfNameSlot = -1;
+        if (selfName is not null && function.VariableSlots.TryGetValue(selfName, out var selfSlotIndex))
+        {
+            if ((uint)selfSlotIndex >= (uint)slotCount || slotHomes[selfSlotIndex] == SlotHome.Free)
+                return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
+            selfNameSlot = selfSlotIndex;
+        }
+
         var duplicateParameters = false;
         for (var i = 1; i < parameterWindowIndex.Length && !duplicateParameters; i++)
         {
@@ -446,6 +478,7 @@ public sealed class FrameLayout
             ArgumentsSlot = argumentsSlot,
             RestrictedArguments = function.UsesRestrictedArgumentsObject,
             SlotIsConst = BuildConstMap(constSlots, slotCount),
+            SelfNameSlot = selfNameSlot,
         };
     }
 
@@ -624,7 +657,7 @@ public sealed class FrameLayout
             // for-in and for-of.
             OpCode.EnumerateKeys, OpCode.ForInNext,
             OpCode.EnumerateValues, OpCode.ForOfNext, OpCode.IteratorClose,
-            OpCode.NewObject, OpCode.NewArray,
+            OpCode.NewObject, OpCode.NewArray, OpCode.NewRegExp,
 
             // Calls and construction.
             OpCode.Construct0, OpCode.Construct1, OpCode.ConstructN,

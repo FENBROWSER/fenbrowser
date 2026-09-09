@@ -327,6 +327,18 @@ internal sealed class Interp2
                 case OpCode.StoreVar:
                 case OpCode.StoreResolvedVar:
                 {
+                    // A named function expression's own name is immutable, but
+                    // only strict code is told: sloppy code drops the write.
+                    if (ins.B == layout.SelfNameSlot)
+                    {
+                        if (layout.IsStrict)
+                        {
+                            _host.Interp2ThrowSelfNameAssignment(NameOfSlot(layout, ins.B));
+                        }
+
+                        break;
+                    }
+
                     // ECMA-262 9.1.1.1.5: assigning to an immutable binding is a
                     // TypeError. Initialising one is not, which is why InitVar
                     // is a separate case below.
@@ -711,6 +723,14 @@ internal sealed class Interp2
                     stack[frameBase + ins.A] = _host.Interp2NewObject();
                     break;
 
+                case OpCode.NewRegExp:
+                {
+                    var pattern = _host.Interp2NewRegExp(function.Constants[ins.B].AsString());
+                    stack = _stack;
+                    stack[frameBase + ins.A] = pattern;
+                    break;
+                }
+
                 case OpCode.NewArray:
                     stack[frameBase + ins.A] = _host.Interp2NewArray(ins.B);
                     break;
@@ -829,6 +849,7 @@ internal sealed class Interp2
     /// </remarks>
     private bool Call(JsValue calleeValue, JsValue thisValue, int argStart, int argCount, int returnSlot)
     {
+        var calleeIsJavaScript = false;
         if (calleeValue.Tag == JsValueTag.Object &&
             _host.Heap.GetObject(calleeValue.AsObjectHandle()) is JsFunctionObject fn)
         {
@@ -839,9 +860,14 @@ internal sealed class Interp2
                 PushFrame(fn, layout, _stack, argStart, argCount, thisValue, returnSlot);
                 return true;
             }
+
+            calleeIsJavaScript = true;
         }
 
-        if (Interp2Options.Log) Interp2Stats.RecordCallDelegated();
+        // Splitting the delegated calls says which of two very different things
+        // to do about them: a JavaScript body this loop declined is coverage
+        // still to win, a native is not.
+        if (Interp2Options.Log) Interp2Stats.RecordCallDelegated(calleeIsJavaScript);
 
         // Natives, bound functions, proxies, generators, async bodies and every
         // function this loop declined: the old loop knows all of them, and the
@@ -883,6 +909,7 @@ internal sealed class Interp2
         }
 
         BindArgumentsObject(layout, callee, context, window, args);
+        BindSelfName(layout, callee, context, window);
     }
 
     private void PushFrame(
@@ -935,6 +962,30 @@ internal sealed class Interp2
 
         BindArgumentsObject(
             layout, callee, context, window, CallArgs.FromRegisters(argSource, argStart, argCount));
+        BindSelfName(layout, callee, context, window);
+    }
+
+    /// <summary>
+    /// ECMA-262 15.2.5: a named function expression can refer to itself by its
+    /// own name, which is a variable of this frame like any other.
+    /// </summary>
+    private void BindSelfName(
+        FrameLayout layout, JsFunctionObject callee, DeclarativeEnvironmentRecord? context, int window)
+    {
+        var slot = layout.SelfNameSlot;
+        if (slot < 0 || callee.SelfHandle is not { } selfHandle)
+        {
+            return;
+        }
+
+        var self = JsValue.FromObject(selfHandle);
+        if (context is not null && layout.SlotHomes[slot] == SlotHome.Context)
+        {
+            BytecodeInterpreter.Interp2DeclareContextSlot(context, slot, self);
+            return;
+        }
+
+        _stack[window + layout.RegisterCount + slot] = self;
     }
 
     /// <summary>

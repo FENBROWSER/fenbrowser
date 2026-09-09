@@ -30,6 +30,7 @@ public static class Interp2Stats
     private static long _framesEntered;
     private static long _callsInLoop;
     private static long _callsDelegated;
+    private static long _callsDelegatedToDeclinedBody;
     private static long _maxDepth;
     private static long _maxStackSlots;
 
@@ -68,7 +69,11 @@ public static class Interp2Stats
 
     internal static void RecordCallInLoop() => _callsInLoop++;
 
-    internal static void RecordCallDelegated() => _callsDelegated++;
+    internal static void RecordCallDelegated(bool calleeIsJavaScript)
+    {
+        _callsDelegated++;
+        if (calleeIsJavaScript) _callsDelegatedToDeclinedBody++;
+    }
 
     public static void Reset()
     {
@@ -79,6 +84,7 @@ public static class Interp2Stats
         _framesEntered = 0;
         _callsInLoop = 0;
         _callsDelegated = 0;
+        _callsDelegatedToDeclinedBody = 0;
         _maxDepth = 0;
         _maxStackSlots = 0;
     }
@@ -100,6 +106,9 @@ public static class Interp2Stats
               .Append(" inLoop=").Append(_callsInLoop)
               .Append(Percent(_callsInLoop, calls))
               .Append(" delegated=").Append(_callsDelegated)
+              .Append(" [toDeclinedBody=").Append(_callsDelegatedToDeclinedBody)
+              .Append(" toNative=").Append(_callsDelegated - _callsDelegatedToDeclinedBody)
+              .Append(']')
               .AppendLine();
 
         var ranked = new List<(Interp2Bailout Reason, long Count)>();
