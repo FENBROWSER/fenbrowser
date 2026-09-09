@@ -560,6 +560,16 @@ internal static class CaptchaFlowRunner
             Console.Write(FenBrowser.Js.Bytecode.JitCompiler.Report());
         }
 
+        if (FenBrowser.Js.Interpreter2.Interp2Options.Log)
+        {
+            // What fraction of the page's own JavaScript the register-window
+            // loop could run, and the ranked reasons for the rest. On a
+            // hand-written corpus that is 86%; on a minified bundle nobody has
+            // measured it, and it is the number that decides whether the loop
+            // reaches the user at all.
+            Console.Write(FenBrowser.Js.Interpreter2.Interp2Stats.Report());
+        }
+
         // Always, not behind a switch: comparing two runs of this harness is the
         // whole point of it, and the per-collection engine line only appears
         // when a collection happened to land at a safepoint.
