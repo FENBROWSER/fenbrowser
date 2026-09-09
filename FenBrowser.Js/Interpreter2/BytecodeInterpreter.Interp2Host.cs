@@ -396,6 +396,19 @@ public sealed partial class BytecodeInterpreter
     internal JsValue Interp2Construct(JsValue constructor, in CallArgs args)
         => ConstructFunction(constructor, args, constructor);
 
+    /// <summary>
+    /// ECMA-262 10.2.3 OrdinaryFunctionCreate for a nested function.
+    /// </summary>
+    /// <remarks>
+    /// The captured environment is the enclosing frame's own closure rather than
+    /// a record for the frame itself, which the layout has already established
+    /// no function created here can tell apart: none of them reaches for a name
+    /// this body declares, so the record would have been a link they resolve
+    /// straight through.
+    /// </remarks>
+    internal JsValue Interp2CreateFunction(BytecodeFunction nested, EnvironmentRecord? outerEnvironment)
+        => CreateFunctionObject(nested, outerEnvironment);
+
     internal JsValue Interp2NewObject()
         => JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()));
 

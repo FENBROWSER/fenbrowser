@@ -96,6 +96,7 @@ internal sealed class Interp2
         public JsFunctionObject? Callee;
         public EnvironmentRecord? OuterEnv;
         public JsValue This;
+        public bool OuterEnvResolved;
         public int Base;
         public int Ip;
         public int ReturnSlot;
@@ -204,7 +205,7 @@ internal sealed class Interp2
                     }
 
                     var loaded = _host.Interp2LoadFree(
-                        _frames[_depth - 1].OuterEnv, NameOfSlot(layout, slot), layout.IsStrict);
+                        OuterEnvironmentOf(_depth - 1), NameOfSlot(layout, slot), layout.IsStrict);
                     stack = _stack;
                     stack[frameBase + ins.A] = loaded;
                     break;
@@ -232,7 +233,7 @@ internal sealed class Interp2
                     }
 
                     _host.Interp2StoreFree(
-                        _frames[_depth - 1].OuterEnv,
+                        OuterEnvironmentOf(_depth - 1),
                         NameOfSlot(layout, slot),
                         stack[frameBase + ins.A],
                         layout.IsStrict);
@@ -351,7 +352,7 @@ internal sealed class Interp2
                     var typeName = (uint)slot < (uint)layout.SlotCount && layout.SlotIsOwn[slot]
                         ? _host.Interp2TypeOfValue(stack[slotBase + slot])
                         : _host.Interp2TypeOfFree(
-                            _frames[_depth - 1].OuterEnv, NameOfSlot(layout, slot), layout.IsStrict);
+                            OuterEnvironmentOf(_depth - 1), NameOfSlot(layout, slot), layout.IsStrict);
                     stack = _stack;
                     stack[frameBase + ins.A] = JsValue.FromString(typeName);
                     break;
@@ -419,6 +420,15 @@ internal sealed class Interp2
                         stack[frameBase + ins.A], ins.B, stack[frameBase + ins.C], layout.IsStrict);
                     stack = _stack;
                     break;
+
+                case OpCode.CreateFunction:
+                {
+                    var closure = _host.Interp2CreateFunction(
+                        function.NestedFunctions[ins.B], OuterEnvironmentOf(_depth - 1));
+                    stack = _stack;
+                    stack[frameBase + ins.A] = closure;
+                    break;
+                }
 
                 case OpCode.NewObject:
                     stack[frameBase + ins.A] = _host.Interp2NewObject();
@@ -666,6 +676,7 @@ internal sealed class Interp2
         // resolving the closure environment is a shape check and sometimes a
         // property probe - real cost on a leaf function that has no use for it.
         frame.OuterEnv = layout.HasFreeVariables ? _host.Interp2OuterEnvironment(callee) : null;
+        frame.OuterEnvResolved = layout.HasFreeVariables;
         frame.This = thisValue;
         frame.Base = window;
         frame.Ip = 0;
@@ -691,6 +702,28 @@ internal sealed class Interp2
         }
 
         Array.Resize(ref _stack, capacity);
+    }
+
+    /// <summary>
+    /// The closure environment of the frame at <paramref name="index"/>,
+    /// resolved on demand.
+    /// </summary>
+    /// <remarks>
+    /// A frame with no free identifiers of its own skips this on entry, because
+    /// resolving it is a shape check and sometimes a property probe. Creating a
+    /// function is the other thing that needs it: the closure has to be given
+    /// something to chain to even when the body around it reaches for nothing.
+    /// </remarks>
+    private EnvironmentRecord? OuterEnvironmentOf(int index)
+    {
+        ref var frame = ref _frames[index];
+        if (!frame.OuterEnvResolved)
+        {
+            frame.OuterEnv = frame.Callee is { } callee ? _host.Interp2OuterEnvironment(callee) : null;
+            frame.OuterEnvResolved = true;
+        }
+
+        return frame.OuterEnv;
     }
 
     private static string? NameOfSlot(FrameLayout layout, int slot)

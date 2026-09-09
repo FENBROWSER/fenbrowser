@@ -17,6 +17,7 @@ public enum Interp2Bailout
     UnmappedSlot,
     UnsupportedOpCode,
     FreeVariableResolve,
+    CapturedVariable,
     DirectEval,
     FrameTooWide,
 }
@@ -210,6 +211,7 @@ public sealed class FrameLayout
         for (var i = 0; i < function.VarDeclarationNames.Count; i++)
             declared.Add(function.VarDeclarationNames[i]);
 
+        var declaredNames = declared;
         var slotIsOwn = new bool[slotCount];
         var hasFreeVariables = false;
         for (var slot = 0; slot < slotCount; slot++)
@@ -221,6 +223,7 @@ public sealed class FrameLayout
         }
 
         var instructions = function.InstructionArray;
+        var makesClosures = false;
         for (var i = 0; i < instructions.Length; i++)
         {
             ref readonly var ins = ref instructions[i];
@@ -243,7 +246,18 @@ public sealed class FrameLayout
             // opcode, and it can both read and add bindings in the caller's scope.
             if (ins.E == 1 && ins.OpCode is OpCode.Call0 or OpCode.Call1 or OpCode.CallN)
                 return new FrameLayout(function, Interp2Bailout.DirectEval);
+
+            makesClosures |= ins.OpCode == OpCode.CreateFunction;
         }
+
+        // A closure is a function object plus the environment it captured, and
+        // that environment exists only to resolve the names the closure does not
+        // declare itself. If no function created here reaches for anything this
+        // body declares, none of them can observe a register - so they are handed
+        // the environment this body itself closed over, and every name they do
+        // reach for resolves exactly where it did before.
+        if (makesClosures && !CaptureAnalysis.NestedFunctionsCaptureNothing(function, declaredNames))
+            return new FrameLayout(function, Interp2Bailout.CapturedVariable);
 
         // Every parameter must have a slot of its own, or its binding would only
         // exist under a name this loop never creates a record for.
@@ -319,6 +333,7 @@ public sealed class FrameLayout
             OpCode.InitVar, OpCode.PreResolveVar, OpCode.StoreResolvedVar,
             OpCode.Move, OpCode.Jump, OpCode.JumpIfFalse,
             OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,
+            OpCode.CreateFunction,
 
             // Arithmetic, coercion and comparison.
             OpCode.Add, OpCode.Sub, OpCode.Mul, OpCode.Div, OpCode.Mod, OpCode.Exp,
