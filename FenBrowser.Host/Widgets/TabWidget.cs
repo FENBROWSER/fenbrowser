@@ -56,6 +56,7 @@ public class TabWidget : Widget
         _tab.TitleChanged += OnTabStateChanged;
         _tab.LoadingChanged += OnTabStateChanged;
         _tab.NeedsRepaint += OnTabStateChanged;
+        _tab.FaviconChanged += OnTabFaviconChanged;
     }
 
     public void Detach()
@@ -63,6 +64,12 @@ public class TabWidget : Widget
         _tab.TitleChanged -= OnTabStateChanged;
         _tab.LoadingChanged -= OnTabStateChanged;
         _tab.NeedsRepaint -= OnTabStateChanged;
+        _tab.FaviconChanged -= OnTabFaviconChanged;
+    }
+
+    private void OnTabFaviconChanged(BrowserTab _)
+    {
+        Invalidate();
     }
 
     private void OnTabStateChanged(BrowserTab _)

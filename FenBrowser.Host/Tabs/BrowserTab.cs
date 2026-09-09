@@ -1,4 +1,5 @@
 using SkiaSharp;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Host.Tabs;
 
@@ -35,6 +36,11 @@ public class BrowserTab : IDisposable
     /// Tab favicon (null if not loaded).
     /// </summary>
     public SKBitmap Favicon { get; set; }
+    
+    /// <summary>
+    /// Event when tab favicon changes.
+    /// </summary>
+    public event Action<BrowserTab> FaviconChanged;
     
     /// <summary>
     /// Whether this tab is currently loading.
@@ -150,6 +156,7 @@ public class BrowserTab : IDisposable
         Browser.FaviconChanged += icon =>
         {
             Favicon = icon;
+            FaviconChanged?.Invoke(this);
             NeedsRepaint?.Invoke(this); // Trigger UI update
         };
     }
