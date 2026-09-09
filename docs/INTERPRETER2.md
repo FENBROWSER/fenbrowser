@@ -292,21 +292,48 @@ again: **a count is not a cost.** `FEN_FENJS_OPTIME=1` now works on this loop
 too, and the property-miss classification under `FEN_JS_INTERP2_LOG=1` names
 what a cache could not answer instead of leaving it to be guessed at.
 
+## Property caching, which is shared with the old loop
+
+Two kinds of read the cache could not describe, both found by classifying where
+it missed rather than by guessing:
+
+- **A dense array's `length`** is the vector's count, synthesised on demand and
+  in no shape. 1.76M of 4.16M missed reads on the page were that one name.
+- **Anything on the prototype.** A method call on a class instance, an array or
+  an object literal reads the callee off the prototype; the cache refused
+  everything that was not the receiver's own. 940k more.
+
+Both now attach, and the named-property hit rate on reCAPTCHA's bundle went
+**36.0% to 73.2%**. Prototype reads cost what own reads cost - 111ns against
+111ns on the new loop.
+
+The prototype form guards three things, because there are three ways the answer
+can move: the receiver's shape (an own property appearing that shadows the
+name), the receiver's `[[Prototype]]` (the chain being reassigned - shapes here
+do not encode it), and the holder's shape (the property moving on the prototype
+itself). It refuses a receiver that has the name at all, however it has it: an
+own *accessor* shadows the prototype and must be called, which four tests in
+`built-ins/Array/prototype` say plainly.
+
+An exotic object answers own-property lookups from somewhere the shape does not
+describe, so a shape guard cannot see one appear - but that is true per name,
+not per object. An array can grow a `2` and a `length` outside its shape and can
+never grow a `push`. `JsObject.MayGainOwnPropertyOutsideShape` asks per name,
+which is the difference between caching 2% of a page's prototype loads and 83%.
+
 ## What is next, in order of measured value
 
 The unimplemented-opcode table is effectively empty: 537 bodies across twenty
 opcodes, none over 160. What is left is one thing and then a different kind of
 work.
 
-1. **Property reads whose receiver is not an ordinary object** - 55% of what
-   still misses a cache site on the page. It is two names: `length` (675k,
-   already answered without flattening) and `charCodeAt` (670k, which walks to
-   String.prototype through the global-prototype table on every read). Worth
-   about 30ms; it needs the cache to accept a non-object receiver at all.
-2. **Prototype loads** - 38% of the remaining misses. The cache refuses anything
-   off the prototype chain, which is every method call on a class instance. It
-   needs a guard on the receiver's [[Prototype]] as well as its shape, because
-   shapes here do not encode the prototype.
+1. **Property reads on a string primitive** - now 80% of what still misses a
+   cache site on the page, and two names: `length` (675k, already answered
+   without flattening) and `charCodeAt` (670k, which walks to String.prototype
+   through the global-prototype table on every read). It needs the cache to
+   accept a receiver that is not an object at all.
+2. **Element reads** - 3.0M misses against 10.4M hits, and unclassified. The
+   named-read table was worth building; this one has not been.
 3. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
    15.3k on test262 - but zero on the page measured so far). The first two
    suspend, which means copying a window out and back at a yield or an await;
