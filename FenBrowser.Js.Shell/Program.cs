@@ -276,6 +276,11 @@ static int ExecuteSource(
             Console.Error.Write(FenBrowser.Js.Diagnostics.CallPathProfiler.Report());
         }
 
+        if (FenBrowser.Js.Interpreter2.Interp2Options.Log)
+        {
+            Console.Error.Write(FenBrowser.Js.Interpreter2.Interp2Stats.Report());
+        }
+
         if (string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_REPORT"), "1", StringComparison.Ordinal))
         {
             Console.Error.Write(FenBrowser.Js.Bytecode.JitCompiler.Report());

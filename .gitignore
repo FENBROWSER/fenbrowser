@@ -58,6 +58,7 @@ bld/
 !scripts/temporal_triage.py
 !scripts/temporal_msg.py
 !scripts/chrome_captcha_probe.py
+!scripts/interp2_ab_report.py
 *.log
 *.png
 wpt/
