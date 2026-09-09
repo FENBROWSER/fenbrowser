@@ -32,6 +32,39 @@ internal static class CaptchaScriptInstrumentation
             // window at all. Anything that reaches for one throws before the
             // bundle gets to run, so address the global directly.
             var window = globalThis;
+
+            // The bundle reaches one `document.body` from inside its dispatch
+            // table, and in a worker that is a bare ReferenceError a millisecond
+            // into the message handler. Which caller asks for it is the whole
+            // question, and the only way to see it is from the site itself.
+            // The served bundle rewrites that one expression into a call here.
+            if (!globalThis.__fenDocBody) {
+                // Report in chunks: a frame now carries a line of its own source,
+                // so eight of them do not fit in one log line. Keep this function
+                // tiny -- its own source is the first frame of every trace it
+                // prints, and a long one crowds out the frames that matter.
+                globalThis.__fenReportStack = function (label, stack) {
+                    var text = String(stack || '(none)').replace(/\s+/g, ' ');
+                    for (var i = 0, n = 0; i < text.length && n < 14; i += 240, n++) {
+                        try { console.log('[FENDISPATCH] ' + label + ' #' + n + ' ' + text.substr(i, 240)); }
+                        catch (e) { }
+                    }
+                };
+                // Same expression, same outcome, in whichever realm reaches it:
+                // the page and the anchor have a document and must still get
+                // document.body, and only a realm without one throws. Reporting
+                // both, tagged by realm, is what separates the anchor's ordinary
+                // call from the worker's fatal one.
+                globalThis.__fenDocBody = function () {
+                    var hasDoc = typeof document !== 'undefined' && !!document;
+                    var where = '?';
+                    try { where = String(location.href).slice(0, 70); } catch (e) { }
+                    __fenReportStack('hasDoc=' + hasDoc + ' at ' + where, new Error('t').stack);
+                    if (hasDoc) { return document.body; }
+                    throw new ReferenceError('document is not defined.');
+                };
+            }
+
             if (window.__fenPrologueInstalled) { return; }
 
             // In a worker there is no document, and everything below that
@@ -40,7 +73,187 @@ internal static class CaptchaScriptInstrumentation
             // the trail goes cold: the anchor's message reaches the worker, its
             // handler runs, and no reply is ever produced. Install the error
             // hooks there and report them back over the worker's own channel.
-            if (typeof document === 'undefined' || !document) { return; }
+            if (typeof document === 'undefined' || !document) {
+                // Worker realm. This is where the trail goes cold: the anchor's
+                // request is delivered to a port listener in here and no reply is
+                // ever produced. console.log is wired to the engine log in a
+                // worker, so report through that rather than a channel the widget
+                // owns and might tear down.
+                if (window.__fenWorkerProbeInstalled) { return; }
+                window.__fenWorkerProbeInstalled = 1;
+                var wlog = function (what) {
+                    try { console.log('[FENWORKER] ' + what); } catch (e) { }
+                };
+                var shape = function (d) {
+                    try {
+                        if (typeof d === 'string') {
+                            // The protocol is ["<payload>","<opcode>","<id>"]; the
+                            // opcode is the whole question and it sits past the
+                            // payload, so pull it out rather than truncating it off.
+                            var op = '';
+                            try {
+                                var a = JSON.parse(d);
+                                if (a && typeof a.length === 'number') {
+                                    op = ' op=' + JSON.stringify(a[1]) + ' id=' + JSON.stringify(a[2]) +
+                                        ' n=' + a.length;
+                                }
+                            } catch (pe) { op = ' unparsed'; }
+                            return 'String(' + d.length + ')' + op + ':' + d.slice(0, 40);
+                        }
+                        if (d && typeof d === 'object') {
+                            return (typeof d.length === 'number' ? 'Arrayish(' + d.length + ')' : 'Object') +
+                                ':' + Object.keys(d).slice(0, 8).join(',');
+                        }
+                        return typeof d;
+                    } catch (e) { return 'shape-threw'; }
+                };
+                wlog('boot wasm=' + (typeof WebAssembly) +
+                    ' fetch=' + (typeof fetch) + ' xhr=' + (typeof XMLHttpRequest) +
+                    ' subtle=' + ((typeof crypto !== 'undefined' && crypto) ? typeof crypto.subtle : 'nocrypto') +
+                    ' href=' + String((typeof location !== 'undefined' && location.href) || '?').slice(0, 50));
+                try {
+                    self.addEventListener('error', function (ev) {
+                        wlog('ERROR ' + ((ev && (ev.message || ev.error)) || 'unknown'));
+                    });
+                    self.addEventListener('unhandledrejection', function (ev) {
+                        wlog('REJECTION ' + ((ev && ev.reason) || 'unknown'));
+                    });
+                } catch (e) { wlog('errhook-threw ' + e); }
+                // A handler that runs and returns without replying and a handler
+                // that throws look identical from the sending realm, so wrap every
+                // one the bundle registers and say which happened.
+                var wrap = function (fn, label) {
+                    return function (ev) {
+                        wlog('enter ' + label + ' data=' + shape(ev && ev.data) +
+                            ' ports=' + ((ev && ev.ports && ev.ports.length) || 0));
+                        // The handler runs a couple of hundred instructions and
+                        // returns, which is far too few to have parsed the
+                        // payload -- so it is bailing on the event object, not on
+                        // its contents. Say exactly what it was handed.
+                        try {
+                            var ks = [];
+                            for (var k in ev) { ks.push(k); }
+                            wlog('event ' + label +
+                                ' type=' + JSON.stringify(ev && ev.type) +
+                                ' origin=' + JSON.stringify(ev && ev.origin) +
+                                ' source=' + (ev && ev.source === null ? 'null' : typeof (ev && ev.source)) +
+                                ' proto=' + (function () {
+                                    try {
+                                        var pr = Object.getPrototypeOf(ev);
+                                        return pr === Object.prototype ? 'Object.prototype'
+                                            : (pr && pr.constructor && pr.constructor.name) || 'other';
+                                    } catch (pe) { return 'threw'; }
+                                })() +
+                                ' isMessageEvent=' + (function () {
+                                    try { return typeof MessageEvent === 'function' && ev instanceof MessageEvent; }
+                                    catch (ie) { return 'threw'; }
+                                })() +
+                                ' stopProp=' + typeof (ev && ev.stopPropagation) +
+                                ' preventDefault=' + typeof (ev && ev.preventDefault) +
+                                ' keys=' + ks.join(','));
+                        } catch (de) { wlog('event-dump-threw ' + de); }
+                        try {
+                            var r = fn.apply(this, arguments);
+                            wlog('exit ' + label + ' returned=' + (typeof r) + ':' + String(r).slice(0, 60));
+                            // The handler is async: it returns a pending promise
+                            // after a couple of hundred instructions. Whether it
+                            // is stuck on an await or finishes and declines to
+                            // reply are different bugs, and only the settlement
+                            // tells them apart.
+                            if (r && typeof r.then === 'function') {
+                                var t0 = Date.now();
+                                r.then(
+                                    function (v) { wlog('SETTLED ' + label + ' after ' + (Date.now() - t0) + 'ms value=' + shape(v)); },
+                                    function (er) {
+                                        wlog('REJECTED ' + label + ' after ' + (Date.now() - t0) + 'ms ' + er +
+                                            ' stack=' + String((er && er.stack) || '(none)').replace(/\s+/g, ' ').slice(0, 2600));
+                                    });
+                                setTimeout(function () { wlog('still-pending? ' + label + ' at +5000ms'); }, 5000);
+                            }
+                            return r;
+                        } catch (err) {
+                            wlog('THREW ' + label + ' ' + err + ' @ ' +
+                                String((err && err.stack) || '').slice(0, 400));
+                            throw err;
+                        }
+                    };
+                };
+                try {
+                    var selfAdd = self.addEventListener;
+                    self.addEventListener = function (type, cb) {
+                        if (type === 'message' && typeof cb === 'function') {
+                            wlog('self.addEventListener message src=' +
+                                String(cb).replace(/\s+/g, ' ').slice(0, 700));
+                            arguments[1] = wrap(cb, 'self');
+                        }
+                        return selfAdd.apply(this, arguments);
+                    };
+                } catch (e) { wlog('selfadd-hook-threw ' + e); }
+                try {
+                    var selfPost = self.postMessage;
+                    self.postMessage = function (d, t) {
+                        wlog('self.postMessage ' + shape(d) + ' transfer=' + ((t && t.length) || 0));
+                        return selfPost.apply(this, arguments);
+                    };
+                } catch (e) { wlog('selfpost-hook-threw ' + e); }
+                try {
+                    var portAdd = MessagePort.prototype.addEventListener;
+                    MessagePort.prototype.addEventListener = function (type, cb) {
+                        if (type === 'message' && typeof cb === 'function') {
+                            // 293 instructions per delivery says this handler bails
+                            // in its first few statements. It is small enough to read.
+                            wlog('port.addEventListener message src=' +
+                                String(cb).replace(/\s+/g, ' ').slice(0, 700));
+                            arguments[1] = wrap(cb, 'port');
+                        }
+                        return portAdd.apply(this, arguments);
+                    };
+                    var portPost = MessagePort.prototype.postMessage;
+                    MessagePort.prototype.postMessage = function (d, t) {
+                        wlog('port.postMessage ' + shape(d) + ' transfer=' + ((t && t.length) || 0));
+                        return portPost.apply(this, arguments);
+                    };
+                } catch (e) { wlog('porthook-threw ' + e); }
+                // The handler rejects with "document is not defined" one
+                // millisecond in, and the stack is minified past reading. Hand
+                // the realm a document that records what is asked of it: what
+                // the worker path actually wants, and whether having it is
+                // enough to get a reply, are both unanswerable from outside.
+                // Diagnostic only -- a real worker has no document.
+                // Opt-in: it changes what the page does, so a normal run must
+                // not get it. FEN_CAPTCHA_WORKER_DOCUMENT=1 turns it on.
+                if (globalThis.__fenProbeWorkerDocument) try {
+                    var asked = {};
+                    var seen = 0;
+                    var probeDoc = new Proxy({}, {
+                        get: function (t, k) {
+                            var key = String(k);
+                            if (!asked[key]) {
+                                asked[key] = 1;
+                                if (++seen <= 30) { wlog('document.' + key + ' read'); }
+                            }
+                            if (key === 'createElement' || key === 'createElementNS') {
+                                return function () { return new Proxy({}, { get: function () { return undefined; } }); };
+                            }
+                            if (key === 'addEventListener' || key === 'removeEventListener') { return function () { }; }
+                            if (key === 'getElementsByTagName' || key === 'querySelectorAll') { return function () { return []; }; }
+                            if (key === 'querySelector' || key === 'getElementById') { return function () { return null; }; }
+                            if (key === 'readyState') { return 'complete'; }
+                            if (key === 'documentElement' || key === 'body' || key === 'head') { return null; }
+                            if (key === 'cookie' || key === 'referrer' || key === 'title' || key === 'domain') { return ''; }
+                            if (key === Symbol.toPrimitive || key === 'toString') { return function () { return '[object HTMLDocument]'; }; }
+                            return undefined;
+                        },
+                        has: function () { return true; }
+                    });
+                    Object.defineProperty(globalThis, 'document', {
+                        value: probeDoc, configurable: true, writable: true, enumerable: false
+                    });
+                    wlog('installed probe document');
+                } catch (e) { wlog('probe-document-threw ' + e); }
+                wlog('probe installed');
+                return;
+            }
 
             window.__fenPrologueInstalled = 1;
             if (!window.__fenListenerLog) { window.__fenListenerLog = []; }
@@ -513,7 +726,39 @@ internal static class CaptchaScriptInstrumentation
         }
 
 
-        var instrumented = Prologue + bundle;
+        var probeWorkerDocument = string.Equals(
+            Environment.GetEnvironmentVariable("FEN_CAPTCHA_WORKER_DOCUMENT"), "1", StringComparison.Ordinal);
+
+        // "(O=document.body)" appears exactly once in the bundle, and it is the
+        // expression that throws in the worker. Route it through a reporter so
+        // the call chain that asks for it is visible; behaviour is unchanged
+        // because the reporter throws the same ReferenceError.
+        if (string.Equals(Environment.GetEnvironmentVariable("FEN_CAPTCHA_DISPATCH_TRACE"), "1", StringComparison.Ordinal))
+        {
+            const string site = "(O=document.body)";
+            var siteCount = 0;
+            for (var at = bundle.IndexOf(site, StringComparison.Ordinal); at >= 0;
+                 at = bundle.IndexOf(site, at + 1, StringComparison.Ordinal))
+            {
+                siteCount++;
+            }
+
+            if (siteCount == 1)
+            {
+                bundle = bundle.Replace(site, "(O=__fenDocBody())");
+                Console.WriteLine("[captcha] dispatch trace armed on the document.body site");
+            }
+            else
+            {
+                // The obfuscator rebuilds this per release. Say so rather than
+                // rewriting the wrong expression or silently doing nothing.
+                Console.WriteLine(
+                    $"[captcha] dispatch trace NOT armed: expected 1 '{site}', found {siteCount}");
+            }
+        }
+        var instrumented =
+            (probeWorkerDocument ? "globalThis.__fenProbeWorkerDocument=1;" + Environment.NewLine : string.Empty) +
+            Prologue + bundle;
         lock (Gate)
         {
             Cache[url] = instrumented;
