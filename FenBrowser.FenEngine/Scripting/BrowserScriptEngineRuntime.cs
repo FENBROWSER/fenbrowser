@@ -7650,9 +7650,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             "globalThis.window.isSecureContext = globalThis.isSecureContext;" +
             "globalThis.crossOriginIsolated = " + crossOriginIsolatedLiteral + ";" +
             "globalThis.window.crossOriginIsolated = globalThis.crossOriginIsolated;" +
-            // Diagnostic error overlay â€” surfaces unhandled JS errors visibly on the page
+            // Diagnostic error overlay - surfaces unhandled JS errors visibly on the page
             // so we can see what's failing without opening DevTools. Remove once stable.
+            //
+            // A worker realm has no document, and this used to be installed there
+            // all the same. The first error or rejection in a worker then ran a
+            // handler that dereferences a bare `document`, so the overlay itself
+            // threw ReferenceError - replacing whatever the real failure was, and
+            // aborting the code that was running. reCAPTCHA's worker died exactly
+            // this way: its message handler rejected with "document is not
+            // defined" a millisecond in, the anchor never got its reply, and the
+            // widget's own 20s watchdog eventually gave up. Only install where
+            // there is a document to draw on.
             "(function(){" +
+            "  if(typeof document==='undefined'||!document)return;" +
             "  var _errs=[];" +
             "  globalThis.addEventListener('error',function(e){" +
             "    var msg=e.message||String(e);" +
