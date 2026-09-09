@@ -62,6 +62,8 @@ public class BrowserIntegration : IDisposable
     private bool _hasFirstStyledRender = false; // Track first styled render to avoid unstyled initial layout
     private bool _hasStableStyleSnapshot = false;
     private DateTime _lastNavigationTime = DateTime.Now; // Track navigation start time for timeout
+    private const int LoadingTimeoutSeconds = 60;
+    private System.Threading.Timer _loadingTimeoutTimer;
     private readonly HashSet<long> _seenNavigationIds = new();
     private float _scrollY = 0;
     private float _contentHeight = 0;
@@ -575,6 +577,29 @@ public class BrowserIntegration : IDisposable
             }
         }, null, 100, 500); // Start after 100ms, poll every 500ms (event-driven is primary)
 
+        _loadingTimeoutTimer = new System.Threading.Timer(_ =>
+        {
+            try
+            {
+                var elapsed = (DateTime.Now - _lastNavigationTime).TotalSeconds;
+                if (IsLoading)
+                {
+                    EngineLogBridge.Debug($"[BrowserIntegration] Loading timeout check: IsLoading=true, elapsed={elapsed:F1}s, timeout={LoadingTimeoutSeconds}s", LogCategory.Navigation);
+                }
+                if (IsLoading && elapsed > LoadingTimeoutSeconds)
+                {
+                    EngineLogBridge.Warn($"[BrowserIntegration] Loading timeout after {elapsed:F1}s (>{LoadingTimeoutSeconds}s), forcing IsLoading=false", LogCategory.Navigation);
+                    IsLoading = false;
+                    LoadingChanged?.Invoke(false);
+                    RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.LoadingTimeout");
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Debug($"[BrowserIntegration] Loading timeout check failed: {ex.Message}", LogCategory.Rendering);
+            }
+        }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+
         if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current != null)
         {
             var coordinator = FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current;
@@ -950,6 +975,8 @@ public class BrowserIntegration : IDisposable
         // 3. Dispose timers.
         _domPoller?.Dispose();
         _domPoller = null;
+        _loadingTimeoutTimer?.Dispose();
+        _loadingTimeoutTimer = null;
 
         // 4. Unsubscribe all events.
         if (_animationFrameHandler != null)
