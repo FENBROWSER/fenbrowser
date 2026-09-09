@@ -654,6 +654,59 @@ internal sealed class Interp2
                     break;
                 }
 
+                case OpCode.EnumerateKeys:
+                {
+                    var forIn = _host.Interp2CreateForInIterator(stack[frameBase + ins.B]);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = forIn;
+                    break;
+                }
+
+                case OpCode.ForInNext:
+                {
+                    var hasNext = _host.Interp2ForInNext(stack[frameBase + ins.B], out var key);
+                    stack = _stack;
+                    if (hasNext)
+                    {
+                        stack[frameBase + ins.A] = key;
+                    }
+                    else
+                    {
+                        ip = ins.C;
+                    }
+
+                    break;
+                }
+
+                case OpCode.EnumerateValues:
+                {
+                    var forOf = _host.Interp2CreateForOfIterator(stack[frameBase + ins.B], ins.C == 1);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = forOf;
+                    break;
+                }
+
+                case OpCode.ForOfNext:
+                {
+                    var done = _host.Interp2ForOfNext(stack[frameBase + ins.B], out var element);
+                    stack = _stack;
+                    if (done)
+                    {
+                        ip = ins.C;
+                    }
+                    else
+                    {
+                        stack[frameBase + ins.A] = element;
+                    }
+
+                    break;
+                }
+
+                case OpCode.IteratorClose:
+                    _host.Interp2IteratorClose(stack[frameBase + ins.B], ins.C == 1);
+                    stack = _stack;
+                    break;
+
                 case OpCode.NewObject:
                     stack[frameBase + ins.A] = _host.Interp2NewObject();
                     break;

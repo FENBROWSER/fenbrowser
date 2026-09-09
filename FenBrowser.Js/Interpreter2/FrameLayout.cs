@@ -620,6 +620,10 @@ public sealed class FrameLayout
             OpCode.SetPropByName, OpCode.SetElem, OpCode.SetElemByIndex,
             OpCode.DeletePropByName, OpCode.DeleteElem,
             OpCode.InstanceOf, OpCode.In,
+
+            // for-in and for-of.
+            OpCode.EnumerateKeys, OpCode.ForInNext,
+            OpCode.EnumerateValues, OpCode.ForOfNext, OpCode.IteratorClose,
             OpCode.NewObject, OpCode.NewArray,
 
             // Calls and construction.

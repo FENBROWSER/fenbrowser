@@ -675,6 +675,61 @@ public sealed partial class BytecodeInterpreter
     internal JsValue Interp2DeleteElement(JsValue receiver, JsValue key, bool strict)
         => JsValue.FromBoolean(DeleteElementCore(receiver, key, strict));
 
+    // ------------------------------------------------------------ iteration
+
+    /// <summary>ECMA-262 14.7.5.6 EnumerateObjectProperties, as a for-in state.</summary>
+    internal JsValue Interp2CreateForInIterator(JsValue source) => CreateForInIterator(source);
+
+    /// <summary>Advance a for-in state; false when the enumeration is finished.</summary>
+    internal bool Interp2ForInNext(JsValue iterator, out JsValue key)
+    {
+        var state = ResolveObject(iterator) as ForInIteratorObject
+            ?? throw new JsEngineFatalException("Interp2ForInNext: register does not hold a for-in iterator.");
+        if (!state.TryMoveNext(out var name))
+        {
+            key = JsValue.Undefined;
+            return false;
+        }
+
+        key = JsValue.FromString(name);
+        return true;
+    }
+
+    /// <summary>
+    /// ECMA-262 7.4.2 GetIterator for a for-of head. <paramref name="requireIterable"/>
+    /// is the destructuring form, where an array-like without @@iterator throws
+    /// rather than falling back.
+    /// </summary>
+    internal JsValue Interp2CreateForOfIterator(JsValue source, bool requireIterable)
+        => CreateForOfIteratorState(source, requireIterable);
+
+    /// <summary>Advance a for-of state; true when the iterator reported done.</summary>
+    internal bool Interp2ForOfNext(JsValue iterator, out JsValue value)
+    {
+        var state = ResolveObject(iterator) as ForOfIteratorObject
+            ?? throw new JsEngineFatalException("Interp2ForOfNext: register does not hold a for-of iterator.");
+        return ForOfStepDone(state, out value);
+    }
+
+    /// <summary>
+    /// ECMA-262 7.4.11 IteratorClose. <paramref name="suppressErrors"/> is the
+    /// throw-completion form: closing because something already went wrong, so
+    /// the original exception wins over anything return() raises.
+    /// </summary>
+    internal void Interp2IteratorClose(JsValue iterator, bool suppressErrors)
+    {
+        try
+        {
+            if (ResolveObject(iterator) is ForOfIteratorObject closing)
+            {
+                CloseForOfIteratorState(closing, suppressErrors);
+            }
+        }
+        catch (JsThrownException) when (suppressErrors)
+        {
+        }
+    }
+
     internal JsValue Interp2NewObject()
         => JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()));
 
