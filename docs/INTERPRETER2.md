@@ -227,27 +227,83 @@ result sets on both for the whole of `test/language` (22663/23730),
 `built-ins/{Object,Array,String,Promise,Function,Proxy,Reflect,Map,Set,Date,
 Math,Number,JSON,Symbol,TypedArray,eval}`.
 
+## What the live page said
+
+`FenBrowser.Tooling.exe captcha https://www.google.com/recaptcha/api2/demo
+35000 25000`, two runs per configuration, `slowestJob` normalised per million
+instructions because raw milliseconds are too noisy to compare:
+
+| | old loop | new loop |
+|---|---|---|
+| blocking job | 6396ms | **4302ms** |
+| per instruction | 79.9 ms/Minstr | **41.3 ms/Minstr** |
+| microtask total | 7926ms | 5378ms |
+| heap frames, anchor realm | 1,619,752 | **51,077** |
+| register bytes, anchor realm | 3727MB | **87MB** |
+| widget's own give-up point | 18419ms | 15441ms |
+
+**Coverage on that bundle is 90.4%** of 4174 function bodies, and its bailout
+table is nothing like test262's. `NotOrdinaryFunction` is **zero** - the bundle
+contains no generators and no async bodies at all, so the item that is 12.9% of
+test262 and all of what remains there is worth nothing here. What blocked it was
+named function expressions (403 bodies) and regex literals (146), both since
+implemented. What remains is block scopes, at 378.
+
+Of 6.80M calls in one run: 2.06M stay in the loop, 1.02M go to a JavaScript body
+the loop declined, and **3.72M go to a native** - 55% of every call the page
+makes, which is not a coverage problem at all.
+
+## What measured zero, and why it is recorded
+
+Three changes were built on this workload and did not move it. They are listed
+because the reason each one failed is more useful than the change would have
+been.
+
+- **Specialising variable access at layout time.** `LoadVar` is 29% of every
+  instruction the page executes, so each one was rewritten into a form carrying
+  the window index outright - no slot-table read, no branch. Ten opcodes and a
+  rewrite pass, and the page did not move. Per-opcode self time then said why:
+  `LoadConst` and `Move`, the two simplest instructions there are, cost the same
+  as `LoadVar` to within 2ns. The count was 29%; the cost was not. Reverted.
+- **A shared (shape, name) table for megamorphic sites.** A site holds four
+  programs and then gives up, answering nothing; the table answered those.
+  It served 0.2% of misses, because the sites were not megamorphic. Reverted.
+- **Calling natives straight from the window**, skipping a second resolution of
+  the callee and the pinning of arguments the collector can already see through
+  the window. Measured zero. Kept anyway - it removes work that is provably
+  redundant on this loop, and the path it replaces did the same lookup twice.
+
+The lesson is the one the perf handoff already states and this work had to learn
+again: **a count is not a cost.** `FEN_FENJS_OPTIME=1` now works on this loop
+too, and the property-miss classification under `FEN_JS_INTERP2_LOG=1` names
+what a cache could not answer instead of leaving it to be guessed at.
+
 ## What is next, in order of measured value
 
 The unimplemented-opcode table is effectively empty: 537 bodies across twenty
 opcodes, none over 160. What is left is one thing and then a different kind of
 work.
 
-1. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
-   15.3k - 12.9% of the corpus, and all of what remains). The first two suspend,
-   which means copying a window out and back at a yield or an await; the third
-   needs `super` and field initialisers. Nothing else on the list is close.
-2. **Tier-up.** The loop gives up the JIT's win on hot single-frame loops -
-   41ns against 80ns on `b_property_read`'s bare loop - and that is now the only
-   place the old loop is faster. It matters once this one is on the critical
-   path.
-3. **Function-level `let`/`const`** (204 bodies) needs a hole value distinct
-   from `undefined` so the temporal dead zone stays observable. Block-level
-   `let`/`const` is already handled, because the compiler says which slot a
-   block introduces and the binding is initialised before it can be read.
-4. **Measure a real page.** Everything here is benchmarks and test262.
-   Eligibility on a minified bundle is unknown and is the number that decides
-   whether any of this reaches the user.
+1. **Property reads whose receiver is not an ordinary object** - 56% of what
+   still misses a cache site on the page, and mostly string primitives
+   (`s.length`, `s.charCodeAt`) and host objects. A boxed primitive is
+   re-created per read today.
+2. **Prototype loads** - 38% of the remaining misses. The cache refuses anything
+   off the prototype chain, which is every method call on a class instance. It
+   needs a guard on the receiver's [[Prototype]] as well as its shape, because
+   shapes here do not encode the prototype.
+3. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
+   15.3k on test262 - but zero on the page measured so far). The first two
+   suspend, which means copying a window out and back at a yield or an await;
+   the third needs `super` and field initialisers.
+4. **Tier-up.** The loop gives up the JIT's win on hot single-frame loops -
+   41ns against 80ns on `b_property_read`'s bare loop - and that is the only
+   place the old loop is still faster.
+5. **Block scopes a closure captures** (378 bodies on the page, 1.02M of its
+   calls). They need a fresh record per entry to the block, and this loop has
+   one per call.
+6. **Function-level `let`/`const`** (204 bodies) needs a hole value distinct
+   from `undefined` so the temporal dead zone stays observable.
 
 Two defects in the **old** loop that this work surfaced and did not fix:
 
