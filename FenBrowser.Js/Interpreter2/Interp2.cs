@@ -203,8 +203,10 @@ internal sealed class Interp2
                         break;
                     }
 
-                    stack[frameBase + ins.A] = _host.Interp2LoadFree(
+                    var loaded = _host.Interp2LoadFree(
                         _frames[_depth - 1].OuterEnv, NameOfSlot(layout, slot), layout.IsStrict);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = loaded;
                     break;
                 }
 
@@ -234,6 +236,7 @@ internal sealed class Interp2
                         NameOfSlot(layout, slot),
                         stack[frameBase + ins.A],
                         layout.IsStrict);
+                    stack = _stack;
                     break;
                 }
 
@@ -294,17 +297,26 @@ internal sealed class Interp2
                 {
                     ref readonly var left = ref stack[frameBase + ins.B];
                     ref readonly var right = ref stack[frameBase + ins.C];
-                    stack[frameBase + ins.A] =
-                        BytecodeInterpreter.Interp2TryFastBinary(ins.OpCode, in left, in right, out var fast)
-                            ? fast
-                            : _host.Interp2SlowBinary(ins.OpCode, left, right);
+                    if (BytecodeInterpreter.Interp2TryFastBinary(ins.OpCode, in left, in right, out var fast))
+                    {
+                        stack[frameBase + ins.A] = fast;
+                        break;
+                    }
+
+                    var slow = _host.Interp2SlowBinary(ins.OpCode, left, right);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = slow;
                     break;
                 }
 
                 case OpCode.Exp:
-                    stack[frameBase + ins.A] = _host.Interp2SlowBinary(
+                {
+                    var exponent = _host.Interp2SlowBinary(
                         OpCode.Exp, stack[frameBase + ins.B], stack[frameBase + ins.C]);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = exponent;
                     break;
+                }
 
                 case OpCode.And:
                     stack[frameBase + ins.A] = _host.Interp2IsTruthy(stack[frameBase + ins.B])
@@ -335,40 +347,59 @@ internal sealed class Interp2
                 case OpCode.ToStringCoerce:
                 case OpCode.Increment:
                 case OpCode.Decrement:
-                    stack[frameBase + ins.A] = _host.Interp2Unary(ins.OpCode, stack[frameBase + ins.B]);
+                {
+                    var unary = _host.Interp2Unary(ins.OpCode, stack[frameBase + ins.B]);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = unary;
                     break;
+                }
 
                 // ------------------------------------------------------ objects
                 case OpCode.GetPropByName:
-                    stack[frameBase + ins.A] = _host.Interp2GetPropertyByName(
+                {
+                    var read = _host.Interp2GetPropertyByName(
                         function, ip - 1, stack[frameBase + ins.B], function.PropertyNames[ins.C]);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = read;
                     break;
+                }
 
                 case OpCode.GetElem:
-                    stack[frameBase + ins.A] = _host.Interp2GetElement(
+                {
+                    var element = _host.Interp2GetElement(
                         function, ip - 1, stack[frameBase + ins.B], stack[frameBase + ins.C]);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = element;
                     break;
+                }
 
                 case OpCode.GetElemConst:
-                    stack[frameBase + ins.A] = _host.Interp2GetElement(
+                {
+                    var element = _host.Interp2GetElement(
                         function, ip - 1, stack[frameBase + ins.B], function.Constants[ins.C]);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = element;
                     break;
+                }
 
                 case OpCode.SetPropByName:
                     _host.Interp2SetPropertyByName(
                         function, ip - 1, stack[frameBase + ins.A], function.PropertyNames[ins.B],
                         stack[frameBase + ins.C], layout.IsStrict);
+                    stack = _stack;
                     break;
 
                 case OpCode.SetElem:
                     _host.Interp2SetElement(
                         stack[frameBase + ins.A], stack[frameBase + ins.B], stack[frameBase + ins.C],
                         layout.IsStrict);
+                    stack = _stack;
                     break;
 
                 case OpCode.SetElemByIndex:
                     _host.Interp2SetElementByIndex(
                         stack[frameBase + ins.A], ins.B, stack[frameBase + ins.C], layout.IsStrict);
+                    stack = _stack;
                     break;
 
                 case OpCode.NewObject:
@@ -491,8 +522,14 @@ internal sealed class Interp2
         // Natives, bound functions, proxies, generators, async bodies and every
         // function this loop declined: the old loop knows all of them, and the
         // arguments it needs are already contiguous in this frame's window.
-        _stack[returnSlot] = _host.Interp2Call(
+        var result = _host.Interp2Call(
             calleeValue, CallArgs.FromRegisters(_stack, argStart, argCount), thisValue);
+
+        // _stack is re-read on the next line rather than reused from this one:
+        // the callee may have re-entered this loop deeply enough to grow the
+        // value stack, and the array the arguments were read out of is then the
+        // one it replaced. Every host call in the dispatch follows the same rule.
+        _stack[returnSlot] = result;
         return false;
     }
 
