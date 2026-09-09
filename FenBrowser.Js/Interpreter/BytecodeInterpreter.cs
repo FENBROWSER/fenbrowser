@@ -14188,9 +14188,55 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var parameters = frame.Function.ParameterNames.Count == 0
                     ? string.Empty
                     : ", params=" + string.Join(",", frame.Function.ParameterNames);
-                return $"    at {functionName} [ip={ip}, op={opcode}{parameters}]";
+                // A minified bundle is nearly all anonymous functions sharing a
+                // small pool of parameter names, so name+params names thousands
+                // of distinct functions identically. The source text says which
+                // one, and is the only thing that makes a stack from a bundle
+                // readable at all.
+                var source = SummarizeFrameSource(frame.Function.SourceText);
+                return $"    at {functionName} [ip={ip}, op={opcode}{parameters}{source}]";
             });
         return header + "\n" + string.Join("\n", frames);
+    }
+
+    /// <summary>
+    /// One line of a function's own source for a stack frame: whitespace
+    /// collapsed and clipped, so a minified frame is identifiable without the
+    /// trace turning into the bundle.
+    /// </summary>
+    private static string SummarizeFrameSource(string? sourceText)
+    {
+        if (string.IsNullOrWhiteSpace(sourceText))
+        {
+            return string.Empty;
+        }
+
+        const int MaxSourceChars = 120;
+        var builder = new System.Text.StringBuilder(MaxSourceChars + 4);
+        var lastWasSpace = false;
+        foreach (var ch in sourceText)
+        {
+            if (builder.Length >= MaxSourceChars)
+            {
+                builder.Append('…');
+                break;
+            }
+
+            if (char.IsWhiteSpace(ch))
+            {
+                if (!lastWasSpace && builder.Length > 0)
+                {
+                    builder.Append(' ');
+                    lastWasSpace = true;
+                }
+                continue;
+            }
+
+            builder.Append(ch);
+            lastWasSpace = false;
+        }
+
+        return builder.Length == 0 ? string.Empty : ", src=" + builder;
     }
 
     private JsValue CreateFunctionObject(
