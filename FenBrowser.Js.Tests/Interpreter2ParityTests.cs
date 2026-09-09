@@ -73,6 +73,34 @@ public sealed class Interpreter2ParityTests
     [InlineData("function f() { throw new TypeError('x'); } try { f(); } catch (e) { e.constructor.name }",
                 "TypeError")]
     [InlineData("function f() { var a = []; a[0] = 1; a[1] = 2; a.n = 3; return a[0] + a[1] + a.n; } f();", "6")]
+    // try / catch / finally, and the block scope a catch binding needs.
+    [InlineData("function f() { try { throw 1; } catch (e) { return 'c' + e; } } f();", "c1")]
+    [InlineData("function f() { var s = ''; try { s += 'a'; } finally { s += 'b'; } return s; } f();", "ab")]
+    [InlineData("function f() { var s = ''; try { throw 1; } catch (e) { s += 'c'; } finally { s += 'f'; }" +
+                " return s; } f();", "cf")]
+    // An exception crossing a finally with no catch is re-raised when it ends.
+    [InlineData("var s = ''; function f() { try { throw 'x'; } finally { s += 'f'; } }" +
+                "try { f(); } catch (e) { s += e; } s;", "fx")]
+    // A throw two frames down finds the handler two frames up.
+    [InlineData("function deep() { throw 'd'; } function mid() { deep(); }" +
+                "function f() { try { mid(); } catch (e) { return 'caught:' + e; } } f();", "caught:d")]
+    // A throw out of a native callback still finds it.
+    [InlineData("function f() { try { [1].forEach(function () { throw 'n'; }); } catch (e) { return e; } } f();",
+                "n")]
+    // Nested try blocks unwind one level at a time.
+    [InlineData("function f() { var s = ''; try { try { throw 1; } finally { s += 'i'; } }" +
+                " catch (e) { s += 'o'; } return s; } f();", "io")]
+    // A catch binding is a block scope, and a return from inside it still works.
+    [InlineData("function f() { try { throw 5; } catch (e) { var d = e * 2; return d; } } f();", "10")]
+    // The catch binding must not leak past the block.
+    [InlineData("var e = 'outer'; function f() { try { throw 'inner'; } catch (e) {} return e; } f();", "outer")]
+    // A handler left open by a return must not catch the caller's throw.
+    [InlineData("function g() { try { return 1; } catch (e) { return 'wrong'; } }" +
+                "function f() { g(); throw 'up'; } try { f(); } catch (e) { e }", "up")]
+    // const inside a block: initialising is allowed, assigning is not.
+    [InlineData("function f() { { const c = 1; return c; } } f();", "1")]
+    [InlineData("function f() { try { { const c = 1; c = 2; } } catch (e) { return e.constructor.name; } } f();",
+                "TypeError")]
     public void BothLoopsAgree(string source, string expected)
     {
         var onOldLoop = RunOn(engine2: false, source);

@@ -18,6 +18,7 @@ public enum Interp2Bailout
     UnsupportedOpCode,
     FreeVariableResolve,
     CapturedReceiver,
+    BlockScope,
     DirectEval,
     FrameTooWide,
 }
@@ -155,6 +156,12 @@ public sealed class FrameLayout
     public bool RestrictedArguments { get; private init; }
 
     /// <summary>
+    /// Slots holding a `const`, so an assignment to one is a TypeError rather
+    /// than a write. Empty when the body declares none.
+    /// </summary>
+    public bool[] SlotIsConst { get; private init; } = Array.Empty<bool>();
+
+    /// <summary>
     /// Window index each formal parameter is bound at, in declaration order.
     /// Meaningful only where the matching <see cref="SlotHomes"/> entry is
     /// <see cref="SlotHome.Register"/>.
@@ -268,6 +275,15 @@ public sealed class FrameLayout
         // A slot this body declares lives in its own window; anything else is a
         // free identifier and resolves through the closure's environment chain,
         // exactly as it does on the old loop.
+        // A block introduces its binding with EnterScope, whose operand is the
+        // slot. Those are declarations of this body as much as a `var` is, and
+        // have to be classified before anything else looks at a slot.
+        var blockScopes = BlockScopeRegions(function.InstructionArray, out var blockScopeSlots, out var constSlots);
+        if (blockScopes is null)
+        {
+            return new FrameLayout(function, Interp2Bailout.BlockScope);
+        }
+
         var declared = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < function.ParameterNames.Count; i++)
             declared.Add(function.ParameterNames[i]);
@@ -287,9 +303,20 @@ public sealed class FrameLayout
         for (var slot = 0; slot < slotCount; slot++)
         {
             var name = slotNames[slot];
-            var own = name is not null && declared.Contains(name);
+            var own = (name is not null && declared.Contains(name)) || blockScopeSlots.Contains(slot);
             slotHomes[slot] = own ? SlotHome.Register : SlotHome.Free;
             hasFreeVariables |= !own;
+        }
+
+        // A block-scoped slot may only be touched from inside its own block.
+        // Read outside it, the register would still hold the block's value where
+        // the spec says the binding is gone and the name resolves outwards.
+        foreach (var (slot, start, end) in blockScopes)
+        {
+            if (!ReferencesConfinedTo(function.InstructionArray, slot, start, end))
+            {
+                return new FrameLayout(function, Interp2Bailout.BlockScope);
+            }
         }
 
         var instructions = function.InstructionArray;
@@ -350,6 +377,15 @@ public sealed class FrameLayout
                     slotNames[slot] is { } name &&
                     captured.Contains(name))
                 {
+                    // A captured block binding needs a fresh record on every
+                    // entry to the block - one closure per turn of a loop must
+                    // not share a variable with the next - and this loop has one
+                    // record per call, not per block.
+                    if (blockScopeSlots.Contains(slot))
+                    {
+                        return new FrameLayout(function, Interp2Bailout.BlockScope);
+                    }
+
                     slotHomes[slot] = SlotHome.Context;
                     hasContext = true;
                 }
@@ -409,7 +445,115 @@ public sealed class FrameLayout
             HasContext = hasContext,
             ArgumentsSlot = argumentsSlot,
             RestrictedArguments = function.UsesRestrictedArgumentsObject,
+            SlotIsConst = BuildConstMap(constSlots, slotCount),
         };
+    }
+
+    /// <summary>
+    /// The block scopes in a body, as (slot, first instruction, last
+    /// instruction) triples, or null when they are shaped in a way this loop
+    /// cannot keep in registers.
+    /// </summary>
+    /// <remarks>
+    /// A block scope on the old loop is a record spliced into the chain, holding
+    /// one binding. Here it is just a slot in the window, which works exactly
+    /// when the block cannot be told apart from a straight-line assignment:
+    ///
+    /// - the scopes must nest properly, so a region can be identified at all;
+    /// - two nested scopes must not share a slot, or the inner one's value would
+    ///   survive into the outer one, which is a distinct binding;
+    /// - the binding must be initialised before anything can read it, because a
+    ///   register has no value distinct from `undefined` to stand for the
+    ///   temporal dead zone.
+    ///
+    /// The compiler emits the catch binding of a `try`/`catch` in exactly that
+    /// shape - EnterScope then InitVar - which is what this exists to admit.
+    /// </remarks>
+    private static List<(int Slot, int Start, int End)>? BlockScopeRegions(
+        Instruction[] code, out HashSet<int> slots, out HashSet<int> constants)
+    {
+        slots = new HashSet<int>();
+        constants = new HashSet<int>();
+        var regions = new List<(int, int, int)>();
+        var open = new List<(int Slot, int Start)>();
+
+        for (var ip = 0; ip < code.Length; ip++)
+        {
+            ref readonly var ins = ref code[ip];
+            if (ins.OpCode == OpCode.LeaveScope)
+            {
+                if (open.Count == 0) return null;
+                var (slot, start) = open[^1];
+                open.RemoveAt(open.Count - 1);
+                regions.Add((slot, start, ip));
+                continue;
+            }
+
+            if (ins.OpCode != OpCode.EnterScope) continue;
+
+            var scopeSlot = ins.A;
+            foreach (var (openSlot, _) in open)
+            {
+                // The inner binding would write the outer one's register, and
+                // leaving the inner block would not bring the outer value back.
+                if (openSlot == scopeSlot) return null;
+            }
+
+            // C = 1 pre-initialises the binding to undefined; otherwise the
+            // declaration must be the very next thing, so nothing can observe
+            // the slot between the block opening and the value arriving.
+            if (ins.C != 1 &&
+                (ip + 1 >= code.Length ||
+                 code[ip + 1].OpCode != OpCode.InitVar ||
+                 code[ip + 1].B != scopeSlot))
+            {
+                return null;
+            }
+
+            if (ins.B == 1) constants.Add(scopeSlot);
+            slots.Add(scopeSlot);
+            open.Add((scopeSlot, ip));
+        }
+
+        return open.Count == 0 ? regions : null;
+    }
+
+    /// <summary>
+    /// Whether every instruction naming <paramref name="slot"/> falls inside
+    /// [<paramref name="start"/>, <paramref name="end"/>].
+    /// </summary>
+    private static bool ReferencesConfinedTo(Instruction[] code, int slot, int start, int end)
+    {
+        for (var ip = 0; ip < code.Length; ip++)
+        {
+            if (ip >= start && ip <= end) continue;
+
+            ref readonly var ins = ref code[ip];
+            var named = ins.OpCode switch
+            {
+                OpCode.LoadVar or OpCode.StoreVar or OpCode.InitVar or OpCode.TypeOfName or
+                OpCode.PreResolveVar or OpCode.StoreResolvedVar or OpCode.StoreVarTop => ins.B,
+                OpCode.EnterScope => ins.A,
+                _ => -1,
+            };
+
+            if (named == slot) return false;
+        }
+
+        return true;
+    }
+
+    private static bool[] BuildConstMap(HashSet<int> constants, int slotCount)
+    {
+        if (constants.Count == 0) return Array.Empty<bool>();
+
+        var map = new bool[slotCount];
+        foreach (var slot in constants)
+        {
+            if ((uint)slot < (uint)slotCount) map[slot] = true;
+        }
+
+        return map;
     }
 
     private static bool HasAnyFree(SlotHome[] slotHomes)
@@ -458,6 +602,7 @@ public sealed class FrameLayout
             OpCode.Move, OpCode.Jump, OpCode.JumpIfFalse,
             OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,
             OpCode.PushHandler, OpCode.PopHandler, OpCode.EndFinally,
+            OpCode.EnterScope, OpCode.LeaveScope,
             OpCode.CreateFunction,
 
             // Arithmetic, coercion and comparison.

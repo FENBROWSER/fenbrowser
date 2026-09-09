@@ -464,6 +464,10 @@ public sealed partial class BytecodeInterpreter
         return "undefined";
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    internal void Interp2ThrowConstAssignment(string? name)
+        => throw new JsThrownException(CreateTypeError($"Assignment to constant variable '{name ?? "?"}'."));
+
     private JsThrownException Interp2BindingFailure(BindingOpResult status, string name, bool assignment)
         => status switch
         {

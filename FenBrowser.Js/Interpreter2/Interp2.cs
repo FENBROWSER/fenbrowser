@@ -309,9 +309,37 @@ internal sealed class Interp2
                     // StoreResolvedVar is an ordinary slot store.
                     break;
 
+                case OpCode.EnterScope:
+                    // The block's binding is a slot in this window, which the
+                    // layout has already proved nothing outside the block can
+                    // reach. C = 1 asks for it to start as undefined; otherwise
+                    // the declaration is the next instruction.
+                    if (ins.C == 1)
+                    {
+                        stack[slotBase + ins.A] = JsValue.Undefined;
+                    }
+
+                    break;
+
+                case OpCode.LeaveScope:
+                    break;
+
                 case OpCode.StoreVar:
-                case OpCode.InitVar:
                 case OpCode.StoreResolvedVar:
+                {
+                    // ECMA-262 9.1.1.1.5: assigning to an immutable binding is a
+                    // TypeError. Initialising one is not, which is why InitVar
+                    // is a separate case below.
+                    var constants = layout.SlotIsConst;
+                    if ((uint)ins.B < (uint)constants.Length && constants[ins.B])
+                    {
+                        _host.Interp2ThrowConstAssignment(NameOfSlot(layout, ins.B));
+                    }
+
+                    goto case OpCode.InitVar;
+                }
+
+                case OpCode.InitVar:
                 {
                     var slot = ins.B;
                     var home = HomeOfSlot(layout, slot);
