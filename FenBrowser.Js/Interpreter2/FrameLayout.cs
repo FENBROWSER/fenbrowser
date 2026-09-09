@@ -618,6 +618,8 @@ public sealed class FrameLayout
             // Property reads, property writes and object literals.
             OpCode.GetPropByName, OpCode.GetElem, OpCode.GetElemConst,
             OpCode.SetPropByName, OpCode.SetElem, OpCode.SetElemByIndex,
+            OpCode.DeletePropByName, OpCode.DeleteElem,
+            OpCode.InstanceOf, OpCode.In,
             OpCode.NewObject, OpCode.NewArray,
 
             // Calls and construction.

@@ -659,6 +659,22 @@ public sealed partial class BytecodeInterpreter
     internal JsValue Interp2CreateArguments(in CallArgs args, bool restricted, JsFunctionObject callee)
         => CreateArgumentsObject(args, restricted, callee);
 
+    /// <summary>ECMA-262 13.10.2 `instanceof`.</summary>
+    internal JsValue Interp2InstanceOf(JsValue left, JsValue right)
+        => JsValue.FromBoolean(InstanceOfCore(left, right));
+
+    /// <summary>ECMA-262 13.10.1 `in`.</summary>
+    internal JsValue Interp2In(JsValue key, JsValue rhs)
+        => JsValue.FromBoolean(HasPropertyCore(key, rhs));
+
+    /// <summary>ECMA-262 13.5.1.2 `delete obj.name`.</summary>
+    internal JsValue Interp2DeletePropertyByName(JsValue receiver, string prop, bool strict)
+        => JsValue.FromBoolean(DeletePropertyByNameCore(receiver, prop, strict));
+
+    /// <summary>ECMA-262 13.5.1.2 `delete obj[key]`.</summary>
+    internal JsValue Interp2DeleteElement(JsValue receiver, JsValue key, bool strict)
+        => JsValue.FromBoolean(DeleteElementCore(receiver, key, strict));
+
     internal JsValue Interp2NewObject()
         => JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()));
 

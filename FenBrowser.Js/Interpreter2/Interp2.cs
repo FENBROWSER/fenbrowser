@@ -619,6 +619,41 @@ internal sealed class Interp2
                     break;
                 }
 
+                case OpCode.InstanceOf:
+                {
+                    var isInstance = _host.Interp2InstanceOf(
+                        stack[frameBase + ins.B], stack[frameBase + ins.C]);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = isInstance;
+                    break;
+                }
+
+                case OpCode.In:
+                {
+                    var has = _host.Interp2In(stack[frameBase + ins.B], stack[frameBase + ins.C]);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = has;
+                    break;
+                }
+
+                case OpCode.DeletePropByName:
+                {
+                    var deleted = _host.Interp2DeletePropertyByName(
+                        stack[frameBase + ins.B], function.PropertyNames[ins.C], layout.IsStrict);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = deleted;
+                    break;
+                }
+
+                case OpCode.DeleteElem:
+                {
+                    var deleted = _host.Interp2DeleteElement(
+                        stack[frameBase + ins.B], stack[frameBase + ins.C], layout.IsStrict);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = deleted;
+                    break;
+                }
+
                 case OpCode.NewObject:
                     stack[frameBase + ins.A] = _host.Interp2NewObject();
                     break;

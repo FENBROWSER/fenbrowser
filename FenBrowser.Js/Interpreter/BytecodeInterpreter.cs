@@ -25087,14 +25087,15 @@ fallbackArraySpecies:
         return right > 0 ? -1 : 1;
     }
 
-    private bool TryInstanceOf(InterpreterFrame frame, JsValue left, JsValue right, out bool result)
+    /// <summary>
+    /// ECMA-262 13.10.2 InstanceofOperator, with no dependence on which loop is
+    /// running it: it raises where the frame-taking form routed.
+    /// </summary>
+    internal bool InstanceOfCore(JsValue left, JsValue right)
     {
-        result = false;
-
         if (right.Tag != JsValueTag.Object && right.Tag != JsValueTag.HostObject)
         {
-            ThrowTypeError(frame, "Right-hand side of 'instanceof' must be an object.");
-            return false;
+            throw new JsThrownException(CreateTypeError("Right-hand side of 'instanceof' must be an object."));
         }
 
         var hasInstanceSymbolId = GetWellKnownSymbolId("hasInstance");
@@ -25105,46 +25106,27 @@ fallbackArraySpecies:
             {
                 if (!IsCallable(hasInstance))
                 {
-                    ThrowTypeError(frame, "@@hasInstance is not callable.");
-                    return false;
+                    throw new JsThrownException(CreateTypeError("@@hasInstance is not callable."));
                 }
 
-                try
-                {
-                    var methodResult = CallFunction(hasInstance, new[] { left }, right);
-                    result = IsTruthy(methodResult);
-                    return true;
-                }
-                catch (JsThrownException ex)
-                {
-                    if (frame.CatchHandlers.Count == 0)
-                    {
-                        throw;
-                    }
-
-                    ThrowOrHandle(frame, ex.Value);
-                    return false;
-                }
+                return IsTruthy(CallFunction(hasInstance, new[] { left }, right));
             }
         }
 
         if (!IsCallable(right))
         {
-            ThrowTypeError(frame, "Right-hand side of 'instanceof' is not callable.");
-            return false;
+            throw new JsThrownException(CreateTypeError("Right-hand side of 'instanceof' is not callable."));
         }
 
         if (left.Tag != JsValueTag.Object && left.Tag != JsValueTag.HostObject)
         {
-            result = false;
-            return true;
+            return false;
         }
 
         var prototypeValue = GetReceiverProperty(right, "prototype");
         if (prototypeValue.Tag != JsValueTag.Object)
         {
-            ThrowTypeError(frame, "Function has non-object prototype in 'instanceof'.");
-            return false;
+            throw new JsThrownException(CreateTypeError("Function has non-object prototype in 'instanceof'."));
         }
 
         var targetPrototype = prototypeValue.AsObjectHandle();
@@ -25152,22 +25134,115 @@ fallbackArraySpecies:
         // triggers property resolution on each prototype object, which can
         // allocate (e.g. boxing the "constructor" property) and trigger a
         // MinorCollect that would invalidate unrooted handles.
+        var rootMark = _heap.RootCount;
         PinIfObject(prototypeValue);
         try
         {
-            result = OrdinaryHasInstancePrototype(left, targetPrototype);
+            return OrdinaryHasInstancePrototype(left, targetPrototype);
+        }
+        finally
+        {
+            _heap.PopRootsTo(rootMark);
+        }
+    }
+
+    private bool TryInstanceOf(InterpreterFrame frame, JsValue left, JsValue right, out bool result)
+    {
+        try
+        {
+            result = InstanceOfCore(left, right);
             return true;
         }
         catch (JsThrownException ex)
         {
-            if (frame.CatchHandlers.Count == 0)
-            {
-                throw;
-            }
-
             ThrowOrHandle(frame, ex.Value);
+            result = false;
             return false;
         }
+    }
+
+    /// <summary>ECMA-262 13.10.1 RelationalExpression : RelationalExpression in ShiftExpression.</summary>
+    internal bool HasPropertyCore(JsValue key, JsValue rhs)
+    {
+        if (rhs.Tag != JsValueTag.Object && rhs.Tag != JsValueTag.HostObject)
+        {
+            throw new JsThrownException(CreateTypeError(
+                $"Right-hand side of 'in' must be an object (got {rhs.Tag})."));
+        }
+
+        if (rhs.Tag == JsValueTag.HostObject)
+        {
+            // Symbols are unlikely on host objects; fall through to false.
+            return key.Tag != JsValueTag.Symbol && HasHostObjectProperty(rhs, ToPropertyKey(key));
+        }
+
+        var obj = ResolveObject(rhs);
+        return key.Tag == JsValueTag.Symbol
+            ? HasSymbolProperty(obj, key.AsSymbolId())
+            : HasPropertyIncludingProxy(obj, ToPropertyKey(key));
+    }
+
+    /// <summary>ECMA-262 13.5.1.2 `delete` of a literal-named property reference.</summary>
+    internal bool DeletePropertyByNameCore(JsValue receiver, string prop, bool strict)
+    {
+        // ToObject(base) happens first, so `delete null.x` is a TypeError.
+        if (receiver.Tag is JsValueTag.Null or JsValueTag.Undefined)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Cannot convert " + (receiver.Tag == JsValueTag.Null ? "null" : "undefined") + " to object."));
+        }
+
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            return true;
+        }
+
+        var obj = ResolveObject(receiver);
+        var deleted = obj is ProxyObject proxy ? ProxyDelete(proxy, prop) : obj.DeleteProperty(prop);
+        if (!deleted && strict)
+        {
+            throw new JsThrownException(CreateTypeError($"Cannot delete property '{prop}'."));
+        }
+
+        return deleted;
+    }
+
+    /// <summary>ECMA-262 13.5.1.2 `delete` of a computed property reference.</summary>
+    internal bool DeleteElementCore(JsValue receiver, JsValue key, bool strict)
+    {
+        if (receiver.Tag is JsValueTag.Null or JsValueTag.Undefined)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Cannot convert " + (receiver.Tag == JsValueTag.Null ? "null" : "undefined") + " to object."));
+        }
+
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            return true;
+        }
+
+        var obj = ResolveObject(receiver);
+        if (key.Tag == JsValueTag.Symbol)
+        {
+            var deletedSymbol = obj is ProxyObject symbolProxy
+                ? ProxyDelete(symbolProxy, key)
+                : obj.DeleteSymbolProperty(key.AsSymbolId());
+            if (!deletedSymbol && strict)
+            {
+                throw new JsThrownException(CreateTypeError("Cannot delete symbol-keyed property."));
+            }
+
+            return deletedSymbol;
+        }
+
+        var propertyKey = ToPropertyKey(key);
+        var deletedKey = obj.DeleteProperty(propertyKey);
+        if (!deletedKey && strict)
+        {
+            throw new JsThrownException(CreateTypeError($"Cannot delete property '{propertyKey}'."));
+        }
+
+        return deletedKey;
     }
 
     [MayExecuteJs]
