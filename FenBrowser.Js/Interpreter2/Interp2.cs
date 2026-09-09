@@ -192,11 +192,20 @@ internal sealed class Interp2
                     break;
 
                 case OpCode.LoadThis:
-                    // An ordinary non-arrow body binds its receiver on entry and
-                    // nothing in an eligible body can rebind it: no super(), no
-                    // inner arrow reading through the chain, no `with`. So the
-                    // frame's own copy is the answer that GetThisEnvironment
-                    // would have walked to.
+                    // An ordinary body binds its receiver on entry and nothing
+                    // in an eligible one can rebind it: no super(), no `with`.
+                    // So the frame's own copy is the answer GetThisEnvironment
+                    // would have walked to. An arrow has no receiver of its own
+                    // and has to do the walk (ECMA-262 9.1.2.5).
+                    if (layout.ResolvesThisOutwards)
+                    {
+                        var receiver = _host.Interp2ResolveThis(
+                            OuterEnvironmentOf(_depth - 1), _frames[_depth - 1].This);
+                        stack = _stack;
+                        stack[frameBase + ins.A] = receiver;
+                        break;
+                    }
+
                     stack[frameBase + ins.A] = _frames[_depth - 1].This;
                     break;
 
@@ -734,7 +743,7 @@ internal sealed class Interp2
         // property probe - real cost on a leaf function that has no use for it.
         // A body that creates a closure needs it whatever else it does, because
         // the closure has to be given something to chain to.
-        var needsOuterNow = layout.HasFreeVariables || layout.HasContext;
+        var needsOuterNow = layout.HasFreeVariables || layout.HasContext || layout.ResolvesThisOutwards;
         frame.OuterEnv = needsOuterNow ? _host.Interp2OuterEnvironment(callee) : null;
         frame.OuterEnvResolved = needsOuterNow;
         frame.This = thisValue;

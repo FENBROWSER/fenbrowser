@@ -172,9 +172,17 @@ public sealed class FrameLayout
 
     /// <summary>
     /// Sloppy-mode bodies coerce their receiver on entry (ECMA-262 10.2.1.3
-    /// OrdinaryCallBindThis steps 6-7); strict ones take it as it comes.
+    /// OrdinaryCallBindThis steps 6-7); strict ones take it as it comes, and an
+    /// arrow never binds one at all.
     /// </summary>
     public bool BindsThisLoosely { get; private init; }
+
+    /// <summary>
+    /// True for an arrow: it has no receiver of its own, so `this` is resolved
+    /// by walking outwards (ECMA-262 9.1.2.5 GetThisEnvironment) rather than
+    /// read off the frame.
+    /// </summary>
+    public bool ResolvesThisOutwards { get; private init; }
 
     public bool IsStrict { get; private init; }
 
@@ -205,7 +213,9 @@ public sealed class FrameLayout
     {
         // Anything whose activation outlives its call, or whose scope is
         // reachable by name from outside it, needs a real environment record.
-        if (function.Kind != FunctionKind.Ordinary)
+        // An arrow qualifies alongside an ordinary function: it differs only in
+        // where `this` comes from, and that is one branch on entry.
+        if (function.Kind is not (FunctionKind.Ordinary or FunctionKind.Arrow))
             return new FrameLayout(function, Interp2Bailout.NotOrdinaryFunction);
         if (function.IsEvalCode)
             return new FrameLayout(function, Interp2Bailout.EvalCode);
@@ -292,9 +302,20 @@ public sealed class FrameLayout
         var hasContext = false;
         if (makesClosures)
         {
-            var captured = CaptureAnalysis.CapturedNames(function, declaredNames);
+            var captured = CaptureAnalysis.CapturedNames(function, declaredNames, out var capturesReceiver);
             if (captured is null)
                 return new FrameLayout(function, Interp2Bailout.CapturedReceiver);
+
+            // A closure that reads the enclosing `this` needs a record to find
+            // it on, so this body keeps one even when none of its variables are
+            // captured. An arrow cannot supply it - its own record is one the
+            // walk passes straight through - so it is refused instead.
+            if (capturesReceiver)
+            {
+                if (function.Kind == FunctionKind.Arrow)
+                    return new FrameLayout(function, Interp2Bailout.CapturedReceiver);
+                hasContext = true;
+            }
 
             for (var slot = 0; slot < slotCount; slot++)
             {
@@ -344,7 +365,8 @@ public sealed class FrameLayout
             function, registerCount, slotCount, slotHomes, slotNames, layoutParameterSlots, parameterWindowIndex)
         {
             IsStrict = function.IsStrictMode,
-            BindsThisLoosely = !function.IsStrictMode,
+            ResolvesThisOutwards = function.Kind == FunctionKind.Arrow,
+            BindsThisLoosely = !function.IsStrictMode && function.Kind != FunctionKind.Arrow,
             HasFreeVariables = hasFreeVariables,
             HasDuplicateParameterSlots = duplicateParameters,
             HasContext = hasContext,

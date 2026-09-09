@@ -118,27 +118,34 @@ public static class CaptureAnalysis
     /// read, at any depth. An empty set means every variable can stay in a
     /// register; the names in it are the ones that need a heap binding.
     /// </summary>
+    /// <param name="capturesReceiver">
+    /// Set when a nested function reads the enclosing <c>this</c>. That lives on
+    /// a function environment record rather than in the bindings, so the body
+    /// has to keep one - which it can, since a captured variable would have made
+    /// it keep one anyway.
+    /// </param>
     /// <returns>
-    /// Null when a nested function reaches for something that is not an
-    /// identifier - the enclosing <c>this</c>, <c>arguments</c>,
-    /// <c>new.target</c> or <c>super</c>. Those live on a function environment
-    /// record rather than in the bindings, so the body has to keep a real one
-    /// and belongs on the old loop.
+    /// Null when a nested function reaches for <c>arguments</c>,
+    /// <c>new.target</c> or <c>super</c> from the enclosing scope. Those need
+    /// state this loop does not carry, so the body belongs on the old loop.
     /// </returns>
-    public static HashSet<string>? CapturedNames(BytecodeFunction function, IReadOnlySet<string> declaredNames)
+    public static HashSet<string>? CapturedNames(
+        BytecodeFunction function, IReadOnlySet<string> declaredNames, out bool capturesReceiver)
     {
+        capturesReceiver = false;
         var captured = new HashSet<string>(StringComparer.Ordinal);
         var nested = function.NestedFunctions;
         for (var i = 0; i < nested.Count; i++)
         {
             var info = Compute(nested[i], depth: 1);
-            if (info.NeedsEnclosingThis ||
-                info.NeedsEnclosingArguments ||
+            if (info.NeedsEnclosingArguments ||
                 info.NeedsEnclosingNewTarget ||
                 info.NeedsEnclosingSuper)
             {
                 return null;
             }
+
+            capturesReceiver |= info.NeedsEnclosingThis;
 
             foreach (var name in info.FreeNames)
             {

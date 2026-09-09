@@ -159,6 +159,17 @@ public sealed partial class BytecodeInterpreter
         JsValue thisValue,
         EnvironmentRecord? outerEnvironment)
     {
+        // ECMA-262 9.1.1.3: an arrow has no `this` of its own, so its record
+        // must be one that `this` resolves straight through. Giving it a
+        // function environment would stop the walk at the arrow and hand back
+        // the wrong receiver.
+        if (function.Kind == FunctionKind.Arrow)
+        {
+            var arrowContext = StampEnvironment(new DeclarativeEnvironmentRecord(outerEnvironment));
+            arrowContext.AttachSlotStorage(function, function.VariableSlots, function.SlotNames.Length);
+            return arrowContext;
+        }
+
         var context = StampEnvironment(new FunctionEnvironmentRecord(
             ThisBindingStatus.Uninitialized,
             callee.SelfHandle is { } selfHandle ? JsValue.FromObject(selfHandle) : JsValue.Undefined,
@@ -168,6 +179,28 @@ public sealed partial class BytecodeInterpreter
         context.AttachSlotStorage(function, function.VariableSlots, function.SlotNames.Length);
         _ = context.BindThisValue(thisValue);
         return context;
+    }
+
+    /// <summary>
+    /// ECMA-262 9.1.2.5 GetThisEnvironment: the receiver an arrow sees, which is
+    /// the nearest enclosing record that provides one.
+    /// </summary>
+    internal JsValue Interp2ResolveThis(EnvironmentRecord? environment, JsValue frameReceiver)
+    {
+        var status = ResolveThisBinding(environment, out var value);
+
+        // ECMA-262 9.2.2 step 9: a derived constructor's `this` stays
+        // uninitialized until super() runs, and an arrow inside it that reads
+        // `this` first sees the same ReferenceError the constructor would.
+        if (status == BindingOpResult.TdzAccess)
+        {
+            throw new JsThrownException(CreateReferenceError(
+                "Must call super constructor in derived class before accessing 'this'."));
+        }
+
+        // No record in the chain provides one - fall back to the receiver the
+        // call supplied, which is what the dispatch loop does.
+        return status == BindingOpResult.Ok ? value : frameReceiver;
     }
 
     internal static void Interp2DeclareContextSlot(
