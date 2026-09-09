@@ -259,6 +259,12 @@ internal sealed class Interp2
                 case OpCode.PrologueEnd:
                     break;
 
+                case OpCode.Throw:
+                    // No frame on this loop carries a handler yet - the layout
+                    // refuses any body containing a `try` - so a throw leaves
+                    // the loop and the entry frame's finally unwinds the stack.
+                    throw new JsThrownException(stack[frameBase + ins.A]);
+
                 case OpCode.Return:
                 {
                     var returnValue = stack[frameBase + ins.A];
@@ -339,6 +345,18 @@ internal sealed class Interp2
                     stack[frameBase + ins.A] = JsValue.Undefined;
                     break;
 
+                case OpCode.TypeOfName:
+                {
+                    var slot = ins.B;
+                    var typeName = (uint)slot < (uint)layout.SlotCount && layout.SlotIsOwn[slot]
+                        ? _host.Interp2TypeOfValue(stack[slotBase + slot])
+                        : _host.Interp2TypeOfFree(
+                            _frames[_depth - 1].OuterEnv, NameOfSlot(layout, slot), layout.IsStrict);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = JsValue.FromString(typeName);
+                    break;
+                }
+
                 case OpCode.Neg:
                 case OpCode.Pos:
                 case OpCode.BitNot:
@@ -409,6 +427,25 @@ internal sealed class Interp2
                 case OpCode.NewArray:
                     stack[frameBase + ins.A] = _host.Interp2NewArray(ins.B);
                     break;
+
+                case OpCode.Construct0:
+                case OpCode.Construct1:
+                case OpCode.ConstructN:
+                {
+                    var argumentCount = ins.OpCode switch
+                    {
+                        OpCode.Construct0 => 0,
+                        OpCode.Construct1 => 1,
+                        _ => ins.D,
+                    };
+                    var constructed = _host.Interp2Construct(
+                        stack[frameBase + ins.B],
+                        CallArgs.FromRegisters(stack, frameBase + ins.C, argumentCount));
+                    stack = _stack;
+                    stack[frameBase + ins.A] = constructed;
+                    heap.CollectAtSafePointIfRequested();
+                    break;
+                }
 
                 // -------------------------------------------------------- calls
                 case OpCode.Call0:

@@ -318,13 +318,13 @@ public sealed class FrameLayout
             OpCode.LoadConst, OpCode.LoadVar, OpCode.LoadThis, OpCode.StoreVar,
             OpCode.InitVar, OpCode.PreResolveVar, OpCode.StoreResolvedVar,
             OpCode.Move, OpCode.Jump, OpCode.JumpIfFalse,
-            OpCode.Return, OpCode.Nop, OpCode.PrologueEnd,
+            OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,
 
             // Arithmetic, coercion and comparison.
             OpCode.Add, OpCode.Sub, OpCode.Mul, OpCode.Div, OpCode.Mod, OpCode.Exp,
             OpCode.Neg, OpCode.Pos, OpCode.Not, OpCode.Void, OpCode.BitNot,
             OpCode.ToNumeric, OpCode.ToStringCoerce, OpCode.Increment, OpCode.Decrement,
-            OpCode.TypeOf,
+            OpCode.TypeOf, OpCode.TypeOfName,
             OpCode.Eq, OpCode.Neq, OpCode.StrictEq, OpCode.StrictNeq,
             OpCode.Lt, OpCode.Gt, OpCode.Le, OpCode.Ge, OpCode.And, OpCode.Or,
             OpCode.BitAnd, OpCode.BitOr, OpCode.BitXor,
@@ -335,7 +335,8 @@ public sealed class FrameLayout
             OpCode.SetPropByName, OpCode.SetElem, OpCode.SetElemByIndex,
             OpCode.NewObject, OpCode.NewArray,
 
-            // Calls.
+            // Calls and construction.
+            OpCode.Construct0, OpCode.Construct1, OpCode.ConstructN,
             OpCode.Call0, OpCode.Call1, OpCode.CallN,
             OpCode.CallMethod0, OpCode.CallMethod1, OpCode.CallMethodN,
         ];

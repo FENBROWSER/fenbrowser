@@ -196,6 +196,37 @@ public sealed partial class BytecodeInterpreter
         SetImplicitGlobalProperty(name, value);
     }
 
+    /// <summary>
+    /// ECMA-262 13.5.3.1: <c>typeof</c> applied to an identifier is the one
+    /// read that does not throw for a name that resolves nowhere - it answers
+    /// "undefined". A name in the temporal dead zone still throws.
+    /// </summary>
+    internal string Interp2TypeOfFree(EnvironmentRecord? outerEnvironment, string? name, bool strict)
+    {
+        if (name is null)
+        {
+            return "undefined";
+        }
+
+        for (var env = outerEnvironment; env is not null; env = env.OuterEnv)
+        {
+            if (!env.HasBinding(name))
+            {
+                continue;
+            }
+
+            var status = env.GetBindingValue(name, strict, out var value);
+            if (status == BindingOpResult.Ok)
+            {
+                return TypeOfValue(value);
+            }
+
+            throw Interp2BindingFailure(status, name, assignment: false);
+        }
+
+        return "undefined";
+    }
+
     private JsThrownException Interp2BindingFailure(BindingOpResult status, string name, bool assignment)
         => status switch
         {
@@ -280,6 +311,8 @@ public sealed partial class BytecodeInterpreter
 
     internal bool Interp2IsTruthy(JsValue value) => IsTruthy(value);
 
+    internal string Interp2TypeOfValue(JsValue value) => TypeOfValue(value);
+
     // -------------------------------------------------------------- properties
 
     /// <summary>
@@ -354,6 +387,14 @@ public sealed partial class BytecodeInterpreter
     /// <summary>Array-literal element store at a compiler-known index.</summary>
     internal void Interp2SetElementByIndex(JsValue receiver, int index, JsValue value, bool strict)
         => SetElementByIndexCore(receiver, index, value, strict);
+
+    /// <summary>ECMA-262 13.3.5 EvaluateNew: <c>new F(...)</c>.</summary>
+    /// <remarks>
+    /// newTarget is the constructor itself. A derived class's <c>super()</c> is
+    /// a different path and this loop declines the bodies that can reach it.
+    /// </remarks>
+    internal JsValue Interp2Construct(JsValue constructor, in CallArgs args)
+        => ConstructFunction(constructor, args, constructor);
 
     internal JsValue Interp2NewObject()
         => JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()));
