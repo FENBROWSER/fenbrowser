@@ -192,6 +192,10 @@ public sealed class BytecodeCompiler
         var allowYield = functionKind is FunctionKind.Generator or FunctionKind.AsyncGenerator;
         var allowAwait = functionKind is FunctionKind.Async or FunctionKind.AsyncGenerator;
         var program = JsParser.ParseFunctionBody(body, ParserMaxRecursionDepth, allowYield, allowAwait);
+        // Spans in the parsed body are offsets into `body`, so functions nested
+        // inside it resolve against it. The assembled outer function is a
+        // separate matter and CreateDynamicFunction still clears its source.
+        _rawSource = body?.Text;
         return CompileProgramCore(
             program,
             parameters,

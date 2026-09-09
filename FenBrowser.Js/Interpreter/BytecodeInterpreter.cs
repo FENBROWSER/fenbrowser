@@ -7408,7 +7408,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             compiled = new BytecodeCompiler
             {
-                ParserMaxRecursionDepth = ParserMaxRecursionDepth
+                ParserMaxRecursionDepth = ParserMaxRecursionDepth,
+                // ECMA-262 15.2.4: a function defined in eval code has
+                // [[SourceText]] like any other. Without the source here every
+                // function in an eval'd script reported itself as
+                // "[native code]" -- and importScripts() is (0,eval)(code), so
+                // that was every function in a worker's imported bundle.
+                _rawSource = args[0].AsString()
             }.CompileProgram(program, inheritedStrictMode: directEvalStrictMode);
             compiled.IsEvalCode = true;
             new BytecodeVerifier().Verify(compiled);
