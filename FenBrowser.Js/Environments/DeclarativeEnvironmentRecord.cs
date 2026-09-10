@@ -24,6 +24,16 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     /// </summary>
     internal bool IsCatchScope { get; set; }
 
+    /// <summary>
+    /// True when this record is a variable environment although its type does
+    /// not say so: an arrow function's body, which has no `this` of its own and
+    /// so cannot be a FunctionEnvironmentRecord, and a strict eval's fresh
+    /// environment. A sloppy direct eval puts its var and function declarations
+    /// in the nearest variable environment outward, and a plain declarative
+    /// record is otherwise indistinguishable from a block.
+    /// </summary>
+    internal bool IsVariableScope { get; set; }
+
     // Slot storage. The compiler already numbers every variable a function
     // declares, and the bytecode already carries those numbers - LoadVar r6, 0
     // means "slot 0". The interpreter then threw the number away and looked the

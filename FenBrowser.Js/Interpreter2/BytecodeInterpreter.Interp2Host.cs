@@ -176,6 +176,8 @@ public sealed partial class BytecodeInterpreter
         if (function.Kind == FunctionKind.Arrow)
         {
             var arrowContext = StampEnvironment(new DeclarativeEnvironmentRecord(outerEnvironment));
+            // The arrow's variable environment, as on the old loop.
+            arrowContext.IsVariableScope = true;
             arrowContext.AttachSlotStorage(function, function.VariableSlots, function.SlotNames.Length);
             return arrowContext;
         }

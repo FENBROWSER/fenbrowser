@@ -1855,7 +1855,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // ECMA-262 9.1.1.3: arrow functions have no `this` binding of their
             // own; a plain declarative record lets `this` resolve through the
             // outer (enclosing function/global) environment.
-            frameEnv = StampEnvironment(new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
+            var arrowEnv = StampEnvironment(new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
+            // It is still the arrow's variable environment, which a sloppy eval
+            // in the arrow must find rather than walking past to the enclosing
+            // function.
+            arrowEnv.IsVariableScope = true;
+            frameEnv = arrowEnv;
             AttachFrameSlots(frameEnv, function);
         }
         else
@@ -7433,28 +7438,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         ValidateEvalDeclarations(compiled, directEvalEnvironment, compiled.IsStrictMode);
 
         var globalHandle = EnsureGlobalObject();
-        EnvironmentRecord env;
-        if (directEvalEnvironment is not null)
-        {
-            // Strict direct eval gets a fresh lexical scope so var/function
-            // declarations do not leak into the caller's environment.
-            env = compiled.IsStrictMode
-                ? StampEnvironment(new DeclarativeEnvironmentRecord(directEvalEnvironment))
-                : directEvalEnvironment;
-        }
-        else
-        {
-            // Indirect eval runs against the global environment, and the same
-            // PerformEval rule applies: a strict eval's varEnv is a fresh
-            // declarative environment. Handing a strict source the global record
-            // itself put its vars and functions on the global object, and made
-            // `let x; (0,eval)('"use strict"; var x;')` a SyntaxError against a
-            // global let it should never have seen.
-            var globalEnvironment = EnsureGlobalEnvironment();
-            env = compiled.IsStrictMode
-                ? StampEnvironment(new DeclarativeEnvironmentRecord(globalEnvironment))
-                : globalEnvironment;
-        }
+        // ECMA-262 19.2.1.1 PerformEval steps 12-17: every eval gets a fresh
+        // lexical environment over its caller's (direct) or the global one
+        // (indirect), so its let, const and class never reach either. Its var
+        // and function declarations go to the caller's variable environment -
+        // or, when the eval is strict, to that fresh environment itself. Giving
+        // a sloppy eval its caller's environment directly put its lets in the
+        // caller's scope, where they collided and leaked, and put its vars in
+        // whatever block or catch the call sat in rather than in the function.
+        var env = StampEnvironment(new DeclarativeEnvironmentRecord(directEvalEnvironment ?? EnsureGlobalEnvironment()));
+        env.IsVariableScope = compiled.IsStrictMode;
 
         return ExecuteInternal(
             compiled,
@@ -7704,19 +7697,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
         }
 
-        // Step 15-18: lexical (let/const) declarations must not conflict with any
-        // existing binding in the same var scope.
-        if (callingEnv is DeclarativeEnvironmentRecord callingDecl)
-        {
-            var allLexNames = new HashSet<string>(lexNames);
-            foreach (var n in constNames) allLexNames.Add(n);
-            foreach (var name in allLexNames)
-            {
-                if (callingDecl.HasBinding(name))
-                    throw new JsThrownException(CreateSyntaxError(
-                        $"Cannot declare lexical binding '{name}' — a binding with that name already exists."));
-            }
-        }
+        // An eval's let, const and class go in the fresh lexical environment
+        // PerformEval makes for it, which holds nothing else, so they conflict
+        // only with each other - an early error the parser already reports.
     }
 
     private ObjectHandle EnsureTypeErrorPrototype()
