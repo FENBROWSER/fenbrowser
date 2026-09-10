@@ -141,6 +141,16 @@ public sealed class Interpreter2ParityTests
     [InlineData("function f() { function t(strings, v) { return strings.length + '|' + strings[0] + '|' + v; }" +
                 "return t`sep${9}end`; } f();", "2|sep|9")]
 
+    // ECMA-262 13.2.5.5: an object literal creates its properties rather than
+    // assigning them, so an inherited setter must not run and an own property
+    // has to exist afterwards.
+    [InlineData("function f() { Object.defineProperty(Object.prototype, 'z', " +
+                "{ set: function () { throw new Error('setter ran'); }, " +
+                "get: function () { return 'inherited'; }, configurable: true });" +
+                "try { var o = { z: 5 };" +
+                "return (Object.getOwnPropertyDescriptor(o, 'z') ? 'own' : 'inherited') + ':' + o.z; }" +
+                "finally { delete Object.prototype.z; } } f();", "own:5")]
+
     // A closure over a block-scoped binding. The enclosing body must not keep
     // that binding in a register nothing outside the frame can reach - the
     // closure resolves the name outwards and finds a ReferenceError, or an

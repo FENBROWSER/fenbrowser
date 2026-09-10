@@ -543,6 +543,10 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromNumber(startIndex + values.Count);
     }
 
+    /// <summary>ECMA-262 7.3.5 CreateDataPropertyOrThrow, shared with the old loop.</summary>
+    internal void Interp2DefineOwnDataProperty(JsValue target, string key, JsValue value)
+        => DefineOwnDataProperty(target, key, value);
+
     /// <summary>ECMA-262 13.2.5.5 object spread: <c>{ ...src }</c>.</summary>
     internal void Interp2CopyDataProperties(JsValue target, JsValue source)
         => CopyDataPropertiesInto(target, source);

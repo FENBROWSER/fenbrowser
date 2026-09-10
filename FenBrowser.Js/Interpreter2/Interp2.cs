@@ -649,9 +649,21 @@ internal sealed class Interp2
                 }
 
                 case OpCode.SetPropByName:
-                    _host.Interp2SetPropertyByName(
-                        function, ip - 1, stack[frameBase + ins.A], function.PropertyNames[ins.B],
-                        stack[frameBase + ins.C], layout.IsStrict);
+                    // D=1 is an object literal's own property: created, not
+                    // assigned (13.2.5.5), so an inherited setter must not run.
+                    if (ins.D != 0)
+                    {
+                        _host.Interp2DefineOwnDataProperty(
+                            stack[frameBase + ins.A], function.PropertyNames[ins.B],
+                            stack[frameBase + ins.C]);
+                    }
+                    else
+                    {
+                        _host.Interp2SetPropertyByName(
+                            function, ip - 1, stack[frameBase + ins.A], function.PropertyNames[ins.B],
+                            stack[frameBase + ins.C], layout.IsStrict);
+                    }
+
                     stack = _stack;
                     break;
 

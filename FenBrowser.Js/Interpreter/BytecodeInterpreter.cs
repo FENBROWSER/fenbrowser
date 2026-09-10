@@ -2885,6 +2885,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.SetPropByName:
                     try
                     {
+                        // D=1 is an object literal's own property. ECMA-262
+                        // 13.2.5.5 creates it rather than assigning it, so an
+                        // inherited setter must not run and an own property has
+                        // to exist afterwards even when one is inherited.
+                        if (ins.D != 0)
+                        {
+                            DefineOwnDataProperty(
+                                registers[ins.A], function.PropertyNames[ins.B], registers[ins.C]);
+                            break;
+                        }
+
                         SetPropertyByNameCore(
                             function,
                             frame.InstructionPointer - 1,
@@ -23679,6 +23690,23 @@ fallbackArraySpecies:
     /// loop populates. Raises rather than routing, so both execution loops can
     /// call it and each can decide what an escaping error means.
     /// </summary>
+    /// <summary>
+    /// ECMA-262 7.3.5 CreateDataPropertyOrThrow: an own, writable, enumerable,
+    /// configurable data property, with no regard for what the prototype chain
+    /// says about the name. This is what an object literal does; assignment is
+    /// the other thing.
+    /// </summary>
+    internal void DefineOwnDataProperty(JsValue target, string key, JsValue value)
+    {
+        var obj = _heap.GetObject(ResolveObjectHandle(target));
+        obj.DefineOwnProperty(
+            key, new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+        if (value.Tag == JsValueTag.Object && target.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(target.AsObjectHandle(), value.AsObjectHandle());
+        }
+    }
+
     internal void SetPropertyByNameCore(
         BytecodeFunction function,
         int icOffset,

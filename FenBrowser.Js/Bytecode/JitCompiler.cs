@@ -1294,6 +1294,9 @@ public static class JitCompiler
                 }
                 return true;
             case OpCode.SetPropByName:
+                // D=1 creates the property rather than assigning it; this path
+                // assigns. See the baseline compiler for the same refusal.
+                if (ins.D != 0) return false;
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 if (ins.B < 0 || ins.B >= function.PropertyNames.Count) return false;
                 if (ins.C < 0 || ins.C >= function.RegisterCount) return false;

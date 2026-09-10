@@ -3994,7 +3994,18 @@ public sealed class BytecodeCompiler
                                 _ => OpCode.SetPropByName,
                             };
                         // D=1 marks an object-literal accessor as enumerable.
-                        var namedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter ? 1 : 0;
+                        //
+                        // For a data property it means something else, and the
+                        // two never meet: an accessor is DefineGetter or
+                        // DefineSetter, never SetPropByName. ECMA-262 13.2.5.5
+                        // defines an object literal's property with
+                        // CreateDataPropertyOrThrow - it does not [[Set]] it -
+                        // so `{ z: 5 }` must not run a setter inherited from
+                        // Object.prototype, and must leave an own property
+                        // behind. D=1 here asks for that define.
+                        var namedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter
+                            ? 1
+                            : (namedOp == OpCode.SetPropByName ? 1 : 0);
                         if (namedOp == OpCode.SetPrototype)
                             _instructions.Add(new Instruction(namedOp, dest, valueReg, 0, namedD));
                         else
