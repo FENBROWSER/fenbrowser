@@ -7212,16 +7212,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return;
         }
 
-        EnvironmentRecord? env = frame.Environment;
-        while (env is not null &&
-               env is not FunctionEnvironmentRecord &&
-               env is not GlobalEnvironmentRecord &&
-               env is not ModuleEnvironmentRecord)
-        {
-            env = env.OuterEnv;
-        }
-
-        env ??= frame.Environment;
+        // Annex B.3.3.1 assigns the function to its binding in the variable
+        // environment - an arrow's own, which is a declarative record rather than
+        // a function one. Walking out to the nearest function record skipped it,
+        // so a block function inside an arrow landed in the enclosing function.
+        var env = NearestVariableScope(frame.Environment);
         if (!env.HasBinding(name))
         {
             _ = env.CreateAndInitializeBinding(name, value, deletable: true);
