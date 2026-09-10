@@ -7618,24 +7618,41 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var callingFunction = _activeFrames.Count > 0
                 ? _activeFrames.Peek().Function
                 : null;
+            // Step 3.d walks from the eval's lexical environment out to the
+            // caller's variable environment and stops there. A lexical binding
+            // further out is shadowed by the var the eval creates, not in
+            // conflict with it: `{ let x; (function () { eval('var x'); })(); }`
+            // stands in V8. The walk used to run on to the global record, so an
+            // eval met every enclosing scope's lets as though they were its own.
+            var varEnv = NearestVariableScope(callingEnv);
+            // The function that variable environment belongs to, which is not
+            // always the calling frame's: an eval inside an eval runs in eval code.
+            var varEnvFunction = (varEnv as DeclarativeEnvironmentRecord)?.SlotOwner as BytecodeFunction ?? callingFunction;
+            // A direct eval in a parameter default runs before the body exists.
+            // The spec gives such a body environments of its own
+            // (FunctionDeclarationInstantiation steps 28 and 30), so the body's
+            // lets are not in scope yet and only a parameter can conflict.
+            var inParameterScope = varEnvFunction is not null &&
+                ReferenceEquals(callingFunction, varEnvFunction) &&
+                varEnvFunction.PrologueEndIp > 0 &&
+                _activeFrames.Peek().InstructionPointer <= varEnvFunction.PrologueEndIp;
             var env = callingEnv;
             while (env is not null)
             {
                 if (env is DeclarativeEnvironmentRecord declEnv)
                 {
-                    // ECMA-262 19.2.1.3 step 7: the varEnv (FunctionEnvironmentRecord)
-                    // is NOT checked for lexical conflicts — var declarations that
-                    // shadow the varEnv's bindings are handled later (silently skipped
-                    // in InstantiateVarDeclarations per step 8).
-                    if (env is FunctionEnvironmentRecord)
+                    // The variable environment itself: a function's, or an arrow's.
+                    // Its vars, functions and parameters may be redeclared (step
+                    // 8 skips a binding that already exists there).
+                    if (ReferenceEquals(env, varEnv))
                     {
                         foreach (var name in varNames)
                         {
                             if (declEnv.HasBinding(name))
                             {
-                                bool isParameter = callingFunction is not null &&
-                                    callingFunction.ParameterNames.Contains(name, StringComparer.Ordinal);
-                                if (!isParameter)
+                                bool isParameter = varEnvFunction is not null &&
+                                    varEnvFunction.ParameterNames.Contains(name, StringComparer.Ordinal);
+                                if (!isParameter && !inParameterScope)
                                 {
                                     // ECMA-262 19.2.1.3 step 8.c.iii: the existing
                                     // binding is NOT from a FormalParameter.
@@ -7655,28 +7672,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                     // `arguments` object (non-deletable) may already
                                     // occupy the slot before the body-level
                                     // declaration is instantiated.
-                                    bool isLexicalBinding = callingFunction is not null &&
-                                        (callingFunction.LexicalDeclarationNames.Contains(name) ||
-                                         callingFunction.ConstDeclarationNames.Contains(name));
+                                    bool isLexicalBinding = varEnvFunction is not null &&
+                                        (varEnvFunction.LexicalDeclarationNames.Contains(name) ||
+                                         varEnvFunction.ConstDeclarationNames.Contains(name));
                                     if (isLexicalBinding)
                                     {
                                         throw new JsThrownException(CreateSyntaxError(
                                             $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
                                     }
                                 }
-                                else if (callingFunction is not null &&
-                                    callingFunction.PrologueEndIp > 0 &&
-                                    _activeFrames.Count > 0)
+                                else if (isParameter && inParameterScope)
                                 {
                                     // Step 8.c.iv + 8.e: parameter binding conflict
                                     // — only illegal when eval is in the parameter
                                     // scope (before prologue ends).
-                                    var callingFrame = _activeFrames.Peek();
-                                    if (callingFrame.InstructionPointer <= callingFunction.PrologueEndIp)
-                                    {
-                                        throw new JsThrownException(CreateSyntaxError(
-                                            $"Cannot declare var binding '{name}' — a parameter binding with that name already exists and the var was introduced by a direct eval call in the parameter scope."));
-                                    }
+                                    throw new JsThrownException(CreateSyntaxError(
+                                        $"Cannot declare var binding '{name}' — a parameter binding with that name already exists and the var was introduced by a direct eval call in the parameter scope."));
                                 }
                             }
                         }
@@ -7692,6 +7703,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                     $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
                         }
                     }
+                }
+                if (ReferenceEquals(env, varEnv))
+                {
+                    break;
                 }
                 env = env.OuterEnv;
             }
