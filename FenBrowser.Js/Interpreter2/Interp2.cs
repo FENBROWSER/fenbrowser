@@ -695,6 +695,29 @@ internal sealed class Interp2
                     break;
                 }
 
+                case OpCode.GetPrivateField:
+                {
+                    // `this.#x`. The brand check is the whole of the access
+                    // control: a private name is not a key user code can forge,
+                    // so there is nothing here a closure or a record would be
+                    // needed for, and a method that reads one is otherwise an
+                    // ordinary body.
+                    var privateValue = _host.Interp2GetPrivateField(
+                        function, stack[frameBase + ins.B], function.PropertyNames[ins.C]);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = privateValue;
+                    break;
+                }
+
+                case OpCode.SetPrivateField:
+                {
+                    _host.Interp2SetPrivateField(
+                        function, stack[frameBase + ins.A], function.PropertyNames[ins.B],
+                        stack[frameBase + ins.C]);
+                    stack = _stack;
+                    break;
+                }
+
                 case OpCode.DeletePropByName:
                 {
                     var deleted = _host.Interp2DeletePropertyByName(

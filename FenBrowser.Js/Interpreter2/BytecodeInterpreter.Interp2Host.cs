@@ -477,6 +477,75 @@ public sealed partial class BytecodeInterpreter
         Interp2StoreFree(outerEnvironment, name, value, strict);
     }
 
+    /// <summary>
+    /// ECMA-262 7.3.31 PrivateGet. A private name is not a property key user
+    /// code can forge, so the whole check is the brand: an object carries the
+    /// one its class stamped on it, and a body may only read the fields of the
+    /// class it was declared in.
+    /// </summary>
+    internal JsValue Interp2GetPrivateField(BytecodeFunction function, JsValue receiver, string name)
+    {
+        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+
+        if (receiver.Tag == JsValueTag.HostObject)
+        {
+            if (!TryGetHostPrivateField(receiver, name, brand, out var hostValue))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot read private field from an object whose class did not declare it."));
+            }
+
+            return hostValue;
+        }
+
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Cannot read private field from non-object."));
+        }
+
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand ||
+            !TryGetPropertyValue(obj, receiver, name, out var value))
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Cannot read private field from an object whose class did not declare it."));
+        }
+
+        return value;
+    }
+
+    /// <summary>ECMA-262 7.3.32 PrivateSet, guarded by the same brand.</summary>
+    internal void Interp2SetPrivateField(
+        BytecodeFunction function, JsValue receiver, string name, JsValue value)
+    {
+        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+
+        if (receiver.Tag == JsValueTag.HostObject)
+        {
+            if (!TrySetHostPrivateField(receiver, name, value, brand))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot write private field to an object whose class did not declare it."));
+            }
+
+            return;
+        }
+
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Cannot write private field to non-object."));
+        }
+
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Cannot write private field to an object whose class did not declare it."));
+        }
+
+        WritePrivateField(obj, receiver, name, value);
+    }
+
     internal void Interp2StoreFree(EnvironmentRecord? outerEnvironment, string? name, JsValue value, bool strict)
     {
         if (name is null)

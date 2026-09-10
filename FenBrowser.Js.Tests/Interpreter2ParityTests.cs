@@ -127,6 +127,21 @@ public sealed class Interpreter2ParityTests
     // A method that reaches for super stays on the old loop, and still works.
     [InlineData("class A { m() { return 'a'; } } class B extends A { m() { return super.m() + 'b'; } }" +
                 "new B().m();", "ab")]
+    // Private fields: the brand is the whole of the access control.
+    [InlineData("class C { #x = 5; read() { return this.#x; } } new C().read();", "5")]
+    [InlineData("class C { #x = 1; bump() { this.#x += 2; return this.#x; } } new C().bump();", "3")]
+    [InlineData("class C { #x = 1; static peek(o) { return o.#x; } } C.peek(new C());", "1")]
+    // Reading one off an object of another class is a TypeError, not undefined.
+    [InlineData("class C { #x = 1; read(o) { return this.#x; } }" +
+                "class D { #x = 2; }" +
+                "function t() { try { return C.prototype.read.call(new D()); }" +
+                "catch (e) { return e.constructor.name; } } String(t());", "TypeError")]
+    [InlineData("class C { #x = 1; read(o) { return o.#x; } }" +
+                "function t() { try { return new C().read({}); }" +
+                "catch (e) { return e.constructor.name; } } String(t());", "TypeError")]
+    [InlineData("class C { #x = 1; read(o) { return o.#x; } }" +
+                "function t() { try { return new C().read(7); }" +
+                "catch (e) { return e.constructor.name; } } String(t());", "TypeError")]
     public void BothLoopsAgree(string source, string expected)
     {
         var onOldLoop = RunOn(engine2: false, source);

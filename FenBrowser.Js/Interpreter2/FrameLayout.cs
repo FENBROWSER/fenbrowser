@@ -696,6 +696,7 @@ public sealed class FrameLayout
             OpCode.SetPropByName, OpCode.SetElem, OpCode.SetElemByIndex,
             OpCode.DeletePropByName, OpCode.DeleteElem,
             OpCode.InstanceOf, OpCode.In,
+            OpCode.GetPrivateField, OpCode.SetPrivateField,
 
             // for-in and for-of.
             OpCode.EnumerateKeys, OpCode.ForInNext,
