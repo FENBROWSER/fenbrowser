@@ -16,20 +16,33 @@ namespace FenBrowser.Js.Objects;
 // where a page like reCAPTCHA spent seconds of its budget.
 //
 // The vector holds indices 0..Count-1 and only ever holds plain data properties
-// that are writable, enumerable and configurable, with no holes. Anything an
-// array can legally do that breaks those invariants — a hole, a getter, a frozen
-// element, a non-index key — makes the object give the fast path up: Materialise
-// copies the elements into ordinary properties and everything afterwards runs on
-// the base class exactly as it did before. Correctness never depends on staying
-// dense, only speed does.
+// that are writable, enumerable and configurable, with no holes among them. The
+// array's length is held separately and may exceed that count: every index from
+// the count up to the length is a trailing hole — absent, not undefined, so it
+// reads through to the prototype and stays invisible to Object.keys, `in`,
+// delete and enumeration. That is the whole of `new Array(n)`, which otherwise
+// gave the vector up before holding a single element.
+//
+// An interior hole is what the vector still cannot represent, and neither can a
+// getter, a frozen element or a non-index key: those make the object give the
+// fast path up. Materialise copies the elements into ordinary properties and
+// everything afterwards runs on the base class exactly as it did before.
+// Correctness never depends on staying dense, only speed does.
 public sealed class ArrayObject : JsObject
 {
     private JsValue[] _dense;
     private int _denseCount;
+    private uint _length;
     private bool _denseAbandoned;
 
-    /// <summary>Elements currently held in the dense vector.</summary>
+    /// <summary>Elements currently held in the dense vector: indices 0..Count-1.</summary>
     internal int DenseCount => _denseAbandoned ? 0 : _denseCount;
+
+    /// <summary>
+    /// The array's `length`, which is at least the element count and may exceed
+    /// it - every index between them is a trailing hole.
+    /// </summary>
+    internal uint DenseLength => _denseAbandoned ? 0 : _length;
 
     internal bool IsDense => !_denseAbandoned;
 
@@ -58,6 +71,11 @@ public sealed class ArrayObject : JsObject
         }
 
         _dense[_denseCount++] = value;
+        if ((uint)_denseCount > _length)
+        {
+            _length = (uint)_denseCount;
+        }
+
         DenseBarrier(value);
         return true;
     }
@@ -127,6 +145,7 @@ public sealed class ArrayObject : JsObject
         }
 
         _denseCount = (int)length;
+        _length = length;
         return true;
     }
 
@@ -169,7 +188,7 @@ public sealed class ArrayObject : JsObject
         // was never stored; it has to become a real property now, with the
         // attributes 10.4.2 requires of it.
         base.DefineOwnProperty(LengthKey, new JsPropertyDescriptor(
-            JsValue.FromNumber(_denseCount),
+            JsValue.FromNumber(_length),
             Writable: _lengthWritable,
             Enumerable: false,
             Configurable: false));
@@ -226,13 +245,13 @@ public sealed class ArrayObject : JsObject
     }
 
     // 10.4.2.1: an Array length is always present, writable by default, never
-    // enumerable and never configurable. While the vector is in use its value is
-    // exactly _denseCount - the vector is hole-free and holds 0..Count-1 - so
-    // storing it as a property would mean a shape transition and a property-slot
-    // allocation per array, and a slot write on every append. A fresh array
-    // literal paid two array allocations and two Array.Copy calls for that one
-    // property before holding a single element. Answer it from the count instead,
-    // so a dense array carries no shape-tracked properties at all.
+    // enumerable and never configurable. While the vector is in use it is held in
+    // _length rather than as a property, because storing it would mean a shape
+    // transition and a property-slot allocation per array, and a slot write on
+    // every append. A fresh array literal paid two array allocations and two
+    // Array.Copy calls for that one property before holding a single element.
+    // Answered from the field instead, so a dense array carries no shape-tracked
+    // properties at all.
     private const string LengthKey = "length";
 
     // Object.defineProperty can make length non-writable while the array is still
@@ -249,7 +268,7 @@ public sealed class ArrayObject : JsObject
         if (!_denseAbandoned && string.Equals(key, LengthKey, StringComparison.Ordinal))
         {
             descriptor = new JsPropertyDescriptor(
-                JsValue.FromNumber(_denseCount),
+                JsValue.FromNumber(_length),
                 Writable: _lengthWritable,
                 Enumerable: false,
                 Configurable: false);
@@ -291,10 +310,18 @@ public sealed class ArrayObject : JsObject
 
     /// <summary>
     /// Applies a write to length that the vector can represent. Returns false
-    /// when it cannot, leaving the caller to materialise: growing past the count
-    /// would introduce holes, and an accessor or a configurable/enumerable
-    /// length is not an array length at all.
+    /// only when the descriptor is not an array length at all - an accessor, or
+    /// a configurable or enumerable one - or when the value is not a length.
     /// </summary>
+    /// <remarks>
+    /// Growing is representable because the vector no longer has to describe
+    /// every index below the length: it holds 0..Count-1 and everything from
+    /// there up is a hole, which is absent rather than undefined. That is what
+    /// `new Array(n)` and `a.length = n` do, and before this each of them
+    /// materialised the array before it held a single element - 7,505 of them
+    /// on one page, between them taking two million reads through a string-keyed
+    /// lookup.
+    /// </remarks>
     private bool TryApplyDenseLength(in JsPropertyDescriptor descriptor, out bool applied)
     {
         applied = false;
@@ -335,20 +362,17 @@ public sealed class ArrayObject : JsObject
         }
 
         var target = (uint)requested;
-        if (target == (uint)_denseCount)
-        {
-            applied = true;
-            return true;
-        }
-
         if (target < (uint)_denseCount)
         {
             applied = TryDenseTruncate(target);
             return applied;
         }
 
-        // Growing leaves holes, which the vector cannot represent.
-        return false;
+        // At or above the element count: the elements the vector holds are
+        // unchanged and every index from the count to the new length is a hole.
+        _length = target;
+        applied = true;
+        return true;
     }
 
     public override bool DeleteProperty(string key)
@@ -361,8 +385,10 @@ public sealed class ArrayObject : JsObject
 
         if (!_denseAbandoned && IsArrayIndexKey(key, out var index) && index < (uint)_denseCount)
         {
-            // Removing the last element keeps the vector hole-free; removing any
-            // other element does not, so give the fast path up first.
+            // Removing the last element the vector holds leaves a trailing hole,
+            // which it can now represent; removing any other leaves an interior
+            // one, which it cannot. Deleting never changes length - the hole the
+            // element leaves behind is inside the array, not past its end.
             if (index == (uint)(_denseCount - 1))
             {
                 _ = TryDensePopLast(out _);
@@ -404,7 +430,7 @@ public sealed class ArrayObject : JsObject
             yield return new KeyValuePair<string, JsPropertyDescriptor>(
                 LengthKey,
                 new JsPropertyDescriptor(
-                    JsValue.FromNumber(_denseCount),
+                    JsValue.FromNumber(_length),
                     Writable: _lengthWritable,
                     Enumerable: false,
                     Configurable: false));

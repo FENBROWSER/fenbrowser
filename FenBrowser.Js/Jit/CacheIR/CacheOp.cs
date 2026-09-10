@@ -36,8 +36,8 @@ internal enum CacheOp : byte
 
     /// <summary>
     /// Fails unless the receiver is an array still keeping its elements in the
-    /// dense vector - which is the only state in which its length is the
-    /// vector's count rather than a stored property.
+    /// dense vector - which is the only state in which its length is a field on
+    /// the object rather than a stored property.
     /// </summary>
     GuardDenseArray,
 

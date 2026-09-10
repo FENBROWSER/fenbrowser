@@ -274,7 +274,7 @@ internal sealed class CacheIRProgram
             // there is nothing to compare but the receiver's state.
             if (receiver is ArrayObject { IsDense: true } array)
             {
-                result = JsValue.FromNumber(array.DenseCount);
+                result = JsValue.FromNumber(array.DenseLength);
                 return true;
             }
 
@@ -376,7 +376,7 @@ internal sealed class CacheIRProgram
                     break;
 
                 case CacheOp.LoadArrayLengthResult:
-                    result = JsValue.FromNumber(((ArrayObject)receiver).DenseCount);
+                    result = JsValue.FromNumber(((ArrayObject)receiver).DenseLength);
                     return CacheRunResult.Hit;
 
                 case CacheOp.LoadSlotResult:
