@@ -394,6 +394,14 @@ never shortens an array.
 | read a pre-sized array | 194ns | **134ns** (a literal costs 132ns) |
 | build a pre-sized array | 289ns | **130ns** |
 
+Arrays that give the vector up afterwards are `WritePastEnd=3237` and
+`UnrepresentableDescriptor=4408` - the second having been 43 before, because
+those arrays used to die at the length and now live long enough to reach an
+`Object.freeze`, `Object.seal` or a partial `Object.defineProperty`, which are
+the three things that produce it. Those are not fixable: a sealed array's
+elements are non-configurable, which is exactly what the vector promises they
+are not.
+
 Which is 23% off the blocking job for the two changes together - 4740ms to
 3644ms - and unlike the string cache the gap is far larger than the spread
 between runs.
