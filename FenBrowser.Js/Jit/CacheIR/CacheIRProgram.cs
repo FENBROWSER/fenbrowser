@@ -125,11 +125,18 @@ internal sealed class CacheIRProgram
             return;
         }
 
-        if (ops.Length == 2 &&
-            ops[0] == CacheOp.GuardDenseArray &&
-            ops[1] == CacheOp.LoadArrayLengthResult)
+        if (ops[0] == CacheOp.GuardDenseArray)
         {
-            _isDenseArrayLength = true;
+            var i = 1;
+            if (ops[i] == CacheOp.GuardKey) _guardedKey = keys[args[i++]];
+
+            if (i == ops.Length - 1 && ops[i] == CacheOp.LoadArrayLengthResult)
+            {
+                _isDenseArrayLength = true;
+                return;
+            }
+
+            _guardedKey = null;
             return;
         }
 
@@ -270,8 +277,16 @@ internal sealed class CacheIRProgram
 
         if (_isDenseArrayLength)
         {
-            // The site's key is fixed at "length" when it was attached, so
-            // there is nothing to compare but the receiver's state.
+            // A site reading a literal `.length` has the name in the bytecode
+            // and needs no comparison; one reading `o[k]` does, and without it
+            // this program answered the element count for every name the site
+            // saw - `a["0"]` came back as 3.
+            if (_guardedKey is { } lengthKey && !string.Equals(key, lengthKey, StringComparison.Ordinal))
+            {
+                result = JsValue.Undefined;
+                return false;
+            }
+
             if (receiver is ArrayObject { IsDense: true } array)
             {
                 result = JsValue.FromNumber(array.DenseLength);

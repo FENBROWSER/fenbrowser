@@ -38,6 +38,7 @@ internal static class LoadPropertyAttacher
         {
             var lengthWriter = new CacheIRWriter();
             lengthWriter.GuardDenseArray();
+            if (keyVariesAtSite) lengthWriter.GuardKey(key);
             lengthWriter.LoadArrayLengthResult();
             return lengthWriter.Build();
         }

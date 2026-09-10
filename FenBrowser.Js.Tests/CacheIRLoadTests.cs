@@ -306,6 +306,24 @@ public sealed class CacheIRLoadTests
     }
 
     [Fact]
+    public void ADenseArrayLengthProgramAnswersOnlyLength()
+    {
+        // A site reading `o[k]` sees many names through one offset. The length
+        // program is the one that guards no shape, so without a key guard it
+        // answered the element count for every one of them: `a["0"]` came back
+        // as 3.
+        Assert.Equal(
+            "3|10|20|undefined",
+            RunString(
+                "function get(o, k) { return o[k]; }" +
+                "var a = [10, 20, 30];" +
+                "[String(get(a, 'length'))," +
+                " String(get(a, '0'))," +
+                " String(get(a, '1'))," +
+                " String(get(a, 'foo'))].join('|');"));
+    }
+
+    [Fact]
     public void CachedAndUncachedSitesAgreeOnTheSameObject()
     {
         Assert.Equal(
