@@ -158,6 +158,25 @@ public sealed partial class BytecodeInterpreter
     private bool TryGetElemStringIC(BytecodeFunction fn, int offset, JsValue receiver, string key, out JsValue result)
         => TryRunLoadSite(fn, offset, receiver, key, out result);
 
+    /// <summary>
+    /// How full the site at this offset is: -1 when there is none yet, 0..4 for
+    /// the programs attached, and <paramref name="megamorphic"/> once it has
+    /// given up. Diagnostic only - a miss count says nothing about whether a
+    /// site could have held the answer, and those are different problems.
+    /// </summary>
+    private int DescribeLoadSite(BytecodeFunction fn, int offset, out bool megamorphic)
+    {
+        megamorphic = false;
+        var sites = fn.LoadCacheSites;
+        if (sites is null || (uint)offset >= (uint)sites.Length || sites[offset] is not { } site)
+        {
+            return -1;
+        }
+
+        megamorphic = site.IsMegamorphic;
+        return site.Count;
+    }
+
     private void PopulateGetElemStringIC(BytecodeFunction fn, int offset, JsValue receiver, string key)
         => AttachLoadSite(fn, offset, receiver, key, keyVariesAtSite: true);
 

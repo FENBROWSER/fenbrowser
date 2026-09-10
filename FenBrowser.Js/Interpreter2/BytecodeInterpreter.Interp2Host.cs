@@ -713,7 +713,21 @@ public sealed partial class BytecodeInterpreter
         if (Interpreter2.Interp2Options.Log)
         {
             Interpreter2.Interp2Stats.RecordElementRead(cached: false);
-            Interpreter2.Interp2Stats.RecordElementMiss(ClassifyElementMiss(receiver, key));
+            var missKind = ClassifyElementMiss(receiver, key);
+            Interpreter2.Interp2Stats.RecordElementMiss(missKind);
+            Interpreter2.Interp2Stats.RecordElementMissSite(
+                DescribeLoadSite(function, icOffset, out var megamorphic), megamorphic);
+            if (missKind == Interpreter2.ElementMissKind.ObjectNameKey)
+            {
+                Interpreter2.Interp2Stats.RecordElementNameKey(key.AsString());
+                Interpreter2.Interp2Stats.RecordElementSite(
+                    function.GetHashCode(),
+                    icOffset,
+                    key.AsString(),
+                    receiver.Tag == JsValueTag.Object
+                        ? _heap.GetObject(receiver.AsObjectHandle()).CurrentShape
+                        : null);
+            }
         }
 
         var propertyKey = ToPropertyKey(key);

@@ -105,6 +105,27 @@ public static class Interp2Stats
 {
     private static readonly long[] ElementMissKinds = new long[Enum.GetValues<ElementMissKind>().Length];
 
+    // Where an element miss happened, not just what it was. A site that has
+    // given up and a site that never saw this receiver are different problems
+    // and a miss count cannot tell them apart.
+    private static long _elementMissAtMegamorphicSite;
+    private static long _elementMissAtFullSite;
+    private static long _elementMissAtOpenSite;
+    private static readonly Dictionary<string, long> ElementNameKeys = new(StringComparer.Ordinal);
+
+    // What the busiest o[k] site actually saw. A site holds four programs and a
+    // program guards a shape and a key together, so it can be exhausted by one
+    // receiver read under many names or by many receivers read under one - and
+    // those want different fixes. Bounded, and only while the switch is on.
+    private sealed class SiteProfile
+    {
+        internal long Misses;
+        internal readonly HashSet<string> Keys = new(StringComparer.Ordinal);
+        internal readonly HashSet<object> Shapes = new(ReferenceEqualityComparer.Instance);
+    }
+
+    private static readonly Dictionary<(int Function, int Offset), SiteProfile> ElementSiteProfiles = new();
+
 
     private static readonly long[] BailoutCounts = new long[Enum.GetValues<Interp2Bailout>().Length];
 
@@ -205,6 +226,45 @@ public static class Interp2Stats
     /// <summary>What an element read was, when no site could answer it.</summary>
     internal static void RecordElementMiss(ElementMissKind kind) => ElementMissKinds[(int)kind]++;
 
+    /// <summary>
+    /// How full the site was when it missed. <paramref name="programCount"/> is
+    /// -1 for a site that does not exist yet.
+    /// </summary>
+    internal static void RecordElementMissSite(int programCount, bool megamorphic)
+    {
+        if (megamorphic) _elementMissAtMegamorphicSite++;
+        else if (programCount >= FenBrowser.Js.Jit.CacheIR.CacheIRSite.Capacity) _elementMissAtFullSite++;
+        else _elementMissAtOpenSite++;
+    }
+
+    /// <summary>
+    /// What one <c>o[k]</c> site saw when it missed: which key, and which
+    /// receiver layout. Together they say whether a site was exhausted by the
+    /// names it reads or by the objects it reads them from.
+    /// </summary>
+    internal static void RecordElementSite(int functionId, int offset, string key, object? shape)
+    {
+        if (!ElementSiteProfiles.TryGetValue((functionId, offset), out var profile))
+        {
+            if (ElementSiteProfiles.Count >= 4096) return;
+            profile = new SiteProfile();
+            ElementSiteProfiles[(functionId, offset)] = profile;
+        }
+
+        profile.Misses++;
+        if (profile.Keys.Count < 64) profile.Keys.Add(key);
+        if (shape is not null && profile.Shapes.Count < 64) profile.Shapes.Add(shape);
+    }
+
+    /// <summary>Which names a page reads through <c>o[k]</c> rather than <c>o.name</c>.</summary>
+    internal static void RecordElementNameKey(string key)
+    {
+        if (ElementNameKeys.Count < 4096)
+        {
+            ElementNameKeys[key] = ElementNameKeys.TryGetValue(key, out var seen) ? seen + 1 : 1;
+        }
+    }
+
     internal static void RecordCallDelegated(bool calleeIsJavaScript)
     {
         _callsDelegated++;
@@ -227,6 +287,11 @@ public static class Interp2Stats
         _elementReadsMissed = 0;
         Array.Clear(PropertyMissKinds);
         Array.Clear(ElementMissKinds);
+        ElementNameKeys.Clear();
+        ElementSiteProfiles.Clear();
+        _elementMissAtMegamorphicSite = 0;
+        _elementMissAtFullSite = 0;
+        _elementMissAtOpenSite = 0;
         FenBrowser.Js.Diagnostics.ArrayShapeStats.Reset();
         UncacheableKeys.Clear();
         StringReceiverKeys.Clear();
@@ -318,6 +383,43 @@ public static class Interp2Stats
             }
 
             report.AppendLine();
+
+            var sited = _elementMissAtMegamorphicSite + _elementMissAtFullSite + _elementMissAtOpenSite;
+            if (sited > 0)
+            {
+                report.Append("[interp2] o[k] miss sites: megamorphic=").Append(_elementMissAtMegamorphicSite)
+                      .Append(Percent(_elementMissAtMegamorphicSite, sited))
+                      .Append(" full=").Append(_elementMissAtFullSite).Append(Percent(_elementMissAtFullSite, sited))
+                      .Append(" open=").Append(_elementMissAtOpenSite).Append(Percent(_elementMissAtOpenSite, sited))
+                      .AppendLine();
+            }
+
+            if (ElementNameKeys.Count > 0)
+            {
+                report.Append("[interp2] o[k] names (").Append(ElementNameKeys.Count).Append(" distinct):");
+                foreach (var (name, count) in ElementNameKeys.OrderByDescending(static p => p.Value).Take(12))
+                {
+                    report.Append(' ').Append(name).Append('=').Append(count);
+                }
+
+                report.AppendLine();
+            }
+
+            if (ElementSiteProfiles.Count > 0)
+            {
+                report.Append("[interp2] widest o[k] sites (of ").Append(ElementSiteProfiles.Count).Append("):");
+                foreach (var profile in ElementSiteProfiles.Values
+                             .OrderByDescending(static p => p.Misses).Take(4))
+                {
+                    report.Append(" [misses=").Append(profile.Misses)
+                          .Append(" keys=").Append(profile.Keys.Count)
+                          .Append(" shapes=").Append(profile.Shapes.Count)
+                          .Append(" first=").Append(profile.Keys.FirstOrDefault() ?? "?")
+                          .Append(']');
+                }
+
+                report.AppendLine();
+            }
         }
 
         var materialised = FenBrowser.Js.Diagnostics.ArrayShapeStats.Describe();
