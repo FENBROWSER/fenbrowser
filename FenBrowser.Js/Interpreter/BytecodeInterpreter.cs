@@ -7463,6 +7463,46 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             frameEnvironment: env);
     }
 
+    // ECMA-262 16.1.6 ScriptEvaluation, for an embedder running one more classic
+    // script against this realm while other code is on the stack - HTML's
+    // importScripts() and test262's $262.evalScript(). It is not eval: the
+    // script's top-level let, const and class become global lexical bindings
+    // that every later script sees, a var over one of them is a SyntaxError, and
+    // no caller's strictness carries in. Hosts faked it with (0, eval)(source),
+    // which only matched while an indirect eval ran in the global record itself.
+    [MayExecuteJs]
+    public JsValue EvaluateScript(string sourceText, string sourceName)
+    {
+        ArgumentNullException.ThrowIfNull(sourceText);
+
+        BytecodeFunction compiled;
+        try
+        {
+            var program = JsParser.ParseScript(
+                new SourceText(sourceText, sourceName),
+                inheritedStrictMode: false,
+                maxRecursionDepth: ParserMaxRecursionDepth);
+            compiled = new BytecodeCompiler
+            {
+                ParserMaxRecursionDepth = ParserMaxRecursionDepth,
+                _rawSource = sourceText
+            }.CompileProgram(program);
+            new BytecodeVerifier().Verify(compiled);
+        }
+        catch (Exception ex) when (ex is JsParserException or UnsupportedFeatureException)
+        {
+            // A script that does not parse never runs; its first early error is
+            // the thrown completion (ParseScript step 2).
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
+
+        return ExecuteInternal(
+            compiled,
+            Array.Empty<JsValue>(),
+            JsValue.FromObject(EnsureGlobalObject()),
+            frameEnvironment: EnsureGlobalEnvironment());
+    }
+
     private static bool IsSimpleAnnexBIdentityLiteral(string rawText)
     {
         var lastSlash = rawText.LastIndexOf('/');

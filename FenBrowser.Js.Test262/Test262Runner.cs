@@ -852,6 +852,15 @@ public sealed class Test262Runner
                             (_, buildArgs) => BuildStringForRegExpHarness((IBuiltinContext)perTestInterpreter, buildArgs),
                             length: 1);
                         perTestInterpreter.RegisterGlobalValue("__fenBuildString", buildString);
+                        // $262.evalScript runs a script, not an eval: its top-level
+                        // lets are global lexicals the test goes on to collide with.
+                        var evalScript = perTestInterpreter.AllocateNativeFunction(
+                            "__fenEvalScript",
+                            (_, scriptArgs) => perTestInterpreter.EvaluateScript(
+                                scriptArgs.Count > 0 ? scriptArgs[0].AsString() : string.Empty,
+                                "<evalScript>"),
+                            length: 1);
+                        perTestInterpreter.RegisterGlobalValue("__fenEvalScript", evalScript);
                         try
                         {
                             _ = perTestInterpreter.Execute(function);
@@ -1507,7 +1516,7 @@ public sealed class Test262Runner
                }
                function $DONE(error) { if (error !== undefined) { throw error; } }
                var $262 = {
-                 evalScript: function (sourceText) { return (0, eval)(sourceText); },
+                 evalScript: function (sourceText) { return __fenEvalScript(String(sourceText)); },
                  global: globalThis,
                  AbstractModuleSource: createAbstractModuleSourceIntrinsic(),
                  createRealm: function () {

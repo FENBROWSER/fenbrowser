@@ -4641,7 +4641,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         throw new Error('importScripts(' + url + '): nothing to run');
                     }
                     try {
-                        (0, eval)(code);
+                        __fenWorkerRunScript(code, url);
                     } catch (err) {
                         __fenWorkerReportError('importScripts(' + url + '): ' + err);
                         throw err;
@@ -4914,6 +4914,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             realm._interpreter.AllocateNativeFunction(
                 "__fenWorkerImportScript",
                 (_, importArgs) => ImportWorkerScript(workerId, importArgs)));
+        // HTML 10.2.2 runs each imported script as a classic script: its
+        // top-level let and const are the worker's global lexicals, not an
+        // eval's locals.
+        realm._interpreter.RegisterGlobalValue(
+            "__fenWorkerRunScript",
+            realm._interpreter.AllocateNativeFunction(
+                "__fenWorkerRunScript",
+                (_, runArgs) => realm._interpreter.EvaluateScript(
+                    runArgs.Count > 0 ? CoerceToHostString(runArgs[0]) : string.Empty,
+                    runArgs.Count > 1 ? CoerceToHostString(runArgs[1]) : "<importScripts>")));
         realm._interpreter.RegisterGlobalValue(
             "__fenWorkerReportError",
             realm._interpreter.AllocateNativeFunction(
