@@ -133,6 +133,8 @@ public static class Interp2Stats
 
     private static readonly Dictionary<FenBrowser.Js.Bytecode.OpCode, long> UnsupportedOpCodes = new();
 
+    private static readonly Dictionary<FenBrowser.Js.Objects.FunctionKind, long> NotOrdinaryKinds = new();
+
     private static long _eligibleFunctions;
     private static long _declinedFunctions;
     private static long _framesEntered;
@@ -170,6 +172,15 @@ public static class Interp2Stats
         if (layout.BailoutOpCode is { } op)
         {
             UnsupportedOpCodes[op] = UnsupportedOpCodes.TryGetValue(op, out var seen) ? seen + 1 : 1;
+        }
+
+        // "Not an ordinary function" is four different features wearing one
+        // name, and they are not the same size or the same work: a generator
+        // suspends, a method does not.
+        if (layout.Bailout == Interp2Bailout.NotOrdinaryFunction)
+        {
+            var kind = layout.Function.Kind;
+            NotOrdinaryKinds[kind] = NotOrdinaryKinds.TryGetValue(kind, out var kindSeen) ? kindSeen + 1 : 1;
         }
     }
 
@@ -284,6 +295,7 @@ public static class Interp2Stats
         Array.Clear(BailoutCounts);
         Array.Clear(DeclinedCallCounts);
         UnsupportedOpCodes.Clear();
+        NotOrdinaryKinds.Clear();
         _eligibleFunctions = 0;
         _declinedFunctions = 0;
         _framesEntered = 0;
@@ -474,6 +486,17 @@ public static class Interp2Stats
             foreach (var (reason, count) in declinedCalls)
             {
                 report.Append(' ').Append(reason).Append('=').Append(count);
+            }
+
+            report.AppendLine();
+        }
+
+        if (NotOrdinaryKinds.Count > 0)
+        {
+            report.Append("[interp2] not-ordinary kinds:");
+            foreach (var (kind, count) in NotOrdinaryKinds.OrderByDescending(static p => p.Value))
+            {
+                report.Append(' ').Append(kind).Append('=').Append(count);
             }
 
             report.AppendLine();
