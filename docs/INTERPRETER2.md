@@ -616,6 +616,30 @@ with no heap, stale-handle or fatal failure; with `--gc-after-every-alloc`, the
 harshest setting there is, 150/150 on both. A missing root would not survive
 either.
 
+**It has now been run in a browser.** Four WPT directories on both loops,
+through the real bed - upstream `wptrunner`, the installed
+`wptrunner_fenbrowser` plugin and the WebDriver server:
+
+| | shared test files | failing subtests, old | new | broken | fixed |
+|---|---|---|---|---|---|
+| `dom/lists` | all | 17 unexpected | 17 | 0 | 0 |
+| `dom/traversal` | all | 19 unexpected | 19 | 0 | 0 |
+| `dom/nodes` | 39 | 908 | 908 | **0** | 0 |
+| `dom/events` | 33 | 223 | 223 | **0** | 0 |
+
+That the new loop was genuinely the one running is not taken on trust: the
+browser's own GC root breakdown carries an `interp2.stack` entry, which only
+exists when the register window is a root source.
+
+**Read the last two rows carefully.** Raw counts said `dom/nodes` had 392 new
+failures, and it had none: the harness started 76 tests in one run and 67 in
+the other, so most of the difference was files only one run reported on.
+Comparing only the files *both* runs produced results for gives identical
+failure sets. `dom/events` started 78 and 63. **That 15-20% swing is
+pre-existing WebDriver flakiness, not the new loop** - but it is also the limit
+of this evidence: what these runs show is that nothing diverged among the tests
+that could be compared, which is weaker than showing nothing diverged.
+
 **The decision, which is not a bug.** Making it the default gives up the JIT
 for the 97.5% of bodies it accepts, because it has no tier-up. Measured, that
 is a **2.1x regression on a tight integer loop** (51ns compiled against 111ns
@@ -633,7 +657,10 @@ acceptable, or whether tier-up comes first.
 - The last 492 tests, which need a RegExp run that does not re-do the property
   escapes.
 - Multi-realm frames and workers under a long browser session. The collector
-  has been stressed directly; those have not.
+  has been stressed directly; those have not, beyond what the captcha harness
+  exercises.
+- A WPT bed that starts the same tests twice running. Until then a browser
+  comparison can only ever cover the intersection.
 
 The one thing that has *not* been a problem is correctness of the loop itself.
 Both divergences the A/B has ever caught were pre-existing engine bugs it
