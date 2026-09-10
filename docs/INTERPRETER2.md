@@ -499,32 +499,57 @@ the means. If the deltas change sign, the answer is "not resolvable", and that
 is a real answer: it bounds the change from above, which is often what you
 needed.
 
+## What is left on the page, which is not the loop
+
+With 97.5% of bodies eligible and 40.5% of calls staying in the loop, the
+anchor realm's blocking job is ~3.6s of ~104M instructions, and the terms in it
+are all small. The one that is not the interpreter at all is the collector:
+**154 minor collections costing around 1 second**, and that count is identical
+in every run of every build measured here - the one number all day that did not
+drift.
+
+`FEN_FENJS_GC_NURSERY` exists to split its fixed cost from its variable one.
+Quadrupling the budget takes the collections from 154 to 38 and the total from
+~979ms to ~758ms, which answers it: solving `154F + VC = 979` against
+`38F + VC = 758` puts the fixed cost at **~1.9ms per collection** (~290ms of
+root scanning in total) and the rest, **~685ms, proportional to the ~1.26M young
+cells themselves**. So a bigger nursery is not the fix - and the budget comment
+above `YoungAllocationsPerMinorGc` records why it was made small in the first
+place. Allocating less is.
+
+Neither half is worth more than a few hundred milliseconds, which is the shape
+of everything left here. **The page's remaining blocker is no longer
+performance**: the widget gives up around 15s, the job is 3.6s, the click is
+delivered and seen, and the challenge frame's `POST /api2/reload` returns 200 -
+but the worker realm runs 779k instructions and never replies, so no token is
+ever issued. That is a functional bug, and it is where the demo now stops.
+
 ## What is next, in order of measured value
 
 The unimplemented-opcode table is effectively empty: 537 bodies across twenty
 opcodes, none over 160. What is left is one thing and then a different kind of
 work.
 
-1. **Tier-up**, which has stopped being an optimisation and become the thing in
-   the way. The loop gives up the JIT on hot single-frame loops - 41ns against
-   80ns on `b_property_read`'s bare loop - and now that 40.5% of the page's
-   calls stay in the loop, the bodies it holds include ones taking 30,000 calls
-   each that the old loop was compiling. It is the leading explanation for why
-   the coverage work did not show up as time, and it is testable: compile a body
-   the new loop holds and measure the same interleaved pair.
-2. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
+1. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
    15.3k on test262 - but still zero on the page). The first two suspend, which
    means copying a window out and back at a yield or an await; the third needs
    `super` and field initialisers. This is the remaining coverage of the
    *corpus* rather than of any page measured so far.
-3. **Elements that are not on a dense array**: `TypedArrayIndex` 70k,
+2. **Elements that are not on a dense array**: `TypedArrayIndex` 70k,
    `ObjectIndexKey` 26k, `SparseArrayIndex` 22k. Nothing here is above 0.6% of
    the page's element reads, and the whole table is now 1.0% of them.
-4. **Block scopes a closure captures** - the case these notes expected to
+
+   **Tier-up has come off this list.** It was item 1, on the reasoning that the
+   loop gives up the JIT on hot single-frame loops. But only 2,761 calls now
+   reach a JavaScript body on the old loop at all, so on this workload the JIT
+   has nearly nothing left to compile and cannot be what is missing. It belongs
+   back on the list when a benchmark, not a page, says a compiled body would
+   win.
+3. **Block scopes a closure captures** - the case these notes expected to
    matter, measured at **zero bodies** on the page once the bailout was split
    apart. It still needs a fresh record per entry to the block for a corpus that
    uses it.
-5. **Function-level `let`/`const`** (204 bodies) needs a hole value distinct
+4. **Function-level `let`/`const`** (204 bodies) needs a hole value distinct
    from `undefined` so the temporal dead zone stays observable.
 
 Two defects in the **old** loop that this work surfaced and did not fix:

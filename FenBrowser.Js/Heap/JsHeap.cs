@@ -80,7 +80,16 @@ public sealed class JsHeap
     // at this budget is the same 4.2M allocations between major collections that
     // 32 minors bought at the old one, so a smaller nursery does not silently
     // buy sixteen times the full-heap walks.
-    public int YoungAllocationsPerMinorGc { get; set; } = 8192;
+    //
+    // Overridable with FEN_FENJS_GC_NURSERY, because the budget is the one lever
+    // that separates a minor collection's fixed cost from its per-cell cost:
+    // scale the budget, and a total that scales with it is root scanning while a
+    // total that stays flat is the young cells themselves. The two want opposite
+    // fixes and the counters alone cannot tell them apart.
+    public int YoungAllocationsPerMinorGc { get; set; } =
+        int.TryParse(Environment.GetEnvironmentVariable("FEN_FENJS_GC_NURSERY"), out var nursery) && nursery > 0
+            ? nursery
+            : 8192;
     public bool DeferAutomaticCollectionUntilSafePoint { get; set; }
     // Long-running browser workloads can keep temporary objects alive across
     // enough nursery collections to promote them. Without a periodic major
