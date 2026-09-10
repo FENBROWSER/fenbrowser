@@ -110,19 +110,32 @@ internal sealed class CacheIRProgram
             return;
         }
 
-        if (ops.Length == 5 &&
+        if (ops.Length >= 5 &&
             ops[0] == CacheOp.GuardNotExotic &&
-            ops[1] == CacheOp.GuardShape &&
-            ops[2] == CacheOp.GuardProto &&
-            ops[3] == CacheOp.GuardHolderShape &&
-            ops[4] == CacheOp.LoadHolderSlotResult &&
-            holder is not null &&
-            holderShape is not null)
+            ops[1] == CacheOp.GuardShape)
         {
-            _isProtoLoad = true;
-            _guardedShape = shapes[args[1]];
-            _resultSlot = args[4];
-            return;
+            // A key-varying site guards the key too, so the sequence is one op
+            // longer. Reading the tail from the end rather than by a fixed
+            // length is what lets both shapes be the same program: before this,
+            // an `o[k]` site's prototype programs matched no form at all, so
+            // they hit nothing, the site attached a fresh dead one on every
+            // miss, and five misses in it gave up for good.
+            var i = 2;
+            if (ops[i] == CacheOp.GuardKey) i++;
+
+            if (i == ops.Length - 3 &&
+                ops[i] == CacheOp.GuardProto &&
+                ops[i + 1] == CacheOp.GuardHolderShape &&
+                ops[i + 2] == CacheOp.LoadHolderSlotResult &&
+                holder is not null &&
+                holderShape is not null)
+            {
+                _isProtoLoad = true;
+                if (i == 3) _guardedKey = keys[args[2]];
+                _guardedShape = shapes[args[1]];
+                _resultSlot = args[i + 2];
+                return;
+            }
         }
 
         if (ops[0] == CacheOp.GuardDenseArray)
@@ -304,6 +317,7 @@ internal sealed class CacheIRProgram
             // object's layout is unchanged, so the property is still in the
             // slot it was found in.
             if (ReferenceEquals(_guardedShape, shape) &&
+                (_guardedKey is not { } protoKey || string.Equals(key, protoKey, StringComparison.Ordinal)) &&
                 receiver.PrototypeHandle is { } proto &&
                 proto.Equals(_protoHandle) &&
                 ReferenceEquals(_holder!.CurrentShape, _holderShape) &&

@@ -324,6 +324,26 @@ public sealed class CacheIRLoadTests
     }
 
     [Fact]
+    public void AVaryingKeyReadsDifferentPrototypeMethods()
+    {
+        // A prototype program at a varying-key site carries one op more than one
+        // at a fixed-name site, and used to match no known sequence - so it hit
+        // nothing, the site attached a fresh dead program on every miss, and
+        // five misses in it gave up for good.
+        Assert.Equal(
+            "1,2,3|3|1|true",
+            RunString(
+                "function call(o, k) { return o[k](); }" +
+                "function name(o, k) { return o[k]; }" +
+                "var a = [1, 2, 3];" +
+                "var joined = call(a, 'join');" +
+                "for (var i = 0; i < 10; i++) { name(a, 'push'); name(a, 'pop'); name(a, 'map'); " +
+                "  name(a, 'slice'); name(a, 'concat'); name(a, 'join'); }" +
+                "[joined, String(name(a, 'length')), String(a[0]), " +
+                " String(name(a, 'push') === Array.prototype.push)].join('|');"));
+    }
+
+    [Fact]
     public void CachedAndUncachedSitesAgreeOnTheSameObject()
     {
         Assert.Equal(
