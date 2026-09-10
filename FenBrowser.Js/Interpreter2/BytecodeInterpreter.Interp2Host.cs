@@ -595,6 +595,20 @@ public sealed partial class BytecodeInterpreter
         return TryGetPropertyValue(baseProto, thisValue, name, out var value) ? value : JsValue.Undefined;
     }
 
+    /// <summary>
+    /// An accessor on an object literal or a class - <c>get x() {}</c>,
+    /// <c>set [k](v) {}</c> - through the core the old loop's handlers wrap.
+    /// <paramref name="name"/> is the constant name, or null when the key is in
+    /// <paramref name="key"/>.
+    /// </summary>
+    internal void Interp2DefineAccessor(
+        JsValue target, string? name, JsValue key, JsValue accessor, bool isGetter, bool enumerable)
+        => DefineAccessorCore(target, name, key, accessor, isGetter, enumerable);
+
+    /// <summary>A class or object-literal method, through the old loop's core.</summary>
+    internal void Interp2DefineMethod(JsValue target, string? name, JsValue key, JsValue method)
+        => DefineMethodCore(target, name, key, method);
+
     /// <summary>ECMA-262 7.3.5 CreateDataPropertyOrThrow, shared with the old loop.</summary>
     internal void Interp2DefineOwnDataProperty(JsValue target, string key, JsValue value)
         => DefineOwnDataProperty(target, key, value);

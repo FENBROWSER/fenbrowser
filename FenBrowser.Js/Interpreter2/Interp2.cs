@@ -707,6 +707,38 @@ internal sealed class Interp2
                     break;
                 }
 
+                case OpCode.DefineGetter:
+                case OpCode.DefineSetter:
+                    // A class body or an object literal installing an accessor.
+                    // This runs in the defining body, not the accessor, so a
+                    // class full of getters stays in the loop.
+                    _host.Interp2DefineAccessor(
+                        stack[frameBase + ins.A], function.PropertyNames[ins.B], JsValue.Undefined,
+                        stack[frameBase + ins.C], ins.OpCode == OpCode.DefineGetter, ins.D != 0);
+                    stack = _stack;
+                    break;
+
+                case OpCode.DefineGetterByReg:
+                case OpCode.DefineSetterByReg:
+                    _host.Interp2DefineAccessor(
+                        stack[frameBase + ins.A], null, stack[frameBase + ins.B],
+                        stack[frameBase + ins.C], ins.OpCode == OpCode.DefineGetterByReg, ins.D != 0);
+                    stack = _stack;
+                    break;
+
+                case OpCode.DefineMethod:
+                    _host.Interp2DefineMethod(
+                        stack[frameBase + ins.A], function.PropertyNames[ins.B], JsValue.Undefined,
+                        stack[frameBase + ins.C]);
+                    stack = _stack;
+                    break;
+
+                case OpCode.DefineMethodByReg:
+                    _host.Interp2DefineMethod(
+                        stack[frameBase + ins.A], null, stack[frameBase + ins.B], stack[frameBase + ins.C]);
+                    stack = _stack;
+                    break;
+
                 case OpCode.SetHomeObject:
                     // Records the object a method was defined on. It is the
                     // enclosing body that runs this, not the method, so a class

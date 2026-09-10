@@ -742,6 +742,8 @@ public sealed class FrameLayout
             OpCode.SetElemDefine, OpCode.SpreadAppend, OpCode.CopyDataProperties,
             OpCode.GetTemplateObject,
             OpCode.SetHomeObject, OpCode.LoadSuperProperty, OpCode.LoadSuperElement,
+            OpCode.DefineGetter, OpCode.DefineSetter, OpCode.DefineGetterByReg, OpCode.DefineSetterByReg,
+            OpCode.DefineMethod, OpCode.DefineMethodByReg,
 
             // for-in and for-of.
             OpCode.EnumerateKeys, OpCode.ForInNext,

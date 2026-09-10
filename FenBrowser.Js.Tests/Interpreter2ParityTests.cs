@@ -173,6 +173,26 @@ public sealed class Interpreter2ParityTests
                 "class B extends A { m() { try { return super.g; } catch (e) { return 'caught:' + e.message; } } }" +
                 "new B().m();", "caught:getter")]
 
+    // Accessors and methods, defined by the body that evaluates the class or the
+    // literal - so each case runs inside f(), which is what the new loop runs.
+    [InlineData("function f() { var o = { get v() { return this._v; }, set v(x) { this._v = x * 2; } };" +
+                "o.v = 4; return o.v + ':' + Object.getOwnPropertyDescriptor(o, 'v').get.name; } f();", "8:get v")]
+    [InlineData("function f() { class C { get a() { return 1; } } var o = { get b() { return 2; } };" +
+                "return Object.keys(o).join() + '|' + Object.getOwnPropertyDescriptor(C.prototype, 'a').enumerable; }" +
+                "f();", "b|false")]
+    [InlineData("function f() { class C { m() {} } var d = Object.getOwnPropertyDescriptor(C.prototype, 'm');" +
+                "return d.enumerable + ':' + d.writable + ':' + C.prototype.m.name; } f();", "false:true:m")]
+    [InlineData("function f() { var s = Symbol('tag'); class C { [s]() { return 1; } }" +
+                "return C.prototype[s].name + ':' + new C()[s](); } f();", "[tag]:1")]
+    [InlineData("function f() { var k = 'g'; class C { get [k]() { return 9; } }" +
+                "var o = { set [k](v) {} };" +
+                "return new C().g + ':' + Object.getOwnPropertyDescriptor(o, 'g').set.name; } f();", "9:set g")]
+    [InlineData("function f() { class C { static s() { return 3; } get ['x' + 1]() { return 4; } }" +
+                "return C.s() + new C().x1; } f();", "7")]
+    // A computed key's toString is user code and runs exactly once.
+    [InlineData("function f() { var n = 0; var k = { toString: function () { n++; return 'q'; } };" +
+                "class C { [k]() {} } return n + ':' + typeof C.prototype.q; } f();", "1:function")]
+
     // A closure over a block-scoped binding. The enclosing body must not keep
     // that binding in a register nothing outside the frame can reach - the
     // closure resolves the name outwards and finds a ReferenceError, or an
