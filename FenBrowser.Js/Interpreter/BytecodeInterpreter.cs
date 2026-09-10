@@ -7444,7 +7444,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         else
         {
-            env = EnsureGlobalEnvironment();
+            // Indirect eval runs against the global environment, and the same
+            // PerformEval rule applies: a strict eval's varEnv is a fresh
+            // declarative environment. Handing a strict source the global record
+            // itself put its vars and functions on the global object, and made
+            // `let x; (0,eval)('"use strict"; var x;')` a SyntaxError against a
+            // global let it should never have seen.
+            var globalEnvironment = EnsureGlobalEnvironment();
+            env = compiled.IsStrictMode
+                ? StampEnvironment(new DeclarativeEnvironmentRecord(globalEnvironment))
+                : globalEnvironment;
         }
 
         return ExecuteInternal(
