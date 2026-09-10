@@ -47,10 +47,16 @@ loop's state out of its own, and that reconstruction is where an engine of this
 shape grows its subtlest bugs.
 
 Refused, and run on the old loop unchanged: generators, async bodies, class
-constructors, `eval` code, rest parameters, named function expressions, `with`,
-direct `eval`, function-level `let`/`const`, and any body whose nested functions
-need the enclosing `new.target` or `super`. As of the last measurement that is
-14.2% of the corpus, and 12.9 points of it is the first three.
+constructors, `eval` code, rest parameters, `with`, direct `eval`,
+function-level `let`/`const`, and any body that reaches for `super` or
+`new.target`. As of the last measurement that is **2.5% of the corpus**, of
+which 1.3 points is the bodies that suspend.
+
+Methods are not refused, though the note above said they were for a long time
+and the numbers were read accordingly. A method differs from an ordinary
+function in having a `[[HomeObject]]` and no `[[Construct]]`, and neither shows
+up in the frame - what a home object is *for* is `super`, and the opcode gate
+refuses that on its own.
 
 ## Semantics live in one place
 
@@ -200,7 +206,10 @@ Measured on `test/language` (118k function bodies, 23,730 tests):
 | + `arguments` | 77.5% | 21.9% |
 | + `try`/`catch`/`finally` and block scopes | 77.5% | 21.9% |
 | + `instanceof`, `in`, `delete` | 83.8% | 27.3% |
-| + `for-in`, `for-of` | **85.8%** | **28.9%** |
+| + `for-in`, `for-of` | 85.8% | 28.9% |
+| + a block's slot shared with its siblings | 86.9% | — |
+| + methods | 90.1% | — |
+| + private fields | **97.5%** | **30.4%** |
 
 Speed, against the old loop **with its JIT enabled**:
 
@@ -530,11 +539,12 @@ The unimplemented-opcode table is effectively empty: 537 bodies across twenty
 opcodes, none over 160. What is left is one thing and then a different kind of
 work.
 
-1. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
-   15.3k on test262 - but still zero on the page). The first two suspend, which
-   means copying a window out and back at a yield or an await; the third needs
-   `super` and field initialisers. This is the remaining coverage of the
-   *corpus* rather than of any page measured so far.
+1. **Bodies that suspend** - `Generator=585`, `AsyncGenerator=590`, `Async=310`
+   on the language corpus, and still zero on the page. This is now genuinely
+   what `NotOrdinaryFunction` means, the name having covered 13,966 ordinary
+   methods until the kind was counted instead of the bailout. Suspending means
+   copying a window out at a yield or an await and back at the resume, which is
+   the one piece of machinery this loop has never needed.
 2. **Elements that are not on a dense array**: `TypedArrayIndex` 70k,
    `ObjectIndexKey` 26k, `SparseArrayIndex` 22k. Nothing here is above 0.6% of
    the page's element reads, and the whole table is now 1.0% of them.
@@ -545,12 +555,22 @@ work.
    has nearly nothing left to compile and cannot be what is missing. It belongs
    back on the list when a benchmark, not a page, says a compiled body would
    win.
-3. **Block scopes a closure captures** - the case these notes expected to
+3. **`super` and the class shape around it** - `SetHomeObject=141`,
+   `LoadSuperProperty=45`, `LoadSuperElement=29`, `LoadSuperConstructor=13`,
+   plus `ClassConstructor=44` bodies. Small, and the only remaining reason a
+   method is turned away.
+4. **Function-level `let`/`const`** (254 bodies) needs a hole value distinct
+   from `undefined` so the temporal dead zone stays observable.
+5. **Block scopes a closure captures** - the case these notes expected to
    matter, measured at **zero bodies** on the page once the bailout was split
    apart. It still needs a fresh record per entry to the block for a corpus that
    uses it.
-4. **Function-level `let`/`const`** (204 bodies) needs a hole value distinct
-   from `undefined` so the temporal dead zone stays observable.
+
+Three of the four largest items on this list turned out to be misnamed rather
+than large: a block scope that escaped nothing, a free-variable resolution that
+had somewhere to go, and 13,966 methods filed under generators. Each was found
+the same way - by counting the thing the fix would have to change, rather than
+the thing the label said.
 
 Two defects in the **old** loop that this work surfaced and did not fix:
 
