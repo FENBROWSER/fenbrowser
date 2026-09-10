@@ -46,11 +46,11 @@ bailout. A loop that can abandon a half-executed frame has to rebuild the old
 loop's state out of its own, and that reconstruction is where an engine of this
 shape grows its subtlest bugs.
 
-Refused, and run on the old loop unchanged: async generators, `yield*`, class
-constructors, `eval` code, rest parameters, `with`, direct `eval`, and any body
-that reaches for `super` or `new.target`. As of the last measurement that is
-**1.8% of the corpus**, of which 0.9 points is the bodies that still suspend
-somewhere this loop does not follow.
+Refused, and run on the old loop unchanged: `yield*`, class constructors,
+`eval` code, rest parameters, `with`, direct `eval`, and any body that reaches
+for `super` or `new.target`. As of the last measurement that is **2.5% of the
+corpus**, and `yield*` is 1,924 of the 3,187 bodies in it - the whole of what is
+left of both generators and async generators.
 
 Methods are not refused, though the note above said they were for a long time
 and the numbers were read accordingly. A method differs from an ordinary
@@ -239,11 +239,26 @@ and that the resume path asks the context which loop it belongs to. An async
 activation runs on the loop it was created for, for the same reason a generator
 does.
 
-An **async generator** is still refused. It is both machines at once, and the
-old loop does not run one that way either - it runs the body as a plain
-generator and wraps each result in a resolved promise, so an `await` inside one
-has no context to suspend into. Matching that here is small; matching what the
-specification says is a change to the shared engine rather than to this loop.
+An **async generator** is both machines at once, and the old loop runs it as
+neither: the body runs as a plain generator and each result is wrapped in a
+resolved promise, so an `await` inside one has no activation to suspend into and
+stays inline. That inline rule now lives in one place - `AwaitWithNothingToSuspendInto`,
+which both loops call - so this loop runs an async generator by running the same
+machinery, not by doing less of it. Matching what the specification actually says
+is a change to the shared engine rather than to either loop, and it is not made
+here: an async generator's `next()` should queue a request rather than run the
+body to the next yield synchronously.
+
+Looking at it turned up a gap wider than the loop. **`for await (... of x)` never
+consults `@@asyncIterator`**: the opcode reserved for it, `EnumerateValuesAsync`,
+is declared and never emitted, so a `for await` compiles to the synchronous
+iteration protocol and an async generator - which has only an async iterator - is
+"not iterable". That is true on both loops, and it is why the parity cases here
+drive an async generator by `next()` rather than by `for await`. It also puts a
+question against the runner: `language/statements/for-await-of` reports 1234/1234
+with that broken, and 400 of those files use `async function*`, so whether an
+async-flagged test that never calls `$DONE` is being counted as a pass is worth
+establishing before any of those numbers are trusted.
 
 ## Guard rails
 
@@ -306,14 +321,22 @@ Measured on `test/language` (118k function bodies, 23,730 tests):
 | + function-level `let` and `const` | 97.9% | 31.6% |
 | + block bindings in the dead zone | 98.1% | 31.7% |
 | + generators, and a try across their yields | 98.1% | **33.2%** |
-| + async functions | **98.2%** | **33.5%** |
+| + async functions | 98.2% | 33.5% |
+| + async generators | **97.5%** | **35.1%** |
 
-Neither of the last two percentages is against the same corpus as the row above
-it, and in both cases that is a larger corpus rather than a smaller win: a body
-that suspends gets a layout for the first time when the loop learns to run it,
-so bodies the loop was never asked about start being counted. In bodies,
-eligible went 116,585 -> 120,006 -> 121,983 while the corpus went
-118,891 -> 122,278 -> 124,204.
+None of the last three percentages is against the same corpus as the row above
+it, and each time that is a larger corpus rather than a smaller win: a body that
+suspends gets a layout for the first time when the loop learns to run it, so
+bodies the loop was never asked about start being counted. In bodies, eligible
+went 116,585 -> 120,006 -> 121,983 -> 124,914 while the corpus went
+118,891 -> 122,278 -> 124,204 -> 128,101.
+
+**The last row is why a rate is the wrong thing to read.** Accepting async
+generators moved eligible up by 2,931 bodies and the percentage *down*, from
+98.2% to 97.5%, because 3,897 bodies were counted for the first time and 1,468
+of them are refused - every one of those a `yield*`. Nothing became less
+eligible; a population that was invisible became visible, and it is worse than
+average. The absolute count is what moved.
 
 Speed, against the old loop **with its JIT enabled**:
 
@@ -799,16 +822,21 @@ opcodes, none over 50.
    equivalent object literal and ~297ns for a method call, and it is the same
    on both loops - so it is the one number in the cross-engine table that this
    work never moved. Ordinary object-oriented code is mostly constructors.
-2. **The bodies that suspend and still do not run here** - `AsyncGenerator=600`
-   and `Generator=456`, the second being entirely `yield*`. Generators and async
-   functions are done: the window travels to the generator object or the
-   `AsyncContext` and back, with its dead-zone bytes and its open try entries.
-   An async generator is both at once, and on the old loop it is neither - the
-   body runs as a plain generator whose results are wrapped in resolved
-   promises. `yield*` needs the delegation protocol rather than more
-   suspension, and the protocol already exists as a state machine on the old
-   loop; extracting it into a shared host helper is the way to have one copy of
-   it rather than two.
+2. **`yield*`, which is now the whole of what suspends and does not run here,
+   and it is four times the size the table used to report.** Generators, async
+   functions and async generators are done - the window travels to the generator
+   object or the `AsyncContext` and back, with its dead-zone bytes and its open
+   try entries. What is left is the delegation protocol, and the bailout table
+   had been reading it as two unrelated items: every one of the `Generator=456`
+   declines is a `yield*`, and so is every one of the `AsyncGenerator=1468`
+   ones, because an async generator that does not delegate is now accepted.
+   Together that is **1,924 bodies**, against the 456 the `Generator` row alone
+   suggested - the same mistake as every other item on this list that turned out
+   to be misnamed rather than large, arriving this time as an underestimate.
+   The protocol already exists as a state machine on the old loop, so the way to
+   have one copy rather than two is to lift it into a shared host helper that
+   returns how the step ended - completed, a return completion, or a yield - and
+   lets each loop route the throw, the return and the suspension its own way.
 3. **Elements that are not on a dense array**: `TypedArrayIndex` 70k,
    `ObjectIndexKey` 26k, `SparseArrayIndex` 22k. Nothing here is above 0.6% of
    the page's element reads, and the whole table is now 1.0% of them.
