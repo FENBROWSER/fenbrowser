@@ -1,4 +1,4 @@
-using FenBrowser.Js.Heap;
+﻿using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 
@@ -80,7 +80,8 @@ public sealed partial class BytecodeInterpreter
                 // Fall through to String.prototype - lookup returns the inherited method
                 // value; the caller (CallMethodN opcode) keeps the receiver string as
                 // `thisValue` so the native method receives the primitive directly.
-                var stringProto = _heap.GetObject(GetGlobalPrototype("String"));
+                //
+                var stringProto = _heap.GetObject(StringPrototypeForPrimitives());
                 return TryGetPropertyValue(stringProto, receiver, key, out var sv) ? sv : JsValue.Undefined;
             }
             case JsValueTag.Number:
@@ -135,7 +136,7 @@ public sealed partial class BytecodeInterpreter
             }
             case JsValueTag.String:
             {
-                var stringProto = _heap.GetObject(GetGlobalPrototype("String"));
+                var stringProto = _heap.GetObject(StringPrototypeForPrimitives());
                 return TryGetSymbolPropertyValue(stringProto, receiver, symbolId, out var value)
                     ? value
                     : JsValue.Undefined;
@@ -252,6 +253,32 @@ public sealed partial class BytecodeInterpreter
     // the literal "0"). Matches the spec's "canonical numeric string" definition for
     // 7.1.21 CanonicalNumericIndexString restricted to non-negative integers, which is
     // what String exotic objects accept as index keys.
+    // The prototype a string primitive resolves its methods on.
+    //
+    // ToObject(string) parents the wrapper on the realm's %String.prototype%
+    // intrinsic (7.1.18), which is fixed for the realm's life - reassigning
+    // `globalThis.String` cannot move where "abc".charCodeAt comes from. That
+    // makes it safe to resolve once and keep, which matters because resolving
+    // it through the global was two dictionary lookups on every string method
+    // read, and one page makes hundreds of thousands of those.
+    private ObjectHandle? _stringPrototypeForPrimitives;
+
+    private ObjectHandle StringPrototypeForPrimitives()
+    {
+        if (_stringPrototypeForPrimitives is { } cached) return cached;
+
+        var resolved = GetGlobalPrototype("String");
+
+        // Before the String builtin has been installed on the global, the
+        // fallback answers with the interpreter's own bootstrap prototype -
+        // which is not the object user code ever sees. Resolve again next time
+        // rather than freezing that one in.
+        if (resolved.Equals(EnsureStringPrototype())) return resolved;
+
+        _stringPrototypeForPrimitives = resolved;
+        return resolved;
+    }
+
     private static bool IsCanonicalIntegerIndex(string key, out int index)
     {
         index = 0;

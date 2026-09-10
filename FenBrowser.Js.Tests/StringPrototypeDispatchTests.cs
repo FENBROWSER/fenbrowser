@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
@@ -28,6 +28,14 @@ public sealed class StringPrototypeDispatchTests
         new BytecodeVerifier().Verify(fn);
         return new BytecodeInterpreter().Execute(fn).AsBoolean();
     }
+
+    // ECMA-262 7.1.18 ToObject(string) parents the wrapper on the realm's
+    // %String.prototype% intrinsic, which is fixed for the realm's life -
+    // rebinding the global `String` cannot move where a primitive's methods
+    // come from.
+    [Fact]
+    public void MethodsResolveOffTheIntrinsicNotTheGlobalBinding() =>
+        Assert.Equal(97, RunNum("'a'.charCodeAt(0); String = function () {}; 'a'.charCodeAt(0);"));
 
     [Fact] public void LengthOnStringPrimitive() => Assert.Equal(5, RunNum("'hello'.length;"));
     [Fact] public void LengthOnEmptyString() => Assert.Equal(0, RunNum("''.length;"));
