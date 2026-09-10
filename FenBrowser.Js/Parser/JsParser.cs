@@ -1543,7 +1543,7 @@ public sealed class JsParser
                     // `using` is a contextual keyword; in expression position it is a
                     // regular identifier. Only in StatementListItem position and only
                     // when followed by a binding start does it begin a UsingDeclaration.
-                    if (ctx == StatementBodyContext.StatementListItem && StartsLetLexicalDeclaration())
+                    if (ctx == StatementBodyContext.StatementListItem && StartsUsingDeclaration(isAwaitUsing: false))
                     {
                         return ParseUsingDeclaration(isAwaitUsing: false);
                     }
@@ -1623,21 +1623,16 @@ public sealed class JsParser
         // falling through to expression parsing.
         if (ctx == StatementBodyContext.StatementListItem)
         {
-            if (IsUnescapedIdentifierLike(Current(), "using") && StartsLetLexicalDeclaration())
+            if (IsUnescapedIdentifierLike(Current(), "using") && StartsUsingDeclaration(isAwaitUsing: false))
             {
                 return ParseUsingDeclaration(isAwaitUsing: false);
             }
             // `await using x = expr` — check if current is `await` followed by `using`
             // and a binding start. Outside async functions, `await` is an identifier.
-            if (IsUnescapedIdentifierLike(Current(), "await") && PeekIdentifierLike(1, "using"))
+            if (IsUnescapedIdentifierLike(Current(), "await") && PeekIdentifierLike(1, "using") &&
+                StartsUsingDeclaration(isAwaitUsing: true))
             {
-                var idx2 = Math.Min(_index + 2, _tokens.Count - 1);
-                var tok2 = _tokens[idx2];
-                if (tok2.Kind == TokenKind.Punctuator && (tok2.Text == "[" || tok2.Text == "{")
-                    || IsIdentifierLike(tok2))
-                {
-                    return ParseUsingDeclaration(isAwaitUsing: true);
-                }
+                return ParseUsingDeclaration(isAwaitUsing: true);
             }
         }
 
@@ -1695,6 +1690,10 @@ public sealed class JsParser
         while (true)
         {
             var binding = ParseVariableDeclaratorBinding();
+            // 14.3.1.1: it is a Syntax Error if the BoundNames of the BindingList
+            // contain "let".
+            if (string.Equals(binding.Identifier, "let", StringComparison.Ordinal))
+                throw new JsParserException("let is disallowed as a lexically bound name.");
             // ES2025: using declarations only allow BindingIdentifier, not
             // destructuring patterns (ArrayBindingPattern or ObjectBindingPattern).
             if (binding.Pattern is not null)
@@ -2320,21 +2319,16 @@ public sealed class JsParser
                     initializer = ParseVariableDeclarationStatement(inForHead: true);
                     initializerIsDeclaration = true;
                 }
-                else if (IsUnescapedIdentifierLike(Current(), "using") && StartsLetLexicalDeclaration())
+                else if (IsUnescapedIdentifierLike(Current(), "using") && StartsUsingDeclaration(isAwaitUsing: false))
                 {
                     initializer = ParseUsingDeclaration(isAwaitUsing: false);
                     initializerIsDeclaration = true;
                 }
-                else if (IsUnescapedIdentifierLike(Current(), "await") && PeekIdentifierLike(1, "using"))
+                else if (IsUnescapedIdentifierLike(Current(), "await") && PeekIdentifierLike(1, "using") &&
+                    StartsUsingDeclaration(isAwaitUsing: true))
                 {
-                    var idx2 = Math.Min(_index + 2, _tokens.Count - 1);
-                    var tok2 = _tokens[idx2];
-                    if ((tok2.Kind == TokenKind.Punctuator && (tok2.Text == "[" || tok2.Text == "{"))
-                        || IsIdentifierLike(tok2))
-                    {
-                        initializer = ParseUsingDeclaration(isAwaitUsing: true);
-                        initializerIsDeclaration = true;
-                    }
+                    initializer = ParseUsingDeclaration(isAwaitUsing: true);
+                    initializerIsDeclaration = true;
                 }
                 else
                 {
@@ -7120,6 +7114,30 @@ public sealed class JsParser
     // is an ordinary identifier (sloppy mode) and the statement is an
     // ExpressionStatement. (`let [` is always a declaration — ExpressionStatement
     // explicitly forbids a leading `let [`.)
+    // ECMA-262 14.3.1: `using [no LineTerminator here] BindingList` and
+    // `await [no LineTerminator here] using [no LineTerminator here] BindingList`.
+    // Only a BindingIdentifier can follow - `using [a] = b` assigns to a member of
+    // `using` - and a line break anywhere in the head leaves `using` a plain
+    // identifier, so `await using` then `let = 1` on the next line is two
+    // statements. The let test this borrowed allowed both.
+    private bool StartsUsingDeclaration(bool isAwaitUsing)
+    {
+        var usingIndex = _index + (isAwaitUsing ? 1 : 0);
+        if (usingIndex + 1 >= _tokens.Count)
+        {
+            return false;
+        }
+
+        var usingToken = _tokens[usingIndex];
+        var binding = _tokens[usingIndex + 1];
+        if (isAwaitUsing && HasLineTerminatorBetween(_tokens[_index], usingToken))
+        {
+            return false;
+        }
+
+        return !HasLineTerminatorBetween(usingToken, binding) && IsIdentifierLike(binding);
+    }
+
     private bool StartsLetLexicalDeclaration()
     {
         var next = _tokens[Math.Min(_index + 1, _tokens.Count - 1)];
