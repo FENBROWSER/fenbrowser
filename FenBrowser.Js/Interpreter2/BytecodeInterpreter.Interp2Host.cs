@@ -219,6 +219,21 @@ public sealed partial class BytecodeInterpreter
         DeclarativeEnvironmentRecord context, int slot, JsValue value)
         => context.DeclareAtSlot(slot, value, deletable: false, overwrite: true);
 
+    /// <summary>A captured let or const, before its declaration has run.</summary>
+    internal static void Interp2DeclareUninitializedContextSlot(
+        DeclarativeEnvironmentRecord context, int slot, bool isConst)
+        => context.DeclareUninitializedAtSlot(slot, immutable: isConst);
+
+    /// <summary>That binding's declaration running.</summary>
+    internal static void Interp2InitializeContextSlot(
+        DeclarativeEnvironmentRecord context, int slot, JsValue value, bool isConst)
+        => context.InitializeAtSlot(slot, value, immutable: isConst);
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    internal void Interp2ThrowDeadZoneAccess(string? name)
+        => throw new JsThrownException(
+            CreateReferenceError($"Cannot access '{name ?? "?"}' before initialization."));
+
     internal JsValue Interp2LoadContext(
         DeclarativeEnvironmentRecord context, BytecodeFunction function, int slot, string? name, bool strict)
     {

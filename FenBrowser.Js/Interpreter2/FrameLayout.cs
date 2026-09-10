@@ -182,6 +182,17 @@ public sealed class FrameLayout
     public bool[] SlotIsConst { get; private init; } = Array.Empty<bool>();
 
     /// <summary>
+    /// Slots holding a function-level let or const, which do not exist until
+    /// their declaration runs. A register in that state carries a set byte in
+    /// the loop's parallel dead-zone array; a captured one is an uninitialized
+    /// binding in this frame's record, which answers the same way.
+    /// </summary>
+    public bool[] SlotIsLexical { get; private init; } = Array.Empty<bool>();
+
+    /// <summary>Whether any slot needs the dead-zone check at all.</summary>
+    public bool HasLexicalSlots { get; private init; }
+
+    /// <summary>
     /// The slot holding a named function expression's own name, or -1. ECMA-262
     /// 15.2.5 binds it immutably so the body can call itself, which is why it
     /// is not simply another var: assigning to it is a TypeError in strict code
@@ -292,9 +303,6 @@ public sealed class FrameLayout
         // let/const need a hole distinct from undefined to keep the temporal
         // dead zone observable. A register window has no such value yet, so the
         // bodies that declare them stay on the old loop for now.
-        if (function.LexicalDeclarationNames.Count > 0 || function.ConstDeclarationNames.Count > 0)
-            return new FrameLayout(function, Interp2Bailout.LexicalDeclarations);
-
         // Slots are classified before the opcodes are scanned, because two of
         // the opcodes are only implementable for a slot this body owns.
         var slotNames = SlotNamesOf(function);
@@ -320,6 +328,15 @@ public sealed class FrameLayout
             declared.Add(function.ParameterNames[i]);
         for (var i = 0; i < function.VarDeclarationNames.Count; i++)
             declared.Add(function.VarDeclarationNames[i]);
+        // ECMA-262 10.2.11 step 34: a function-level let or const is a variable
+        // of this body like a var, and lives in the window like one. What sets
+        // it apart is that it does not exist until its declaration runs, which
+        // the window says with the byte beside each slot rather than with a
+        // value - see SlotIsLexical.
+        for (var i = 0; i < function.LexicalDeclarationNames.Count; i++)
+            declared.Add(function.LexicalDeclarationNames[i]);
+        for (var i = 0; i < function.ConstDeclarationNames.Count; i++)
+            declared.Add(function.ConstDeclarationNames[i]);
 
         // `arguments` is declared by the body having one, not by a declaration
         // in it, so nothing above names it - but it is a variable of this frame
@@ -348,6 +365,29 @@ public sealed class FrameLayout
             var own = (name is not null && declared.Contains(name)) || blockScopeSlots.Contains(slot);
             slotHomes[slot] = own ? SlotHome.Register : SlotHome.Free;
             hasFreeVariables |= !own;
+        }
+
+        var slotIsLexical = new bool[slotCount];
+        var hasLexicalSlots = false;
+        for (var kind = 0; kind < 2; kind++)
+        {
+            var lexicalNames = kind == 0 ? function.LexicalDeclarationNames : function.ConstDeclarationNames;
+            for (var i = 0; i < lexicalNames.Count; i++)
+            {
+                if (!function.VariableSlots.TryGetValue(lexicalNames[i], out var lexicalSlot) ||
+                    (uint)lexicalSlot >= (uint)slotCount ||
+                    slotHomes[lexicalSlot] == SlotHome.Free)
+                {
+                    return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
+                }
+
+                slotIsLexical[lexicalSlot] = true;
+                hasLexicalSlots = true;
+                if (kind == 1)
+                {
+                    constSlots.Add(lexicalSlot);
+                }
+            }
         }
 
         // A block-scoped slot may only be touched from inside a block that
@@ -538,6 +578,8 @@ public sealed class FrameLayout
             ArgumentsSlot = argumentsSlot,
             RestrictedArguments = function.UsesRestrictedArgumentsObject,
             SlotIsConst = BuildConstMap(constSlots, slotCount),
+            SlotIsLexical = slotIsLexical,
+            HasLexicalSlots = hasLexicalSlots,
             SelfNameSlot = selfNameSlot,
         };
     }

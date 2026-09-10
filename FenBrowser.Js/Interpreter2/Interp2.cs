@@ -70,6 +70,16 @@ internal sealed class Interp2
     /// </summary>
     private JsValue[] _stack = new JsValue[InitialStackSlots];
 
+    /// <summary>
+    /// One byte per value-stack slot, set while a function-level let or const
+    /// has not been initialized. A register holds no value that means
+    /// "uninitialized", and the temporal dead zone is observable: reading or
+    /// assigning the binding before its declaration runs is a ReferenceError.
+    /// Only a body whose layout says it has lexical slots reads or writes this,
+    /// so the ordinary frame pays nothing for it.
+    /// </summary>
+    private byte[] _tdz = new byte[InitialStackSlots];
+
     private int _stackTop;
 
     private Frame[] _frames = new Frame[InitialFrameCapacity];
@@ -310,7 +320,13 @@ internal sealed class Interp2
                     {
                         // A variable no closure can read is a register. There is
                         // no binding record to consult, no presence bit to test
-                        // and no name to translate back to.
+                        // and no name to translate back to - only a let or const
+                        // that has not been initialized needs anything more.
+                        if (layout.HasLexicalSlots && _tdz[slotBase + slot] != 0)
+                        {
+                            _host.Interp2ThrowDeadZoneAccess(NameOfSlot(layout, slot));
+                        }
+
                         stack[frameBase + ins.A] = stack[slotBase + slot];
                         break;
                     }
@@ -374,6 +390,16 @@ internal sealed class Interp2
                         break;
                     }
 
+                    // The dead zone comes first: assigning to a let or const
+                    // before its declaration runs is a ReferenceError, whichever
+                    // of the two it is.
+                    if (layout.HasLexicalSlots &&
+                        HomeOfSlot(layout, ins.B) == SlotHome.Register &&
+                        _tdz[slotBase + ins.B] != 0)
+                    {
+                        _host.Interp2ThrowDeadZoneAccess(NameOfSlot(layout, ins.B));
+                    }
+
                     // ECMA-262 9.1.1.1.5: assigning to an immutable binding is a
                     // TypeError. Initialising one is not, which is why InitVar
                     // is a separate case below.
@@ -402,13 +428,31 @@ internal sealed class Interp2
                 {
                     var slot = ins.B;
                     var home = HomeOfSlot(layout, slot);
+                    var isLexicalSlot = layout.HasLexicalSlots &&
+                        (uint)slot < (uint)layout.SlotIsLexical.Length && layout.SlotIsLexical[slot];
                     if (home == SlotHome.Register)
                     {
+                        if (isLexicalSlot)
+                        {
+                            // The declaration has run: the binding exists now.
+                            _tdz[slotBase + slot] = 0;
+                        }
+
                         stack[slotBase + slot] = stack[frameBase + ins.A];
                         break;
                     }
 
-                    if (home == SlotHome.Context)
+                    if (home == SlotHome.Context && isLexicalSlot)
+                    {
+                        // Initializing an uninitialized binding, which a store
+                        // through the record would refuse as a dead-zone write.
+                        BytecodeInterpreter.Interp2InitializeContextSlot(
+                            _frames[_depth - 1].Context!,
+                            slot,
+                            stack[frameBase + ins.A],
+                            (uint)slot < (uint)layout.SlotIsConst.Length && layout.SlotIsConst[slot]);
+                    }
+                    else if (home == SlotHome.Context)
                     {
                         _host.Interp2StoreContext(
                             _frames[_depth - 1].Context!, function, slot, stack[frameBase + ins.A],
@@ -592,6 +636,13 @@ internal sealed class Interp2
                 {
                     var slot = ins.B;
                     var home = HomeOfSlot(layout, slot);
+                    // `typeof` answers "undefined" for a name that is not
+                    // declared, but not for one in the dead zone.
+                    if (home == SlotHome.Register && layout.HasLexicalSlots && _tdz[slotBase + slot] != 0)
+                    {
+                        _host.Interp2ThrowDeadZoneAccess(NameOfSlot(layout, slot));
+                    }
+
                     var typeName = home switch
                     {
                         SlotHome.Register => _host.Interp2TypeOfValue(stack[slotBase + slot]),
@@ -1236,6 +1287,13 @@ internal sealed class Interp2
 
         var window = _stackTop;
         Array.Clear(_stack, window, windowSize);
+        if (layout.HasLexicalSlots)
+        {
+            // A frame that left a dead-zone byte set - it returned or threw
+            // before the declaration ran - must not hand it to the next one.
+            Array.Clear(_tdz, window, windowSize);
+        }
+
         _stackTop = newTop;
         return window;
     }
@@ -1288,6 +1346,32 @@ internal sealed class Interp2
             }
         }
 
+        if (layout.HasLexicalSlots)
+        {
+            var lexical = layout.SlotIsLexical;
+            var constants = layout.SlotIsConst;
+            var lexicalHomes = layout.SlotHomes;
+            for (var slot = 0; slot < lexical.Length; slot++)
+            {
+                if (!lexical[slot])
+                {
+                    continue;
+                }
+
+                var isConst = (uint)slot < (uint)constants.Length && constants[slot];
+                if (lexicalHomes[slot] == SlotHome.Context)
+                {
+                    // Declared above holding undefined, like every context slot;
+                    // a lexical one is not supposed to exist yet.
+                    BytecodeInterpreter.Interp2DeclareUninitializedContextSlot(context!, slot, isConst);
+                }
+                else
+                {
+                    _tdz[window + layout.RegisterCount + slot] = 1;
+                }
+            }
+        }
+
         frame.Context = context;
 
         if (Interp2Options.Log)
@@ -1312,6 +1396,7 @@ internal sealed class Interp2
         }
 
         Array.Resize(ref _stack, capacity);
+        Array.Resize(ref _tdz, capacity);
     }
 
     /// <summary>

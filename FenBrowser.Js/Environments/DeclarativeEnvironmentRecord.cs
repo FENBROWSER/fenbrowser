@@ -361,6 +361,45 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         return true;
     }
 
+    /// <summary>
+    /// Declare a slot's binding without a value: a let or const before its
+    /// declaration has run, which reads and writes answer with a TdzAccess.
+    /// A const is marked strict so assigning to it throws in sloppy code too.
+    /// </summary>
+    internal void DeclareUninitializedAtSlot(int slot, bool immutable)
+    {
+        if ((uint)slot >= (uint)(_slotBindings?.Length ?? 0))
+        {
+            return;
+        }
+
+        _slotBindings![slot] = new Binding(
+            Value: JsValue.Undefined, IsMutable: !immutable, IsInitialized: false,
+            IsStrict: immutable, IsDeletable: false);
+        _slotPresent![slot] = true;
+    }
+
+    /// <summary>
+    /// Give a slot declared by <see cref="DeclareUninitializedAtSlot"/> its
+    /// value. Initializing a const is not an assignment to it.
+    /// </summary>
+    internal void InitializeAtSlot(int slot, JsValue value, bool immutable)
+    {
+        if ((uint)slot >= (uint)(_slotBindings?.Length ?? 0))
+        {
+            return;
+        }
+
+        _slotBindings![slot] = new Binding(
+            Value: value, IsMutable: !immutable, IsInitialized: true,
+            IsStrict: immutable, IsDeletable: false);
+        _slotPresent![slot] = true;
+        if (value.Tag == JsValueTag.Object)
+        {
+            RememberBindingStore(value.AsObjectHandle());
+        }
+    }
+
     internal void DeclareAtSlot(int slot, JsValue value, bool deletable, bool overwrite)
     {
         if ((uint)slot >= (uint)(_slotBindings?.Length ?? 0))
