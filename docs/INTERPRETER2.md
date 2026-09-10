@@ -1,4 +1,4 @@
-# The register-window interpreter (`FenBrowser.Js/Interpreter2/`)
+﻿# The register-window interpreter (`FenBrowser.Js/Interpreter2/`)
 
 A second execution loop for FenJS, built beside the original rather than in
 place of it, selected by `FEN_JS_INTERPRETER=v2`. Off by default.
@@ -143,14 +143,37 @@ the old loop arrives, and the dispatch carries no exception handling at all. The
 handler region sits around the outermost entry rather than around the dispatch
 loop, which is worth about 5% of it.
 
-A block scope is a slot in the window rather than a record, when the block cannot
-be told apart from a straight-line assignment. `EnterScope` carries the slot it
-introduces, whether it is a `const`, and whether it starts initialised, so the
-layout can check that the scopes nest, that no two nested scopes share a slot,
-that every instruction naming the slot falls inside the block, and that the
-binding is initialised before it can be read. That last one stands in for the
-temporal dead zone, which a register cannot represent - and it is exactly the
-shape the compiler emits for a catch binding.
+A block scope is a slot in the window rather than a record. `EnterScope` carries
+the slot it introduces, whether it is a `const`, and whether it starts
+initialised, so the layout can check that the scopes nest, that no two nested
+scopes share a slot, and that every instruction naming the slot falls inside the
+block.
+
+## The dead zone, in a byte beside each slot
+
+A register holds no value meaning "not yet initialized", and the temporal dead
+zone is observable: reading a `let` or `const` before its declaration runs, or
+assigning to one, is a ReferenceError, and `typeof` does not excuse it. For a
+while that cost the loop every body with a function-level `let` or `const`, and
+every block whose declaration was not the very next instruction after the block
+opened - the loop admitted only the shape the compiler emits for a catch
+binding, because there nothing can observe the slot in between.
+
+So the loop carries a second array beside the value stack: one byte per slot,
+set while the binding has not been initialized. The layout marks which slots are
+lexical - a function-level `let` or `const`, or a block binding that does not
+start pre-initialised - and sets a flag when a body has any. Frame entry sets
+their bytes, `EnterScope` sets one again on each entry to the block (the next
+turn of a loop gets a fresh binding, so a fresh dead zone), the declaration
+clears it, and reads, `typeof` and assignments test it. Everything is behind the
+layout's flag, so a body without lexical slots does not touch the array at all.
+
+A captured `let` or `const` needs none of it. Its home is this frame's record,
+which already had an uninitialized binding to offer and answers a read of one
+with the same `TdzAccess` the old loop turns into a ReferenceError; the
+declaration initializes it through the record rather than storing to it, which
+would be refused as a dead-zone write, and a captured `const` is declared
+immutable so assigning to it throws in sloppy code as well.
 
 ## Guard rails
 
@@ -209,7 +232,9 @@ Measured on `test/language` (118k function bodies, 23,730 tests):
 | + `for-in`, `for-of` | 85.8% | 28.9% |
 | + a block's slot shared with its siblings | 86.9% | — |
 | + methods | 90.1% | — |
-| + private fields | **97.5%** | **30.4%** |
+| + private fields | 97.5% | 30.4% |
+| + function-level `let` and `const` | 97.9% | 31.6% |
+| + block bindings in the dead zone | **98.1%** | **31.7%** |
 
 Speed, against the old loop **with its JIT enabled**:
 
@@ -687,20 +712,22 @@ a closure over a `for-of` binding that the capture analysis could not see.
 
 ## What is next, in order of measured value
 
-The unimplemented-opcode table is effectively empty: 537 bodies across twenty
-opcodes, none over 160. What is left is one thing and then a different kind of
-work.
+Measured on `test/language` at 98.1% of bodies eligible, the queue is one large
+item and a tail. The unimplemented-opcode table is 242 bodies across fifteen
+opcodes, none over 50.
 
 1. **Construction.** `new Point()` costs ~1050ns against ~337ns for the
    equivalent object literal and ~297ns for a method call, and it is the same
    on both loops - so it is the one number in the cross-engine table that this
    work never moved. Ordinary object-oriented code is mostly constructors.
-2. **Bodies that suspend** - `Generator=585`, `AsyncGenerator=590`, `Async=310`
+2. **Bodies that suspend** - `Generator=588`, `AsyncGenerator=590`, `Async=315`
    on the language corpus, and still zero on the page. This is now genuinely
    what `NotOrdinaryFunction` means, the name having covered 13,966 ordinary
-   methods until the kind was counted instead of the bailout. Suspending means
-   copying a window out at a yield or an await and back at the resume, which is
-   the one piece of machinery this loop has never needed.
+   methods until the kind was counted instead of the bailout. It is 1,497 of the
+   2,306 bodies still declined - 57% of what is left, and everything else on
+   this list put together is smaller. Suspending means copying a window out at a
+   yield or an await and back at the resume, which is the one piece of machinery
+   this loop has never needed.
 3. **Elements that are not on a dense array**: `TypedArrayIndex` 70k,
    `ObjectIndexKey` 26k, `SparseArrayIndex` 22k. Nothing here is above 0.6% of
    the page's element reads, and the whole table is now 1.0% of them.
@@ -715,12 +742,18 @@ work.
    `LoadSuperProperty=45`, `LoadSuperElement=29`, `LoadSuperConstructor=13`,
    plus `ClassConstructor=44` bodies. Small, and the only remaining reason a
    method is turned away.
-5. **Function-level `let`/`const`** (254 bodies) needs a hole value distinct
-   from `undefined` so the temporal dead zone stays observable.
-6. **Block scopes a closure captures** - the case these notes expected to
-   matter, measured at **zero bodies** on the page once the bailout was split
-   apart. It still needs a fresh record per entry to the block for a corpus that
-   uses it.
+5. **Direct `eval` in a body** (231 bodies), which can read and add bindings in
+   the caller's scope. Nothing in a window can answer that; it needs the body's
+   variables to live in a record, which is what the old loop hands it.
+6. **A block-scoped slot named from outside its block** (95 bodies) and **block
+   scopes a closure captures** (6). The second needs a fresh record per entry to
+   the block, so one closure per turn of a loop does not share a variable with
+   the next.
+
+**Done since this list was written**: function-level `let` and `const`, which
+wanted "a hole value distinct from `undefined`" and got a byte beside the slot
+instead (254 bodies, and the whole bailout reason is gone), and the block shape
+rule that the same byte replaced (392 bodies down to 100).
 
 Three of the four largest items on this list turned out to be misnamed rather
 than large: a block scope that escaped nothing, a free-variable resolution that
