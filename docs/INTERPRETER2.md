@@ -240,6 +240,41 @@ result sets on both for the whole of `test/language` (22663/23730),
 `built-ins/{Object,Array,String,Promise,Function,Proxy,Reflect,Map,Set,Date,
 Math,Number,JSON,Symbol,TypedArray,eval}`.
 
+## Against Chrome
+
+Everything above compares this engine to its own previous build. These three
+benchmarks run unmodified in the FenJS shell, in node and in a browser, and each
+carries a check value so a run that did different work shows up as wrong rather
+than as fast - all three engines returned identical checks. Chrome
+headless and node agreed to within 20%, so the column is V8 either way.
+Repeated twice per engine; the numbers below moved by under 4% between runs,
+unlike anything measured on the live page.
+
+| | Chrome (V8) | old loop | new loop | new vs old | new vs V8 |
+|---|---|---|---|---|---|
+| `x_simple_loop` - tight integer loop | 3.6 ns/iter | 52.0 | **110.8** | **2.1x slower** | 31x |
+| `x_medium_calls` - allocate, call a method, read a free variable | 8.5 ns/iter | 2231 | **1575** | 1.42x faster | 185x |
+| `x_hard_mixed` - strings, arrays, a dictionary, a sort comparator | 10.9 ms/round | 124.9 | **111.3** | 1.12x faster | 10.2x |
+
+The three say three different things, and the middle one says the most.
+
+**Simple** is the known loss, and the only one: a single frame running a hot
+loop is what a JIT compiles and what this loop has no tier-up for. Two times
+slower, exactly as `b_property_read` said.
+
+**Hard** is the honest whole-workload number - 1.12x, because most of its time
+is inside `split`, `sort` and string building, which are natives that neither
+loop touches. A page made of library calls will move about this much.
+
+**Medium** is where the new loop should have shone and it only manages 1.42x,
+so it was decomposed. A bare iteration is ~177ns, `o.x` adds nothing,
+`o.len2()` ~297ns, an `{x, y}` literal ~337ns - and **`new Point()` ~1050ns,
+near-identical on both loops**. Two thirds of that benchmark is construction,
+which this work never touched: the frame, the call and the free-variable read
+all got faster underneath a cost that did not move. It is the largest single
+gap to V8 in ordinary object-oriented JavaScript, and nothing in the coverage
+or caching work was ever going to close it.
+
 ## What the live page said
 
 `FenBrowser.Tooling.exe captcha https://www.google.com/recaptcha/api2/demo
@@ -539,13 +574,17 @@ The unimplemented-opcode table is effectively empty: 537 bodies across twenty
 opcodes, none over 160. What is left is one thing and then a different kind of
 work.
 
-1. **Bodies that suspend** - `Generator=585`, `AsyncGenerator=590`, `Async=310`
+1. **Construction.** `new Point()` costs ~1050ns against ~337ns for the
+   equivalent object literal and ~297ns for a method call, and it is the same
+   on both loops - so it is the one number in the cross-engine table that this
+   work never moved. Ordinary object-oriented code is mostly constructors.
+2. **Bodies that suspend** - `Generator=585`, `AsyncGenerator=590`, `Async=310`
    on the language corpus, and still zero on the page. This is now genuinely
    what `NotOrdinaryFunction` means, the name having covered 13,966 ordinary
    methods until the kind was counted instead of the bailout. Suspending means
    copying a window out at a yield or an await and back at the resume, which is
    the one piece of machinery this loop has never needed.
-2. **Elements that are not on a dense array**: `TypedArrayIndex` 70k,
+3. **Elements that are not on a dense array**: `TypedArrayIndex` 70k,
    `ObjectIndexKey` 26k, `SparseArrayIndex` 22k. Nothing here is above 0.6% of
    the page's element reads, and the whole table is now 1.0% of them.
 
@@ -555,13 +594,13 @@ work.
    has nearly nothing left to compile and cannot be what is missing. It belongs
    back on the list when a benchmark, not a page, says a compiled body would
    win.
-3. **`super` and the class shape around it** - `SetHomeObject=141`,
+4. **`super` and the class shape around it** - `SetHomeObject=141`,
    `LoadSuperProperty=45`, `LoadSuperElement=29`, `LoadSuperConstructor=13`,
    plus `ClassConstructor=44` bodies. Small, and the only remaining reason a
    method is turned away.
-4. **Function-level `let`/`const`** (254 bodies) needs a hole value distinct
+5. **Function-level `let`/`const`** (254 bodies) needs a hole value distinct
    from `undefined` so the temporal dead zone stays observable.
-5. **Block scopes a closure captures** - the case these notes expected to
+6. **Block scopes a closure captures** - the case these notes expected to
    matter, measured at **zero bodies** on the page once the bailout was split
    apart. It still needs a fresh record per entry to the block for a corpus that
    uses it.
