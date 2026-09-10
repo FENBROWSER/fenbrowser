@@ -178,8 +178,8 @@ The A/B script exits non-zero when the new loop fails anything the old one
 passed, so it can gate a commit. Comparing pass totals is not enough: a loop can
 fix one test and break another and score the same.
 
-`FEN_JS_INTERP2_LOG=1` prints coverage, the ranked bailout table, and what the
-property caches could not answer - named misses by where the name actually
+`FEN_JS_INTERP2_LOG=1` prints coverage, the bailout table ranked both by bodies
+and by the calls those bodies cost, and what the property caches could not answer - named misses by where the name actually
 lived, and `o[k]` misses by receiver and key together, because that pair is what
 a new cache form would have to guard. It works from the JS shell and from the
 test262 runner. The
@@ -406,28 +406,124 @@ Which is 23% off the blocking job for the two changes together - 4740ms to
 3644ms - and unlike the string cache the gap is far larger than the spread
 between runs.
 
+## Three programs that described the wrong thing
+
+The `o[k]` table said 87.7% of what still missed was one name, `push`, at
+megamorphic sites. Profiling those sites said the rest: each read **one key off
+one shape**. Nothing about that traffic is polymorphic, so the sites should
+never have given up - which pointed at the programs, and there were three
+defects in them, two of them wrong answers rather than slow ones.
+
+- **The array-length program had no key guard at an `o[k]` site.** It is the
+  program that guards no shape, because the length is not in one; at a site
+  reading a literal `.length` the name is in the bytecode and that is enough.
+  At a varying-key site it is not, and once a site had read `a["length"]` it
+  answered the element count for every other name: **`a["0"]` returned 3**.
+- **The prototype program was recognised by an exact sequence of five ops.** A
+  varying-key site guards the key too, which makes six, so those programs
+  matched no form, ran as unrecognised, and answered nothing. The site attached
+  a fresh dead one on every miss and turned megamorphic in five. That is all
+  941,330 `push` reads.
+- **A compiled body read a prototype program's slot off the receiver.** The
+  baseline compiler writes the guards out inline: check the shape the program
+  reports, read the slot the program reports off the receiver. A prototype
+  program reports the receiver's shape and a slot on the *holder*, so `p.m`
+  returned whichever of `p`'s own slots shared that index - correct until the
+  body was hot enough to compile, wrong after. The interpreter runs the same
+  program correctly, which is why no test saw it.
+
+`o[k]` reads on the bundle go **77.3% to 99.0%** cached across this and the
+array work, and misses at a megamorphic site 944,251 to 4,292. The blocking job
+does not move: interleaved run-for-run against the same build it is 4052ms
+against 4137ms over three pairs with the pairwise deltas changing sign. **A
+million prototype-chain walks are worth less than this harness can see**, which
+is the same lesson as the four changes above that measured zero, arriving from
+the other direction - this time the count was real and the cost still was not.
+
+## Coverage, and what a bailout table is for
+
+The bailout table ranks *bodies*, and that turned out to be the wrong queue.
+Two reasons stood behind almost all of the page's declined bodies:
+
+- **332 bodies: a block-scoped slot named from outside its block.** Nothing was
+  escaping. The compiler numbers a body's bindings in one space and reuses a
+  number across blocks that cannot both be open, so two sibling `{ let x }`
+  blocks share one - and checking each block on its own failed on the other
+  block's instructions every time. Checking the slot against every block that
+  declares it took eligibility from **89.0% to 96.8%**.
+- It also moved the delegated calls by **0.7%**. Those 332 bodies are barely
+  entered. So the table now counts calls as well, and the two disagree
+  completely: 103 bodies against 2,913 calls for one reason, **33 bodies against
+  1,009,494 calls** for another.
+
+Those 33 are `PreResolveVar` on a name the body does not declare - `x++` on an
+outer variable or a global. The resolution genuinely has to be carried, because
+`ToNumeric` runs between the two instructions and a `valueOf` there can delete
+the property the name resolved to; walking again then throws in strict code
+where the spec says the write lands. Held on the interpreter and matched by name
+at the store, which is where and how the old loop holds it.
+
+| | before | after |
+|---|---|---|
+| eligible functions | 89.0% | **97.5%** |
+| calls staying in the loop | 30.4% | **40.5%** |
+| calls to a declined body | 1,012,408 | **2,761** |
+
+The A/B gate earned its keep here: admitting those bodies broke two tests, a
+named function expression whose own name an arrow assigns. Inside the body the
+immutable binding is enforced at the store, which knows the slot; from a closure
+it resolves through a record whose slots are all mutable, so the write landed
+where the spec drops it. That body is refused rather than given a home that
+cannot say no.
+
+**And the blocking job does not resolve either way.** Interleaved run-for-run
+the two builds are 3984ms and 4230ms, pairwise deltas changing sign, against a
+within-build spread of 1100ms. Two of three pairs say the coverage win cost
+time, which would be the missing tier-up - those 33 bodies take 30,000 calls
+each and were being JIT-compiled - but disabling the JIT on both did not
+separate them either. The honest statement is that this machine could not see a
+difference of this size on the day, and the counts above are what the change is
+known to have done.
+
+## How to measure this loop, after getting it wrong
+
+The timings in this document above the coverage section were taken run-for-run
+in one sitting. The ones in this section could not be, and the reason is worth
+recording: **the machine drifted 450ms between the morning and the afternoon**,
+which is larger than every change measured that day. Comparing a number taken
+now against one written down earlier says nothing.
+
+So: build both engines, keep both DLLs, and alternate them run by run -
+before, after, before, after. Report the pairwise deltas and their signs, not
+the means. If the deltas change sign, the answer is "not resolvable", and that
+is a real answer: it bounds the change from above, which is often what you
+needed.
+
 ## What is next, in order of measured value
 
 The unimplemented-opcode table is effectively empty: 537 bodies across twenty
 opcodes, none over 160. What is left is one thing and then a different kind of
 work.
 
-1. **`o[k]` with a name key** - 955,377 reads, and now 87.7% of every element
-   miss left on the page. These reach the same named-key site the `o.name` cache
-   uses, so the question is why it does not hold them: a key that varies costs a
-   comparison, and a site that sees four shapes gives up. Nothing else in that
-   table is above 75k.
-2. **Block scopes a closure captures** (450 bodies on the page, and 1.02M of
-   its calls go to a body this loop declined - now the largest single thing
-   between it and full coverage of the bundle). They need a fresh record per
-   entry to the block, and this loop has one per call.
-3. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
-   15.3k on test262 - but zero on the page measured so far). The first two
-   suspend, which means copying a window out and back at a yield or an await;
-   the third needs `super` and field initialisers.
-4. **Tier-up.** The loop gives up the JIT's win on hot single-frame loops -
-   41ns against 80ns on `b_property_read`'s bare loop - and that is the only
-   place the old loop is still faster.
+1. **Tier-up**, which has stopped being an optimisation and become the thing in
+   the way. The loop gives up the JIT on hot single-frame loops - 41ns against
+   80ns on `b_property_read`'s bare loop - and now that 40.5% of the page's
+   calls stay in the loop, the bodies it holds include ones taking 30,000 calls
+   each that the old loop was compiling. It is the leading explanation for why
+   the coverage work did not show up as time, and it is testable: compile a body
+   the new loop holds and measure the same interleaved pair.
+2. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
+   15.3k on test262 - but still zero on the page). The first two suspend, which
+   means copying a window out and back at a yield or an await; the third needs
+   `super` and field initialisers. This is the remaining coverage of the
+   *corpus* rather than of any page measured so far.
+3. **Elements that are not on a dense array**: `TypedArrayIndex` 70k,
+   `ObjectIndexKey` 26k, `SparseArrayIndex` 22k. Nothing here is above 0.6% of
+   the page's element reads, and the whole table is now 1.0% of them.
+4. **Block scopes a closure captures** - the case these notes expected to
+   matter, measured at **zero bodies** on the page once the bailout was split
+   apart. It still needs a fresh record per entry to the block for a corpus that
+   uses it.
 5. **Function-level `let`/`const`** (204 bodies) needs a hole value distinct
    from `undefined` so the temporal dead zone stays observable.
 
