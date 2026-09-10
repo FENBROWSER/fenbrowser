@@ -613,18 +613,16 @@ public sealed class FrameLayout
     /// </summary>
     /// <remarks>
     /// Suspension is the window being copied out at the yield and back at the
-    /// resume, which is the machinery the loop never needed until now. Two
-    /// shapes need more of it and are left on the old loop for the moment: a
-    /// body with a `try` in it, whose open handler entries would have to travel
-    /// with the window, and `yield*`, which resumes into its own delegation
-    /// protocol rather than at the instruction after it.
+    /// resume, and the frame's open try entries travel with it. One shape needs
+    /// more than that and is left on the old loop: `yield*`, which resumes into
+    /// its own delegation protocol rather than at the instruction after it.
     /// </remarks>
     private static bool GeneratorBodySupported(BytecodeFunction function)
     {
         var code = function.InstructionArray;
         for (var ip = 0; ip < code.Length; ip++)
         {
-            if (code[ip].OpCode is OpCode.PushHandler or OpCode.YieldStar)
+            if (code[ip].OpCode is OpCode.YieldStar)
             {
                 return false;
             }

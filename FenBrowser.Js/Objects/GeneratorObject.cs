@@ -35,6 +35,14 @@ public sealed class GeneratorObject : JsObject
     public bool RunsOnRegisterWindow { get; set; }
 
     /// <summary>
+    /// The frame's open try entries at the suspension, as the (catch ip,
+    /// finally ip) pairs the register-window loop keeps them in, outermost
+    /// first. A generator can yield inside a try, and the handlers have to be
+    /// there when it resumes.
+    /// </summary>
+    public int[] SavedWindowHandlers { get; set; } = Array.Empty<int>();
+
+    /// <summary>
     /// The dead-zone byte of each window slot at the suspension, for a body
     /// that has lexical slots: a generator can yield while one of its own let
     /// or const bindings has not been initialized yet.

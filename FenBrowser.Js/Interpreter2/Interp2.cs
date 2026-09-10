@@ -167,6 +167,15 @@ internal sealed class Interp2
         public bool HasPendingException;
 
         /// <summary>
+        /// A return completion injected at a yield by .return(), waiting for
+        /// the finally blocks that cover the yield to run. A catch never sees
+        /// one: a return is not catchable.
+        /// </summary>
+        public JsValue PendingReturn;
+
+        public bool HasPendingReturn;
+
+        /// <summary>
         /// The generator this frame is the body of, which its yields suspend
         /// into. Null for an ordinary frame.
         /// </summary>
@@ -246,31 +255,49 @@ internal sealed class Interp2
         var entryHandlerTop = _handlerTop;
         try
         {
-            // A resume can carry an abrupt completion from .return() or
-            // .throw(), including into a generator that has not started: the
-            // body never runs at all then. A body with a `try` in it is not run
-            // here, so there is no finally to route a return through and nothing
-            // that could catch an injected throw: both leave the generator at
-            // once, wherever it was suspended.
-            if (generator.CompletionMode == GeneratorCompletionMode.Return)
-            {
-                generator.CompletionMode = GeneratorCompletionMode.Normal;
-                return generator.SentValue;
-            }
-
-            if (generator.CompletionMode == GeneratorCompletionMode.Throw)
-            {
-                generator.CompletionMode = GeneratorCompletionMode.Normal;
-                generator.State = GeneratorState.Completed;
-                throw new JsThrownException(generator.SentValue);
-            }
+            var mode = generator.CompletionMode;
+            generator.CompletionMode = GeneratorCompletionMode.Normal;
+            var injectedThrow = false;
 
             if (generator.InstructionPointer > 0)
             {
                 ResumeGeneratorFrame(generator, layout);
+
+                // ECMA-262 27.5.3.4 GeneratorResumeAbrupt. A throw is raised at
+                // the yield, so the try blocks around it can catch it - which
+                // means raising it inside the routing loop below rather than
+                // here. A return runs the finally blocks that cover the yield,
+                // and only those; with none, the generator is simply done.
+                if (mode == GeneratorCompletionMode.Throw)
+                {
+                    injectedThrow = true;
+                }
+                else if (mode == GeneratorCompletionMode.Return)
+                {
+                    ref var resumed = ref _frames[_depth - 1];
+                    if (!TryRouteReturnThroughFinally(ref resumed, generator.SentValue))
+                    {
+                        _depth--;
+                        _stackTop = resumed.Base;
+                        return generator.SentValue;
+                    }
+                }
             }
             else
             {
+                // Not started: there is no frame for a completion to land in, so
+                // the body never runs at all.
+                if (mode == GeneratorCompletionMode.Return)
+                {
+                    return generator.SentValue;
+                }
+
+                if (mode == GeneratorCompletionMode.Throw)
+                {
+                    generator.State = GeneratorState.Completed;
+                    throw new JsThrownException(generator.SentValue);
+                }
+
                 var callee = GeneratorCallee(generator);
                 var args = generator.InitialArgs;
                 PushFrame(callee!, layout, args, 0, args.Length, generator.ThisValue, returnSlot: -1);
@@ -281,6 +308,12 @@ internal sealed class Interp2
             {
                 try
                 {
+                    if (injectedThrow)
+                    {
+                        injectedThrow = false;
+                        throw new JsThrownException(generator.SentValue);
+                    }
+
                     return Dispatch(entryDepth);
                 }
                 catch (JsThrownException thrown) when (!thrown.IsUncatchableByScript)
@@ -316,6 +349,19 @@ internal sealed class Interp2
             Array.Copy(generator.SavedDeadZone, 0, _tdz, window, size);
         }
 
+        var savedHandlers = generator.SavedWindowHandlers;
+        var handlerBase = _handlerTop;
+        if (savedHandlers.Length > 0)
+        {
+            while (_handlerTop + savedHandlers.Length > _handlers.Length)
+            {
+                Array.Resize(ref _handlers, _handlers.Length * 2);
+            }
+
+            Array.Copy(savedHandlers, 0, _handlers, _handlerTop, savedHandlers.Length);
+            _handlerTop += savedHandlers.Length;
+        }
+
         ref var frame = ref _frames[_depth++];
         frame.Layout = layout;
         frame.Callee = GeneratorCallee(generator);
@@ -326,10 +372,12 @@ internal sealed class Interp2
         frame.Base = window;
         frame.Ip = generator.InstructionPointer;
         frame.ReturnSlot = -1;
-        frame.HandlerBase = _handlerTop;
-        frame.HandlerCount = 0;
-        frame.PendingException = JsValue.Undefined;
-        frame.HasPendingException = false;
+        frame.HandlerBase = handlerBase;
+        frame.HandlerCount = savedHandlers.Length / 2;
+        frame.PendingException = generator.PendingException ?? JsValue.Undefined;
+        frame.HasPendingException = generator.PendingException is not null;
+        frame.PendingReturn = JsValue.Undefined;
+        frame.HasPendingReturn = false;
         frame.Generator = generator;
 
         // The value .next() was given is what the yield expression evaluates to.
@@ -371,10 +419,62 @@ internal sealed class Interp2
             Array.Copy(_tdz, window, generator.SavedDeadZone, 0, size);
         }
 
+        // The try blocks open around the yield, and an exception a finally is
+        // still carrying, are as much of the frame as the registers are.
+        var handlerCount = frame.HandlerCount * 2;
+        if (handlerCount == 0)
+        {
+            generator.SavedWindowHandlers = Array.Empty<int>();
+        }
+        else
+        {
+            if (generator.SavedWindowHandlers.Length != handlerCount)
+            {
+                generator.SavedWindowHandlers = new int[handlerCount];
+            }
+
+            Array.Copy(_handlers, frame.HandlerBase, generator.SavedWindowHandlers, 0, handlerCount);
+        }
+
+        if (frame.HasPendingException)
+        {
+            generator.PendingException = frame.PendingException;
+            generator.BarrierInternalSlot(frame.PendingException);
+        }
+        else
+        {
+            generator.PendingException = null;
+        }
+
         generator.InstructionPointer = ip;
         generator.YieldDestReg = destinationRegister;
         generator.Environment = frame.Context;
         generator.State = GeneratorState.Suspended;
+    }
+
+    /// <summary>
+    /// Send a return completion to the innermost finally block covering the
+    /// suspension, if there is one. A catch-only entry is skipped: a return
+    /// completion is not catchable (ECMA-262 27.5.3.3).
+    /// </summary>
+    private bool TryRouteReturnThroughFinally(ref Frame frame, JsValue value)
+    {
+        while (frame.HandlerCount > 0)
+        {
+            frame.HandlerCount--;
+            var entry = frame.HandlerBase + frame.HandlerCount * 2;
+            var finallyIp = _handlers[entry + 1];
+            _handlerTop = entry;
+            if (finallyIp >= 0)
+            {
+                frame.PendingReturn = value;
+                frame.HasPendingReturn = true;
+                frame.Ip = finallyIp;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ---------------------------------------------------------------- dispatch
@@ -727,16 +827,41 @@ internal sealed class Interp2
                     // ECMA-262 14.15.3: a finally block that completes normally
                     // hands the abrupt completion it interrupted back on.
                     ref var finishing = ref _frames[_depth - 1];
-                    if (!finishing.HasPendingException)
+                    if (finishing.HasPendingException)
+                    {
+                        var pending = finishing.PendingException;
+                        finishing.HasPendingException = false;
+                        finishing.PendingException = JsValue.Undefined;
+                        finishing.Ip = ip;
+                        throw new JsThrownException(pending);
+                    }
+
+                    if (!finishing.HasPendingReturn)
                     {
                         break;
                     }
 
-                    var pending = finishing.PendingException;
-                    finishing.HasPendingException = false;
-                    finishing.PendingException = JsValue.Undefined;
+                    // A generator's .return() waiting on this finally: hand it
+                    // to the next one out, or complete the body with it.
+                    var pendingReturn = finishing.PendingReturn;
+                    finishing.HasPendingReturn = false;
+                    finishing.PendingReturn = JsValue.Undefined;
                     finishing.Ip = ip;
-                    throw new JsThrownException(pending);
+                    if (TryRouteReturnThroughFinally(ref finishing, pendingReturn))
+                    {
+                        goto reload;
+                    }
+
+                    var pendingReturnSlot = finishing.ReturnSlot;
+                    _depth--;
+                    _stackTop = frameBase;
+                    if (_depth == entryDepth)
+                    {
+                        return pendingReturn;
+                    }
+
+                    stack[pendingReturnSlot] = pendingReturn;
+                    goto reload;
                 }
 
                 case OpCode.Return:
@@ -1522,6 +1647,8 @@ internal sealed class Interp2
         frame.HandlerCount = 0;
         frame.PendingException = JsValue.Undefined;
         frame.HasPendingException = false;
+        frame.PendingReturn = JsValue.Undefined;
+        frame.HasPendingReturn = false;
         frame.Generator = null;
 
         DeclarativeEnvironmentRecord? context = null;

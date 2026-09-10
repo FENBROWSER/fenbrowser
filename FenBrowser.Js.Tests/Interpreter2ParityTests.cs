@@ -260,8 +260,21 @@ public sealed class Interpreter2ParityTests
     [InlineData("function* g() { var n = 0; yield ++n; yield ++n; }" +
                 "var a = g(), b = g(); String(a.next().value) + ',' + String(b.next().value) +" +
                 "',' + String(a.next().value);", "1,1,2")]
-    // A body with a try, and one with yield*, stay on the old loop for now.
+    // A try open across a yield travels with the window, and .return() runs the
+    // finally blocks that cover the yield - a catch never sees one.
     [InlineData("function* g() { try { yield 1; } finally { } } [...g()].join(',');", "1")]
+    [InlineData("var log = []; function* g() { try { yield 1; } finally { log.push('fin'); } }" +
+                "var it = g(); it.next(); it.return(7); log.join(',');", "fin")]
+    [InlineData("function* g() { try { yield 1; } catch (e) { yield 'caught:' + e.message; } }" +
+                "var it = g(); it.next(); it.throw(new Error('x')).value;", "caught:x")]
+    [InlineData("function* g() { try { yield 1; } finally { yield 'fin'; } }" +
+                "var it = g(); it.next(); var r = it.return(5); r.value + ':' + String(r.done);", "fin:false")]
+    [InlineData("var log = []; function* g() { try { try { yield 1; } finally { log.push('inner'); } }" +
+                "finally { log.push('outer'); } } var it = g(); it.next(); it.return(0); log.join(',');",
+                "inner,outer")]
+    [InlineData("function* g() { try { yield 1; } finally { return 9; } }" +
+                "var it = g(); it.next(); var r = it.next(); String(r.value) + ':' + String(r.done);", "9:true")]
+    // yield* stays on the old loop for now.
     [InlineData("function* g() { yield* [1, 2]; } [...g()].join(',');", "1,2")]
     public void BothLoopsAgree(string source, string expected)
     {
