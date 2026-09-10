@@ -227,8 +227,9 @@ Speed, against the old loop **with its JIT enabled**:
 **Where the new loop loses**: tight single-frame loops, because there the old
 loop's JIT compiles the body and the new loop has no tier-up.
 `b_property_read`'s bare loop is 41ns old against 80ns new. The new loop wins
-wherever calls or free variables are involved and loses where a JIT-compiled loop
-runs uninterrupted.
+wherever calls or free variables are involved and loses where a JIT-compiled
+loop runs uninterrupted - to the compiler, not to the old interpreter, which it
+beats on every benchmark measured here (see "Against Chrome" below).
 
 **Correctness**: `FenBrowser.Js.Tests` 3423 passing on both loops, including
 `Interpreter2ParityTests` - 34 programs run on both loops in the same process and
@@ -256,11 +257,30 @@ unlike anything measured on the live page.
 | `x_medium_calls` - allocate, call a method, read a free variable | 8.5 ns/iter | 2231 | **1575** | 1.42x faster | 185x |
 | `x_hard_mixed` - strings, arrays, a dictionary, a sort comparator | 10.9 ms/round | 124.9 | **111.3** | 1.12x faster | 10.2x |
 
-The three say three different things, and the middle one says the most.
+That table compares what actually ships: the old loop **with its JIT**, against
+the new loop, which never tiers up. It is the right comparison for a user and
+the wrong one for the question "is the new loop faster". Turning the JIT off on
+both sides asks that one instead:
 
-**Simple** is the known loss, and the only one: a single frame running a hot
-loop is what a JIT compiles and what this loop has no tier-up for. Two times
-slower, exactly as `b_property_read` said.
+| | old loop, no JIT | new loop | new vs old |
+|---|---|---|---|
+| `x_simple_loop` | 382.4 ns/iter | **111.0** | **3.4x faster** |
+| `x_medium_calls` | 3376.5 ns/iter | **1572.0** | **2.1x faster** |
+| `x_hard_mixed` | 186.1 ms/round | **111.8** | **1.7x faster** |
+
+So the new loop beats the old interpreter on every one of them, by 1.7x to
+3.4x. What it loses to is the old loop's **JIT**, which on a tight integer loop
+is worth 7.4x (382ns to 51ns) and is the whole of the 2.1x deficit in the first
+table. The same flag confirms the new loop never uses the JIT at all: 110.5ns
+against 111.0ns, 1592 against 1572, 114.4 against 111.8 - within noise of
+itself.
+
+The three benchmarks say three different things, and the middle one says the
+most.
+
+**Simple** is the known loss, and it is a loss to a compiler rather than to an
+interpreter: a single frame running a hot loop is what a JIT is for and what
+this loop has no tier-up for. Against the old *interpreter* it is 3.4x faster.
 
 **Hard** is the honest whole-workload number - 1.12x, because most of its time
 is inside `split`, `sort` and string building, which are natives that neither
