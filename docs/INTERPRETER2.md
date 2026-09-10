@@ -588,6 +588,49 @@ delivered and seen, and the challenge frame's `POST /api2/reload` returns 200 -
 but the worker realm runs 779k instructions and never replies, so no token is
 ever issued. That is a functional bug, and it is where the demo now stops.
 
+## What making it the default would take
+
+Selecting the loop is already one environment variable, forwarded to whatever
+process runs the script. What is not settled is whether it should be the
+default, and the honest state of that is below.
+
+**Settled.** 50,219 of test262's ~53,485 tests - **93.9%** - have been run on
+both loops and diffed by test name. Every category is an identical result set
+except `staging`, where the new loop passes **ten more** because it finishes
+inside the 2s per-test timeout that the old loop misses. Coverage is 97.5% of
+bodies, and the 2.5% it declines fall back to the old loop by construction, so
+a body this loop cannot represent is a speed question and never a correctness
+one. 3,483 unit tests pass, 59 of them running the same program on both loops
+in one process and comparing.
+
+**The decision, which is not a bug.** Making it the default gives up the JIT
+for the 97.5% of bodies it accepts, because it has no tier-up. Measured, that
+is a **2.1x regression on a tight integer loop** (51ns compiled against 111ns
+interpreted) and nothing at all on the reCAPTCHA page, where the JIT with and
+without could not be told apart. Every other shape measured is faster - 1.42x
+on allocate-call-read, 1.12x on a mixed workload, and 1.7x to 3.4x against the
+old *interpreter*. So the question is whether one shape regressing 2x is
+acceptable, or whether tier-up comes first.
+
+**Still open before flipping it.**
+
+- The remaining 6.1% of the corpus: `built-ins/RegExp/property-escapes` (613
+  tests, slow enough to need its own run), `Atomics` (389), and about 2,200
+  tests in small `built-ins` directories.
+- One full batched run on the new loop, to confirm the committed headline
+  number does not move. The per-category diffs are stronger evidence than an
+  aggregate, but the aggregate is what `docs/test262_results.md` records.
+- Browser-level verification. The captcha harness runs on the new loop and gets
+  further than the old one, but no systematic page or WPT run has been done
+  with it as the default.
+- Long-session behaviour: the collector, multi-realm frames and workers have not
+  been stressed on it the way a browser session would.
+
+The one thing that has *not* been a problem is correctness of the loop itself.
+Both divergences the A/B has ever caught were pre-existing engine bugs it
+exposed rather than caused - a cache program that answered the wrong name, and
+a closure over a `for-of` binding that the capture analysis could not see.
+
 ## What is next, in order of measured value
 
 The unimplemented-opcode table is effectively empty: 537 bodies across twenty
