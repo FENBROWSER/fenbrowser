@@ -1903,7 +1903,9 @@ public sealed class BytecodeCompiler
             EmitForBindingAssignment(targetSlot, targetPattern, initReg);
         }
 
+        var headTdz = OpenHeadTdzScope(forInStmt.Initializer);
         var sourceReg = CompileExpression(forInStmt.Iterable);
+        CloseHeadTdzScope(headTdz);
         var iteratorReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.EnumerateKeys, iteratorReg, sourceReg, 0));
 
@@ -2038,7 +2040,9 @@ public sealed class BytecodeCompiler
             }
         }
 
+        var headTdz = OpenHeadTdzScope(forOfStmt.Initializer);
         var sourceReg = CompileExpression(forOfStmt.Iterable);
+        CloseHeadTdzScope(headTdz);
         var iteratorReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.EnumerateValues, iteratorReg, sourceReg, 0));
 
@@ -2331,6 +2335,87 @@ public sealed class BytecodeCompiler
         return isPrefix ? newMemberReg : oldMemberReg;
     }
 
+    // ECMA-262 14.7.5.6 ForIn/OfHeadEvaluation step 2: when the head declares let
+    // or const, the expression after `in` or `of` runs in an environment that
+    // already binds those names, uninitialized. So `for (let x of [x])` is a
+    // ReferenceError, and so is calling a closure made there that reads x -
+    // neither may reach an x outside the loop. The environment costs an
+    // allocation per name on every entry to the loop, and is unobservable unless
+    // the expression names one of them, makes a closure or calls eval; so a Nop
+    // holds each EnterScope's place and becomes one only when it can matter. The
+    // instruction count is the same either way, so no jump moves.
+    private (int Start, int ExpressionStart, List<int>? Slots) OpenHeadTdzScope(StatementNode? initializer)
+    {
+        if (initializer is not VariableDeclarationStatementNode { Kind: "let" or "const" } declaration)
+        {
+            return (-1, -1, null);
+        }
+
+        var slots = new List<int>();
+        foreach (var boundName in GetDeclaratorBoundNames(declaration.Declarators[0]))
+        {
+            slots.Add(GetOrCreateVariableSlot(boundName));
+        }
+
+        var start = _instructions.Count;
+        foreach (var _ in slots)
+        {
+            _instructions.Add(new Instruction(OpCode.Nop));
+        }
+
+        return (start, _instructions.Count, slots);
+    }
+
+    private void CloseHeadTdzScope((int Start, int ExpressionStart, List<int>? Slots) head)
+    {
+        if (head.Slots is not { Count: > 0 } slots || !ExpressionCanReachHeadBindings(head.ExpressionStart, slots))
+        {
+            return;
+        }
+
+        for (var i = 0; i < slots.Count; i++)
+        {
+            // B=0, C=0: a mutable binding left uninitialized.
+            _instructions[head.Start + i] = new Instruction(OpCode.EnterScope, slots[i], 0, 0);
+        }
+
+        foreach (var _ in slots)
+        {
+            _instructions.Add(new Instruction(OpCode.LeaveScope));
+        }
+    }
+
+    private bool ExpressionCanReachHeadBindings(int expressionStart, List<int> headSlots)
+    {
+        for (var ip = expressionStart; ip < _instructions.Count; ip++)
+        {
+            var instruction = _instructions[ip];
+            if (instruction.OpCode == OpCode.CreateFunction)
+            {
+                return true;
+            }
+
+            if (instruction.E == DirectEvalCallFlag && instruction.OpCode is
+                OpCode.Call0 or OpCode.Call1 or OpCode.CallN or OpCode.CallSpread)
+            {
+                return true;
+            }
+
+            var named = instruction.OpCode switch
+            {
+                OpCode.LoadVar or OpCode.StoreVar or OpCode.InitVar or OpCode.TypeOfName or
+                OpCode.PreResolveVar or OpCode.StoreResolvedVar or OpCode.StoreVarTop => instruction.B,
+                _ => -1,
+            };
+            if (named >= 0 && headSlots.Contains(named))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private void CompileForAwaitOfStatement(ForAwaitOfStatementNode forAwaitOfStmt)
     {
         if (_currentFunctionKind is not FunctionKind.Async and not FunctionKind.AsyncGenerator)
@@ -2350,7 +2435,9 @@ public sealed class BytecodeCompiler
             throw new InvalidOperationException("Unsupported for-await-of initializer target.");
         }
 
+        var headTdz = OpenHeadTdzScope(forAwaitOfStmt.Initializer);
         var sourceReg = CompileExpression(forAwaitOfStmt.Iterable);
+        CloseHeadTdzScope(headTdz);
         var iteratorReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.EnumerateValues, iteratorReg, sourceReg, 0));
 
