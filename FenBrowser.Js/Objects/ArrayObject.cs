@@ -149,13 +149,14 @@ public sealed class ArrayObject : JsObject
 
     // Copies the dense elements into ordinary properties, in index order so their
     // creation order matches enumeration order, and stops using the fast path.
-    private void Materialise()
+    private void Materialise(FenBrowser.Js.Diagnostics.ArrayMaterialiseReason reason)
     {
         if (_denseAbandoned)
         {
             return;
         }
 
+        FenBrowser.Js.Diagnostics.ArrayShapeStats.Record(reason);
         _denseAbandoned = true;
         for (var i = 0; i < _denseCount; i++)
         {
@@ -199,7 +200,7 @@ public sealed class ArrayObject : JsObject
                 return applied;
             }
 
-            Materialise();
+            Materialise(FenBrowser.Js.Diagnostics.ArrayMaterialiseReason.LengthUnrepresentable);
             return base.DefineOwnProperty(key, descriptor);
         }
 
@@ -213,7 +214,12 @@ public sealed class ArrayObject : JsObject
             // Writing past the end would leave a hole, and anything that is not a
             // plain writable/enumerable/configurable data property cannot be
             // represented by the vector. Fall back for good.
-            Materialise();
+            Materialise(
+                !IsDenseRepresentable(descriptor)
+                    ? FenBrowser.Js.Diagnostics.ArrayMaterialiseReason.UnrepresentableDescriptor
+                    : !Extensible
+                        ? FenBrowser.Js.Diagnostics.ArrayMaterialiseReason.NotExtensible
+                        : FenBrowser.Js.Diagnostics.ArrayMaterialiseReason.WritePastEnd);
         }
 
         return base.DefineOwnProperty(key, descriptor);
@@ -276,7 +282,7 @@ public sealed class ArrayObject : JsObject
                 return applied;
             }
 
-            Materialise();
+            Materialise(FenBrowser.Js.Diagnostics.ArrayMaterialiseReason.LengthUnrepresentable);
             return base.SetProperty(key, value);
         }
 
@@ -363,7 +369,7 @@ public sealed class ArrayObject : JsObject
                 return true;
             }
 
-            Materialise();
+            Materialise(FenBrowser.Js.Diagnostics.ArrayMaterialiseReason.ElementDeleted);
         }
 
         return base.DeleteProperty(key);

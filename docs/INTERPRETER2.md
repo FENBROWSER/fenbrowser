@@ -368,14 +368,27 @@ The unimplemented-opcode table is effectively empty: 537 bodies across twenty
 opcodes, none over 160. What is left is one thing and then a different kind of
 work.
 
-1. **Indexed reads on an array that is no longer dense** - 1,991,043 of the
-   3,055,000 element misses on the page, and the largest single item left
+1. **Indexed reads on an array that is no longer dense** - 1,985,174 of the
+   3,044,000 element misses on the page, and the largest single item left
    anywhere in either table. `o[k]` misses are now classified the way named
-   misses are, and the answer was not the one the count suggested: it is not
-   spread across receiver kinds, it is two thirds one kind. What a cache form
-   would have to guard is not yet known - whether these arrays went sparse, hold
-   holes, or are dictionaries the shape does not describe - and that is the next
-   thing to find out.
+   misses are, and the answer was not the one the count suggested: not spread
+   across receiver kinds, but two thirds one kind.
+
+   Only 10,736 arrays are behind all of it, and they name their reason:
+   **`LengthUnrepresentable=7505`**, `WritePastEnd=3231`,
+   `UnrepresentableDescriptor=43`. The first is `new Array(n)` and `a.length =
+   n` - a length grown past the element count, which the vector cannot hold
+   because everything above the count is a hole. So the array is materialised at
+   birth, before it holds anything, and every read of it afterwards builds a
+   string from the index and looks it up.
+
+   The shape of the fix follows from that: let the vector carry a length that
+   exceeds its count, with the indices between them absent rather than
+   `undefined`. A `new Array(n)` filled 0..n-1 in order then stays dense the
+   whole way, which is what the pattern actually does. The care is in the
+   difference between a hole and an `undefined`: a hole is not an own property,
+   so it must read through to the prototype, and `Object.keys`, `in`, `delete`
+   and enumeration all have to keep seeing it as absent.
 2. **`o[k]` with a name key** - 957,454 more, 31.3% of element misses. These
    reach the same named-key site the `o.name` cache uses, so the question is why
    it does not hold them: a key that varies costs a comparison and a site that

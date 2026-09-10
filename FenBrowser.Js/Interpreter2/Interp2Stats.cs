@@ -227,6 +227,7 @@ public static class Interp2Stats
         _elementReadsMissed = 0;
         Array.Clear(PropertyMissKinds);
         Array.Clear(ElementMissKinds);
+        FenBrowser.Js.Diagnostics.ArrayShapeStats.Reset();
         UncacheableKeys.Clear();
         StringReceiverKeys.Clear();
         _maxDepth = 0;
@@ -317,6 +318,15 @@ public static class Interp2Stats
             }
 
             report.AppendLine();
+        }
+
+        var materialised = FenBrowser.Js.Diagnostics.ArrayShapeStats.Describe();
+        if (materialised.Length > 0)
+        {
+            // Printed next to the element misses it explains: an array that gave
+            // up its vector answers every later indexed read through a
+            // string-keyed lookup, with the key built from the index first.
+            report.Append("[interp2] arrays no longer dense: ").Append(materialised).AppendLine();
         }
 
         var ranked = new List<(Interp2Bailout Reason, long Count)>();
