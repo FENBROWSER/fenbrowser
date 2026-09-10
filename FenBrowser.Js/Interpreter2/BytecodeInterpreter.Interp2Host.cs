@@ -423,6 +423,60 @@ public sealed partial class BytecodeInterpreter
     }
 
     /// <summary>ECMA-262 9.1.1.1.5 SetMutableBinding through the closure chain.</summary>
+    /// <summary>
+    /// ECMA-262 13.4: an update expression resolves its reference once, then
+    /// evaluates and writes back through that same reference. Records which
+    /// environment holds the name so the matching store can use it.
+    /// </summary>
+    /// <remarks>
+    /// The gap between the two is not empty: <c>x++</c> runs ToNumeric, which
+    /// can call a <c>valueOf</c>, which can delete the very property the name
+    /// resolved to. Walking again then answers differently - a ReferenceError in
+    /// strict code where the spec says the write lands. Held on the interpreter
+    /// rather than the frame, and matched by name at the store, exactly as the
+    /// old loop holds it, so both loops answer the same.
+    /// </remarks>
+    internal void Interp2PreResolveFree(EnvironmentRecord? outerEnvironment, string? name)
+    {
+        _preResolvedEnv = null;
+        _preResolvedName = name;
+        if (name is null) return;
+
+        for (var env = outerEnvironment; env is not null; env = env.OuterEnv)
+        {
+            if (env.HasBinding(name))
+            {
+                _preResolvedEnv = env;
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Writes through the binding <see cref="Interp2PreResolveFree"/> found, or
+    /// walks the chain when there was none to find or something in between
+    /// resolved a different name.
+    /// </summary>
+    internal void Interp2StoreResolvedFree(
+        EnvironmentRecord? outerEnvironment, string? name, JsValue value, bool strict)
+    {
+        var resolved = _preResolvedEnv;
+        var resolvedName = _preResolvedName;
+        _preResolvedEnv = null;
+        _preResolvedName = null;
+
+        if (resolved is not null && name is not null &&
+            string.Equals(resolvedName, name, StringComparison.Ordinal))
+        {
+            var status = resolved.SetMutableBinding(name, value, strict);
+            if (status == BindingOpResult.Ok) return;
+
+            throw Interp2BindingFailure(status, name, assignment: true);
+        }
+
+        Interp2StoreFree(outerEnvironment, name, value, strict);
+    }
+
     internal void Interp2StoreFree(EnvironmentRecord? outerEnvironment, string? name, JsValue value, bool strict)
     {
         if (name is null)

@@ -326,13 +326,22 @@ internal sealed class Interp2
                 }
 
                 case OpCode.PreResolveVar:
-                    // ECMA-262 13.3.2.4 resolves the binding before the
-                    // initializer runs so a visibility change in between cannot
-                    // redirect the write. The layout has already established
-                    // that this slot is a register in this window, which nothing
-                    // outside the frame can see, delete or shadow - so there is
-                    // no resolution to capture and the matching
-                    // StoreResolvedVar is an ordinary slot store.
+                    // ECMA-262 13.3.2.4 and 13.4 resolve the binding before the
+                    // expression in between runs, so a visibility change it
+                    // causes cannot redirect the write. A register or a context
+                    // slot is this call's own, and nothing outside the frame can
+                    // see, delete or shadow it - there is no resolution to
+                    // capture and the matching store is an ordinary slot store.
+                    // A free name is the case that needs one: `x++` on an outer
+                    // variable runs ToNumeric between the two, and a valueOf
+                    // there can delete the property the name resolved to.
+                    if (HomeOfSlot(layout, ins.B) == SlotHome.Free)
+                    {
+                        _host.Interp2PreResolveFree(
+                            OuterEnvironmentOf(_depth - 1), NameOfSlot(layout, ins.B));
+                        stack = _stack;
+                    }
+
                     break;
 
                 case OpCode.EnterScope:
@@ -372,6 +381,18 @@ internal sealed class Interp2
                     if ((uint)ins.B < (uint)constants.Length && constants[ins.B])
                     {
                         _host.Interp2ThrowConstAssignment(NameOfSlot(layout, ins.B));
+                    }
+
+                    if (ins.OpCode == OpCode.StoreResolvedVar &&
+                        HomeOfSlot(layout, ins.B) == SlotHome.Free)
+                    {
+                        _host.Interp2StoreResolvedFree(
+                            OuterEnvironmentOf(_depth - 1),
+                            NameOfSlot(layout, ins.B),
+                            stack[frameBase + ins.A],
+                            layout.IsStrict);
+                        stack = _stack;
+                        break;
                     }
 
                     goto case OpCode.InitVar;
@@ -956,7 +977,7 @@ internal sealed class Interp2
         }
 
         BindArgumentsObject(layout, callee, context, window, args);
-        BindSelfName(layout, callee, context, window);
+        BindSelfName(layout, callee, window);
     }
 
     private void PushFrame(
@@ -1009,15 +1030,14 @@ internal sealed class Interp2
 
         BindArgumentsObject(
             layout, callee, context, window, CallArgs.FromRegisters(argSource, argStart, argCount));
-        BindSelfName(layout, callee, context, window);
+        BindSelfName(layout, callee, window);
     }
 
     /// <summary>
     /// ECMA-262 15.2.5: a named function expression can refer to itself by its
     /// own name, which is a variable of this frame like any other.
     /// </summary>
-    private void BindSelfName(
-        FrameLayout layout, JsFunctionObject callee, DeclarativeEnvironmentRecord? context, int window)
+    private void BindSelfName(FrameLayout layout, JsFunctionObject callee, int window)
     {
         var slot = layout.SelfNameSlot;
         if (slot < 0 || callee.SelfHandle is not { } selfHandle)
@@ -1025,14 +1045,10 @@ internal sealed class Interp2
             return;
         }
 
-        var self = JsValue.FromObject(selfHandle);
-        if (context is not null && layout.SlotHomes[slot] == SlotHome.Context)
-        {
-            BytecodeInterpreter.Interp2DeclareContextSlot(context, slot, self);
-            return;
-        }
-
-        _stack[window + layout.RegisterCount + slot] = self;
+        // Always a register: the layout refuses a body whose own name a closure
+        // reads, because the record it would share has no immutable slot to put
+        // the binding in.
+        _stack[window + layout.RegisterCount + slot] = JsValue.FromObject(selfHandle);
     }
 
     /// <summary>

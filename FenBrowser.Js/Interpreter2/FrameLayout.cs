@@ -25,6 +25,12 @@ public enum Interp2Bailout
     /// <summary>A block-scoped slot named from outside every block that declares it.</summary>
     BlockScopeEscapes,
 
+    /// <summary>
+    /// A block-scoped binding a nested function captures, which needs a fresh
+    /// record on every entry to the block rather than one per call.
+    /// </summary>
+    BlockScopeCaptured,
+
     DirectEval,
     FrameTooWide,
 }
@@ -346,14 +352,11 @@ public sealed class FrameLayout
             if (!Supported[(int)ins.OpCode])
                 return new FrameLayout(function, Interp2Bailout.UnsupportedOpCode, ins.OpCode);
 
-            // ECMA-262 13.3.2.4 resolves a var's binding before its initializer
-            // runs, so an initializer that changes what the name resolves to
-            // still writes where the declaration meant. For a register there is
-            // nothing to resolve and nothing that could change it; for a free
-            // name the resolution has to be carried between two instructions,
-            // which this loop has nowhere to put yet.
+            // A slot the layout never classified has no home to write to.
+            // A free one does now: the loop carries the resolution between the
+            // two instructions on the interpreter, the way the old loop does.
             if (ins.OpCode is OpCode.PreResolveVar or OpCode.StoreResolvedVar &&
-                ((uint)ins.B >= (uint)slotCount || slotHomes[ins.B] == SlotHome.Free))
+                (uint)ins.B >= (uint)slotCount)
             {
                 return new FrameLayout(function, Interp2Bailout.FreeVariableResolve);
             }
@@ -383,11 +386,15 @@ public sealed class FrameLayout
             // it on, so this body keeps one even when none of its variables are
             // captured. An arrow cannot supply it - its own record is one the
             // walk passes straight through - so it is refused instead.
-            // The self-name is bound to a slot, so a closure that reads it needs
-            // one to exist. A body that never mentions its own name has none -
-            // the old loop gives that case a binding by name instead.
-            if (selfName is not null && captured.Contains(selfName) &&
-                !function.VariableSlots.ContainsKey(selfName))
+            // ECMA-262 15.2.5 binds a function expression's own name
+            // immutably. Inside this body that is enforced at the store, which
+            // knows the slot; a closure that reads the name outwards resolves
+            // it through a record, and the record this loop would share holds
+            // slots that are all mutable - so an arrow assigning the name would
+            // succeed where the spec drops the write in sloppy code and throws
+            // in strict. Refuse the body rather than give the binding a home
+            // that cannot say no.
+            if (selfName is not null && captured.Contains(selfName))
             {
                 return new FrameLayout(function, Interp2Bailout.BindsOwnName);
             }
@@ -411,7 +418,7 @@ public sealed class FrameLayout
                     // record per call, not per block.
                     if (blockScopeSlots.Contains(slot))
                     {
-                        return new FrameLayout(function, Interp2Bailout.BlockScope);
+                        return new FrameLayout(function, Interp2Bailout.BlockScopeCaptured);
                     }
 
                     slotHomes[slot] = SlotHome.Context;
@@ -562,12 +569,15 @@ public sealed class FrameLayout
     /// <remarks>
     /// One slot can have several blocks. The compiler numbers a body's bindings
     /// in one space and reuses a number across blocks that cannot both be open -
-    /// two sibling `{ let x }` blocks share one - so checking each block on its
-    /// own failed on the *other* block's instructions every time, which is not a
-    /// slot escaping anything. Those blocks are disjoint, because a slot
-    /// re-entered while already open is refused before this, and each one
+    /// two sibling `{ let x }` blocks share one - and checking each block on its
+    /// own therefore failed on the *other* block's instructions every time,
+    /// which is not a slot escaping anything. Those blocks are disjoint, because
+    /// a slot re-entered while already open is refused before this, and each one
     /// re-initialises the register as it opens. So a reference inside any of a
     /// slot's blocks names the binding that block declared.
+    ///
+    /// It was 332 of the 437 bodies this loop declined on reCAPTCHA's bundle,
+    /// against zero for the captured-binding case the design notes expected.
     /// </remarks>
     private static bool BlockScopeReferencesConfined(
         Instruction[] code, List<(int Slot, int Start, int End)> regions, HashSet<int> blockScopeSlots)
