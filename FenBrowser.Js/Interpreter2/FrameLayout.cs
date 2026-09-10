@@ -26,6 +26,14 @@ public enum Interp2Bailout
     BlockScopeEscapes,
 
     /// <summary>
+    /// `super` in a body that does not carry a home object of its own - an
+    /// arrow inside a method. Resolving it means finding the enclosing method's
+    /// home object on the environment chain, and a method running on this loop
+    /// may keep everything in registers and have no record on that chain at all.
+    /// </summary>
+    SuperOutsideMethod,
+
+    /// <summary>
     /// A block-scoped binding a nested function captures, which needs a fresh
     /// record on every entry to the block rather than one per call.
     /// </summary>
@@ -358,6 +366,17 @@ public sealed class FrameLayout
             ref readonly var ins = ref instructions[i];
             if (!Supported[(int)ins.OpCode])
                 return new FrameLayout(function, Interp2Bailout.UnsupportedOpCode, ins.OpCode);
+
+            // A method carries its home object on the function object, which is
+            // this frame's callee, so `super` in one resolves without a walk.
+            // An arrow does not carry one - the old loop finds the enclosing
+            // method's by walking for a FunctionEnvironmentRecord, and a method
+            // on this loop need not have put one there.
+            if (ins.OpCode is OpCode.LoadSuperProperty or OpCode.LoadSuperElement &&
+                function.Kind != FunctionKind.Method)
+            {
+                return new FrameLayout(function, Interp2Bailout.SuperOutsideMethod);
+            }
 
             // A slot the layout never classified has no home to write to.
             // A free one does now: the loop carries the resolution between the
@@ -722,6 +741,7 @@ public sealed class FrameLayout
             OpCode.GetPrivateField, OpCode.SetPrivateField,
             OpCode.SetElemDefine, OpCode.SpreadAppend, OpCode.CopyDataProperties,
             OpCode.GetTemplateObject,
+            OpCode.SetHomeObject, OpCode.LoadSuperProperty, OpCode.LoadSuperElement,
 
             // for-in and for-of.
             OpCode.EnumerateKeys, OpCode.ForInNext,

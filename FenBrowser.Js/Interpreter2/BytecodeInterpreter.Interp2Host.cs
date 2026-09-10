@@ -543,6 +543,58 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromNumber(startIndex + values.Count);
     }
 
+    /// <summary>
+    /// ECMA-262 10.2.7 MakeMethod: records the object a method was defined on,
+    /// which is what `super` in its body resolves against.
+    /// </summary>
+    internal void Interp2SetHomeObject(JsValue methodValue, JsValue homeValue)
+    {
+        if (methodValue.Tag != JsValueTag.Object || homeValue.Tag != JsValueTag.Object) return;
+        if (_heap.GetObject(methodValue.AsObjectHandle()) is not JsFunctionObject method) return;
+
+        var home = homeValue.AsObjectHandle();
+        method.HomeObject = home;
+        method.BarrierInternalSlot(home);
+        _heap.WriteBarrier(methodValue.AsObjectHandle(), home);
+    }
+
+    /// <summary>
+    /// ECMA-262 13.3.7.3 MakeSuperPropertyReference and 9.1.2 GetSuperBase:
+    /// `super.x` and `super[k]`, read off the home object's prototype with the
+    /// current receiver as the `this` an accessor would see.
+    /// </summary>
+    /// <remarks>
+    /// The old loop finds the home object on the frame's callee, and failing
+    /// that walks the environment chain for an arrow that closed over one. Only
+    /// the first case can arise here: a body whose nested function reaches for
+    /// the enclosing `super` is refused by the capture analysis before it runs.
+    /// </remarks>
+    internal JsValue Interp2LoadSuper(
+        BytecodeFunction function, JsFunctionObject? callee, JsValue thisValue, JsValue key, bool keyIsName)
+    {
+        if (callee?.HomeObject is not { } home)
+        {
+            throw new JsThrownException(CreateReferenceError(
+                "super reference requires a class method context."));
+        }
+
+        if (!TryGetSuperPropertyBase(function, home, out var baseProtoHandle))
+        {
+            throw new JsThrownException(CreateTypeError("Cannot read properties of null."));
+        }
+
+        var baseProto = _heap.GetObject(baseProtoHandle);
+        if (!keyIsName && key.Tag == JsValueTag.Symbol)
+        {
+            return TryGetSymbolPropertyValue(baseProto, thisValue, key.AsSymbolId(), out var symbolValue)
+                ? symbolValue
+                : JsValue.Undefined;
+        }
+
+        var name = keyIsName ? key.AsString() : ToPropertyKey(key);
+        return TryGetPropertyValue(baseProto, thisValue, name, out var value) ? value : JsValue.Undefined;
+    }
+
     /// <summary>ECMA-262 7.3.5 CreateDataPropertyOrThrow, shared with the old loop.</summary>
     internal void Interp2DefineOwnDataProperty(JsValue target, string key, JsValue value)
         => DefineOwnDataProperty(target, key, value);

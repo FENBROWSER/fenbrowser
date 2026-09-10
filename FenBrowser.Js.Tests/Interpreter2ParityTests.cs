@@ -151,6 +151,28 @@ public sealed class Interpreter2ParityTests
                 "return (Object.getOwnPropertyDescriptor(o, 'z') ? 'own' : 'inherited') + ':' + o.z; }" +
                 "finally { delete Object.prototype.z; } } f();", "own:5")]
 
+    // `super` resolves against the method's home object, which is the frame's
+    // callee - so it needs no environment record on this loop.
+    [InlineData("class A { get v() { return 7; } } class B extends A { m() { return super['v'] + 1; } }" +
+                "String(new B().m());", "8")]
+    [InlineData("var base = { greet() { return 'hi'; } };" +
+                "var o = { __proto__: base, greet() { return super.greet() + '!'; } }; o.greet();", "hi!")]
+    [InlineData("class A { who() { return this.name; } }" +
+                "class B extends A { constructor() { super(); this.name = 'b'; } m() { return super.who(); } }" +
+                "new B().m();", "b")]
+    // An arrow carries no home object of its own; it is refused here and has
+    // to keep working on the old loop.
+    [InlineData("class A { m() { return 'a'; } }" +
+                "class B extends A { m() { var f = () => super.m(); return f() + 'b'; } } new B().m();", "ab")]
+    // A throw from `super[k]` - its ToPropertyKey, or a getter on the base -
+    // has to reach the `try` around it rather than leave the dispatch loop.
+    [InlineData("var bad = { toString: function () { throw new RangeError('key'); } };" +
+                "var o = { m() { try { return super[bad]; } catch (e) { return 'caught:' + e.message; } } };" +
+                "o.m();", "caught:key")]
+    [InlineData("class A { get g() { throw new TypeError('getter'); } }" +
+                "class B extends A { m() { try { return super.g; } catch (e) { return 'caught:' + e.message; } } }" +
+                "new B().m();", "caught:getter")]
+
     // A closure over a block-scoped binding. The enclosing body must not keep
     // that binding in a register nothing outside the frame can reach - the
     // closure resolves the name outwards and finds a ReferenceError, or an

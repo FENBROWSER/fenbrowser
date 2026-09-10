@@ -707,6 +707,30 @@ internal sealed class Interp2
                     break;
                 }
 
+                case OpCode.SetHomeObject:
+                    // Records the object a method was defined on. It is the
+                    // enclosing body that runs this, not the method, so a class
+                    // full of methods stays in the loop even when the methods
+                    // themselves reach for super.
+                    _host.Interp2SetHomeObject(stack[frameBase + ins.A], stack[frameBase + ins.B]);
+                    stack = _stack;
+                    break;
+
+                case OpCode.LoadSuperProperty:
+                case OpCode.LoadSuperElement:
+                {
+                    ref var superFrame = ref _frames[_depth - 1];
+                    var superKey = ins.OpCode == OpCode.LoadSuperProperty
+                        ? JsValue.FromString(function.PropertyNames[ins.B])
+                        : stack[frameBase + ins.B];
+                    var superValue = _host.Interp2LoadSuper(
+                        function, superFrame.Callee, superFrame.This, superKey,
+                        keyIsName: ins.OpCode == OpCode.LoadSuperProperty);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = superValue;
+                    break;
+                }
+
                 case OpCode.SetElemDefine:
                     // `{ [k]: v }` and a computed method name. Defining rather
                     // than setting is the point: a computed key must not run a
