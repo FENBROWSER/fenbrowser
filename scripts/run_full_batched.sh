@@ -18,7 +18,11 @@ else
   exit 2
 fi
 
-OUTDIR="Results/test262/batched"
+# Overridable so a run on a different engine or interpreter can be compared
+# against the committed store instead of overwriting it - FRESH=1 wipes whatever
+# OUTDIR points at, and that store is what docs/test262_results.md is generated
+# from.
+OUTDIR="${OUTDIR:-Results/test262/batched}"
 mkdir -p "$OUTDIR"
 PROG="$OUTDIR/_progress.txt"
 : > "$PROG"
