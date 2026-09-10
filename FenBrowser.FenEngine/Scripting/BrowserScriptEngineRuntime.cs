@@ -1559,7 +1559,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             ? "<none>"
             : string.IsNullOrEmpty(id) ? $"<{element.TagName}>" : $"<{element.TagName}#{id}>";
         FenBrowser.Core.EngineLogCompat.Info(
-            $"[InputPipeline] JS dispatch type='{eventName}' target='{target}' realm='{realm}'",
+            $"[InputPipeline] JS dispatch type='{eventName}' target='{target}' realm='{realm}' " +
+            $"class='{element?.GetAttribute("class") ?? string.Empty}'",
             FenBrowser.Core.Logging.LogCategory.Events);
     }
 
@@ -1570,8 +1571,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         var target = element == null
             ? "<none>"
             : string.IsNullOrEmpty(id) ? $"<{element.TagName}>" : $"<{element.TagName}#{id}>";
+        // The class after the page's own handler has run. A widget that marks a
+        // selection by adding a class - reCAPTCHA's image tiles do - shows the
+        // change here, which separates "the handler never set it" from "it was
+        // set and nothing painted".
         FenBrowser.Core.EngineLogCompat.Info(
-            $"[InputPipeline] JS complete type='{eventName}' target='{target}' defaultAllowed={defaultAllowed}",
+            $"[InputPipeline] JS complete type='{eventName}' target='{target}' defaultAllowed={defaultAllowed} " +
+            $"class='{element?.GetAttribute("class") ?? string.Empty}'",
             FenBrowser.Core.Logging.LogCategory.Events);
     }
 

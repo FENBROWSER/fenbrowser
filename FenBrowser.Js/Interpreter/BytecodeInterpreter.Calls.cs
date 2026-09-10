@@ -565,7 +565,15 @@ public sealed partial class BytecodeInterpreter
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private JsValue CallAsyncGeneratorFunctionBody(JsValue value, JsFunctionObject fn, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
-        var registers = new JsValue[fn.Function.RegisterCount];
+        // Sized to hold a whole register window when the new loop runs it, for
+        // the same reason a sync generator's is - see CallGeneratorFunctionBody.
+        var windowLayout = Interpreter2.Interp2Options.Enabled && fn.SelfHandle is not null
+            ? Interpreter2.FrameLayout.For(fn.Function)
+            : null;
+        var runsOnRegisterWindow = windowLayout is { GeneratorEligible: true };
+        var registers = new JsValue[runsOnRegisterWindow
+            ? Math.Max(windowLayout!.WindowSize, fn.Function.RegisterCount)
+            : fn.Function.RegisterCount];
         for (var i = 0; i < registers.Length; i++)
             registers[i] = JsValue.Undefined;
 
@@ -573,6 +581,7 @@ public sealed partial class BytecodeInterpreter
         {
             ThisValue = thisValue,
             IsAsyncGenerator = true,
+            RunsOnRegisterWindow = runsOnRegisterWindow,
             InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args),
             SelfHandle = fn.SelfHandle
         };

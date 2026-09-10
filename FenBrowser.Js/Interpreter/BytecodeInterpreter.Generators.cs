@@ -30,16 +30,7 @@ public sealed partial class BytecodeInterpreter
 
         if (frame.AsyncContext is null)
         {
-            // Nothing to suspend into: this is not a real async activation, so
-            // keep the historical inline behaviour rather than failing the whole
-            // evaluation.
-            if (instance.Promise.State == PromiseState.Fulfilled)
-                return instance.Promise.GetResultUnchecked();
-
-            if (instance.Promise.State == PromiseState.Rejected)
-                throw new JsThrownException(instance.Promise.GetResultUnchecked());
-
-            throw new JsThrownException(CreateTypeError("Pending await is not supported in this execution context."));
+            return AwaitWithNothingToSuspendInto(instance);
         }
 
         // Suspend the async frame and resume from the microtask job.
@@ -63,6 +54,22 @@ public sealed partial class BytecodeInterpreter
         return JsValue.Undefined;
     }
 
+
+    // An await in a body with no async activation behind it, which is what an
+    // async generator is here: the body runs as a plain generator and each
+    // result is wrapped in a resolved promise, so there is no context to put the
+    // frame away in. Keep the historical inline behaviour rather than failing
+    // the whole evaluation. Both loops come here, so there is one copy of it.
+    internal JsValue AwaitWithNothingToSuspendInto(PromiseInstance instance)
+    {
+        if (instance.Promise.State == PromiseState.Fulfilled)
+            return instance.Promise.GetResultUnchecked();
+
+        if (instance.Promise.State == PromiseState.Rejected)
+            throw new JsThrownException(instance.Promise.GetResultUnchecked());
+
+        throw new JsThrownException(CreateTypeError("Pending await is not supported in this execution context."));
+    }
 
     // Creates (or reuses) a NativeFunctionObject that resumes the given
     // AsyncContext when the awaited promise settles. The callback declares the

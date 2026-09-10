@@ -308,7 +308,13 @@ public sealed class FrameLayout
         // with the call. What a home object is *for* is `super`, and a body
         // that reaches for one emits LoadSuperProperty, LoadSuperElement or
         // LoadSuperConstructor, which the opcode gate below refuses on its own.
-        var isGenerator = function.Kind == FunctionKind.Generator && GeneratorBodySupported(function);
+        // An async generator suspends at a yield like any other generator. On
+        // the old loop that is all it does - the body runs as a plain generator
+        // and its results are wrapped in resolved promises - so the two loops
+        // agree by running the same machinery, not by this one doing less.
+        var isGenerator =
+            (function.Kind is FunctionKind.Generator or FunctionKind.AsyncGenerator) &&
+            GeneratorBodySupported(function);
         // An async function suspends at an await and is resumed by a promise
         // job, which is the generator machinery pointed somewhere else. Module
         // and script bodies compile as async too - top-level await is legal in

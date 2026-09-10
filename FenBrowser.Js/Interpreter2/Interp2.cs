@@ -823,9 +823,12 @@ internal sealed class Interp2
                     // ECMA-262 27.7.5.2 Await. Resolving the value can run user
                     // code - a thenable's `then` getter - so the window is saved
                     // after that and before the reactions are attached.
-                    var awaiting = _frames[_depth - 1].AsyncContext!;
+                    // An async generator's frame has no activation to suspend
+                    // into, here or on the old loop, so its awaits stay inline.
+                    var awaiting = _frames[_depth - 1].AsyncContext;
                     var suspends = _host.Interp2AwaitPrepare(
-                        stack[frameBase + ins.B], out var awaitedPromise, out var inlineResult);
+                        stack[frameBase + ins.B], awaiting is not null,
+                        out var awaitedPromise, out var inlineResult);
                     stack = _stack;
                     if (!suspends)
                     {
@@ -833,8 +836,8 @@ internal sealed class Interp2
                         break;
                     }
 
-                    SaveAsyncWindow(awaiting, ins.A, ip);
-                    _host.Interp2AwaitAttach(awaiting, awaitedPromise);
+                    SaveAsyncWindow(awaiting!, ins.A, ip);
+                    _host.Interp2AwaitAttach(awaiting!, awaitedPromise);
                     _depth--;
                     _stackTop = frameBase;
                     return JsValue.Undefined;
@@ -2053,6 +2056,13 @@ internal sealed class Interp2
             if (frame.HasPendingException && frame.PendingException.Tag == JsValueTag.Object)
             {
                 tracer.TraceRoot("interp2.frame.pendingException", frame.PendingException.AsObjectHandle());
+            }
+
+            // Audit JSRT-004: while an async frame is active, its context must be
+            // rooted even though no promise reaction holds it yet.
+            if (frame.AsyncContext?.SelfHandle is { } asyncCtxHandle)
+            {
+                tracer.TraceRoot("interp2.frame.asyncContext", asyncCtxHandle);
             }
         }
     }

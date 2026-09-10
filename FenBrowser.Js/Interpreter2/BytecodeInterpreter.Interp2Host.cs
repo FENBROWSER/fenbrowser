@@ -224,16 +224,27 @@ public sealed partial class BytecodeInterpreter
     /// away: true when the await suspends, and <paramref name="awaitedPromise"/>
     /// is what the resumption attaches to.
     /// </summary>
-    internal bool Interp2AwaitPrepare(JsValue value, out JsValue awaitedPromise, out JsValue inlineResult)
+    /// <param name="hasContext">
+    /// Whether the frame has an async activation to suspend into. An async
+    /// generator's does not - see <see cref="AwaitWithNothingToSuspendInto"/>.
+    /// </param>
+    internal bool Interp2AwaitPrepare(
+        JsValue value, bool hasContext, out JsValue awaitedPromise, out JsValue inlineResult)
     {
         awaitedPromise = PromiseResolveStatic(value);
         inlineResult = JsValue.Undefined;
         if (awaitedPromise.Tag != JsValueTag.Object ||
-            _heap.GetObject(awaitedPromise.AsObjectHandle()) is not Promises.PromiseInstance)
+            _heap.GetObject(awaitedPromise.AsObjectHandle()) is not Promises.PromiseInstance instance)
         {
             // Not something with reactions to hang the resumption on, so the
             // value is its own result - as it is on the old loop.
             inlineResult = value;
+            return false;
+        }
+
+        if (!hasContext)
+        {
+            inlineResult = AwaitWithNothingToSuspendInto(instance);
             return false;
         }
 

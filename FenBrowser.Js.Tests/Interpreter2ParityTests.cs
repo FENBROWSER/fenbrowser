@@ -368,6 +368,36 @@ public sealed class Interpreter2ParityTests
                 "log.join(',');", "g1,f1,top,f2,g2")]
     [InlineData("var log = []; Promise.resolve().then(function () { log.push('p'); });" +
                 "(async function () { log.push('a'); await 0; log.push('b'); })();", "log.join(',');", "a,p,b")]
+    // An async generator is both machines at once - it suspends at a yield like
+    // a generator and its results are promises - and on both loops it is run as
+    // a generator whose results are wrapped in resolved promises. So an await
+    // inside one has no activation to suspend into, and stays inline.
+    [InlineData("var out; async function* g() { yield 1; yield 2; }" +
+                "g().next().then(function (r) { out = r.value + ':' + r.done; });", "out;", "1:false")]
+    [InlineData("var out; async function* g() { var v = await Promise.resolve(5); yield v * 2; }" +
+                "g().next().then(function (r) { out = String(r.value); });", "out;", "10")]
+    // Its own variables survive the suspension, as a sync generator's do, and
+    // the value next() is given is what the yield evaluates to.
+    [InlineData("var out; async function* g() { var n = 0; yield ++n; yield ++n; } var it = g(); var r = [];" +
+                "it.next().then(function (a) { r.push(a.value); return it.next(); })" +
+                ".then(function (b) { r.push(b.value); out = r.join(','); });", "out;", "1,2")]
+    [InlineData("var out; async function* g() { var x = yield 1; out = 'got:' + x; } var it = g();" +
+                "it.next().then(function () { return it.next('s'); });", "out;", "got:s")]
+    [InlineData("var out; async function* g() { yield 1; } var it = g();" +
+                "it.next().then(function () { return it.next(); })" +
+                ".then(function (r) { out = String(r.value) + ':' + r.done; });", "out;", "undefined:true")]
+    // A finally covering the yield runs when .return() ends the delegation.
+    [InlineData("var out = []; async function* g() { try { yield 1; } finally { out.push('fin'); } } var it = g();" +
+                "it.next().then(function () { return it.return(9); })" +
+                ".then(function (r) { out.push(r.value + ':' + r.done); });", "out.join(',');", "fin,9:true")]
+    // Its receiver and its parameters are bound when it is called.
+    [InlineData("var out; async function* g() { yield this.v; }" +
+                "g.call({ v: 7 }).next().then(function (a) { out = String(a.value); });", "out;", "7")]
+    [InlineData("var out; async function* g(a, b) { yield a + b; }" +
+                "g(3, 4).next().then(function (r) { out = String(r.value); });", "out;", "7")]
+    // A throw before the first yield rejects the promise next() handed back.
+    [InlineData("var out; async function* g() { throw new Error('ag'); }" +
+                "g().next().catch(function (e) { out = e.message; });", "out;", "ag")]
     public void BothLoopsAgreeAfterTheJobQueueDrains(string source, string reader, string expected)
     {
         var onOldLoop = RunThenReadOn(engine2: false, source, reader);
