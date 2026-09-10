@@ -364,10 +364,21 @@ internal sealed class Interp2
                     // The block's binding is a slot in this window, which the
                     // layout has already proved nothing outside the block can
                     // reach. C = 1 asks for it to start as undefined; otherwise
-                    // the declaration is the next instruction.
+                    // it starts in the temporal dead zone and the declaration
+                    // ends it, whenever in the block that turns out to be.
                     if (ins.C == 1)
                     {
                         stack[slotBase + ins.A] = JsValue.Undefined;
+                        if (layout.HasLexicalSlots)
+                        {
+                            _tdz[slotBase + ins.A] = 0;
+                        }
+                    }
+                    else if (layout.HasLexicalSlots)
+                    {
+                        // Re-entering the block - the next turn of a loop - puts
+                        // the binding back in the dead zone, as a fresh one is.
+                        _tdz[slotBase + ins.A] = 1;
                     }
 
                     break;

@@ -317,7 +317,8 @@ public sealed class FrameLayout
         // A block introduces its binding with EnterScope, whose operand is the
         // slot. Those are declarations of this body as much as a `var` is, and
         // have to be classified before anything else looks at a slot.
-        var blockScopes = BlockScopeRegions(function.InstructionArray, out var blockScopeSlots, out var constSlots);
+        var blockScopes = BlockScopeRegions(
+            function.InstructionArray, out var blockScopeSlots, out var constSlots, out var deadZoneSlots);
         if (blockScopes is null)
         {
             return new FrameLayout(function, Interp2Bailout.BlockScope);
@@ -369,6 +370,15 @@ public sealed class FrameLayout
 
         var slotIsLexical = new bool[slotCount];
         var hasLexicalSlots = false;
+        foreach (var deadZoneSlot in deadZoneSlots)
+        {
+            if ((uint)deadZoneSlot < (uint)slotCount)
+            {
+                slotIsLexical[deadZoneSlot] = true;
+                hasLexicalSlots = true;
+            }
+        }
+
         for (var kind = 0; kind < 2; kind++)
         {
             var lexicalNames = kind == 0 ? function.LexicalDeclarationNames : function.ConstDeclarationNames;
@@ -597,18 +607,16 @@ public sealed class FrameLayout
     /// - the scopes must nest properly, so a region can be identified at all;
     /// - two nested scopes must not share a slot, or the inner one's value would
     ///   survive into the outer one, which is a distinct binding;
-    /// - the binding must be initialised before anything can read it, because a
-    ///   register has no value distinct from `undefined` to stand for the
-    ///   temporal dead zone.
-    ///
-    /// The compiler emits the catch binding of a `try`/`catch` in exactly that
-    /// shape - EnterScope then InitVar - which is what this exists to admit.
+    /// A binding that is not pre-initialised starts in the temporal dead zone,
+    /// which the byte beside its slot carries, so the declaration need not
+    /// immediately follow the block opening.
     /// </remarks>
     private static List<(int Slot, int Start, int End)>? BlockScopeRegions(
-        Instruction[] code, out HashSet<int> slots, out HashSet<int> constants)
+        Instruction[] code, out HashSet<int> slots, out HashSet<int> constants, out HashSet<int> deadZone)
     {
         slots = new HashSet<int>();
         constants = new HashSet<int>();
+        deadZone = new HashSet<int>();
         var regions = new List<(int, int, int)>();
         var open = new List<(int Slot, int Start)>();
 
@@ -634,16 +642,11 @@ public sealed class FrameLayout
                 if (openSlot == scopeSlot) return null;
             }
 
-            // C = 1 pre-initialises the binding to undefined; otherwise the
-            // declaration must be the very next thing, so nothing can observe
-            // the slot between the block opening and the value arriving.
-            if (ins.C != 1 &&
-                (ip + 1 >= code.Length ||
-                 code[ip + 1].OpCode != OpCode.InitVar ||
-                 code[ip + 1].B != scopeSlot))
-            {
-                return null;
-            }
+            // C = 1 pre-initialises the binding to undefined. Otherwise it
+            // starts in the temporal dead zone, which the byte beside the slot
+            // carries: the declaration need not be the next instruction, and a
+            // read in between is the ReferenceError it should be.
+            if (ins.C != 1) deadZone.Add(scopeSlot);
 
             if (ins.B == 1) constants.Add(scopeSlot);
             slots.Add(scopeSlot);
