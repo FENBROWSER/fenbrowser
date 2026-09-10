@@ -616,6 +616,25 @@ with no heap, stale-handle or fatal failure; with `--gc-after-every-alloc`, the
 harshest setting there is, 150/150 on both. A missing root would not survive
 either.
 
+**The full suite has been run on it.** 190 batches, the whole of test262,
+against the committed headline:
+
+| | passed | total | |
+|---|---|---|---|
+| old loop (committed headline) | 49,936 | 53,483 | 93.37% |
+| new loop | **49,953** | 53,483 | **93.40%** |
+
+**No batch passes fewer**, and the 190 batches match on totals one for one.
+Three pass more: `staging` +12, which is the new loop finishing inside the 2s
+per-test timeout, and `built-ins/Array` +5 with `built-ins/RegExp` +1, which are
+engine fixes made alongside this work and help both loops equally. So the
+headline does not move down; it moves up by seventeen tests, twelve of them
+attributable to the loop.
+
+(The local batched store carried eight stale batch files from an older
+directory layout, which is why its own total reads 55,362. On the 190 batches
+both stores share, the totals are identical.)
+
 **It has now been run in a browser.** Four WPT directories on both loops,
 through the real bed - upstream `wptrunner`, the installed
 `wptrunner_fenbrowser` plugin and the WebDriver server:
@@ -651,11 +670,10 @@ acceptable, or whether tier-up comes first.
 
 **Still open before flipping it.**
 
-- One full batched run on the new loop, to confirm the committed headline
-  number does not move. The per-category diffs are stronger evidence than an
-  aggregate, but the aggregate is what `docs/test262_results.md` records.
 - The last 492 tests, which need a RegExp run that does not re-do the property
-  escapes.
+  escapes. They are inside the full batched run above, which shows
+  `built-ins/RegExp` at 1874/1879 on the new loop against 1873 on the old, so
+  nothing is hiding in them - but they have not been diffed test by test.
 - Multi-realm frames and workers under a long browser session. The collector
   has been stressed directly; those have not, beyond what the captcha harness
   exercises.
