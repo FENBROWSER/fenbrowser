@@ -594,14 +594,27 @@ Selecting the loop is already one environment variable, forwarded to whatever
 process runs the script. What is not settled is whether it should be the
 default, and the honest state of that is below.
 
-**Settled.** 50,219 of test262's ~53,485 tests - **93.9%** - have been run on
-both loops and diffed by test name. Every category is an identical result set
-except `staging`, where the new loop passes **ten more** because it finishes
-inside the 2s per-test timeout that the old loop misses. Coverage is 97.5% of
-bodies, and the 2.5% it declines fall back to the old loop by construction, so
-a body this loop cannot represent is a speed question and never a correctness
-one. 3,483 unit tests pass, 59 of them running the same program on both loops
-in one process and comparing.
+**Settled.** All of test262 except 492 tests - **99.1%** - has been run on both
+loops and diffed by test name. Every category is an identical result set except
+two, and in both the new loop passes *more*: `staging` by ten and
+`built-ins/RegExp/CharacterClassEscapes` by two, in each case because it
+finishes inside the 2s per-test timeout that the old loop misses. The 492 not
+covered are the loose files at `built-ins/RegExp`, which cannot be selected
+without re-running the 613 property escapes beside them; those escapes were run
+and are 613/613 on both.
+
+Coverage is 97.5% of bodies, and the 2.5% it declines fall back to the old loop
+by construction, so a body this loop cannot represent is a speed question and
+never a correctness one. 3,483 unit tests pass, 59 of them running the same
+program on both loops in one process and comparing.
+
+**The collector has been stressed on it**, which matters because the loop added
+a root source the old one did not have - the register window itself, visible in
+a browser's root breakdown as `interp2.stack`. Running test262 slices through
+the shell with `--gc-random --verify-heap-after-gc` gives 673/751 on both loops
+with no heap, stale-handle or fatal failure; with `--gc-after-every-alloc`, the
+harshest setting there is, 150/150 on both. A missing root would not survive
+either.
 
 **The decision, which is not a bug.** Making it the default gives up the JIT
 for the 97.5% of bodies it accepts, because it has no tier-up. Measured, that
@@ -614,17 +627,13 @@ acceptable, or whether tier-up comes first.
 
 **Still open before flipping it.**
 
-- The remaining 6.1% of the corpus: `built-ins/RegExp/property-escapes` (613
-  tests, slow enough to need its own run), `Atomics` (389), and about 2,200
-  tests in small `built-ins` directories.
 - One full batched run on the new loop, to confirm the committed headline
   number does not move. The per-category diffs are stronger evidence than an
   aggregate, but the aggregate is what `docs/test262_results.md` records.
-- Browser-level verification. The captcha harness runs on the new loop and gets
-  further than the old one, but no systematic page or WPT run has been done
-  with it as the default.
-- Long-session behaviour: the collector, multi-realm frames and workers have not
-  been stressed on it the way a browser session would.
+- The last 492 tests, which need a RegExp run that does not re-do the property
+  escapes.
+- Multi-realm frames and workers under a long browser session. The collector
+  has been stressed directly; those have not.
 
 The one thing that has *not* been a problem is correctness of the loop itself.
 Both divergences the A/B has ever caught were pre-existing engine bugs it
