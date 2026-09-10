@@ -385,7 +385,30 @@ public sealed class FrameLayout
         var hasContext = false;
         if (makesClosures)
         {
-            var captured = CaptureAnalysis.CapturedNames(function, declaredNames, out var capturesReceiver);
+            // A block-scoped binding is this body's as much as a var is, but it
+            // is not in `declared` - that set is parameters, vars, `arguments`
+            // and the self name. Handing only those over made a closure over a
+            // `for (const v of ...)` head *invisible*: the name came back
+            // uncaptured, the binding stayed a register nothing outside the
+            // frame can reach, and the closure resolved `v` outwards - to a
+            // ReferenceError, or worse to an unrelated binding of the same name
+            // that answered with the wrong value.
+            var captureScope = declaredNames;
+            if (blockScopeSlots.Count > 0)
+            {
+                var withBlocks = new HashSet<string>(declaredNames, StringComparer.Ordinal);
+                foreach (var blockSlot in blockScopeSlots)
+                {
+                    if ((uint)blockSlot < (uint)slotNames.Length && slotNames[blockSlot] is { } blockName)
+                    {
+                        withBlocks.Add(blockName);
+                    }
+                }
+
+                captureScope = withBlocks;
+            }
+
+            var captured = CaptureAnalysis.CapturedNames(function, captureScope, out var capturesReceiver);
             if (captured is null)
                 return new FrameLayout(function, Interp2Bailout.CapturedReceiver);
 

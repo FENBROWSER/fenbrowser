@@ -127,6 +127,24 @@ public sealed class Interpreter2ParityTests
     // A method that reaches for super stays on the old loop, and still works.
     [InlineData("class A { m() { return 'a'; } } class B extends A { m() { return super.m() + 'b'; } }" +
                 "new B().m();", "ab")]
+    // A closure over a block-scoped binding. The enclosing body must not keep
+    // that binding in a register nothing outside the frame can reach - the
+    // closure resolves the name outwards and finds a ReferenceError, or an
+    // unrelated binding of the same name that answers with the wrong value.
+    [InlineData("function f() { var o = []; for (const v of ['a', 'b', 'c']) { o.push(function () { return v; }); }" +
+                "return o.map(function (g) { return g(); }).join(','); } f();", "a,b,c")]
+    [InlineData("function f() { var o = []; for (let i = 0; i < 3; i++) { o.push(function () { return i; }); }" +
+                "return o.map(function (g) { return g(); }).join(','); } f();", "0,1,2")]
+    [InlineData("function f() { var o = []; var xs = ['p', 'q'];" +
+                "for (var k = 0; k < xs.length; k++) { const c = xs[k]; o.push(function () { return c; }); }" +
+                "return o.map(function (g) { return g(); }).join(','); } f();", "p,q")]
+    [InlineData("function f() { var o = []; for (const k in { a: 1, b: 2 }) { o.push(() => k); }" +
+                "return o.map(function (g) { return g(); }).join(','); } f();", "a,b")]
+    // An outer binding of the same name must not be what the closure finds.
+    [InlineData("var v = 'outer';" +
+                "function f() { var o = []; for (const v of ['inner']) { o.push(function () { return v; }); }" +
+                "return o[0](); } f();", "inner")]
+
     // Private fields: the brand is the whole of the access control.
     [InlineData("class C { #x = 5; read() { return this.#x; } } new C().read();", "5")]
     [InlineData("class C { #x = 1; bump() { this.#x += 2; return this.#x; } } new C().bump();", "3")]
