@@ -335,4 +335,11 @@ public enum OpCode : byte
 		// pair is one of the most executed sequences there is.
 		// A=dest reg, B=object reg, C=constant index.
 		GetElemConst,
+
+		// ECMA-262 10.2.1.3 FunctionDeclarationInstantiation steps 28 and 30: give
+		// the body of a function whose parameter expressions could observe it an
+		// environment of its own, holding BytecodeFunction.BodyVarNames - each
+		// starting as the same-named parameter's value, or undefined - and its let
+		// and const. Emitted once, right after PrologueEnd. No operands.
+		EnterFunctionBodyScope,
 	}

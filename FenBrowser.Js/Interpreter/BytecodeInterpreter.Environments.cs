@@ -219,6 +219,52 @@ public sealed partial class BytecodeInterpreter
     }
 
 
+    // ECMA-262 10.2.1.3 FunctionDeclarationInstantiation steps 28 and 30, for a
+    // function whose parameter expressions create a closure or call eval: once the
+    // parameters are bound the body gets an environment of its own, so a closure
+    // made in a default value goes on seeing the parameters and the scope outside
+    // them, never the body's vars. Each body var starts as the value of the
+    // parameter of the same name - `arguments` too, when the function has its own
+    // - and otherwise as undefined; a let or const starts uninitialized. It is the
+    // body's variable environment, where a sloppy eval in the body puts its vars
+    // and an Annex B block function its binding.
+    private void EnterFunctionBodyScope(InterpreterFrame frame, BytecodeFunction function)
+    {
+        var parameterEnvironment = frame.Environment;
+        var bodyEnvironment = StampEnvironment(new DeclarativeEnvironmentRecord(parameterEnvironment));
+        bodyEnvironment.IsVariableScope = true;
+
+        foreach (var name in function.BodyVarNames)
+        {
+            var initial = JsValue.Undefined;
+            // The prologue's own vars are the names destructured parameters bind.
+            var isParameterBinding = function.ParameterNames.Contains(name, StringComparer.Ordinal) ||
+                function.VarDeclarationNames.Contains(name) ||
+                (function.HasOwnArgumentsObject && string.Equals(name, "arguments", StringComparison.Ordinal));
+            if (isParameterBinding &&
+                parameterEnvironment.HasBinding(name) &&
+                parameterEnvironment.GetBindingValue(name, strict: false, out var parameterValue) == BindingOpResult.Ok)
+            {
+                initial = parameterValue;
+            }
+
+            _ = bodyEnvironment.CreateMutableBinding(name, deletable: false);
+            _ = bodyEnvironment.InitializeBinding(name, initial);
+        }
+
+        foreach (var name in function.BodyLexicalNames)
+        {
+            _ = bodyEnvironment.CreateMutableBinding(name, deletable: false);
+        }
+
+        foreach (var name in function.BodyConstNames)
+        {
+            _ = bodyEnvironment.CreateImmutableBinding(name, strict: true);
+        }
+
+        frame.Environment = bodyEnvironment;
+    }
+
     internal void EnterScopeForJit(InterpreterFrame frame, int slotNameIndex, int isConst, int isCatch)
     {
         var newScope = StampEnvironment(new DeclarativeEnvironmentRecord(frame.Environment));

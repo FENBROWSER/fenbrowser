@@ -100,6 +100,16 @@ public sealed class BytecodeFunction
 
     public IReadOnlyList<string> ConstDeclarationNames { get; init; } = Array.Empty<string>();
 
+    // ECMA-262 10.2.1.3 FunctionDeclarationInstantiation steps 28 and 30. When a
+    // parameter expression could observe the difference - it creates a closure or
+    // calls eval - the body's declarations live in an environment of their own,
+    // entered by EnterFunctionBodyScope once the parameters are bound. These are
+    // the names that environment holds, and the three lists above then hold only
+    // what the parameters declare themselves.
+    public IReadOnlyList<string> BodyVarNames { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> BodyLexicalNames { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> BodyConstNames { get; init; } = Array.Empty<string>();
+
     public required IReadOnlyList<string> PropertyNames { get; init; }
 
     public required IReadOnlyList<string> ParameterNames { get; init; }
@@ -336,6 +346,9 @@ public sealed class BytecodeFunction
             VarDeclarationNames = VarDeclarationNames,
             LexicalDeclarationNames = LexicalDeclarationNames,
             ConstDeclarationNames = ConstDeclarationNames,
+            BodyVarNames = BodyVarNames,
+            BodyLexicalNames = BodyLexicalNames,
+            BodyConstNames = BodyConstNames,
             PropertyNames = PropertyNames,
             ParameterNames = ParameterNames,
             RestParameterIndex = RestParameterIndex,

@@ -239,6 +239,7 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
             case OpCode.PrologueEnd:
+            case OpCode.EnterFunctionBodyScope:
                 break;
             case OpCode.DefineMethodByReg:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

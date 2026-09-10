@@ -2421,6 +2421,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         return JsValue.Undefined;
                     }
                     break;
+                case OpCode.EnterFunctionBodyScope:
+                    EnterFunctionBodyScope(frame, function);
+                    break;
                 case OpCode.DefineMethod:
                     HandleDefineMethod(frame, function, ins);
                     break;
@@ -7669,7 +7672,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                     // declaration is instantiated.
                                     bool isLexicalBinding = varEnvFunction is not null &&
                                         (varEnvFunction.LexicalDeclarationNames.Contains(name) ||
-                                         varEnvFunction.ConstDeclarationNames.Contains(name));
+                                         varEnvFunction.ConstDeclarationNames.Contains(name) ||
+                                         varEnvFunction.BodyLexicalNames.Contains(name) ||
+                                         varEnvFunction.BodyConstNames.Contains(name));
                                     if (isLexicalBinding)
                                     {
                                         throw new JsThrownException(CreateSyntaxError(

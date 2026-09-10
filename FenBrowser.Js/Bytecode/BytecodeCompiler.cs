@@ -95,6 +95,15 @@ public sealed class BytecodeCompiler
     private readonly Dictionary<string, int> _propertyNameToIndex = new(StringComparer.Ordinal);
     private readonly List<BytecodeFunction> _nestedFunctions = new();
     private readonly List<string> _parameterNames = new();
+
+    // FunctionDeclarationInstantiation steps 28 and 30 (see EnterFunctionBodyScope):
+    // set at the end of the parameter prologue when that prologue can observe the
+    // body's environment, after which every var the body declares is noted in
+    // _bodyVarNames as well. _prologueVarNames holds what the prologue itself
+    // declared - the names a destructured parameter binds.
+    private bool _bodyScopeSeparated;
+    private HashSet<string>? _prologueVarNames;
+    private readonly HashSet<string> _bodyVarNames = new(StringComparer.Ordinal);
     private readonly Stack<LoopContext> _loopStack = new();
     private readonly Stack<LabelTarget> _labelStack = new();
     // Pending `finally` blocks (innermost on top) and a monotonic counter shared by
@@ -233,6 +242,9 @@ public sealed class BytecodeCompiler
         _propertyNameToIndex.Clear();
         _nestedFunctions.Clear();
         _parameterNames.Clear();
+        _bodyScopeSeparated = false;
+        _prologueVarNames = null;
+        _bodyVarNames.Clear();
         _loopStack.Clear();
         _labelStack.Clear();
         _finallyStack.Clear();
@@ -281,6 +293,22 @@ public sealed class BytecodeCompiler
             {
                 prologueEndIp = _instructions.Count;
                 _instructions.Add(new Instruction(OpCode.PrologueEnd, 0, 0, 0));
+                // ECMA-262 10.2.1.3 steps 28 and 30: a body whose parameters have
+                // expressions gets its own environment. It is only observable
+                // through a closure made in the parameters or an eval there, and
+                // the name lookups it costs are not free, so only then is it made.
+                if (PrologueCanObserveBodyScope(prologueEndIp))
+                {
+                    _bodyScopeSeparated = true;
+                    _prologueVarNames = new HashSet<string>(_varDeclarationNames, StringComparer.Ordinal);
+                    foreach (var annexBName in _annexBFunctionNames)
+                    {
+                        _prologueVarNames.Remove(annexBName);
+                        _bodyVarNames.Add(annexBName);
+                    }
+
+                    _instructions.Add(new Instruction(OpCode.EnterFunctionBodyScope, 0, 0, 0));
+                }
                 // Hoist function declarations from the body portion AFTER the
                 // parameter default expressions (the prelude). This ensures
                 // that the StoreVar for a function declaration like
@@ -324,9 +352,12 @@ public sealed class BytecodeCompiler
             Instructions = _instructions.ToArray(),
             Constants = _constants.ToArray(),
             VariableSlots = new Dictionary<string, int>(_variables),
-            VarDeclarationNames = _varDeclarationNames.ToArray(),
-            LexicalDeclarationNames = _lexicalDeclarationNames.ToArray(),
-            ConstDeclarationNames = _constDeclarationNames.ToArray(),
+            VarDeclarationNames = (_prologueVarNames ?? _varDeclarationNames).ToArray(),
+            LexicalDeclarationNames = _bodyScopeSeparated ? Array.Empty<string>() : _lexicalDeclarationNames.ToArray(),
+            ConstDeclarationNames = _bodyScopeSeparated ? Array.Empty<string>() : _constDeclarationNames.ToArray(),
+            BodyVarNames = _bodyVarNames.ToArray(),
+            BodyLexicalNames = _bodyScopeSeparated ? _lexicalDeclarationNames.ToArray() : Array.Empty<string>(),
+            BodyConstNames = _bodyScopeSeparated ? _constDeclarationNames.ToArray() : Array.Empty<string>(),
             PropertyNames = _propertyNames.ToArray(),
             ParameterNames = _parameterNames.ToArray(),
             RestParameterIndex = restParameterIndex,
@@ -494,7 +525,7 @@ public sealed class BytecodeCompiler
                         bool isBlockScoped = IsBlockScopedName(boundName);
                         if (string.Equals(decl.Kind, "var", StringComparison.Ordinal))
                         {
-                            _varDeclarationNames.Add(boundName);
+                            AddVarDeclarationName(boundName);
                         }
                         else if (!isBlockScoped)
                         {
@@ -728,7 +759,7 @@ public sealed class BytecodeCompiler
         }
         else
         {
-            _varDeclarationNames.Add(functionDecl.Name);
+            AddVarDeclarationName(functionDecl.Name);
             _instructions.Add(new Instruction(OpCode.StoreVar, dest, slot, 0));
         }
     }
@@ -2595,7 +2626,7 @@ public sealed class BytecodeCompiler
         {
             foreach (var boundName in GetDeclaratorBoundNames(declarator))
             {
-                _varDeclarationNames.Add(boundName);
+                AddVarDeclarationName(boundName);
             }
         }
 
@@ -2695,7 +2726,7 @@ public sealed class BytecodeCompiler
         {
             var catchSlot = GetOrCreateVariableSlot(catchIdentifier);
             if (!useBlockScope)
-                _varDeclarationNames.Add(catchIdentifier);
+                AddVarDeclarationName(catchIdentifier);
             _instructions.Add(new Instruction(useBlockScope ? OpCode.InitVar : OpCode.StoreVar, 0, catchSlot, 0));
             return;
         }
@@ -2707,7 +2738,7 @@ public sealed class BytecodeCompiler
             _ = GetOrCreateVariableSlot(name);
             if (!useBlockScope)
             {
-                _varDeclarationNames.Add(name);
+                AddVarDeclarationName(name);
             }
         }
         // Copy the exception out of register 0 before destructuring, since pattern
@@ -5146,6 +5177,38 @@ public sealed class BytecodeCompiler
         // For now, the StoreFieldKey + later SetElem/GetElem do ToPropertyKey
         // implicitly. Return the value as-is.
         return valueReg;
+    }
+
+    private void AddVarDeclarationName(string name)
+    {
+        _varDeclarationNames.Add(name);
+        if (_bodyScopeSeparated)
+        {
+            _bodyVarNames.Add(name);
+        }
+    }
+
+    // Whether the parameter prologue - instructions [0, prologueEndIp) - makes a
+    // closure or calls eval directly, the only two ways code in the parameters can
+    // tell a separate body environment from a shared one.
+    private bool PrologueCanObserveBodyScope(int prologueEndIp)
+    {
+        for (var ip = 0; ip < prologueEndIp; ip++)
+        {
+            var instruction = _instructions[ip];
+            if (instruction.OpCode == OpCode.CreateFunction)
+            {
+                return true;
+            }
+
+            if (instruction.E == DirectEvalCallFlag && instruction.OpCode is
+                OpCode.Call0 or OpCode.Call1 or OpCode.CallN or OpCode.CallSpread)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsDirectEvalCallCallee(ExpressionNode callee)
