@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
@@ -890,6 +890,12 @@ internal sealed class Interp2
                 }
 
                 calleeIsJavaScript = true;
+
+                // Which reason is costing calls, not which is costing bodies.
+                // 332 bodies were declined for one reason and 97 for another,
+                // and clearing the 332 moved the delegated calls by 0.7%: the
+                // work queue has to be weighted by how often a body is entered.
+                if (Interp2Options.Log) Interp2Stats.RecordDeclinedCall(layout.Bailout);
             }
             else if (target is NativeFunctionObject native)
             {

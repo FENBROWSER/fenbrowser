@@ -129,6 +129,8 @@ public static class Interp2Stats
 
     private static readonly long[] BailoutCounts = new long[Enum.GetValues<Interp2Bailout>().Length];
 
+    private static readonly long[] DeclinedCallCounts = new long[Enum.GetValues<Interp2Bailout>().Length];
+
     private static readonly Dictionary<FenBrowser.Js.Bytecode.OpCode, long> UnsupportedOpCodes = new();
 
     private static long _eligibleFunctions;
@@ -265,6 +267,12 @@ public static class Interp2Stats
         }
     }
 
+    /// <summary>
+    /// A call that had to leave the loop because the callee's body was
+    /// declined, counted against the reason it was declined.
+    /// </summary>
+    internal static void RecordDeclinedCall(Interp2Bailout reason) => DeclinedCallCounts[(int)reason]++;
+
     internal static void RecordCallDelegated(bool calleeIsJavaScript)
     {
         _callsDelegated++;
@@ -274,6 +282,7 @@ public static class Interp2Stats
     public static void Reset()
     {
         Array.Clear(BailoutCounts);
+        Array.Clear(DeclinedCallCounts);
         UnsupportedOpCodes.Clear();
         _eligibleFunctions = 0;
         _declinedFunctions = 0;
@@ -440,8 +449,29 @@ public static class Interp2Stats
         ranked.Sort(static (a, b) => b.Count.CompareTo(a.Count));
         if (ranked.Count > 0)
         {
-            report.Append("[interp2] declined:");
+            report.Append("[interp2] declined bodies:");
             foreach (var (reason, count) in ranked)
+            {
+                report.Append(' ').Append(reason).Append('=').Append(count);
+            }
+
+            report.AppendLine();
+        }
+
+        var declinedCalls = new List<(Interp2Bailout Reason, long Count)>();
+        for (var i = 1; i < DeclinedCallCounts.Length; i++)
+        {
+            if (DeclinedCallCounts[i] > 0) declinedCalls.Add(((Interp2Bailout)i, DeclinedCallCounts[i]));
+        }
+
+        declinedCalls.Sort(static (a, b) => b.Count.CompareTo(a.Count));
+        if (declinedCalls.Count > 0)
+        {
+            // The queue that matters. A reason costing 300 bodies entered twice
+            // each is worth less than one costing three bodies in the hot path,
+            // and only this line tells them apart.
+            report.Append("[interp2] declined calls:");
+            foreach (var (reason, count) in declinedCalls)
             {
                 report.Append(' ').Append(reason).Append('=').Append(count);
             }
