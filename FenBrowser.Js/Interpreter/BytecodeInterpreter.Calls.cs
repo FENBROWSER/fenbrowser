@@ -448,12 +448,21 @@ public sealed partial class BytecodeInterpreter
 
         // Create an AsyncContext to hold suspended state. If the body
         // never awaits, the context is unused and the fast path applies.
-        var registers = new JsValue[fn.Function.RegisterCount];
+        // On the register-window loop the suspended state is a whole window,
+        // so the array is sized for one.
+        var windowLayout = Interpreter2.Interp2Options.Enabled
+            ? Interpreter2.FrameLayout.For(fn.Function)
+            : null;
+        var runsOnRegisterWindow = windowLayout is { AsyncEligible: true };
+        var registers = new JsValue[runsOnRegisterWindow
+            ? Math.Max(windowLayout!.WindowSize, fn.Function.RegisterCount)
+            : fn.Function.RegisterCount];
         for (var i = 0; i < registers.Length; i++)
             registers[i] = JsValue.Undefined;
         var asyncCtx = new AsyncContext(fn.Function, registers, fn.OuterEnvironment)
         {
-            ThisValue = thisValue
+            ThisValue = thisValue,
+            RunsOnRegisterWindow = runsOnRegisterWindow
         };
         var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
         asyncCtx.SelfHandle = ctxHandle;
@@ -472,7 +481,9 @@ public sealed partial class BytecodeInterpreter
 
         try
         {
-            var result = ExecuteInternal(fn.Function, new CallArgs(args), thisValue, fn.OuterEnvironment, callee: fn, asyncContext: asyncCtx);
+            var result = runsOnRegisterWindow
+                ? Interp2RunAsync(asyncCtx, fn, args as JsValue[] ?? System.Linq.Enumerable.ToArray(args), thisValue)
+                : ExecuteInternal(fn.Function, new CallArgs(args), thisValue, fn.OuterEnvironment, callee: fn, asyncContext: asyncCtx);
 
             if (asyncCtx.IsSuspended)
             {

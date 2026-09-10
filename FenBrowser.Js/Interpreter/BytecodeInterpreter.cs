@@ -1260,13 +1260,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         try
         {
-            var result = ExecuteInternal(
-                ctx.Function,
-                Array.Empty<JsValue>(),
-                ctx.ThisValue,
-                ctx.OuterEnvironment,
-                frameEnvironment: isResume ? ctx.Environment : null,
-                asyncContext: ctx);
+            // An async activation runs on the loop it was created for, for the
+            // same reason a generator does: the two lay a frame out differently.
+            var result = ctx.RunsOnRegisterWindow
+                ? Interp2ResumeAsync(ctx)
+                : ExecuteInternal(
+                    ctx.Function,
+                    Array.Empty<JsValue>(),
+                    ctx.ThisValue,
+                    ctx.OuterEnvironment,
+                    frameEnvironment: isResume ? ctx.Environment : null,
+                    asyncContext: ctx);
 
             if (ctx.IsSuspended)
             {

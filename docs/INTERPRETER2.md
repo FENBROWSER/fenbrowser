@@ -46,11 +46,11 @@ bailout. A loop that can abandon a half-executed frame has to rebuild the old
 loop's state out of its own, and that reconstruction is where an engine of this
 shape grows its subtlest bugs.
 
-Refused, and run on the old loop unchanged: generators, async bodies, class
-constructors, `eval` code, rest parameters, `with`, direct `eval`,
-function-level `let`/`const`, and any body that reaches for `super` or
-`new.target`. As of the last measurement that is **2.5% of the corpus**, of
-which 1.3 points is the bodies that suspend.
+Refused, and run on the old loop unchanged: async generators, `yield*`, class
+constructors, `eval` code, rest parameters, `with`, direct `eval`, and any body
+that reaches for `super` or `new.target`. As of the last measurement that is
+**1.8% of the corpus**, of which 0.9 points is the bodies that still suspend
+somewhere this loop does not follow.
 
 Methods are not refused, though the note above said they were for a long time
 and the numbers were read accordingly. A method differs from an ordinary
@@ -211,6 +211,40 @@ other could resume.
 than at the instruction after it, and that protocol is a state machine on the
 old loop which this one has no reason to own a second copy of.
 
+## The same frame, put away by a promise
+
+An async function is the generator machinery pointed somewhere else. `await`
+saves the window exactly as `yield` does - the registers, the dead-zone bytes,
+the open try entries and any exception a `finally` was carrying - but into the
+call's `AsyncContext` rather than into a generator object, and what resumes it
+is the promise job the await queues rather than a `next()`.
+
+So the two halves of the await are split around the point where the frame has to
+be put away. `PromiseResolveStatic` runs first, because reading a thenable's
+`then` is user code and can re-enter this loop deeply enough to move the value
+stack out from under it; the window is saved after that has returned, and only
+then are the resume reactions attached. A value that does not resolve to a
+promise is its own result and the frame never leaves the stack at all.
+
+A rejection arrives as a throw *at the await*, raised inside this loop's own
+throw routing, so the `try` blocks the window carried across the suspension
+catch it as they would any other exception - which is the whole of what
+ECMA-262 27.7.5.3 asks for.
+
+Nothing about the promise, the job queue or the capability is duplicated here.
+The call still goes through the old loop's `CallAsyncFunctionBody`, which makes
+the `AsyncContext` and hands back the pending promise; the only thing that
+changes is that the context's register array is sized to hold a whole window,
+and that the resume path asks the context which loop it belongs to. An async
+activation runs on the loop it was created for, for the same reason a generator
+does.
+
+An **async generator** is still refused. It is both machines at once, and the
+old loop does not run one that way either - it runs the body as a plain
+generator and wraps each result in a resolved promise, so an `await` inside one
+has no context to suspend into. Matching that here is small; matching what the
+specification says is a change to the shared engine rather than to this loop.
+
 ## Guard rails
 
 An instruction budget, a wall-clock deadline and an embedder interrupt are
@@ -271,12 +305,15 @@ Measured on `test/language` (118k function bodies, 23,730 tests):
 | + private fields | 97.5% | 30.4% |
 | + function-level `let` and `const` | 97.9% | 31.6% |
 | + block bindings in the dead zone | 98.1% | 31.7% |
-| + generators, and a try across their yields | **98.1%** | **33.2%** |
+| + generators, and a try across their yields | 98.1% | **33.2%** |
+| + async functions | **98.2%** | **33.5%** |
 
-The last row's percentage is against a larger corpus, not a smaller win: a
-generator body now gets a layout when the generator is created, so bodies the
-loop was never asked about are counted for the first time. In bodies, eligible
-went 116,585 -> 120,006 while the corpus went 118,891 -> 122,278.
+Neither of the last two percentages is against the same corpus as the row above
+it, and in both cases that is a larger corpus rather than a smaller win: a body
+that suspends gets a layout for the first time when the loop learns to run it,
+so bodies the loop was never asked about start being counted. In bodies,
+eligible went 116,585 -> 120,006 -> 121,983 while the corpus went
+118,891 -> 122,278 -> 124,204.
 
 Speed, against the old loop **with its JIT enabled**:
 
@@ -762,13 +799,16 @@ opcodes, none over 50.
    equivalent object literal and ~297ns for a method call, and it is the same
    on both loops - so it is the one number in the cross-engine table that this
    work never moved. Ordinary object-oriented code is mostly constructors.
-2. **The bodies that suspend and still do not run here** - `AsyncGenerator=590`,
-   `Generator=456` (all of them `yield*`), `Async=315`. Generators themselves are
-   done: the window travels to the generator object and back, with its dead-zone
-   bytes and its open try entries. An async function is the same machinery
-   pointed at an `AsyncContext` and a promise job instead of a `next()`, and an
-   async generator is both at once. `yield*` needs the delegation protocol
-   rather than more suspension.
+2. **The bodies that suspend and still do not run here** - `AsyncGenerator=600`
+   and `Generator=456`, the second being entirely `yield*`. Generators and async
+   functions are done: the window travels to the generator object or the
+   `AsyncContext` and back, with its dead-zone bytes and its open try entries.
+   An async generator is both at once, and on the old loop it is neither - the
+   body runs as a plain generator whose results are wrapped in resolved
+   promises. `yield*` needs the delegation protocol rather than more
+   suspension, and the protocol already exists as a state machine on the old
+   loop; extracting it into a shared host helper is the way to have one copy of
+   it rather than two.
 3. **Elements that are not on a dense array**: `TypedArrayIndex` 70k,
    `ObjectIndexKey` 26k, `SparseArrayIndex` 22k. Nothing here is above 0.6% of
    the page's element reads, and the whole table is now 1.0% of them.

@@ -181,6 +181,12 @@ internal sealed class Interp2
         /// into. Null for an ordinary frame.
         /// </summary>
         public GeneratorObject? Generator;
+
+        /// <summary>
+        /// The async activation this frame is the body of, which its awaits
+        /// suspend into. Null for an ordinary frame.
+        /// </summary>
+        public AsyncContext? AsyncContext;
     }
 
     /// <summary>
@@ -305,26 +311,7 @@ internal sealed class Interp2
                 _frames[_depth - 1].Generator = generator;
             }
 
-            while (true)
-            {
-                try
-                {
-                    if (injectedThrow)
-                    {
-                        injectedThrow = false;
-                        throw new JsThrownException(generator.SentValue);
-                    }
-
-                    return Dispatch(entryDepth);
-                }
-                catch (JsThrownException thrown) when (!thrown.IsUncatchableByScript)
-                {
-                    if (!TryRouteThrow(entryDepth, thrown.Value))
-                    {
-                        throw;
-                    }
-                }
-            }
+            return DispatchRouted(entryDepth, injectedThrow, generator.SentValue);
         }
         finally
         {
@@ -332,6 +319,193 @@ internal sealed class Interp2
             _stackTop = entryTop;
             _handlerTop = entryHandlerTop;
         }
+    }
+
+    /// <summary>
+    /// Run an async function body from its start. It returns when the body
+    /// finishes, or when an await suspends it - the caller settles the promise
+    /// in the first case and hands back the pending one in the second, exactly
+    /// as it does for a body on the old loop.
+    /// </summary>
+    internal JsValue RunAsync(
+        AsyncContext context, JsFunctionObject callee, JsValue[] args, JsValue thisValue)
+    {
+        var layout = FrameLayout.For(context.Function);
+        var entryDepth = _depth;
+        var entryTop = _stackTop;
+        var entryHandlerTop = _handlerTop;
+        try
+        {
+            PushFrame(callee, layout, args, 0, args.Length, thisValue, returnSlot: -1);
+            _frames[_depth - 1].AsyncContext = context;
+            return DispatchRouted(entryDepth, injectedThrow: false, JsValue.Undefined);
+        }
+        finally
+        {
+            _depth = entryDepth;
+            _stackTop = entryTop;
+            _handlerTop = entryHandlerTop;
+        }
+    }
+
+    /// <summary>
+    /// Resume an async function body when the promise it awaited settles.
+    /// ECMA-262 27.7.5.3: a rejection arrives as a throw at the await, so the
+    /// try blocks around it can catch it.
+    /// </summary>
+    internal JsValue ResumeAsync(AsyncContext context)
+    {
+        var layout = FrameLayout.For(context.Function);
+        var entryDepth = _depth;
+        var entryTop = _stackTop;
+        var entryHandlerTop = _handlerTop;
+        try
+        {
+            ResumeAsyncFrame(context, layout);
+            var rejected = context.IsRejectResume;
+            context.IsRejectResume = false;
+            return DispatchRouted(entryDepth, rejected, context.SentValue);
+        }
+        finally
+        {
+            _depth = entryDepth;
+            _stackTop = entryTop;
+            _handlerTop = entryHandlerTop;
+        }
+    }
+
+    /// <summary>
+    /// The dispatch, with this loop's throw routing around it, and optionally
+    /// an exception raised at the resumption point first.
+    /// </summary>
+    private JsValue DispatchRouted(int entryDepth, bool injectedThrow, JsValue injected)
+    {
+        while (true)
+        {
+            try
+            {
+                if (injectedThrow)
+                {
+                    injectedThrow = false;
+                    throw new JsThrownException(injected);
+                }
+
+                return Dispatch(entryDepth);
+            }
+            catch (JsThrownException thrown) when (!thrown.IsUncatchableByScript)
+            {
+                if (!TryRouteThrow(entryDepth, thrown.Value))
+                {
+                    throw;
+                }
+            }
+        }
+    }
+
+    private void ResumeAsyncFrame(AsyncContext context, FrameLayout layout)
+    {
+        var window = Reserve(layout);
+        var size = Math.Min(layout.WindowSize, context.Registers.Length);
+        Array.Copy(context.Registers, 0, _stack, window, size);
+        if (layout.HasLexicalSlots && context.SavedDeadZone.Length >= size)
+        {
+            Array.Copy(context.SavedDeadZone, 0, _tdz, window, size);
+        }
+
+        var savedHandlers = context.SavedWindowHandlers;
+        var handlerBase = _handlerTop;
+        if (savedHandlers.Length > 0)
+        {
+            while (_handlerTop + savedHandlers.Length > _handlers.Length)
+            {
+                Array.Resize(ref _handlers, _handlers.Length * 2);
+            }
+
+            Array.Copy(savedHandlers, 0, _handlers, _handlerTop, savedHandlers.Length);
+            _handlerTop += savedHandlers.Length;
+        }
+
+        ref var frame = ref _frames[_depth++];
+        frame.Layout = layout;
+        frame.Callee = null;
+        frame.OuterEnv = context.OuterEnvironment;
+        frame.OuterEnvResolved = true;
+        frame.Context = context.Environment as DeclarativeEnvironmentRecord;
+        frame.This = context.ThisValue;
+        frame.Base = window;
+        frame.Ip = context.InstructionPointer;
+        frame.ReturnSlot = -1;
+        frame.HandlerBase = handlerBase;
+        frame.HandlerCount = savedHandlers.Length / 2;
+        frame.PendingException = context.PendingException ?? JsValue.Undefined;
+        frame.HasPendingException = context.PendingException is not null;
+        frame.PendingReturn = JsValue.Undefined;
+        frame.HasPendingReturn = false;
+        frame.Generator = null;
+        frame.AsyncContext = context;
+
+        // What the promise settled with is what the await expression evaluates to.
+        if (context.AwaitDestReg >= 0)
+        {
+            _stack[window + context.AwaitDestReg] = context.SentValue;
+        }
+
+        context.AwaitDestReg = -1;
+        context.IsSuspended = false;
+    }
+
+    /// <summary>The await's half of <see cref="SaveGeneratorWindow"/>.</summary>
+    private void SaveAsyncWindow(AsyncContext context, int destinationRegister, int ip)
+    {
+        ref var frame = ref _frames[_depth - 1];
+        var layout = frame.Layout;
+        var window = frame.Base;
+        var size = Math.Min(layout.WindowSize, context.Registers.Length);
+        Array.Copy(_stack, window, context.Registers, 0, size);
+        for (var i = 0; i < size; i++)
+        {
+            context.BarrierInternalSlot(context.Registers[i]);
+        }
+
+        if (layout.HasLexicalSlots)
+        {
+            if (context.SavedDeadZone.Length < size)
+            {
+                context.SavedDeadZone = new byte[size];
+            }
+
+            Array.Copy(_tdz, window, context.SavedDeadZone, 0, size);
+        }
+
+        var handlerCount = frame.HandlerCount * 2;
+        if (handlerCount == 0)
+        {
+            context.SavedWindowHandlers = Array.Empty<int>();
+        }
+        else
+        {
+            if (context.SavedWindowHandlers.Length != handlerCount)
+            {
+                context.SavedWindowHandlers = new int[handlerCount];
+            }
+
+            Array.Copy(_handlers, frame.HandlerBase, context.SavedWindowHandlers, 0, handlerCount);
+        }
+
+        if (frame.HasPendingException)
+        {
+            context.PendingException = frame.PendingException;
+            context.BarrierInternalSlot(frame.PendingException);
+        }
+        else
+        {
+            context.PendingException = null;
+        }
+
+        context.InstructionPointer = ip;
+        context.AwaitDestReg = destinationRegister;
+        context.Environment = frame.Context;
+        context.IsSuspended = true;
     }
 
     private JsFunctionObject? GeneratorCallee(GeneratorObject generator)
@@ -380,6 +554,7 @@ internal sealed class Interp2
         frame.PendingReturn = JsValue.Undefined;
         frame.HasPendingReturn = false;
         frame.Generator = generator;
+        frame.AsyncContext = null;
 
         // The value .next() was given is what the yield expression evaluates to.
         if (generator.YieldDestReg >= 0)
@@ -642,6 +817,28 @@ internal sealed class Interp2
 
                 case OpCode.LeaveScope:
                     break;
+
+                case OpCode.Await:
+                {
+                    // ECMA-262 27.7.5.2 Await. Resolving the value can run user
+                    // code - a thenable's `then` getter - so the window is saved
+                    // after that and before the reactions are attached.
+                    var awaiting = _frames[_depth - 1].AsyncContext!;
+                    var suspends = _host.Interp2AwaitPrepare(
+                        stack[frameBase + ins.B], out var awaitedPromise, out var inlineResult);
+                    stack = _stack;
+                    if (!suspends)
+                    {
+                        stack[frameBase + ins.A] = inlineResult;
+                        break;
+                    }
+
+                    SaveAsyncWindow(awaiting, ins.A, ip);
+                    _host.Interp2AwaitAttach(awaiting, awaitedPromise);
+                    _depth--;
+                    _stackTop = frameBase;
+                    return JsValue.Undefined;
+                }
 
                 case OpCode.Yield:
                 {
@@ -1651,6 +1848,7 @@ internal sealed class Interp2
         frame.PendingReturn = JsValue.Undefined;
         frame.HasPendingReturn = false;
         frame.Generator = null;
+        frame.AsyncContext = null;
 
         DeclarativeEnvironmentRecord? context = null;
         if (layout.HasContext)

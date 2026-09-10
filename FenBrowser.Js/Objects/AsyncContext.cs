@@ -23,6 +23,22 @@ public sealed class AsyncContext : JsObject
 	public bool IsRejectResume { get; set; }
 	public bool IsSuspended { get; set; }
 
+	/// <summary>
+	/// Set when this body runs on the register-window loop, whose window - the
+	/// bytecode registers and the body's variables in one span - is what
+	/// <see cref="Registers"/> then holds, sized to match.
+	/// </summary>
+	public bool RunsOnRegisterWindow { get; set; }
+
+	/// <summary>
+	/// The frame's open try entries at the await, as the (catch ip, finally ip)
+	/// pairs the register-window loop keeps them in.
+	/// </summary>
+	public int[] SavedWindowHandlers { get; set; } = Array.Empty<int>();
+
+	/// <summary>The dead-zone byte of each window slot at the await.</summary>
+	public byte[] SavedDeadZone { get; set; } = Array.Empty<byte>();
+
 	public AsyncContext? Parent { get; set; }
 
 	public ObjectHandle? CapabilityPromise { get; set; }

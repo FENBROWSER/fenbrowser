@@ -163,8 +163,9 @@ public static class Interp2Stats
     {
         // A generator body is eligible too; it is entered through the
         // generator's resume path rather than by a call, which is what keeps it
-        // out of FrameLayout.Eligible.
-        if (layout.Eligible || layout.GeneratorEligible)
+        // out of FrameLayout.Eligible. So is an async body, which the call's own
+        // path starts and the promise jobs its awaits queue resume.
+        if (layout.Eligible || layout.GeneratorEligible || layout.AsyncEligible)
         {
             _eligibleFunctions++;
             return;

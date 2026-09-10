@@ -141,13 +141,24 @@ public sealed class FrameLayout
     /// generator function makes a generator object, and only its resume path
     /// enters the body.
     /// </summary>
-    public bool Eligible => Bailout == Interp2Bailout.None && !IsGenerator;
+    public bool Eligible => Bailout == Interp2Bailout.None && !IsGenerator && !IsAsync;
 
     /// <summary>A generator body this loop can start and resume.</summary>
     public bool GeneratorEligible => Bailout == Interp2Bailout.None && IsGenerator;
 
     /// <summary>Whether this body suspends at a yield.</summary>
     public bool IsGenerator { get; private init; }
+
+    /// <summary>
+    /// An async function body this loop can start and resume. Like a generator
+    /// it is not <see cref="Eligible"/>: calling an async function makes a
+    /// promise, and the body is entered by the call's own path and then by the
+    /// promise jobs its awaits queue.
+    /// </summary>
+    public bool AsyncEligible => Bailout == Interp2Bailout.None && IsAsync;
+
+    /// <summary>Whether this body suspends at an await.</summary>
+    public bool IsAsync { get; private init; }
 
     /// <summary>Bytecode registers - the low half of the frame's window.</summary>
     public int RegisterCount { get; }
@@ -298,7 +309,13 @@ public sealed class FrameLayout
         // that reaches for one emits LoadSuperProperty, LoadSuperElement or
         // LoadSuperConstructor, which the opcode gate below refuses on its own.
         var isGenerator = function.Kind == FunctionKind.Generator && GeneratorBodySupported(function);
-        if (!isGenerator &&
+        // An async function suspends at an await and is resumed by a promise
+        // job, which is the generator machinery pointed somewhere else. Module
+        // and script bodies compile as async too - top-level await is legal in
+        // one - and those are eval code, which the gate below refuses anyway.
+        var isAsync = function.Kind == FunctionKind.Async && !function.IsEvalCode &&
+            GeneratorBodySupported(function);
+        if (!isGenerator && !isAsync &&
             function.Kind is not (FunctionKind.Ordinary or FunctionKind.Arrow or FunctionKind.Method))
             return new FrameLayout(function, Interp2Bailout.NotOrdinaryFunction);
         if (function.IsEvalCode)
@@ -602,6 +619,7 @@ public sealed class FrameLayout
             RestrictedArguments = function.UsesRestrictedArgumentsObject,
             SlotIsConst = BuildConstMap(constSlots, slotCount),
             IsGenerator = isGenerator,
+            IsAsync = isAsync,
             SlotIsLexical = slotIsLexical,
             HasLexicalSlots = hasLexicalSlots,
             SelfNameSlot = selfNameSlot,
@@ -803,7 +821,7 @@ public sealed class FrameLayout
             OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,
             OpCode.PushHandler, OpCode.PopHandler, OpCode.EndFinally,
             OpCode.EnterScope, OpCode.LeaveScope,
-            OpCode.CreateFunction, OpCode.Yield,
+            OpCode.CreateFunction, OpCode.Yield, OpCode.Await,
 
             // Arithmetic, coercion and comparison.
             OpCode.Add, OpCode.Sub, OpCode.Mul, OpCode.Div, OpCode.Mod, OpCode.Exp,

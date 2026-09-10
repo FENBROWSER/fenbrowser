@@ -285,6 +285,126 @@ public sealed class Interpreter2ParityTests
         Assert.Equal(onOldLoop, onNewLoop);
     }
 
+    /// <summary>
+    /// The same comparison for a body that suspends at an await. An async
+    /// function's effects land after the script's completion value has been
+    /// taken, so each case runs its program, lets the job queue drain, and then
+    /// reads what the program left behind - on both loops, in the same process.
+    /// </summary>
+    /// <remarks>
+    /// Every expectation here was taken from node before it was written down.
+    /// </remarks>
+    [Theory]
+    // An async body runs to its first await synchronously and the rest of it
+    // after the caller has carried on.
+    [InlineData("var log = []; async function f() { log.push('a'); await 0; log.push('b'); } f(); log.push('c');",
+                "log.join(',');", "a,c,b")]
+    // What the body returns settles the promise the call handed back.
+    [InlineData("var out; async function f() { return 7; } f().then(function (v) { out = v; });",
+                "String(out);", "7")]
+    [InlineData("var out; async function f() { await 0; return 'v'; } f().then(function (v) { out = 'then:' + v; });",
+                "out;", "then:v")]
+    // What the awaited promise settles with is what the await evaluates to.
+    [InlineData("var out; async function f() { var v = await Promise.resolve(5); out = v * 2; } f();",
+                "String(out);", "10")]
+    [InlineData("var out; async function f() { var a = await 1, b = await 2; out = a + b; } f();",
+                "String(out);", "3")]
+    [InlineData("var out; async function f() { return await Promise.resolve(3); }" +
+                "f().then(function (v) { out = v + 1; });", "String(out);", "4")]
+    // A rejection rejects the promise, and a throw before any await does too.
+    [InlineData("var out; async function f() { await Promise.reject(new Error('boom')); }" +
+                "f().catch(function (e) { out = e.message; });", "out;", "boom")]
+    [InlineData("var out; async function f() { throw new Error('sync'); }" +
+                "f().catch(function (e) { out = e.message; });", "out;", "sync")]
+    // A try open across an await comes back to the same handlers, so the
+    // rejection arrives as a throw at the await itself.
+    [InlineData("var out; async function f() { try { await Promise.reject('r'); } catch (e) { out = 'caught:' + e; } }" +
+                "f();", "out;", "caught:r")]
+    [InlineData("var log = []; async function f() { try { await 0; log.push('t'); } finally { log.push('f'); } } f();",
+                "log.join(',');", "t,f")]
+    [InlineData("var log = []; async function f() { try { try { await 0; throw 'x'; } finally { log.push('i'); } }" +
+                "catch (e) { log.push('c' + e); } } f();", "log.join(',');", "i,cx")]
+    // A finally that awaits still lets the return it is holding through.
+    [InlineData("var out; async function f() { try { return 1; } finally { await 0; } }" +
+                "f().then(function (v) { out = 'r' + v; });", "out;", "r1")]
+    [InlineData("var out; async function f() { var s = 0; try { await 0; throw 'e'; } catch (x) { s = 1; }" +
+                "finally { await 0; s += 10; } out = s; } f();", "String(out);", "11")]
+    // The frame survives the suspension: its variables, a closure over one, its
+    // receiver, its arguments object and a let still in the dead zone.
+    [InlineData("var out; async function f() { var n = 1; await 0; n += 2; await 0; out = n; } f();",
+                "String(out);", "3")]
+    [InlineData("var out; async function f() { var n = 0; var bump = function () { return ++n; };" +
+                "await 0; bump(); await 0; bump(); out = n; } f();", "String(out);", "2")]
+    [InlineData("var out; async function f() { await 0; out = this.v; } f.call({ v: 3 });", "String(out);", "3")]
+    [InlineData("var out; async function f() { await 0; out = arguments.length + ':' + arguments[1]; } f(7, 8, 9);",
+                "out;", "3:8")]
+    [InlineData("var out; async function f() { await 0; out = typeof globalThis; let v = 2; out += ',' + v; } f();",
+                "out;", "object,2")]
+    [InlineData("var out; async function f() { const c = 1; await 0; out = c; } f();", "String(out);", "1")]
+    // Two activations of one body do not share a frame.
+    [InlineData("var out = []; async function f(n) { await 0; out.push(n); await 0; out.push(n * 10); } f(1); f(2);",
+                "out.join(',');", "1,2,10,20")]
+    // An await inside a loop resumes back into the loop.
+    [InlineData("var out; async function f() { var t = 0; for (var i = 0; i < 3; i++) { t += await i; } out = t; } f();",
+                "String(out);", "3")]
+    [InlineData("var out; async function f() { var r = []; for (var i = 0; i < 2; i++)" +
+                "{ try { await i; r.push('t' + i); } catch (e) { r.push('c'); } } out = r.join(','); } f();",
+                "out;", "t0,t1")]
+    // A block binding a closure captures needs a fresh one per turn, across the
+    // await as well as before it.
+    [InlineData("var out; async function f() { var o = []; for (const v of ['a', 'b'])" +
+                "{ await 0; o.push(function () { return v; }); }" +
+                "out = o.map(function (g) { return g(); }).join(','); } f();", "out;", "a,b")]
+    // The other shapes an async body comes in.
+    [InlineData("var out; var f = async function () { await 0; out = 42; }; f();", "String(out);", "42")]
+    [InlineData("var out; var o = { v: 5, m: async function () { await 0; out = this.v; } }; o.m();",
+                "String(out);", "5")]
+    [InlineData("var out; function outer() { var v = 9; async function inner() { await 0; out = v; } inner(); }" +
+                "outer();", "String(out);", "9")]
+    // Ordering against another async body and against a plain promise reaction,
+    // which is what says the resumption is a job and not a call.
+    [InlineData("var log = []; async function f() { log.push('f1'); await 0; log.push('f2'); }" +
+                "async function g() { log.push('g1'); await f(); log.push('g2'); } g(); log.push('top');",
+                "log.join(',');", "g1,f1,top,f2,g2")]
+    [InlineData("var log = []; Promise.resolve().then(function () { log.push('p'); });" +
+                "(async function () { log.push('a'); await 0; log.push('b'); })();", "log.join(',');", "a,p,b")]
+    public void BothLoopsAgreeAfterTheJobQueueDrains(string source, string reader, string expected)
+    {
+        var onOldLoop = RunThenReadOn(engine2: false, source, reader);
+        var onNewLoop = RunThenReadOn(engine2: true, source, reader);
+
+        Assert.Equal(expected, onOldLoop);
+        Assert.Equal(onOldLoop, onNewLoop);
+    }
+
+    /// <summary>
+    /// Run a program, then read what it left behind. <c>Execute</c> drains the
+    /// job queue before it returns, so the second script sees every await
+    /// resumption the first one queued.
+    /// </summary>
+    private static string RunThenReadOn(bool engine2, string source, string reader)
+    {
+        var previous = Interp2Options.Enabled;
+        Interp2Options.Enabled = engine2;
+        try
+        {
+            var interpreter = new BytecodeInterpreter();
+            Execute(interpreter, source);
+            return Describe(interpreter, Execute(interpreter, reader));
+        }
+        finally
+        {
+            Interp2Options.Enabled = previous;
+        }
+    }
+
+    private static Runtime.JsValue Execute(BytecodeInterpreter interpreter, string source)
+    {
+        var function = new BytecodeCompiler().CompileScript(new SourceText(source));
+        new BytecodeVerifier().Verify(function);
+        return interpreter.Execute(function);
+    }
+
     private static string RunOn(bool engine2, string source)
     {
         var previous = Interp2Options.Enabled;

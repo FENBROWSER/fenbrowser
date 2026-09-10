@@ -219,6 +219,53 @@ public sealed partial class BytecodeInterpreter
     internal JsValue Interp2CreateIteratorResult(JsValue value, bool done)
         => CreateIteratorResult(value, done);
 
+    /// <summary>
+    /// ECMA-262 27.7.5.2 Await, up to the point where the frame has to be put
+    /// away: true when the await suspends, and <paramref name="awaitedPromise"/>
+    /// is what the resumption attaches to.
+    /// </summary>
+    internal bool Interp2AwaitPrepare(JsValue value, out JsValue awaitedPromise, out JsValue inlineResult)
+    {
+        awaitedPromise = PromiseResolveStatic(value);
+        inlineResult = JsValue.Undefined;
+        if (awaitedPromise.Tag != JsValueTag.Object ||
+            _heap.GetObject(awaitedPromise.AsObjectHandle()) is not Promises.PromiseInstance)
+        {
+            // Not something with reactions to hang the resumption on, so the
+            // value is its own result - as it is on the old loop.
+            inlineResult = value;
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>The rest of it: the resumption this suspended frame waits on.</summary>
+    internal void Interp2AwaitAttach(Objects.AsyncContext context, JsValue awaitedPromise)
+    {
+        var instance = (Promises.PromiseInstance)_heap.GetObject(awaitedPromise.AsObjectHandle());
+        var onFulfilled = GetOrCreateAsyncResumeCallback(isReject: false, context);
+        var onRejected = GetOrCreateAsyncResumeCallback(isReject: true, context);
+        var onFulfilledHandle = _heap.AllocateObject(onFulfilled, AllocationSite.Current());
+        var onRejectedHandle = _heap.AllocateObject(onRejected, AllocationSite.Current());
+        PerformPromiseThen(
+            awaitedPromise.AsObjectHandle(),
+            instance.Promise,
+            JsValue.FromObject(onFulfilledHandle),
+            JsValue.FromObject(onRejectedHandle),
+            GetDummyCapability());
+        instance.Promise.IsHandled = true;
+    }
+
+    /// <summary>Run an async function body on the register-window loop.</summary>
+    internal JsValue Interp2RunAsync(
+        Objects.AsyncContext context, JsFunctionObject callee, JsValue[] args, JsValue thisValue)
+        => Interp2Loop.RunAsync(context, callee, args, thisValue);
+
+    /// <summary>Resume one when the promise it awaited settles.</summary>
+    internal JsValue Interp2ResumeAsync(Objects.AsyncContext context)
+        => Interp2Loop.ResumeAsync(context);
+
     /// <summary>Start or resume a generator body on the register-window loop.</summary>
     internal JsValue Interp2RunGenerator(Objects.GeneratorObject generator)
         => Interp2Loop.RunGenerator(generator);
