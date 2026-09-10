@@ -7606,24 +7606,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                 {
                                     // ECMA-262 19.2.1.3 step 8.c.iii: the existing
                                     // binding is NOT from a FormalParameter.
-                                    // Check whether the calling function explicitly
-                                    // declares this name — a function declaration,
-                                    // var, let, or const in the body all block an
-                                    // eval-introduced var of the same name.
+                                    // Step 3.d walks the scopes between the eval's
+                                    // lexEnv and the caller's varEnv and never
+                                    // checks the varEnv itself, so a var or function
+                                    // the caller already declares may be redeclared:
+                                    // `var x = 1; eval('var x')` stands in V8. This
+                                    // engine keeps a function's own let and const in
+                                    // the same record as its vars, where the spec
+                                    // holds them in a lexical environment below the
+                                    // varEnv (FunctionDeclarationInstantiation step
+                                    // 30) - so those, and only those, still conflict.
                                     // We consult the calling function's own
                                     // declaration lists rather than the env record's
                                     // deletability flag because the implicit
                                     // `arguments` object (non-deletable) may already
                                     // occupy the slot before the body-level
                                     // declaration is instantiated.
-                                    bool isExplicitBinding = callingFunction is not null &&
-                                        (callingFunction.VarDeclarationNames.Contains(name) ||
-                                         callingFunction.LexicalDeclarationNames.Contains(name) ||
+                                    bool isLexicalBinding = callingFunction is not null &&
+                                        (callingFunction.LexicalDeclarationNames.Contains(name) ||
                                          callingFunction.ConstDeclarationNames.Contains(name));
-                                    if (isExplicitBinding)
+                                    if (isLexicalBinding)
                                     {
                                         throw new JsThrownException(CreateSyntaxError(
-                                            $"Cannot declare var binding '{name}' — a binding with that name already exists."));
+                                            $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
                                     }
                                 }
                                 else if (callingFunction is not null &&
