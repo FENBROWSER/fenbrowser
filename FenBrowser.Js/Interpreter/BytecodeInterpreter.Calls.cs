@@ -524,9 +524,6 @@ public sealed partial class BytecodeInterpreter
             : fn.Function.RegisterCount];
         for (var i = 0; i < registers.Length; i++)
             registers[i] = JsValue.Undefined;
-        var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
-        for (var i = 0; i < paramCount; i++)
-            registers[i + 1] = args[i]; // register 0 is return slot, params start at 1
 
         var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
         genObj.RunsOnRegisterWindow = runsOnRegisterWindow;
@@ -560,9 +557,6 @@ public sealed partial class BytecodeInterpreter
         var registers = new JsValue[fn.Function.RegisterCount];
         for (var i = 0; i < registers.Length; i++)
             registers[i] = JsValue.Undefined;
-        var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
-        for (var i = 0; i < paramCount; i++)
-            registers[i + 1] = args[i];
 
         var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment)
         {

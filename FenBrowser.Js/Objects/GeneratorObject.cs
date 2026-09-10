@@ -98,19 +98,20 @@ public sealed class GeneratorObject : JsObject
         }
     }
 
-    public JsValue[] GetInitialParameters()
-    {
-        // Return the full argument list when available so the body's `arguments`
-        // object is complete; fall back to the named parameters from registers.
-        if (InitialArgs.Length > 0)
-            return InitialArgs;
-
-        var paramCount = Function.ParameterNames.Count;
-        var result = new JsValue[paramCount];
-        for (var i = 0; i < paramCount; i++)
-            result[i] = Registers[i + 1];
-        return result;
-    }
+    /// <summary>
+    /// The arguments the generator function was called with, which the body is
+    /// entered with so its `arguments` object is the call's own.
+    /// </summary>
+    /// <remarks>
+    /// This used to fall back to reading the named parameters out of the
+    /// registers when the list was empty, on the assumption that they sat at
+    /// register 1 upwards. A call with no arguments then handed the body one
+    /// undefined per declared parameter, so `arguments.length` was the
+    /// parameter count rather than 0 - and the registers those values were
+    /// seeded into were past the end of the array as soon as a generator
+    /// declared enough of them, which was an outright crash.
+    /// </remarks>
+    public JsValue[] GetInitialParameters() => InitialArgs;
 
     private static void TraceValues(IHeapTracer tracer, IReadOnlyList<JsValue> values)
     {
