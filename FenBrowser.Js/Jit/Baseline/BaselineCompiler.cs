@@ -664,6 +664,7 @@ internal static class BaselineCompiler
                     il.Arg(1);
                     il.Int(ins.A);
                     il.Int(ins.B);
+                    il.Int(ins.D);
                     il.Call(MiEnterScope);
                     // The frame stands on a different environment now, so the
                     // slot storage hoisted at entry no longer describes it.

@@ -14,6 +14,16 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
 {
     private Dictionary<string, Binding>? _bindings;
 
+    /// <summary>
+    /// True for the scope of a catch clause whose parameter is a plain
+    /// identifier. Annex B.3.4 lets a direct eval inside that catch block declare
+    /// a var of the parameter's name; the same eval inside any other block that
+    /// binds the name - including a catch with a destructuring pattern - is a
+    /// SyntaxError. The scopes are otherwise the same shape, so the conflict
+    /// checks have to be told which one they are looking at.
+    /// </summary>
+    internal bool IsCatchScope { get; set; }
+
     // Slot storage. The compiler already numbers every variable a function
     // declares, and the bytecode already carries those numbers - LoadVar r6, 0
     // means "slot 0". The interpreter then threw the number away and looked the

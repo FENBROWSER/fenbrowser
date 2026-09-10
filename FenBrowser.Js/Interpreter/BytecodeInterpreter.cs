@@ -2767,11 +2767,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var scopeName = SlotNameTable.GetName(function, ins.A);
                     if (scopeName != null)
                     {
-                        // B=0 -> mutable (let), B=1 -> immutable (const)
+                        // B=0 -> mutable (let), B=1 -> immutable (const).
+                        // ECMA-262 14.2.3 BlockDeclarationInstantiation creates a
+                        // let binding with CreateMutableBinding(dn, false): it is
+                        // not deletable. Creating it deletable let a sloppy
+                        // `delete x` on a block's let - or a catch parameter,
+                        // which is bound the same way - return true and remove
+                        // the binding, so the next read threw a ReferenceError.
                         if (ins.B == 1)
                             _ = newScope.CreateImmutableBinding(scopeName, strict: true);
                         else
-                            _ = newScope.CreateMutableBinding(scopeName, deletable: true);
+                            _ = newScope.CreateMutableBinding(scopeName, deletable: false);
+                        // D=1: a catch clause with an identifier parameter (B.3.4).
+                        newScope.IsCatchScope = ins.D == 1;
                         // C=1: for-loop head binding — pre-initialize so StoreVar
                         // (SetMutableBinding) works on each iteration. Regular block
                         // bindings stay in TDZ (C=0).
@@ -7414,7 +7422,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // ECMA-262 19.2.1.3 EvalDeclarationInstantiation — validate the eval body
         // before executing. Super-check runs for ALL eval; declaration environment
         // checks only for direct eval where the calling env is known.
-        ValidateEvalDeclarations(compiled, directEvalEnvironment, directEvalStrictMode);
+        //
+        // ECMA-262 19.2.1.1 PerformEval: strictEval is the caller's strictness OR
+        // the eval source's own "use strict" prologue. directEvalStrictMode is
+        // only the first; the compiled body's IsStrictMode is both, because the
+        // caller's strictness went in as inheritedStrictMode. Deciding on the
+        // caller alone ran the sloppy var-conflict checks on a strict source -
+        // which throw once a block's let is correctly non-deletable - and ran a
+        // strict source in the caller's scope, so its vars leaked out of it.
+        ValidateEvalDeclarations(compiled, directEvalEnvironment, compiled.IsStrictMode);
 
         var globalHandle = EnsureGlobalObject();
         EnvironmentRecord env;
@@ -7422,7 +7438,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             // Strict direct eval gets a fresh lexical scope so var/function
             // declarations do not leak into the caller's environment.
-            env = directEvalStrictMode
+            env = compiled.IsStrictMode
                 ? StampEnvironment(new DeclarativeEnvironmentRecord(directEvalEnvironment))
                 : directEvalEnvironment;
         }
@@ -7622,7 +7638,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         foreach (var name in varNames)
                         {
-                            if (declEnv.HasLexicalBinding(name))
+                            // Annex B.3.4: an identifier catch parameter is the
+                            // one block binding a direct eval's var may share.
+                            if (declEnv.HasLexicalBinding(name) && !declEnv.IsCatchScope)
                                 throw new JsThrownException(CreateSyntaxError(
                                     $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
                         }

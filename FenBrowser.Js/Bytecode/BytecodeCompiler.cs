@@ -2654,11 +2654,14 @@ public sealed class BytecodeCompiler
                 CollectBoundNames(tryCatchStmt.CatchPattern, names);
             else
                 names.Add(tryCatchStmt.CatchIdentifier);
+            // D=1 marks the scope of an identifier catch parameter, which
+            // Annex B.3.4 lets a direct eval's var share; a pattern gets none.
+            var catchScopeFlag = tryCatchStmt.CatchPattern is null ? 1 : 0;
             foreach (var name in names)
             {
                 var slot = GetOrCreateVariableSlot(name);
                 catchScopeSlots.Add(slot);
-                _instructions.Add(new Instruction(OpCode.EnterScope, slot, 0, 0));
+                _instructions.Add(new Instruction(OpCode.EnterScope, slot, 0, 0, catchScopeFlag));
                 _openScopeDepth++;
             }
         }
@@ -2787,11 +2790,14 @@ public sealed class BytecodeCompiler
                 CollectBoundNames(stmt.CatchPattern, names);
             else
                 names.Add(stmt.CatchIdentifier);
+            // D=1 marks the scope of an identifier catch parameter, which
+            // Annex B.3.4 lets a direct eval's var share; a pattern gets none.
+            var catchScopeFlag = stmt.CatchPattern is null ? 1 : 0;
             foreach (var name in names)
             {
                 var slot = GetOrCreateVariableSlot(name);
                 catchScopeSlots.Add(slot);
-                _instructions.Add(new Instruction(OpCode.EnterScope, slot, 0, 0));
+                _instructions.Add(new Instruction(OpCode.EnterScope, slot, 0, 0, catchScopeFlag));
                 _openScopeDepth++;
             }
         }

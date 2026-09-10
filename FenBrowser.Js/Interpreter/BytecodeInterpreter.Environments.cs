@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
@@ -111,7 +111,8 @@ public sealed partial class BytecodeInterpreter
                 // with an existing lexical binding must be a SyntaxError.
                 if (isEval && frame.Environment is DeclarativeEnvironmentRecord declEnv &&
                     frame.Environment is not FunctionEnvironmentRecord &&
-                    declEnv.HasLexicalBinding(name))
+                    declEnv.HasLexicalBinding(name) &&
+                    !declEnv.IsCatchScope)
                     throw new JsThrownException(CreateSyntaxError(
                         $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
                 continue;
@@ -190,17 +191,20 @@ public sealed partial class BytecodeInterpreter
     }
 
 
-    internal void EnterScopeForJit(InterpreterFrame frame, int slotNameIndex, int isConst)
+    internal void EnterScopeForJit(InterpreterFrame frame, int slotNameIndex, int isConst, int isCatch)
     {
         var newScope = StampEnvironment(new DeclarativeEnvironmentRecord(frame.Environment));
         var scopeName = SlotNameTable.GetName(frame.Function, slotNameIndex);
         if (scopeName != null)
         {
+            // Not deletable, per ECMA-262 14.2.3 - see the EnterScope case in the
+            // dispatch loop, which this must match exactly.
             if (isConst == 1)
                 _ = newScope.CreateImmutableBinding(scopeName, strict: true);
             else
-                _ = newScope.CreateMutableBinding(scopeName, deletable: true);
+                _ = newScope.CreateMutableBinding(scopeName, deletable: false);
         }
+        newScope.IsCatchScope = isCatch == 1;
         frame.Environment = newScope;
     }
 

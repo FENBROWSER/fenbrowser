@@ -1167,7 +1167,7 @@ public static class JitCompiler
                 return true;
             case OpCode.EnterScope:
                 body.Add(Expression.Call(interp, MiEnterScope, frame,
-                    Expression.Constant(ins.A), Expression.Constant(ins.B)));
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.D)));
                 // The frame sits on a different environment now, so the slot
                 // storage hoisted at entry no longer describes it.
                 body.Add(refreshSlots());
