@@ -7602,7 +7602,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // FunctionEnvironmentRecord (they inherit the enclosing scope's env),
         // and their [[ThisMode]] is lexical.
         // Strict eval has its own scope, so this restriction does not apply.
-        if (!strict && callingEnv is FunctionEnvironmentRecord &&
+        // And it is only the parameter list's: test262's
+        // *-fn-body-cntns-arguments-* and no-pre-existing-arguments cases all put
+        // the eval in a default value. In the body, `eval('var arguments = 1')`
+        // simply assigns the binding, as V8 does; rejecting it everywhere in a
+        // function made that a SyntaxError.
+        var callerFrameForArguments = _activeFrames.Count > 0 ? _activeFrames.Peek() : null;
+        var evalInParameterList = callerFrameForArguments?.Function is { PrologueEndIp: > 0 } callerForArguments &&
+            callerFrameForArguments.InstructionPointer <= callerForArguments.PrologueEndIp;
+        if (!strict && callingEnv is FunctionEnvironmentRecord && evalInParameterList &&
             varNames.Contains("arguments"))
         {
             throw new JsThrownException(CreateSyntaxError(
