@@ -25,7 +25,7 @@ public sealed class FenJsElementClientRectsTests
         var flushes = 0;
         var engine = new FenJsBrowserScriptEngine(CreateHost())
         {
-            FlushPendingLayout = () => flushes++,
+            FlushPendingLayout = _ => flushes++,
             LayoutBoxResolver = element => ReferenceEquals(element, target) ? box : null
         };
 
@@ -49,7 +49,7 @@ public sealed class FenJsElementClientRectsTests
         var flushes = 0;
         var engine = new FenJsBrowserScriptEngine(CreateHost())
         {
-            FlushPendingLayout = () => flushes++,
+            FlushPendingLayout = _ => flushes++,
             LayoutBoxResolver = _ => null
         };
 

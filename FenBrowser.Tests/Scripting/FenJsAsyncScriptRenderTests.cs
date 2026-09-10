@@ -54,7 +54,7 @@ namespace FenBrowser.Tests.Scripting
             var engine = new FenJsBrowserScriptEngine(CreateHost())
             {
                 Sandbox = SandboxPolicy.AllowAll,
-                FlushPendingLayout = () =>
+                FlushPendingLayout = _ =>
                 {
                     flushes++;
                     box.BorderBox = new SKRect(0, 0, 300, 480);
