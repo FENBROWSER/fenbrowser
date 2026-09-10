@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Interpreter2;
 using FenBrowser.Js.Source;
@@ -117,6 +117,16 @@ public sealed class Interpreter2ParityTests
     // Regex literals.
     [InlineData("function f() { return /a(b+)c/.exec('xabbbc')[1]; } f();", "bbb")]
     [InlineData("function f() { var r = /x/g; return r.source + ':' + r.flags; } f();", "x:g")]
+    // A method is an ordinary body with a home object, and the home object only
+    // matters to `super` - which the loop still declines.
+    [InlineData("var o = { v: 4, m() { return this.v + 1; } }; o.m();", "5")]
+    [InlineData("class C { m(a) { return a * 2; } } new C().m(21);", "42")]
+    [InlineData("var o = { m() { var f = () => this; return f() === o; } }; String(o.m());", "true")]
+    [InlineData("var o = { m() { return arguments.length + ':' + arguments[1]; } }; o.m(7, 8, 9);", "3:8")]
+    [InlineData("class C { static m() { return this === C; } } String(C.m());", "true")]
+    // A method that reaches for super stays on the old loop, and still works.
+    [InlineData("class A { m() { return 'a'; } } class B extends A { m() { return super.m() + 'b'; } }" +
+                "new B().m();", "ab")]
     public void BothLoopsAgree(string source, string expected)
     {
         var onOldLoop = RunOn(engine2: false, source);

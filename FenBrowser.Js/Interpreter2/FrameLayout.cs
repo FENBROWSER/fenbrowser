@@ -260,7 +260,14 @@ public sealed class FrameLayout
         // reachable by name from outside it, needs a real environment record.
         // An arrow qualifies alongside an ordinary function: it differs only in
         // where `this` comes from, and that is one branch on entry.
-        if (function.Kind is not (FunctionKind.Ordinary or FunctionKind.Arrow))
+        //
+        // So does a method. A method differs in having a [[HomeObject]] and no
+        // [[Construct]], and neither shows up in the frame: `this` arrives the
+        // same way, `arguments` is the same object, and the activation ends
+        // with the call. What a home object is *for* is `super`, and a body
+        // that reaches for one emits LoadSuperProperty, LoadSuperElement or
+        // LoadSuperConstructor, which the opcode gate below refuses on its own.
+        if (function.Kind is not (FunctionKind.Ordinary or FunctionKind.Arrow or FunctionKind.Method))
             return new FrameLayout(function, Interp2Bailout.NotOrdinaryFunction);
         if (function.IsEvalCode)
             return new FrameLayout(function, Interp2Bailout.EvalCode);
