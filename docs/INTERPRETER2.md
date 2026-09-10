@@ -178,7 +178,11 @@ The A/B script exits non-zero when the new loop fails anything the old one
 passed, so it can gate a commit. Comparing pass totals is not enough: a loop can
 fix one test and break another and score the same.
 
-`FEN_JS_INTERP2_LOG=1` works from the JS shell and from the test262 runner. The
+`FEN_JS_INTERP2_LOG=1` prints coverage, the ranked bailout table, and what the
+property caches could not answer - named misses by where the name actually
+lived, and `o[k]` misses by receiver and key together, because that pair is what
+a new cache form would have to guard. It works from the JS shell and from the
+test262 runner. The
 runner is the honest measurement - the benchmarks all reach 100% eligibility
 because each was written to isolate one cost and they avoid what is hard.
 
@@ -321,19 +325,61 @@ not per object. An array can grow a `2` and a `length` outside its shape and can
 never grow a `push`. `JsObject.MayGainOwnPropertyOutsideShape` asks per name,
 which is the difference between caching 2% of a page's prototype loads and 83%.
 
+## A receiver that is not an object
+
+A string is not an object. It has no shape, so every read off one missed every
+site and fell through the whole `[[Get]]` switch - and on this page those were
+**80% of everything that still missed** after the object forms went in. Two
+names: `length` (682k) and `charCodeAt` (677k).
+
+What makes them cacheable is that a string primitive's own properties are
+exactly `length` and its integer indices, and that set can never grow. Once the
+key is neither, there is no receiver state left to guard - only which realm's
+`%String.prototype%` answered and whether that object still holds the name in
+the same slot. So the two forms guard no receiver shape at all: one yields the
+value's length without flattening it, the other a prototype slot behind those
+two guards. A key beginning with a digit is refused outright, which is wider
+than the canonical-index rule and errs the safe way.
+
+The realm guard is the part a string cannot supply for itself. An object
+receiver discriminates realms by its own prototype handle; a string in one frame
+is indistinguishable from a string in another, so a site warmed in the first
+would otherwise hand the second the first one's methods. Resolving that
+prototype was also two dictionary lookups through `globalThis.String` on every
+string method read - and it is an intrinsic, fixed for the realm's life
+(7.1.18), so rebinding the global cannot move it. It is now resolved once and
+kept, which is both the fix and what the guard compares against.
+
+Named reads on the bundle went **73.2% to 94.6% cached**; string-receiver misses
+went from 1,403,537 to 579. `s.charCodeAt` costs 288ns before and 146ns after on
+the new loop, 320ns to 232ns on the old; `b_string`, the obfuscated-bundle decode
+loop, 1265ms to 1060ms. The blocking job moved 4740ms to 4593ms across two runs
+each - consistent in direction, but that is a 3% move against a 130ms spread
+within each pair, so treat the magnitude as approximate.
+
+**The `length` form measured nothing** - 119ns before, 120ns after. It was
+already answered without flattening, so the cache only replaces a miss that was
+cheap. It stays because without it every `s.length` read would now attempt an
+attach and be refused, which is work the old code did not do.
+
 ## What is next, in order of measured value
 
 The unimplemented-opcode table is effectively empty: 537 bodies across twenty
 opcodes, none over 160. What is left is one thing and then a different kind of
 work.
 
-1. **Property reads on a string primitive** - now 80% of what still misses a
-   cache site on the page, and two names: `length` (675k, already answered
-   without flattening) and `charCodeAt` (670k, which walks to String.prototype
-   through the global-prototype table on every read). It needs the cache to
-   accept a receiver that is not an object at all.
-2. **Element reads** - 3.0M misses against 10.4M hits, and unclassified. The
-   named-read table was worth building; this one has not been.
+1. **Indexed reads on an array that is no longer dense** - 1,991,043 of the
+   3,055,000 element misses on the page, and the largest single item left
+   anywhere in either table. `o[k]` misses are now classified the way named
+   misses are, and the answer was not the one the count suggested: it is not
+   spread across receiver kinds, it is two thirds one kind. What a cache form
+   would have to guard is not yet known - whether these arrays went sparse, hold
+   holes, or are dictionaries the shape does not describe - and that is the next
+   thing to find out.
+2. **`o[k]` with a name key** - 957,454 more, 31.3% of element misses. These
+   reach the same named-key site the `o.name` cache uses, so the question is why
+   it does not hold them: a key that varies costs a comparison and a site that
+   sees four shapes gives up.
 3. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
    15.3k on test262 - but zero on the page measured so far). The first two
    suspend, which means copying a window out and back at a yield or an await;
