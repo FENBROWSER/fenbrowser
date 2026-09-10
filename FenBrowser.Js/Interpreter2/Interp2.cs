@@ -32,10 +32,11 @@ namespace FenBrowser.Js.Interpreter2;
 /// rather than by the host's native stack.
 /// </para>
 /// <para>
-/// Everything that a window cannot represent - a closure capturing the scope, a
-/// generator suspending with it intact, <c>with</c>, direct <c>eval</c>, the
-/// temporal dead zone - is refused by <see cref="FrameLayout"/> before the frame
-/// is entered, and runs on the old loop unchanged. The two share a heap, a set of
+/// Everything that a window cannot represent - <c>with</c>, direct <c>eval</c>,
+/// a body whose kind this loop does not suspend yet - is refused by
+/// <see cref="FrameLayout"/> before the frame is entered, and runs on the old
+/// loop unchanged. A generator is no longer one of them: its window travels to
+/// the generator object at a yield and back at the resume. The two share a heap, a set of
 /// builtins, an inline-cache table and a bytecode format, so a call can cross
 /// between them in either direction at any depth.
 /// </para>

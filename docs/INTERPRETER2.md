@@ -175,6 +175,42 @@ declaration initializes it through the record rather than storing to it, which
 would be refused as a dead-zone write, and a captured `const` is declared
 immutable so assigning to it throws in sloppy code as well.
 
+## A frame that outlives its call
+
+A generator is a frame that does not end when the call that made it returns,
+which is the one thing a window on a shared stack cannot be. So the window
+becomes the generator: its register array is sized to hold a whole one - the
+bytecode registers and the body's variables in a single span - and `Yield`
+copies the window into it, records the instruction to resume at and the register
+the sent value belongs in, and hands back the iterator result. A resume reserves
+a window, copies the saved one into it, drops the sent value in that register
+and carries on. Nothing else about the frame changes: the same dispatch, the
+same handlers, the same context record, which the generator holds a reference to
+between resumes.
+
+Three things travel with the registers. The dead-zone bytes, because a generator
+can yield while one of its own `let` bindings is still uninitialized. The
+frame's open try entries, as the (catch ip, finally ip) pairs the loop keeps
+them in, because a yield inside a `try` has to come back to the same handlers.
+And an exception a `finally` was carrying when the yield happened.
+
+The parameters are bound when the generator function is *called*, not on the
+first `next()` - so the body runs to the `PrologueEnd` marker and suspends
+there, which is what hands the generator object back before any of the body has
+run. `.throw()` is raised at the yield from inside the loop's own throw routing,
+so the try blocks around it catch it as they would any other exception.
+`.return()` goes to the innermost `finally` covering the yield and then to the
+next one out, and completes the body when there are none; a `catch` never sees
+it.
+
+Which loop a generator runs on is decided when it is created and never changes.
+The two lay a frame out differently, so a window one suspended is not one the
+other could resume.
+
+`yield*` is still refused: it resumes into its own delegation protocol rather
+than at the instruction after it, and that protocol is a state machine on the
+old loop which this one has no reason to own a second copy of.
+
 ## Guard rails
 
 An instruction budget, a wall-clock deadline and an embedder interrupt are
@@ -234,7 +270,13 @@ Measured on `test/language` (118k function bodies, 23,730 tests):
 | + methods | 90.1% | — |
 | + private fields | 97.5% | 30.4% |
 | + function-level `let` and `const` | 97.9% | 31.6% |
-| + block bindings in the dead zone | **98.1%** | **31.7%** |
+| + block bindings in the dead zone | 98.1% | 31.7% |
+| + generators, and a try across their yields | **98.1%** | **33.2%** |
+
+The last row's percentage is against a larger corpus, not a smaller win: a
+generator body now gets a layout when the generator is created, so bodies the
+loop was never asked about are counted for the first time. In bodies, eligible
+went 116,585 -> 120,006 while the corpus went 118,891 -> 122,278.
 
 Speed, against the old loop **with its JIT enabled**:
 
@@ -720,14 +762,13 @@ opcodes, none over 50.
    equivalent object literal and ~297ns for a method call, and it is the same
    on both loops - so it is the one number in the cross-engine table that this
    work never moved. Ordinary object-oriented code is mostly constructors.
-2. **Bodies that suspend** - `Generator=588`, `AsyncGenerator=590`, `Async=315`
-   on the language corpus, and still zero on the page. This is now genuinely
-   what `NotOrdinaryFunction` means, the name having covered 13,966 ordinary
-   methods until the kind was counted instead of the bailout. It is 1,497 of the
-   2,306 bodies still declined - 57% of what is left, and everything else on
-   this list put together is smaller. Suspending means copying a window out at a
-   yield or an await and back at the resume, which is the one piece of machinery
-   this loop has never needed.
+2. **The bodies that suspend and still do not run here** - `AsyncGenerator=590`,
+   `Generator=456` (all of them `yield*`), `Async=315`. Generators themselves are
+   done: the window travels to the generator object and back, with its dead-zone
+   bytes and its open try entries. An async function is the same machinery
+   pointed at an `AsyncContext` and a promise job instead of a `next()`, and an
+   async generator is both at once. `yield*` needs the delegation protocol
+   rather than more suspension.
 3. **Elements that are not on a dense array**: `TypedArrayIndex` 70k,
    `ObjectIndexKey` 26k, `SparseArrayIndex` 22k. Nothing here is above 0.6% of
    the page's element reads, and the whole table is now 1.0% of them.
