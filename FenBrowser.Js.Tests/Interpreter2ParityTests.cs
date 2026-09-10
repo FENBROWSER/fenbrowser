@@ -127,6 +127,20 @@ public sealed class Interpreter2ParityTests
     // A method that reaches for super stays on the old loop, and still works.
     [InlineData("class A { m() { return 'a'; } } class B extends A { m() { return super.m() + 'b'; } }" +
                 "new B().m();", "ab")]
+    // Computed keys, spread and tagged templates.
+    [InlineData("function f() { var k = 'a'; var o = { [k]: 1, b: 2 }; return o.a + o.b; } f();", "3")]
+    [InlineData("function f() { var k = '__proto__'; var o = { [k]: 1 };" +
+                "return Object.getPrototypeOf(o) === Object.prototype ? 'own:' + o.__proto__ : 'reparented'; } f();",
+                "own:1")]
+    [InlineData("function f() { var m = { ['x']() { return 7; } }; return m.x(); } f();", "7")]
+    [InlineData("function f() { var a = [1, 2], b = [0, ...a, 3, ...a]; return b.join(','); } f();", "0,1,2,3,1,2")]
+    [InlineData("function f() { function g(a, b, c) { return a + ':' + b + ':' + c; }" +
+                "var args = [2, 3]; return g(1, ...args); } f();", "1:2:3")]
+    [InlineData("function f() { var s = { a: 1, b: 2 }; var o = { ...s, c: 3 };" +
+                "return Object.keys(o).join(',') + '=' + o.a + o.b + o.c; } f();", "a,b,c=123")]
+    [InlineData("function f() { function t(strings, v) { return strings.length + '|' + strings[0] + '|' + v; }" +
+                "return t`sep${9}end`; } f();", "2|sep|9")]
+
     // A closure over a block-scoped binding. The enclosing body must not keep
     // that binding in a register nothing outside the frame can reach - the
     // closure resolves the name outwards and finds a ReferenceError, or an

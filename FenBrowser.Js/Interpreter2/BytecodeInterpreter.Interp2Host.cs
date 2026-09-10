@@ -478,6 +478,80 @@ public sealed partial class BytecodeInterpreter
     }
 
     /// <summary>
+    /// ECMA-262 13.2.5.5 / 15.4: defines an own data property from a computed
+    /// key - an object literal's <c>{ [k]: v }</c> and a computed method name.
+    /// </summary>
+    /// <remarks>
+    /// Defining rather than setting is the point: a computed key must not run a
+    /// setter the prototype happens to carry, and B.3.1 says a computed
+    /// <c>__proto__</c> makes a plain own property instead of reparenting.
+    /// <paramref name="namesFunction"/> carries the NamedEvaluation the compiler
+    /// asked for on an anonymous method.
+    /// </remarks>
+    internal void Interp2DefineElement(JsValue target, JsValue key, JsValue value, bool namesFunction)
+    {
+        var obj = _heap.GetObject(ResolveObjectHandle(target));
+        if (key.Tag == JsValueTag.Symbol)
+        {
+            obj.DefineOwnSymbolProperty(
+                key.AsSymbolId(),
+                new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+            if (namesFunction) ApplyFunctionName(value, key, prefix: null);
+            return;
+        }
+
+        var propertyKey = ToPropertyKey(key);
+        obj.DefineOwnProperty(
+            propertyKey,
+            new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+        if (namesFunction) ApplyFunctionName(value, JsValue.FromString(propertyKey), prefix: null);
+    }
+
+    /// <summary>
+    /// ECMA-262 13.2.4.1 / 13.3.7.1: expands an iterable into an array literal
+    /// or an argument list, returning the index after the last element written.
+    /// </summary>
+    internal JsValue Interp2SpreadAppend(JsValue target, JsValue startIndexValue, JsValue source)
+    {
+        var targetHandle = ResolveObjectHandle(target);
+        var targetObj = _heap.GetObject(targetHandle);
+        var startIndex = (int)startIndexValue.AsNumber();
+        var values = CollectSpreadValues(source);
+
+        // The iterable's values are only reachable from a CLR list until they
+        // land in the array, and writing one can collect.
+        var rootMark = _heap.RootCount;
+        try
+        {
+            _heap.PushRoot(targetHandle);
+            foreach (var v in values)
+            {
+                if (v.Tag == JsValueTag.Object) _heap.PushRoot(v.AsObjectHandle());
+            }
+
+            for (var k = 0; k < values.Count; k++)
+            {
+                var key = (startIndex + k).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                _ = SetPropertyValue(targetHandle, targetObj, key, values[k], target);
+            }
+        }
+        finally
+        {
+            _heap.PopRootsTo(rootMark);
+        }
+
+        return JsValue.FromNumber(startIndex + values.Count);
+    }
+
+    /// <summary>ECMA-262 13.2.5.5 object spread: <c>{ ...src }</c>.</summary>
+    internal void Interp2CopyDataProperties(JsValue target, JsValue source)
+        => CopyDataPropertiesInto(target, source);
+
+    /// <summary>ECMA-262 13.2.8.3 GetTemplateObject, cached on the function.</summary>
+    internal JsValue Interp2GetTemplateObject(BytecodeFunction function, int index)
+        => GetTemplateObject(function, index);
+
+    /// <summary>
     /// ECMA-262 7.3.31 PrivateGet. A private name is not a property key user
     /// code can forge, so the whole check is the brand: an object carries the
     /// one its class stamped on it, and a body may only read the fields of the

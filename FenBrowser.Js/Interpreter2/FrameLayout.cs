@@ -720,6 +720,8 @@ public sealed class FrameLayout
             OpCode.DeletePropByName, OpCode.DeleteElem,
             OpCode.InstanceOf, OpCode.In,
             OpCode.GetPrivateField, OpCode.SetPrivateField,
+            OpCode.SetElemDefine, OpCode.SpreadAppend, OpCode.CopyDataProperties,
+            OpCode.GetTemplateObject,
 
             // for-in and for-of.
             OpCode.EnumerateKeys, OpCode.ForInNext,

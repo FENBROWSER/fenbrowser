@@ -695,6 +695,41 @@ internal sealed class Interp2
                     break;
                 }
 
+                case OpCode.SetElemDefine:
+                    // `{ [k]: v }` and a computed method name. Defining rather
+                    // than setting is the point: a computed key must not run a
+                    // setter the prototype carries.
+                    _host.Interp2DefineElement(
+                        stack[frameBase + ins.A], stack[frameBase + ins.B],
+                        stack[frameBase + ins.C], ins.D != 0);
+                    stack = _stack;
+                    break;
+
+                case OpCode.SpreadAppend:
+                {
+                    // The index is read and written back through the same
+                    // register, because one array literal can hold several
+                    // spreads and each starts where the last ended.
+                    var nextIndex = _host.Interp2SpreadAppend(
+                        stack[frameBase + ins.A], stack[frameBase + ins.B], stack[frameBase + ins.C]);
+                    stack = _stack;
+                    stack[frameBase + ins.B] = nextIndex;
+                    break;
+                }
+
+                case OpCode.CopyDataProperties:
+                    _host.Interp2CopyDataProperties(stack[frameBase + ins.A], stack[frameBase + ins.B]);
+                    stack = _stack;
+                    break;
+
+                case OpCode.GetTemplateObject:
+                {
+                    var template = _host.Interp2GetTemplateObject(function, ins.B);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = template;
+                    break;
+                }
+
                 case OpCode.GetPrivateField:
                 {
                     // `this.#x`. The brand check is the whole of the access
