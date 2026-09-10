@@ -78,6 +78,45 @@ internal sealed class CacheIRWriter
         _holderShape = holderShape;
     }
 
+    internal void GuardStringReceiver()
+    {
+        _ops.Add(CacheOp.GuardStringReceiver);
+        _args.Add(0);
+    }
+
+    internal void LoadStringLengthResult()
+    {
+        _ops.Add(CacheOp.LoadStringLengthResult);
+        _args.Add(0);
+    }
+
+    /// <summary>
+    /// The string-primitive counterpart of <see cref="LoadFromPrototype"/>,
+    /// written as one call for the same reason: the identity of the realm's
+    /// %String.prototype% and that object's layout are only correct together.
+    /// There is no receiver shape to guard - a string has none - and none is
+    /// needed, because the caller has already established that the name is
+    /// neither `length` nor an integer index, which is everything a string
+    /// primitive can own.
+    /// </summary>
+    internal void LoadFromStringPrototype(
+        ObjectHandle stringProtoHandle, JsObject holder, Shape holderShape, int slot)
+    {
+        ArgumentNullException.ThrowIfNull(holder);
+        ArgumentNullException.ThrowIfNull(holderShape);
+        if (slot < 0) throw new ArgumentOutOfRangeException(nameof(slot));
+
+        _ops.Add(CacheOp.GuardStringPrototype);
+        _args.Add(0);
+        _ops.Add(CacheOp.GuardHolderShape);
+        _args.Add(0);
+        _ops.Add(CacheOp.LoadHolderSlotResult);
+        _args.Add(slot);
+        _protoHandle = stringProtoHandle;
+        _holder = holder;
+        _holderShape = holderShape;
+    }
+
     internal void GuardDenseArray()
     {
         _ops.Add(CacheOp.GuardDenseArray);

@@ -61,6 +61,57 @@ internal static class LoadPropertyAttacher
     }
 
     /// <summary>
+    /// Builds a program for a read off a string primitive.
+    /// </summary>
+    /// <remarks>
+    /// A string is not an object: it has no shape, so every read off one missed
+    /// every site, and on a real page those reads are not rare - `length` and
+    /// `charCodeAt` between them were most of what still missed after the
+    /// object forms were in.
+    ///
+    /// What makes it cacheable is that a string primitive's own properties are
+    /// exactly `length` and its integer indices, and that set can never grow.
+    /// Every other name resolves on the realm's %String.prototype%, so once the
+    /// key is neither of those there is no receiver state left to guard - only
+    /// which realm's prototype answered, and whether that object still holds the
+    /// name in the same slot.
+    /// </remarks>
+    /// <param name="stringPrototype">The realm's %String.prototype%.</param>
+    internal static CacheIRProgram? TryAttachString(
+        JsObject stringPrototype, ObjectHandle stringPrototypeHandle, string key, bool keyVariesAtSite)
+    {
+        if (key.Length == 0) return null;
+
+        if (string.Equals(key, "length", StringComparison.Ordinal))
+        {
+            var lengthWriter = new CacheIRWriter();
+            lengthWriter.GuardStringReceiver();
+            if (keyVariesAtSite) lengthWriter.GuardKey(key);
+            lengthWriter.LoadStringLengthResult();
+            return lengthWriter.Build();
+        }
+
+        // An index is the string's own, and which character it names depends on
+        // the receiver - so it is not this site's to answer. Refusing every key
+        // that merely begins with a digit is wider than the canonical-index
+        // rule and errs the safe way: those names resolve on the prototype to
+        // undefined, and letting them take the general path costs nothing.
+        if (key[0] is >= '0' and <= '9') return null;
+
+        if (stringPrototype is ProxyObject or ModuleNamespaceObject) return null;
+
+        var holderShape = stringPrototype.CurrentShape;
+        if (!holderShape.TryGetSlot(key, out var holderSlot)) return null;
+        if (!stringPrototype.TryReadDataSlot(holderSlot, out _)) return null;
+
+        var writer = new CacheIRWriter();
+        writer.GuardStringReceiver();
+        if (keyVariesAtSite) writer.GuardKey(key);
+        writer.LoadFromStringPrototype(stringPrototypeHandle, stringPrototype, holderShape, holderSlot);
+        return writer.Build();
+    }
+
+    /// <summary>
     /// A read that lands on the receiver's immediate prototype.
     /// </summary>
     /// <remarks>

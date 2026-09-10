@@ -16,16 +16,29 @@ public sealed partial class BytecodeInterpreter
     private bool TryRunLoadSite(BytecodeFunction fn, int offset, JsValue receiver, string key, out JsValue result)
     {
         var sites = fn.LoadCacheSites;
-        if (receiver.Tag != JsValueTag.Object || sites is null ||
-            (uint)offset >= (uint)sites.Length || sites[offset] is not { } site)
+        if (sites is null || (uint)offset >= (uint)sites.Length || sites[offset] is not { } site)
         { result = JsValue.Undefined; return false; }
 
-        return site.TryRun(_heap.GetObject(receiver.AsObjectHandle()), key, out result);
+        if (receiver.Tag == JsValueTag.Object)
+        {
+            return site.TryRun(_heap.GetObject(receiver.AsObjectHandle()), key, out result);
+        }
+
+        // A string primitive has no shape, so its programs check the realm's
+        // %String.prototype% instead - which the receiver cannot name for
+        // itself.
+        if (receiver.Tag == JsValueTag.String)
+        {
+            return site.TryRunString(receiver, key, StringPrototypeForPrimitives(), out result);
+        }
+
+        result = JsValue.Undefined;
+        return false;
     }
 
     private void AttachLoadSite(BytecodeFunction fn, int offset, JsValue receiver, string key, bool keyVariesAtSite)
     {
-        if (receiver.Tag != JsValueTag.Object) return;
+        if (receiver.Tag is not (JsValueTag.Object or JsValueTag.String)) return;
 
         var sites = fn.EnsureLoadCacheSites();
         if ((uint)offset >= (uint)sites.Length) return;
@@ -33,8 +46,19 @@ public sealed partial class BytecodeInterpreter
         var site = sites[offset] ??= new CacheIRSite();
         if (site.IsMegamorphic) return;
 
-        var program = LoadPropertyAttacher.TryAttach(
-            _heap.GetObject(receiver.AsObjectHandle()), key, keyVariesAtSite, _heap.GetObject);
+        CacheIRProgram? program;
+        if (receiver.Tag == JsValueTag.String)
+        {
+            var stringProtoHandle = StringPrototypeForPrimitives();
+            program = LoadPropertyAttacher.TryAttachString(
+                _heap.GetObject(stringProtoHandle), stringProtoHandle, key, keyVariesAtSite);
+        }
+        else
+        {
+            program = LoadPropertyAttacher.TryAttach(
+                _heap.GetObject(receiver.AsObjectHandle()), key, keyVariesAtSite, _heap.GetObject);
+        }
+
         if (program is not null) site.Attach(program);
     }
 

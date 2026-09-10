@@ -63,6 +63,30 @@ internal enum CacheOp : byte
     LoadHolderSlotResult,
 
     /// <summary>
+    /// Fails unless the receiver is a string primitive. A string is not an
+    /// object, so it has no shape and every read off one missed every site.
+    /// Its own properties are exactly `length` and its integer indices; every
+    /// other name resolves on the realm's %String.prototype%, which is what
+    /// makes the answer cacheable at all.
+    /// </summary>
+    GuardStringReceiver,
+
+    /// <summary>
+    /// Fails unless the realm's %String.prototype% is still the object recorded
+    /// at attach time. A string receiver carries nothing that says which realm
+    /// it came from, so without this a site warmed in one frame would hand a
+    /// second frame the first one's methods.
+    /// </summary>
+    GuardStringPrototype,
+
+    /// <summary>
+    /// Yields a string primitive's length, and terminates. Read without
+    /// flattening the value, so `s.length` inside the loop that builds `s` does
+    /// not put the quadratic cost back.
+    /// </summary>
+    LoadStringLengthResult,
+
+    /// <summary>
     /// Yields a dense array's length, and terminates. It is not a slot in any
     /// shape - the array synthesises it from the vector - so no shape guard can
     /// describe it and, before this, no site could cache it. On a real page

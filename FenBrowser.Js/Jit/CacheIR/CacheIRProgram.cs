@@ -15,6 +15,15 @@ namespace FenBrowser.Js.Jit.CacheIR;
 /// </remarks>
 internal sealed class CacheIRProgram
 {
+    /// <summary>Which string-primitive sequence a program is, if any.</summary>
+    private enum StringForm : byte
+    {
+        None,
+        Length,
+        PrototypeSlot,
+    }
+
+
     private readonly CacheOp[] _ops;
     private readonly int[] _args;
     private readonly Shape[] _shapes;
@@ -35,6 +44,11 @@ internal sealed class CacheIRProgram
     // one. Recognised here for the same reason the others are: so the hot path
     // is a type test rather than a walk of the op list.
     private readonly bool _isDenseArrayLength;
+
+    // The string-primitive forms, which guard no receiver shape because a
+    // string has none. Held as one field so the object hot path pays a single
+    // predictable test to turn them away rather than one per form.
+    private readonly StringForm _stringForm;
 
     // The prototype form. The holder is held directly, which is safe because
     // the guard proves the receiver still points at it: a cell that was freed
@@ -65,6 +79,36 @@ internal sealed class CacheIRProgram
         _protoHandle = protoHandle;
         _holder = holder;
         _holderShape = holderShape;
+
+        if (ops[0] == CacheOp.GuardStringReceiver)
+        {
+            var i = 1;
+            if (ops[i] == CacheOp.GuardKey) _guardedKey = keys[args[i++]];
+
+            if (i == ops.Length - 1 && ops[i] == CacheOp.LoadStringLengthResult)
+            {
+                _stringForm = StringForm.Length;
+                return;
+            }
+
+            if (i == ops.Length - 3 &&
+                ops[i] == CacheOp.GuardStringPrototype &&
+                ops[i + 1] == CacheOp.GuardHolderShape &&
+                ops[i + 2] == CacheOp.LoadHolderSlotResult &&
+                holder is not null &&
+                holderShape is not null)
+            {
+                _stringForm = StringForm.PrototypeSlot;
+                _resultSlot = args[i + 2];
+                return;
+            }
+
+            // Not a sequence this class knows how to run. Leaving the form
+            // unset makes every entry point refuse it, which is what an
+            // unrecognised program has always done here.
+            _guardedKey = null;
+            return;
+        }
 
         if (ops.Length == 5 &&
             ops[0] == CacheOp.GuardNotExotic &&
@@ -133,6 +177,7 @@ internal sealed class CacheIRProgram
     internal bool Guards(Shape shape, string? key) =>
         !_isDenseArrayLength &&
         !_isProtoLoad &&
+        _stringForm == StringForm.None &&
         ReferenceEquals(_guardedShape, shape) &&
         (_guardedKey is null || string.Equals(_guardedKey, key, StringComparison.Ordinal));
 
@@ -176,9 +221,53 @@ internal sealed class CacheIRProgram
         return false;
     }
 
+    /// <summary>
+    /// The string-primitive counterpart of <see cref="TryHit"/>. The caller has
+    /// established that the receiver is a string, and passes the realm's
+    /// current %String.prototype% because the receiver does not name one.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryHitString(
+        in JsValue receiver, string key, ObjectHandle stringPrototype, out JsValue result)
+    {
+        if (_guardedKey is { } guardedKey && !string.Equals(key, guardedKey, StringComparison.Ordinal))
+        {
+            result = JsValue.Undefined;
+            return false;
+        }
+
+        if (_stringForm == StringForm.Length)
+        {
+            // Read off the value, not off a flattened copy of it: `s.length`
+            // inside the loop that builds `s` is the shape that made string
+            // concatenation quadratic once already.
+            result = JsValue.FromNumber(receiver.StringLength);
+            return true;
+        }
+
+        if (_stringForm == StringForm.PrototypeSlot &&
+            stringPrototype.Equals(_protoHandle) &&
+            ReferenceEquals(_holder!.CurrentShape, _holderShape) &&
+            _holder.TryReadDataSlot(_resultSlot, out result))
+        {
+            return true;
+        }
+
+        result = JsValue.Undefined;
+        return false;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryHit(JsObject receiver, Shape shape, string key, out JsValue result)
     {
+        // A string program answers nothing about an object, and guards no shape
+        // that would turn one away on its own.
+        if (_stringForm != StringForm.None)
+        {
+            result = JsValue.Undefined;
+            return false;
+        }
+
         if (_isDenseArrayLength)
         {
             // The site's key is fixed at "length" when it was attached, so
@@ -274,6 +363,13 @@ internal sealed class CacheIRProgram
 
                 case CacheOp.LoadHolderSlotResult:
                     return LoadSlot(_holder!, _args[i], out result);
+
+                case CacheOp.GuardStringReceiver:
+                case CacheOp.GuardStringPrototype:
+                case CacheOp.LoadStringLengthResult:
+                    // This walk is the object-receiver interpretation of a
+                    // program; a string form has no object to run against.
+                    goto miss;
 
                 case CacheOp.GuardDenseArray:
                     if (receiver is not ArrayObject { IsDense: true }) goto miss;

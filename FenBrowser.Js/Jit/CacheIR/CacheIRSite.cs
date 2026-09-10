@@ -55,6 +55,23 @@ internal sealed class CacheIRSite
         return false;
     }
 
+    /// <summary>
+    /// The string-primitive path. A string carries no shape and no realm, so
+    /// the caller supplies the realm's %String.prototype% and each program
+    /// checks it for itself.
+    /// </summary>
+    internal bool TryRunString(
+        in JsValue receiver, string key, ObjectHandle stringPrototype, out JsValue result)
+    {
+        if (_p0 is { } p0 && p0.TryHitString(receiver, key, stringPrototype, out result)) return true;
+        if (_p1 is { } p1 && p1.TryHitString(receiver, key, stringPrototype, out result)) return true;
+        if (_p2 is { } p2 && p2.TryHitString(receiver, key, stringPrototype, out result)) return true;
+        if (_p3 is { } p3 && p3.TryHitString(receiver, key, stringPrototype, out result)) return true;
+
+        result = JsValue.Undefined;
+        return false;
+    }
+
     internal bool TryResolveStore(JsObject receiver, string key, out int slot)
     {
         if (receiver is ProxyObject)
