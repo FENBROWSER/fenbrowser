@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Objects;
 
 namespace FenBrowser.Js.Interpreter2;
@@ -18,7 +18,13 @@ public enum Interp2Bailout
     UnsupportedOpCode,
     FreeVariableResolve,
     CapturedReceiver,
+
+    /// <summary>A block whose bytecode this layout cannot read as a nesting of scopes.</summary>
     BlockScope,
+
+    /// <summary>A block-scoped slot named from outside every block that declares it.</summary>
+    BlockScopeEscapes,
+
     DirectEval,
     FrameTooWide,
 }
@@ -323,15 +329,13 @@ public sealed class FrameLayout
             hasFreeVariables |= !own;
         }
 
-        // A block-scoped slot may only be touched from inside its own block.
-        // Read outside it, the register would still hold the block's value where
-        // the spec says the binding is gone and the name resolves outwards.
-        foreach (var (slot, start, end) in blockScopes)
+        // A block-scoped slot may only be touched from inside a block that
+        // declares it. Read outside one, the register would still hold that
+        // block's value where the spec says the binding is gone and the name
+        // resolves outwards.
+        if (!BlockScopeReferencesConfined(function.InstructionArray, blockScopes, blockScopeSlots))
         {
-            if (!ReferencesConfinedTo(function.InstructionArray, slot, start, end))
-            {
-                return new FrameLayout(function, Interp2Bailout.BlockScope);
-            }
+            return new FrameLayout(function, Interp2Bailout.BlockScopeEscapes);
         }
 
         var instructions = function.InstructionArray;
@@ -552,15 +556,24 @@ public sealed class FrameLayout
     }
 
     /// <summary>
-    /// Whether every instruction naming <paramref name="slot"/> falls inside
-    /// [<paramref name="start"/>, <paramref name="end"/>].
+    /// Whether every instruction naming a block-scoped slot falls inside one of
+    /// the blocks that declare that slot.
     /// </summary>
-    private static bool ReferencesConfinedTo(Instruction[] code, int slot, int start, int end)
+    /// <remarks>
+    /// One slot can have several blocks. The compiler numbers a body's bindings
+    /// in one space and reuses a number across blocks that cannot both be open -
+    /// two sibling `{ let x }` blocks share one - so checking each block on its
+    /// own failed on the *other* block's instructions every time, which is not a
+    /// slot escaping anything. Those blocks are disjoint, because a slot
+    /// re-entered while already open is refused before this, and each one
+    /// re-initialises the register as it opens. So a reference inside any of a
+    /// slot's blocks names the binding that block declared.
+    /// </remarks>
+    private static bool BlockScopeReferencesConfined(
+        Instruction[] code, List<(int Slot, int Start, int End)> regions, HashSet<int> blockScopeSlots)
     {
         for (var ip = 0; ip < code.Length; ip++)
         {
-            if (ip >= start && ip <= end) continue;
-
             ref readonly var ins = ref code[ip];
             var named = ins.OpCode switch
             {
@@ -570,7 +583,20 @@ public sealed class FrameLayout
                 _ => -1,
             };
 
-            if (named == slot) return false;
+            if (named < 0 || !blockScopeSlots.Contains(named)) continue;
+
+            var inside = false;
+            for (var r = 0; r < regions.Count; r++)
+            {
+                var region = regions[r];
+                if (region.Slot == named && ip >= region.Start && ip <= region.End)
+                {
+                    inside = true;
+                    break;
+                }
+            }
+
+            if (!inside) return false;
         }
 
         return true;
