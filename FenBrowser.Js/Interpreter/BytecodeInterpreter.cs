@@ -2425,11 +2425,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.SetHomeObject:
                     HandleSetHomeObject(frame, ins);
                     break;
+                // Both of these can throw from user code - ToPropertyKey on the
+                // computed form runs a toString, and either can reach a getter
+                // on the base prototype. Unwrapped, that exception left the
+                // dispatch loop entirely instead of going to this frame's
+                // handler stack, so a `try` around `super[k]` never saw it.
                 case OpCode.LoadSuperProperty:
-                    HandleLoadSuperProperty(frame, function, ins);
+                    try
+                    {
+                        HandleLoadSuperProperty(frame, function, ins);
+                    }
+                    catch (JsThrownException ex)
+                    {
+                        ThrowOrHandle(frame, ex.Value);
+                    }
+
                     break;
                 case OpCode.LoadSuperElement:
-                    HandleLoadSuperElement(frame, ins);
+                    try
+                    {
+                        HandleLoadSuperElement(frame, ins);
+                    }
+                    catch (JsThrownException ex)
+                    {
+                        ThrowOrHandle(frame, ex.Value);
+                    }
+
                     break;
                 case OpCode.DynamicImport:
                     registers[ins.A] = HandleDynamicImport(registers[ins.B], registers[ins.C], frame.Environment);
