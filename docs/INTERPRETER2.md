@@ -362,37 +362,57 @@ already answered without flattening, so the cache only replaces a miss that was
 cheap. It stays because without it every `s.length` read would now attempt an
 attach and be refused, which is work the old code did not do.
 
+## An array that is not full
+
+Two thirds of the page's missed `o[k]` reads - 1,985,174 of 3,044,000 - were
+indexed reads on an array that had stopped keeping its elements in the dense
+vector. The count said the cost was there; only the reason said whether it was
+fixable, so `Materialise` records that too. **10,736 arrays** account for all of
+it, and they named it: `LengthUnrepresentable=7505`, `WritePastEnd=3231`,
+`UnrepresentableDescriptor=43`.
+
+The first is `new Array(n)` and `a.length = n`. The vector could not hold a
+length above its element count, so the array was materialised **before it held
+anything**, and every read of it afterwards built a string from the index and
+looked it up in the property table.
+
+It does not have to describe every index below the length. The vector holds
+`0..Count-1`, hole-free, and everything from the count up to the length is a
+trailing hole - **absent, not `undefined`**, which is the whole of the
+difference: it reads through to the prototype, and `Object.keys`, `in`, `delete`
+and enumeration all have to keep it invisible. An interior hole is still what it
+cannot represent, so a write past the end gives the vector up as before. The
+length becomes its own field rather than the element count, which also fixes a
+delete: `var a = [1,2,3]; delete a[2]` reported `a.length` as 2, and deleting
+never shortens an array.
+
+| | before | after |
+|---|---|---|
+| `o[k]` reads cached | 77.3% | **91.9%** |
+| indexed reads on a non-dense array | 1,985,174 | **22,359** |
+| blocking job | 4593ms | **3644ms** |
+| read a pre-sized array | 194ns | **134ns** (a literal costs 132ns) |
+| build a pre-sized array | 289ns | **130ns** |
+
+Which is 23% off the blocking job for the two changes together - 4740ms to
+3644ms - and unlike the string cache the gap is far larger than the spread
+between runs.
+
 ## What is next, in order of measured value
 
 The unimplemented-opcode table is effectively empty: 537 bodies across twenty
 opcodes, none over 160. What is left is one thing and then a different kind of
 work.
 
-1. **Indexed reads on an array that is no longer dense** - 1,985,174 of the
-   3,044,000 element misses on the page, and the largest single item left
-   anywhere in either table. `o[k]` misses are now classified the way named
-   misses are, and the answer was not the one the count suggested: not spread
-   across receiver kinds, but two thirds one kind.
-
-   Only 10,736 arrays are behind all of it, and they name their reason:
-   **`LengthUnrepresentable=7505`**, `WritePastEnd=3231`,
-   `UnrepresentableDescriptor=43`. The first is `new Array(n)` and `a.length =
-   n` - a length grown past the element count, which the vector cannot hold
-   because everything above the count is a hole. So the array is materialised at
-   birth, before it holds anything, and every read of it afterwards builds a
-   string from the index and looks it up.
-
-   The shape of the fix follows from that: let the vector carry a length that
-   exceeds its count, with the indices between them absent rather than
-   `undefined`. A `new Array(n)` filled 0..n-1 in order then stays dense the
-   whole way, which is what the pattern actually does. The care is in the
-   difference between a hole and an `undefined`: a hole is not an own property,
-   so it must read through to the prototype, and `Object.keys`, `in`, `delete`
-   and enumeration all have to keep seeing it as absent.
-2. **`o[k]` with a name key** - 957,454 more, 31.3% of element misses. These
-   reach the same named-key site the `o.name` cache uses, so the question is why
-   it does not hold them: a key that varies costs a comparison and a site that
-   sees four shapes gives up.
+1. **`o[k]` with a name key** - 955,377 reads, and now 87.7% of every element
+   miss left on the page. These reach the same named-key site the `o.name` cache
+   uses, so the question is why it does not hold them: a key that varies costs a
+   comparison, and a site that sees four shapes gives up. Nothing else in that
+   table is above 75k.
+2. **Block scopes a closure captures** (450 bodies on the page, and 1.02M of
+   its calls go to a body this loop declined - now the largest single thing
+   between it and full coverage of the bundle). They need a fresh record per
+   entry to the block, and this loop has one per call.
 3. **Generators, async bodies and class constructors** (`NotOrdinaryFunction`,
    15.3k on test262 - but zero on the page measured so far). The first two
    suspend, which means copying a window out and back at a yield or an await;
@@ -400,10 +420,7 @@ work.
 4. **Tier-up.** The loop gives up the JIT's win on hot single-frame loops -
    41ns against 80ns on `b_property_read`'s bare loop - and that is the only
    place the old loop is still faster.
-5. **Block scopes a closure captures** (378 bodies on the page, 1.02M of its
-   calls). They need a fresh record per entry to the block, and this loop has
-   one per call.
-6. **Function-level `let`/`const`** (204 bodies) needs a hole value distinct
+5. **Function-level `let`/`const`** (204 bodies) needs a hole value distinct
    from `undefined` so the temporal dead zone stays observable.
 
 Two defects in the **old** loop that this work surfaced and did not fix:
