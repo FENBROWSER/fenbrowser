@@ -1,4 +1,4 @@
-using FenBrowser.Js.Ast;
+﻿using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Lexer;
 using FenBrowser.Js.Regex;
@@ -766,8 +766,16 @@ public sealed class JsParser
     private static HashSet<string> CollectTopLevelLexicallyDeclaredNames(IReadOnlyList<StatementNode> statements)
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var statement in statements)
+        foreach (var listed in statements)
         {
+            // A label does not hide what it labels: the LexicallyDeclaredNames of
+            // `l: function f() {}` is f (ECMA-262 14.13.2).
+            var statement = listed;
+            while (statement is LabeledStatementNode labelled)
+            {
+                statement = labelled.Body;
+            }
+
             switch (statement)
             {
                 case VariableDeclarationStatementNode declaration when declaration.Kind is "let" or "const":
@@ -790,6 +798,86 @@ public sealed class JsParser
         }
 
         return names;
+    }
+
+    // ECMA-262 15.2.1 FunctionBody and 15.7.1 ClassStaticBlockBody early errors.
+    // Their LexicallyDeclaredNames are the top-level let, const and class only
+    // (TopLevelLexicallyDeclaredNames); a top-level function declaration is a var
+    // there, as it is in a script. So `var x; function x() {}` and a repeated
+    // function stand, strict or not, while a let may meet neither a var nor a
+    // function of its name. Checking a body with the Block rules made the first
+    // two SyntaxErrors in strict code - and in sloppy code too once a block's own
+    // function-vs-var collision was no longer waved through.
+    private static void ValidateFunctionBodyEarlyErrors(IReadOnlyList<StatementNode> statements)
+    {
+        var lexicalNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var name in EnumerateBodyLexicallyDeclaredNames(statements))
+        {
+            if (!lexicalNames.Add(name))
+            {
+                throw new JsParserException($"Identifier '{name}' has already been declared.");
+            }
+        }
+
+        if (lexicalNames.Count == 0)
+        {
+            return;
+        }
+
+        // VarDeclaredNames: every explicit var down through nested blocks, and
+        // the body's own top-level function declarations. A function in a nested
+        // block is not one of them; Annex B.3.3 just declines to hoist it.
+        var varNames = new HashSet<string>(StringComparer.Ordinal);
+        CollectVarConflictNamesRecursive(
+            statements,
+            varNames,
+            new HashSet<string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal));
+        foreach (var listed in statements)
+        {
+            var statement = listed;
+            while (statement is LabeledStatementNode labelled)
+            {
+                statement = labelled.Body;
+            }
+
+            if (statement is FunctionDeclarationNode function)
+            {
+                varNames.Add(function.Name);
+            }
+        }
+
+        foreach (var name in lexicalNames)
+        {
+            if (varNames.Contains(name))
+            {
+                throw new JsParserException($"Identifier '{name}' has already been declared.");
+            }
+        }
+    }
+
+    // The let, const and class names at the top of a function body, in order and
+    // with any repeats - not its function declarations, which are vars there. A
+    // parameter may share a function's name (`function f(x) { function x() {} }`)
+    // but not a let's.
+    private static IEnumerable<string> EnumerateBodyLexicallyDeclaredNames(IReadOnlyList<StatementNode> statements)
+    {
+        foreach (var statement in statements)
+        {
+            switch (statement)
+            {
+                case VariableDeclarationStatementNode declaration when declaration.Kind is not "var":
+                    foreach (var declarator in declaration.Declarators)
+                    {
+                        yield return declarator.Identifier;
+                    }
+
+                    break;
+                case ClassDeclarationNode classDeclaration:
+                    yield return classDeclaration.Name;
+                    break;
+            }
+        }
     }
 
     // ECMA-262 14.2.1 Block Static Semantics: Early Errors.
@@ -934,23 +1022,14 @@ public sealed class JsParser
         var letConstClassNames = new HashSet<string>(StringComparer.Ordinal);
         CollectVarConflictNamesRecursive(statements, varDeclNames, funcDeclNames, letConstClassNames);
 
-        // Collect which lexical names came from function declarations (vs let/const/class).
-        // In sloppy mode, function declarations are allowed to share names with var
-        // declarations (Annex B.3.1).
-        var lexicalFuncDeclNames = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var statement in statements)
-        {
-            if (statement is FunctionDeclarationNode funcDecl)
-                lexicalFuncDeclNames.Add(funcDecl.Name);
-        }
-
         foreach (var name in lexicalNames)
         {
-            // Conflict (a): lexical name vs explicit `var` declaration.
-            // In sloppy mode, a function declaration sharing a name with a var
-            // declaration is NOT a conflict (Annex B.3.1: function hoists first,
-            // var assignment takes effect at its position).
-            if (varDeclNames.Contains(name) && !(!_strictMode && lexicalFuncDeclNames.Contains(name)))
+            // Conflict (a): lexical name vs explicit `var` declaration, a block's
+            // function declarations included and in sloppy code too. Annex B.3.2.4
+            // forgives a block only duplicate FunctionDeclarations; the rule that
+            // no LexicallyDeclaredName may also be a VarDeclaredName stands, so
+            // `{ function f() {} var f; }` is a SyntaxError in V8 as in the spec.
+            if (varDeclNames.Contains(name))
             {
                 throw new JsParserException(
                     $"Block-scoped declaration '{name}' conflicts with a var declaration in the same block.");
@@ -1058,7 +1137,7 @@ public sealed class JsParser
             }
         }
 
-        var lexicalNames = CollectTopLevelLexicallyDeclaredNames(body.Statements);
+        var lexicalNames = new HashSet<string>(EnumerateBodyLexicallyDeclaredNames(body.Statements), StringComparer.Ordinal);
         foreach (var parameter in parameterInfo.Parameters)
         {
             if (IsSyntheticPatternBinding(parameter))
@@ -1649,7 +1728,11 @@ public sealed class JsParser
         return new ExpressionStatementNode(expression, expression.Span);
     }
 
-    private BlockStatementNode ParseBlockStatement()
+    // A function's body, or a class static block: parsed like a block, but its
+    // statement list follows the FunctionStatementList early errors.
+    private BlockStatementNode ParseFunctionBodyStatement() => ParseBlockStatement(isFunctionBody: true);
+
+    private BlockStatementNode ParseBlockStatement(bool isFunctionBody = false)
     {
         var open = Advance();
         var statements = new List<StatementNode>();
@@ -1665,8 +1748,17 @@ public sealed class JsParser
         ExpectPunctuator("}");
         var close = Previous();
         // ECMA-262 14.2.1: early error check for duplicate declarations
-        // and var-vs-lexical conflicts within the block.
-        ValidateBlockEarlyErrors(statements);
+        // and var-vs-lexical conflicts within the block - or, for a function
+        // body, the FunctionStatementList rules, under which a function
+        // declaration is a var rather than a lexical binding.
+        if (isFunctionBody)
+        {
+            ValidateFunctionBodyEarlyErrors(statements);
+        }
+        else
+        {
+            ValidateBlockEarlyErrors(statements);
+        }
         return new BlockStatementNode(statements, MergeSpan(open.Span, close.Span));
     }
 
@@ -3804,7 +3896,7 @@ public sealed class JsParser
                 BlockStatementNode block;
                 try
                 {
-                    block = ParseBlockStatement();
+                    block = ParseBlockStatement(isFunctionBody: true);
                 }
                 finally
                 {
@@ -4415,7 +4507,7 @@ public sealed class JsParser
             var body = ParseWithExpressionContext(
                 allowYieldExpression: allowYieldInBody,
                 allowAwaitExpression: allowAwaitInBody,
-                parse: () => ParseFunctionBlockBody(ParseBlockStatement));
+                parse: () => ParseFunctionBlockBody(ParseFunctionBodyStatement));
 
             // ECMA-262 15.1.1 / 15.2.1 early errors: in strict-mode code `eval` and
             // `arguments` may not be bound as parameter names. The function is strict
@@ -6458,7 +6550,7 @@ public sealed class JsParser
             var block = ParseWithExpressionContext(
                 allowYieldExpression: false,
                 allowAwaitExpression: isAsync,
-                () => ParseFunctionBlockBody(ParseBlockStatement));
+                () => ParseFunctionBlockBody(ParseFunctionBodyStatement));
             ValidateDirectivePrologueStrictStringEscapes(block.Statements);
             // ECMA-262 14.2.1: SyntaxError if the body contains "use strict"
             // and the parameter list is non-simple (destructuring, rest, defaults).
@@ -6471,7 +6563,7 @@ public sealed class JsParser
                 ValidateRestrictedIdentifiersInStatements(block.Statements, forbidAwaitIdentifier: true, forbidYieldIdentifier: false);
             // ECMA-262 14.2.1: parameter names must not conflict with
             // lexical declarations in the function body.
-            var bodyLexicalNames = CollectTopLevelLexicallyDeclaredNames(block.Statements);
+            var bodyLexicalNames = new HashSet<string>(EnumerateBodyLexicallyDeclaredNames(block.Statements), StringComparer.Ordinal);
             foreach (var p in parameters)
             {
                 if (!IsSyntheticPatternBinding(p) && bodyLexicalNames.Contains(p))
