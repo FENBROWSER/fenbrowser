@@ -136,7 +136,18 @@ public sealed class FrameLayout
     /// </summary>
     public OpCode? BailoutOpCode { get; }
 
-    public bool Eligible => Bailout == Interp2Bailout.None;
+    /// <summary>
+    /// A body a call can enter directly. A generator body is not one: calling a
+    /// generator function makes a generator object, and only its resume path
+    /// enters the body.
+    /// </summary>
+    public bool Eligible => Bailout == Interp2Bailout.None && !IsGenerator;
+
+    /// <summary>A generator body this loop can start and resume.</summary>
+    public bool GeneratorEligible => Bailout == Interp2Bailout.None && IsGenerator;
+
+    /// <summary>Whether this body suspends at a yield.</summary>
+    public bool IsGenerator { get; private init; }
 
     /// <summary>Bytecode registers - the low half of the frame's window.</summary>
     public int RegisterCount { get; }
@@ -286,7 +297,9 @@ public sealed class FrameLayout
         // with the call. What a home object is *for* is `super`, and a body
         // that reaches for one emits LoadSuperProperty, LoadSuperElement or
         // LoadSuperConstructor, which the opcode gate below refuses on its own.
-        if (function.Kind is not (FunctionKind.Ordinary or FunctionKind.Arrow or FunctionKind.Method))
+        var isGenerator = function.Kind == FunctionKind.Generator && GeneratorBodySupported(function);
+        if (!isGenerator &&
+            function.Kind is not (FunctionKind.Ordinary or FunctionKind.Arrow or FunctionKind.Method))
             return new FrameLayout(function, Interp2Bailout.NotOrdinaryFunction);
         if (function.IsEvalCode)
             return new FrameLayout(function, Interp2Bailout.EvalCode);
@@ -588,10 +601,36 @@ public sealed class FrameLayout
             ArgumentsSlot = argumentsSlot,
             RestrictedArguments = function.UsesRestrictedArgumentsObject,
             SlotIsConst = BuildConstMap(constSlots, slotCount),
+            IsGenerator = isGenerator,
             SlotIsLexical = slotIsLexical,
             HasLexicalSlots = hasLexicalSlots,
             SelfNameSlot = selfNameSlot,
         };
+    }
+
+    /// <summary>
+    /// Whether a generator body is one this loop can suspend and resume.
+    /// </summary>
+    /// <remarks>
+    /// Suspension is the window being copied out at the yield and back at the
+    /// resume, which is the machinery the loop never needed until now. Two
+    /// shapes need more of it and are left on the old loop for the moment: a
+    /// body with a `try` in it, whose open handler entries would have to travel
+    /// with the window, and `yield*`, which resumes into its own delegation
+    /// protocol rather than at the instruction after it.
+    /// </remarks>
+    private static bool GeneratorBodySupported(BytecodeFunction function)
+    {
+        var code = function.InstructionArray;
+        for (var ip = 0; ip < code.Length; ip++)
+        {
+            if (code[ip].OpCode is OpCode.PushHandler or OpCode.YieldStar)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -766,7 +805,7 @@ public sealed class FrameLayout
             OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,
             OpCode.PushHandler, OpCode.PopHandler, OpCode.EndFinally,
             OpCode.EnterScope, OpCode.LeaveScope,
-            OpCode.CreateFunction,
+            OpCode.CreateFunction, OpCode.Yield,
 
             // Arithmetic, coercion and comparison.
             OpCode.Add, OpCode.Sub, OpCode.Mul, OpCode.Div, OpCode.Mod, OpCode.Exp,

@@ -226,6 +226,43 @@ public sealed class Interpreter2ParityTests
     [InlineData("class C { #x = 1; read(o) { return o.#x; } }" +
                 "function t() { try { return new C().read(7); }" +
                 "catch (e) { return e.constructor.name; } } String(t());", "TypeError")]
+
+    // A generator suspends with its window intact: the frame lives on the
+    // generator object between resumes, which is the machinery the loop needed
+    // for a body that does not run to completion in one go.
+    [InlineData("function* g() { yield 1; yield 2; } [...g()].join(',');", "1,2")]
+    // The value .next() is given is what the yield evaluates to.
+    [InlineData("function* g() { var x = yield 1; return x * 2; }" +
+                "var it = g(); it.next(); String(it.next(21).value);", "42")]
+    // Parameters are bound when the generator is made, not on the first next().
+    [InlineData("var made = 0; function* g(a = ++made) { yield a; }" +
+                "var it = g(); String(made) + ':' + String(it.next().value);", "1:1")]
+    // Its own variables survive the suspension, and so does a closure over one.
+    [InlineData("function* g() { var n = 0; var bump = () => ++n; yield bump(); yield bump(); }" +
+                "[...g()].join(',');", "1,2")]
+    // A let of its own is in the dead zone across a yield that precedes it.
+    [InlineData("function* g() { yield typeof globalThis; let v = 2; yield v; } [...g()].join(',');",
+                "object,2")]
+    // .return() and .throw() at a suspension leave the body at once.
+    [InlineData("function* g() { yield 1; yield 2; } var it = g(); it.next();" +
+                "var r = it.return(9); String(r.value) + ':' + String(r.done);", "9:true")]
+    [InlineData("function* g() { yield 1; } var it = g(); it.next();" +
+                "function t() { try { it.throw(new Error('boom')); return 'no-throw'; }" +
+                "catch (e) { return e.message; } } t();", "boom")]
+    // ... including into one that has not started.
+    [InlineData("function* g() { yield 1; } var it = g();" +
+                "function t() { try { it.throw(new Error('early')); return 'no-throw'; }" +
+                "catch (e) { return e.message; } } t();", "early")]
+    // The receiver a generator was called with is still there after a resume.
+    [InlineData("function* g() { yield this.v; yield this.v; }" +
+                "var it = g.call({ v: 3 }); String(it.next().value) + ',' + String(it.next().value);", "3,3")]
+    // Two generators from one function do not share a frame.
+    [InlineData("function* g() { var n = 0; yield ++n; yield ++n; }" +
+                "var a = g(), b = g(); String(a.next().value) + ',' + String(b.next().value) +" +
+                "',' + String(a.next().value);", "1,1,2")]
+    // A body with a try, and one with yield*, stay on the old loop for now.
+    [InlineData("function* g() { try { yield 1; } finally { } } [...g()].join(',');", "1")]
+    [InlineData("function* g() { yield* [1, 2]; } [...g()].join(',');", "1,2")]
     public void BothLoopsAgree(string source, string expected)
     {
         var onOldLoop = RunOn(engine2: false, source);

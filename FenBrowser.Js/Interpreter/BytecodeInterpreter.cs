@@ -1190,13 +1190,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Resume: pass no args — the saved registers and env already hold
         // all local state.
         var initialArgs = isResume ? Array.Empty<JsValue>() : gen.GetInitialParameters();
-        var result = ExecuteInternal(
-            gen.Function,
-            initialArgs,
-            gen.ThisValue,
-            gen.OuterEnvironment,
-            frameEnvironment: isResume ? gen.Environment : null,
-            ownerGenerator: gen);
+        // A generator runs on the loop it was created for: the two lay a frame
+        // out differently, so the window one suspended cannot be resumed by the
+        // other.
+        var result = gen.RunsOnRegisterWindow
+            ? Interp2RunGenerator(gen)
+            : ExecuteInternal(
+                gen.Function,
+                initialArgs,
+                gen.ThisValue,
+                gen.OuterEnvironment,
+                frameEnvironment: isResume ? gen.Environment : null,
+                ownerGenerator: gen);
 
         // If Yield didn't set state to Suspended, the generator body completed
         // (return or fell off end). Wrap the raw return value into {value, done: true}

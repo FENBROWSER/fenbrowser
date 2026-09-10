@@ -161,7 +161,10 @@ public static class Interp2Stats
 
     internal static void RecordLayout(FrameLayout layout)
     {
-        if (layout.Eligible)
+        // A generator body is eligible too; it is entered through the
+        // generator's resume path rather than by a call, which is what keeps it
+        // out of FrameLayout.Eligible.
+        if (layout.Eligible || layout.GeneratorEligible)
         {
             _eligibleFunctions++;
             return;

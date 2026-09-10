@@ -25,6 +25,22 @@ public sealed class GeneratorObject : JsObject
     public JsValue? PendingException { get; set; }
     public JsValue? PendingReturn { get; set; }
 
+    /// <summary>
+    /// Set when this body runs on the register-window loop, whose window - the
+    /// bytecode registers and the body's variables in one span - is what
+    /// <see cref="Registers"/> then holds, sized to match. The two loops lay a
+    /// frame out differently, so a generator that starts on one always resumes
+    /// on it.
+    /// </summary>
+    public bool RunsOnRegisterWindow { get; set; }
+
+    /// <summary>
+    /// The dead-zone byte of each window slot at the suspension, for a body
+    /// that has lexical slots: a generator can yield while one of its own let
+    /// or const bindings has not been initialized yet.
+    /// </summary>
+    public byte[] SavedDeadZone { get; set; } = Array.Empty<byte>();
+
     public ObjectHandle? YieldStarIterator { get; set; }
     public bool IsAsyncGenerator { get; set; }
 

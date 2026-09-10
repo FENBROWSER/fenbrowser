@@ -215,6 +215,14 @@ public sealed partial class BytecodeInterpreter
         return status == BindingOpResult.Ok ? value : frameReceiver;
     }
 
+    /// <summary>The {value, done} object a yield hands back.</summary>
+    internal JsValue Interp2CreateIteratorResult(JsValue value, bool done)
+        => CreateIteratorResult(value, done);
+
+    /// <summary>Start or resume a generator body on the register-window loop.</summary>
+    internal JsValue Interp2RunGenerator(Objects.GeneratorObject generator)
+        => Interp2Loop.RunGenerator(generator);
+
     internal static void Interp2DeclareContextSlot(
         DeclarativeEnvironmentRecord context, int slot, JsValue value)
         => context.DeclareAtSlot(slot, value, deletable: false, overwrite: true);

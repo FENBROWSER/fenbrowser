@@ -511,7 +511,17 @@ public sealed partial class BytecodeInterpreter
         // including destructuring) synchronously before returning the
         // generator. If the function carries a PrologueEnd marker we run
         // the prologue here and let the generator suspend at the marker.
-        var registers = new JsValue[fn.Function.RegisterCount];
+        // On the register-window loop a suspended generator holds a whole
+        // window - the bytecode registers and the body's variables - so the
+        // array it is saved into is sized for one. The loop binds the
+        // parameters itself when it enters the body, from InitialArgs.
+        var windowLayout = Interpreter2.Interp2Options.Enabled && fn.SelfHandle is not null
+            ? Interpreter2.FrameLayout.For(fn.Function)
+            : null;
+        var runsOnRegisterWindow = windowLayout is { GeneratorEligible: true };
+        var registers = new JsValue[runsOnRegisterWindow
+            ? Math.Max(windowLayout!.WindowSize, fn.Function.RegisterCount)
+            : fn.Function.RegisterCount];
         for (var i = 0; i < registers.Length; i++)
             registers[i] = JsValue.Undefined;
         var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
@@ -519,6 +529,7 @@ public sealed partial class BytecodeInterpreter
             registers[i + 1] = args[i]; // register 0 is return slot, params start at 1
 
         var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
+        genObj.RunsOnRegisterWindow = runsOnRegisterWindow;
         genObj.ThisValue = thisValue;
         genObj.InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args);
         genObj.SelfHandle = fn.SelfHandle;

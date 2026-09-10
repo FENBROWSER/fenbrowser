@@ -165,6 +165,12 @@ internal sealed class Interp2
         public JsValue PendingException;
 
         public bool HasPendingException;
+
+        /// <summary>
+        /// The generator this frame is the body of, which its yields suspend
+        /// into. Null for an ordinary frame.
+        /// </summary>
+        public GeneratorObject? Generator;
     }
 
     /// <summary>
@@ -219,6 +225,156 @@ internal sealed class Interp2
                 FenBrowser.Js.Diagnostics.InterpreterProfiler.EndOpBatch();
             }
         }
+    }
+
+    /// <summary>
+    /// Start or resume a generator body. ECMA-262 27.5.3.2 GeneratorResume and
+    /// 27.5.3.3/27.5.3.4 GeneratorResumeAbrupt, for the bodies this loop runs.
+    /// </summary>
+    /// <remarks>
+    /// The generator object holds the frame between resumes: its Registers is
+    /// this loop's window, sized to hold the whole of one, and its instruction
+    /// pointer is where the yield left off. Which loop a generator runs on is
+    /// decided when it is created and never changes, because the two lay a
+    /// frame out differently.
+    /// </remarks>
+    internal JsValue RunGenerator(GeneratorObject generator)
+    {
+        var layout = FrameLayout.For(generator.Function);
+        var entryDepth = _depth;
+        var entryTop = _stackTop;
+        var entryHandlerTop = _handlerTop;
+        try
+        {
+            // A resume can carry an abrupt completion from .return() or
+            // .throw(), including into a generator that has not started: the
+            // body never runs at all then. A body with a `try` in it is not run
+            // here, so there is no finally to route a return through and nothing
+            // that could catch an injected throw: both leave the generator at
+            // once, wherever it was suspended.
+            if (generator.CompletionMode == GeneratorCompletionMode.Return)
+            {
+                generator.CompletionMode = GeneratorCompletionMode.Normal;
+                return generator.SentValue;
+            }
+
+            if (generator.CompletionMode == GeneratorCompletionMode.Throw)
+            {
+                generator.CompletionMode = GeneratorCompletionMode.Normal;
+                generator.State = GeneratorState.Completed;
+                throw new JsThrownException(generator.SentValue);
+            }
+
+            if (generator.InstructionPointer > 0)
+            {
+                ResumeGeneratorFrame(generator, layout);
+            }
+            else
+            {
+                var callee = GeneratorCallee(generator);
+                var args = generator.InitialArgs;
+                PushFrame(callee!, layout, args, 0, args.Length, generator.ThisValue, returnSlot: -1);
+                _frames[_depth - 1].Generator = generator;
+            }
+
+            while (true)
+            {
+                try
+                {
+                    return Dispatch(entryDepth);
+                }
+                catch (JsThrownException thrown) when (!thrown.IsUncatchableByScript)
+                {
+                    if (!TryRouteThrow(entryDepth, thrown.Value))
+                    {
+                        throw;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            _depth = entryDepth;
+            _stackTop = entryTop;
+            _handlerTop = entryHandlerTop;
+        }
+    }
+
+    private JsFunctionObject? GeneratorCallee(GeneratorObject generator)
+        => generator.SelfHandle is { } handle && _host.Heap.GetObject(handle) is JsFunctionObject callee
+            ? callee
+            : null;
+
+    /// <summary>Put a suspended window back on the stack and continue in it.</summary>
+    private void ResumeGeneratorFrame(GeneratorObject generator, FrameLayout layout)
+    {
+        var window = Reserve(layout);
+        var size = Math.Min(layout.WindowSize, generator.Registers.Length);
+        Array.Copy(generator.Registers, 0, _stack, window, size);
+        if (layout.HasLexicalSlots && generator.SavedDeadZone.Length >= size)
+        {
+            Array.Copy(generator.SavedDeadZone, 0, _tdz, window, size);
+        }
+
+        ref var frame = ref _frames[_depth++];
+        frame.Layout = layout;
+        frame.Callee = GeneratorCallee(generator);
+        frame.OuterEnv = generator.OuterEnvironment;
+        frame.OuterEnvResolved = true;
+        frame.Context = generator.Environment as DeclarativeEnvironmentRecord;
+        frame.This = generator.ThisValue;
+        frame.Base = window;
+        frame.Ip = generator.InstructionPointer;
+        frame.ReturnSlot = -1;
+        frame.HandlerBase = _handlerTop;
+        frame.HandlerCount = 0;
+        frame.PendingException = JsValue.Undefined;
+        frame.HasPendingException = false;
+        frame.Generator = generator;
+
+        // The value .next() was given is what the yield expression evaluates to.
+        if (generator.YieldDestReg >= 0)
+        {
+            _stack[window + generator.YieldDestReg] = generator.SentValue;
+        }
+
+        generator.YieldDestReg = -1;
+        generator.State = GeneratorState.Executing;
+    }
+
+    /// <summary>
+    /// Copy the running frame's window into the generator, which is what a
+    /// suspended generator is: a frame that outlives the call that made it.
+    /// </summary>
+    private void SaveGeneratorWindow(GeneratorObject generator, int destinationRegister, int ip)
+    {
+        ref var frame = ref _frames[_depth - 1];
+        var layout = frame.Layout;
+        var window = frame.Base;
+        var size = Math.Min(layout.WindowSize, generator.Registers.Length);
+        Array.Copy(_stack, window, generator.Registers, 0, size);
+
+        // Everything in that window is now reachable only through the generator,
+        // which the collector reaches by tracing it as an internal slot.
+        for (var i = 0; i < size; i++)
+        {
+            generator.BarrierInternalSlot(generator.Registers[i]);
+        }
+
+        if (layout.HasLexicalSlots)
+        {
+            if (generator.SavedDeadZone.Length < size)
+            {
+                generator.SavedDeadZone = new byte[size];
+            }
+
+            Array.Copy(_tdz, window, generator.SavedDeadZone, 0, size);
+        }
+
+        generator.InstructionPointer = ip;
+        generator.YieldDestReg = destinationRegister;
+        generator.Environment = frame.Context;
+        generator.State = GeneratorState.Suspended;
     }
 
     // ---------------------------------------------------------------- dispatch
@@ -386,6 +542,20 @@ internal sealed class Interp2
                 case OpCode.LeaveScope:
                     break;
 
+                case OpCode.Yield:
+                {
+                    // ECMA-262 27.5.3.7 GeneratorYield: the window goes to the
+                    // generator and the value comes back as the iterator result.
+                    // A yield only ever appears in the generator's own body, so
+                    // this frame is the one RunGenerator entered.
+                    var yielding = _frames[_depth - 1].Generator!;
+                    var yielded = stack[frameBase + ins.B];
+                    SaveGeneratorWindow(yielding, ins.A, ip);
+                    _depth--;
+                    _stackTop = frameBase;
+                    return _host.Interp2CreateIteratorResult(yielded, done: false);
+                }
+
                 case OpCode.StoreVar:
                 case OpCode.StoreResolvedVar:
                 {
@@ -498,7 +668,20 @@ internal sealed class Interp2
                     break;
 
                 case OpCode.Nop:
+                    break;
+
                 case OpCode.PrologueEnd:
+                    // ECMA-262 27.5.1.1: a generator binds its parameters when it
+                    // is called and suspends here, so the call can hand the
+                    // generator object back before any of the body runs.
+                    if (_frames[_depth - 1].Generator is { } starting)
+                    {
+                        SaveGeneratorWindow(starting, 0, ip);
+                        _depth--;
+                        _stackTop = frameBase;
+                        return JsValue.Undefined;
+                    }
+
                     break;
 
                 case OpCode.Throw:
@@ -1339,6 +1522,7 @@ internal sealed class Interp2
         frame.HandlerCount = 0;
         frame.PendingException = JsValue.Undefined;
         frame.HasPendingException = false;
+        frame.Generator = null;
 
         DeclarativeEnvironmentRecord? context = null;
         if (layout.HasContext)
