@@ -344,6 +344,41 @@ public sealed class CacheIRLoadTests
     }
 
     [Fact]
+    public void ACompiledSiteReadsAPrototypeMethodFromThePrototype()
+    {
+        // The compiled sequence reads the program's slot off the receiver, and
+        // a prototype program's slot is on the holder. Hot enough to tier up,
+        // `p.m` returned whichever own slot shared that index - here `this.b`.
+        Assert.Equal(
+            "PROTO|PROTO",
+            RunString(
+                "function P(x) { this.a = x; this.b = x + 1; }" +
+                "P.prototype.m = 'PROTO';" +
+                "function read(p) { return p.m; }" +
+                "var p = new P(11);" +
+                "var cold = read(p);" +
+                "var hot = '';" +
+                "for (var i = 0; i < 5000; i++) hot = read(p);" +
+                "[cold, hot].join('|');"));
+    }
+
+    [Fact]
+    public void ACompiledSiteStillSeesThePrototypeChange()
+    {
+        Assert.Equal(
+            "first|second",
+            RunString(
+                "function Q() { this.a = 1; }" +
+                "Q.prototype.m = 'first';" +
+                "function read(q) { return q.m; }" +
+                "var q = new Q();" +
+                "var hot = '';" +
+                "for (var i = 0; i < 5000; i++) hot = read(q);" +
+                "Q.prototype.m = 'second';" +
+                "[hot, read(q)].join('|');"));
+    }
+
+    [Fact]
     public void CachedAndUncachedSitesAgreeOnTheSameObject()
     {
         Assert.Equal(

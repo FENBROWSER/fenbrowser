@@ -185,7 +185,17 @@ internal sealed class CacheIRProgram
     /// program has gone stale, so a compiled guard fails closed on the same
     /// test it already makes.
     /// </summary>
-    internal Shape? InlineLoadShape => !_isStore && _guardedKey is null ? _guardedShape : null;
+    /// <remarks>
+    /// A prototype load is excluded because the compiled sequence reads
+    /// <see cref="ResultSlot"/> off the receiver, and this program's slot is on
+    /// the holder. Handing over the receiver's shape made a hot `p.method` read
+    /// whichever of the receiver's own slots happened to share that index, and
+    /// only once the body was hot enough to compile - which is why nothing
+    /// caught it. Null sends the site to the miss helper, which runs the
+    /// program's own guards.
+    /// </remarks>
+    internal Shape? InlineLoadShape =>
+        !_isStore && !_isProtoLoad && _guardedKey is null ? _guardedShape : null;
 
     /// <summary>The store counterpart, which also declines the array-length form.</summary>
     internal Shape? InlineStoreShape =>
