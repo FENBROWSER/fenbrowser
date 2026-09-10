@@ -953,17 +953,21 @@ public sealed class BytecodeCompiler
     {
         _lexicalDeclarationNames.Add(classDecl.Name);
         var slot = GetOrCreateVariableSlot(classDecl.Name);
-        // Bind the class name in the outer scope BEFORE static initialization
-        // blocks run so they (and any methods they call) can resolve the class
-        // by name. ECMA-262 puts the binding in an inner class-scope environment
-        // that the body sees but the outer scope doesn't see until after the body
-        // runs; we approximate that with a single hoisted binding for now.
+        // ECMA-262 15.7.14 ClassDefinitionEvaluation: a class declaration's body
+        // runs in an environment of its own holding an immutable binding for the
+        // class name, exactly as a named class expression's does. A method still
+        // finds the class after the outer binding is reassigned, the heritage
+        // expression sees it, and assigning to it from inside is a TypeError. This
+        // bound the name once in the outer scope instead, so `C = null` outside
+        // changed what every method saw.
         var classReg = CompileClassExpressionToRegister(
             classDecl.Name,
             classDecl.BaseClass,
             classDecl.Members,
-            bindNameBeforeStaticBlocks: reg =>
-                _instructions.Add(new Instruction(OpCode.InitVar, reg, slot, 0)));
+            hasInnerNameBinding: true);
+        // The outer lexical binding is initialized once that environment has
+        // closed: while it is open, the class name resolves to the inner binding.
+        _instructions.Add(new Instruction(OpCode.InitVar, classReg, slot, 0));
     }
 
     // Synthesise the constructor function + prototype object, install methods
@@ -1016,7 +1020,6 @@ public sealed class BytecodeCompiler
         string? className,
         ExpressionNode? baseClass,
         IReadOnlyList<ClassMemberNode> members,
-        Action<int>? bindNameBeforeStaticBlocks = null,
         bool hasInnerNameBinding = false)
     {
         var savedClassStrictMode = _isStrictMode;
@@ -1388,12 +1391,6 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, nameIdx, initReg));
             }
         }
-
-        // H.5 - bind the class name in the outer scope BEFORE running static
-        // initialization blocks, so the block body can resolve the class by
-        // name (e.g. `static { C.x = 1; }`). Approximates ECMA-262 15.7.14
-        // step 37 ordering relative to the inner class scope.
-        bindNameBeforeStaticBlocks?.Invoke(classReg);
 
         // H.5 - static initialization blocks. ECMA-262 15.7.10. Run each block
         // with this=class and HomeObject=class so `super.foo` walks the base
