@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 
 namespace FenBrowser.Js.Interpreter2;
 
@@ -53,8 +53,59 @@ public enum PropertyMissKind
     Absent,
 }
 
+/// <summary>
+/// What an <c>o[k]</c> read was, when neither the dense-element path nor the
+/// string-key site could answer it.
+/// </summary>
+/// <remarks>
+/// Named misses got a table before this one and it paid for itself twice - a
+/// dense array's length and a prototype method were both invisible until the
+/// names said so. Element reads had only a count: 3.0 million of them against
+/// 10.4 million hits on one page, with nothing to say what a cache would have
+/// to describe to answer them. These are the receiver and key together, because
+/// that pair is exactly what a new cache form would have to guard.
+/// </remarks>
+public enum ElementMissKind
+{
+    /// <summary>A dense array asked for an index it does not hold.</summary>
+    DenseArrayOutOfRange,
+
+    /// <summary>An array that has stopped keeping its elements in the vector.</summary>
+    SparseArrayIndex,
+
+    /// <summary>A typed array, whose elements come from the buffer.</summary>
+    TypedArrayIndex,
+
+    /// <summary>A character of a string primitive: `s[i]`, which allocates one.</summary>
+    StringIndex,
+
+    /// <summary>A name off a string primitive: `s[k]` where k is not an index.</summary>
+    StringName,
+
+    /// <summary>An ordinary object read with an integer key - a dictionary keyed by number.</summary>
+    ObjectIndexKey,
+
+    /// <summary>An ordinary object read with a name, which the named cache should have held.</summary>
+    ObjectNameKey,
+
+    /// <summary>A host object: the DOM, and anything else the embedder owns.</summary>
+    HostReceiver,
+
+    /// <summary>A proxy or a module namespace, which routes access through itself.</summary>
+    ExoticReceiver,
+
+    /// <summary>Some other primitive - a number, a boolean.</summary>
+    OtherPrimitiveReceiver,
+
+    /// <summary>A key that is neither a string nor a number, so ToPropertyKey has work to do.</summary>
+    OtherKey,
+}
+
 public static class Interp2Stats
 {
+    private static readonly long[] ElementMissKinds = new long[Enum.GetValues<ElementMissKind>().Length];
+
+
     private static readonly long[] BailoutCounts = new long[Enum.GetValues<Interp2Bailout>().Length];
 
     private static readonly Dictionary<FenBrowser.Js.Bytecode.OpCode, long> UnsupportedOpCodes = new();
@@ -151,6 +202,9 @@ public static class Interp2Stats
         if (cached) _elementReadsCached++; else _elementReadsMissed++;
     }
 
+    /// <summary>What an element read was, when no site could answer it.</summary>
+    internal static void RecordElementMiss(ElementMissKind kind) => ElementMissKinds[(int)kind]++;
+
     internal static void RecordCallDelegated(bool calleeIsJavaScript)
     {
         _callsDelegated++;
@@ -172,6 +226,7 @@ public static class Interp2Stats
         _elementReadsCached = 0;
         _elementReadsMissed = 0;
         Array.Clear(PropertyMissKinds);
+        Array.Clear(ElementMissKinds);
         UncacheableKeys.Clear();
         StringReceiverKeys.Clear();
         _maxDepth = 0;
@@ -247,6 +302,21 @@ public static class Interp2Stats
 
                 report.AppendLine();
             }
+        }
+
+        var elementMissTotal = 0L;
+        foreach (var count in ElementMissKinds) elementMissTotal += count;
+        if (elementMissTotal > 0)
+        {
+            report.Append("[interp2] o[k] misses:");
+            for (var i = 0; i < ElementMissKinds.Length; i++)
+            {
+                if (ElementMissKinds[i] == 0) continue;
+                report.Append(' ').Append((ElementMissKind)i).Append('=').Append(ElementMissKinds[i])
+                      .Append(Percent(ElementMissKinds[i], elementMissTotal));
+            }
+
+            report.AppendLine();
         }
 
         var ranked = new List<(Interp2Bailout Reason, long Count)>();

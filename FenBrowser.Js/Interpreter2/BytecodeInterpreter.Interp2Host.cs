@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter2;
@@ -710,7 +710,12 @@ public sealed partial class BytecodeInterpreter
             return cached;
         }
 
-        if (Interpreter2.Interp2Options.Log) Interpreter2.Interp2Stats.RecordElementRead(cached: false);
+        if (Interpreter2.Interp2Options.Log)
+        {
+            Interpreter2.Interp2Stats.RecordElementRead(cached: false);
+            Interpreter2.Interp2Stats.RecordElementMiss(ClassifyElementMiss(receiver, key));
+        }
+
         var propertyKey = ToPropertyKey(key);
         var value = GetReceiverProperty(receiver, propertyKey);
         if (key.Tag == JsValueTag.String)
@@ -719,6 +724,56 @@ public sealed partial class BytecodeInterpreter
         }
 
         return value;
+    }
+
+    /// <summary>
+    /// What an element read was, when neither the dense path nor a site could
+    /// answer it. Diagnostic only, so it runs under the coverage switch and
+    /// nowhere else - and it reads nothing user code could observe.
+    /// </summary>
+    private Interpreter2.ElementMissKind ClassifyElementMiss(JsValue receiver, JsValue key)
+    {
+        var keyIsIndex = key.Tag switch
+        {
+            JsValueTag.Int32 => key.AsInt32() >= 0,
+            JsValueTag.Number => key.AsNumber() >= 0 && key.AsNumber() == Math.Floor(key.AsNumber()),
+            JsValueTag.String => IsCanonicalIntegerIndex(key.AsString(), out _),
+            _ => false,
+        };
+
+        switch (receiver.Tag)
+        {
+            case JsValueTag.String:
+                return keyIsIndex
+                    ? Interpreter2.ElementMissKind.StringIndex
+                    : Interpreter2.ElementMissKind.StringName;
+
+            case JsValueTag.HostObject:
+                return Interpreter2.ElementMissKind.HostReceiver;
+
+            case JsValueTag.Object:
+                break;
+
+            default:
+                return Interpreter2.ElementMissKind.OtherPrimitiveReceiver;
+        }
+
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (obj is ProxyObject or ModuleNamespaceObject) return Interpreter2.ElementMissKind.ExoticReceiver;
+        if (obj is TypedArrayObject) return Interpreter2.ElementMissKind.TypedArrayIndex;
+
+        if (obj is ArrayObject array && keyIsIndex)
+        {
+            return array.IsDense
+                ? Interpreter2.ElementMissKind.DenseArrayOutOfRange
+                : Interpreter2.ElementMissKind.SparseArrayIndex;
+        }
+
+        if (keyIsIndex) return Interpreter2.ElementMissKind.ObjectIndexKey;
+
+        return key.Tag == JsValueTag.String
+            ? Interpreter2.ElementMissKind.ObjectNameKey
+            : Interpreter2.ElementMissKind.OtherKey;
     }
 
     /// <summary>ECMA-262 13.15.2 assignment to a literal property name.</summary>
