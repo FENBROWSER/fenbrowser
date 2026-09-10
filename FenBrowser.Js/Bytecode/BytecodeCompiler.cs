@@ -102,6 +102,7 @@ public sealed class BytecodeCompiler
     // _bodyVarNames as well. _prologueVarNames holds what the prologue itself
     // declared - the names a destructured parameter binds.
     private bool _bodyScopeSeparated;
+    private int _bodyScopeInstructionIp = -1;
     private HashSet<string>? _prologueVarNames;
     private readonly HashSet<string> _bodyVarNames = new(StringComparer.Ordinal);
     private readonly Stack<LoopContext> _loopStack = new();
@@ -243,6 +244,7 @@ public sealed class BytecodeCompiler
         _nestedFunctions.Clear();
         _parameterNames.Clear();
         _bodyScopeSeparated = false;
+        _bodyScopeInstructionIp = -1;
         _prologueVarNames = null;
         _bodyVarNames.Clear();
         _loopStack.Clear();
@@ -307,7 +309,12 @@ public sealed class BytecodeCompiler
                         _bodyVarNames.Add(annexBName);
                     }
 
-                    _instructions.Add(new Instruction(OpCode.EnterFunctionBodyScope, 0, 0, 0));
+                    // A Nop holds the instruction's place until the body has been
+                    // compiled: a body that declares nothing has no environment
+                    // worth making, and most bodies behind a default-value closure
+                    // declare nothing at all.
+                    _bodyScopeInstructionIp = _instructions.Count;
+                    _instructions.Add(new Instruction(OpCode.Nop));
                 }
                 // Hoist function declarations from the body portion AFTER the
                 // parameter default expressions (the prelude). This ensures
@@ -325,6 +332,8 @@ public sealed class BytecodeCompiler
                     HoistFunctionDeclarations(bodyFuncDecls);
             }
         }
+
+        SettleFunctionBodyScope(prologueEndIp);
 
         if (_captureCompletionValue)
         {
@@ -5261,6 +5270,49 @@ public sealed class BytecodeCompiler
         // For now, the StoreFieldKey + later SetElem/GetElem do ToPropertyKey
         // implicitly. Return the value as-is.
         return valueReg;
+    }
+
+    // The body environment is worth making only if the body has something to put
+    // in it: a declaration of its own, or a direct eval that may add one. Without
+    // that, the parameters cannot tell it from the frame's own record - and every
+    // function carrying the instruction is one the new loop declines, which on
+    // test/language was 315 bodies against the 24 the split exists for.
+    private void SettleFunctionBodyScope(int prologueEndIp)
+    {
+        if (_bodyScopeInstructionIp < 0)
+        {
+            return;
+        }
+
+        var declaresSomething = _bodyVarNames.Count > 0 ||
+            _lexicalDeclarationNames.Count > 0 ||
+            _constDeclarationNames.Count > 0 ||
+            BodyCallsEvalDirectly(prologueEndIp);
+        if (!declaresSomething)
+        {
+            // The Nop stays, and the names go back to the frame's own record.
+            _bodyScopeSeparated = false;
+            _prologueVarNames = null;
+            _bodyVarNames.Clear();
+            return;
+        }
+
+        _instructions[_bodyScopeInstructionIp] = new Instruction(OpCode.EnterFunctionBodyScope, 0, 0, 0);
+    }
+
+    private bool BodyCallsEvalDirectly(int prologueEndIp)
+    {
+        for (var ip = prologueEndIp; ip < _instructions.Count; ip++)
+        {
+            var instruction = _instructions[ip];
+            if (instruction.E == DirectEvalCallFlag && instruction.OpCode is
+                OpCode.Call0 or OpCode.Call1 or OpCode.CallN or OpCode.CallSpread)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void AddVarDeclarationName(string name)
