@@ -49,36 +49,6 @@ internal static class CaptchaFlowRunner
 
     // Runs inside a frame: identifies the document and returns every script it holds,
     // inline text included, because that bootstrap is what the engine trips over.
-    // A tile click selects logically - reCAPTCHA relabels the verify button -
-    // but the tile never changes appearance. Two candidates: the stylesheet
-    // that paints a selected tile never reached this frame, or it did and the
-    // class is not applied. Listing the frame's sheets separates those, and
-    // toggling reCAPTCHA's own class says whether the rule that paints a
-    // selection exists here at all. No newlines: a real line break inside the
-    // emitted JS string literal is a parse error at the far end.
-    // reCAPTCHA paints a selected tile purely in CSS: adding
-    // rc-imageselect-tileselected to the <td> is meant to flip two descendant
-    // rules - the checkmark div from display:none to block, and scale(.8) on
-    // the wrapper. So the question is narrow: after the class lands on the
-    // ancestor, does a descendant re-match? Read display on the checkmark,
-    // which getComputedStyle does report, rather than transform, which it does
-    // not. No newlines: a line break inside the emitted JS literal is a parse
-    // error at the far end.
-    private const string TileStyleProbeScript =
-        "(function(){var out='';try{" +
-        "var tile=document.querySelector('.rc-imageselect-tile');" +
-        "if(!tile){return 'NO_TILE';}" +
-        "var box=tile.querySelector('.rc-imageselect-checkbox');" +
-        "var wrap=tile.querySelector('.rc-image-tile-wrapper');" +
-        "out+='HAS_CHECKBOX='+(box?'yes':'no')+' HAS_WRAPPER='+(wrap?'yes':'no')+' ~ ';" +
-        "function d(el){return el?window.getComputedStyle(el).getPropertyValue('display'):'(none)';}" +
-        "function w(el){if(!el)return '(none)';var r=el.getBoundingClientRect();" +
-        "return Math.round(r.width)+'x'+Math.round(r.height);}" +
-        "out+='BEFORE class='+tile.className+' checkboxDisplay='+d(box)+' wrapperRect='+w(wrap)+' ~ ';" +
-        "tile.className=tile.className+' rc-imageselect-tileselected';" +
-        "out+='AFTER class='+tile.className+' checkboxDisplay='+d(box)+' wrapperRect='+w(wrap);" +
-        "}catch(e){out+='PROBE_THREW '+e;}return out;})()";
-
     private const string FrameSourceScript =
         "(function(){" +
         "var out='HREF='+location.href+'\\nNAME='+window.name+'\\nTITLE='+document.title+'\\n';" +
@@ -365,9 +335,6 @@ internal static class CaptchaFlowRunner
                 await host.SwitchToFrameAsync(frameIds[i]).ConfigureAwait(false);
                 html = await EvalAsync(host, FrameSourceScript).ConfigureAwait(false);
                 probe = await EvalAsync(host, FrameNetworkProbeScript).ConfigureAwait(false);
-                Console.WriteLine("[captcha] TILESTYLE " + (src.Contains("bframe", StringComparison.Ordinal)
-                        ? "bframe" : src.Contains("anchor", StringComparison.Ordinal) ? "anchor" : "other") + " " +
-                    await EvalAsync(host, TileStyleProbeScript).ConfigureAwait(false));
             }
             catch
             {
