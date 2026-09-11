@@ -72,7 +72,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 return false;
             }
 
-            var pipeName = $"fen_{_targetKind.ToString().ToLowerInvariant()}_{_parentPid}_{Guid.NewGuid():N}";
+            var pipeName = IpcPaths.PipeName($"fen_{_targetKind.ToString().ToLowerInvariant()}_{_parentPid}_{Guid.NewGuid():N}");
             var authToken = CreateAuthToken();
             var session = new TargetProcessSession(_targetKind, pipeName, authToken);
             Process spawnedChild = null;

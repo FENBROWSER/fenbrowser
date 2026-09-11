@@ -289,6 +289,19 @@ public sealed class PosixCommandSandbox : ISandbox
             AddBind(args, systemPath, writable: false);
         }
 
+        // The broker's pipes are Unix sockets under the host temp directory and
+        // frame/network shared memory is file-backed beside them; both sit below
+        // the private tmpfs mounted above, so expose exactly those two
+        // directories. Connecting to a socket needs no write access, so the pipe
+        // directory stays read-only; the child publishes frames, so the shared
+        // memory directory is writable (owner-only, same uid as the broker).
+        AddBind(args, IpcPaths.PipeDirectory, writable: false);
+        AddBind(args, IpcPaths.EnsureSharedMemoryDirectory(), writable: true);
+
+        // fontconfig's system cache. Without it every child rescans the font
+        // directories on start-up instead of loading the prebuilt cache.
+        AddBind(args, "/var/cache/fontconfig", writable: false);
+
         BindWorkingDirectory(args, sandboxWorkingDirectory);
 
         var executableDirectory = NormalizeDirectoryPath(Path.GetDirectoryName(resolvedExecutable));
@@ -351,6 +364,12 @@ public sealed class PosixCommandSandbox : ISandbox
         }
 
         AppendSandboxPathRule(profile, "file-read*", NormalizeDirectoryPath(Path.GetDirectoryName(resolvedExecutable)));
+
+        // Broker IPC: see BuildBubblewrapArguments for why these two are exposed
+        // regardless of profile capabilities.
+        AppendSandboxPathRule(profile, "file-read*", IpcPaths.PipeDirectory);
+        AppendSandboxPathRule(profile, "file-read*", IpcPaths.EnsureSharedMemoryDirectory());
+        AppendSandboxPathRule(profile, "file-write*", IpcPaths.SharedMemoryDirectory);
 
         if ((_profile.Capabilities & OsSandboxCapabilities.FileReadUser) != 0)
         {
@@ -420,7 +439,7 @@ public sealed class PosixCommandSandbox : ISandbox
         foreach (var kvp in source)
         {
             var key = kvp.Key;
-            if (string.IsNullOrWhiteSpace(key) || !allowList.Contains(key))
+            if (string.IsNullOrWhiteSpace(key) || !(allowList.Contains(key) || IsChildWiringVariable(key)))
             {
                 continue;
             }
@@ -431,6 +450,13 @@ public sealed class PosixCommandSandbox : ISandbox
         if (!environment.ContainsKey("PATH"))
         {
             environment["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? "/usr/bin:/bin";
+        }
+
+        // Both sides derive the IPC directories from the temp path, so the child
+        // must see the same one even when it may not write anywhere else in it.
+        if (!environment.ContainsKey("TMPDIR"))
+        {
+            environment["TMPDIR"] = NormalizeDirectoryPath(_tempDirectory) ?? "/tmp";
         }
 
         if ((_profile.Capabilities & OsSandboxCapabilities.FileReadUser) != 0 &&
@@ -449,6 +475,25 @@ public sealed class PosixCommandSandbox : ISandbox
         }
 
         return environment;
+    }
+
+    // The broker hands a child its identity through the environment: which pipe
+    // to connect to, its auth token, tab id and parent pid (FEN_RENDERER_*,
+    // FEN_NETWORK_*, FEN_TARGET_*), plus the diagnostic knobs
+    // RendererChildEnvironment forwards on purpose. The apphost needs DOTNET_*
+    // to find a runtime installed outside /usr, and a renderer on Linux needs
+    // the display variables the host already chose to pass. The caller has
+    // reset the child environment to a safe base before we see it; dropping
+    // these here left the child with no way to reach the broker at all.
+    private static bool IsChildWiringVariable(string key)
+    {
+        if (key.StartsWith("FEN_", StringComparison.Ordinal) ||
+            key.StartsWith("DOTNET_", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return key is "DISPLAY" or "WAYLAND_DISPLAY" or "XDG_RUNTIME_DIR" or "XAUTHORITY";
     }
 
     private IEnumerable<string> GetSystemReadOnlyPaths()

@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using FenBrowser.Core.Platform;
 
 namespace FenBrowser.Host.ProcessIsolation.Network
 {
@@ -32,7 +33,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         public static NetworkBodyPipe CreateServer()
         {
-            var pipeName = $"fen_network_body_{Environment.ProcessId}_{Guid.NewGuid():N}";
+            var pipeName = IpcPaths.PipeName($"fen_network_body_{Environment.ProcessId}_{Guid.NewGuid():N}");
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
             var pipe = new NamedPipeServerStream(
                 pipeName,

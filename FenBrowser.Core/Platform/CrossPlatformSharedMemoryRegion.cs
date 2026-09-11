@@ -36,7 +36,7 @@ public sealed unsafe class CrossPlatformSharedMemoryRegion : ISharedMemoryRegion
         IsOwner = isOwner;
 
         _path = BuildPath(name);
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        IpcPaths.EnsureSharedMemoryDirectory();
 
         if (isOwner)
         {
@@ -169,7 +169,7 @@ public sealed unsafe class CrossPlatformSharedMemoryRegion : ISharedMemoryRegion
     {
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(name));
         string fileName = $"fenbrowser-shm-{Convert.ToHexString(hash)}.bin";
-        return Path.Combine(Path.GetTempPath(), "FenBrowser", "SharedMemory", fileName);
+        return Path.Combine(IpcPaths.SharedMemoryDirectory, fileName);
     }
 
     private static void RestrictBackingFilePermissions(string path)

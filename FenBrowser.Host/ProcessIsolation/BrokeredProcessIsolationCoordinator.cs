@@ -329,6 +329,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
             _tabStates.Clear();
             _rendererProcessPool?.Dispose();
+            IpcPaths.TryRemovePipeDirectory();
         }
 
         private async Task<bool> TryStartSessionAsync(TabProcessState state, int restartAttempt, string restartReason)
@@ -390,7 +391,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
             }
 
-            var pipeName = $"fen_renderer_{_parentPid}_{state.TabId}_{Guid.NewGuid():N}";
+            var pipeName = IpcPaths.PipeName($"fen_renderer_{_parentPid}_{state.TabId}_{Guid.NewGuid():N}");
             var token = CreateAuthToken();
             var session = new RendererChildSession(state.TabId, pipeName, token);
             session.FrameReceived += (_, payload) => FrameReceived?.Invoke(state.TabId, payload);

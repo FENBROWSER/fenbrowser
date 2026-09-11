@@ -61,7 +61,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 return false;
             }
 
-            var pipeName = $"fen_network_{_parentPid}_{Guid.NewGuid():N}";
+            var pipeName = IpcPaths.PipeName($"fen_network_{_parentPid}_{Guid.NewGuid():N}");
             var authToken = CreateAuthToken();
             var session = new NetworkProcessSession(pipeName, authToken);
             Process spawnedChild = null;

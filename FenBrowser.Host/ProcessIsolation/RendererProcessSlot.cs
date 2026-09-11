@@ -94,7 +94,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 throw new ArgumentOutOfRangeException(nameof(timeout));
 
             var tabId = GenerateTabId();
-            var pipeName = $"fen_renderer_pool_{Environment.ProcessId}_{tabId}_{Guid.NewGuid():N}";
+            var pipeName = IpcPaths.PipeName($"fen_renderer_pool_{Environment.ProcessId}_{tabId}_{Guid.NewGuid():N}");
             var authToken = CreateAuthToken();
             var session = new RendererChildSession(tabId, pipeName, authToken);
             ISandbox sandbox = null;
