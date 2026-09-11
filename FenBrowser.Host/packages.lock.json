@@ -70,18 +70,9 @@
       },
       "SkiaSharp.NativeAssets.Linux": {
         "type": "Direct",
-        "requested": "[2.88.7, )",
-        "resolved": "2.88.7",
-        "contentHash": "i9VitS7/5D8Te3B1Gu7F6kakW9PYVnI3YC6MoR6NidreD9hDl1EIOQEBaa0eBsOsWNX5Bz92OVf6+7KbDrJvyg==",
-        "dependencies": {
-          "SkiaSharp": "2.88.7"
-        }
-      },
-      "SkiaSharp.NativeAssets.Linux.NoDependencies": {
-        "type": "Direct",
         "requested": "[4.148.0, )",
         "resolved": "4.148.0",
-        "contentHash": "his6BWV/9ye7QualS4zNCm1oTyUPxzKdzfEWKL+iAQ6UNhDwYOYly+jlzND9On88VDJKChDpkvekYdxiVIkhnQ=="
+        "contentHash": "diba2vLeoKmWVkVTdXYOG14c7+s5FsH/AQZ5UPiFLRwLKgrCQNJPLKw8q60HzfOcJt+t/blv+1xkinqd5ZjX5A=="
       },
       "SkiaSharp.NativeAssets.macOS": {
         "type": "Direct",
@@ -314,7 +305,7 @@
           "HarfBuzzSharp": "[14.2.0, )",
           "SkiaSharp": "[4.148.0, )",
           "SkiaSharp.HarfBuzz": "[4.148.0, )",
-          "SkiaSharp.NativeAssets.Linux.NoDependencies": "[4.148.0, )",
+          "SkiaSharp.NativeAssets.Linux": "[4.148.0, )",
           "Svg.Skia": "[5.1.1, )"
         }
       },

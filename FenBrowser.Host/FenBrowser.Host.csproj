@@ -49,15 +49,14 @@
     <PackageReference Include="SkiaSharp" Version="4.148.0" />
     <PackageReference Include="SkiaSharp.HarfBuzz" Version="4.148.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.148.0" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.148.0" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="2.88.7" ExcludeAssets="all" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.148.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.148.0" />
     <PackageReference Include="Topten.RichTextKit" Version="0.4.167" />
   </ItemGroup>
 
   <Target Name="UseCurrentSkiaNativeAssetForLinuxPublish" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
     <Copy
-      SourceFiles="$(NuGetPackageRoot)skiasharp.nativeassets.linux.nodependencies\4.148.0\runtimes\linux-x64\native\libSkiaSharp.so"
+      SourceFiles="$(NuGetPackageRoot)skiasharp.nativeassets.linux\4.148.0\runtimes\linux-x64\native\libSkiaSharp.so"
       DestinationFiles="$(PublishDir)libSkiaSharp.so" />
   </Target>
 
