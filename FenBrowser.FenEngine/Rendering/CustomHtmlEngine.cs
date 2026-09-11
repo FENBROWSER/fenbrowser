@@ -140,6 +140,7 @@ namespace FenBrowser.FenEngine.Rendering
         public Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
         public Func<Element, Uri, Task> FrameElementLoader { get; set; }
         public Func<IDisposable> ImageLoaderScope { get; set; }
+        public Func<double, double, Element> ViewportHitTester { get; set; }
 
         private CspPolicy _activePolicy;
         /// <summary>Active Content Security Policy for this page. When set, subresource loads are checked against it.</summary>
@@ -2587,6 +2588,7 @@ private Node FindLayoutRootForElement(Element element, Node documentRoot)
              js.FlushPendingLayout = FlushPendingLayoutForScript;
              js.FrameElementLoader = FrameElementLoader;
              js.ImageLoaderScope = ImageLoaderScope;
+             js.ViewportHitTester = ViewportHitTester;
 
              if (ScriptFetcher != null)
              {

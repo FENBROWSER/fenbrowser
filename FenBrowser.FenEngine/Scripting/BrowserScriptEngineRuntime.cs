@@ -360,6 +360,12 @@ Action<Element> FlushPendingLayout { get; set; }
     /// layout starts. Null means unscoped.
     /// </summary>
     Func<IDisposable> ImageLoaderScope { get; set; }
+
+    /// <summary>
+    /// Top-viewport hit test: the element painted at (x, y), which may sit in
+    /// a nested frame's document. Backs document.elementFromPoint.
+    /// </summary>
+    Func<double, double, Element> ViewportHitTester { get; set; }
     Func<Element, object> LayoutBoxResolver { get; set; }
     Func<Element, (double X, double Y)> FrameScrollReader { get; set; }
     Action<Element, double, double> FrameScrollWriter { get; set; }
@@ -981,6 +987,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     public Func<Uri, Uri, Task<string>> WorkerScriptFetcher { get; set; }
     public Func<Element, Uri, Task> FrameElementLoader { get; set; }
     public Func<IDisposable> ImageLoaderScope { get; set; }
+    public Func<double, double, Element> ViewportHitTester { get; set; }
     public Func<Element, object> LayoutBoxResolver { get; set; }
     public Func<Element, (double X, double Y)> FrameScrollReader { get; set; }
     public Action<Element, double, double> FrameScrollWriter { get; set; }
@@ -1734,6 +1741,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     {
         realm.RuntimeProfile = RuntimeProfile;
         realm.ImageLoaderScope = ImageLoaderScope;
+        realm.ViewportHitTester = ViewportHitTester;
         realm.FetchOverride = FetchOverride;
         realm.SubresourceAllowed = SubresourceAllowed;
         realm.TrustedDynamicSubresourceAllowed = TrustedDynamicSubresourceAllowed;
@@ -4899,6 +4907,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         };
         realm.RuntimeProfile = RuntimeProfile;
         realm.ImageLoaderScope = ImageLoaderScope;
+        realm.ViewportHitTester = ViewportHitTester;
         realm.FetchOverride = FetchOverride;
         realm.SubresourceAllowed = SubresourceAllowed;
         realm.TrustedDynamicSubresourceAllowed = TrustedDynamicSubresourceAllowed;
@@ -6697,6 +6706,34 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         SetStoredHostProperty(navigator, "userAgentData", CreateNavigatorUserAgentDataObject(navigator.UserAgentData));
         SetStoredHostProperty(navigator, "userAgent", JsValue.FromString(navigator.UserAgent ?? string.Empty));
         SetStoredHostProperty(navigator, "connection", CreateNavigatorConnectionObject());
+        // Media Capture and Streams: the object exists in every browser; with
+        // no capture devices, enumeration is empty and capture is refused with
+        // NotAllowedError, which is what a denied permission looks like.
+        SetStoredHostProperty(
+            navigator,
+            "mediaDevices",
+            _interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["enumerateDevices"] = _interpreter.AllocateNativeFunction(
+                    "enumerateDevices",
+                    (_, _) => EvaluateWithFenJsRaw("Promise.resolve([])"),
+                    length: 0),
+                ["getSupportedConstraints"] = _interpreter.AllocateNativeFunction(
+                    "getSupportedConstraints",
+                    (_, _) => _interpreter.AllocateObject(new Dictionary<string, JsValue>()),
+                    length: 0),
+                ["getUserMedia"] = _interpreter.AllocateNativeFunction(
+                    "getUserMedia",
+                    (_, _) => EvaluateWithFenJsRaw("Promise.reject(Object.assign(new Error('Permission denied'), { name: 'NotAllowedError' }))"),
+                    length: 1),
+                ["getDisplayMedia"] = _interpreter.AllocateNativeFunction(
+                    "getDisplayMedia",
+                    (_, _) => EvaluateWithFenJsRaw("Promise.reject(Object.assign(new Error('Permission denied'), { name: 'NotAllowedError' }))"),
+                    length: 1),
+                ["addEventListener"] = _interpreter.AllocateNativeFunction("addEventListener", (_, _) => JsValue.Undefined, length: 2),
+                ["removeEventListener"] = _interpreter.AllocateNativeFunction("removeEventListener", (_, _) => JsValue.Undefined, length: 2),
+                ["ondevicechange"] = JsValue.Null
+            }));
         SetStoredHostProperty(
             navigator,
             "sendBeacon",
@@ -9781,11 +9818,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         JsValue CreateImage(IReadOnlyList<JsValue> args)
         {
-            var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
-            if (document == null)
-            {
-                return JsValue.Undefined;
-            }
+            // HTML: new Image() always yields an img owned by the realm's
+            // document; before a document is bound, a detached one still works.
+            var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument
+                ?? _parentRealmOwner?._currentDomRoot as Document ?? _parentRealmOwner?._currentDomRoot?.OwnerDocument
+                ?? new Document();
 
             var image = document.CreateElement("img");
             if (args.Count > 0)
@@ -21748,6 +21785,25 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case Element element when string.Equals(property, "textContent", StringComparison.Ordinal):
                     element.TextContent = CoerceToHostString(value);
                     return true;
+                case Element element when string.Equals(property, "innerText", StringComparison.Ordinal):
+                    WriteInnerText(element, CoerceToHostString(value));
+                    return true;
+                case Element element when
+                    (string.Equals(property, "width", StringComparison.Ordinal) ||
+                     string.Equals(property, "height", StringComparison.Ordinal)) &&
+                    IsImageElement(element):
+                    element.SetAttribute(property, Math.Max(0, (int)CoerceToFiniteNumber(value, 0)).ToString(CultureInfo.InvariantCulture));
+                    return true;
+                case Element element when TryMapAriaReflection(property, out var ariaAttribute):
+                    if (value.Tag is JsValueTag.Null or JsValueTag.Undefined)
+                    {
+                        element.RemoveAttribute(ariaAttribute);
+                    }
+                    else
+                    {
+                        element.SetAttribute(ariaAttribute, CoerceToHostString(value));
+                    }
+                    return true;
                 case Element element when
                     string.Equals(property, "text", StringComparison.Ordinal) &&
                     IsScriptElement(element):
@@ -22140,6 +22196,37 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             return _owner.ToHostNodeOrNull(document.GetElementById(id));
                         },
                         length: 1);
+                    return true;
+                case "elementFromPoint":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "elementFromPoint",
+                        (_, args) => _owner.ToHostNodeOrNull(_owner.ElementFromPoint(
+                            document,
+                            args.Count > 0 ? CoerceToFiniteNumber(args[0], 0) : 0,
+                            args.Count > 1 ? CoerceToFiniteNumber(args[1], 0) : 0)),
+                        length: 2);
+                    return true;
+                case "elementsFromPoint":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "elementsFromPoint",
+                        (_, args) =>
+                        {
+                            var chain = new List<JsValue>();
+                            for (var node = _owner.ElementFromPoint(
+                                     document,
+                                     args.Count > 0 ? CoerceToFiniteNumber(args[0], 0) : 0,
+                                     args.Count > 1 ? CoerceToFiniteNumber(args[1], 0) : 0);
+                                 node != null;
+                                 node = node.ParentNode as Element)
+                            {
+                                chain.Add(_owner.ToHostNodeOrNull(node));
+                            }
+
+                            return _owner.CreateHostArray(chain);
+                        },
+                        length: 2);
                     return true;
                 case "querySelector":
                     value = _owner.GetOrCreateHostCallable(
@@ -22919,6 +23006,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case "textContent":
                     value = JsValue.FromString(element.TextContent ?? string.Empty);
+                    return true;
+                case "innerText":
+                    value = JsValue.FromString(ReadInnerText(element));
+                    return true;
+                case "width" when IsImageElement(element):
+                case "height" when IsImageElement(element):
+                    value = JsValue.FromInt32(_owner.ReadImageDimension(element, property));
+                    return true;
+                case var aria when TryMapAriaReflection(aria, out var ariaAttribute):
+                    // ARIA 1.2 reflection: ariaFoo <-> aria-foo, null when absent.
+                    value = element.HasAttribute(ariaAttribute)
+                        ? JsValue.FromString(element.GetAttribute(ariaAttribute) ?? string.Empty)
+                        : JsValue.Null;
                     return true;
                 case "text" when string.Equals(element.TagName, "script", StringComparison.OrdinalIgnoreCase):
                     // HTMLScriptElement.text reflects the element's child text
@@ -24263,6 +24363,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case "nodeValue":
                 case "textContent":
                     value = JsValue.FromString(characterData.Data ?? string.Empty);
+                    return true;
+                case "wholeText" when characterData is Text:
+                    value = JsValue.FromString(ReadWholeText(characterData));
                     return true;
                 case "length":
                     value = JsValue.FromInt32(characterData.Length);

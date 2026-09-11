@@ -842,6 +842,7 @@ namespace FenBrowser.FenEngine.Rendering
             };
             _engine.FrameElementLoader = LoadFrameElementAsync;
             _engine.ImageLoaderScope = EnterImageLoaderContext;
+            _engine.ViewportHitTester = (x, y) => HitTestElementAtViewportPoint((float)x, (float)y);
 
             // Wire up DevTools Network Monitoring
             _resources.NetworkRequestStarting += (id, req) =>
