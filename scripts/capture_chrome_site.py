@@ -26,8 +26,8 @@ from datetime import datetime, timezone
 import requests
 from websockets.asyncio.client import connect
 
-VIEWPORT_W = 1280
-VIEWPORT_H = 800
+VIEWPORT_W = int(os.environ.get("CHROME_CAPTURE_W", "1280"))
+VIEWPORT_H = int(os.environ.get("CHROME_CAPTURE_H", "800"))
 DEFAULT_SETTLE_MS = 15000
 NETWORK_IDLE_MS = 2000
 
