@@ -214,7 +214,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 arrangedBoxes[node] = childBox.Geometry;
             }
 
-            float measureHeightConstraint = state.AvailableSize.Height;
+            // CSS Grid §11.7 / §12.7: fr rows only resolve against a definite grid
+            // container block size. When the container's own height is definite, size
+            // the tracks against that, not the parent's available height (which is the
+            // viewport or infinity for an auto-height parent and left every 1fr row at 0).
+            float definiteContentHeight = ResolveDefiniteContentHeight(containerStyle, state);
+            float measureHeightConstraint = float.IsFinite(definiteContentHeight)
+                ? definiteContentHeight
+                : state.AvailableSize.Height;
             if (float.IsNaN(measureHeightConstraint))
             {
                 measureHeightConstraint = state.ViewportHeight;
@@ -229,9 +236,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 childrenSource,
                 state.SubgridContext);
 
+            float arrangeHeight = float.IsFinite(definiteContentHeight)
+                ? definiteContentHeight
+                : Math.Max(0f, metrics.ContentHeight);
+
             GridLayoutComputer.Arrange(
                 containerElement,
-                new SKRect(0f, 0f, container.Geometry.ContentBox.Width, Math.Max(0f, metrics.ContentHeight)),
+                new SKRect(0f, 0f, container.Geometry.ContentBox.Width, arrangeHeight),
                 styles,
                 arrangedBoxes,
                 0,
@@ -525,6 +536,73 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return Math.Max(0f, maxBottom);
+        }
+
+        /// <summary>
+        /// The container's content-box height when its `height` is definite (px, a
+        /// percentage of a definite containing block, or a resolvable calc()), clamped by
+        /// min/max-height; NaN when the height is auto / indefinite.
+        /// </summary>
+        private static float ResolveDefiniteContentHeight(CssComputed style, LayoutState state)
+        {
+            if (style == null)
+            {
+                return float.NaN;
+            }
+
+            float containingHeight = state.ContainingBlockHeight > 0f
+                ? state.ContainingBlockHeight
+                : float.NaN;
+
+            float height;
+            if (style.Height.HasValue)
+            {
+                height = (float)style.Height.Value;
+            }
+            else if (style.HeightPercent.HasValue && float.IsFinite(containingHeight))
+            {
+                height = (float)(style.HeightPercent.Value / 100d * containingHeight);
+            }
+            else if (!string.IsNullOrEmpty(style.HeightExpression) && float.IsFinite(containingHeight))
+            {
+                height = LayoutHelper.EvaluateCssExpression(
+                    style.HeightExpression,
+                    containingHeight,
+                    state.ViewportWidth,
+                    state.ViewportHeight,
+                    (float)(style.FontSize ?? 16d));
+            }
+            else
+            {
+                return float.NaN;
+            }
+
+            if (!float.IsFinite(height))
+            {
+                return float.NaN;
+            }
+
+            float chrome = 0f;
+            if (string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                var padding = style.Padding;
+                var border = style.BorderThickness;
+                chrome = (float)(padding.Top + padding.Bottom + border.Top + border.Bottom);
+            }
+
+            float minHeight = style.MinHeight.HasValue
+                ? (float)style.MinHeight.Value
+                : (style.MinHeightPercent.HasValue && float.IsFinite(containingHeight)
+                    ? (float)(style.MinHeightPercent.Value / 100d * containingHeight)
+                    : 0f);
+            float maxHeight = style.MaxHeight.HasValue
+                ? (float)style.MaxHeight.Value
+                : (style.MaxHeightPercent.HasValue && float.IsFinite(containingHeight)
+                    ? (float)(style.MaxHeightPercent.Value / 100d * containingHeight)
+                    : float.PositiveInfinity);
+
+            height = Math.Min(Math.Max(height, minHeight), maxHeight);
+            return Math.Max(0f, height - chrome);
         }
 
         private static float ApplyHeightConstraints(CssComputed style, float contentHeight, LayoutState state)

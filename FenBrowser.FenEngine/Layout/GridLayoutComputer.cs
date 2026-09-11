@@ -951,8 +951,10 @@ namespace FenBrowser.FenEngine.Layout
                 var itemStyle = styles.TryGetValue(item, out var resolvedItemStyle)
                     ? resolvedItemStyle
                     : new CssComputed();
-                string justify = itemStyle.JustifySelf ?? style.JustifyItems ?? "stretch";
-                string align = itemStyle.AlignSelf ?? style.AlignItems ?? "stretch";
+                string justify = AutoMarginAlignment(itemStyle.MarginLeftAuto, itemStyle.MarginRightAuto)
+                    ?? itemStyle.JustifySelf ?? style.JustifyItems ?? "stretch";
+                string align = AutoMarginAlignment(itemStyle.MarginTopAuto, itemStyle.MarginBottomAuto)
+                    ?? itemStyle.AlignSelf ?? style.AlignItems ?? "stretch";
 
                 float itemW = trackW;
                 float itemH = trackH;
@@ -965,6 +967,18 @@ namespace FenBrowser.FenEngine.Layout
                 
                 if (justify != "stretch" && hasExplicitW) itemW = (float)itemStyle.Width.Value;
                 if (align != "stretch" && hasExplicitH) itemH = (float)itemStyle.Height.Value;
+
+                // A percentage size resolves against the grid area (CSS Grid §6.6.1).
+                if (justify != "stretch" && !hasExplicitW && itemStyle.WidthPercent.HasValue)
+                {
+                    itemW = (float)(itemStyle.WidthPercent.Value / 100d * trackW);
+                    hasExplicitW = true;
+                }
+                if (align != "stretch" && !hasExplicitH && itemStyle.HeightPercent.HasValue)
+                {
+                    itemH = (float)(itemStyle.HeightPercent.Value / 100d * trackH);
+                    hasExplicitH = true;
+                }
 
                 bool needsIntrinsicW = justify != "stretch" && !hasExplicitW;
                 bool needsIntrinsicH = align != "stretch" && !hasExplicitH;
@@ -983,6 +997,21 @@ namespace FenBrowser.FenEngine.Layout
                     {
                         itemH = Math.Min(trackH, intrinsic.ContentHeight);
                     }
+                }
+
+                // min/max constraints bound the aligned size (the item's layout applies
+                // them too; applying them here keeps the alignment offset consistent).
+                if (justify != "stretch")
+                {
+                    if (itemStyle.MaxWidth.HasValue) itemW = Math.Min(itemW, (float)itemStyle.MaxWidth.Value);
+                    else if (itemStyle.MaxWidthPercent.HasValue) itemW = Math.Min(itemW, (float)(itemStyle.MaxWidthPercent.Value / 100d * trackW));
+                    if (itemStyle.MinWidth.HasValue) itemW = Math.Max(itemW, (float)itemStyle.MinWidth.Value);
+                }
+                if (align != "stretch")
+                {
+                    if (itemStyle.MaxHeight.HasValue) itemH = Math.Min(itemH, (float)itemStyle.MaxHeight.Value);
+                    else if (itemStyle.MaxHeightPercent.HasValue) itemH = Math.Min(itemH, (float)(itemStyle.MaxHeightPercent.Value / 100d * trackH));
+                    if (itemStyle.MinHeight.HasValue) itemH = Math.Max(itemH, (float)itemStyle.MinHeight.Value);
                 }
 
                 // Track starts already include content alignment offsets.
@@ -1608,10 +1637,25 @@ namespace FenBrowser.FenEngine.Layout
                 return true;
             }
 
-            return style.HeightPercent.HasValue &&
+            // A percentage or calc() height is definite once the caller has resolved the
+            // container's block size and passes it as the available height.
+            return (style.HeightPercent.HasValue || !string.IsNullOrEmpty(style.HeightExpression)) &&
                    !float.IsNaN(availableHeight) &&
                    !float.IsInfinity(availableHeight) &&
                    availableHeight > 0f;
+        }
+
+        /// <summary>
+        /// CSS Box Alignment §5 / CSS Grid §10.2: auto margins in an axis absorb the free
+        /// space in the grid area and take precedence over the alignment properties.
+        /// Returns the equivalent alignment keyword, or null when no margin is auto.
+        /// </summary>
+        private static string AutoMarginAlignment(bool startAuto, bool endAuto)
+        {
+            if (startAuto && endAuto) return "center";
+            if (startAuto) return "end";
+            if (endAuto) return "start";
+            return null;
         }
     }
 }
