@@ -103,6 +103,7 @@ namespace FenBrowser.Host
             options.Title = "FenBrowser";
             options.API = new GraphicsAPI(ContextAPI.OpenGLES, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 0));
 
+            Platform.GlContextCreationPolicy.ApplyGlfwHints(isHeadless);
             _window = Silk.NET.Windowing.Window.Create(options);
             AttachWindowEvents();
         }

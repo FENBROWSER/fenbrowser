@@ -185,6 +185,7 @@ internal sealed class WindowsPlatformHost : IPlatformHost
             ? (GraphicsAPI)options.Api
             : new GraphicsAPI(ContextAPI.OpenGLES, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 0));
 
+        GlContextCreationPolicy.ApplyGlfwHints(headless: false);
         var window = Silk.NET.Windowing.Window.Create(silkOptions);
 
         var wrappedWindow = new WindowsWindow(window);
