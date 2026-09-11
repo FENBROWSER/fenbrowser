@@ -1224,6 +1224,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // Height
             float height = 0;
+            bool heightIsContentBased =
+                boxStyle?.Map != null &&
+                boxStyle.Map.TryGetValue("height", out var rawHeightForSizing) &&
+                LayoutHelper.IsContentBasedSizeKeyword(rawHeightForSizing);
             if (boxStyle?.Height.HasValue == true)
             {
                 height = (float)boxStyle.Height.Value;
@@ -1259,7 +1263,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             0f,
                             state.AvailableSize.Height - (float)margin.Vertical - verticalChrome);
                     }
-                    else if (!string.IsNullOrEmpty(boxStyle?.HeightExpression))
+                    else if (!heightIsContentBased && !string.IsNullOrEmpty(boxStyle?.HeightExpression))
                     {
                         float parentHeight = state.AvailableSize.Height;
                         if (float.IsInfinity(parentHeight) || parentHeight <= 0)
