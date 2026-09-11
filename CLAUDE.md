@@ -45,8 +45,9 @@ Other useful docs:
 - `docs/THIRD_PARTY_DEPENDENCIES.md` — all external libraries and licenses
 
 Key facts from Volume I not visible in code:
-- **Startup modes**: `--headless`, `--test262`, `--wpt`, `--acid2` (passed to `FenBrowser.Host/Program.cs`)
-- **Process isolation**: set env `FEN_PROCESS_ISOLATION=brokered` to enable multi-process mode
+- **Host flags** (`FenBrowser.Host/Program.cs`): only `--windowed`, `--window-size WxH`, `--log-level <level>` plus a positional URL. There is **no** `--headless`/`--test262`/`--acid2` on the Host anymore — those live in **`FenBrowser.Tooling`**: `FenBrowser.Tooling diagnose <url> [settle_ms]` (headless load + report), `debug-site <url>` (report + `screenshot.png` bundle), `acid2`, `wpt`, `test262`, `webdriver`, `captcha`.
+- **Process isolation**: brokered multi-process is the **default**; set `FEN_PROCESS_ISOLATION=in-process` to opt out. File logging is off by default — `FEN_LOG_PRESET=developer` logs to the console, `testrun`/`perf`/`ci` write `logs/fenbrowser_*.jsonl` (flushed on clean shutdown only).
+- **Linux / WSL2 (verified 2026-09-11 on Ubuntu 24.04 + WSLg)**: builds and runs; `LIBGL_ALWAYS_SOFTWARE=1` is the reliable GL path under WSLg. Requires `libfontconfig1` (the Skia native is the fontconfig-linked one) and `bubblewrap` for brokered children. Keep the clone on the Linux filesystem, not `/mnt/c`.
 - **Diagnostics dir**: override with `FEN_DIAGNOSTICS_DIR` env var
 - **DevTools CDP port**: 9222
 
