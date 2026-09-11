@@ -269,13 +269,19 @@ namespace FenBrowser.Tooling
             return ResolveProcessTimeoutSeconds(options.TimeoutSeconds, CountSelectedTests(options));
         }
 
+        // Task.Delay rejects anything past uint.MaxValue - 1 milliseconds (about
+        // 49 days). Scaling the per-path budget by a whole-tree path list (18000s
+        // x 270 directories) sailed past that and the tool threw before wptrunner
+        // ever started, so the ceiling is applied here rather than at the delay.
+        internal const int MaxProcessTimeoutSeconds = (int)((uint.MaxValue - 1) / 1000);
+
         internal static int ResolveProcessTimeoutSeconds(int timeoutSeconds, int selectedTestCount)
         {
             var perTestBudget = Math.Max(1, timeoutSeconds);
             var scaledBudget = (long)perTestBudget * Math.Max(1, selectedTestCount);
             var graceSeconds = Math.Max(30, Math.Min(300, selectedTestCount * 5));
             var total = Math.Max(perTestBudget, scaledBudget + graceSeconds);
-            return total >= int.MaxValue ? int.MaxValue : (int)total;
+            return total >= MaxProcessTimeoutSeconds ? MaxProcessTimeoutSeconds : (int)total;
         }
 
         private static int CountSelectedTests(WptOptions options)

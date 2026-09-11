@@ -75,6 +75,16 @@ public sealed class WptToolRunnerRawLogTests
     }
 
     [Fact]
+    public void ProcessTimeout_IsCappedToWhatTaskDelayAccepts()
+    {
+        // A whole-tree run: 18000s per path across ~270 top-level directories.
+        var capped = WptToolRunner.ResolveProcessTimeoutSeconds(timeoutSeconds: 18000, selectedTestCount: 270);
+        Assert.Equal(WptToolRunner.MaxProcessTimeoutSeconds, capped);
+        var delay = Task.Delay(TimeSpan.FromSeconds(capped));
+        Assert.NotNull(delay);
+    }
+
+    [Fact]
     public void AnalyzeRawLog_ExtractsUnexpectedSubtestAndTestFailures()
     {
         var rawLogPath = Path.Combine(Path.GetTempPath(), $"fen-wpt-raw-{Guid.NewGuid():N}.json");
