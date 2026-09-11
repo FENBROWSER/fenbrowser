@@ -15,6 +15,38 @@ namespace FenBrowser.FenEngine.Layout
     {
         public const float NativeCheckboxRadioSize = 16f;
 
+        /// <summary>
+        /// HTML §15.5.15 (Rendering: the textarea element): the intrinsic content size is
+        /// `rows` lines tall (default 2) and `cols` average character widths wide
+        /// (default 20). Line height comes from the computed style, falling back to
+        /// `normal` (~1.2em) like the flex text-control helper.
+        /// </summary>
+        public static SKSize TextareaIntrinsicContentSize(Element element, CssComputed style)
+        {
+            int rows = 2;
+            int cols = 20;
+            if (element != null)
+            {
+                if (int.TryParse(element.GetAttribute("rows"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedRows) && parsedRows > 0)
+                {
+                    rows = parsedRows;
+                }
+                if (int.TryParse(element.GetAttribute("cols"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedCols) && parsedCols > 0)
+                {
+                    cols = parsedCols;
+                }
+            }
+
+            float fontSize = (float)(style?.FontSize ?? 16d);
+            double lineHeight = style?.LineHeight ?? 1.2d;
+            float lineBox = lineHeight <= 4d ? fontSize * (float)lineHeight : (float)lineHeight;
+            lineBox = Math.Max(fontSize, lineBox);
+
+            // Average character advance of a 16px monospace/sans face is ~0.5em.
+            float averageCharWidth = fontSize * 0.5f;
+            return new SKSize(cols * averageCharWidth, rows * lineBox);
+        }
+
         public static bool IsNativeCheckboxOrRadio(Element element)
         {
             if (element == null ||

@@ -2595,8 +2595,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
             else if (tag == "TEXTAREA")
             {
-                if (w <= 0) w = 200f;
-                if (h <= 0) h = 48f;
+                var intrinsic = ReplacedElementSizing.TextareaIntrinsicContentSize(el, box.ComputedStyle);
+                if (w <= 0) w = intrinsic.Width;
+                if (h <= 0) h = intrinsic.Height;
             }
             else if (tag == "SELECT")
             {

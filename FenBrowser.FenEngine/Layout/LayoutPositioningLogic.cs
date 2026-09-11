@@ -594,7 +594,7 @@ namespace FenBrowser.FenEngine.Layout
             {
                 if (TryParseLengthAttribute(element, "width", out var attrW)) width = attrW;
                 else if (tag == "INPUT") width = 150f;
-                else if (tag == "TEXTAREA") width = 200f;
+                else if (tag == "TEXTAREA") width = ReplacedElementSizing.TextareaIntrinsicContentSize(element, style).Width;
                 else if (tag == "SELECT") width = 120f;
                 else if (tag == "BUTTON")
                 {
@@ -610,7 +610,7 @@ namespace FenBrowser.FenEngine.Layout
                 else if (style.LineHeight.HasValue && style.LineHeight.Value > 0) height = (float)style.LineHeight.Value;
                 else if (tag == "INPUT" || tag == "SELECT") height = 24f;
                 else if (tag == "BUTTON") height = 36f;
-                else if (tag == "TEXTAREA") height = 48f;
+                else if (tag == "TEXTAREA") height = ReplacedElementSizing.TextareaIntrinsicContentSize(element, style).Height;
             }
         }
 

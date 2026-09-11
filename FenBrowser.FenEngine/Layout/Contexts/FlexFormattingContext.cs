@@ -1495,7 +1495,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
                     else if (tag == "TEXTAREA")
                     {
-                        width = 200f;
+                        width = ReplacedElementSizing.TextareaIntrinsicContentSize(el, boxStyle).Width;
                     }
                 }
 
@@ -1525,7 +1525,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
                     else if (tag == "TEXTAREA")
                     {
-                        height = 60f;
+                        height = ReplacedElementSizing.TextareaIntrinsicContentSize(el, boxStyle).Height;
                     }
                 }
 

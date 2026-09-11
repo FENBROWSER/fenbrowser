@@ -420,7 +420,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // Handle intrinsic height for empty replaced elements (IMG, SVG, etc.)
             if (blockBox.Children.Count == 0)
             {
-                string t = (blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element)?.TagName?.ToUpperInvariant();
+                var el = blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element;
+                string t = el?.TagName?.ToUpperInvariant();
                 if (t == "IMG" || t == "SVG" || t == "CANVAS" || t == "VIDEO" || t == "IFRAME" || t == "EMBED" || t == "OBJECT" ||
                     t == "INPUT" || t == "TEXTAREA" || t == "BUTTON" || t == "SELECT")
                 {
@@ -469,7 +470,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     {
                         if (nativeCheckboxOrRadio) w = ReplacedElementSizing.NativeCheckboxRadioSize;
                         else if (t == "INPUT") w = 150f;
-                        else if (t == "TEXTAREA") w = 200f;
+                        else if (t == "TEXTAREA") w = ReplacedElementSizing.TextareaIntrinsicContentSize(el, blockBox.ComputedStyle).Width;
                         else if (t == "BUTTON") w = 100f;
                         else if (t == "SELECT") w = 120f;
                         else w = 300f;
@@ -485,7 +486,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     {
                         if (nativeCheckboxOrRadio) h = ReplacedElementSizing.NativeCheckboxRadioSize;
                         else if (t == "INPUT" || t == "SELECT") h = 24f;
-                        else if (t == "TEXTAREA") h = 48f;
+                        else if (t == "TEXTAREA") h = ReplacedElementSizing.TextareaIntrinsicContentSize(el, blockBox.ComputedStyle).Height;
                         else if (t == "BUTTON") h = 28f;
                         else h = 150f;
                     }
