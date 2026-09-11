@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Platform;
 
 namespace FenBrowser.Host.ProcessIsolation
 {
@@ -39,6 +40,9 @@ namespace FenBrowser.Host.ProcessIsolation
         private EventWaitHandle _readyEvent;
         private readonly bool _isWriter;
         private readonly int _regionCapacity;
+        // Non-Windows only: the file that backs the mapping. The writer owns it and
+        // unlinks it on dispose; open readers keep their mapping until they close.
+        private readonly string _backingFilePath;
         private bool _disposed;
 
         private FrameSharedMemory(
@@ -48,7 +52,8 @@ namespace FenBrowser.Host.ProcessIsolation
             MemoryMappedFile mmf,
             MemoryMappedViewAccessor accessor,
             EventWaitHandle readyEvent,
-            int regionCapacity)
+            int regionCapacity,
+            string backingFilePath = null)
         {
             _mmfName = mmfName;
             _readyEventName = readyEventName;
@@ -57,6 +62,119 @@ namespace FenBrowser.Host.ProcessIsolation
             _accessor = accessor;
             _readyEvent = readyEvent;
             _regionCapacity = regionCapacity;
+            _backingFilePath = backingFilePath;
+        }
+
+        // Named mappings and named events are Windows object-namespace features;
+        // MemoryMappedFile.CreateNew(name) throws PlatformNotSupportedException on
+        // Unix. There the region is a file under IpcPaths.SharedMemoryDirectory,
+        // which the sandbox binds read-write into the renderer, and publication is
+        // signalled by the FrameReady IPC message alone (nothing consumes the
+        // ready event on the reader side, so no cross-process event is needed).
+        private static string MakeBackingFilePath(string mmfName)
+        {
+            byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(mmfName));
+            return Path.Combine(IpcPaths.EnsureSharedMemoryDirectory(), $"frame-{Convert.ToHexString(hash)}.bin");
+        }
+
+        private static bool TryCreateFileBackedMapping(string mmfName, long totalSize, out MemoryMappedFile mmf, out string backingFilePath)
+        {
+            mmf = null;
+            backingFilePath = MakeBackingFilePath(mmfName);
+            FileStream stream = null;
+            try
+            {
+                stream = new FileStream(
+                    backingFilePath,
+                    FileMode.Create,
+                    FileAccess.ReadWrite,
+                    FileShare.ReadWrite | FileShare.Delete);
+                stream.SetLength(totalSize);
+                if (!OperatingSystem.IsWindows())
+                {
+                    try
+                    {
+                        File.SetUnixFileMode(backingFilePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        // Created by this process; the sandbox is the outer boundary.
+                    }
+                }
+
+                mmf = MemoryMappedFile.CreateFromFile(
+                    stream,
+                    mapName: null,
+                    totalSize,
+                    MemoryMappedFileAccess.ReadWrite,
+                    HandleInheritability.None,
+                    leaveOpen: false);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Warn($"[FrameSharedMemory] Could not create file-backed frame mapping '{backingFilePath}': {ex.Message}", LogCategory.General);
+                TryDispose(stream, "writer-backing-file");
+                TryDeleteBackingFile(backingFilePath);
+                return false;
+            }
+        }
+
+        private static bool TryOpenFileBackedMapping(string mmfName, out MemoryMappedFile mmf)
+        {
+            mmf = null;
+            var backingFilePath = MakeBackingFilePath(mmfName);
+            if (!File.Exists(backingFilePath))
+            {
+                return false;
+            }
+
+            FileStream stream = null;
+            try
+            {
+                stream = new FileStream(
+                    backingFilePath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                if (stream.Length < HeaderSize)
+                {
+                    stream.Dispose();
+                    return false;
+                }
+
+                // Capacity 0 maps the whole file; the reader validates the header
+                // against the mapped size just as it does for a named mapping.
+                mmf = MemoryMappedFile.CreateFromFile(
+                    stream,
+                    mapName: null,
+                    capacity: 0,
+                    MemoryMappedFileAccess.Read,
+                    HandleInheritability.None,
+                    leaveOpen: false);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Warn($"[FrameSharedMemory] Could not open file-backed frame mapping '{backingFilePath}': {ex.Message}", LogCategory.General);
+                TryDispose(stream, "reader-backing-file");
+                return false;
+            }
+        }
+
+        private static void TryDeleteBackingFile(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return;
+
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
         }
 
         public static int ComputeRegionCapacity(int windowWidth, int windowHeight)
@@ -118,25 +236,33 @@ namespace FenBrowser.Host.ProcessIsolation
             }
 
             MemoryMappedFile mmf;
-            try
+            EventWaitHandle readyEvent = null;
+            string backingFilePath = null;
+            if (OperatingSystem.IsWindows())
             {
-                mmf = MemoryMappedFile.CreateNew(mmfName, totalSize, MemoryMappedFileAccess.ReadWrite);
-            }
-            catch (Exception ex)
-            {
-                EngineLogBridge.Warn($"[FrameSharedMemory] CreateNew failed for session-local mapping: {ex.Message}", LogCategory.General);
-                return null;
-            }
+                try
+                {
+                    mmf = MemoryMappedFile.CreateNew(mmfName, totalSize, MemoryMappedFileAccess.ReadWrite);
+                }
+                catch (Exception ex)
+                {
+                    EngineLogBridge.Warn($"[FrameSharedMemory] CreateNew failed for session-local mapping: {ex.Message}", LogCategory.General);
+                    return null;
+                }
 
-            EventWaitHandle readyEvent;
-            try
-            {
-                readyEvent = new EventWaitHandle(false, EventResetMode.AutoReset, eventName);
+                try
+                {
+                    readyEvent = new EventWaitHandle(false, EventResetMode.AutoReset, eventName);
+                }
+                catch (Exception ex)
+                {
+                    EngineLogBridge.Warn($"[FrameSharedMemory] Could not create session-local frame-ready event: {ex.Message}", LogCategory.General);
+                    TryDispose(mmf, "writer-memory-mapped-file");
+                    return null;
+                }
             }
-            catch (Exception ex)
+            else if (!TryCreateFileBackedMapping(mmfName, totalSize, out mmf, out backingFilePath))
             {
-                EngineLogBridge.Warn($"[FrameSharedMemory] Could not create session-local frame-ready event: {ex.Message}", LogCategory.General);
-                TryDispose(mmf, "writer-memory-mapped-file");
                 return null;
             }
 
@@ -169,14 +295,12 @@ namespace FenBrowser.Host.ProcessIsolation
                 mmf,
                 accessor,
                 readyEvent,
-                regionCapacity);
+                regionCapacity,
+                backingFilePath);
         }
 
         public static FrameSharedMemory OpenForReader(int tabId, int parentPid, string capabilityToken = null)
         {
-            if (!OperatingSystem.IsWindows())
-                return null;
-
             var mmfName = string.IsNullOrWhiteSpace(capabilityToken)
                 ? MakeMmfName(tabId, parentPid)
                 : MakeMmfName(tabId, parentPid, capabilityToken);
@@ -185,36 +309,43 @@ namespace FenBrowser.Host.ProcessIsolation
                 : MakeEventName(tabId, parentPid, capabilityToken);
 
             MemoryMappedFile mmf;
-            try
+            EventWaitHandle readyEvent = null;
+            if (OperatingSystem.IsWindows())
             {
-                // The compositor only consumes published frame bytes. Do not give
-                // the reader write access to renderer-owned shared memory.
-                mmf = MemoryMappedFile.OpenExisting(mmfName, MemoryMappedFileRights.Read);
-            }
-            catch (FileNotFoundException)
-            {
-                return null;
-            }
-            catch (Exception ex)
-            {
-                EngineLogBridge.Warn($"[FrameSharedMemory] Could not open session-local mapping: {ex.Message}", LogCategory.General);
-                return null;
-            }
-
-            EventWaitHandle readyEvent;
-            try
-            {
-                if (!EventWaitHandle.TryOpenExisting(eventName, out readyEvent))
+                try
                 {
-                    EngineLogBridge.Warn("[FrameSharedMemory] Could not open session-local frame-ready event; rejecting mapping.", LogCategory.General);
+                    // The compositor only consumes published frame bytes. Do not give
+                    // the reader write access to renderer-owned shared memory.
+                    mmf = MemoryMappedFile.OpenExisting(mmfName, MemoryMappedFileRights.Read);
+                }
+                catch (FileNotFoundException)
+                {
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    EngineLogBridge.Warn($"[FrameSharedMemory] Could not open session-local mapping: {ex.Message}", LogCategory.General);
+                    return null;
+                }
+
+                try
+                {
+                    if (!EventWaitHandle.TryOpenExisting(eventName, out readyEvent))
+                    {
+                        EngineLogBridge.Warn("[FrameSharedMemory] Could not open session-local frame-ready event; rejecting mapping.", LogCategory.General);
+                        TryDispose(mmf, "reader-memory-mapped-file");
+                        return null;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    EngineLogBridge.Warn($"[FrameSharedMemory] Could not open session-local frame-ready event: {ex.Message}", LogCategory.General);
                     TryDispose(mmf, "reader-memory-mapped-file");
                     return null;
                 }
             }
-            catch (Exception ex)
+            else if (!TryOpenFileBackedMapping(mmfName, out mmf))
             {
-                EngineLogBridge.Warn($"[FrameSharedMemory] Could not open session-local frame-ready event: {ex.Message}", LogCategory.General);
-                TryDispose(mmf, "reader-memory-mapped-file");
                 return null;
             }
 
@@ -461,6 +592,11 @@ namespace FenBrowser.Host.ProcessIsolation
             _accessor = null;
             _mmf = null;
             _readyEvent = null;
+
+            if (_isWriter)
+            {
+                TryDeleteBackingFile(_backingFilePath);
+            }
         }
 
         private static void TryDispose(IDisposable disposable, string resourceName)
