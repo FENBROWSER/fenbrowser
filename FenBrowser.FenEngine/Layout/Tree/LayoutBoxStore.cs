@@ -29,6 +29,25 @@ namespace FenBrowser.FenEngine.Layout.Tree
         private LayoutBox[] _wrappers;
         private LayoutState[] _cachedLayoutStates;
         private bool[] _hasCachedLayout;
+        private List<SubtreeLayoutSnapshot>[] _layoutSnapshots;
+        private const int MaxSnapshotsPerBox = 4;
+
+        /// <summary>
+        /// The geometry a subtree had after being laid out under one constraint set.
+        /// Nested flex/inline-block measure passes lay the same subtree out under a
+        /// handful of alternating constraints (intrinsic probe, then one or two forced
+        /// widths) at every level, so a leaf is laid out thousands of times with only
+        /// two or three distinct states. The single-slot memo thrashed between them;
+        /// keeping the last few subtree geometries makes each state a hit.
+        /// </summary>
+        private sealed class SubtreeLayoutSnapshot
+        {
+            public LayoutState State;
+            public int[] Ids;
+            public BoxModel[] Geometries;
+            public LayoutState[] CachedStates;
+            public bool[] HasCached;
+        }
 
         private int _count;
         private int _generation = 1;
@@ -64,6 +83,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             _isAnonymous = new bool[capacity];
             _cachedLayoutStates = new LayoutState[capacity];
             _hasCachedLayout = new bool[capacity];
+            _layoutSnapshots = new List<SubtreeLayoutSnapshot>[capacity];
             _wrappers = new LayoutBox[capacity];
         }
 
@@ -84,6 +104,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             Array.Resize(ref _isAnonymous, newCapacity);
             Array.Resize(ref _cachedLayoutStates, newCapacity);
             Array.Resize(ref _hasCachedLayout, newCapacity);
+            Array.Resize(ref _layoutSnapshots, newCapacity);
             Array.Resize(ref _wrappers, newCapacity);
         }
 
@@ -102,6 +123,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             Array.Clear(_styles, 0, _count);
             Array.Clear(_cachedLayoutStates, 0, _count);
             Array.Clear(_hasCachedLayout, 0, _count);
+            Array.Clear(_layoutSnapshots, 0, _count);
             Array.Clear(_wrappers, 0, _count);
 
             for (int i = 0; i < _count; i++)
@@ -309,6 +331,127 @@ namespace FenBrowser.FenEngine.Layout.Tree
         {
             _cachedLayoutStates[id] = state;
             _hasCachedLayout[id] = true;
+        }
+
+        /// <summary>
+        /// Before a box is laid out under a new state, keep the geometry it has now
+        /// (which belongs to its currently memoized state) so that state stays a hit.
+        /// </summary>
+        public void SnapshotCurrentLayout(int id)
+        {
+            if (!_hasCachedLayout[id])
+            {
+                return;
+            }
+
+            var state = _cachedLayoutStates[id];
+            var list = _layoutSnapshots[id];
+            if (list != null)
+            {
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (list[i].State.Equals(state))
+                    {
+                        return;
+                    }
+                }
+            }
+            else
+            {
+                list = _layoutSnapshots[id] = new List<SubtreeLayoutSnapshot>(MaxSnapshotsPerBox);
+            }
+
+            var ids = new List<int>();
+            CollectSubtreeIds(id, ids);
+            var snapshot = new SubtreeLayoutSnapshot
+            {
+                State = state,
+                Ids = ids.ToArray(),
+                Geometries = new BoxModel[ids.Count],
+                CachedStates = new LayoutState[ids.Count],
+                HasCached = new bool[ids.Count]
+            };
+            for (int i = 0; i < ids.Count; i++)
+            {
+                int d = ids[i];
+                snapshot.Geometries[i] = _geometries[d]?.ShallowClone();
+                snapshot.CachedStates[i] = _cachedLayoutStates[d];
+                snapshot.HasCached[i] = _hasCachedLayout[d];
+            }
+
+            if (list.Count >= MaxSnapshotsPerBox)
+            {
+                list.RemoveAt(0);
+            }
+            list.Add(snapshot);
+        }
+
+        /// <summary>
+        /// Restores the subtree geometry recorded for <paramref name="state"/>, if any,
+        /// making it the box's current memoized layout.
+        /// </summary>
+        public bool TryRestoreCachedLayout(int id, LayoutState state)
+        {
+            var list = _layoutSnapshots[id];
+            if (list == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                var snapshot = list[i];
+                if (!snapshot.State.Equals(state))
+                {
+                    continue;
+                }
+
+                // Keep the geometry being replaced so the alternation stays cheap.
+                SnapshotCurrentLayout(id);
+
+                var ids = snapshot.Ids;
+                for (int k = 0; k < ids.Length; k++)
+                {
+                    int d = ids[k];
+                    if ((uint)d >= (uint)_count)
+                    {
+                        continue;
+                    }
+
+                    var saved = snapshot.Geometries[k];
+                    if (saved != null)
+                    {
+                        if (_geometries[d] == null)
+                        {
+                            _geometries[d] = new BoxModel();
+                        }
+                        _geometries[d].CopyFrom(saved);
+                    }
+                    _cachedLayoutStates[d] = snapshot.CachedStates[k];
+                    _hasCachedLayout[d] = snapshot.HasCached[k];
+                }
+
+                // Most recently used goes last.
+                list.RemoveAt(i);
+                list.Add(snapshot);
+                return true;
+            }
+
+            return false;
+        }
+
+        private void CollectSubtreeIds(int id, List<int> ids)
+        {
+            ids.Add(id);
+            var children = _childIds[id];
+            if (children == null)
+            {
+                return;
+            }
+            for (int i = 0; i < children.Count; i++)
+            {
+                CollectSubtreeIds(children[i], ids);
+            }
         }
 
         internal void ValidateAccess(int id, int expectedGeneration)

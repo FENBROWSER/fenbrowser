@@ -125,6 +125,31 @@ namespace FenBrowser.FenEngine.Layout
         /// <summary>
         /// Creates a box model from content box dimensions.
         /// </summary>
+        /// <summary>
+        /// Field-wise copy for layout snapshots. <see cref="Lines"/> is shared: every
+        /// layout pass assigns a fresh list and never mutates one after it finishes.
+        /// </summary>
+        public BoxModel ShallowClone() => (BoxModel)MemberwiseClone();
+
+        public void CopyFrom(BoxModel other)
+        {
+            MarginBox = other.MarginBox;
+            BorderBox = other.BorderBox;
+            PaddingBox = other.PaddingBox;
+            ContentBox = other.ContentBox;
+            Margin = other.Margin;
+            Border = other.Border;
+            Padding = other.Padding;
+            Baseline = other.Baseline;
+            LineHeight = other.LineHeight;
+            Ascent = other.Ascent;
+            Descent = other.Descent;
+            Transform = other.Transform;
+            LogicalContentBox = other.LogicalContentBox;
+            WritingMode = other.WritingMode;
+            Lines = other.Lines;
+        }
+
         public static BoxModel FromContentBox(float x, float y, float width, float height)
         {
             var box = new BoxModel();

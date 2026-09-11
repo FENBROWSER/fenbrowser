@@ -16,7 +16,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         {
             state.Deadline?.Check();
 
-            if (box.Store.TryGetCachedLayout(box.StoreId, state))
+            if (box.Store.TryGetCachedLayout(box.StoreId, state) || box.Store.TryRestoreCachedLayout(box.StoreId, state))
             {
                 // Fast-path: constraints exactly match previous pass.
                 // Children retain their relative offsets, and the parent will safely position the root.
@@ -31,6 +31,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             _layoutDepth++;
             try
             {
+                box.Store.SnapshotCurrentLayout(box.StoreId);
                 LayoutCore(box, state);
                 ArrangeOutsideListMarker(box, state);
                 box.Store.SetCachedLayout(box.StoreId, state);
