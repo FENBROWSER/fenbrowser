@@ -292,6 +292,24 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
+        /// <summary>
+        /// Marks a just-inserted subtree for recascade under its new ancestors.
+        /// <see cref="MarkDirty"/> only propagates when a flag flips, and a node that was
+        /// styled (className, setAttribute) before insertion is already StyleDirty, so
+        /// the new parent chain never learned about it: elements created by script kept
+        /// the default style and a 0px box until something else dirtied the page.
+        /// An inserted subtree always needs a cascade anyway - inheritance changed.
+        /// </summary>
+        public void MarkInsertedSubtreeDirty()
+        {
+            _flags |= NodeFlags.StyleDirty;
+            PropagateChildDirtyUp(
+                style: true,
+                layout: LayoutDirty || ChildLayoutDirty,
+                paint: PaintDirty || ChildPaintDirty);
+            _ownerDocument?.NotifyTreeDirty();
+        }
+
         // A document that is itself parented (a frame's content document). Its dirty
         // flags are managed by a different style pass than its embedder's, so the
         // "ancestors are already marked" shortcut cannot be trusted here.

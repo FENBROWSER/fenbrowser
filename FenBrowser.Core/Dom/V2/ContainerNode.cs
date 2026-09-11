@@ -486,7 +486,7 @@ namespace FenBrowser.Core.Dom.V2
             InvalidateChildCache();
 
             // Mark inserted node as style-dirty so incremental recascade picks it up
-            node.MarkDirty(InvalidationKind.Style);
+            node.MarkInsertedSubtreeDirty();
 
             // Adding a child changes the containing block's inline/block flow.
             // Mark the parent itself for layout so incremental layout rebuilds
@@ -546,7 +546,7 @@ namespace FenBrowser.Core.Dom.V2
             InvalidateChildCache();
 
             // Mark inserted node as style-dirty so incremental recascade picks it up
-            node.MarkDirty(InvalidationKind.Style);
+            node.MarkInsertedSubtreeDirty();
 
             // Insertion can reflow every following sibling in the containing
             // block; the parent must be the incremental layout root.

@@ -2063,15 +2063,15 @@ private void FlushPendingLayoutForScript(Element element)
                 return;
             }
 
-            // Find the nearest ancestor that establishes a formatting context
-            // to limit layout scope. GetComputedStyle is a cache lookup (no layout trigger).
-            var layoutRoot = FindLayoutRootForElement(element, root);
-            if (layoutRoot == null)
-            {
-                layoutRoot = root;
-            }
+            // CSSOM View: a geometry read flushes pending style and layout for the
+            // document. EnsureLayout lays its root out at the origin and replaces the
+            // renderer's whole box cache with that subtree, so it can only ever be
+            // handed the document root: scoping it to a nearer formatting-context
+            // ancestor (or, when `overflow` was unset, the element itself) left every
+            // other element without a box and the flushed one at (0,0).
+            var layoutRoot = root;
 
-            // Skip if nothing dirty in the layout root's subtree
+            // Skip if nothing dirty in the document
             bool isDirty = layoutRoot.StyleDirty || layoutRoot.ChildStyleDirty ||
                            layoutRoot.LayoutDirty || layoutRoot.ChildLayoutDirty;
             if (!isDirty)
@@ -2096,35 +2096,6 @@ private void FlushPendingLayoutForScript(Element element)
                 (float)(_activeViewportWidth ?? 1920),
                 (float)(_activeViewportHeight ?? GetPrimaryWindowHeight()),
                 _activeBaseUri?.AbsoluteUri);
-        }
-
-private Node FindLayoutRootForElement(Element element, Node documentRoot)
-        {
-            // Walk up from the element to find the nearest ancestor that establishes
-            // a formatting context. GetComputedStyle is a cache lookup (no layout trigger).
-            var current = element;
-            while (current != null && current != documentRoot)
-            {
-                var style = current.GetComputedStyle();
-                if (style != null)
-                {
-                    var display = style.Display?.ToLowerInvariant() ?? "block";
-                    // Elements that establish independent formatting contexts
-                    // Note: table-cell and table-caption are TABLE-INTERNAL, they participate
-                    // in the TABLE's formatting context. Only table/inline-table establishes
-                    // an independent table formatting context.
-                    if (display == "flex" || display == "inline-flex" ||
-                        display == "grid" || display == "inline-grid" ||
-                        display == "table" || display == "inline-table" ||
-                        display == "flow-root" ||
-                        (display == "block" && style.Overflow != "visible"))
-                    {
-                        return current;
-                    }
-                }
-                current = current.ParentElement;
-            }
-            return documentRoot;
         }
 
         /// <summary>
