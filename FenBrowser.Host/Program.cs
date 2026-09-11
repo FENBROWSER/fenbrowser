@@ -1197,7 +1197,13 @@ namespace FenBrowser.Host
                         lastFrameScrollY = scrollY;
                         hasFrameViewport = true;
 
-                        SendFrameReady(vpWidth, vpHeight, scrollY, "RendererChild.FrameRequest", envelope.CorrelationId);
+                        // The broker asks for a frame on every paint (rate-limited to
+                        // 33ms). Producing it here put a full raster on this thread
+                        // between two input reads, which is where the remaining
+                        // 100-370ms of click latency lived after frame draining moved
+                        // to the pump. Hand the request to the pump instead; it runs
+                        // every 8ms so the frame is still prompt.
+                        Interlocked.Exchange(ref pendingRendererRepaintFrame, 1);
                         continue;
                     }
 
