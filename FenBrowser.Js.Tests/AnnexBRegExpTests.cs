@@ -16,6 +16,22 @@ public sealed class AnnexBRegExpTests
     }
 
     [Fact]
+    public void ClassEscapeNextToDashIsLiteralOutsideUnicodeMode()
+    {
+        // ES2024 B.1.2 NonemptyClassRangesNoDash: google.com's chunks build
+        // RegExp("[+\-.,!#%_a-zA-Z0-9	]") and `/[\w-.]/`-style classes.
+        Assert.True(Run(@"
+            var a = /[\w-.]+/.test('ab-c.d') && !/[\w-.]/.test(' ');
+            var b = /[\d-\s]/.test('-') && /[\d-\s]/.test(' ') && /[\d-\s]/.test('5') && !/[\d-\s]/.test('a');
+            var c = /[a-\d]/.test('a') && /[a-\d]/.test('-') && /[a-\d]/.test('7') && !/[a-\d]/.test('b');
+            var d = RegExp('[+\-.,!#%_a-zA-Z0-9	]').test('#');
+            var threw = false;
+            try { new RegExp('[\w-.]', 'u'); } catch (error) { threw = error instanceof SyntaxError; }
+            a && b && c && d && threw;
+        ").AsBoolean());
+    }
+
+    [Fact]
     public void LegacyContextAliasesHaveAccessorsAndRejectWrongReceiver()
     {
         Assert.True(Run(@"

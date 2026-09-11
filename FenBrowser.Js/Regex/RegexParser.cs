@@ -713,7 +713,18 @@ public static class RegexParser
 
                     if (startCp < 0 || endCp < 0)
                     {
-                        throw new RegexSyntaxError("Invalid range in character class", _pos);
+                        // ES2024 B.1.2 (Annex B) NonemptyClassRangesNoDash: outside u/v mode a
+                        // class escape on either side of '-' (e.g. `[\w-.]`, `[+\-.,!#%_a-z]`
+                        // is fine but `[\s-\w]` is not a range) makes the '-' a literal and
+                        // the result the union of the three atoms. Only u/v mode rejects it.
+                        if (IsUnicode)
+                        {
+                            throw new RegexSyntaxError("Invalid range in character class", _pos);
+                        }
+
+                        items.Add(new ClassLiteralChar('-'));
+                        items.Add(endAtom);
+                        continue;
                     }
 
                     if (startCp > endCp)
