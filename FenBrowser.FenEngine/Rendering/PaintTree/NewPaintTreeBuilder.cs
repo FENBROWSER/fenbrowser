@@ -856,12 +856,33 @@ namespace FenBrowser.FenEngine.Rendering
                         else currentContext.AddBlockNodes(clipList);
                     }
                 }
+                else if (!isPositioned && node is Element && (isFloat || IsAtomicInlineDisplay(display)))
+                {
+                    // CSS 2.1 Appendix E steps 5 / 7.2.1: the float or atomic inline paints its
+                    // in-flow content as one unit at its own place in the parent's float / inline
+                    // phase. Without this, a block-level child (e.g. a display:flex span inside an
+                    // inline-block button) landed in the ancestor's block phase and was painted
+                    // underneath the button's own background.
+                    var atomicCtx = new BuilderStackingContext(node) { EscapeTarget = currentContext };
+                    ProcessChildren(node, atomicCtx, depth + 1, escapeContext, nodeVisibilityHidden);
+                    var atomicNodes = atomicCtx.Flatten();
+                    if (atomicNodes.Count > 0)
+                    {
+                        if (isFloat) currentContext.AddFloatNodes(atomicNodes);
+                        else currentContext.AddInlineNodes(atomicNodes);
+                    }
+                }
                 else
                 {
                     // No clipping - process children directly into current context
                     ProcessChildren(node, currentContext, depth + 1, escapeContext, nodeVisibilityHidden);
                 }
             }
+        }
+
+        private static bool IsAtomicInlineDisplay(string display)
+        {
+            return display == "inline-block" || display == "inline-flex" || display == "inline-grid" || display == "inline-table";
         }
 
         private static bool TryResolveLegacyRectClip(CssComputed style, SKRect borderBox, out SKRect clipRect)
@@ -6234,6 +6255,13 @@ namespace FenBrowser.FenEngine.Rendering
             // CSS filter / backdrop-filter (stored as raw strings; parsed by renderer)
             public string Filter { get; set; }
             public string BackdropFilter { get; set; }
+
+            // CSS 2.1 Appendix E steps 5 and 7.2.1: a float or an atomic inline (inline-block,
+            // inline-table, inline-flex, inline-grid) paints "as if it created a new stacking
+            // context, except that any positioned descendants and descendants which actually
+            // create a new stacking context should be considered part of the parent stacking
+            // context". Such a pseudo-context forwards those escapees to EscapeTarget.
+            public BuilderStackingContext EscapeTarget { get; set; }
             
             // Categorized by paint order (CSS spec)
             private readonly List<BuilderStackingContext> _negativeZContexts = new List<BuilderStackingContext>();
@@ -6254,6 +6282,11 @@ namespace FenBrowser.FenEngine.Rendering
             
             public void AddChildContext(BuilderStackingContext child)
             {
+                if (EscapeTarget != null)
+                {
+                    EscapeTarget.AddChildContext(child);
+                    return;
+                }
                 if (child.ZIndex < 0)
                     _negativeZContexts.Add(child);
                 else if (child.ZIndex == 0)
@@ -6268,6 +6301,11 @@ namespace FenBrowser.FenEngine.Rendering
             
             public void AddPositionedNodes(List<PaintNodeBase> nodes, int zIndex)
             {
+                if (EscapeTarget != null)
+                {
+                    EscapeTarget.AddPositionedNodes(nodes, zIndex);
+                    return;
+                }
                 // Positioned with z-index: auto (which comes here as we verify no-context in caller)
                 _step6Items.Add(nodes); // Step 6
             }
