@@ -1149,6 +1149,25 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 return replacedWidth;
             }
+            // A definite px width is the box's max-content contribution regardless of what
+            // the probe pass left in its geometry: a flex item measured inside a too-narrow
+            // provisional container has already been flex-shrunk below its own width.
+            if (box.ComputedStyle?.Width.HasValue == true)
+            {
+                var explicitStyle = box.ComputedStyle;
+                float explicitOuter = (float)explicitStyle.Width.Value;
+                if (!string.Equals(explicitStyle.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+                {
+                    explicitOuter += (float)(explicitStyle.Padding.Left + explicitStyle.Padding.Right +
+                                             explicitStyle.BorderThickness.Left + explicitStyle.BorderThickness.Right);
+                }
+                explicitOuter += (float)(explicitStyle.Margin.Left + explicitStyle.Margin.Right);
+                if (float.IsFinite(explicitOuter) && explicitOuter > directWidth)
+                {
+                    directWidth = explicitOuter;
+                }
+            }
+
             bool isFloating =
                 string.Equals(box.ComputedStyle?.Float, "left", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(box.ComputedStyle?.Float, "right", StringComparison.OrdinalIgnoreCase);
@@ -1169,10 +1188,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 hasIntrinsicDescendantWidth = true;
             }
 
-            if (!hasExplicitWidth &&
-                TryMeasureFlexRowShrinkToFitWidth(box, out float flexRowWidth) &&
-                flexRowWidth > directWidth + 0.5f)
+            // A row flex container's max-content size is the sum of its items' contributions
+            // (CSS Flexbox §9.9.1). The provisional geometry is whatever width the probe pass
+            // stretched it to, so it must not win over the sum in either direction.
+            if (!hasExplicitWidth && TryMeasureFlexRowShrinkToFitWidth(box, out float flexRowWidth))
             {
+                var flexStyle = box.ComputedStyle;
+                if (flexStyle?.MinWidth.HasValue == true)
+                {
+                    float minOuter = (float)flexStyle.MinWidth.Value;
+                    if (!string.Equals(flexStyle.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+                    {
+                        minOuter += (float)(flexStyle.Padding.Left + flexStyle.Padding.Right +
+                                            flexStyle.BorderThickness.Left + flexStyle.BorderThickness.Right);
+                    }
+                    minOuter += (float)(flexStyle.Margin.Left + flexStyle.Margin.Right);
+                    flexRowWidth = Math.Max(flexRowWidth, minOuter);
+                }
                 return flexRowWidth;
             }
 
@@ -1351,16 +1383,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 textWidth = fontSize * Math.Max(1, text.Length) * 0.5f;
             }
 
-            var padding = style?.Padding ?? new Thickness();
-            var border = style?.BorderThickness ?? new Thickness();
-            var margin = style?.Margin ?? new Thickness();
-            float horizontalChrome =
-                (float)padding.Left +
-                (float)padding.Right +
-                (float)border.Left +
-                (float)border.Right +
-                (float)margin.Left +
-                (float)margin.Right;
+            // A text run carries its parent's computed style but owns no box chrome; the
+            // padding/border/margin belong to the element box that wraps it and are added
+            // there. Counting them here too made "AI Mode" measure 8px wider than it is.
+            float horizontalChrome = 0f;
+            if (box is not TextLayoutBox)
+            {
+                var padding = style?.Padding ?? new Thickness();
+                var border = style?.BorderThickness ?? new Thickness();
+                var margin = style?.Margin ?? new Thickness();
+                horizontalChrome =
+                    (float)padding.Left +
+                    (float)padding.Right +
+                    (float)border.Left +
+                    (float)border.Right +
+                    (float)margin.Left +
+                    (float)margin.Right;
+            }
 
             width = Math.Max(0f, textWidth + horizontalChrome);
             return width > 0f;
@@ -1425,7 +1464,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             float gap = ResolveFlexShrinkToFitColumnGap(style);
             int itemCount = 0;
-            foreach (var child in box.Children)
+            foreach (var child in EnumerateFlexItemsForShrinkToFit(box))
             {
                 if (IsIgnorableShrinkToFitChild(child))
                 {
@@ -1447,7 +1486,39 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 itemCount++;
             }
 
+            if (itemCount > 0)
+            {
+                // The sum is the container's content size; report its margin box.
+                width += (float)(style.Padding.Left + style.Padding.Right +
+                                 style.BorderThickness.Left + style.BorderThickness.Right +
+                                 style.Margin.Left + style.Margin.Right);
+            }
+
             return itemCount > 0 && width > 0f;
+        }
+
+        /// <summary>
+        /// The boxes that FlexFormattingContext will treat as flex items: inline content
+        /// inside a flex container is wrapped in an anonymous box by the tree builder, and
+        /// each concrete child of that wrapper is its own item. Measuring the wrapper as one
+        /// item takes the widest child instead of their sum, so a row of icon + label came
+        /// out label-wide and the label then wrapped onto a second line.
+        /// </summary>
+        private static IEnumerable<LayoutBox> EnumerateFlexItemsForShrinkToFit(LayoutBox container)
+        {
+            foreach (var child in container.Children)
+            {
+                if (child.IsAnonymous && child.SourceNode is not Element && child.Children.Count > 0)
+                {
+                    foreach (var concrete in child.Children)
+                    {
+                        yield return concrete;
+                    }
+                    continue;
+                }
+
+                yield return child;
+            }
         }
 
         private static bool IsIgnorableShrinkToFitChild(LayoutBox box)
@@ -1930,12 +2001,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             var parentContent = parent.Geometry.ContentBox;
             float childHeight = child.Geometry.MarginBox.Height;
-            if (parentContent.Height <= childHeight + 1f || childHeight <= 0f)
+
+            // The button's explicit height is applied to its geometry only after its
+            // children are placed, so during a (re)layout pass the content box may still
+            // carry the probe height. Center against the definite height when there is one.
+            float parentHeight = parentContent.Height;
+            float definiteHeight = ResolveDefiniteContentHeightForChildren(parent, state);
+            if (float.IsFinite(definiteHeight) && definiteHeight > 0f)
+            {
+                parentHeight = definiteHeight;
+            }
+
+            if (parentHeight <= childHeight + 1f || childHeight <= 0f)
             {
                 return;
             }
 
-            float targetTop = parentContent.Top + (parentContent.Height - childHeight) * 0.5f;
+            float targetTop = parentContent.Top + (parentHeight - childHeight) * 0.5f;
             if (Math.Abs(child.Geometry.MarginBox.Top - targetTop) <= 0.5f)
             {
                 return;
