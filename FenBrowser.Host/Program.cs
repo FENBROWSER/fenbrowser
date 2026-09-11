@@ -1885,6 +1885,18 @@ namespace FenBrowser.Host
                 return true;
             }
 
+            // A sandboxed child on Linux runs in its own PID namespace (bwrap
+            // --unshare-all), where the broker's pid does not exist at all, so
+            // "not found" says nothing about whether the broker is alive - every
+            // child exited on its first loop iteration here. On Unix the pipe is
+            // the liveness signal: the read loop ends on EOF when the broker goes
+            // away, and bwrap's --die-with-parent kills the child if the broker
+            // dies without closing anything.
+            if (!OperatingSystem.IsWindows())
+            {
+                return true;
+            }
+
             try
             {
                 var parent = Process.GetProcessById(parentPid);
