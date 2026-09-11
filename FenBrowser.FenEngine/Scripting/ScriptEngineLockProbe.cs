@@ -58,6 +58,39 @@ namespace FenBrowser.FenEngine.Scripting
 
         private static readonly long ProbeStartTicks = Stopwatch.GetTimestamp();
 
+        // Waits in progress, by thread. The aggregates only exist once a wait
+        // ends; a worker that is stalled right now needs to be asked where it
+        // is standing, which is what a StillRunning report does.
+        private static readonly Dictionary<int, (string Site, long SinceTicks)> ActiveWaits =
+            new Dictionary<int, (string, long)>();
+
+        /// <summary>
+        /// Every contended acquisition still waiting, as "site for Nms", or
+        /// an empty string. Only meaningful with the probe enabled.
+        /// </summary>
+        internal static string DescribeActiveWaits()
+        {
+            if (!Enabled)
+            {
+                return string.Empty;
+            }
+
+            var now = Stopwatch.GetTimestamp();
+            var sb = new StringBuilder();
+            lock (StatsGate)
+            {
+                foreach (var pair in ActiveWaits)
+                {
+                    if (sb.Length > 0) sb.Append(' ');
+                    sb.Append("thread").Append(pair.Key).Append('@').Append(pair.Value.Site)
+                      .Append(" for ").Append((1000.0 * (now - pair.Value.SinceTicks) / Stopwatch.Frequency).ToString("F0", System.Globalization.CultureInfo.InvariantCulture))
+                      .Append("ms");
+                }
+            }
+
+            return sb.ToString();
+        }
+
         private readonly object _gate;
         private readonly string _site;
         private readonly string _label;
@@ -96,7 +129,23 @@ namespace FenBrowser.FenEngine.Scripting
             var contended = !Monitor.TryEnter(gate);
             if (contended)
             {
-                Monitor.Enter(gate);
+                var threadId = Environment.CurrentManagedThreadId;
+                lock (StatsGate)
+                {
+                    ActiveWaits[threadId] = (site, start);
+                }
+
+                try
+                {
+                    Monitor.Enter(gate);
+                }
+                finally
+                {
+                    lock (StatsGate)
+                    {
+                        ActiveWaits.Remove(threadId);
+                    }
+                }
             }
 
             var acquired = Stopwatch.GetTimestamp();

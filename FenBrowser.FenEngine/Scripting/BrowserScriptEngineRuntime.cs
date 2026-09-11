@@ -2437,6 +2437,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 $"dirtyCards={heap?.RememberedSetEdgeCount ?? 0} " +
                                 $"rememberedEnvs={heap?.RememberedEnvironmentCount ?? 0}] " +
                                 $"roots=[{heap?.LastMinorRootBreakdown ?? string.Empty}] " +
+                                // A job that stops allocating but keeps its
+                                // elapsed time climbing is waiting, not working;
+                                // with FEN_FENJS_LOCKPROBE=1 this names the lock.
+                                $"waits=[{ScriptEngineLockProbe.DescribeActiveWaits()}] " +
                                 $"clr=[allocatedMB={managedAllocated / (1024.0 * 1024.0):F0} " +
                                 $"managedMB={managedMemory / (1024.0 * 1024.0):F0} " +
                                 $"gen0={GC.CollectionCount(0)} gen1={GC.CollectionCount(1)} gen2={GC.CollectionCount(2)}] " +
