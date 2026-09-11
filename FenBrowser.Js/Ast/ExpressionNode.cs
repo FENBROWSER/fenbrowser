@@ -55,7 +55,13 @@ public sealed record ParenthesizedExpressionNode(ExpressionNode Expression, Sour
 
 public sealed record BinaryExpressionNode(string Operator, ExpressionNode Left, ExpressionNode Right, SourceSpan Span) : ExpressionNode(Span);
 
-public sealed record AssignmentExpressionNode(ExpressionNode Left, ExpressionNode Right, SourceSpan Span) : ExpressionNode(Span);
+// Plain `=` when CompoundOperator is null. For `+=`, `-=`, ... on a member
+// target the parser keeps the raw right-hand side here and names the binary
+// operator, so the compiler evaluates the target reference once (ECMA-262
+// 13.15.2 step 1-3: EvaluateLeftHandSide, GetValue, then PutValue on that
+// same reference). Desugaring to `target = target op right` would evaluate
+// the object and key expressions twice.
+public sealed record AssignmentExpressionNode(ExpressionNode Left, ExpressionNode Right, SourceSpan Span, string? CompoundOperator = null) : ExpressionNode(Span);
 
 // Logical assignment (&&=, ||=, ??=). Operator is the underlying logical
 // operator ("&&", "||", "??"). Unlike a desugared `x = x op y`, these

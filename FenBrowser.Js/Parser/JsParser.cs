@@ -7353,6 +7353,15 @@ public sealed class JsParser
             return new LogicalAssignmentExpressionNode(target, op[..^1], right, span);
         }
 
+        // A compound assignment to a member keeps its operator so the compiler
+        // can evaluate the object and key once (ECMA-262 13.15.2). Identifier
+        // targets have no side effects to duplicate, and `super` members keep
+        // their existing lowering; both still desugar to `target = target op right`.
+        if (op != "=" && Unparenthesize(target) is MemberExpressionNode { Object: not SuperExpressionNode })
+        {
+            return new AssignmentExpressionNode(target, right, span, op[..^1]);
+        }
+
         var rhs = BuildAssignmentRight(target, op, right);
         return new AssignmentExpressionNode(target, rhs, span);
     }

@@ -151,10 +151,11 @@ internal static class PrivateNameRewriter
                 return new MemberExpressionNode(obj, me.Property, me.Computed, propExpr, me.Span);
 
             case AssignmentExpressionNode ae:
-                return new AssignmentExpressionNode(
-                    RewriteExpression(ae.Left, m),
-                    RewriteExpression(ae.Right, m),
-                    ae.Span);
+                return ae with
+                {
+                    Left = RewriteExpression(ae.Left, m),
+                    Right = RewriteExpression(ae.Right, m),
+                };
 
             case LogicalAssignmentExpressionNode lae:
                 return new LogicalAssignmentExpressionNode(

@@ -883,10 +883,11 @@ public sealed class BytecodeCompiler
                     cond.Span),
 
             AssignmentExpressionNode assign =>
-                new AssignmentExpressionNode(
-                    ReplaceTdzParameterReferences(assign.Left, tdzParameterNames),
-                    ReplaceTdzParameterReferences(assign.Right, tdzParameterNames),
-                    assign.Span),
+                assign with
+                {
+                    Left = ReplaceTdzParameterReferences(assign.Left, tdzParameterNames),
+                    Right = ReplaceTdzParameterReferences(assign.Right, tdzParameterNames),
+                },
 
             CallExpressionNode call =>
                 new CallExpressionNode(
@@ -2246,6 +2247,90 @@ public sealed class BytecodeCompiler
         return resultMemberReg;
     }
 
+    private static OpCode BinaryOpCodeFor(string op) => op switch
+    {
+        "+" => OpCode.Add,
+        "-" => OpCode.Sub,
+        "*" => OpCode.Mul,
+        "%" => OpCode.Mod,
+        "/" => OpCode.Div,
+        "**" => OpCode.Exp,
+        "&" => OpCode.BitAnd,
+        "|" => OpCode.BitOr,
+        "^" => OpCode.BitXor,
+        "<<" => OpCode.ShiftLeft,
+        ">>" => OpCode.ShiftRight,
+        ">>>" => OpCode.UnsignedShiftRight,
+        "==" => OpCode.Eq,
+        "!=" => OpCode.Neq,
+        "===" => OpCode.StrictEq,
+        "!==" => OpCode.StrictNeq,
+        "in" => OpCode.In,
+        "instanceof" => OpCode.InstanceOf,
+        "<" => OpCode.Lt,
+        ">" => OpCode.Gt,
+        "<=" => OpCode.Le,
+        ">=" => OpCode.Ge,
+        _ => throw new InvalidOperationException($"Unsupported binary operator {op}.")
+    };
+
+    // ECMA-262 13.15.2 Evaluation, AssignmentOperator other than `=`: the
+    // left-hand reference is evaluated once, read, and then written with the
+    // combined value. The object and key expressions run exactly once, in
+    // order, before the right-hand side, and the result is the stored value.
+    private int CompileCompoundMemberAssignment(AssignmentExpressionNode node)
+    {
+        var target = node.Left;
+        while (target is ParenthesizedExpressionNode paren)
+        {
+            target = paren.Expression;
+        }
+
+        var member = (MemberExpressionNode)target;
+        ThrowIfPrivateMemberAccess(member);
+        var binOp = BinaryOpCodeFor(node.CompoundOperator!);
+        var objReg = CompileExpression(member.Object);
+
+        if (member.Computed)
+        {
+            var keyReg = CompileExpression(member.PropertyExpression!);
+            var curReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.GetElem, curReg, objReg, keyReg));
+            var valReg = CompileExpression(node.Right);
+            var resultReg = AllocateRegister();
+            _instructions.Add(new Instruction(binOp, resultReg, curReg, valReg));
+            _instructions.Add(new Instruction(OpCode.SetElem, objReg, keyReg, resultReg));
+            return resultReg;
+        }
+
+        if (TryGetComputedFieldIndex(member.Property, out var fieldIdx))
+        {
+            var keyReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadFieldKey, keyReg, fieldIdx, 0));
+            var curReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.GetElem, curReg, objReg, keyReg));
+            var valReg = CompileExpression(node.Right);
+            var resultReg = AllocateRegister();
+            _instructions.Add(new Instruction(binOp, resultReg, curReg, valReg));
+            _instructions.Add(new Instruction(OpCode.SetElem, objReg, keyReg, resultReg));
+            return resultReg;
+        }
+
+        var nameIndex = GetOrCreatePropertyName(member.Property);
+        var isPrivate = IsPrivateMangled(member.Property);
+        var getOp = isPrivate ? OpCode.GetPrivateField : OpCode.GetPropByName;
+        var curMemberReg = AllocateRegister();
+        _instructions.Add(new Instruction(getOp, curMemberReg, objReg, nameIndex));
+        var newValReg = CompileExpression(node.Right);
+        var resultMemberReg = AllocateRegister();
+        _instructions.Add(new Instruction(binOp, resultMemberReg, curMemberReg, newValReg));
+        var setOp = isPrivate
+            ? (_compilingClassConstructor ? OpCode.DefinePrivateField : OpCode.SetPrivateField)
+            : OpCode.SetPropByName;
+        _instructions.Add(new Instruction(setOp, objReg, nameIndex, resultMemberReg));
+        return resultMemberReg;
+    }
+
     // Emit the short-circuit test for a logical assignment. After this returns,
     // the next emitted instructions are the "do the assignment" block; the
     // returned jump placeholders must be patched to the point after that block
@@ -3381,6 +3466,8 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.StoreVar, rightReg, slot, 0));
                 return rightReg;
             }
+            case AssignmentExpressionNode { CompoundOperator: not null } compound:
+                return CompileCompoundMemberAssignment(compound);
             case AssignmentExpressionNode assign when assign.Left is MemberExpressionNode member:
             {
                 ThrowIfPrivateMemberAccess(member);
@@ -4273,33 +4360,7 @@ public sealed class BytecodeCompiler
                 var leftReg = CompileExpression(bin.Left);
                 var rightReg = CompileExpression(bin.Right);
                 var dest = AllocateRegister();
-                var op = bin.Operator switch
-                {
-                    "+" => OpCode.Add,
-                    "-" => OpCode.Sub,
-                    "*" => OpCode.Mul,
-                    "%" => OpCode.Mod,
-                    "/" => OpCode.Div,
-                    "**" => OpCode.Exp,
-                    "&" => OpCode.BitAnd,
-                    "|" => OpCode.BitOr,
-                    "^" => OpCode.BitXor,
-                    "<<" => OpCode.ShiftLeft,
-                    ">>" => OpCode.ShiftRight,
-                    ">>>" => OpCode.UnsignedShiftRight,
-                    "==" => OpCode.Eq,
-                    "!=" => OpCode.Neq,
-                    "===" => OpCode.StrictEq,
-                    "!==" => OpCode.StrictNeq,
-                    "in" => OpCode.In,
-                    "instanceof" => OpCode.InstanceOf,
-                    "<" => OpCode.Lt,
-                    ">" => OpCode.Gt,
-                    "<=" => OpCode.Le,
-                    ">=" => OpCode.Ge,
-                    _ => throw new InvalidOperationException($"Unsupported binary operator {bin.Operator}.")
-                };
-                _instructions.Add(new Instruction(op, dest, leftReg, rightReg));
+                _instructions.Add(new Instruction(BinaryOpCodeFor(bin.Operator), dest, leftReg, rightReg));
                 return dest;
             }
             case ParenthesizedExpressionNode paren:
