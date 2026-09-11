@@ -400,6 +400,20 @@ namespace FenBrowser.Host.ProcessIsolation
         private const int MaxPendingOutboundMessages = 128;
         private const int OutboundQueueCapacity = 512;
         private readonly Channel<RendererIpcEnvelope> _outbound;
+
+        // Latest-wins slots for the two message streams that arrive faster than
+        // a busy child can drain them (pointer moves at input rate, frame requests
+        // at up to 30/s). Only the newest of each is ever worth sending, and
+        // keeping them out of the bounded queue means the queue's DropOldest
+        // policy can no longer throw away a MouseDown/MouseUp behind a burst of
+        // moves - which is how tile clicks on the reCAPTCHA challenge went missing
+        // while the spinner kept the child rasterising. A slot is published to the
+        // writer task through a marker envelope enqueued only when the slot was
+        // empty, so ordering against discrete events is preserved.
+        private RendererIpcEnvelope _pendingMouseMove;
+        private RendererIpcEnvelope _pendingFrameRequest;
+        private readonly RendererIpcEnvelope _mouseMoveSlotMarker = new() { Type = "slot:MouseMove" };
+        private readonly RendererIpcEnvelope _frameRequestSlotMarker = new() { Type = "slot:FrameRequest" };
         private readonly Task _outboundLoop;
         private readonly RendererIpcAckTracker _ackTracker = new();
         private int _outboundFaulted;
@@ -503,13 +517,49 @@ namespace FenBrowser.Host.ProcessIsolation
                 return;
             }
 
-            Send(new RendererIpcEnvelope
+            var envelope = new RendererIpcEnvelope
             {
                 Type = RendererIpcMessageType.Input.ToString(),
                 TabId = TabId,
                 CorrelationId = Guid.NewGuid().ToString("N"),
                 Payload = RendererIpc.SerializePayload(inputEvent)
-            });
+            };
+
+            if (inputEvent.Type == RendererInputEventType.MouseMove)
+            {
+                SendLatestWins(ref _pendingMouseMove, _mouseMoveSlotMarker, envelope);
+                return;
+            }
+
+            Send(envelope);
+        }
+
+        private void SendLatestWins(ref RendererIpcEnvelope slot, RendererIpcEnvelope marker, RendererIpcEnvelope envelope)
+        {
+            if (Interlocked.Exchange(ref slot, envelope) == null)
+            {
+                Send(marker);
+            }
+        }
+
+        /// <summary>
+        /// Resolves a marker envelope to the newest slot content, or returns the
+        /// envelope unchanged when it is not a marker. Null means the slot was
+        /// already drained by an earlier marker and there is nothing to write.
+        /// </summary>
+        private RendererIpcEnvelope ResolveOutbound(RendererIpcEnvelope envelope)
+        {
+            if (ReferenceEquals(envelope, _mouseMoveSlotMarker))
+            {
+                return Interlocked.Exchange(ref _pendingMouseMove, null);
+            }
+
+            if (ReferenceEquals(envelope, _frameRequestSlotMarker))
+            {
+                return Interlocked.Exchange(ref _pendingFrameRequest, null);
+            }
+
+            return envelope;
         }
 
         private float _lastFrameRequestScrollY;
@@ -542,7 +592,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 ScrollY = scrollY
             };
 
-            Send(new RendererIpcEnvelope
+            SendLatestWins(ref _pendingFrameRequest, _frameRequestSlotMarker, new RendererIpcEnvelope
             {
                 Type = RendererIpcMessageType.FrameRequest.ToString(),
                 TabId = TabId,
@@ -816,8 +866,14 @@ namespace FenBrowser.Host.ProcessIsolation
         {
             try
             {
-                await foreach (var envelope in _outbound.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
+                await foreach (var queued in _outbound.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
                 {
+                    var envelope = ResolveOutbound(queued);
+                    if (envelope == null)
+                    {
+                        continue;
+                    }
+
                     try
                     {
                         lock (_writeLock)
@@ -829,6 +885,24 @@ namespace FenBrowser.Host.ProcessIsolation
                             }
 
                             WriteEnvelope(envelope);
+
+                            // If the queue's DropOldest ever discarded a marker, its
+                            // slot would stay occupied and never be re-announced. Once
+                            // the queue is empty, publish whatever the slots still hold.
+                            if (_outbound.Reader.Count == 0)
+                            {
+                                var move = Interlocked.Exchange(ref _pendingMouseMove, null);
+                                if (move != null)
+                                {
+                                    WriteEnvelope(move);
+                                }
+
+                                var frame = Interlocked.Exchange(ref _pendingFrameRequest, null);
+                                if (frame != null)
+                                {
+                                    WriteEnvelope(frame);
+                                }
+                            }
                         }
                     }
                     catch (Exception ex)
