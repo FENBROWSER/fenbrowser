@@ -218,10 +218,35 @@ namespace FenBrowser.Core
 
         static BrowserSettings()
         {
+            _settingsPath = ResolveSettingsPath();
+        }
+
+        // A sandboxed child has no HOME, so LocalApplicationData comes back empty on
+        // Unix and the old Path.Combine produced a *relative* "FenBrowser" directory
+        // inside a read-only working directory. The CreateDirectory in the static
+        // constructor then threw, and a type-initializer failure took the whole
+        // renderer down before it could connect to the broker. Settings are optional
+        // state: Load() already copes with a missing file and Save() with a failed
+        // write, so resolving the path must never throw either.
+        private static string ResolveSettingsPath()
+        {
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrWhiteSpace(appDataPath))
+            {
+                appDataPath = Path.GetTempPath();
+            }
+
             var fenBrowserPath = Path.Combine(appDataPath, "FenBrowser");
-            Directory.CreateDirectory(fenBrowserPath);
-            _settingsPath = Path.Combine(fenBrowserPath, "settings.json");
+            try
+            {
+                Directory.CreateDirectory(fenBrowserPath);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"[Settings] Settings directory unavailable ({ex.Message}); running with defaults.");
+            }
+
+            return Path.Combine(fenBrowserPath, "settings.json");
         }
 
         public static BrowserSettings Instance
