@@ -9550,6 +9550,104 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     enumerable: true
                 });
 
+                // CSSOM §6.1 / §6.4: a minimal CSSStyleSheet + CSSStyleRule model behind
+                // HTMLStyleElement.sheet. Rules inserted through insertRule are mirrored
+                // into the owning <style> element's text so the cascade sees them; rules
+                // are parsed only as far as selector + declaration block. google.com's
+                // safeStyleSheet helper validates every CSS-in-JS rule by inserting it into
+                // a detached document's <style> sheet and reading back cssRules[0].cssText.
+                var CSSRule = defineCtor('CSSRule', null, ['CSSRule'], function (candidate) {
+                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSRule') >= 0;
+                });
+                CSSRule.STYLE_RULE = 1;
+                var CSSStyleRule = defineCtor('CSSStyleRule', CSSRule, ['CSSRule', 'CSSStyleRule'], function (candidate) {
+                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSStyleRule') >= 0;
+                });
+                var CSSStyleSheet = defineCtor('CSSStyleSheet', null, ['StyleSheet', 'CSSStyleSheet'], function (candidate) {
+                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSStyleSheet') >= 0;
+                });
+                function __fenParseCssRule(text) {
+                    text = String(text == null ? '' : text).trim();
+                    var open = text.indexOf('{');
+                    var close = text.lastIndexOf('}');
+                    if (open <= 0 || close < open) {
+                        var err = new Error("Failed to execute 'insertRule' on 'CSSStyleSheet': Failed to parse the rule '" + text + "'.");
+                        err.name = 'SyntaxError';
+                        throw err;
+                    }
+                    var selector = text.slice(0, open).trim();
+                    var declarations = text.slice(open + 1, close).split(';').map(function (d) { return d.trim(); }).filter(Boolean)
+                        .map(function (d) { var i = d.indexOf(':'); return i > 0 ? d.slice(0, i).trim() + ': ' + d.slice(i + 1).trim() : d; });
+                    var rule = Object.create(CSSStyleRule.prototype);
+                    Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSStyleRule'], enumerable: false });
+                    rule.selectorText = selector;
+                    rule.type = 1;
+                    rule.parentStyleSheet = null;
+                    rule.style = { cssText: declarations.join('; ') + (declarations.length ? ';' : '') };
+                    Object.defineProperty(rule, 'cssText', {
+                        get: function () { return this.selectorText + ' { ' + this.style.cssText + (declarations.length ? ' ' : '') + '}'; },
+                        configurable: true, enumerable: true
+                    });
+                    return rule;
+                }
+                Object.defineProperty(globalThis, '__fenCreateStyleSheet', {
+                    value: function (ownerNode) {
+                        var sheet = Object.create(CSSStyleSheet.prototype);
+                        Object.defineProperty(sheet, '__fenDomBrands', { value: ['StyleSheet', 'CSSStyleSheet'], enumerable: false });
+                        var rules = [];
+                        rules.item = function (i) { return i >= 0 && i < rules.length ? rules[i] : null; };
+                        sheet.cssRules = rules;
+                        sheet.rules = rules;
+                        sheet.ownerNode = ownerNode || null;
+                        sheet.type = 'text/css';
+                        sheet.disabled = false;
+                        sheet.href = null;
+                        sheet.media = { length: 0, mediaText: '', item: function () { return null; } };
+                        function sync() {
+                            if (ownerNode && ownerNode.textContent !== undefined) {
+                                ownerNode.textContent = rules.map(function (r) { return r.cssText; }).join(String.fromCharCode(10));
+                            }
+                        }
+                        sheet.insertRule = function (text, index) {
+                            index = index === undefined ? 0 : (index | 0);
+                            if (index < 0 || index > rules.length) {
+                                var err = new Error("Failed to execute 'insertRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + rules.length + ").");
+                                err.name = 'IndexSizeError';
+                                throw err;
+                            }
+                            var rule = __fenParseCssRule(text);
+                            rule.parentStyleSheet = sheet;
+                            rules.splice(index, 0, rule);
+                            sync();
+                            return index;
+                        };
+                        sheet.addRule = function (selector, block, index) {
+                            sheet.insertRule(selector + ' { ' + block + ' }', index === undefined ? rules.length : index);
+                            return -1;
+                        };
+                        sheet.deleteRule = function (index) {
+                            index = index | 0;
+                            if (index < 0 || index >= rules.length) {
+                                var err = new Error("Failed to execute 'deleteRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + (rules.length - 1) + ").");
+                                err.name = 'IndexSizeError';
+                                throw err;
+                            }
+                            rules.splice(index, 1);
+                            sync();
+                        };
+                        sheet.removeRule = sheet.deleteRule;
+                        sheet.replaceSync = function (text) {
+                            rules.length = 0;
+                            String(text || '').split('}').forEach(function (chunk) {
+                                if (chunk.trim()) { rules.push(__fenParseCssRule(chunk + '}')); }
+                            });
+                            sync();
+                        };
+                        return sheet;
+                    },
+                    enumerable: false, configurable: true, writable: true
+                });
+
                 defineCtor('DOMStringMap', null, ['DOMStringMap'], function (candidate) {
                     return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('DOMStringMap') >= 0;
                 });
@@ -12400,6 +12498,24 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 var propName = kv.Key.StartsWith("--") ? kv.Key : "--" + kv.Key;
                 if (!props.ContainsKey(propName))
                     props[propName] = JsValue.FromString(kv.Value ?? string.Empty);
+            }
+        }
+
+        // CSSOM §6.7.5: a computed style reports every property, so an unset one
+        // reads as its initial value rather than undefined. Closure's positioning
+        // code tests `overflow != "visible"` on each ancestor; an undefined overflow
+        // made every ancestor a clipping box and google.com's menus never opened.
+        foreach (var initial in CssComputed.InitialValues)
+        {
+            if (!props.ContainsKey(initial.Key))
+            {
+                var initialValue = JsValue.FromString(initial.Value);
+                props[initial.Key] = initialValue;
+                var camel = CssPropToCamel(initial.Key);
+                if (!props.ContainsKey(camel))
+                {
+                    props[camel] = initialValue;
+                }
             }
         }
 
@@ -20294,8 +20410,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             "offsetHeight" => JsValue.FromNumber(box.BorderBox.Height),
             "clientWidth" => JsValue.FromNumber(box.PaddingBox.Width),
             "clientHeight" => JsValue.FromNumber(box.PaddingBox.Height),
-            "offsetLeft" => JsValue.FromNumber(box.BorderBox.Left),
-            "offsetTop" => JsValue.FromNumber(box.BorderBox.Top),
+            "offsetLeft" => JsValue.FromNumber(box.BorderBox.Left - OffsetParentPaddingEdge(element).X),
+            "offsetTop" => JsValue.FromNumber(box.BorderBox.Top - OffsetParentPaddingEdge(element).Y),
             "clientLeft" => JsValue.FromNumber(box.BorderBox.Left - box.PaddingBox.Left),
             "clientTop" => JsValue.FromNumber(box.BorderBox.Top - box.PaddingBox.Top),
             "scrollWidth" => JsValue.FromNumber(box.ContentBox.Width),
@@ -20304,6 +20420,80 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             "scrollLeft" => JsValue.FromInt32(0),
             _ => JsValue.FromInt32(0)
         };
+    }
+
+    /// <summary>
+    /// CSSOM View §9 "offsetParent": null for the root, body, a display:none or
+    /// position:fixed element; otherwise the nearest ancestor that is positioned or a
+    /// table cell / table, falling back to body. Google's popup positioning bails when
+    /// offsetParent is missing, so the menu opened but stayed at the page origin.
+    /// </summary>
+    /// <summary>
+    /// The padding-edge origin offsetLeft/offsetTop are measured from (CSSOM View §9);
+    /// (0,0) when the offsetParent is body/null so the numbers stay page-relative there.
+    /// </summary>
+    private SKPoint OffsetParentPaddingEdge(Element element)
+    {
+        var offsetParent = ResolveOffsetParent(element);
+        if (offsetParent == null || offsetParent == element.OwnerDocument?.Body)
+        {
+            return SKPoint.Empty;
+        }
+
+        var parentBox = LayoutBoxResolver?.Invoke(offsetParent) as BoxModel;
+        return parentBox == null ? SKPoint.Empty : new SKPoint(parentBox.PaddingBox.Left, parentBox.PaddingBox.Top);
+    }
+
+    private Element ResolveOffsetParent(Element element)
+    {
+        if (element == null)
+        {
+            return null;
+        }
+
+        // offsetParent depends on computed display/position, so it flushes pending
+        // style like the other layout-dependent reads; a popup that was just shown
+        // (`style.display = ''`) otherwise still reads as display:none here.
+        FlushPendingLayout?.Invoke(element);
+
+        var document = element.OwnerDocument;
+        var body = document?.Body;
+        if (element == document?.DocumentElement || element == body)
+        {
+            return null;
+        }
+
+        var style = element.GetComputedStyle();
+        if (style != null &&
+            (string.Equals(style.Display, "none", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(style.Position, "fixed", StringComparison.OrdinalIgnoreCase)))
+        {
+            return null;
+        }
+
+        for (var ancestor = element.ParentElement; ancestor != null; ancestor = ancestor.ParentElement)
+        {
+            if (ancestor == body)
+            {
+                return body;
+            }
+
+            var tag = ancestor.TagName?.ToUpperInvariant();
+            if (tag is "TD" or "TH" or "TABLE")
+            {
+                return ancestor;
+            }
+
+            var ancestorStyle = ancestor.GetComputedStyle();
+            var position = ancestorStyle?.Position;
+            if (!string.IsNullOrEmpty(position) &&
+                !string.Equals(position, "static", StringComparison.OrdinalIgnoreCase))
+            {
+                return ancestor;
+            }
+        }
+
+        return body;
     }
 
     /// <summary>
@@ -20876,6 +21066,29 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 (_, args) => JsValue.FromString(CssEscape(args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty)),
                 length: 1)
         });
+    }
+
+    /// <summary>
+    /// HTMLStyleElement.sheet: one CSSStyleSheet per style element, built by the
+    /// prelude's __fenCreateStyleSheet and cached on the element.
+    /// </summary>
+    private JsValue GetOrCreateStyleElementSheet(Element element)
+    {
+        var existing = GetStoredHostPropertyOrUndefined(element, "sheet");
+        if (existing.Tag != JsValueTag.Undefined)
+        {
+            return existing;
+        }
+
+        var factory = _interpreter.ReadGlobalValueOrUndefined("__fenCreateStyleSheet");
+        if (!_interpreter.CanCallValue(factory))
+        {
+            return JsValue.Null;
+        }
+
+        var sheet = _interpreter.InvokeFunction(factory, new[] { ToHostNodeOrNull(element) }, JsValue.Undefined);
+        SetStoredHostProperty(element, "sheet", sheet);
+        return sheet;
     }
 
     private JsValue CreateEmptyStyleSheetListObject()
@@ -23175,6 +23388,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case "dataset":
                     value = _owner.ToHostOrNull(new FenJsDomStringMapHost(element), HostObjectKind.Other);
                     return true;
+                case "sheet" when string.Equals(element.TagName, "STYLE", StringComparison.OrdinalIgnoreCase):
+                    value = _owner.GetOrCreateStyleElementSheet(element);
+                    return true;
                 case "addEventListener":
                     value = _owner.GetOrCreateHostCallable(
                         element,
@@ -24067,6 +24283,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case "scrollTop":
                 case "scrollLeft":
                     value = _owner.ReadElementLayoutDimension(element, property);
+                    return true;
+                case "offsetParent":
+                    value = _owner.ToHostNodeOrNull(_owner.ResolveOffsetParent(element));
                     return true;
                 case "getBoundingClientRect":
                     value = _owner.GetOrCreateHostCallable(

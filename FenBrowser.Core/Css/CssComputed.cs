@@ -665,6 +665,8 @@ namespace FenBrowser.Core.Css
             ["opacity"] = "1",
             ["transform"] = "none",
             ["overflow"] = "visible",
+            ["overflow-x"] = "visible",
+            ["overflow-y"] = "visible",
             ["cursor"] = "auto",
             ["pointer-events"] = "auto"
         };
