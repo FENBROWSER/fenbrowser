@@ -18297,6 +18297,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 // Replace or append the property in the existing style string.
                 // Never append duplicate declarations â€” deduplicate by property name.
                 var styleAttr = element.GetAttribute("style") ?? string.Empty;
+                // CSSOM §6.7.1 setProperty step 4: an empty value removes the
+                // declaration. Writing `display:;` instead left an empty display in
+                // the cascade and google.com's Settings menu (shown via
+                // `popup.style.display = ''`) never got a box.
+                bool removeDeclaration = string.IsNullOrWhiteSpace(val);
                 bool replaced = false;
                 bool changed = false;
                 var sb = new System.Text.StringBuilder();
@@ -18309,19 +18314,24 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     var name = trimmed.Substring(0, colonIdx).Trim();
                     if (string.Equals(name, prop, StringComparison.OrdinalIgnoreCase))
                     {
+                        replaced = true;
+                        if (removeDeclaration)
+                        {
+                            changed = true;
+                            continue;
+                        }
                         // Replace the existing declaration with the new value.
                         var oldVal = trimmed.Substring(colonIdx + 1).Trim();
                         if (!string.Equals(oldVal, val, StringComparison.OrdinalIgnoreCase))
                             changed = true;
                         sb.Append(prop).Append(':').Append(val).Append(';');
-                        replaced = true;
                     }
                     else
                     {
                         sb.Append(trimmed).Append(';');
                     }
                 }
-                if (!replaced)
+                if (!replaced && !removeDeclaration)
                 {
                     // New property â€” always a change.
                     sb.Append(prop).Append(':').Append(val).Append(';');
@@ -21448,6 +21458,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             }
 
             var hostObject = resolution.HostObject;
+
+            // HTML §3.2.6.1 DOMStringMap: the map's own properties are exactly the
+            // element's data-* attributes. A read of an absent key is undefined, but
+            // `"cthref" in el.dataset` must be false - google.com's document click
+            // handler navigates to data-cthref whenever that test passes, and answering
+            // true for every key sent it to /null.
+            if (hostObject is FenJsDomStringMapHost datasetHost && accessKind != HostPropertyAccessKind.Read)
+            {
+                var exists = datasetHost.Element.HasAttribute(PropertyNameToDatasetAttribute(property));
+                value = exists ? JsValue.FromString(datasetHost.Element.GetAttribute(PropertyNameToDatasetAttribute(property)) ?? string.Empty) : JsValue.Undefined;
+                return exists;
+            }
+
             var found = TryGetHostObjectDefinedProperty(hostObject, property, out value);
 
             if (!found)
