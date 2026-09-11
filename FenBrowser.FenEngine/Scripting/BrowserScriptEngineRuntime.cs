@@ -353,6 +353,13 @@ Action<Element> FlushPendingLayout { get; set; }
     /// </summary>
     Func<Uri, Uri, Task<string>> WorkerScriptFetcher { get; set; }
     Func<Element, Uri, Task> FrameElementLoader { get; set; }
+
+    /// <summary>
+    /// Enters the host's image-loader request scope, so image fetches the
+    /// script engine starts share the cache and cache keys of the ones
+    /// layout starts. Null means unscoped.
+    /// </summary>
+    Func<IDisposable> ImageLoaderScope { get; set; }
     Func<Element, object> LayoutBoxResolver { get; set; }
     Func<Element, (double X, double Y)> FrameScrollReader { get; set; }
     Action<Element, double, double> FrameScrollWriter { get; set; }
@@ -449,7 +456,7 @@ internal sealed record BrowserHostLifetimeSnapshot(
 /// FenJS browser script engine â€” the sole JS runtime for the browser pipeline.
 /// All page scripts execute through FenJS; there is no legacy fallback.
 /// </summary>
-public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSource
+public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSource
 {
     private sealed class MessagePortEndpoint
     {
@@ -973,6 +980,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     public Func<Uri, Uri, string, Task<string>> ExternalScriptFetcherWithNonce { get; set; }
     public Func<Uri, Uri, Task<string>> WorkerScriptFetcher { get; set; }
     public Func<Element, Uri, Task> FrameElementLoader { get; set; }
+    public Func<IDisposable> ImageLoaderScope { get; set; }
     public Func<Element, object> LayoutBoxResolver { get; set; }
     public Func<Element, (double X, double Y)> FrameScrollReader { get; set; }
     public Action<Element, double, double> FrameScrollWriter { get; set; }
@@ -1725,6 +1733,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private void CopyFrameRealmConfiguration(FenJsBrowserScriptEngine realm)
     {
         realm.RuntimeProfile = RuntimeProfile;
+        realm.ImageLoaderScope = ImageLoaderScope;
         realm.FetchOverride = FetchOverride;
         realm.SubresourceAllowed = SubresourceAllowed;
         realm.TrustedDynamicSubresourceAllowed = TrustedDynamicSubresourceAllowed;
@@ -1908,6 +1917,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             RebindFenJsDomContext(domRoot, baseUri, documentReadyState: "loading");
         }
 
+        EnsureImageLoadObserver();
+
         if (resetSession && _parentRealmOwner != null && _embeddingFrameElement != null)
         {
             ConfigureEmbeddedRealmGlobals();
@@ -1930,6 +1941,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 });
             WireInlineEventHandlers(domRoot);
             await ExecutePageScriptsWithFenJsAsync(domRoot, baseUri).ConfigureAwait(false);
+            // Images the parser created never went through the mutation
+            // observer. Their requests start here, after the page's scripts
+            // have had the chance to attach listeners, the way an image that
+            // loads asynchronously during parsing would be seen.
+            TrackImagesInSubtree(domRoot);
             ApplyScriptingEnabledSanitizer(domRoot);
             DispatchStartupLifecycleEvents();
         }
@@ -4325,6 +4341,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         // safe point and drop _fenJsLock before the teardown below needs it.
         _realmAbandoned = true;
         UnsubscribeFrameTeardownObserver();
+        UnsubscribeImageLoadObserver();
 
         foreach (var childRealm in DetachFrameRealms())
         {
@@ -4877,6 +4894,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             _parentRealmOwner = this
         };
         realm.RuntimeProfile = RuntimeProfile;
+        realm.ImageLoaderScope = ImageLoaderScope;
         realm.FetchOverride = FetchOverride;
         realm.SubresourceAllowed = SubresourceAllowed;
         realm.TrustedDynamicSubresourceAllowed = TrustedDynamicSubresourceAllowed;
@@ -18643,7 +18661,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             "submit", "reset", "change", "input",
             "focus", "blur", "focusin", "focusout",
             "scroll", "wheel",
-            "error", "abort",
+            "load", "error", "abort",
             "touchstart", "touchend", "touchmove", "touchcancel"
         };
 
@@ -22818,7 +22836,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     value = _owner.ToHostNodeOrNull(element.ShadowRoot);
                     return true;
                 case "complete" when IsImageElement(element):
-                    value = JsValue.FromBoolean(true);
+                    value = JsValue.FromBoolean(_owner.IsImageComplete(element));
+                    return true;
+                case "naturalWidth" when IsImageElement(element):
+                    value = JsValue.FromInt32(_owner.GetImageNaturalSize(element).Width);
+                    return true;
+                case "naturalHeight" when IsImageElement(element):
+                    value = JsValue.FromInt32(_owner.GetImageNaturalSize(element).Height);
                     return true;
                 case "open" when IsDialogElement(element):
                     value = JsValue.FromBoolean(element.HasAttribute("open"));

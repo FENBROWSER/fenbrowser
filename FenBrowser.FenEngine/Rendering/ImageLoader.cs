@@ -379,6 +379,32 @@ namespace FenBrowser.FenEngine.Rendering
         // Emits authoritative pending network-image load count changes.
         public static event Action<int> PendingLoadCountChanged;
 
+        /// <summary>
+        /// Raised on a pool thread when a network image fetch+decode finishes,
+        /// with the requested URL and whether a bitmap is now cached for it.
+        /// This is what lets an <c>img</c> element get its load/error event:
+        /// the loader is keyed by URL, not by element.
+        /// </summary>
+        public static event Action<string, bool> ImageLoadFinished;
+
+        private static void RaiseImageLoadFinished(string url, bool success)
+        {
+            var handler = ImageLoadFinished;
+            if (handler == null)
+            {
+                return;
+            }
+
+            try
+            {
+                handler(url, success);
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Warn($"[ImageLoader] Load-finished handler failed: {ex.Message}", LogCategory.Rendering);
+            }
+        }
+
         // ========== Memory Management Properties ==========
         
         /// <summary>
@@ -1484,11 +1510,12 @@ namespace FenBrowser.FenEngine.Rendering
             int? targetHeight = null,
             ImageLoaderRequestContext context = null)
         {
+            var succeeded = false;
             try
             {
                 // Check caches before loading
-                if (_animatedGifs.ContainsKey(cacheKey)) return;
-                if (_memoryCache.ContainsKey(cacheKey) || _legacyCache.ContainsKey(cacheKey)) return;
+                if (_animatedGifs.ContainsKey(cacheKey)) { succeeded = true; return; }
+                if (_memoryCache.ContainsKey(cacheKey) || _legacyCache.ContainsKey(cacheKey)) { succeeded = true; return; }
 
                 // Only allow http/https for now — data URIs are handled synchronously above.
                 if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
@@ -1576,6 +1603,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     if (TryStoreDecodedBitmap(cacheKey, url, bitmap, isLazy))
                     {
+                        succeeded = true;
                         RecordLoadResult(url, cacheKey, fetchResult with { DecodeFormat = decodeFormat });
 
                         RequestDebouncedRepaint(cacheKey, context);
@@ -1612,6 +1640,7 @@ namespace FenBrowser.FenEngine.Rendering
             finally
             {
                 CompletePendingLoad(cacheKey);
+                RaiseImageLoadFinished(url, succeeded);
             }
         }
 

@@ -5,6 +5,9 @@ using Xunit;
 
 namespace FenBrowser.Tests.Core;
 
+// Asserts ImageLoader's process-wide counters, which any test that loads an
+// image would move; the collection keeps it off the parallel schedule.
+[Collection("Synthetic CAPTCHA")]
 public sealed class ImageLoaderCssFunctionTests
 {
     [Fact]

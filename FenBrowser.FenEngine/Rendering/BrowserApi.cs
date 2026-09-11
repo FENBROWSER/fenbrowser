@@ -841,6 +841,7 @@ namespace FenBrowser.FenEngine.Rendering
                 });
             };
             _engine.FrameElementLoader = LoadFrameElementAsync;
+            _engine.ImageLoaderScope = EnterImageLoaderContext;
 
             // Wire up DevTools Network Monitoring
             _resources.NetworkRequestStarting += (id, req) =>
