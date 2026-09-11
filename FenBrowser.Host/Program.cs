@@ -1023,14 +1023,18 @@ namespace FenBrowser.Host
             // broker stamping the envelope and this loop finishing with it.
             var inputStats = new RendererChildInputStats(tabId);
 
+            // Frame production belongs to the pump above, never to this loop. When
+            // this loop also drained frames, each drain rasterised a full 3840x2160
+            // surface (~150ms) before the next single line was read: measured 400-880ms
+            // of every second spent at the loop top, ~5 input envelopes read per second
+            // against ~90 sent, and pointer events reaching the page 18-23s after the
+            // click once the broker's bounded queue had filled.
             while (running)
             {
                 var loopTopStart = Stopwatch.GetTimestamp();
                 if (handshakeComplete)
                 {
                     logForwarder.FlushRenderer(writer, tabId);
-                    DrainPendingRendererRepaintFrame();
-                    CheckTextCaretBlink();
                 }
                 inputStats.RecordLoopTop(Stopwatch.GetElapsedTime(loopTopStart));
 
@@ -1047,12 +1051,6 @@ namespace FenBrowser.Host
                 inputStats.MaybeFlush();
                 if (!readResult.Completed)
                 {
-                    if (handshakeComplete)
-                    {
-                        DrainPendingRendererRepaintFrame();
-                        CheckTextCaretBlink();
-                    }
-
                     continue;
                 }
 
