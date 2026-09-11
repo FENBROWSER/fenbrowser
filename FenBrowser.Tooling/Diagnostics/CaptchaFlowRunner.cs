@@ -515,7 +515,7 @@ internal static class CaptchaFlowRunner
 
             if (!tileClicked)
             {
-                tileClicked = await ClickFirstTileAsync(host).ConfigureAwait(false);
+                tileClicked = await ClickFirstTileAsync(host, started).ConfigureAwait(false);
             }
 
             var line = await StateLineAsync(host, anchorFrameId).ConfigureAwait(false);
@@ -932,7 +932,7 @@ internal static class CaptchaFlowRunner
     /// what the click did to the challenge document. Returns false until there
     /// is a grid to click.
     /// </summary>
-    private static async Task<bool> ClickFirstTileAsync(BrowserHost host)
+    private static async Task<bool> ClickFirstTileAsync(BrowserHost host, DateTime started)
     {
         string[] frameIds;
         try
@@ -1032,7 +1032,17 @@ internal static class CaptchaFlowRunner
                     return true;
                 }
 
-                // The dynamic variant answered; nothing more to learn this run.
+                // The dynamic variant: press Verify too, so the userverify round
+                // trip and whatever the challenge frame does with the answer
+                // happen under observation.
+                var verify = await host.FindElementsAsync("css selector", "#recaptcha-verify-button").ConfigureAwait(false)
+                             ?? Array.Empty<string>();
+                if (verify.Length > 0)
+                {
+                    await host.ClickElementAsync(verify[0]).ConfigureAwait(false);
+                    Console.WriteLine(FormattableString.Invariant($"[captcha] verify: clicked at +{(DateTime.UtcNow - started).TotalSeconds:0.0}s"));
+                }
+
                 return true;
             }
             catch (Exception ex)
