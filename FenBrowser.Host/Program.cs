@@ -476,6 +476,16 @@ namespace FenBrowser.Host
 
             using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
+
+            // The renderer holds no sockets: its sandbox profile grants none, and on
+            // Linux the network namespace is unshared outright. Every fetch the
+            // engine makes below goes to the broker over this pipe, which forwards
+            // it to the sandboxed network process. Install the transport before the
+            // BrowserHost exists so no client is ever created against the direct
+            // socket handler.
+            using var networkClient = new RendererNetworkClient(tabId, envelope => SendRendererEnvelope(writer, envelope));
+            FenBrowser.Core.Network.HttpClientFactory.ConfigureRequestTransport(networkClient.SendAsync);
+
             using var browser = new FenBrowser.FenEngine.Rendering.BrowserHost();
             using var logForwarder = new ChildProcessLogForwarder("renderer", tabId);
             var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
@@ -1126,6 +1136,24 @@ namespace FenBrowser.Host
                         continue;
                     }
 
+                    if (rendererMessageType == RendererIpcMessageType.NetworkFetchBodyPipe)
+                    {
+                        networkClient.OnBodyPipe(envelope);
+                        continue;
+                    }
+
+                    if (rendererMessageType == RendererIpcMessageType.NetworkFetchResponseHead)
+                    {
+                        networkClient.OnResponseHead(envelope);
+                        continue;
+                    }
+
+                    if (rendererMessageType == RendererIpcMessageType.NetworkFetchFailed)
+                    {
+                        networkClient.OnFailed(envelope);
+                        continue;
+                    }
+
                     if (rendererMessageType == RendererIpcMessageType.Navigate)
                     {
                         var payload = RendererIpc.DeserializePayload<RendererNavigatePayload>(envelope);
@@ -1401,37 +1429,16 @@ namespace FenBrowser.Host
                                 using var requestBody = payload.HasBody
                                     ? bodyPipe.OpenReadStream(long.MaxValue)
                                     : null;
-                                using var request = BuildNetworkChildRequest(payload, requestBody);
+                                using var request = NetworkFetchMessages.BuildRequest(payload, requestBody);
                                 using var response = await SendNetworkRequestAsync(httpClient, noProxyClient, request, linkedCts.Token).ConfigureAwait(false);
-
-                                var headers = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                                foreach (var header in response.Headers)
-                                {
-                                    headers[header.Key] = string.Join(", ", header.Value);
-                                }
-
-                                foreach (var header in response.Content.Headers)
-                                {
-                                    headers[header.Key] = string.Join(", ", header.Value);
-                                }
 
                                 SendNetworkEnvelope(writer, new NetworkIpcEnvelope
                                 {
                                     Type = NetworkIpcMessageType.FetchResponseHead.ToString(),
                                     RequestId = envelope.RequestId,
                                     CapabilityToken = envelope.CapabilityToken,
-                                    Payload = NetworkIpc.SerializePayload(new NetworkFetchResponseHeadPayload
-                                    {
-                                        RequestId = envelope.RequestId,
-                                        StatusCode = (int)response.StatusCode,
-                                        StatusText = response.ReasonPhrase ?? string.Empty,
-                                        Headers = headers,
-                                        Url = response.RequestMessage?.RequestUri?.AbsoluteUri ?? payload.Url,
-                                        ResponseType = "basic",
-                                        Cors = string.Equals(payload.Mode, "cors", StringComparison.OrdinalIgnoreCase),
-                                        Opaque = string.Equals(payload.Mode, "no-cors", StringComparison.OrdinalIgnoreCase),
-                                        ContentLength = response.Content.Headers.ContentLength ?? -1
-                                    })
+                                    Payload = NetworkIpc.SerializePayload(
+                                        NetworkFetchMessages.BuildResponseHead(response, envelope.RequestId, payload.Mode, payload.Url))
                                 });
 
                                 using var bodyStream = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
@@ -2454,35 +2461,6 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                     ErrorMessage = errorMessage ?? string.Empty
                 })
             });
-        }
-
-        private static HttpRequestMessage BuildNetworkChildRequest(
-            NetworkFetchRequestPayload payload,
-            Stream requestBody)
-        {
-            var request = new HttpRequestMessage(
-                new HttpMethod(string.IsNullOrWhiteSpace(payload.Method) ? "GET" : payload.Method),
-                payload.Url);
-
-            if (payload.HasBody)
-            {
-                request.Content = new StreamContent(
-                    requestBody ?? throw new InvalidDataException("Request body stream was unavailable."));
-            }
-
-            if (payload.Headers != null)
-            {
-                foreach (var header in payload.Headers)
-                {
-                    if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value))
-                    {
-                        request.Content ??= new ByteArrayContent(Array.Empty<byte>());
-                        request.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
-                    }
-                }
-            }
-
-            return request;
         }
 
         private static async Task<HttpResponseMessage> SendNetworkRequestAsync(

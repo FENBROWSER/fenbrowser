@@ -129,7 +129,7 @@ namespace FenBrowser.Host.ProcessIsolation
                     $"Sandboxed network process is unavailable; request to {GetSafeUriForMessage(request?.RequestUri)} blocked by process-isolation policy."));
         }
 
-        private static string GetInitiatorOrigin(HttpRequestMessage request)
+        internal static string GetInitiatorOrigin(HttpRequestMessage request)
         {
             if (request?.Headers != null &&
                 request.Headers.TryGetValues("Origin", out var origins))

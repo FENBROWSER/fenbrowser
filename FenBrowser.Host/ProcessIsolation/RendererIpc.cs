@@ -40,7 +40,15 @@ namespace FenBrowser.Host.ProcessIsolation
         Ack,
         Error,
         Ping,
-        Pong
+        Pong,
+        // Renderer -> broker: fetch a URL through the sandboxed network process.
+        NetworkFetch,
+        NetworkFetchCancel,
+        // Broker -> renderer: the body pipe for a fetch, then its response head,
+        // or the reason it failed.
+        NetworkFetchBodyPipe,
+        NetworkFetchResponseHead,
+        NetworkFetchFailed
     }
 
     public sealed class RendererIpcEnvelope
@@ -158,6 +166,19 @@ namespace FenBrowser.Host.ProcessIsolation
         public string Title { get; set; }
         public bool FaviconChanged { get; set; }
         public byte[] FaviconPngBytes { get; set; }
+    }
+
+    /// <summary>
+    /// Where the renderer streams a fetch's request body to and reads its response
+    /// body from. The broker owns the pipe server; the renderer connects as the
+    /// client, so the socket lives in the broker's IPC directory, which the
+    /// sandbox exposes, rather than in the renderer's private tmpfs.
+    /// </summary>
+    public sealed class RendererNetworkBodyPipePayload
+    {
+        public string RequestId { get; set; }
+        public string PipeName { get; set; }
+        public string PipeToken { get; set; }
     }
 
     internal static class RendererIpc
@@ -279,7 +300,9 @@ namespace FenBrowser.Host.ProcessIsolation
                    messageType == RendererIpcMessageType.Error ||
                    messageType == RendererIpcMessageType.LogBatch ||
                    messageType == RendererIpcMessageType.Ack ||
-                   messageType == RendererIpcMessageType.Pong;
+                   messageType == RendererIpcMessageType.Pong ||
+                   messageType == RendererIpcMessageType.NetworkFetch ||
+                   messageType == RendererIpcMessageType.NetworkFetchCancel;
         }
 
         public static string SerializePayload<T>(T payload)
@@ -418,6 +441,7 @@ namespace FenBrowser.Host.ProcessIsolation
         private readonly RendererIpcAckTracker _ackTracker = new();
         private int _outboundFaulted;
         private FrameSharedMemory _frameSharedMemory;
+        private readonly Network.RendererNetworkRelay _networkRelay;
         private readonly int _parentPid = Environment.ProcessId;
 
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
@@ -458,6 +482,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 SingleWriter = false
             });
             _outboundLoop = Task.Run(OutboundLoopAsync);
+            _networkRelay = new Network.RendererNetworkRelay(tabId, Send);
         }
 
         public void AttachProcess(System.Diagnostics.Process childProcess)
@@ -762,6 +787,14 @@ namespace FenBrowser.Host.ProcessIsolation
                             NavigationLifecycleReceived?.Invoke(TabId, payload);
                         }
                     }
+                    else if (messageType == RendererIpcMessageType.NetworkFetch)
+                    {
+                        _networkRelay.HandleFetch(envelope);
+                    }
+                    else if (messageType == RendererIpcMessageType.NetworkFetchCancel)
+                    {
+                        _networkRelay.HandleCancel(envelope);
+                    }
                     else if (messageType == RendererIpcMessageType.Error)
                     {
                         EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Renderer child error tab={TabId}: {BoundDiagnosticPayload(envelope.Payload)}");
@@ -1006,6 +1039,7 @@ namespace FenBrowser.Host.ProcessIsolation
             TryDispose(_reader, "reader");
             TryDispose(_pipe, "pipe");
             TryDispose(_cts, "cts");
+            TryDispose(_networkRelay, "network-relay");
             TryDispose(_frameSharedMemory, "frame-shared-memory");
             _frameSharedMemory = null;
         }

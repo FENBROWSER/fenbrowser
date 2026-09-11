@@ -139,7 +139,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             var requestId = Guid.NewGuid().ToString("N");
             var bodyPipe = NetworkBodyPipe.CreateServer();
-            var fetchPayload = BuildFetchPayload(request, initiatorOrigin, bodyPipe);
+            var fetchPayload = NetworkFetchMessages.BuildFetchPayload(request, initiatorOrigin, bodyPipe);
             var pending = new PendingNetworkRequest(requestId, cancellationToken, bodyPipe);
             if (!_pending.TryAdd(requestId, pending))
             {
@@ -181,7 +181,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     responseBodyLimit,
                     () => CompleteResponse(requestId, pending, session));
 
-                return BuildHttpResponse(head, stream, request);
+                return NetworkFetchMessages.BuildHttpResponse(head, stream, request);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -232,11 +232,18 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             }
             catch (Exception ex)
             {
-                if (_pending.TryRemove(requestId, out var removed))
+                if (!_pending.TryRemove(requestId, out var removed))
                 {
-                    removed.SetFailed("Request body streaming failed.");
-                    removed.Dispose();
+                    // The response already completed (or failed) and took the pipe
+                    // with it; a server may finish before consuming the whole upload.
+                    EngineLogBridge.Debug(
+                        $"[NetworkCoordinator] Request body upload for {requestId} ended after completion: {ex.GetType().Name}",
+                        LogCategory.Network);
+                    return;
                 }
+
+                removed.SetFailed("Request body streaming failed.");
+                removed.Dispose();
 
                 session.SendCancel(requestId);
                 EngineLogBridge.Warn(
@@ -296,55 +303,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             DetachSession();
         }
 
-        private static string GetFetchMode(HttpRequestMessage request)
-        {
-            if (request != null && request.Headers.TryGetValues("Sec-Fetch-Mode", out var values))
-            {
-                foreach (var value in values)
-                {
-                    var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
-                    if (normalized is "cors" or "no-cors" or "same-origin" or "navigate")
-                    {
-                        return normalized;
-                    }
-                }
-            }
-
-            return "cors";
-        }
-
-        private static NetworkFetchRequestPayload BuildFetchPayload(
-            HttpRequestMessage request,
-            string initiatorOrigin,
-            NetworkBodyPipe bodyPipe)
-        {
-            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var h in request.Headers)
-            {
-                headers[h.Key] = string.Join(", ", h.Value);
-            }
-            if (request.Content != null)
-            {
-                foreach (var h in request.Content.Headers)
-                {
-                    headers[h.Key] = string.Join(", ", h.Value);
-                }
-            }
-
-            return new NetworkFetchRequestPayload
-            {
-                Url = request.RequestUri?.AbsoluteUri ?? string.Empty,
-                Method = request.Method.Method,
-                Headers = headers,
-                HasBody = request.Content != null,
-                BodyPipeName = bodyPipe.PipeName,
-                BodyPipeToken = bodyPipe.AuthenticationToken,
-                Mode = GetFetchMode(request),
-                Credentials = CorsHandler.GetCredentialsMode(request),
-                InitiatorOrigin = initiatorOrigin ?? string.Empty,
-            };
-        }
-
         private long ResolveResponseBodyLimit(HttpRequestMessage request)
         {
             if (request?.Headers.TryGetValues("Sec-Fetch-Dest", out var values) == true)
@@ -361,32 +319,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             }
 
             return _defaultResponseBodyLimit;
-        }
-
-        private static HttpResponseMessage BuildHttpResponse(
-            NetworkFetchResponseHeadPayload head,
-            Stream bodyStream,
-            HttpRequestMessage request)
-        {
-            var response = new HttpResponseMessage((HttpStatusCode)head.StatusCode)
-            {
-                ReasonPhrase = head.StatusText ?? string.Empty,
-                RequestMessage = request,
-                Content = new StreamContent(bodyStream),
-            };
-
-            if (head.Headers != null)
-            {
-                foreach (var kv in head.Headers)
-                {
-                    if (!response.Headers.TryAddWithoutValidation(kv.Key, kv.Value))
-                    {
-                        response.Content.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
-                    }
-                }
-            }
-
-            return response;
         }
 
         private static string GetSafeUriForLog(Uri uri)
