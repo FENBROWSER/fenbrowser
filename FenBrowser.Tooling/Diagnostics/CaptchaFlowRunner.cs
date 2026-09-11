@@ -503,6 +503,7 @@ internal static class CaptchaFlowRunner
         var deadline = DateTime.UtcNow.AddMilliseconds(observeMs);
         string last = string.Empty;
         var solved = false;
+        var tileClicked = false;
         while (DateTime.UtcNow < deadline)
         {
             await Task.Delay(1000).ConfigureAwait(false);
@@ -510,6 +511,11 @@ internal static class CaptchaFlowRunner
             {
                 await EnsureNetworkRecordersAsync(host, instrumented).ConfigureAwait(false);
                 await DumpFramesAsync(host, "observe", dumped).ConfigureAwait(false);
+            }
+
+            if (!tileClicked)
+            {
+                tileClicked = await ClickFirstTileAsync(host).ConfigureAwait(false);
             }
 
             var line = await StateLineAsync(host, anchorFrameId).ConfigureAwait(false);
@@ -736,6 +742,231 @@ internal static class CaptchaFlowRunner
         }
 
         Console.WriteLine($"[captcha] FAIL could not click after {attempt} attempts: {lastError}");
+        return false;
+    }
+
+    // What a tile click is supposed to do to the challenge document: mark the
+    // cell selected and relabel the button from "Skip" to "Verify". Read both
+    // back, plus anything the handler threw, so "the click did nothing" can be
+    // told apart from "the change was never painted".
+    private const string InstallTileErrorRecorderScript =
+        "(function(){if(window.__fenTileErrors)return 'already';window.__fenTileErrors=[];" +
+        "window.addEventListener('error',function(e){window.__fenTileErrors.push(String(e.message)+'@'+e.lineno+':'+e.colno);});" +
+        "window.addEventListener('unhandledrejection',function(e){window.__fenTileErrors.push('rejection:'+String(e.reason));});" +
+        "return 'installed';})()";
+
+    private const string ReadTileStateScript =
+        "(function(){var t=document.getElementById('0');var b=document.getElementById('recaptcha-verify-button');" +
+        "return 'tile0.class='+(t?t.className:'none')+' button.text='+JSON.stringify(b?b.textContent:'none')+" +
+        "' button.children='+(b?b.childNodes.length:-1)+' errors=['+(window.__fenTileErrors||[]).join(' | ')+']';})()";
+
+    // Every change to tile 0's class and to the button's text, each with the
+    // JS stack that made it, so a toggle that ran twice reads differently from
+    // one that never ran.
+    private const string InstallTileTraceScript =
+        "(function(){var t=document.getElementById('0');var b=document.getElementById('recaptcha-verify-button');" +
+        "if(!t||!b)return 'no tile/button';if(window.__fenTileTrace)return 'already';var log=window.__fenTileTrace=[];" +
+        "function rec(what,val){var st='';try{st=String(new Error().stack||'').split('\\n').slice(1,6).join(' <- ');}catch(e){}" +
+        "log.push(Math.round(performance.now())+'ms '+what+'='+JSON.stringify(val)+(st?' stack:'+st:''));}" +
+        "try{new MutationObserver(function(ms){ms.forEach(function(m){rec('tile0.class',t.className);});}).observe(t,{attributes:true,attributeFilter:['class']});" +
+        "new MutationObserver(function(ms){ms.forEach(function(m){rec('button.'+m.type,b.textContent);});}).observe(b,{childList:true,characterData:true,subtree:true});}catch(e){return 'observer failed: '+e;}" +
+        "return 'installed';})()";
+
+    // Closure keeps a tile's listeners in a closure_lm_<uid> expando whose `i`
+    // maps event type -> [Listener]; fireListener reads `.listener` at call
+    // time, so wrapping it shows which of reCAPTCHA's own handlers a click
+    // reaches, and what each returns or throws.
+    private const string WrapTileListenersScript =
+        "(function(){var t=document.getElementById('0');if(!t)return 'no tile';var log=window.__fenTileTrace=window.__fenTileTrace||[];" +
+        "var keys=Object.getOwnPropertyNames(t).filter(function(k){return k.indexOf('closure_lm_')===0;});" +
+        "if(!keys.length)return 'no closure listener map on tile 0; own='+Object.getOwnPropertyNames(t).join(',');" +
+        "var lm=t[keys[0]];var map=lm&&lm.i;if(!map)return 'listener map has no i; keys='+Object.keys(lm||{}).join(',');" +
+        "var out=[];Object.keys(map).forEach(function(type){map[type].forEach(function(l,i){" +
+        "var orig=l.listener;if(typeof orig!=='function'){out.push(type+'#'+i+':notfn');return;}" +
+        "l.listener=function(e){var tag='';try{tag=(e&&e.target&&e.target.tagName)+'/'+(e&&e.type);}catch(x){}" +
+        "log.push(Math.round(performance.now())+'ms '+type+'#'+i+' fired '+tag);" +
+        "try{var r=orig.apply(this,arguments);log.push('  -> returned '+r);return r;}catch(x){log.push('  -> threw '+x);throw x;}};" +
+        "out.push(type+'#'+i);});});return 'wrapped '+out.join(',');})()";
+
+    // Prototype-level hook, installed in the challenge frame before its grid
+    // exists: every listener added to a TD is recorded, and each is wrapped so
+    // the trace also says which of them a click actually reaches. Expandos on
+    // host elements are not enumerable here, so the listener map itself cannot
+    // be read back after the fact.
+    private const string InstallTdListenerHookScript =
+        "(function(){if(window.__fenTdHook)return 'already';var log=window.__fenTileTrace=window.__fenTileTrace||[];" +
+        "var P=null;try{if(typeof EventTarget==='function'&&EventTarget.prototype.addEventListener)P=EventTarget.prototype;}catch(e){}" +
+        "if(!P){try{if(Element.prototype.addEventListener)P=Element.prototype;}catch(e){}}" +
+        "if(!P)return 'no prototype addEventListener';var orig=P.addEventListener;" +
+        "P.addEventListener=function(t,fn,opt){var el=this;var isTd=false;try{isTd=el&&el.tagName==='TD';}catch(e){}" +
+        "if(isTd&&typeof fn==='function'){log.push('reg '+t+' on td#'+el.id+' capture='+JSON.stringify(opt===undefined?false:(typeof opt==='object'&&opt?!!opt.capture:opt)));" +
+        "var w=function(e){log.push(Math.round(performance.now())+'ms fire '+t+' on td#'+el.id+' target='+(e&&e.target&&e.target.tagName)+'#'+(e&&e.target&&e.target.id)+' phase='+(e&&e.eventPhase));" +
+        "try{var r=fn.apply(this,arguments);log.push('  -> ok');return r;}catch(x){log.push('  -> threw '+x);throw x;}};" +
+        "return orig.call(this,t,w,opt);}" +
+        "return orig.apply(this,arguments);};window.__fenTdHook=1;return 'installed';})()";
+
+    private static int _tileClickFailures;
+
+    private const string ReadTileBlockerScript =
+        "(function(){var t=document.getElementById('0');if(!t)return 'no tile';var r=t.getBoundingClientRect();" +
+        "var e=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);" +
+        "return 'tile0 rect='+Math.round(r.left)+','+Math.round(r.top)+' '+Math.round(r.width)+'x'+Math.round(r.height)+" +
+        "' atCenter='+(e?e.tagName+'#'+e.id+'.'+e.className:'none');})()";
+
+    // The listener map's expando key is closure_lm_<random below 1e6>, the
+    // bundle is an IIFE so the variable holding it is out of reach, and host
+    // expandos are readable but not enumerable. A linear scan of the key space
+    // is the one way left to find it; the timing is printed with the result.
+    private const string FindListenerMapScript =
+        "(function(){var t=document.getElementById('0');if(!t)return 'no tile';var t0=performance.now();" +
+        "for(var i=0;i<1000000;i++){var k='closure_lm_'+i;var v=t[k];if(v){window.__fenLmKey=k;" +
+        "var types=[];try{types=Object.keys(v.i||{});}catch(e){}return 'found '+k+' after '+Math.round(performance.now()-t0)+'ms types='+types.join(',');}}" +
+        "return 'not found in '+Math.round(performance.now()-t0)+'ms';})()";
+
+    // With the key known, wrap every Closure listener on tile 0 so the trace
+    // shows which fire on a click and what they return or throw.
+    private const string WrapListenerMapScript =
+        "(function(){var t=document.getElementById('0');var k=window.__fenLmKey;if(!t||!k)return 'no key';var lm=t[k];var map=lm&&lm.i;if(!map)return 'no map';" +
+        "var log=window.__fenTileTrace=window.__fenTileTrace||[];var out=[];" +
+        "Object.keys(map).forEach(function(type){map[type].forEach(function(l,i){var orig=l.listener;if(typeof orig!=='function'){out.push(type+'#'+i+':notfn');return;}" +
+        "l.listener=function(e){var tag='';try{tag=(e&&e.target&&e.target.tagName)+'#'+(e&&e.target&&e.target.id)+'/'+(e&&e.type);}catch(x){}" +
+        "log.push(Math.round(performance.now())+'ms '+type+'#'+i+' fired '+tag);" +
+        "try{var r=orig.apply(this,arguments);log.push('  -> returned '+r);return r;}catch(x){log.push('  -> threw '+x);throw x;}};" +
+        "out.push(type+'#'+i+' capture='+l.capture+' handler='+(l.handler?typeof l.handler:'none'));});});" +
+        "return 'wrapped '+out.join(', ');})()";
+
+    // Follows the Closure event chain out of the DOM: each DOM listener's
+    // handler is a Closure EventTarget whose own listener map (an object
+    // with an `i` of type -> [Listener]) holds the next hop. Wrap every hop
+    // up to a few levels deep so the trace shows where the ACTION stops.
+    private const string WrapListenerChainScript =
+        "(function(){var t=document.getElementById('0');var k=window.__fenLmKey;if(!t||!k)return 'no key';" +
+        "var log=window.__fenTileTrace=window.__fenTileTrace||[];var seen=[];var out=[];" +
+        // The challenge object keeps its tile records at G.Ss.Jc (tc = records,
+        // vS = selected count); those names are not obfuscated.
+        "function st(h){var r='';try{var j=h&&h.G&&h.G.Ss&&h.G.Ss.Jc;if(j)r+='vS='+j.vS+' tc0.selected='+(j.tc&&j.tc[0]&&j.tc[0].selected)+' tc.len='+(j.tc&&j.tc.length);}catch(e){r+='state?';}" +
+        "try{var b=document.getElementById('recaptcha-verify-button');r+=' btn='+JSON.stringify(b&&b.textContent)+'/'+(b&&b.childNodes.length)+' tile0='+JSON.stringify(t.className);}catch(e){}return r;}" +
+        "function isMap(v){if(!v||typeof v!=='object'||!v.i||typeof v.i!=='object')return false;var ks=Object.keys(v.i);" +
+        "return ks.length>0&&ks.every(function(x){return Array.isArray(v.i[x])&&v.i[x].every(function(l){return l&&typeof l.listener==='function';});});}" +
+        "function wrapMap(map,label,depth){Object.keys(map.i).forEach(function(type){map.i[type].forEach(function(l,i){" +
+        "if(l.__fenWrapped)return;l.__fenWrapped=1;var orig=l.listener;var name=label+':'+type+'#'+i;out.push(name);" +
+        "l.listener=function(e){var et='';try{et=(e&&e.type)+' target='+(e&&e.target&&(e.target.tagName||e.target.constructor&&e.target.constructor.name||typeof e.target));}catch(x){}" +
+        "log.push(Math.round(performance.now())+'ms '+name+' fired '+et+' | before: '+st(this));try{var r=orig.apply(this,arguments);log.push('  '+name+' -> '+r+' | after: '+st(this));return r;}catch(x){log.push('  '+name+' threw '+x+' | after: '+st(this));throw x;}};" +
+        "if(depth<4&&l.handler&&typeof l.handler==='object')walk(l.handler,name+'>',depth+1);});});}" +
+        "function walk(obj,label,depth){if(seen.indexOf(obj)>=0)return;seen.push(obj);var ks=[];try{ks=Object.keys(obj);}catch(e){return;}" +
+        "ks.forEach(function(p){var v;try{v=obj[p];}catch(e){return;}if(isMap(v))wrapMap(v,label+p,depth);});}" +
+        "walk({dom:t[k]},'',0);return 'wrapped '+out.length+': '+out.join(', ');})()";
+
+    private const string ButtonRealmProbeScript =
+        "(function(){var b=document.getElementById('recaptcha-verify-button');if(!b)return 'no button';" +
+        "return 'textContent in='+('textContent' in b)+' first===last='+(b.firstChild===b.lastChild)+' first!=last='+(b.firstChild!=b.lastChild)+" +
+        "' firstType='+(b.firstChild&&b.firstChild.nodeType)+' children='+b.childNodes.length+' classList='+(typeof b.classList)+" +
+        "' tile0 classList='+(typeof document.getElementById('0').classList);})()";
+
+    private const string ReadTileTraceScript =
+        "(function(){var l=window.__fenTileTrace||[];return l.length+' changes: '+l.join(' || ');})()";
+
+    // The dynamic (3x3) variant only ever selects; the 4x4 variant is the one
+    // that toggles and shows "Skip". Failing dynamic rounds is how a session
+    // gets handed a 4x4, so submit a wrong answer until the button says Skip.
+    private const string ClickVerifyScript =
+        "(function(){var b=document.getElementById('recaptcha-verify-button');if(!b)return 'no button';b.click();return 'clicked '+b.textContent;})()";
+
+    /// <summary>
+    /// Clicks the first image tile once the challenge grid exists and reports
+    /// what the click did to the challenge document. Returns false until there
+    /// is a grid to click.
+    /// </summary>
+    private static async Task<bool> ClickFirstTileAsync(BrowserHost host)
+    {
+        string[] frameIds;
+        try
+        {
+            frameIds = await host.FindElementsAsync("css selector", "iframe").ConfigureAwait(false)
+                       ?? Array.Empty<string>();
+        }
+        catch
+        {
+            return false;
+        }
+
+        foreach (var frameId in frameIds)
+        {
+            string src;
+            try
+            {
+                src = await host.GetElementAttributeAsync(frameId, "src").ConfigureAwait(false) ?? string.Empty;
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (!src.Contains("bframe", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            try
+            {
+                await host.SwitchToFrameAsync(frameId).ConfigureAwait(false);
+                var tiles = await host.FindElementsAsync("css selector", "td.rc-imageselect-tile").ConfigureAwait(false)
+                            ?? Array.Empty<string>();
+                if (tiles.Length == 0)
+                {
+                    return false;
+                }
+
+                Console.WriteLine($"[captcha] tile-recorder: {await EvalAsync(host, InstallTileErrorRecorderScript).ConfigureAwait(false)}");
+                var before = await EvalAsync(host, ReadTileStateScript).ConfigureAwait(false);
+                Console.WriteLine($"[captcha] tile before: {before}");
+
+                // A grid still animating in has its button disabled; wait for
+                // the next tick rather than clicking into the transition.
+                if (before.Contains("button.text=\"none\"", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                var isSkipVariant = before.Contains("button.text=\"Skip\"", StringComparison.Ordinal);
+                if (isSkipVariant)
+                {
+                    Console.WriteLine($"[captcha] tile-trace: {await EvalAsync(host, InstallTileTraceScript).ConfigureAwait(false)}");
+                    Console.WriteLine($"[captcha] listener-map: {await EvalAsync(host, FindListenerMapScript).ConfigureAwait(false)}");
+                    Console.WriteLine($"[captcha] listener-chain: {await EvalAsync(host, WrapListenerChainScript).ConfigureAwait(false)}");
+                    Console.WriteLine($"[captcha] button-realm: {await EvalAsync(host, ButtonRealmProbeScript).ConfigureAwait(false)}");
+                }
+
+                var rect = await host.GetElementRectAsync(tiles[0]).ConfigureAwait(false);
+                await host.ClickElementAsync(tiles[0]).ConfigureAwait(false);
+                Console.WriteLine(FormattableString.Invariant(
+                    $"[captcha] clicked tile 0 at ({rect?.X ?? 0:0.#},{rect?.Y ?? 0:0.#}) {rect?.Width ?? 0:0.#}x{rect?.Height ?? 0:0.#}"));
+                await Task.Delay(1500).ConfigureAwait(false);
+                Console.WriteLine($"[captcha] tile after: {await EvalAsync(host, ReadTileStateScript).ConfigureAwait(false)}");
+                if (isSkipVariant)
+                {
+                    Console.WriteLine($"[captcha] tile-trace: {await EvalAsync(host, ReadTileTraceScript).ConfigureAwait(false)}");
+                    return true;
+                }
+
+                // The dynamic variant answered; nothing more to learn this run.
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // Usually the grid animating in under an overlay; try again next
+                // tick, but not forever, and say what is in the way.
+                Console.WriteLine($"[captcha] tile click threw: {ex.GetType().Name}: {ex.Message}");
+                Console.WriteLine($"[captcha] tile blocker: {await SafeAsync(() => EvalAsync(host, ReadTileBlockerScript)).ConfigureAwait(false)}");
+                return ++_tileClickFailures >= 5;
+            }
+            finally
+            {
+                await SafeAsync(async () => { await host.SwitchToFrameAsync(null).ConfigureAwait(false); return 0; })
+                    .ConfigureAwait(false);
+            }
+        }
+
         return false;
     }
 
