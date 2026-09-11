@@ -13,7 +13,22 @@ namespace FenBrowser.Core.Css
     public sealed class CssComputed
     {
         public Dictionary<string, string> Map { get; private set; }
-        public Dictionary<string, string> CustomProperties { get; private set; }
+
+        /// <summary>
+        /// Custom properties (CSS Variables Level 1 §2: every custom property inherits).
+        /// The table is copy-on-write: a style that declares no custom properties of its own
+        /// shares its parent's dictionary by reference, so a :root with thousands of design
+        /// tokens costs one table per document instead of one per element and text run.
+        /// Mutate only through <see cref="SetVariable"/> / <see cref="SetCustomProperty"/>.
+        /// </summary>
+        public IReadOnlyDictionary<string, string> CustomProperties => _customProperties;
+
+        private static readonly Dictionary<string, string> EmptyCustomProperties =
+            new Dictionary<string, string>(System.StringComparer.Ordinal);
+
+        private Dictionary<string, string> _customProperties;
+        // False while _customProperties is EmptyCustomProperties or a table shared with another style.
+        private bool _ownsCustomProperties;
 
         public CssComputed Before { get; set; }
         public CssComputed After { get; set; }
@@ -40,15 +55,32 @@ namespace FenBrowser.Core.Css
         public CssComputed()
         {
             Map = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
-            CustomProperties = new Dictionary<string, string>(System.StringComparer.Ordinal);
+            _customProperties = EmptyCustomProperties;
+            _ownsCustomProperties = false;
         }
 
         public CssComputed Clone()
         {
             var c = (CssComputed)this.MemberwiseClone();
             c.Map = new Dictionary<string, string>(this.Map, System.StringComparer.OrdinalIgnoreCase);
-            c.CustomProperties = new Dictionary<string, string>(this.CustomProperties, System.StringComparer.Ordinal);
+            // Both sides now share one custom-property table; whichever writes first copies.
+            _ownsCustomProperties = false;
+            c._ownsCustomProperties = false;
             return c;
+        }
+
+        /// <summary>
+        /// Returns a custom-property table this style is free to mutate, unsharing it first
+        /// if it is currently borrowed from an ancestor, a clone, or the empty sentinel.
+        /// </summary>
+        private Dictionary<string, string> MutableCustomProperties()
+        {
+            if (!_ownsCustomProperties)
+            {
+                _customProperties = new Dictionary<string, string>(_customProperties, System.StringComparer.Ordinal);
+                _ownsCustomProperties = true;
+            }
+            return _customProperties;
         }
 
         // Display & positioning
@@ -401,9 +433,25 @@ namespace FenBrowser.Core.Css
             
             var key = name.StartsWith("--") ? name : "--" + name;
             if (string.IsNullOrWhiteSpace(value))
-                CustomProperties.Remove(key);
+            {
+                if (_customProperties.ContainsKey(key))
+                    MutableCustomProperties().Remove(key);
+            }
             else
-                CustomProperties[key] = value;
+            {
+                SetCustomProperty(key, value);
+            }
+        }
+
+        /// <summary>
+        /// Store an already-normalized custom property (key includes the leading "--").
+        /// </summary>
+        public void SetCustomProperty(string key, string value)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            if (_customProperties.TryGetValue(key, out var existing) && string.Equals(existing, value, System.StringComparison.Ordinal))
+                return;
+            MutableCustomProperties()[key] = value;
         }
         
         /// <summary>
@@ -511,15 +559,25 @@ namespace FenBrowser.Core.Css
         /// </summary>
         public void InheritCustomProperties(CssComputed parent)
         {
-            if (parent?.CustomProperties == null) return;
-            
-            foreach (var kv in parent.CustomProperties)
+            var inherited = parent?._customProperties;
+            if (inherited == null || inherited.Count == 0) return;
+            if (ReferenceEquals(inherited, _customProperties)) return;
+
+            if (_customProperties.Count == 0)
             {
-                // Don't override if already set locally
-                if (!CustomProperties.ContainsKey(kv.Key))
-                {
-                    CustomProperties[kv.Key] = kv.Value;
-                }
+                // Nothing declared locally: borrow the parent's table outright. The parent
+                // gives up ownership too, so a later write on either side copies first.
+                _customProperties = inherited;
+                _ownsCustomProperties = false;
+                parent._ownsCustomProperties = false;
+                return;
+            }
+
+            // Local declarations win; only fill in what the parent adds.
+            var local = MutableCustomProperties();
+            foreach (var kv in inherited)
+            {
+                local.TryAdd(kv.Key, kv.Value);
             }
         }
         

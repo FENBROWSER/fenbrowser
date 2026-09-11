@@ -4089,14 +4089,11 @@ private static double? ExtractPx(string text, string prop)
 
             try
             {
-                if (parentCss != null && parentCss.CustomProperties != null)
-                {
-                    foreach (var kv in parentCss.CustomProperties)
-                    {
-                        css.CustomProperties[kv.Key] = kv.Value;
-                        css.Map[kv.Key] = kv.Value;
-                    }
-                }
+                // Custom properties inherit by reference (copy-on-write) - see CssComputed.
+                // They are deliberately kept out of Map: Map is case-insensitive and custom
+                // property names are not, and every reader of variables goes through
+                // CustomProperties.
+                css.InheritCustomProperties(parentCss);
 
                 if (cascadedProperties != null && cascadedProperties.Count > 0)
                 {
@@ -4113,8 +4110,7 @@ private static double? ExtractPx(string text, string prop)
                     {
                         var resolvedCustom = ResolveCustomPropertyReferences(rawCustom[key], css, rawCustom, new HashSet<string>(StringComparer.Ordinal) { key });
                         rawCustom[key] = resolvedCustom;
-                        css.CustomProperties[key] = resolvedCustom;
-                        css.Map[key] = resolvedCustom;
+                        css.SetCustomProperty(key, resolvedCustom);
                     }
 
                     // Resolve standard properties
@@ -7060,7 +7056,7 @@ private static double? ExtractPx(string text, string prop)
                 
                 if (current != null)
                 {
-                    current.CustomProperties[name] = resolved;
+                    current.SetCustomProperty(name, resolved);
                 }
                 
                 #if DEBUG_CSS_VARS

@@ -159,6 +159,12 @@ public class CSSDomain : IProtocolHandler
                         }
                     }
                 }
+
+                // 3. Custom properties live in their own (case-sensitive) table, not in Map.
+                foreach (var kv in styles.CustomProperties)
+                {
+                    computedStyle.Add(new CssPropertyDto { Name = kv.Key, Value = kv.Value });
+                }
             }
             
                 return ProtocolResponse.Success(request.Id, new { computedStyle = computedStyle });
