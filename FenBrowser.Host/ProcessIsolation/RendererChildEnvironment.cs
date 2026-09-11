@@ -59,6 +59,10 @@ internal static class RendererChildEnvironment
         "FEN_LAYOUT_DEADLINE_MS",
         "FEN_GRID_TRACE",
         "FEN_NAV_GLOBALS_SNAPSHOT",
+        // Page fetches run in the renderer child, so a body-capture filter set
+        // on the host would otherwise log nothing.
+        "FEN_LOG_RESPONSE_BODY_URLS",
+        "FEN_DUMP_FRAMES_ON_CLICK",
         "FEN_COMPAT_INTERVENTIONS",
         // Automation posture has to match the host's or the page sees a
         // different browser in the frame that actually renders it.

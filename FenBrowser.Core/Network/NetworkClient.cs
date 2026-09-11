@@ -44,6 +44,57 @@ namespace FenBrowser.Core.Network
         public bool EnableKeepAlive { get; set; } = true;
         public bool LogConnectionStats { get; set; } = false;
 
+        // FEN_LOG_RESPONSE_BODY_URLS=<substring>[;<substring>...]: log the first
+        // 2 KB of the response body for matching URLs. Opt-in because it buffers
+        // the body; meant for reading what a service such as reCAPTCHA's
+        // /userverify actually answered, which the status line cannot tell.
+        private static readonly string[] ResponseBodyLogFilters =
+            (Environment.GetEnvironmentVariable("FEN_LOG_RESPONSE_BODY_URLS") ?? string.Empty)
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        private static async Task LogResponseBodyIfRequestedAsync(
+            HttpRequestMessage request,
+            HttpResponseMessage response,
+            CancellationToken cancellationToken)
+        {
+            if (ResponseBodyLogFilters.Length == 0 || response?.Content == null)
+            {
+                return;
+            }
+
+            var url = request.RequestUri?.AbsoluteUri ?? string.Empty;
+            var matches = false;
+            foreach (var filter in ResponseBodyLogFilters)
+            {
+                if (url.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                {
+                    matches = true;
+                    break;
+                }
+            }
+
+            if (!matches)
+            {
+                return;
+            }
+
+            try
+            {
+                await response.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                const int maxChars = 32768;
+                var shown = body.Length > maxChars ? body.Substring(0, maxChars) + "..." : body;
+                LogManager.Log(LogCategory.Network, LogLevel.Info,
+                    $"[NetworkClient] Body {request.Method} {url} ({body.Length} chars): {shown}");
+            }
+            catch (Exception ex)
+            {
+                LogManager.Log(LogCategory.Network, LogLevel.Debug,
+                    $"[NetworkClient] Body capture failed for {url}: {ex.Message}");
+            }
+        }
+
+
         private sealed class HostRequestGate : IDisposable
         {
             public HostRequestGate(int limit)
@@ -148,6 +199,8 @@ namespace FenBrowser.Core.Network
                     LogManager.Log(LogCategory.Network, LogLevel.Debug,
                         $"[NetworkClient] Slow request: {request.RequestUri} took {sw.ElapsedMilliseconds}ms");
                 }
+
+                await LogResponseBodyIfRequestedAsync(request, context.Response, effectiveToken).ConfigureAwait(false);
 
                 return context.Response;
             }

@@ -2690,6 +2690,70 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
             }
         }
 
+        private static readonly bool DumpFramesOnClick =
+            !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("FEN_DUMP_FRAMES_ON_CLICK"));
+
+        /// <summary>
+        /// FEN_DUMP_FRAMES_ON_CLICK=1: after every click, write each iframe's live
+        /// document to logs/frame-dumps. The engine-source snapshot only covers the
+        /// top document, and reCAPTCHA keeps all of its state in child frames, so
+        /// without this there is no way to tell "the click changed nothing" from
+        /// "the change was never painted".
+        /// </summary>
+        private static void DumpFrameDocumentsAfterClick(BrowserHost browser)
+        {
+            if (!DumpFramesOnClick)
+            {
+                return;
+            }
+
+            try
+            {
+                var root = browser.GetDomRoot();
+                if (root == null)
+                {
+                    return;
+                }
+
+                var dir = Path.Combine(FenBrowser.Core.Logging.DiagnosticPaths.GetLogsDirectory(), "frame-dumps");
+                Directory.CreateDirectory(dir);
+                var stamp = DateTime.Now.ToString("HHmmss_fff");
+                var index = 0;
+                foreach (var node in FenBrowser.Core.Dom.V2.DomExtensions.DescendantsAndSelf(root))
+                {
+                    if (node is not FenBrowser.Core.Dom.V2.Element frame ||
+                        !string.Equals(frame.LocalName, "iframe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var children = frame.ChildNodes;
+                    for (int i = 0; children != null && i < children.Length; i++)
+                    {
+                        if (children[i] is not FenBrowser.Core.Dom.V2.Document frameDocument)
+                        {
+                            continue;
+                        }
+
+                        var html = frameDocument.DocumentElement?.OuterHTML;
+                        if (string.IsNullOrEmpty(html))
+                        {
+                            continue;
+                        }
+
+                        var path = Path.Combine(dir, $"{stamp}_frame{index++}.html");
+                        File.WriteAllText(path, "<!-- src=" + frame.GetAttribute("src") + " -->" + Environment.NewLine + html);
+                    }
+                }
+
+                EngineLog.Write(LogSubsystem.Event, LogSeverity.Info, $"[FrameDump] wrote {index} frame document(s) to {dir} ({stamp})");
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.Event, LogSeverity.Warn, $"[FrameDump] failed: {ex.Message}");
+            }
+        }
+
         internal static async Task DispatchRendererInputAsync(BrowserHost browser, RendererInputEvent input)
         {
             ArgumentNullException.ThrowIfNull(browser);
@@ -2714,6 +2778,7 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                     {
                         await browser.DispatchClickAndActivate(input.X, input.Y, input.Button).ConfigureAwait(false);
                     }
+                    DumpFrameDocumentsAfterClick(browser);
                     break;
                 case RendererInputEventType.MouseMove:
                     browser.OnMouseMove(input.X, input.Y);
