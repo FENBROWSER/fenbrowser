@@ -386,12 +386,29 @@ namespace FenBrowser.FenEngine.Rendering
 
             SanitizeBoxForPaint(box);
 
-            // ABSOLUTE POSITION ESCAPE LOGIC
-            // If this node is absolute, and we have a valid escape context (from a static parent), use it.
-            if (escapeContext != null && style != null && string.Equals(style.Position, "absolute", StringComparison.OrdinalIgnoreCase))
+            // OUT-OF-FLOW ESCAPE FROM A STATIC OVERFLOW CLIP
+            // css-overflow-3 §3.1: an overflow clip applies to descendants whose containing
+            // block is the clipping element or a descendant of it. An absolute/fixed box
+            // whose containing block lies above a non-positioned clipper is painted in
+            // that outer context instead (google.com's menus live in a body-level layer
+            // that a 0px-tall overflow:hidden wrapper would otherwise clip away). A
+            // positioned (or transformed) element in between becomes the containing block
+            // for everything below it, so the escape stops there.
+            if (escapeContext != null && style != null)
             {
-                 currentContext = escapeContext;
-                 escapeContext = null; 
+                string escapePosition = style.Position?.ToLowerInvariant();
+                bool establishesContainingBlock =
+                    (!string.IsNullOrEmpty(style.Transform) && !string.Equals(style.Transform, "none", StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrEmpty(style.Filter) && !string.Equals(style.Filter, "none", StringComparison.OrdinalIgnoreCase));
+                if (escapePosition == "absolute" || escapePosition == "fixed")
+                {
+                    currentContext = escapeContext;
+                    escapeContext = null;
+                }
+                else if (escapePosition == "relative" || escapePosition == "sticky" || establishesContainingBlock)
+                {
+                    escapeContext = null;
+                }
             }
             
             // Skip hidden elements (display: none)
@@ -821,10 +838,12 @@ namespace FenBrowser.FenEngine.Rendering
                     // Collect children into a temporary context and flatten them
                     var tempCtx = new BuilderStackingContext(node);
                     
-                    // Keep descendants inside this overflow clip context.
-                    // Escaping absolute descendants from static ancestors produces visible leaks
-                    // (Acid2 lower-face strip) and diverges from expected clipping behavior.
-                    BuilderStackingContext nextEscapeContext = null;
+                    // A clip on a non-positioned element does not reach out-of-flow
+                    // descendants whose containing block is above it (css-overflow-3 §3.1);
+                    // hand them the enclosing context. A positioned clipper contains them.
+                    BuilderStackingContext nextEscapeContext = isPositioned || pos == "relative" || pos == "sticky"
+                        ? null
+                        : (escapeContext ?? currentContext);
 
                     // Inherit scroll offset logic if strictly needed, but for visual clipping Flatten() handles list construction.
                     // Important: Recursion here puts children into tempCtx.
