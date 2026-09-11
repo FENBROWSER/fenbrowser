@@ -619,6 +619,15 @@ namespace FenBrowser.Tooling
                 {
                     var preResult = await host.ExecuteScriptAsync(preScript).ConfigureAwait(false);
                     Console.WriteLine($"[debug-site] pre-screenshot script => {preResult}");
+                    // FEN_DEBUG_SITE_PRESCRIPT_SETTLE_MS lets asynchronous reactions to the
+                    // script (a click handler that opens a menu on a later task) land before
+                    // the capture.
+                    if (int.TryParse(Environment.GetEnvironmentVariable("FEN_DEBUG_SITE_PRESCRIPT_SETTLE_MS"), out var preSettleMs) && preSettleMs > 0)
+                    {
+                        await Task.Delay(preSettleMs).ConfigureAwait(false);
+                        var postResult = await host.ExecuteScriptAsync(Environment.GetEnvironmentVariable("FEN_DEBUG_SITE_POSTSCRIPT") ?? "''").ConfigureAwait(false);
+                        Console.WriteLine($"[debug-site] post-settle script => {postResult}");
+                    }
                     await host.FlushPendingLayoutAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex)
