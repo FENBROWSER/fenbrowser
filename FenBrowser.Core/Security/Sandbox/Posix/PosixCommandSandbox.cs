@@ -302,6 +302,18 @@ public sealed class PosixCommandSandbox : ISandbox
         // directories on start-up instead of loading the prebuilt cache.
         AddBind(args, "/var/cache/fontconfig", writable: false);
 
+        if ((_profile.Capabilities & (OsSandboxCapabilities.NetworkOutbound | OsSandboxCapabilities.NetworkListen)) != 0)
+        {
+            // /etc/resolv.conf is routinely a symlink out of /etc - to
+            // /run/systemd/resolve/stub-resolv.conf under systemd-resolved, to
+            // /mnt/wsl/resolv.conf under WSL - and a read-only /etc alone leaves the
+            // child with a dangling link and no resolver. Bind the file it points at.
+            foreach (var resolverFile in GetResolverFilesOutsideSystemPaths())
+            {
+                AddBindFile(args, resolverFile);
+            }
+        }
+
         BindWorkingDirectory(args, sandboxWorkingDirectory);
 
         var executableDirectory = NormalizeDirectoryPath(Path.GetDirectoryName(resolvedExecutable));
@@ -520,6 +532,51 @@ public sealed class PosixCommandSandbox : ISandbox
             "/lib64",
             "/etc"
         };
+    }
+
+    private IEnumerable<string> GetResolverFilesOutsideSystemPaths()
+    {
+        const string resolvConf = "/etc/resolv.conf";
+        string target;
+        try
+        {
+            target = File.ResolveLinkTarget(resolvConf, returnFinalTarget: true)?.FullName;
+        }
+        catch (IOException)
+        {
+            yield break;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            yield break;
+        }
+
+        if (string.IsNullOrEmpty(target) || !File.Exists(target))
+        {
+            yield break;
+        }
+
+        foreach (var systemPath in GetSystemReadOnlyPaths())
+        {
+            if (target.StartsWith(systemPath.TrimEnd('/') + "/", StringComparison.Ordinal))
+            {
+                yield break;
+            }
+        }
+
+        yield return target;
+    }
+
+    private static void AddBindFile(List<string> args, string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        args.Add("--ro-bind");
+        args.Add(path);
+        args.Add(path);
     }
 
     private static void AddBind(List<string> args, string path, bool writable)
