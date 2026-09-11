@@ -863,6 +863,61 @@ internal static class CaptchaFlowRunner
         "' firstType='+(b.firstChild&&b.firstChild.nodeType)+' children='+b.childNodes.length+' classList='+(typeof b.classList)+" +
         "' tile0 classList='+(typeof document.getElementById('0').classList);})()";
 
+    // Every tile's class after a round change, beside the challenge object's
+    // own records, so a stale checkmark can be told apart from a stale paint.
+    private const string ReadAllTilesScript =
+        "(function(){var out=[];var tds=document.querySelectorAll('td.rc-imageselect-tile');" +
+        "for(var i=0;i<tds.length;i++){if(tds[i].className!=='rc-imageselect-tile')out.push('#'+tds[i].id+'='+tds[i].className);}" +
+        "var b=document.getElementById('recaptcha-verify-button');var st='';" +
+        "try{var k=window.__fenLmKey;var t=document.getElementById('0');var lm=t&&k&&t[k];" +
+        "var l=lm&&lm.i&&lm.i.click&&lm.i.click[0];var oj=l&&l.handler;" +
+        "var mt=oj&&oj.j&&oj.j.i&&oj.j.i.action&&oj.j.i.action[0]&&oj.j.i.action[0].handler;" +
+        "var comp=mt&&mt.j&&mt.j.i&&mt.j.i.action&&mt.j.i.action[0]&&mt.j.i.action[0].handler;" +
+        "var j=comp&&comp.G&&comp.G.Ss&&comp.G.Ss.Jc;if(j){var sel=[];for(var q=0;q<j.tc.length;q++)if(j.tc[q].selected)sel.push(q);" +
+        "st=' vS='+j.vS+' recordsSelected=['+sel.join(',')+'] tc.len='+j.tc.length;}}catch(e){st=' state?'+e;}" +
+        "return 'selectedTiles=['+out.join(' ')+'] button='+JSON.stringify(b&&b.textContent)+st;})()";
+
+    // Class writes on the tiles during a round change: the token-list methods
+    // through their prototype (if the engine shares one) and, failing that,
+    // a poll of the class attribute, so "never removed" and "removed and put
+    // back" read differently.
+    private const string InstallClassWriteHookScript =
+        "(function(){var log=window.__fenClassLog=[];var t=document.getElementById('0');if(!t)return 'no tile';" +
+        "var cl=t.classList;var same=(t.classList===cl);var proto=Object.getPrototypeOf(cl);var hasProto=proto&&typeof proto.remove==='function';" +
+        "var r='classListSame='+same+' protoRemove='+hasProto+' DOMTokenList='+(typeof DOMTokenList);" +
+        "function wrap(obj,name){var orig=obj[name];if(typeof orig!=='function')return false;obj[name]=function(){var el=null;try{el=this&&this.__fenOwner;}catch(e){}" +
+        "log.push(Math.round(performance.now())+'ms '+name+'('+Array.prototype.join.call(arguments,',')+') on '+(el?'#'+el.id:'?'));return orig.apply(this,arguments);};return true;}" +
+        "var target=hasProto?proto:cl;r+=' wrapped='+['add','remove','toggle'].map(function(n){return n+':'+wrap(target,n);}).join(',');" +
+        "var tds=document.querySelectorAll('td.rc-imageselect-tile');for(var i=0;i<tds.length;i++){try{tds[i].classList.__fenOwner=tds[i];}catch(e){}}" +
+        "window.__fenClassPoll=[];var last=t.className;window.__fenClassPoll.push('0ms '+last);var n=0;var iv=setInterval(function(){n++;if(t.className!==last){last=t.className;window.__fenClassPoll.push((n*50)+'ms '+last);}if(n>=120)clearInterval(iv);},50);" +
+        "return r;})()";
+
+    private const string ReadClassWriteLogScript =
+        "(function(){return 'calls=['+(window.__fenClassLog||[]).join(' | ')+'] poll=['+(window.__fenClassPoll||[]).join(' | ')+']';})()";
+
+    // Grid inventory during a round change: every image-select table, its
+    // carousel classes, its tile count, and how many of its tiles are marked.
+    private const string ReadGridInventoryScript =
+        "(function(){var out=[];var tabs=document.querySelectorAll('table');for(var i=0;i<tabs.length;i++){var t=tabs[i];" +
+        "var tds=t.querySelectorAll('td.rc-imageselect-tile');if(!tds.length)continue;var sel=0;for(var j=0;j<tds.length;j++)if(tds[j].className.indexOf('tileselected')>=0)sel++;" +
+        "var p=t.parentNode;var pc=p?p.className:'';var r=t.getBoundingClientRect();" +
+        "out.push('table'+i+'{tiles='+tds.length+' selected='+sel+' class='+JSON.stringify(t.className)+' parent='+JSON.stringify(pc)+' rect='+Math.round(r.left)+','+Math.round(r.top)+' '+Math.round(r.width)+'x'+Math.round(r.height)+' firstImg='+(tds[0].querySelector('img')?tds[0].querySelector('img').src.slice(-12):'none')+'}');}" +
+        "var ids=document.querySelectorAll('[id=\"0\"]');return out.join(' ')+' id0count='+ids.length;})()";
+
+    // The carousel waits for the first image of the new table to fire `load`.
+    // Report the state of those images, and arm listeners of our own on them
+    // plus a fresh Image() with the same URL, to see which events ever fire.
+    private const string ProbeNewTableImagesScript =
+        "(function(){var tabs=document.querySelectorAll('table');var q=null;for(var i=0;i<tabs.length;i++){if(tabs[i].className.indexOf('offscreen-right')>=0)q=tabs[i];}" +
+        "if(!q)return 'no offscreen-right table';var imgs=q.querySelectorAll('img');if(!imgs.length)return 'no imgs';var log=window.__fenImgLog=window.__fenImgLog||[];" +
+        "var out='imgs='+imgs.length;for(var i=0;i<Math.min(imgs.length,2);i++){var im=imgs[i];out+=' img'+i+'{complete='+im.complete+' w='+im.width+'x'+im.height+' nat='+im.naturalWidth+' src='+String(im.src).slice(-14)+' hasSrcAttr='+im.hasAttribute('src')+'}';" +
+        "(function(k,el){el.addEventListener('load',function(){log.push('img'+k+' load');});el.addEventListener('error',function(){log.push('img'+k+' error');});})(i,im);}" +
+        "try{var fresh=new Image();fresh.addEventListener('load',function(){log.push('fresh load');});fresh.addEventListener('error',function(){log.push('fresh error');});fresh.src=imgs[0].src;out+=' freshComplete='+fresh.complete;}catch(e){out+=' fresh threw '+e;}" +
+        "return out;})()";
+
+    private const string ReadImageLogScript =
+        "(function(){return 'imgEvents=['+(window.__fenImgLog||[]).join(' | ')+']';})()";
+
     private const string ReadTileTraceScript =
         "(function(){var l=window.__fenTileTrace||[];return l.length+' changes: '+l.join(' || ');})()";
 
@@ -946,6 +1001,34 @@ internal static class CaptchaFlowRunner
                 if (isSkipVariant)
                 {
                     Console.WriteLine($"[captcha] tile-trace: {await EvalAsync(host, ReadTileTraceScript).ConfigureAwait(false)}");
+
+                    // Now the round change: press the button and watch whether
+                    // the previous round's selection is cleared from the grid.
+                    var button = await host.FindElementsAsync("css selector", "#recaptcha-verify-button").ConfigureAwait(false)
+                                 ?? Array.Empty<string>();
+                    if (button.Length > 0)
+                    {
+                        Console.WriteLine($"[captcha] round before: {await EvalAsync(host, ReadAllTilesScript).ConfigureAwait(false)}");
+                        Console.WriteLine($"[captcha] grids before: {await EvalAsync(host, ReadGridInventoryScript).ConfigureAwait(false)}");
+                        Console.WriteLine($"[captcha] class-hook: {await EvalAsync(host, InstallClassWriteHookScript).ConfigureAwait(false)}");
+                        await host.ClickElementAsync(button[0]).ConfigureAwait(false);
+                        Console.WriteLine("[captcha] clicked button");
+                        for (var wait = 0; wait < 4; wait++)
+                        {
+                            await Task.Delay(1500).ConfigureAwait(false);
+                            Console.WriteLine($"[captcha] round +{(wait + 1) * 1.5:0.0}s: {await EvalAsync(host, ReadAllTilesScript).ConfigureAwait(false)}");
+                            Console.WriteLine($"[captcha] grids +{(wait + 1) * 1.5:0.0}s: {await EvalAsync(host, ReadGridInventoryScript).ConfigureAwait(false)}");
+                            if (wait == 0)
+                            {
+                                Console.WriteLine($"[captcha] new-table imgs: {await EvalAsync(host, ProbeNewTableImagesScript).ConfigureAwait(false)}");
+                            }
+                        }
+
+                        Console.WriteLine($"[captcha] img-events: {await EvalAsync(host, ReadImageLogScript).ConfigureAwait(false)}");
+
+                        Console.WriteLine($"[captcha] class-writes: {await EvalAsync(host, ReadClassWriteLogScript).ConfigureAwait(false)}");
+                    }
+
                     return true;
                 }
 
