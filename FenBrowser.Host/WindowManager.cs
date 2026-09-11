@@ -244,8 +244,7 @@ namespace FenBrowser.Host
 
         private void InitializeSkia()
         {
-            using var glInterface = GRGlInterface.CreateGles(
-                name => _window.GLContext.TryGetProcAddress(name, out var addr) ? addr : IntPtr.Zero);
+            using var glInterface = GRGlInterface.CreateGles(ResolveGlProc);
 
             if (glInterface == null)
             {
@@ -264,6 +263,50 @@ namespace FenBrowser.Host
 
             SyncDimensions();
             CreateRenderTarget();
+        }
+
+        private IntPtr ResolveGlProc(string name)
+        {
+            // Skia also asks the GL loader for eglGetCurrentDisplay/eglQueryString so
+            // it can read the EGL extension string. When GLFW created the context
+            // through GLX (Linux/X11, Xwayland) that request lands in Mesa's
+            // glXGetProcAddress, which hands back a live dispatch stub for names it
+            // does not know instead of null; Skia calls it, gets garbage, and
+            // dereferences it as a string. Resolve egl* symbols against a real EGL
+            // library instead, and give Skia null when there is none.
+            if (!OperatingSystem.IsWindows() && name.StartsWith("egl", StringComparison.Ordinal))
+            {
+                return ResolveEglExport(name);
+            }
+
+            return _window.GLContext.TryGetProcAddress(name, out var addr) ? addr : IntPtr.Zero;
+        }
+
+        private static IntPtr _eglLibrary;
+        private static bool _eglLibraryProbed;
+
+        private static IntPtr ResolveEglExport(string name)
+        {
+            if (!_eglLibraryProbed)
+            {
+                _eglLibraryProbed = true;
+                foreach (var candidate in new[] { "libEGL.so.1", "libEGL.so", "libEGL.dylib" })
+                {
+                    if (System.Runtime.InteropServices.NativeLibrary.TryLoad(candidate, out _eglLibrary))
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (_eglLibrary == IntPtr.Zero)
+            {
+                return IntPtr.Zero;
+            }
+
+            return System.Runtime.InteropServices.NativeLibrary.TryGetExport(_eglLibrary, name, out var export)
+                ? export
+                : IntPtr.Zero;
         }
 
         private void SyncDimensions()
