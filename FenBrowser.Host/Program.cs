@@ -1019,14 +1019,20 @@ namespace FenBrowser.Host
                 }
             });
 
+            // Input latency accounting: where a click's time goes between the
+            // broker stamping the envelope and this loop finishing with it.
+            var inputStats = new RendererChildInputStats(tabId);
+
             while (running)
             {
+                var loopTopStart = Stopwatch.GetTimestamp();
                 if (handshakeComplete)
                 {
                     logForwarder.FlushRenderer(writer, tabId);
                     DrainPendingRendererRepaintFrame();
                     CheckTextCaretBlink();
                 }
+                inputStats.RecordLoopTop(Stopwatch.GetElapsedTime(loopTopStart));
 
                 if (!IsParentAlive(parentPid))
                 {
@@ -1038,6 +1044,7 @@ namespace FenBrowser.Host
                     childRenderer.AnimationEngine.IsRunning
                         ? TimeSpan.FromMilliseconds(8)
                         : TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+                inputStats.MaybeFlush();
                 if (!readResult.Completed)
                 {
                     if (handshakeComplete)
@@ -1151,7 +1158,10 @@ namespace FenBrowser.Host
                         var input = RendererIpc.DeserializePayload<RendererInputEvent>(envelope);
                         if (input != null && input.IsMeaningful)
                         {
+                            var receiveLagMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - envelope.TimestampUnixMs;
+                            var dispatchStart = Stopwatch.GetTimestamp();
                             await DispatchRendererInputAsync(browser, input).ConfigureAwait(false);
+                            inputStats.RecordInput(input, receiveLagMs, Stopwatch.GetElapsedTime(dispatchStart));
 
                             // Only this process can answer "what is under the
                             // pointer" - the broker has no document in brokered
@@ -2578,6 +2588,102 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                     TagName = tagName
                 })
             });
+        }
+
+        /// <summary>
+        /// Per-second summary of the renderer child's input handling: how late each
+        /// envelope arrives relative to the broker's stamp, how long the child spends
+        /// dispatching it, and how long the loop top (frame drain, log flush) holds
+        /// the reader. Pointer clicks are also logged individually.
+        /// </summary>
+        private sealed class RendererChildInputStats
+        {
+            private readonly int _tabId;
+            private long _windowStart = Stopwatch.GetTimestamp();
+            private int _moves;
+            private int _others;
+            private double _maxLagMs;
+            private double _sumDispatchMs;
+            private double _maxDispatchMs;
+            private string _maxDispatchType = string.Empty;
+            private double _sumLoopTopMs;
+            private double _maxLoopTopMs;
+
+            public RendererChildInputStats(int tabId)
+            {
+                _tabId = tabId;
+            }
+
+            public void RecordLoopTop(TimeSpan elapsed)
+            {
+                var ms = elapsed.TotalMilliseconds;
+                _sumLoopTopMs += ms;
+                if (ms > _maxLoopTopMs)
+                {
+                    _maxLoopTopMs = ms;
+                }
+            }
+
+            public void RecordInput(RendererInputEvent input, long receiveLagMs, TimeSpan dispatch)
+            {
+                var dispatchMs = dispatch.TotalMilliseconds;
+                if (input.Type == RendererInputEventType.MouseMove)
+                {
+                    _moves++;
+                }
+                else
+                {
+                    _others++;
+                }
+
+                if (receiveLagMs > _maxLagMs)
+                {
+                    _maxLagMs = receiveLagMs;
+                }
+
+                _sumDispatchMs += dispatchMs;
+                if (dispatchMs > _maxDispatchMs)
+                {
+                    _maxDispatchMs = dispatchMs;
+                    _maxDispatchType = input.Type.ToString();
+                }
+
+                if (input.Type is RendererInputEventType.MouseDown or RendererInputEventType.MouseUp)
+                {
+                    EngineLog.Write(
+                        LogSubsystem.Event,
+                        LogSeverity.Info,
+                        $"[InputLatency] {input.Type} document=({input.X:F1},{input.Y:F1}) receiveLagMs={receiveLagMs} dispatchMs={dispatchMs:F1}");
+                }
+            }
+
+            public void MaybeFlush()
+            {
+                if (Stopwatch.GetElapsedTime(_windowStart).TotalMilliseconds < 1000)
+                {
+                    return;
+                }
+
+                if (_moves + _others > 0 || _maxLoopTopMs > 20)
+                {
+                    EngineLog.Write(
+                        LogSubsystem.Event,
+                        LogSeverity.Info,
+                        $"[InputLatency] tab={_tabId} window=1s moves={_moves} others={_others} maxReceiveLagMs={_maxLagMs:F0} " +
+                        $"dispatchTotalMs={_sumDispatchMs:F0} maxDispatchMs={_maxDispatchMs:F1}({_maxDispatchType}) " +
+                        $"loopTopTotalMs={_sumLoopTopMs:F0} maxLoopTopMs={_maxLoopTopMs:F1}");
+                }
+
+                _windowStart = Stopwatch.GetTimestamp();
+                _moves = 0;
+                _others = 0;
+                _maxLagMs = 0;
+                _sumDispatchMs = 0;
+                _maxDispatchMs = 0;
+                _maxDispatchType = string.Empty;
+                _sumLoopTopMs = 0;
+                _maxLoopTopMs = 0;
+            }
         }
 
         internal static async Task DispatchRendererInputAsync(BrowserHost browser, RendererInputEvent input)
