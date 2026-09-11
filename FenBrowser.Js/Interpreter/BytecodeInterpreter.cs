@@ -24894,6 +24894,19 @@ fallbackArraySpecies:
                 return hostPrimitive;
             }
 
+            // ECMA-262 7.1.1.1 OrdinaryToPrimitive: a host object with a
+            // JavaScript prototype answers through its own toString/valueOf,
+            // which is how `String(navigator)` reaches Object.prototype.toString
+            // and the prototype's @@toStringTag. Only a method that is not
+            // Object.prototype.toString on a bare host object is worth a call;
+            // a missing prototype still reads as a plain object.
+            var hostPrefersString = hint != PrimitiveHint.Number;
+            if (TryCallHostPrimitiveMethod(value, hostPrefersString ? "toString" : "valueOf", out var hostOrdinary) ||
+                TryCallHostPrimitiveMethod(value, hostPrefersString ? "valueOf" : "toString", out hostOrdinary))
+            {
+                return hostOrdinary;
+            }
+
             return JsValue.FromString("[object Object]");
         }
 
@@ -24962,6 +24975,35 @@ fallbackArraySpecies:
         var second = prefersString ? "valueOf" : "toString";
         return TryCallPrimitiveMethod(obj, value, first, out primitive) ||
                TryCallPrimitiveMethod(obj, value, second, out primitive);
+    }
+
+    [MayExecuteJs]
+    private bool TryCallHostPrimitiveMethod(JsValue hostValue, string name, out JsValue primitive)
+    {
+        primitive = JsValue.Undefined;
+        JsValue method;
+        try
+        {
+            method = GetReceiverProperty(hostValue, name);
+        }
+        catch (JsThrownException)
+        {
+            return false;
+        }
+
+        if (!IsCallable(method))
+        {
+            return false;
+        }
+
+        var result = CallFunction(method, Array.Empty<JsValue>(), hostValue);
+        if (result.Tag == JsValueTag.Object || result.Tag == JsValueTag.HostObject)
+        {
+            return false;
+        }
+
+        primitive = result;
+        return true;
     }
 
     private bool TryCallPrimitiveMethod(JsObject obj, JsValue thisValue, string name, out JsValue primitive)
