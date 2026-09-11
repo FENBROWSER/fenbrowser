@@ -673,15 +673,17 @@ public sealed class MissingApiTrackerTests
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
+            // Screen Wake Lock is a standard Navigator member the engine does
+            // not provide, which is what this classification needs.
             Assert.Equal("function|undefined", engine.Evaluate(@"
-                typeof location.toString + '|' + typeof navigator.geolocation;")?.ToString());
+                typeof location.toString + '|' + typeof navigator.wakeLock;")?.ToString());
 
             using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
             var records = outputJson.RootElement.GetProperty("records")
                 .EnumerateArray()
                 .ToDictionary(record => record.GetProperty("apiName").GetString()!, record => record);
 
-            AssertStandard(records["Navigator.geolocation"], "Navigator");
+            AssertStandard(records["Navigator.wakeLock"], "Navigator");
         }
         finally
         {

@@ -1,0 +1,3 @@
+partial interface Navigator {
+  [SameObject, SecureContext] readonly attribute WakeLock wakeLock;
+};

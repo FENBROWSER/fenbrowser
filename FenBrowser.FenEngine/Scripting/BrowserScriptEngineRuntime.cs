@@ -6664,9 +6664,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsNativeBrowserConstructors();
         _fenJsDomConstructorsInstalled = true;
         TryAttachFenJsPrototype(EvaluateWithFenJsRaw("document"), document, HostObjectKind.DomDocument);
+        TryAttachFenJsPrototype(EvaluateWithFenJsRaw("navigator"), navigator, HostObjectKind.Other);
         InstallFenJsMutationObserver();
         InstallFenJsBrowserUiApis(baseUri);
         InstallFenJsRemainingWebApis();
+        InstallFenJsBrowserSurfaceFillers();
         InstallTopWindowPostMessageBridge(globalThisValue);
     }
 
@@ -9539,18 +9541,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return candidate === globalThis.navigator || (candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('Navigator') >= 0);
                 });
 
-                Object.defineProperty(Navigator.prototype, 'serviceWorker', {
-                    get: function () {
-                        return globalThis.navigator ? globalThis.navigator.serviceWorker : undefined;
-                    },
-                    configurable: true,
-                    enumerable: true
-                });
-
-                Object.defineProperty(Navigator.prototype, 'storage', {
-                    get: function () {
-                        return globalThis.navigator ? globalThis.navigator.storage : undefined;
-                    },
+                // WebDriver: the attribute lives on the prototype and reads
+                // false for a browser under no automation. Scripts check both
+                // the value and where it is defined.
+                Object.defineProperty(Navigator.prototype, 'webdriver', {
+                    get: function () { return false; },
                     configurable: true,
                     enumerable: true
                 });
@@ -10125,10 +10120,33 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 if (!(this instanceof HTMLEl))
                                     throw new TypeError("Illegal constructor");
                             }
-                            HTMLEl.prototype = Object.create(EventTarget.prototype);
-                            HTMLEl.prototype.constructor = HTMLEl;
+                            // An element interface sits under HTMLElement, and its
+                            // brand is what Object.prototype.toString reports;
+                            // both are among the first things a "real browser?"
+                            // check reads.
+                            var base = (typeof globalThis.HTMLElement === 'function' && globalThis.HTMLElement.prototype) ||
+                                EventTarget.prototype;
+                            HTMLEl.prototype = Object.create(base);
+                            Object.defineProperty(HTMLEl.prototype, 'constructor', {
+                                value: HTMLEl, writable: true, configurable: true
+                            });
+                            Object.defineProperty(HTMLEl.prototype, Symbol.toStringTag, {
+                                value: name, configurable: true
+                            });
                             globalThis[name] = HTMLEl;
                         })(_htmlEls[_i]);
+                    }
+                    // HTML: the document of an HTML page is an HTMLDocument.
+                    if (typeof globalThis.Document === 'function' && typeof globalThis.HTMLDocument !== 'function') {
+                        function HTMLDocument() { throw new TypeError("Illegal constructor"); }
+                        HTMLDocument.prototype = Object.create(globalThis.Document.prototype);
+                        Object.defineProperty(HTMLDocument.prototype, 'constructor', {
+                            value: HTMLDocument, writable: true, configurable: true
+                        });
+                        Object.defineProperty(HTMLDocument.prototype, Symbol.toStringTag, {
+                            value: 'HTMLDocument', configurable: true
+                        });
+                        globalThis.HTMLDocument = HTMLDocument;
                     }
                 })()
                 """);
@@ -10858,6 +10876,27 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     this.buttons = this.button ? 1 << this.button : 0;
                     this.relatedTarget = relatedTarget || null;
                 };
+
+                // Pointer Events: the constructor scripts feature-detect, over
+                // the same MouseEvent shape the engine already dispatches.
+                globalThis.PointerEvent = function PointerEvent(type, options) {
+                    MouseEvent.call(this, type, options);
+                    options = options || {};
+                    this.pointerId = options.pointerId || 0;
+                    this.width = options.width || 1;
+                    this.height = options.height || 1;
+                    this.pressure = options.pressure || 0;
+                    this.tangentialPressure = options.tangentialPressure || 0;
+                    this.tiltX = options.tiltX || 0;
+                    this.tiltY = options.tiltY || 0;
+                    this.twist = options.twist || 0;
+                    this.pointerType = options.pointerType || '';
+                    this.isPrimary = !!options.isPrimary;
+                };
+                PointerEvent.prototype = Object.create(MouseEvent.prototype);
+                PointerEvent.prototype.constructor = PointerEvent;
+                PointerEvent.prototype.getCoalescedEvents = function () { return [this]; };
+                PointerEvent.prototype.getPredictedEvents = function () { return []; };
 
                 globalThis.WheelEvent = function WheelEvent(type, options) {
                     MouseEvent.call(this, type, options);
@@ -13642,6 +13681,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             {
                 _hostPrototypeNames[hostObject] = constructorName;
             }
+            else if (hostObject is Element &&
+                     !string.Equals(constructorName, "HTMLElement", StringComparison.Ordinal) &&
+                     _interpreter.TrySetHostObjectPrototypeFromGlobalConstructor(target, "HTMLElement"))
+            {
+                _hostPrototypeNames[hostObject] = "HTMLElement";
+            }
+            else if (hostObject is Document &&
+                     _interpreter.TrySetHostObjectPrototypeFromGlobalConstructor(target, "Document"))
+            {
+                _hostPrototypeNames[hostObject] = "Document";
+            }
         }
         catch
         {
@@ -13653,13 +13703,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     {
         return hostObject switch
         {
-            Document => "Document",
+            Document => "HTMLDocument",
             ShadowRoot => "ShadowRoot",
             DocumentFragment => "DocumentFragment",
             Text => "Text",
             Comment => "Comment",
             CharacterData => "CharacterData",
-            Element => "HTMLElement",
+            Element element => ResolveElementConstructorName(element),
             Attr => "Attr",
             DomRange => "Range",
             FenJsHtmlCollectionHost => "HTMLCollection",
@@ -13668,6 +13718,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             FenJsDomStringMapHost => "DOMStringMap",
             _ => null
         };
+    }
+
+    // The element's own interface (td -> HTMLTableCellElement) when the realm
+    // defines that constructor; HTMLElement otherwise, so the prototype chain
+    // is never left bare.
+    private static string ResolveElementConstructorName(Element element)
+    {
+        var name = FenBrowser.Core.Dom.V2.HtmlElementInterfaceCatalog.ResolveInterfaceName(
+            element.LocalName ?? element.TagName?.ToLowerInvariant(),
+            element.NamespaceUri);
+        return string.IsNullOrEmpty(name) ? "HTMLElement" : name;
     }
 
     private JsValue ToHostNodeOrNull(Node node)
