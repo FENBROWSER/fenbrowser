@@ -22,12 +22,6 @@
           "Silk.NET.Maths": "2.23.0"
         }
       },
-      "Silk.NET.OpenGLES.ANGLE.Native": {
-        "type": "Direct",
-        "requested": "[2025.9.12, )",
-        "resolved": "2025.9.12",
-        "contentHash": "79A4SruVjCEMCh/CQv9oANQ9aFLHtrjbfuW3DB3H8Hx+qOucYJtuhwmS0kxeYgqh12HrAKKkpksgOrnYtIQY5Q=="
-      },
       "Silk.NET.OpenGLES.Extensions.EXT": {
         "type": "Direct",
         "requested": "[2.23.0, )",

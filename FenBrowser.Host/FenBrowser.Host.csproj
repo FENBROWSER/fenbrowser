@@ -40,9 +40,19 @@
     </None>
   </ItemGroup>
 
+  <!-- Vendored x64 ANGLE (see Native/win-x64/ANGLE-LICENSE.txt). Copied to the
+       output root, next to the executable, where GLFW looks for libEGL.dll when
+       a headless window asks for an EGL context; None items flow to referencing
+       projects (FenBrowser.Tooling) as well. The Silk.NET.OpenGLES.ANGLE.Native
+       package is not used: every published version ships 32-bit DLLs under
+       runtimes/win-x64. -->
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <None Include="Native\win-x64\libEGL.dll" Link="libEGL.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Native\win-x64\libGLESv2.dll" Link="libGLESv2.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Silk.NET.OpenGLES" Version="2.23.0" />
-    <PackageReference Include="Silk.NET.OpenGLES.ANGLE.Native" Version="2025.9.12" />
     <PackageReference Include="Silk.NET.OpenGLES.Extensions.EXT" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Input" Version="2.23.0" />

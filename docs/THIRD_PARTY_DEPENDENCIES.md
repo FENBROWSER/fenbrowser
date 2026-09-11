@@ -141,43 +141,28 @@ The FenEngine project contains the core browser engine: HTML parsing, CSS comput
 
 _Same as Core – see above_
 
-### SkiaSharp.NativeAssets.Linux.NoDependencies (v2.88.9)
+### SkiaSharp.NativeAssets.Linux (v4.148.0)
 
 ```xml
-<PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.9" />
+<PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.148.0" />
 ```
 
 **Description:**
-Provides the native Skia libraries compiled for Linux without requiring external system dependencies like fontconfig or freetype to be pre-installed.
+Native Skia for Linux, linked against the system fontconfig and FreeType.
 
 **Why We Use It:**
 
-- Enables Linux support without requiring users to install system packages
-- Self-contained deployment for AppImage, Flatpak, or Docker
+- The `NoDependencies` variant used until 2026-09-11 ships a libSkiaSharp with **no font manager at all**: `SKFontManager.Default` reports one empty family and every `SKTypeface.FromFamilyName` call, including installed families, returns a zero-glyph typeface. The browser drew its chrome but no text.
+- fontconfig resolves the engine's Windows-first family names through the system alias table (Arial → Liberation Sans, Segoe UI → Noto Sans, Times New Roman → Liberation Serif).
 
 **Technical Details:**
 
-- Contains `libSkiaSharp.so` compiled with static linking
-- Includes bundled FreeType, HarfBuzz, and libpng
-- ~20MB addition to Linux deployment
-
-**Pros:**
-
-- ✅ Zero system dependencies required on Linux
-- ✅ Works in minimal containers (Alpine, scratch)
-- ✅ Consistent font rendering across distributions
-- ✅ Enables truly portable Linux binaries
-
-**Cons:**
-
-- ⚠️ Larger binary size than system-dependent version
-- ⚠️ Cannot use system font cache
-- ⚠️ May have older versions of bundled libraries
+- Requires `libfontconfig1` and `libfreetype6` on the target (present on every desktop distribution; install them in minimal containers).
+- Referenced from FenBrowser.Host, FenBrowser.FenEngine and FenBrowser.Tests at 4.148.0; the direct reference also retires the old `2.88.7 ExcludeAssets` pin that kept a transitive copy from clobbering the native.
 
 **Security Assessment:**
 
-- 🟢 Low Risk – Static linking isolates from system library vulnerabilities
-- Should update promptly when SkiaSharp releases security patches
+- 🟢 Low Risk – Font parsing happens in the system FreeType, which receives distribution security updates.
 
 ### SkiaSharp.HarfBuzz (v2.88.9)
 
@@ -473,6 +458,23 @@ Native Skia libraries compiled for Windows (x86 and x64).
 **Security Assessment:**
 
 - 🟢 Low Risk – Same as SkiaSharp
+
+### ANGLE (vendored, x64 Windows)
+
+Files: `FenBrowser.Host/Native/win-x64/libEGL.dll`, `libGLESv2.dll` (license and provenance in `ANGLE-LICENSE.txt` beside them). Copied to the output root of FenBrowser.Host and every project that references it.
+
+**Description:**
+Google's ANGLE implements OpenGL ES on top of Direct3D 11, with a WARP software fallback when no GPU is present. Build taken from the Electron runtime bundled with Visual Studio Code 1.128.1.
+
+**Why We Use It:**
+
+- GLFW's default on Windows is WGL, which needs a vendor OpenGL driver. GitHub-hosted Windows runners have none, so the headless WebDriver window could not create a context and the WPT dashboard ran zero tests.
+- `GlContextCreationPolicy` asks GLFW for EGL in headless mode (or when `FEN_GL_CONTEXT_API=egl`), and these DLLs provide it. The interactive window keeps WGL by default.
+- The `Silk.NET.OpenGLES.ANGLE.Native` NuGet package cannot be used: every published version ships 32-bit DLLs under `runtimes/win-x64`.
+
+**Security Assessment:**
+
+- 🟢 Low Risk – BSD-3 licensed; the same binaries run inside Electron applications. Update by replacing the two files and the version noted in `ANGLE-LICENSE.txt`.
 
 ### Topten.RichTextKit (v0.4.164)
 
