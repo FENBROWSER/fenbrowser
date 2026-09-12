@@ -9520,6 +9520,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         EvaluateWithFenJsRaw(
             """
             (function () {
+                var ordinaryHasInstance = Function.prototype[Symbol.hasInstance];
                 function defineCtor(name, baseCtor, prototypeBrands, match) {
                     var ctor = function () {
                         if (name === 'HTMLElement') {
@@ -9555,6 +9556,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     ctor.prototype = proto;
                     Object.defineProperty(ctor, Symbol.hasInstance, {
                         value: function (candidate) {
+                            // `class X extends HTMLElement {}` inherits this method
+                            // through X.[[Prototype]] === HTMLElement, so `v instanceof X`
+                            // lands here with `this` === X (ECMA-262 13.10.2). Only the
+                            // interface itself answers by brand; a subclass is answered
+                            // by the ordinary prototype walk, or every HTMLElement would
+                            // pass as an instance of every element class.
+                            if (this !== ctor) {
+                                return ordinaryHasInstance.call(this, candidate);
+                            }
+
                             if (candidate == null) {
                                 return false;
                             }
