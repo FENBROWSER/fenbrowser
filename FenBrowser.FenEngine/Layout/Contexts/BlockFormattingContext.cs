@@ -78,6 +78,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float currentY = 0; 
             float maxBottom = 0;
             float lastMarginBottom = 0;
+            // CSS 2.1 §8.3.1: every margin adjoining the flow cursor forms ONE collapsed
+            // margin (max positive + min negative). A block that collapses through adds
+            // its own and its descendants' margins to that set without ending it, so the
+            // set is kept as a (positive, negative) pair — pairwise collapsing of mixed
+            // signs is not associative (Acid2's `.empty`: 48, 75, 0, -72, 75, 60 → 3px).
+            float pendingMarginPositive = 0;
+            float pendingMarginNegative = 0;
             bool isFirstChild = true;
 
             bool parentPreventsTopCollapse = PreventsChildTopMarginCollapse(blockBox);
@@ -133,7 +140,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
                     else
                     {
-                        collapsedMarginForClear = MarginCollapseComputer.Collapse(lastMarginBottom, childMarginTopForClear);
+                        float positive = pendingMarginPositive, negative = pendingMarginNegative;
+                        CombineCollapsedMargin(ref positive, ref negative, childMarginTopForClear);
+                        collapsedMarginForClear = positive + negative;
                     }
 
                     float marginEdgeY = currentY + collapsedMarginForClear;
@@ -280,7 +289,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
                     else
                     {
-                        collapsedMargin = MarginCollapseComputer.Collapse(lastMarginBottom, childMarginTop);
+                        float positive = pendingMarginPositive, negative = pendingMarginNegative;
+                        CombineCollapsedMargin(ref positive, ref negative, childMarginTop);
+                        collapsedMargin = positive + negative;
                     }
 
                     float estimatedChildY = currentY + collapsedMargin;
@@ -304,15 +315,36 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         floatManager, xOffset, floatOriginY);
                     FormattingContext.Resolve(child).Layout(child, childState);
 
-                    if (TryResolveCollapsedThroughMargin(child, out float collapsedThroughMargin))
+                    bool collapsedThrough = false;
+                    float collapsedThroughPositive = 0f, collapsedThroughNegative = 0f;
+                    if (!isFirstChild &&
+                        TryResolveCollapsedThroughMargin(child, ref collapsedThroughPositive, ref collapsedThroughNegative))
+                    {
+                        // The empty block's top border edge sits where it would with a
+                        // non-zero bottom border: at the collapse of everything adjoining,
+                        // including its own bottom margin and its descendants'.
+                        collapsedThrough = true;
+                        CombineCollapsedMargin(ref collapsedThroughPositive, ref collapsedThroughNegative, pendingMarginPositive);
+                        CombineCollapsedMargin(ref collapsedThroughPositive, ref collapsedThroughNegative, pendingMarginNegative);
+                        collapsedMargin = collapsedThroughPositive + collapsedThroughNegative;
+                    }
+                    else if (TryResolveCollapsedThroughMargin(child, out float collapsedThroughMargin))
                     {
                         childMarginBottom = collapsedThroughMargin;
                     }
+                    else
+                    {
+                        childMarginBottom = ResolveUsedBottomMargin(child);
+                    }
 
-                    // Advance cursor by the collapsed margin
-                    currentY += collapsedMargin;
-
-                    float childY = currentY;
+                    // Advance cursor by the collapsed margin. A collapsed-through block
+                    // is placed at that offset but leaves the cursor (and the pending
+                    // margin set) for the next sibling to collapse against.
+                    float childY = currentY + collapsedMargin;
+                    if (!collapsedThrough)
+                    {
+                        currentY = childY;
+                    }
                     float childX = xOffset;
 
                     if (fragmentationEnabled &&
@@ -408,9 +440,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     // Advance cursor by CONTENT (BorderBox) height — uses the
                     // static (pre-sticky) position so siblings are unaffected.
-                    currentY = childY + child.Geometry.BorderBox.Height;
-                    
-                    lastMarginBottom = childMarginBottom;
+                    if (collapsedThrough)
+                    {
+                        pendingMarginPositive = collapsedThroughPositive;
+                        pendingMarginNegative = collapsedThroughNegative;
+                        lastMarginBottom = pendingMarginPositive + pendingMarginNegative;
+                    }
+                    else
+                    {
+                        currentY = childY + child.Geometry.BorderBox.Height;
+                        lastMarginBottom = childMarginBottom;
+                        pendingMarginPositive = Math.Max(0f, childMarginBottom);
+                        pendingMarginNegative = Math.Min(0f, childMarginBottom);
+                    }
                     isFirstChild = false;
                     
                     maxBottom = Math.Max(maxBottom, currentY);
@@ -896,13 +938,86 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return own;
             }
 
-            var firstInFlow = box.Children?.FirstOrDefault(static child => child != null && !child.IsOutOfFlow);
+            // A leading float is not in flow: its margins never collapse (§8.3.1), and
+            // it does not stop the parent's top margin from adjoining the first block's.
+            var firstInFlow = box.Children?.FirstOrDefault(static child => child != null && !child.IsOutOfFlow && !IsFloatedBox(child));
             if (firstInFlow == null)
             {
                 return own;
             }
 
             return MarginCollapseComputer.Collapse(own, ResolveUsedTopMargin(firstInFlow));
+        }
+
+        /// <summary>
+        /// CSS 2.1 §8.3.1: with no bottom padding/border and an auto height, a box's
+        /// bottom margin adjoins its last in-flow child's bottom margin, so the margin
+        /// the next sibling collapses against is the collapse of that chain (Acid2:
+        /// `.parser`'s 1em bottom margin reaches the `ul` through `.parser-container`).
+        /// </summary>
+        private static float ResolveUsedBottomMargin(LayoutBox box)
+        {
+            float own = (float)(box?.ComputedStyle?.Margin.Bottom ?? 0.0);
+            if (box == null || PreventsChildBottomMarginCollapse(box))
+            {
+                return own;
+            }
+
+            LayoutBox lastInFlow = null;
+            var children = box.Children;
+            for (int i = children.Count - 1; i >= 0; i--)
+            {
+                var candidate = children[i];
+                if (candidate == null || candidate.IsOutOfFlow || IsFloatedBox(candidate))
+                {
+                    continue;
+                }
+                if (candidate is TextLayoutBox textBox &&
+                    TextWhitespaceClassifier.IsCollapsibleWhitespaceOnly((textBox.SourceNode as Text)?.Data ?? textBox.TextContent ?? string.Empty))
+                {
+                    continue;
+                }
+                lastInFlow = candidate;
+                break;
+            }
+
+            if (lastInFlow == null || lastInFlow is TextLayoutBox || lastInFlow.ComputedStyle == null)
+            {
+                return own;
+            }
+
+            return MarginCollapseComputer.Collapse(own, ResolveUsedBottomMargin(lastInFlow));
+        }
+
+        private static bool PreventsChildBottomMarginCollapse(LayoutBox box)
+        {
+            var style = box.ComputedStyle;
+            if (style == null)
+            {
+                return true;
+            }
+
+            if (style.Padding.Bottom > 0 || style.BorderThickness.Bottom > 0)
+            {
+                return true;
+            }
+
+            bool hasExplicitHeight =
+                style.Height.HasValue ||
+                style.HeightPercent.HasValue ||
+                !string.IsNullOrWhiteSpace(style.HeightExpression);
+            if (hasExplicitHeight || (style.MinHeight.HasValue && style.MinHeight.Value > 0))
+            {
+                return true;
+            }
+
+            var display = style.Display?.Trim().ToLowerInvariant();
+            if (display != null && display != "block" && display != "list-item" && display != "flow" )
+            {
+                return true;
+            }
+
+            return EstablishesMarginCollapseBoundary(box);
         }
 
         // The parent asks this before the child's box geometry exists, so the top
@@ -922,15 +1037,24 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private static bool PreventsChildTopMarginCollapse(LayoutBox box)
         {
-            // CSS2: the root element's margins do not collapse. In particular,
-            // BODY's top margin must remain inside the initial containing block
-            // instead of being collapsed through HTML and discarded above y=0.
-            if (box.SourceNode?.ParentNode is Document)
+            if (box.Geometry.Padding.Top > 0 || box.Geometry.Border.Top > 0)
             {
                 return true;
             }
 
-            if (box.Geometry.Padding.Top > 0 || box.Geometry.Border.Top > 0)
+            return EstablishesMarginCollapseBoundary(box);
+        }
+
+        /// <summary>
+        /// Boxes whose own margins never adjoin their children's, whatever the
+        /// padding/border: the root, BFC roots, out-of-flow and floated boxes.
+        /// </summary>
+        private static bool EstablishesMarginCollapseBoundary(LayoutBox box)
+        {
+            // CSS2: the root element's margins do not collapse. In particular,
+            // BODY's top margin must remain inside the initial containing block
+            // instead of being collapsed through HTML and discarded above y=0.
+            if (box.SourceNode?.ParentNode is Document)
             {
                 return true;
             }
@@ -2357,7 +2481,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private static bool TryResolveCollapsedThroughMargin(LayoutBox box, out float collapsedMargin)
         {
-            collapsedMargin = 0f;
+            float positive = 0f, negative = 0f;
+            bool collapses = TryResolveCollapsedThroughMargin(box, ref positive, ref negative);
+            collapsedMargin = collapses ? positive + negative : 0f;
+            return collapses;
+        }
+
+        /// <summary>
+        /// When <paramref name="box"/> collapses through (§8.3.1), folds its own top and
+        /// bottom margins and its first in-flow descendants' into the (positive,
+        /// negative) set so the caller can keep collapsing siblings against it.
+        /// </summary>
+        private static bool TryResolveCollapsedThroughMargin(LayoutBox box, ref float positive, ref float negative)
+        {
             if (box?.ComputedStyle == null)
             {
                 return false;
@@ -2368,26 +2504,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return false;
             }
 
-            float positive = 0f;
-            float negative = 0f;
             CombineCollapsedMargin(ref positive, ref negative, (float)box.Geometry.Margin.Top);
             CombineCollapsedMargin(ref positive, ref negative, (float)box.Geometry.Margin.Bottom);
 
-            var firstInFlow = box.Children.FirstOrDefault(static child => child != null && !child.IsOutOfFlow);
-            if (firstInFlow != null)
+            var firstInFlow = box.Children.FirstOrDefault(static child => child != null && !child.IsOutOfFlow && !IsFloatedBox(child));
+            if (firstInFlow != null && !TryResolveCollapsedThroughMargin(firstInFlow, ref positive, ref negative))
             {
-                if (TryResolveCollapsedThroughMargin(firstInFlow, out float childCollapsed))
-                {
-                    CombineCollapsedMargin(ref positive, ref negative, childCollapsed);
-                }
-                else
-                {
-                    CombineCollapsedMargin(ref positive, ref negative, (float)firstInFlow.Geometry.Margin.Top);
-                    CombineCollapsedMargin(ref positive, ref negative, (float)firstInFlow.Geometry.Margin.Bottom);
-                }
+                CombineCollapsedMargin(ref positive, ref negative, (float)firstInFlow.Geometry.Margin.Top);
+                CombineCollapsedMargin(ref positive, ref negative, (float)firstInFlow.Geometry.Margin.Bottom);
             }
 
-            collapsedMargin = positive + negative;
             return true;
         }
 
