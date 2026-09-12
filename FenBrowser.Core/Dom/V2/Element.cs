@@ -572,7 +572,7 @@ namespace FenBrowser.Core.Dom.V2
                 }
             }
             NotifySlotAssignmentMayHaveChanged(name);
-            NotifyAttributeMutation(attr, oldValue);
+            NotifyAttributeMutation(attr, oldValue, removed: true);
         }
 
         private static bool IsStyleAffectingAttribute(string name)
@@ -605,8 +605,10 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
-        private void NotifyAttributeMutation(Attr attr, string oldValue)
+        private void NotifyAttributeMutation(Attr attr, string oldValue, bool removed = false)
         {
+            Node.NotifyAttributeChanged(this, attr.Name, attr.NamespaceUri, oldValue, removed ? null : attr.Value);
+
             var record = new MutationRecord
             {
                 Type = MutationRecordType.Attributes,

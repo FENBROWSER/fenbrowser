@@ -4543,6 +4543,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         // safe point and drop _fenJsLock before the teardown below needs it.
         _realmAbandoned = true;
         UnsubscribeFrameTeardownObserver();
+        UnsubscribeAttributeReactionObserver();
         UnsubscribeImageLoadObserver();
 
         foreach (var childRealm in DetachFrameRealms())
@@ -4595,6 +4596,88 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         _frameTeardownObserverSubscribed = true;
         Node.OnMutation += OnDomMutationForFrameTeardown;
+    }
+
+    private bool _attributeReactionObserverSubscribed;
+
+    private void EnsureAttributeReactionObserver()
+    {
+        if (_attributeReactionObserverSubscribed)
+        {
+            return;
+        }
+
+        _attributeReactionObserverSubscribed = true;
+        Node.OnAttributeChanged += OnDomAttributeChangedForCustomElements;
+    }
+
+    private void UnsubscribeAttributeReactionObserver()
+    {
+        if (!_attributeReactionObserverSubscribed)
+        {
+            return;
+        }
+
+        _attributeReactionObserverSubscribed = false;
+        Node.OnAttributeChanged -= OnDomAttributeChangedForCustomElements;
+    }
+
+    // Node.OnAttributeChanged is process-wide and fires for every attribute
+    // write on every document, so the filter here has to be cheap and exact:
+    // only this realm's document, only elements a definition could apply to,
+    // and only from the script thread -- a parser or layout thread must never
+    // re-enter the interpreter.
+    private void OnDomAttributeChangedForCustomElements(
+        Element element,
+        string attributeName,
+        string attributeNamespace,
+        string oldValue,
+        string newValue)
+    {
+        if (!_onFenJsLargeStackThread || _interpreter == null || _realmAbandoned || element == null)
+        {
+            return;
+        }
+
+        var localName = element.LocalName;
+        if (string.IsNullOrEmpty(localName) ||
+            (localName.IndexOf('-') < 0 && !element.HasAttribute("is")))
+        {
+            return;
+        }
+
+        var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
+        if (document == null || !ReferenceEquals(element.OwnerDocument, document))
+        {
+            return;
+        }
+
+        if (!_interpreter.TryReadGlobalValue("__fenCustomElementAttributeChanged", out var hook) ||
+            !_interpreter.CanCallValue(hook))
+        {
+            return;
+        }
+
+        try
+        {
+            _ = _interpreter.InvokeFunction(
+                hook,
+                new[]
+                {
+                    ToHostNodeOrNull(element),
+                    JsValue.FromString(attributeName),
+                    oldValue == null ? JsValue.Null : JsValue.FromString(oldValue),
+                    newValue == null ? JsValue.Null : JsValue.FromString(newValue),
+                    attributeNamespace == null ? JsValue.Null : JsValue.FromString(attributeNamespace)
+                },
+                JsValue.Undefined);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] attributeChangedCallback dispatch failed for <{localName} {attributeName}>: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
     }
 
     private void UnsubscribeFrameTeardownObserver()
@@ -5594,6 +5677,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _moduleEvaluator = null;
             _moduleSourceCache.Clear();
             _inlineModuleCounter = 0;
+            EnsureAttributeReactionObserver();
             EnsureFenJsHeapDiagnosticSink();
             ConfigureFenJsMicrotaskTracing(_interpreter);
 
@@ -12208,6 +12292,22 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 return;
                             }
                         }
+                        // HTML 4.13.5 "upgrade an element" step 4: an attributeChangedCallback
+                        // reaction for each observed attribute already on the element,
+                        // before connectedCallback. Polymer's <dom-module> registers its
+                        // id here and nowhere else.
+                        var observed = observedAttributesOf(entry);
+                        if (observed.length && typeof element.attributeChangedCallback === 'function') {
+                            for (var a = 0; a < observed.length; a++) {
+                                var attributeName = observed[a];
+                                if (!element.hasAttribute(attributeName)) continue;
+                                try {
+                                    element.attributeChangedCallback(attributeName, null, element.getAttribute(attributeName), null);
+                                } catch (_attributeError) {
+                                    reportCustomElementReactionError(name, 'attributeChangedCallback', _attributeError);
+                                }
+                            }
+                        }
                     }
                     if (element.isConnected &&
                         !element.__fenCustomElementConnected &&
@@ -12223,6 +12323,33 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         }
                     }
                 }
+                function observedAttributesOf(entry) {
+                    if (entry.observed) return entry.observed;
+                    var list = [];
+                    try {
+                        var declared = entry.constructor && entry.constructor.observedAttributes;
+                        if (declared && typeof declared.length === 'number') {
+                            for (var i = 0; i < declared.length; i++) list.push(String(declared[i]));
+                        }
+                    } catch (_observedError) {}
+                    entry.observed = list;
+                    return list;
+                }
+                // Called by the host for every attribute change on an element whose
+                // name looks custom (HTML 4.13.4: the reaction is enqueued for any
+                // change to an observed attribute, whatever path changed it).
+                globalThis.__fenCustomElementAttributeChanged = function (element, attributeName, oldValue, newValue, namespaceUri) {
+                    var name = element && element.__fenCustomElementName;
+                    if (!name) return;
+                    var entry = customElements._registry[name];
+                    if (!entry || observedAttributesOf(entry).indexOf(attributeName) < 0) return;
+                    if (typeof element.attributeChangedCallback !== 'function') return;
+                    try {
+                        element.attributeChangedCallback(attributeName, oldValue, newValue, namespaceUri);
+                    } catch (_attributeError) {
+                        reportCustomElementReactionError(name, 'attributeChangedCallback', _attributeError);
+                    }
+                };
                 function upgradeCustomElementTree(root, registry, filterName) {
                     if (!root || !registry) return;
                     var names = filterName ? [filterName] : Object.keys(registry._registry);

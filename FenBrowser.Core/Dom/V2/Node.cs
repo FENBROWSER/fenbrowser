@@ -25,6 +25,20 @@ namespace FenBrowser.Core.Dom.V2
         // delegate void MutationHandler(Node target, string type, string? attrName, string? attrNamespace, List<Node>? addedNodes, List<Node>? removedNodes);
         public static event Action<Node, string, string?, string?, List<Node>?, List<Node>?>? OnMutation;
 
+        /// <summary>
+        /// Every attribute change on any element, with the values the script-facing
+        /// reactions need: (element, local name, namespace, old value, new value),
+        /// null for a value that did not exist. Custom element attributeChangedCallback
+        /// (HTML 4.13.4) hangs off this, so it fires for every path that changes an
+        /// attribute -- setAttribute, reflected properties, toggleAttribute, the parser.
+        /// </summary>
+        public static event Action<Element, string, string?, string?, string?>? OnAttributeChanged;
+
+        internal static void NotifyAttributeChanged(Element target, string name, string? ns, string? oldValue, string? newValue)
+        {
+            OnAttributeChanged?.Invoke(target, name, ns, oldValue, newValue);
+        }
+
         internal static void NotifyMutation(Node target, string type, string? attrName, string? attrNamespace, List<Node>? addedNodes, List<Node>? removedNodes)
         {
             OnMutation?.Invoke(target, type, attrName, attrNamespace, addedNodes, removedNodes);
