@@ -1,4 +1,4 @@
-// WHATWG DOM Living Standard compliant implementation
+﻿// WHATWG DOM Living Standard compliant implementation
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
 using System;
@@ -211,6 +211,84 @@ namespace FenBrowser.Core.Dom.V2
         public override IEnumerator<Element> GetEnumerator()
         {
             return ((IEnumerable<Element>)_elements).GetEnumerator();
+        }
+    }
+
+    /// <summary>
+    /// A live HTMLCollection over the descendants of a root that satisfy a
+    /// predicate, in tree order (DOM §4.2.10.2). Backs the document collections
+    /// of HTML §3.1.3 (forms, links, images, ...), whose membership is a
+    /// per-element test rather than a tag name. Named access matches id, and
+    /// name for the element kinds the spec lists.
+    /// </summary>
+    public sealed class FilteredHTMLCollection : HTMLCollection
+    {
+        private readonly ContainerNode _root;
+        private readonly Func<Element, bool> _predicate;
+        private readonly bool _nameMatches;
+
+        public FilteredHTMLCollection(ContainerNode root, Func<Element, bool> predicate, bool nameMatches = true)
+        {
+            _root = root ?? throw new ArgumentNullException(nameof(root));
+            _predicate = predicate ?? throw new ArgumentNullException(nameof(predicate));
+            _nameMatches = nameMatches;
+        }
+
+        public override int Length
+        {
+            get
+            {
+                int count = 0;
+                foreach (var node in _root.Descendants())
+                {
+                    if (node is Element el && _predicate(el))
+                        count++;
+                }
+                return count;
+            }
+        }
+
+        public override Element this[int index]
+        {
+            get
+            {
+                if (index < 0) return null;
+                int i = 0;
+                foreach (var node in _root.Descendants())
+                {
+                    if (node is Element el && _predicate(el))
+                    {
+                        if (i == index) return el;
+                        i++;
+                    }
+                }
+                return null;
+            }
+        }
+
+        public override Element NamedItem(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            foreach (var node in _root.Descendants())
+            {
+                if (node is Element el && _predicate(el) &&
+                    (el.Id == name || (_nameMatches && el.GetAttribute("name") == name)))
+                {
+                    return el;
+                }
+            }
+            return null;
+        }
+
+        public override IEnumerator<Element> GetEnumerator()
+        {
+            var snapshot = new List<Element>();
+            foreach (var node in _root.Descendants())
+            {
+                if (node is Element el && _predicate(el))
+                    snapshot.Add(el);
+            }
+            return snapshot.GetEnumerator();
         }
     }
 

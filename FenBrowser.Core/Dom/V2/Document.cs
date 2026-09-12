@@ -1,4 +1,4 @@
-// WHATWG DOM Living Standard compliant implementation
+﻿// WHATWG DOM Living Standard compliant implementation
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
 using System;
@@ -483,6 +483,9 @@ namespace FenBrowser.Core.Dom.V2
             return el;
         }
 
+        /// <summary>XML Namespaces QName production check, for callers that validate names before building nodes.</summary>
+        public static bool IsValidXmlQualifiedName(string qualifiedName) => IsValidQualifiedName(qualifiedName);
+
         private static bool IsValidQualifiedName(string name)
         {
             if (string.IsNullOrEmpty(name)) return false;
@@ -527,6 +530,39 @@ namespace FenBrowser.Core.Dom.V2
         public Comment CreateComment(string data)
         {
             return new Comment(data ?? "", this);
+        }
+
+        /// <summary>
+        /// Creates a processing instruction. DOM §4.5
+        /// dom-document-createprocessinginstruction: the target must be an XML
+        /// Name and the data may not contain "?>".
+        /// </summary>
+        public ProcessingInstruction CreateProcessingInstruction(string target, string data)
+        {
+            if (!IsValidXmlName(target))
+                throw new DomException("InvalidCharacterError", $"'{target}' is not a valid processing instruction target");
+
+            data ??= string.Empty;
+            if (data.Contains("?>", StringComparison.Ordinal))
+                throw new DomException("InvalidCharacterError", "Processing instruction data may not contain '?>'");
+
+            return new ProcessingInstruction(target, data, this);
+        }
+
+        /// <summary>
+        /// Creates a CDATA section. DOM §4.5 dom-document-createcdatasection: not
+        /// supported on HTML documents, and the data may not contain "]]>".
+        /// </summary>
+        public CDATASection CreateCDATASection(string data)
+        {
+            if (string.Equals(ContentType, "text/html", StringComparison.OrdinalIgnoreCase))
+                throw new DomException("NotSupportedError", "CDATA sections cannot be created in HTML documents");
+
+            data ??= string.Empty;
+            if (data.Contains("]]>", StringComparison.Ordinal))
+                throw new DomException("InvalidCharacterError", "CDATA section data may not contain ']]>'");
+
+            return new CDATASection(data, this);
         }
 
         /// <summary>
@@ -623,6 +659,32 @@ namespace FenBrowser.Core.Dom.V2
             return new TreeWalker(root, whatToShow, filter);
         }
 
+        // --- Document collections (HTML §3.1.3) ---
+
+        private static bool IsHtml(Element el, string localName) =>
+            string.Equals(el.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+            string.Equals(el.LocalName, localName, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>HTML dom-document-forms: all form elements, in tree order.</summary>
+        public HTMLCollection Forms => new FilteredHTMLCollection(this, el => IsHtml(el, "form"));
+
+        /// <summary>HTML dom-document-links: a and area elements with an href attribute.</summary>
+        public HTMLCollection Links => new FilteredHTMLCollection(
+            this, el => (IsHtml(el, "a") || IsHtml(el, "area")) && el.HasAttribute("href"));
+
+        /// <summary>HTML dom-document-anchors: a elements with a name attribute.</summary>
+        public HTMLCollection Anchors => new FilteredHTMLCollection(
+            this, el => IsHtml(el, "a") && el.HasAttribute("name"));
+
+        /// <summary>HTML dom-document-images: all img elements.</summary>
+        public HTMLCollection Images => new FilteredHTMLCollection(this, el => IsHtml(el, "img"));
+
+        /// <summary>HTML dom-document-embeds (and plugins): all embed elements.</summary>
+        public HTMLCollection Embeds => new FilteredHTMLCollection(this, el => IsHtml(el, "embed"));
+
+        /// <summary>HTML dom-document-scripts: all script elements.</summary>
+        public HTMLCollection Scripts => new FilteredHTMLCollection(this, el => IsHtml(el, "script"));
+
         /// <summary>
         /// Creates a new NodeIterator.
         /// https://dom.spec.whatwg.org/#dom-document-createnodeiterator
@@ -630,7 +692,12 @@ namespace FenBrowser.Core.Dom.V2
         public NodeIterator CreateNodeIterator(Node root, uint whatToShow = 0xFFFFFFFF, NodeFilter filter = null)
         {
             var iterator = new NodeIterator(root, whatToShow, filter);
-            RegisterNodeIterator(iterator);
+            // DOM 4.2.2 "remove" runs the pre-removing steps for every NodeIterator
+            // whose root's node document is the removed node's node document, so
+            // the iterator registers with its root's document, which may not be
+            // the document createNodeIterator was called on.
+            var owner = (root as Document) ?? root.OwnerDocument ?? this;
+            owner.RegisterNodeIterator(iterator);
             return iterator;
         }
 
@@ -777,10 +844,12 @@ namespace FenBrowser.Core.Dom.V2
                 return;
             }
 
-            // Document can have DocumentType, Element, and Comment children.
+            // DOM 4.2.3 ensure pre-insertion validity: a document accepts
+            // DocumentType, Element, ProcessingInstruction and Comment children.
             if (node is not DocumentType &&
                 node is not Element &&
-                node is not Comment)
+                node is not Comment &&
+                node is not ProcessingInstruction)
             {
                 throw new DomException("HierarchyRequestError", "Node type is not valid for a Document");
             }

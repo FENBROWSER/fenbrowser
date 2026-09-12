@@ -1,4 +1,4 @@
-// WHATWG DOM Living Standard compliant implementation
+﻿// WHATWG DOM Living Standard compliant implementation
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
 using System;
@@ -102,15 +102,42 @@ namespace FenBrowser.Core.Dom.V2
                     beforeNode = true;
                 }
 
-                var result = AcceptNode(node);
+                // The candidate is the traversal's in-flight position while the
+                // filter runs: a filter that removes nodes has the pre-removing
+                // steps retarget this position (DOM 6.1), not the last accepted
+                // reference, so the iterator never rests on a detached node.
+                _inFlightNode = node;
+                _inFlightBefore = beforeNode;
+                _inFlight = true;
+                NodeFilterResult result;
+                try
+                {
+                    result = AcceptNode(node);
+                }
+                finally
+                {
+                    _inFlight = false;
+                }
+
+                var retargeted = !ReferenceEquals(_inFlightNode, node) || _inFlightBefore != beforeNode;
                 if (result == NodeFilterResult.Accept)
                 {
-                    ReferenceNode = node;
-                    PointerBeforeReferenceNode = beforeNode;
+                    ReferenceNode = _inFlightNode;
+                    PointerBeforeReferenceNode = _inFlightBefore;
                     return node;
+                }
+
+                if (retargeted)
+                {
+                    node = _inFlightNode;
+                    beforeNode = _inFlightBefore;
                 }
             }
         }
+
+        private Node _inFlightNode;
+        private bool _inFlightBefore;
+        private bool _inFlight;
 
         private Node NextNodeInTree(Node node)
         {
@@ -170,54 +197,81 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         /// <summary>
-        /// Called when a node is removed from the document.
-        /// Updates the iterator state appropriately.
+        /// DOM §6.1 NodeIterator pre-removing steps, run for every live iterator
+        /// before a node is removed from its parent.
+        /// https://dom.spec.whatwg.org/#nodeiterator-pre-removing-steps
         /// </summary>
         internal void OnNodeRemoved(Node node)
         {
-            if (!IsAncestorOrSelf(node, ReferenceNode))
+            // While a filter runs, the position being retargeted is the
+            // candidate under filtering, not the last accepted reference.
+            var reference = _inFlight ? _inFlightNode : ReferenceNode;
+            var pointerBefore = _inFlight ? _inFlightBefore : PointerBeforeReferenceNode;
+
+            // Step 1: nothing to do unless the removed subtree contains the
+            // reference, and never when it contains the root itself (the
+            // iterator then just follows its root out of the tree).
+            if (!IsAncestorOrSelf(node, reference) || IsAncestorOrSelf(node, Root))
                 return;
 
-            if (PointerBeforeReferenceNode)
+            // Step 2: pointer before the reference - move to the first following
+            // node inside root that is outside the removed subtree.
+            if (pointerBefore)
             {
-                var next = NextNodeInTree(node);
-                while (next != null && IsAncestorOrSelf(node, next))
-                    next = NextNodeInTree(next);
-
+                var next = FollowingNodeOutside(node);
                 if (next != null)
                 {
-                    ReferenceNode = next;
+                    SetPosition(next, true);
+                    return;
                 }
-                else
-                {
-                    var prev = PreviousNodeInTree(node);
-                    while (prev != null && IsAncestorOrSelf(node, prev))
-                        prev = PreviousNodeInTree(prev);
 
-                    ReferenceNode = prev ?? Root;
-                    PointerBeforeReferenceNode = false;
-                }
+                pointerBefore = false;
+            }
+
+            // Step 3: the node just before the removed subtree in tree order -
+            // the previous sibling's last inclusive descendant, else the parent.
+            var previous = node.PreviousSibling;
+            if (previous != null)
+            {
+                while (previous.HasChildNodes)
+                    previous = previous.LastChild;
+                SetPosition(previous, pointerBefore);
             }
             else
             {
-                var prev = PreviousNodeInTree(node);
-                while (prev != null && IsAncestorOrSelf(node, prev))
-                    prev = PreviousNodeInTree(prev);
-
-                if (prev != null)
-                {
-                    ReferenceNode = prev;
-                }
-                else
-                {
-                    var next = NextNodeInTree(node);
-                    while (next != null && IsAncestorOrSelf(node, next))
-                        next = NextNodeInTree(next);
-
-                    ReferenceNode = next ?? Root;
-                    PointerBeforeReferenceNode = true;
-                }
+                SetPosition(node.ParentNode ?? Root, pointerBefore);
             }
+        }
+
+        private void SetPosition(Node node, bool pointerBefore)
+        {
+            if (_inFlight)
+            {
+                _inFlightNode = node;
+                _inFlightBefore = pointerBefore;
+            }
+            else
+            {
+                ReferenceNode = node;
+                PointerBeforeReferenceNode = pointerBefore;
+            }
+        }
+
+        /// <summary>
+        /// The first node following <paramref name="node"/> in tree order that is
+        /// an inclusive descendant of root but not of <paramref name="node"/>.
+        /// </summary>
+        private Node FollowingNodeOutside(Node node)
+        {
+            var current = node;
+            while (current != null && current != Root)
+            {
+                if (current.NextSibling != null)
+                    return current.NextSibling;
+                current = current.ParentNode;
+            }
+
+            return null;
         }
 
         private static bool IsAncestorOrSelf(Node ancestor, Node descendant)

@@ -1,4 +1,4 @@
-// WHATWG DOM Living Standard compliant implementation
+﻿// WHATWG DOM Living Standard compliant implementation
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
 using System;
@@ -13,7 +13,7 @@ namespace FenBrowser.Core.Dom.V2
     /// Represents text content in a document.
     /// This node CANNOT have children.
     /// </summary>
-    public sealed class Text : CharacterData, ISlottable
+    public class Text : CharacterData, ISlottable
     {
         public override NodeType NodeType => NodeType.Text;
         public override string NodeName => "#text";
@@ -138,5 +138,21 @@ namespace FenBrowser.Core.Dom.V2
         Element AssignedSlot { get; }
 
         internal Element ManualSlotAssignment { get; set; }
+    }
+
+    /// <summary>
+    /// DOM Living Standard: CDATASection interface, a Text node that serialises
+    /// as a CDATA section in XML documents.
+    /// https://dom.spec.whatwg.org/#interface-cdatasection
+    /// </summary>
+    public sealed class CDATASection : Text
+    {
+        public override NodeType NodeType => NodeType.CDataSection;
+        public override string NodeName => "#cdata-section";
+
+        public CDATASection(string data = "", Document owner = null)
+            : base(data, owner)
+        {
+        }
     }
 }
