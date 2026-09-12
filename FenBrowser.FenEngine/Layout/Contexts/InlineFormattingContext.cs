@@ -733,6 +733,36 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     xOffset = 0f;
                 }
 
+            // CSS 2.1 §10.8.1: every line box starts with the block container's strut —
+            // a zero-width inline box carrying the block's own font and line-height.
+            // A line of smaller-font content is therefore never shorter than the
+            // strut, and its baseline sits where the block's text would (an <img> in a
+            // 20em-font cell hangs from that tall baseline; Acid2 lines 12 and 14).
+            // Lines that never received content stay empty so the block stays 0 tall.
+            var strut = GetStyleFontInfo(box.ComputedStyle ?? new FenBrowser.Core.Css.CssComputed());
+            var lineHasContent = new bool[lines.Count];
+            for (int li = 0; li < lines.Count; li++)
+            {
+                lineHasContent[li] = lines[li].Items.Count > 0 || lines[li].Height > 0f;
+            }
+            foreach (var kvp in textBoxLines)
+            {
+                foreach (var seg in kvp.Value)
+                {
+                    if (seg.LineIndex >= 0 && seg.LineIndex < lineHasContent.Length)
+                    {
+                        lineHasContent[seg.LineIndex] = true;
+                    }
+                }
+            }
+            for (int li = 0; li < lines.Count; li++)
+            {
+                if (lineHasContent[li])
+                {
+                    lines[li].IncludeMetrics(strut.Baseline, strut.Descent);
+                }
+            }
+
                 lineYPositions.Add(curY);
                 lineXOffsets.Add(xOffset);
                 curY += line.Height;

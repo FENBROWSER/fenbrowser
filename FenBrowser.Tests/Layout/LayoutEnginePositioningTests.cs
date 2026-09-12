@@ -528,7 +528,11 @@ namespace FenBrowser.Tests.Layout
             var result = engine.ComputeLayout(document, 0, 0, 800, availableHeight: 600);
 
             Assert.True(result.ElementRects.TryGetValue(link, out var linkGeometry));
-            Assert.InRange(linkGeometry.Height, 32f, 34f);
+            // The collapsed edge whitespace adds no line of its own, but the line box
+            // still carries the inline-block's strut (CSS 2.1 §10.8.1): the 32px icon
+            // sits on the baseline and the strut's descent hangs below it. Chrome
+            // renders this 39px tall; only a whole extra text line would be wrong.
+            Assert.InRange(linkGeometry.Height, 36f, 40f);
         }
 
         [Fact]
