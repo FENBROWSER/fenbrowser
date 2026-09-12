@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.DevTools.Core;
 using FenBrowser.DevTools.Domains;
@@ -33,6 +33,8 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
     private long _retainedNetworkBodyChars;
     private readonly Action _needsRepaintHandler;
     private readonly Action<string> _jsonOutputHandler;
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _pendingProtocolEvents = new();
+    private int _protocolDispatchScheduled;
     private readonly Action<FenBrowser.FenEngine.DevTools.NetworkRequest> _networkRequestHandler;
     private readonly Action<string> _consoleMessageHandler;
     private bool _disposed;
@@ -572,7 +574,34 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
 
     private void OnProtocolJsonOutput(string json)
     {
-        Program.RunOnMainThread(() => ProtocolEventReceived?.Invoke(json));
+        // Protocol events arrive on the DevTools pump thread at whatever rate the
+        // engine produces them (every DOM mutation and every engine log line is one).
+        // The main-thread queue is drained a bounded number of items per frame, so
+        // posting one work item per event lets a busy script bury it thousands deep
+        // and every later main-thread call - WebDriver commands included - queues
+        // behind the backlog for seconds. Coalesce: one work item per burst, drained
+        // in order on the main thread.
+        _pendingProtocolEvents.Enqueue(json);
+        if (Interlocked.Exchange(ref _protocolDispatchScheduled, 1) != 0)
+        {
+            return;
+        }
+
+        Program.RunOnMainThread(DispatchPendingProtocolEvents);
+    }
+
+    private void DispatchPendingProtocolEvents()
+    {
+        Interlocked.Exchange(ref _protocolDispatchScheduled, 0);
+        while (_pendingProtocolEvents.TryDequeue(out var json))
+        {
+            if (_disposed)
+            {
+                continue;
+            }
+
+            ProtocolEventReceived?.Invoke(json);
+        }
     }
 
     private void OnEngineNetworkRequest(FenBrowser.FenEngine.DevTools.NetworkRequest request)
