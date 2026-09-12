@@ -180,4 +180,27 @@ public sealed class AsyncFunctionRuntimeTests
         ", "captured;");
         Assert.Equal("ok-number", result.AsString());
     }
+    // ECMA-262 15.3.4 / 15.9: an async arrow function has lexical `this`, like
+    // any arrow. wpt.fyi calls `then(async runs => this.fetchResults(...))`
+    // from a component method.
+    [Fact]
+    public void AsyncArrowFunctionsCaptureLexicalThis()
+    {
+        Assert.Equal("42|42|45|42", RunThenRead(
+            """
+            var results = [];
+            var o = {
+              x: 42,
+              direct() { var f = async v => this.x; return f(); },
+              inThen() { return Promise.resolve(1).then(async v => this.x); },
+              withArgs() { var f = async (a, b) => this.x + a + b; return f(1, 2); },
+              nested() { var g = async () => { var h = async () => this.x; return await h(); }; return g(); }
+            };
+            o.direct().then(function (v) { results[0] = v; });
+            o.inThen().then(function (v) { results[1] = v; });
+            o.withArgs().then(function (v) { results[2] = v; });
+            o.nested().then(function (v) { results[3] = v; });
+            """,
+            "results.join('|');").AsString());
+    }
 }

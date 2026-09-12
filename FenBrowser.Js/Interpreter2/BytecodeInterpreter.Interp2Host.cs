@@ -173,7 +173,7 @@ public sealed partial class BytecodeInterpreter
         // must be one that `this` resolves straight through. Giving it a
         // function environment would stop the walk at the arrow and hand back
         // the wrong receiver.
-        if (function.Kind == FunctionKind.Arrow)
+        if (function.IsArrow)
         {
             var arrowContext = StampEnvironment(new DeclarativeEnvironmentRecord(outerEnvironment));
             // The arrow's variable environment, as on the old loop.

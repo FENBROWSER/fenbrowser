@@ -536,7 +536,7 @@ public sealed class FrameLayout
 
             if (capturesReceiver)
             {
-                if (function.Kind == FunctionKind.Arrow)
+                if (function.IsArrow)
                     return new FrameLayout(function, Interp2Bailout.CapturedReceiver);
                 hasContext = true;
             }
@@ -616,8 +616,8 @@ public sealed class FrameLayout
             function, registerCount, slotCount, slotHomes, slotNames, layoutParameterSlots, parameterWindowIndex)
         {
             IsStrict = function.IsStrictMode,
-            ResolvesThisOutwards = function.Kind == FunctionKind.Arrow,
-            BindsThisLoosely = !function.IsStrictMode && function.Kind != FunctionKind.Arrow,
+            ResolvesThisOutwards = function.IsArrow,
+            BindsThisLoosely = !function.IsStrictMode && !function.IsArrow,
             HasFreeVariables = hasFreeVariables,
             HasDuplicateParameterSlots = duplicateParameters,
             HasContext = hasContext,

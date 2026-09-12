@@ -130,6 +130,7 @@ public sealed class BytecodeCompiler
     // that maximum on its own.
     private int _highWaterRegister = 1;
     private FunctionKind _currentFunctionKind = FunctionKind.Ordinary;
+    private bool _currentIsArrow;
     private bool _isStrictMode;
     private bool _captureCompletionValue;
     // When non-null, the next LoopContext pushed should take this label.
@@ -230,7 +231,8 @@ public sealed class BytecodeCompiler
         bool captureCompletionValue,
         int prologueStatementCount = 0,
         IReadOnlyList<ExpressionNode?>? parameterDefaults = null,
-        bool bindOwnNameInBody = false)
+        bool bindOwnNameInBody = false,
+        bool isArrow = false)
     {
         _instructions.Clear();
         _constants.Clear();
@@ -255,6 +257,7 @@ public sealed class BytecodeCompiler
         _nextRegister = 1;
         _highWaterRegister = 1;
         _currentFunctionKind = functionKind;
+        _currentIsArrow = isArrow || functionKind == FunctionKind.Arrow;
         _isStrictMode = inheritedStrictMode || program.Kind == ProgramKind.Module || HasUseStrictDirective(program.Body);
         _captureCompletionValue = captureCompletionValue;
         _hasOwnArgumentsObject = hasOwnArgumentsObject;
@@ -355,6 +358,7 @@ public sealed class BytecodeCompiler
         {
             Name = _name,
             Kind = _currentFunctionKind,
+            IsArrow = _currentIsArrow,
             IsStrictMode = _isStrictMode,
             IsDerivedConstructor = _isDerivedConstructor,
             IsClassConstructor = _isClassConstructor,
@@ -4060,7 +4064,8 @@ public sealed class BytecodeCompiler
                     inheritedStrictMode: _isStrictMode,
                     captureCompletionValue: false,
                     prologueStatementCount: arrowPrologueCount,
-                    parameterDefaults: arrow.ParameterDefaults);
+                    parameterDefaults: arrow.ParameterDefaults,
+                    isArrow: true);
                 AttachSource(nestedFunction, arrow.Span);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);

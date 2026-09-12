@@ -136,6 +136,14 @@ public sealed class BytecodeFunction
 
     public FunctionKind Kind { get; init; } = FunctionKind.Ordinary;
 
+    /// <summary>
+    /// Compiled from arrow syntax. Kind says how the body runs (an async arrow
+    /// is FunctionKind.Async so it gets the async machinery); this says what the
+    /// function *is* for ECMA-262 10.2.1: no own `this`, `arguments` or
+    /// `new.target`, and no [[Construct]].
+    /// </summary>
+    public bool IsArrow { get; init; }
+
     // When compilation was asked for, so the compiler can report how long the
     // request waited behind others before it was served.
     internal long CompileRequestedTicks;
@@ -357,6 +365,7 @@ public sealed class BytecodeFunction
             HasOwnArgumentsObject = HasOwnArgumentsObject,
             UsesRestrictedArgumentsObject = UsesRestrictedArgumentsObject,
             UsesOuterArguments = UsesOuterArguments,
+            IsArrow = IsArrow,
             Kind = Kind,
             IsEvalCode = IsEvalCode,
             IsStrictMode = IsStrictMode,

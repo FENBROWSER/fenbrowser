@@ -1820,7 +1820,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Arrow functions have no own `this`; derived constructors bind it via super().
         var prologueSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
         var thisSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-        if (function.Kind != FunctionKind.Arrow
+        if (!function.IsArrow
             && !function.IsDerivedConstructor)
         {
             if (function.IsStrictMode)
@@ -1860,7 +1860,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 JsValue.Undefined, callee?.HomeObject, outerEnvironment));
             AttachFrameSlots(frameEnv, function);
         }
-        else if (function.Kind == FunctionKind.Arrow)
+        else if (function.IsArrow)
         {
             // ECMA-262 9.1.1.3: arrow functions have no `this` binding of their
             // own; a plain declarative record lets `this` resolve through the
@@ -1961,13 +1961,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // Arrow functions inherit new.target from the lexically enclosing
         // non-arrow function (ECMA-262 10.2.1 — arrows have no own new.target).
-        if (function.Kind == FunctionKind.Arrow && frame.NewTarget.Tag == JsValueTag.Undefined)
+        if (function.IsArrow && frame.NewTarget.Tag == JsValueTag.Undefined)
         {
             var foundSelf = false;
             foreach (var callerFrame in _activeFrames)
             {
                 if (!foundSelf) { foundSelf = true; continue; }
-                if (callerFrame.Function?.Kind != FunctionKind.Arrow)
+                if (callerFrame.Function?.IsArrow != true)
                 {
                     frame.NewTarget = callerFrame.NewTarget;
                     break;

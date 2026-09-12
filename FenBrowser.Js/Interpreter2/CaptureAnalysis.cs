@@ -194,7 +194,7 @@ public static class CaptureAnalysis
             }
         }
 
-        var isArrow = function.Kind == FunctionKind.Arrow;
+        var isArrow = function.IsArrow;
         var needsThis = isArrow && MentionsThis(function);
         var needsArguments = function.UsesOuterArguments;
         var needsNewTarget = isArrow && Mentions(function, OpCode.LoadNewTarget);
