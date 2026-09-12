@@ -59,6 +59,7 @@ bld/
 !scripts/test262_report.py
 !scripts/temporal_triage.py
 !scripts/acid3_probe.py
+!scripts/wpt_run_summary.py
 !scripts/temporal_msg.py
 !scripts/chrome_captcha_probe.py
 !scripts/interp2_ab_report.py
