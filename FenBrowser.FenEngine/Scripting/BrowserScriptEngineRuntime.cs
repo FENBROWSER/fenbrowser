@@ -736,6 +736,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
         TraceJsRoot(tracer, _activeWindowEventTarget);
         TraceJsRoot(tracer, _fenJsFileConstructor);
+        TraceJsRoot(tracer, _fenJsStylePrototype);
 
         // A running worker's page-side handle is reachable only from this
         // dictionary, so leaving it untraced frees the very object the worker
@@ -5468,6 +5469,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _activeWindowEventListeners = null;
             _activeWindowEventTarget = JsValue.Undefined;
             _fenJsFileConstructor = JsValue.Undefined;
+            _fenJsStylePrototype = JsValue.Undefined;
             _activeParentBaseUri = null;
             _fenJsDomConstructorsInstalled = false;
 
@@ -12477,52 +12479,52 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         // Override/add typed properties for correctness
         if (cs.Display != null) props["display"] = JsValue.FromString(cs.Display);
         if (cs.Position != null) props["position"] = JsValue.FromString(cs.Position);
-        if (cs.FlexDirection != null) props["flexDirection"] = JsValue.FromString(cs.FlexDirection);
-        if (cs.FlexWrap != null) props["flexWrap"] = JsValue.FromString(cs.FlexWrap);
-        if (cs.JustifyContent != null) props["justifyContent"] = JsValue.FromString(cs.JustifyContent);
-        if (cs.AlignItems != null) props["alignItems"] = JsValue.FromString(cs.AlignItems);
-        if (cs.AlignContent != null) props["alignContent"] = JsValue.FromString(cs.AlignContent);
+        if (cs.FlexDirection != null) props["flex-direction"] = JsValue.FromString(cs.FlexDirection);
+        if (cs.FlexWrap != null) props["flex-wrap"] = JsValue.FromString(cs.FlexWrap);
+        if (cs.JustifyContent != null) props["justify-content"] = JsValue.FromString(cs.JustifyContent);
+        if (cs.AlignItems != null) props["align-items"] = JsValue.FromString(cs.AlignItems);
+        if (cs.AlignContent != null) props["align-content"] = JsValue.FromString(cs.AlignContent);
         if (cs.Width.HasValue) props["width"] = JsValue.FromString(cs.Width.Value + "px");
         if (cs.Height.HasValue) props["height"] = JsValue.FromString(cs.Height.Value + "px");
-        if (cs.MinWidth.HasValue) props["minWidth"] = JsValue.FromString(cs.MinWidth.Value + "px");
-        if (cs.MinHeight.HasValue) props["minHeight"] = JsValue.FromString(cs.MinHeight.Value + "px");
-        if (cs.MaxWidth.HasValue) props["maxWidth"] = JsValue.FromString(cs.MaxWidth.Value + "px");
-        if (cs.MaxHeight.HasValue) props["maxHeight"] = JsValue.FromString(cs.MaxHeight.Value + "px");
-        if (cs.FontSize.HasValue) props["fontSize"] = JsValue.FromString(cs.FontSize.Value + "px");
-        if (cs.ForegroundColor.HasValue) props["color"] = JsValue.FromString(CssParser.ResolveCurrentColor(cs.ForegroundColor.Value, cs.ForegroundColor).ToString());
-        if (cs.BackgroundColor.HasValue) props["backgroundColor"] = JsValue.FromString(CssParser.ResolveCurrentColor(cs.BackgroundColor.Value, cs.ForegroundColor).ToString());
+        if (cs.MinWidth.HasValue) props["min-width"] = JsValue.FromString(cs.MinWidth.Value + "px");
+        if (cs.MinHeight.HasValue) props["min-height"] = JsValue.FromString(cs.MinHeight.Value + "px");
+        if (cs.MaxWidth.HasValue) props["max-width"] = JsValue.FromString(cs.MaxWidth.Value + "px");
+        if (cs.MaxHeight.HasValue) props["max-height"] = JsValue.FromString(cs.MaxHeight.Value + "px");
+        if (cs.FontSize.HasValue) props["font-size"] = JsValue.FromString(cs.FontSize.Value + "px");
+        if (cs.ForegroundColor.HasValue) props["color"] = JsValue.FromString(SerializeComputedColor(CssParser.ResolveCurrentColor(cs.ForegroundColor.Value, cs.ForegroundColor)));
+        if (cs.BackgroundColor.HasValue) props["background-color"] = JsValue.FromString(SerializeComputedColor(CssParser.ResolveCurrentColor(cs.BackgroundColor.Value, cs.ForegroundColor)));
         if (cs.Opacity.HasValue) props["opacity"] = JsValue.FromString(cs.Opacity.Value.ToString(CultureInfo.InvariantCulture));
         if (cs.Visibility != null) props["visibility"] = JsValue.FromString(cs.Visibility);
         if (cs.Overflow != null) props["overflow"] = JsValue.FromString(cs.Overflow);
-        if (cs.OverflowX != null) props["overflowX"] = JsValue.FromString(cs.OverflowX);
-        if (cs.OverflowY != null) props["overflowY"] = JsValue.FromString(cs.OverflowY);
-        if (cs.BoxSizing != null) props["boxSizing"] = JsValue.FromString(cs.BoxSizing);
-        if (cs.ZIndex.HasValue) props["zIndex"] = JsValue.FromString(cs.ZIndex.Value.ToString(CultureInfo.InvariantCulture));
-        if (cs.LineHeight.HasValue) props["lineHeight"] = JsValue.FromString(cs.LineHeight.Value + "px");
-        if (cs.TextAlign.HasValue) props["textAlign"] = JsValue.FromString(cs.TextAlign.Value.ToString());
-        if (cs.FontWeight.HasValue) props["fontWeight"] = JsValue.FromString(cs.FontWeight.Value.ToString(CultureInfo.InvariantCulture));
-        if (cs.FontFamilyName != null) props["fontFamily"] = JsValue.FromString(cs.FontFamilyName);
+        if (cs.OverflowX != null) props["overflow-x"] = JsValue.FromString(cs.OverflowX);
+        if (cs.OverflowY != null) props["overflow-y"] = JsValue.FromString(cs.OverflowY);
+        if (cs.BoxSizing != null) props["box-sizing"] = JsValue.FromString(cs.BoxSizing);
+        if (cs.ZIndex.HasValue) props["z-index"] = JsValue.FromString(cs.ZIndex.Value.ToString(CultureInfo.InvariantCulture));
+        if (cs.LineHeight.HasValue) props["line-height"] = JsValue.FromString(cs.LineHeight.Value + "px");
+        if (cs.TextAlign.HasValue) props["text-align"] = JsValue.FromString(cs.TextAlign.Value.ToString());
+        if (cs.FontWeight.HasValue) props["font-weight"] = JsValue.FromString(cs.FontWeight.Value.ToString(CultureInfo.InvariantCulture));
+        if (cs.FontFamilyName != null) props["font-family"] = JsValue.FromString(cs.FontFamilyName);
         // Border from Thickness + Brush
         var bt = cs.BorderThickness;
         if (bt.Left != 0 || bt.Right != 0 || bt.Top != 0 || bt.Bottom != 0)
         {
-            props["borderTopWidth"] = JsValue.FromString(bt.Top + "px");
-            props["borderRightWidth"] = JsValue.FromString(bt.Right + "px");
-            props["borderBottomWidth"] = JsValue.FromString(bt.Bottom + "px");
-            props["borderLeftWidth"] = JsValue.FromString(bt.Left + "px");
+            props["border-top-width"] = JsValue.FromString(bt.Top + "px");
+            props["border-right-width"] = JsValue.FromString(bt.Right + "px");
+            props["border-bottom-width"] = JsValue.FromString(bt.Bottom + "px");
+            props["border-left-width"] = JsValue.FromString(bt.Left + "px");
         }
         if (cs.BorderBrush.HasValue)
-            props["borderTopColor"] = JsValue.FromString(cs.BorderBrush.Value.ToString());
+            props["border-top-color"] = JsValue.FromString(SerializeComputedColor(cs.BorderBrush.Value));
 
         // Margin/padding shorthand (from Map if not explicit)
-        props["marginTop"] = JsValue.FromString(cs.Margin.Top + "px");
-        props["marginRight"] = JsValue.FromString(cs.Margin.Right + "px");
-        props["marginBottom"] = JsValue.FromString(cs.Margin.Bottom + "px");
-        props["marginLeft"] = JsValue.FromString(cs.Margin.Left + "px");
-        props["paddingTop"] = JsValue.FromString(cs.Padding.Top + "px");
-        props["paddingRight"] = JsValue.FromString(cs.Padding.Right + "px");
-        props["paddingBottom"] = JsValue.FromString(cs.Padding.Bottom + "px");
-        props["paddingLeft"] = JsValue.FromString(cs.Padding.Left + "px");
+        props["margin-top"] = JsValue.FromString(cs.Margin.Top + "px");
+        props["margin-right"] = JsValue.FromString(cs.Margin.Right + "px");
+        props["margin-bottom"] = JsValue.FromString(cs.Margin.Bottom + "px");
+        props["margin-left"] = JsValue.FromString(cs.Margin.Left + "px");
+        props["padding-top"] = JsValue.FromString(cs.Padding.Top + "px");
+        props["padding-right"] = JsValue.FromString(cs.Padding.Right + "px");
+        props["padding-bottom"] = JsValue.FromString(cs.Padding.Bottom + "px");
+        props["padding-left"] = JsValue.FromString(cs.Padding.Left + "px");
 
         // Custom properties (CSS variables)
         if (cs.CustomProperties != null)
@@ -12543,13 +12545,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         {
             if (!props.ContainsKey(initial.Key))
             {
-                var initialValue = JsValue.FromString(initial.Value);
-                props[initial.Key] = initialValue;
-                var camel = CssPropToCamel(initial.Key);
-                if (!props.ContainsKey(camel))
-                {
-                    props[camel] = initialValue;
-                }
+                props[initial.Key] = JsValue.FromString(initial.Value);
             }
         }
 
@@ -12578,12 +12574,45 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 inlineValue = inlineValue[..importantIndex].TrimEnd();
             }
 
-            var jsValue = JsValue.FromString(inlineValue);
-            props[name] = jsValue;
-            props[CssPropToCamel(name)] = jsValue;
+            props[name] = JsValue.FromString(inlineValue);
+        }
+
+        // CSSOM §6.7.3: every property is readable both as its dashed name
+        // (getPropertyValue / bracket access) and as the camel-cased IDL
+        // attribute, plus cssFloat for float. Everything above wrote dashed
+        // names, so mirror each one here rather than at every write site.
+        foreach (var dashed in props.Keys.ToArray())
+        {
+            if (dashed.StartsWith("--", StringComparison.Ordinal) || dashed.IndexOf('-') < 0)
+            {
+                continue;
+            }
+
+            var camel = CssPropToCamel(dashed);
+            props[camel] = props[dashed];
+        }
+
+        if (props.TryGetValue("float", out var floatValue))
+        {
+            props["cssFloat"] = floatValue;
         }
 
         return CreateComputedStyleObject(props);
+    }
+
+    /// <summary>
+    /// CSSOM §4.3 serialization of a computed color: rgb(r, g, b) when opaque,
+    /// rgba(r, g, b, a) with a decimal alpha otherwise.
+    /// </summary>
+    private static string SerializeComputedColor(SKColor color)
+    {
+        if (color.Alpha == 255)
+        {
+            return string.Create(CultureInfo.InvariantCulture, $"rgb({color.Red}, {color.Green}, {color.Blue})");
+        }
+
+        var alpha = Math.Round(color.Alpha / 255d, 3);
+        return string.Create(CultureInfo.InvariantCulture, $"rgba({color.Red}, {color.Green}, {color.Blue}, {alpha})");
     }
 
     private JsValue CreateComputedStyleObject(Dictionary<string, JsValue> props)
@@ -18497,65 +18526,66 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             },
             length: 1), enumerable: true);
 
-        // Register the raw style object under a temporary global so the JS
-        // snippet below can wrap it with property forwarding.
-        var tempStyleName = "__fenStyleTmp" + Interlocked.Increment(ref _temporaryFenJsGlobalCounter)
-            .ToString(CultureInfo.InvariantCulture);
-        _interpreter.RegisterGlobalValue(tempStyleName, styleObj);
-        try
+        // CSSOM §6.7.3: every supported property is a camel-cased accessor
+        // (plus cssFloat for float). The accessors live on one shared prototype
+        // built once, so creating a style object costs nothing per property.
+        var stylePrototype = GetOrCreateStylePrototype();
+        if (stylePrototype.Tag == JsValueTag.Object)
         {
-            // Define getter/setter forwarding for the most common CSS
-            // properties so that `el.style.display = "block"` and
-            // `el.style.opacity` work without going through setProperty().
-            var cssProps = new[]
-            {
-                "display", "opacity", "visibility", "width", "height",
-                "minWidth", "minHeight", "maxWidth", "maxHeight",
-                "color", "backgroundColor", "background", "backgroundImage",
-                "position", "top", "right", "bottom", "left",
-                "margin", "marginTop", "marginRight", "marginBottom", "marginLeft",
-                "padding", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
-                "border", "borderTop", "borderRight", "borderBottom", "borderLeft",
-                "borderWidth", "borderColor", "borderRadius",
-                "fontSize", "fontFamily", "fontWeight", "fontStyle",
-                "lineHeight", "textAlign", "textDecoration", "textTransform",
-                "zIndex", "overflow", "overflowX", "overflowY",
-                "transform", "transformOrigin", "transition", "animation",
-                "transitionProperty", "transitionDuration", "transitionDelay", "transitionTimingFunction",
-                "animationName", "animationDuration", "animationDelay", "animationTimingFunction",
-                "animationIterationCount", "animationDirection", "animationFillMode", "animationPlayState",
-                "cursor", "pointerEvents", "userSelect",
-                "boxShadow", "boxSizing",
-                "flex", "flexDirection", "flexWrap", "justifyContent", "alignItems", "alignContent",
-                "gridTemplateColumns", "gridTemplateRows", "gap", "rowGap", "columnGap",
-                "whiteSpace", "wordBreak", "wordWrap",
-                "verticalAlign", "objectFit", "objectPosition",
-                "outline", "outlineWidth", "outlineColor"
-            };
-            var setPropJs = string.Join("",
-                cssProps.Select(p =>
-                {
-                    var camel = CamelToCssProp(p);
-                    return "Object.defineProperty(globalThis." + tempStyleName + ",'" + p + "',{" +
-                           "get:function(){return this.getPropertyValue('" + camel + "');}," +
-                           "set:function(v){this.setProperty('" + camel + "',''+v);}," +
-                           "enumerable:true,configurable:true});";
-                }));
-            // cssText getter/setter: reading returns the full inline style string,
-            // writing replaces the entire inline style via setAttribute('style', v).
-            setPropJs += "Object.defineProperty(globalThis." + tempStyleName + ",'cssText',{" +
-                         "get:function(){return this.getPropertyValue('__cssText__');}," +
-                         "set:function(v){this.setProperty('__cssText__',''+v);}," +
-                         "enumerable:true,configurable:true});";
-            EvaluateWithFenJsRaw(setPropJs);
-        }
-        finally
-        {
-            _interpreter.RegisterGlobalValue(tempStyleName, JsValue.Undefined);
+            _interpreter.Heap.GetObject(styleObj.AsObjectHandle()).SetPrototype(stylePrototype.AsObjectHandle());
         }
 
         store["__fenJsStyle"] = styleObj;
         return styleObj;
+    }
+
+    private JsValue _fenJsStylePrototype = JsValue.Undefined;
+
+    private JsValue GetOrCreateStylePrototype()
+    {
+        if (_fenJsStylePrototype.Tag == JsValueTag.Object)
+        {
+            return _fenJsStylePrototype;
+        }
+
+        var prototype = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        var tempName = "__fenStyleProto" + Interlocked.Increment(ref _temporaryFenJsGlobalCounter)
+            .ToString(CultureInfo.InvariantCulture);
+        _interpreter.RegisterGlobalValue(tempName, prototype);
+        try
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append("(function(p){function def(name, css){Object.defineProperty(p,name,{")
+              .Append("get:function(){return this.getPropertyValue(css);},")
+              .Append("set:function(v){if(v===null||v===undefined)v='';this.setProperty(css,''+v);},")
+              .Append("enumerable:true,configurable:true});}");
+            foreach (var property in FenBrowser.Core.Css.CssPropertyNames.All)
+            {
+                var camel = FenBrowser.Core.Css.CssPropertyNames.ToCamelCase(property);
+                sb.Append("def('").Append(camel).Append("','").Append(property).Append("');");
+                if (camel != property)
+                {
+                    // The dashed spelling is also an accessor (CSSOM §6.7.3 dashed attribute).
+                    sb.Append("def('").Append(property).Append("','").Append(property).Append("');");
+                }
+            }
+            sb.Append("def('cssFloat','float');");
+            // cssText getter/setter: reading returns the full inline style string,
+            // writing replaces the entire inline style via setAttribute('style', v).
+            sb.Append("Object.defineProperty(p,'cssText',{")
+              .Append("get:function(){return this.getPropertyValue('__cssText__');},")
+              .Append("set:function(v){this.setProperty('__cssText__',''+v);},")
+              .Append("enumerable:true,configurable:true});")
+              .Append("})(globalThis.").Append(tempName).Append(");");
+            EvaluateWithFenJsRaw(sb.ToString());
+        }
+        finally
+        {
+            _interpreter.RegisterGlobalValue(tempName, JsValue.Undefined);
+        }
+
+        _fenJsStylePrototype = prototype;
+        return prototype;
     }
 
     private void NotifyResizeObservers(Element element)
