@@ -20526,7 +20526,213 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         var r = box.BorderBox;
-        return CreateDomRect(r.Left, r.Top, r.Width, r.Height);
+        var scroll = ReadAncestorScrollOffset(element);
+        return CreateDomRect(r.Left - scroll.X, r.Top - scroll.Y, r.Width, r.Height);
+    }
+
+    /// <summary>
+    /// Sum of the scroll offsets of every scrolling box above the element — its
+    /// overflow scrollers, the embedding iframe of a nested browsing context, and
+    /// the viewport. Layout boxes are unscrolled, and CSSOM View wants rects
+    /// relative to the viewport.
+    /// </summary>
+    private (double X, double Y) ReadAncestorScrollOffset(Element element)
+    {
+        double x = 0, y = 0;
+        if (FrameScrollReader == null)
+        {
+            return (0, 0);
+        }
+
+        // A fixed box is positioned against its viewport, so the scrollers between it
+        // and that viewport (the embedding iframe, or the top-level window) don't
+        // move it; scrolling above the frame still does.
+        bool fixedToViewport = IsFixedPositioned(element);
+        for (Node current = element?.ParentNode; current != null; current = current.ParentNode)
+        {
+            if (current is not Element ancestor)
+            {
+                continue;
+            }
+
+            if (IsIFrameElement(ancestor))
+            {
+                if (!fixedToViewport)
+                {
+                    var offset = FrameScrollReader(ancestor);
+                    x += offset.X;
+                    y += offset.Y;
+                }
+                fixedToViewport = IsFixedPositioned(ancestor);
+            }
+            else if (!fixedToViewport && IsScrollContainer(ancestor))
+            {
+                var offset = FrameScrollReader(ancestor);
+                x += offset.X;
+                y += offset.Y;
+            }
+            else if (!fixedToViewport && IsFixedPositioned(ancestor))
+            {
+                fixedToViewport = true;
+            }
+        }
+
+        if (fixedToViewport)
+        {
+            return (x, y);
+        }
+
+        var viewport = FrameScrollReader(null);
+        return (x + viewport.X, y + viewport.Y);
+    }
+
+    private static bool IsFixedPositioned(Element element) =>
+        string.Equals(element?.GetComputedStyle()?.Position, "fixed", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// CSSOM View §"scrollIntoView(arg)" + "scroll an element into view": for every
+    /// scrolling box that is an ancestor of the element — nearest first, then the
+    /// embedding frame of a nested browsing context — position the element's border
+    /// box per the block/inline alignment. `true`/undefined align the block start,
+    /// `false` the block end; an options dictionary supplies block/inline explicitly.
+    /// </summary>
+    private void ScrollElementIntoView(Element element, JsValue arg)
+    {
+        if (element == null)
+        {
+            return;
+        }
+
+        var block = "start";
+        var inline = "nearest";
+        if (arg.Tag == JsValueTag.Boolean)
+        {
+            block = arg.AsBoolean() ? "start" : "end";
+        }
+        else if (arg.Tag == JsValueTag.Object)
+        {
+            var blockValue = ReadJsProperty(arg, "block");
+            var inlineValue = ReadJsProperty(arg, "inline");
+            if (blockValue.Tag != JsValueTag.Undefined) block = CoerceToHostString(blockValue);
+            if (inlineValue.Tag != JsValueTag.Undefined) inline = CoerceToHostString(inlineValue);
+        }
+
+        FlushPendingLayout?.Invoke(element);
+        if (LayoutBoxResolver?.Invoke(element) is not BoxModel targetBox)
+        {
+            return;
+        }
+
+        var target = targetBox.BorderBox;
+        var scrolled = false;
+        var insideFrame = false;
+        Node current = element.ParentNode;
+        while (current != null)
+        {
+            if (current is Element ancestor &&
+                (IsIFrameElement(ancestor) || IsScrollContainer(ancestor)) &&
+                LayoutBoxResolver?.Invoke(ancestor) is BoxModel ancestorBox)
+            {
+                insideFrame |= IsIFrameElement(ancestor);
+                var viewport = ancestorBox.PaddingBox;
+                var currentScroll = FrameScrollReader?.Invoke(ancestor) ?? (0d, 0d);
+                var y = ResolveScrollIntoViewOffset(
+                    block, target.Top - viewport.Top, target.Height, viewport.Height, currentScroll.Y);
+                var x = ResolveScrollIntoViewOffset(
+                    inline, target.Left - viewport.Left, target.Width, viewport.Width, currentScroll.X);
+                if (Math.Abs(x - currentScroll.X) > 0.001 || Math.Abs(y - currentScroll.Y) > 0.001)
+                {
+                    FrameScrollWriter?.Invoke(ancestor, Math.Max(0, x), Math.Max(0, y));
+                    if (IsIFrameElement(ancestor))
+                    {
+                        NotifyFrameScrollChanged(ancestor);
+                    }
+                    scrolled = true;
+                }
+            }
+
+            current = current.ParentNode;
+        }
+
+        // The top-level viewport's scroll is owned by the host (it translates the
+        // canvas itself), so a top-level target goes through the host's provider.
+        if (!insideFrame && JavaScriptEngine.TryScrollToElement(element))
+        {
+            scrolled = true;
+        }
+
+        if (scrolled)
+        {
+            RequestRender?.Invoke();
+        }
+    }
+
+    /// <summary>
+    /// An element whose overflow establishes a scrolling box. CSS Overflow §3.3
+    /// propagates the root element's overflow (and body's, when the root's is
+    /// visible) to the viewport, so neither is a scroll container of its own —
+    /// the viewport (or the embedding iframe) is.
+    /// </summary>
+    private static bool IsScrollContainer(Element element)
+    {
+        if (element.ParentNode is Document)
+        {
+            return false;
+        }
+
+        if (element.ParentNode is Element parent &&
+            parent.ParentNode is Document &&
+            string.Equals(element.TagName, "BODY", StringComparison.OrdinalIgnoreCase) &&
+            !HasScrollingOverflow(parent.GetComputedStyle()))
+        {
+            return false;
+        }
+
+        return HasScrollingOverflow(element.GetComputedStyle());
+    }
+
+    private static bool HasScrollingOverflow(CssComputed cs) =>
+        cs != null &&
+        (IsScrollingOverflow(cs.OverflowX) || IsScrollingOverflow(cs.OverflowY) || IsScrollingOverflow(cs.Overflow));
+
+    private static bool IsScrollingOverflow(string overflow) =>
+        overflow != null &&
+        (overflow.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+         overflow.Equals("scroll", StringComparison.OrdinalIgnoreCase) ||
+         overflow.Equals("hidden", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Scroll offset that places a box of <paramref name="size"/> starting at
+    /// <paramref name="offsetInContent"/> (unscrolled, relative to the scrolling box's
+    /// padding edge) according to a scrollIntoView alignment keyword.
+    /// </summary>
+    private static double ResolveScrollIntoViewOffset(
+        string alignment, double offsetInContent, double size, double viewportSize, double currentScroll)
+    {
+        switch (alignment?.ToLowerInvariant())
+        {
+            case "end":
+                return offsetInContent + size - viewportSize;
+            case "center":
+                return offsetInContent + size / 2 - viewportSize / 2;
+            case "nearest":
+                {
+                    var visibleStart = offsetInContent - currentScroll;
+                    var visibleEnd = visibleStart + size;
+                    if (visibleStart >= 0 && visibleEnd <= viewportSize)
+                    {
+                        return currentScroll;
+                    }
+                    if (size > viewportSize)
+                    {
+                        // Oversized boxes align the edge the viewport is already nearer to.
+                        return visibleStart > 0 ? offsetInContent : offsetInContent + size - viewportSize;
+                    }
+                    return visibleStart < 0 ? offsetInContent : offsetInContent + size - viewportSize;
+                }
+            default:
+                return offsetInContent;
+        }
     }
 
     private static bool TryReadDeclaredPixelDimension(Element element, string property, out double value)
@@ -20616,7 +20822,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         var rect = box.BorderBox;
-        var values = new[] { CreateDomRect(rect.Left, rect.Top, rect.Width, rect.Height) };
+        var scroll = ReadAncestorScrollOffset(element);
+        var values = new[] { CreateDomRect(rect.Left - scroll.X, rect.Top - scroll.Y, rect.Width, rect.Height) };
         var array = _interpreter.AllocateArray(values);
         _interpreter.SetObjectProperty(
             array,
@@ -24297,6 +24504,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = _owner.GetOrCreateHostCallable(
                         element, "getClientRects",
                         (_, _) => _owner.ReadElementClientRects(element),
+                        length: 0);
+                    return true;
+                case "scrollIntoView":
+                    value = _owner.GetOrCreateHostCallable(
+                        element, "scrollIntoView",
+                        (_, args) =>
+                        {
+                            _owner.ScrollElementIntoView(element, args.Count > 0 ? args[0] : JsValue.Undefined);
+                            return JsValue.Undefined;
+                        },
                         length: 0);
                     return true;
                 case "style":
