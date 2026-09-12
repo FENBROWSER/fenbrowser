@@ -77,6 +77,13 @@ namespace FenBrowser.FenEngine.Typography
 
             (rawAscent, rawDescent) = NormalizeContentMetrics(fontSize, rawAscent, rawDescent);
 
+            // Round ascent and descent to whole pixels, as Blink does for every
+            // SimpleFontData. Fractional content metrics leak into line-box heights
+            // (a 2px/4px inline under a 12px strut made Acid2's chin row 12.29px and
+            // shifted every row below it); integer metrics keep lines on pixel rows.
+            rawAscent = MathF.Round(rawAscent);
+            rawDescent = MathF.Round(rawDescent);
+
             float contentHeight = rawAscent + rawDescent;
             
             return new NormalizedFontMetrics
