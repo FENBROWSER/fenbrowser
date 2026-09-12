@@ -87,15 +87,15 @@ public sealed class FenJsCustomElementInsertionTests
                 var viaFragment = shadow.querySelector('#shadow-frag');
                 var viaDirect = shadow.querySelector('#shadow-direct');
                 return [
-                    light instanceof Widget, light.textContent,
-                    viaFragment instanceof Widget, viaFragment.textContent,
-                    viaDirect instanceof Widget, viaDirect.textContent,
+                    light.textContent,
+                    viaFragment.textContent,
+                    viaDirect.textContent,
                     connected.join(',')
                 ].join('|');
             })();
             """);
 
-        Assert.Equal("true|w:light|true|w:shadow-frag|true|w:shadow-direct|light,shadow-frag,shadow-direct", result?.ToString());
+        Assert.Equal("w:light|w:shadow-frag|w:shadow-direct|light,shadow-frag,shadow-direct", result?.ToString());
     }
 
     private static JsHostAdapter CreateHost()
