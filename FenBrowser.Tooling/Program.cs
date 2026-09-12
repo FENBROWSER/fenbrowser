@@ -333,14 +333,19 @@ namespace FenBrowser.Tooling
                 return;
             }
 
-            // Settle: let subresources, scripts, and async work run. Poll DOM size until stable.
+            // Settle: let subresources, scripts, and async work run. Poll DOM size until
+            // stable. A quiet DOM is not settled while the document is still loading:
+            // deferred and module scripts fetch off the engine thread and touch nothing
+            // until they run, so stability only counts once `load` has fired.
             int lastCount = -1, stableTicks = 0;
             var deadline = DateTime.UtcNow.AddMilliseconds(settleMs);
             while (DateTime.UtcNow < deadline)
             {
                 await Task.Delay(250).ConfigureAwait(false);
-                int count = CountDomNodes(host.GetDomRoot());
-                if (count == lastCount) { if (++stableTicks >= 8) break; }
+                var domRoot = host.GetDomRoot();
+                int count = CountDomNodes(domRoot);
+                var loaded = domRoot?.OwnerDocument?.ReadyState == FenBrowser.Core.Dom.V2.DocumentReadyState.Complete;
+                if (count == lastCount && loaded) { if (++stableTicks >= 8) break; }
                 else { stableTicks = 0; lastCount = count; }
             }
             sw.Stop();
