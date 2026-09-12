@@ -711,28 +711,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     string.IsNullOrEmpty(seg.Text) && seg.Width <= 0f);
             }
 
-            // Calculate line Y positions
-            var textAlign = box.ComputedStyle?.TextAlign ?? SKTextAlign.Left;
-            float curY = 0;
-            var lineYPositions = new List<float>(lines.Count);
-            var lineXOffsets = new List<float>(lines.Count);
-
-            foreach (var line in lines)
-            {
-                float xOffset = 0;
-                if (!isShrinkToFitProbe)
-                {
-                    float alignLimit = hasFloatAvoidance ? effectiveContentLimit : contentLimit;
-                    if (textAlign == SKTextAlign.Center) xOffset = (alignLimit - line.Width) / 2f;
-                    else if (textAlign == SKTextAlign.Right) xOffset = (alignLimit - line.Width);
-                }
-
-                if (xOffset < 0f)
-                {
-                    // Guard against overflow-induced negative offsets from probe widths.
-                    xOffset = 0f;
-                }
-
             // CSS 2.1 §10.8.1: every line box starts with the block container's strut —
             // a zero-width inline box carrying the block's own font and line-height.
             // A line of smaller-font content is therefore never shorter than the
@@ -762,6 +740,28 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     lines[li].IncludeMetrics(strut.Baseline, strut.Descent);
                 }
             }
+
+            // Calculate line Y positions
+            var textAlign = box.ComputedStyle?.TextAlign ?? SKTextAlign.Left;
+            float curY = 0;
+            var lineYPositions = new List<float>(lines.Count);
+            var lineXOffsets = new List<float>(lines.Count);
+
+            foreach (var line in lines)
+            {
+                float xOffset = 0;
+                if (!isShrinkToFitProbe)
+                {
+                    float alignLimit = hasFloatAvoidance ? effectiveContentLimit : contentLimit;
+                    if (textAlign == SKTextAlign.Center) xOffset = (alignLimit - line.Width) / 2f;
+                    else if (textAlign == SKTextAlign.Right) xOffset = (alignLimit - line.Width);
+                }
+
+                if (xOffset < 0f)
+                {
+                    // Guard against overflow-induced negative offsets from probe widths.
+                    xOffset = 0f;
+                }
 
                 lineYPositions.Add(curY);
                 lineXOffsets.Add(xOffset);
