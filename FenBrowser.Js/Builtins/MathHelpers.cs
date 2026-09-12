@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Numerics;
 
 namespace FenBrowser.Js.Builtins;
@@ -335,5 +335,70 @@ internal static class MathHelpers
 
         // Step 13: e < 0 → "0." + -(e+1) zeros + m
         return sign + "0." + new string('0', -(e + 1)) + m;
+    }
+
+    /// <summary>
+    /// ECMA-262 21.1.3.3 Number.prototype.toFixed, steps 6-12, for a finite
+    /// |x| below 10^21 and 0 <= f <= 100. The integer n is chosen so that
+    /// n / 10^f - x is as close to zero as possible, ties going to the larger n,
+    /// computed against the exact binary value of x rather than a rounded
+    /// decimal: (1.005).toFixed(2) is "1.00" because the double is a hair below
+    /// 1.005, and (2.5).toFixed(0) is "3" because ties round up. A negative
+    /// zero prints without a sign because the sign is only emitted when x &lt; 0.
+    /// </summary>
+    public static string FormatFixed(double x, int f)
+    {
+        var sign = string.Empty;
+        if (x < 0)
+        {
+            sign = "-";
+            x = -x;
+        }
+
+        // Exact rational value of x as mantissa * 2^exponent.
+        var bits = BitConverter.DoubleToInt64Bits(x);
+        var rawExponent = (int)((bits >> 52) & 0x7FF);
+        var mantissa = bits & 0xFFFFFFFFFFFFFL;
+        int exponent;
+        if (rawExponent == 0)
+        {
+            exponent = -1074;
+        }
+        else
+        {
+            mantissa |= 1L << 52;
+            exponent = rawExponent - 1075;
+        }
+
+        // n = round-half-up(mantissa * 2^exponent * 10^f), as numerator/denominator.
+        var numerator = new BigInteger(mantissa) * BigInteger.Pow(10, f);
+        BigInteger denominator = BigInteger.One;
+        if (exponent >= 0)
+        {
+            numerator <<= exponent;
+        }
+        else
+        {
+            denominator <<= -exponent;
+        }
+
+        var n = BigInteger.DivRem(numerator, denominator, out var remainder);
+        if (remainder * 2 >= denominator)
+        {
+            n += BigInteger.One;
+        }
+
+        var m = n.IsZero ? "0" : n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (f == 0)
+        {
+            return sign + m;
+        }
+
+        if (m.Length <= f)
+        {
+            m = new string('0', f + 1 - m.Length) + m;
+        }
+
+        return sign + m.Substring(0, m.Length - f) + "." + m.Substring(m.Length - f);
     }
 }

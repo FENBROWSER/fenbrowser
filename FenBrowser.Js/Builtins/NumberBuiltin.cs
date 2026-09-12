@@ -1,4 +1,4 @@
-using FenBrowser.Js.Heap;
+﻿using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
@@ -237,8 +237,7 @@ public sealed class NumberBuiltin : IBuiltinModule
         if (double.IsNaN(value)) return JsValue.FromString("NaN");
         if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
         if (Math.Abs(value) >= 1e21) return JsValue.FromString(MathHelpers.FormatNumberForString(value));
-        return JsValue.FromString(value.ToString("F" + digits.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            System.Globalization.CultureInfo.InvariantCulture));
+        return JsValue.FromString(MathHelpers.FormatFixed(value, digits));
     }
 
     private static JsValue NumberPrototypeToExponential(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)

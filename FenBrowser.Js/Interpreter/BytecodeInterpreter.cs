@@ -22173,9 +22173,7 @@ fallbackArraySpecies:
             return JsValue.FromString(FormatNumberForString(value));
         }
 
-        return JsValue.FromString(value.ToString(
-            "F" + digits.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            System.Globalization.CultureInfo.InvariantCulture));
+        return JsValue.FromString(FenBrowser.Js.Builtins.MathHelpers.FormatFixed(value, digits));
     }
 
     // ECMA-262 21.1.3.6 Number.prototype.toString([radix]). Radix must be in [2, 36];
