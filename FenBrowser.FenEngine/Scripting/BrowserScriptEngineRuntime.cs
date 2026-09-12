@@ -9548,6 +9548,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         typeof candidate.data === 'string';
                 });
 
+                defineCtor('DocumentType', Node, ['Node', 'DocumentType'], function (candidate) {
+                    return candidate.nodeType === Node.DOCUMENT_TYPE_NODE &&
+                        typeof candidate.publicId === 'string' &&
+                        typeof candidate.systemId === 'string';
+                });
+
                 var DocumentFragment = defineCtor('DocumentFragment', Node, ['Node', 'DocumentFragment'], function (candidate) {
                     return candidate.nodeName === '#document-fragment' &&
                         typeof candidate.appendChild === 'function' &&
@@ -9559,6 +9565,22 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         typeof candidate.setStart === 'function' &&
                         typeof candidate.setEnd === 'function' &&
                         typeof candidate.commonAncestorContainer !== 'undefined';
+                });
+
+                // DOM 6.1 / 6.2: traversal objects are platform objects with their
+                // own interface prototypes (Object.prototype.toString reports
+                // "[object TreeWalker]"); they are never constructible.
+                defineCtor('TreeWalker', null, ['TreeWalker'], function (candidate) {
+                    return candidate != null &&
+                        typeof candidate.currentNode !== 'undefined' &&
+                        typeof candidate.nextNode === 'function' &&
+                        typeof candidate.firstChild === 'function';
+                });
+                defineCtor('NodeIterator', null, ['NodeIterator'], function (candidate) {
+                    return candidate != null &&
+                        typeof candidate.referenceNode !== 'undefined' &&
+                        typeof candidate.nextNode === 'function' &&
+                        typeof candidate.detach === 'function';
                 });
                 var rangeConstants = {
                     START_TO_START: 0,
@@ -9951,10 +9973,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private void InstallFenJsNativeBrowserConstructors()
     {
+        // DOM 4.5 dom-document-document: `new Document()` is an XML document
+        // (content type application/xml), with no HTML-only behaviour such as
+        // the createCDATASection refusal or case-folded element names.
         var documentConstructor = _interpreter.AllocateNativeConstructor(
             "Document",
-            (_, _) => ToHostOrNull(new Document(), HostObjectKind.DomDocument),
-            _ => ToHostOrNull(new Document(), HostObjectKind.DomDocument));
+            (_, _) => ToHostOrNull(Document.CreateXmlDocument(), HostObjectKind.DomDocument),
+            _ => ToHostOrNull(Document.CreateXmlDocument(), HostObjectKind.DomDocument));
         _interpreter.RegisterGlobalValue("__fenNativeDocumentCtor", documentConstructor);
 
         JsValue CreateImage(IReadOnlyList<JsValue> args)
@@ -11977,8 +12002,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                 // â”€â”€ DOMException â”€â”€
                 globalThis.DOMException = function DOMException(message, name) {
-                    this.message = message || '';
-                    this.name = name || 'Error';
+                    this.message = message === undefined ? '' : String(message);
+                    this.name = name === undefined ? 'Error' : String(name);
                     var codes = {
                         IndexSizeError: 1,
                         HierarchyRequestError: 3,
@@ -12007,6 +12032,31 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 };
                 DOMException.prototype = Object.create(Error.prototype);
                 DOMException.prototype.constructor = DOMException;
+                DOMException.prototype.toString = function () {
+                    return this.message ? this.name + ': ' + this.message : this.name;
+                };
+                Object.defineProperty(DOMException.prototype, Symbol.toStringTag, {
+                    value: 'DOMException', configurable: true
+                });
+                // Legacy code constants live on both the interface object and its
+                // prototype (WebIDL 3.14 "constants").
+                (function () {
+                    var constants = {
+                        INDEX_SIZE_ERR: 1, DOMSTRING_SIZE_ERR: 2, HIERARCHY_REQUEST_ERR: 3,
+                        WRONG_DOCUMENT_ERR: 4, INVALID_CHARACTER_ERR: 5, NO_DATA_ALLOWED_ERR: 6,
+                        NO_MODIFICATION_ALLOWED_ERR: 7, NOT_FOUND_ERR: 8, NOT_SUPPORTED_ERR: 9,
+                        INUSE_ATTRIBUTE_ERR: 10, INVALID_STATE_ERR: 11, SYNTAX_ERR: 12,
+                        INVALID_MODIFICATION_ERR: 13, NAMESPACE_ERR: 14, INVALID_ACCESS_ERR: 15,
+                        VALIDATION_ERR: 16, TYPE_MISMATCH_ERR: 17, SECURITY_ERR: 18, NETWORK_ERR: 19,
+                        ABORT_ERR: 20, URL_MISMATCH_ERR: 21, QUOTA_EXCEEDED_ERR: 22, TIMEOUT_ERR: 23,
+                        INVALID_NODE_TYPE_ERR: 24, DATA_CLONE_ERR: 25
+                    };
+                    for (var key in constants) {
+                        var descriptor = { value: constants[key], writable: false, enumerable: true, configurable: false };
+                        Object.defineProperty(DOMException, key, descriptor);
+                        Object.defineProperty(DOMException.prototype, key, descriptor);
+                    }
+                })();
 
                 // Minimal queued ReadableStream/reader implementation for site
                 // bootstrap code that constructs streams or checks the global.
@@ -13841,9 +13891,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     {
         return hostObject switch
         {
-            Document => "HTMLDocument",
+            // DOM 4.5: only an HTML document is an HTMLDocument; new Document()
+            // and createDocument() produce plain Documents.
+            Document document => string.Equals(document.ContentType, "text/html", StringComparison.OrdinalIgnoreCase)
+                ? "HTMLDocument"
+                : "Document",
             ShadowRoot => "ShadowRoot",
             DocumentFragment => "DocumentFragment",
+            CDATASection => "CDATASection",
+            ProcessingInstruction => "ProcessingInstruction",
+            DocumentType => "DocumentType",
             Text => "Text",
             Comment => "Comment",
             CharacterData => "CharacterData",
@@ -13851,6 +13908,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             Attr => "Attr",
             DomRange => "Range",
             FenJsHtmlCollectionHost => "HTMLCollection",
+            FenJsTreeWalkerHost => "TreeWalker",
+            FenJsNodeIteratorHost => "NodeIterator",
             Node when kind == HostObjectKind.DomNode => "Node",
             BrowserSurfaceProfile => "Navigator",
             FenJsDomStringMapHost => "DOMStringMap",
@@ -20152,6 +20211,57 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         };
     }
 
+    /// <summary>
+    /// The four child-list mutation methods for a container that has no
+    /// type-specific override (DocumentFragment, ShadowRoot, or a container
+    /// whose own getter declined). DOM 4.2.3 pre-insert / replace / remove.
+    /// </summary>
+    private JsValue CreateContainerMutationCallable(ContainerNode container, string method)
+    {
+        return GetOrCreateHostCallable(
+            container,
+            method,
+            (_, args) =>
+            {
+                var first = args.Count > 0 ? ResolveHostObjectOrNull<Node>(args[0]) : null;
+                if (first == null)
+                {
+                    ThrowDomException("TypeError", $"Failed to execute '{method}' on 'Node': parameter 1 is not of type 'Node'.");
+                }
+
+                switch (method)
+                {
+                    case "appendChild":
+                        return UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(container.AppendChild(first)));
+                    case "removeChild":
+                        return ToHostNodeOrNull(container.RemoveChild(first));
+                    case "insertBefore":
+                    {
+                        var reference = args.Count > 1 && args[1].Tag != JsValueTag.Null && args[1].Tag != JsValueTag.Undefined
+                            ? ResolveHostObjectOrNull<Node>(args[1])
+                            : null;
+                        if (args.Count > 1 && args[1].Tag != JsValueTag.Null && reference == null)
+                        {
+                            ThrowDomException("TypeError", "Failed to execute 'insertBefore' on 'Node': parameter 2 is not of type 'Node'.");
+                        }
+
+                        return UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(container.InsertBefore(first, reference)));
+                    }
+                    default:
+                    {
+                        var child = args.Count > 1 ? ResolveHostObjectOrNull<Node>(args[1]) : null;
+                        if (child == null)
+                        {
+                            ThrowDomException("TypeError", "Failed to execute 'replaceChild' on 'Node': parameter 2 is not of type 'Node'.");
+                        }
+
+                        return UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(container.ReplaceChild(first, child)));
+                    }
+                }
+            },
+            length: method == "appendChild" || method == "removeChild" ? 1 : 2);
+    }
+
     private JsValue CreateCompareDocumentPositionCallable(Node node)
     {
         return GetOrCreateHostCallable(
@@ -20906,9 +21016,29 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var exceptionName = string.IsNullOrWhiteSpace(name) ? "Error" : name;
         var exceptionMessage = message ?? string.Empty;
         var context = (FenBrowser.Js.Builtins.IBuiltinContext)_interpreter;
+
+        // WebIDL 3.14: a DOMException thrown by the platform is an instance of
+        // the realm's DOMException, so `e instanceof DOMException`, `e.code` and
+        // `e.constructor === DOMException` all hold. TypeError and RangeError
+        // are ECMAScript errors, not DOMExceptions.
+        if (!string.Equals(exceptionName, "TypeError", StringComparison.Ordinal) &&
+            !string.Equals(exceptionName, "RangeError", StringComparison.Ordinal) &&
+            !string.Equals(exceptionName, "Error", StringComparison.Ordinal))
+        {
+            var domExceptionCtor = ReadGlobalValueOrUndefined("DOMException");
+            if (_interpreter.CanCallValue(domExceptionCtor))
+            {
+                throw new JsThrownException(_interpreter.ConstructValue(
+                    domExceptionCtor,
+                    new[] { JsValue.FromString(exceptionMessage), JsValue.FromString(exceptionName) }));
+            }
+        }
+
         var errorValue = string.Equals(exceptionName, "TypeError", StringComparison.Ordinal)
             ? context.CreateTypeError(exceptionMessage)
-            : context.CreateError(exceptionMessage);
+            : string.Equals(exceptionName, "RangeError", StringComparison.Ordinal)
+                ? context.CreateRangeError(exceptionMessage)
+                : context.CreateError(exceptionMessage);
         var error = _interpreter.Heap.GetObject(errorValue.AsObjectHandle());
         error.DefineOwnProperty(
             "name",
@@ -21510,42 +21640,53 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return null;
         }
 
-        var callback = filterValue;
-        var thisValue = JsValue.Undefined;
-        if (!_interpreter.CanCallValue(callback))
+        if (_interpreter.CanCallValue(filterValue))
         {
-            callback = ReadJsProperty(filterValue, "acceptNode");
-            thisValue = filterValue;
+            return node => ToNodeFilterResult(
+                _interpreter.InvokeFunction(filterValue, new[] { ToHostNodeOrNull(node) }, JsValue.Undefined));
         }
 
-        if (!_interpreter.CanCallValue(callback))
+        if (filterValue.Tag != JsValueTag.Object && filterValue.Tag != JsValueTag.HostObject)
         {
-            return null;
+            ThrowDomException("TypeError", "Failed to convert value to 'NodeFilter': not an object or function.");
         }
 
+        // WebIDL 3.12 "call a user object's operation": a callback interface
+        // object has acceptNode looked up with [[Get]] on every call, and a
+        // missing or non-callable acceptNode is a TypeError raised at that call,
+        // not when the traverser is created.
         return node =>
         {
-            var result = _interpreter.InvokeFunction(callback, new[] { ToHostNodeOrNull(node) }, thisValue);
-            return ToNodeFilterResult(result);
+            var callback = ReadJsProperty(filterValue, "acceptNode");
+            if (!_interpreter.CanCallValue(callback))
+            {
+                ThrowDomException("TypeError", "NodeFilter.acceptNode is not a function.");
+            }
+
+            return ToNodeFilterResult(
+                _interpreter.InvokeFunction(callback, new[] { ToHostNodeOrNull(node) }, filterValue));
         };
     }
 
+    // DOM 6.1 "filter" step 5 converts the callback's return value to
+    // unsigned short and the traversal algorithms compare it against
+    // FILTER_ACCEPT / FILTER_REJECT / FILTER_SKIP individually, so a value
+    // that is none of them (false, 0, 7) has to reach them unchanged: it is
+    // not an accept, it does not stop a descent the way REJECT does, and it
+    // does not descend the way SKIP does in "traverse children".
     private static NodeFilterResult ToNodeFilterResult(JsValue value)
     {
         var numeric = value.Tag switch
         {
             JsValueTag.Int32 => value.AsInt32(),
-            JsValueTag.Number => double.IsFinite(value.AsNumber()) ? (int)value.AsNumber() : (int)NodeFilterResult.Accept,
-            JsValueTag.String when int.TryParse(value.AsString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
-            _ => (int)NodeFilterResult.Accept
+            JsValueTag.Number => double.IsFinite(value.AsNumber()) ? (int)value.AsNumber() : 0,
+            JsValueTag.Boolean => value.AsBoolean() ? 1 : 0,
+            JsValueTag.String when double.TryParse(value.AsString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) && double.IsFinite(parsed) => (int)parsed,
+            JsValueTag.Undefined or JsValueTag.Null => 0,
+            _ => 0
         };
 
-        return numeric switch
-        {
-            (int)NodeFilterResult.Reject => NodeFilterResult.Reject,
-            (int)NodeFilterResult.Skip => NodeFilterResult.Skip,
-            _ => NodeFilterResult.Accept
-        };
+        return (NodeFilterResult)(ushort)(numeric & 0xFFFF);
     }
 
     private sealed class FenJsHtmlCollectionHost
@@ -21560,12 +21701,30 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private sealed class FenJsTreeWalkerHost
     {
-        public FenJsTreeWalkerHost(TreeWalker treeWalker)
+        public FenJsTreeWalkerHost(TreeWalker treeWalker, JsValue filterValue)
         {
             TreeWalker = treeWalker ?? throw new ArgumentNullException(nameof(treeWalker));
+            FilterValue = filterValue;
         }
 
         public TreeWalker TreeWalker { get; }
+
+        /// <summary>The NodeFilter the script passed, returned by <c>filter</c> (DOM §6.2).</summary>
+        public JsValue FilterValue { get; }
+    }
+
+    /// <summary>DOM §6.1 NodeIterator, wrapping the Core iterator for script.</summary>
+    private sealed class FenJsNodeIteratorHost
+    {
+        public FenJsNodeIteratorHost(NodeIterator iterator, JsValue filterValue)
+        {
+            Iterator = iterator ?? throw new ArgumentNullException(nameof(iterator));
+            FilterValue = filterValue;
+        }
+
+        public NodeIterator Iterator { get; }
+
+        public JsValue FilterValue { get; }
     }
 
     private sealed class FenJsAnimationHost
@@ -21960,10 +22119,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             switch (hostObject)
             {
                 case Document document:
-                    found = TryGetDocumentProperty(document, property, out value);
+                    found = TryGetDocumentProperty(document, property, out value) ||
+                            TryGetNodeProperty(document, property, out value);
                     break;
                 case Element element:
-                    found = TryGetElementProperty(element, property, out value);
+                    found = TryGetElementProperty(element, property, out value) ||
+                            TryGetNodeProperty(element, property, out value);
                     break;
                 case FenJsDomImplementationHost implementation:
                     found = TryGetDomImplementationProperty(implementation, property, out value);
@@ -21978,10 +22139,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     found = TryGetDomTokenListProperty(tokenList, property, out value);
                     break;
                 case CharacterData characterData:
-                    found = TryGetCharacterDataProperty(characterData, property, out value);
+                    found = TryGetCharacterDataProperty(characterData, property, out value) ||
+                            TryGetNodeProperty(characterData, property, out value);
                     break;
                 case DocumentFragment fragment:
-                    found = TryGetDocumentFragmentProperty(fragment, property, out value);
+                    found = TryGetDocumentFragmentProperty(fragment, property, out value) ||
+                            TryGetNodeProperty(fragment, property, out value);
                     break;
                 case Node node:
                     found = TryGetNodeProperty(node, property, out value);
@@ -21994,6 +22157,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     break;
                 case FenJsTreeWalkerHost treeWalker:
                     found = TryGetTreeWalkerProperty(treeWalker, property, out value);
+                    break;
+                case FenJsNodeIteratorHost nodeIterator:
+                    found = TryGetNodeIteratorProperty(nodeIterator, property, out value);
                     break;
                 case FenJsAnimationHost animation:
                     found = TryGetAnimationProperty(animation, property, out value);
@@ -22062,6 +22228,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 DomRange => "Range",
                 FenJsHtmlCollectionHost => "HTMLCollection",
                 FenJsTreeWalkerHost => "TreeWalker",
+                FenJsNodeIteratorHost => "NodeIterator",
                 FenJsAnimationHost => "Animation",
                 FenJsDomStringMapHost => "DOMStringMap",
                 BrowserSurfaceProfile => "Navigator",
@@ -22862,6 +23029,29 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         },
                         length: 1);
                     return true;
+                case "createProcessingInstruction":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "createProcessingInstruction",
+                        (_, args) =>
+                        {
+                            var target = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            var data = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            return _owner.ToHostNodeOrNull(document.CreateProcessingInstruction(target, data));
+                        },
+                        length: 2);
+                    return true;
+                case "createCDATASection":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "createCDATASection",
+                        (_, args) =>
+                        {
+                            var data = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            return _owner.ToHostNodeOrNull(document.CreateCDATASection(data));
+                        },
+                        length: 1);
+                    return true;
                 case "createDocumentFragment":
                     value = _owner.GetOrCreateHostCallable(
                         document,
@@ -22954,14 +23144,43 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                     "Failed to execute 'createTreeWalker': parameter 1 is not of type 'Node'.");
                             }
 
-                            var whatToShow = args.Count > 1
-                                ? CoerceToHostUInt32(args[1], NodeFilterShow.All)
+                            // WebIDL: whatToShow is an unsigned long defaulting to 0xFFFFFFFF;
+                            // null converts to 0, only undefined takes the default.
+                            var whatToShow = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+                                ? CoerceToHostUInt32(args[1], 0)
                                 : NodeFilterShow.All;
-                            var filter = args.Count > 2
-                                ? _owner.CreateTreeWalkerFilter(args[2])
-                                : null;
+                            var filterValue = args.Count > 2 ? args[2] : JsValue.Null;
+                            var filter = _owner.CreateTreeWalkerFilter(filterValue);
                             return _owner.ToHostOrNull(
-                                new FenJsTreeWalkerHost(document.CreateTreeWalker(root, whatToShow, filter)),
+                                new FenJsTreeWalkerHost(document.CreateTreeWalker(root, whatToShow, filter), filterValue),
+                                HostObjectKind.Other);
+                        },
+                        length: 1);
+                    return true;
+                case "createNodeIterator":
+                    // DOM §4.5 dom-document-createnodeiterator: whatToShow defaults to
+                    // SHOW_ALL and the filter to null; the legacy fourth argument
+                    // (entityReferenceExpansion) is ignored.
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "createNodeIterator",
+                        (_, args) =>
+                        {
+                            var root = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (root == null)
+                            {
+                                _owner.ThrowDomException(
+                                    "TypeError",
+                                    "Failed to execute 'createNodeIterator': parameter 1 is not of type 'Node'.");
+                            }
+
+                            var whatToShow = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+                                ? CoerceToHostUInt32(args[1], 0)
+                                : NodeFilterShow.All;
+                            var filterValue = args.Count > 2 ? args[2] : JsValue.Null;
+                            var filter = _owner.CreateTreeWalkerFilter(filterValue);
+                            return _owner.ToHostOrNull(
+                                new FenJsNodeIteratorHost(document.CreateNodeIterator(root, whatToShow, filter), filterValue),
                                 HostObjectKind.Other);
                         },
                         length: 1);
@@ -22979,6 +23198,31 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         "requestStorageAccess",
                         (_, _) => _owner.EvaluateWithFenJsRaw("Promise.resolve()"),
                         length: 0);
+                    return true;
+                case "doctype":
+                    // DOM 4.5 dom-document-doctype: the document's first doctype child.
+                    value = _owner.ToHostNodeOrNull(document.Doctype);
+                    return true;
+                // HTML §3.1.3 document collections. A new wrapper each read is
+                // fine: the collections are live views and carry no state.
+                case "forms":
+                    value = _owner.ToHostOrNull(new FenJsHtmlCollectionHost(document.Forms), HostObjectKind.Other);
+                    return true;
+                case "links":
+                    value = _owner.ToHostOrNull(new FenJsHtmlCollectionHost(document.Links), HostObjectKind.Other);
+                    return true;
+                case "anchors":
+                    value = _owner.ToHostOrNull(new FenJsHtmlCollectionHost(document.Anchors), HostObjectKind.Other);
+                    return true;
+                case "images":
+                    value = _owner.ToHostOrNull(new FenJsHtmlCollectionHost(document.Images), HostObjectKind.Other);
+                    return true;
+                case "embeds":
+                case "plugins":
+                    value = _owner.ToHostOrNull(new FenJsHtmlCollectionHost(document.Embeds), HostObjectKind.Other);
+                    return true;
+                case "scripts":
+                    value = _owner.ToHostOrNull(new FenJsHtmlCollectionHost(document.Scripts), HostObjectKind.Other);
                     return true;
                 case "getElementsByTagName":
                     value = _owner.GetOrCreateHostCallable(
@@ -23275,6 +23519,159 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case "getRootNode":
                     value = _owner.CreateGetRootNodeCallable(node);
+                    return true;
+                // DOM 4.4: the rest of the Node interface, shared by every node
+                // kind. Type-specific getters run first and may override any of
+                // these; this is what a doctype, a text node or a document falls
+                // back to so no Node member is missing on any kind.
+                case "name" when node is DocumentType doctypeName:
+                    value = JsValue.FromString(doctypeName.Name ?? string.Empty);
+                    return true;
+                case "publicId" when node is DocumentType doctypePublic:
+                    value = JsValue.FromString(doctypePublic.PublicId ?? string.Empty);
+                    return true;
+                case "systemId" when node is DocumentType doctypeSystem:
+                    value = JsValue.FromString(doctypeSystem.SystemId ?? string.Empty);
+                    return true;
+                case "parentElement":
+                    value = _owner.ToHostNodeOrNull(node.ParentElement);
+                    return true;
+                case "isConnected":
+                    value = JsValue.FromBoolean(node.IsConnected);
+                    return true;
+                case "baseURI":
+                    value = JsValue.FromString(node.OwnerDocument?.BaseURI ?? (node as Document)?.BaseURI ?? string.Empty);
+                    return true;
+                case "hasChildNodes":
+                    value = _owner.GetOrCreateHostCallable(
+                        node,
+                        "hasChildNodes",
+                        (_, _) => JsValue.FromBoolean(node.HasChildNodes),
+                        length: 0);
+                    return true;
+                case "cloneNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        node,
+                        "cloneNode",
+                        (_, args) =>
+                        {
+                            var deep = args.Count > 0 && CoerceToHostBoolean(args[0]);
+                            return _owner.ToHostNodeOrNull(node.CloneNode(deep));
+                        },
+                        length: 1);
+                    return true;
+                case "isEqualNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        node,
+                        "isEqualNode",
+                        (_, args) =>
+                        {
+                            var other = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            return JsValue.FromBoolean(other != null && node.IsEqualNode(other));
+                        },
+                        length: 1);
+                    return true;
+                case "isSameNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        node,
+                        "isSameNode",
+                        (_, args) =>
+                        {
+                            var other = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            return JsValue.FromBoolean(other != null && node.IsSameNode(other));
+                        },
+                        length: 1);
+                    return true;
+                case "contains":
+                    value = _owner.GetOrCreateHostCallable(
+                        node,
+                        "contains",
+                        (_, args) =>
+                        {
+                            var other = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            return JsValue.FromBoolean(other != null && node.Contains(other));
+                        },
+                        length: 1);
+                    return true;
+                case "normalize":
+                    value = _owner.GetOrCreateHostCallable(
+                        node,
+                        "normalize",
+                        (_, _) =>
+                        {
+                            node.Normalize();
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                case "lookupPrefix":
+                    value = _owner.GetOrCreateHostCallable(
+                        node,
+                        "lookupPrefix",
+                        (_, args) =>
+                        {
+                            var ns = args.Count > 0 && args[0].Tag != JsValueTag.Null && args[0].Tag != JsValueTag.Undefined
+                                ? CoerceToHostString(args[0])
+                                : null;
+                            var prefix = DomNamespaceLookup.LookupPrefix(node, ns);
+                            return prefix == null ? JsValue.Null : JsValue.FromString(prefix);
+                        },
+                        length: 1);
+                    return true;
+                case "lookupNamespaceURI":
+                    value = _owner.GetOrCreateHostCallable(
+                        node,
+                        "lookupNamespaceURI",
+                        (_, args) =>
+                        {
+                            var prefix = args.Count > 0 && args[0].Tag != JsValueTag.Null && args[0].Tag != JsValueTag.Undefined
+                                ? CoerceToHostString(args[0])
+                                : null;
+                            var ns = DomNamespaceLookup.LookupNamespaceUri(node, prefix);
+                            return ns == null ? JsValue.Null : JsValue.FromString(ns);
+                        },
+                        length: 1);
+                    return true;
+                case "isDefaultNamespace":
+                    value = _owner.GetOrCreateHostCallable(
+                        node,
+                        "isDefaultNamespace",
+                        (_, args) =>
+                        {
+                            var ns = args.Count > 0 && args[0].Tag != JsValueTag.Null && args[0].Tag != JsValueTag.Undefined
+                                ? CoerceToHostString(args[0])
+                                : null;
+                            if (ns == string.Empty) ns = null;
+                            return JsValue.FromBoolean(string.Equals(DomNamespaceLookup.LookupNamespaceUri(node, null), ns, StringComparison.Ordinal));
+                        },
+                        length: 1);
+                    return true;
+                case "appendChild":
+                case "insertBefore":
+                case "replaceChild":
+                case "removeChild":
+                    if (node is ContainerNode container)
+                    {
+                        value = _owner.CreateContainerMutationCallable(container, property);
+                        return true;
+                    }
+
+                    // DOM 4.2.3: a leaf node (Text, Comment, DocumentType, ...) still
+                    // has these members; every call is a HierarchyRequestError
+                    // (or NotFoundError for removeChild) since it has no children.
+                    value = _owner.GetOrCreateHostCallable(
+                        node,
+                        property,
+                        (_, _) =>
+                        {
+                            _owner.ThrowDomException(
+                                property == "removeChild" ? "NotFoundError" : "HierarchyRequestError",
+                                property == "removeChild"
+                                    ? "The node to be removed is not a child of this node."
+                                    : "This node type does not support children.");
+                            return JsValue.Undefined;
+                        },
+                        length: property == "appendChild" || property == "removeChild" ? 1 : 2);
                     return true;
                 default:
                     value = JsValue.Undefined;
@@ -24586,11 +24983,39 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var qualifiedName = args.Count > 1 && args[1].Tag != JsValueTag.Null
                                 ? CoerceToHostString(args[1])
                                 : null;
-                            return _owner.ToHostOrNull(
-                                Document.CreateXmlDocument(namespaceUri, qualifiedName),
-                                HostObjectKind.DomDocument);
+                            var created = Document.CreateXmlDocument(namespaceUri, qualifiedName);
+                            // DOM 4.5.1 dom-domimplementation-createdocument step 5: an
+                            // optional doctype is appended (adopted) before the element.
+                            var doctype = args.Count > 2 ? _owner.ResolveHostObjectOrNull<DocumentType>(args[2]) : null;
+                            if (doctype != null)
+                            {
+                                created.InsertBefore(doctype, created.FirstChild);
+                            }
+
+                            return _owner.ToHostOrNull(created, HostObjectKind.DomDocument);
                         },
                         length: 2);
+                    return true;
+                case "createDocumentType":
+                    // DOM 4.5.1 dom-domimplementation-createdocumenttype: validate the
+                    // qualified name, then a doctype owned by this implementation's
+                    // document.
+                    value = _owner.GetOrCreateHostCallable(
+                        implementation,
+                        "createDocumentType",
+                        (_, args) =>
+                        {
+                            var name = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            var publicId = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            var systemId = args.Count > 2 ? CoerceToHostString(args[2]) : string.Empty;
+                            if (!Document.IsValidXmlQualifiedName(name))
+                            {
+                                throw new DomException("InvalidCharacterError", $"The qualified name '{name}' is not valid.");
+                            }
+
+                            return _owner.ToHostNodeOrNull(new DocumentType(name, publicId, systemId, implementation.OwnerDocument));
+                        },
+                        length: 3);
                     return true;
                 case "createHTMLDocument":
                     value = _owner.GetOrCreateHostCallable(
@@ -24919,6 +25344,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case "wholeText" when characterData is Text:
                     value = JsValue.FromString(ReadWholeText(characterData));
+                    return true;
+                case "target" when characterData is ProcessingInstruction processingInstruction:
+                    value = JsValue.FromString(processingInstruction.Target);
                     return true;
                 case "length":
                     value = JsValue.FromInt32(characterData.Length);
@@ -25808,6 +26236,15 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         return true;
                     }
 
+                    // DOM §4.2.10.2: an HTMLCollection's named properties are the
+                    // ids and names of its elements (document.forms.form).
+                    var named = collection.NamedItem(property);
+                    if (named != null)
+                    {
+                        value = _owner.ToHostNodeOrNull(named);
+                        return true;
+                    }
+
                     value = JsValue.Undefined;
                     return false;
             }
@@ -25825,7 +26262,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = JsValue.FromNumber(treeWalker.WhatToShow);
                     return true;
                 case "filter":
-                    value = JsValue.Null;
+                    value = treeWalkerHost.FilterValue.Tag == JsValueTag.Undefined ? JsValue.Null : treeWalkerHost.FilterValue;
                     return true;
                 case "currentNode":
                     value = _owner.ToHostNodeOrNull(treeWalker.CurrentNode);
@@ -25877,6 +26314,57 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         treeWalkerHost,
                         "nextNode",
                         (_, _) => _owner.ToHostNodeOrNull(treeWalker.NextNode()),
+                        length: 0);
+                    return true;
+                default:
+                    value = JsValue.Undefined;
+                    return false;
+            }
+        }
+
+        private bool TryGetNodeIteratorProperty(FenJsNodeIteratorHost iteratorHost, string property, out JsValue value)
+        {
+            var iterator = iteratorHost.Iterator;
+            switch (property)
+            {
+                case "root":
+                    value = _owner.ToHostNodeOrNull(iterator.Root);
+                    return true;
+                case "referenceNode":
+                    value = _owner.ToHostNodeOrNull(iterator.ReferenceNode);
+                    return true;
+                case "pointerBeforeReferenceNode":
+                    value = JsValue.FromBoolean(iterator.PointerBeforeReferenceNode);
+                    return true;
+                case "whatToShow":
+                    value = JsValue.FromNumber(iterator.WhatToShow);
+                    return true;
+                case "filter":
+                    value = iteratorHost.FilterValue.Tag == JsValueTag.Undefined ? JsValue.Null : iteratorHost.FilterValue;
+                    return true;
+                case "nextNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        iteratorHost,
+                        "nextNode",
+                        (_, _) => _owner.ToHostNodeOrNull(iterator.NextNode()),
+                        length: 0);
+                    return true;
+                case "previousNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        iteratorHost,
+                        "previousNode",
+                        (_, _) => _owner.ToHostNodeOrNull(iterator.PreviousNode()),
+                        length: 0);
+                    return true;
+                case "detach":
+                    value = _owner.GetOrCreateHostCallable(
+                        iteratorHost,
+                        "detach",
+                        (_, _) =>
+                        {
+                            iterator.Detach();
+                            return JsValue.Undefined;
+                        },
                         length: 0);
                     return true;
                 default:
