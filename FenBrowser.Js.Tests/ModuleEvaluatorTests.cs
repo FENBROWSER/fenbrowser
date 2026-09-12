@@ -414,4 +414,17 @@ public sealed class ModuleEvaluatorTests
         Assert.True(interpreter.TryReadGlobalValue("result", out var v));
         Assert.Equal(3d, v.AsNumber());
     }
+
+    [Fact]
+    public void CollectModuleRequestsListsImportsAndReexportsOnce()
+    {
+        var requests = ModuleEvaluator.CollectModuleRequests("""
+            import a from './a.js';
+            import { b } from './b.js';
+            export * from './c.js';
+            export { d } from './a.js';
+            const local = 1;
+            """);
+        Assert.Equal(new[] { "./a.js", "./b.js", "./c.js" }, requests);
+    }
 }

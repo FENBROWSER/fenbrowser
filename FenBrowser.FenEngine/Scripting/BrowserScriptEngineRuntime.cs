@@ -697,6 +697,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private long _temporaryFenJsGlobalCounter;
     private BytecodeCompiler _compiler;
     private BytecodeInterpreter _interpreter;
+
+    // HTML 8.1.6.1 "module map": one per document (interpreter session). Every
+    // <script type=module> and every import shares it, so a module is fetched and
+    // evaluated once per document no matter how many graphs reach it.
+    private FenBrowser.Js.Modules.ModuleEvaluator _moduleEvaluator;
+    private readonly ConcurrentDictionary<string, string> _moduleSourceCache = new(StringComparer.Ordinal);
+    private int _inlineModuleCounter;
     private DocumentEpoch _documentEpoch = DocumentEpoch.Initial;
     private Node _currentDomRoot;
     private Uri _currentBaseUri;
@@ -3453,6 +3460,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     if (!fetchTasks.TryGetValue(fetchKey, out var fetchTask))
                     {
                         fetchTask = FetchExternalPageScriptAsync(scriptUri, baseUri, string.IsNullOrEmpty(elementNonce) ? null : elementNonce);
+                        if (isModule)
+                        {
+                            // HTML "fetch an external module script graph": the
+                            // descendants load now, alongside every other script on
+                            // the page, not when this script's turn to run comes.
+                            fetchTask = FetchModuleScriptGraphAsync(scriptUri, fetchTask);
+                        }
                         fetchTasks[fetchKey] = fetchTask;
                         UpdateScriptLoadingSnapshot(snapshot => snapshot.FetchStarted++);
                         UpdateScriptLoadingRecord(scriptRecord, record =>
@@ -4224,17 +4238,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     }
 
     private string FetchModuleTextSync(Uri uri)
+        => FetchModuleTextAsync(uri).GetAwaiter().GetResult();
+
+    private async Task<string> FetchModuleTextAsync(Uri uri)
     {
         if (uri == null) return string.Empty;
         try
         {
             if (ExternalScriptFetcher != null)
             {
-                return ExternalScriptFetcher(uri, _currentBaseUri).GetAwaiter().GetResult() ?? string.Empty;
+                return await ExternalScriptFetcher(uri, _currentBaseUri).ConfigureAwait(false) ?? string.Empty;
             }
             if (FetchOverride != null)
             {
-                return FetchOverride(uri).GetAwaiter().GetResult() ?? string.Empty;
+                return await FetchOverride(uri).ConfigureAwait(false) ?? string.Empty;
             }
             if (FetchHandler != null)
             {
@@ -4256,16 +4273,116 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         }
                     }
                 }
-                using var response = FetchHandler(request).GetAwaiter().GetResult();
+                using var response = await FetchHandler(request).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
-                return response.Content.ReadAsStringAsync().GetAwaiter().GetResult() ?? string.Empty;
+                return await response.Content.ReadAsStringAsync().ConfigureAwait(false) ?? string.Empty;
             }
         }
         catch (Exception ex)
         {
-            FenBrowser.Core.EngineLogCompat.Warn($"[FenJsBridge] FetchModuleTextSync failed for '{uri}': {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            FenBrowser.Core.EngineLogCompat.Warn($"[FenJsBridge] FetchModuleText failed for '{uri}': {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
         }
         return string.Empty;
+    }
+
+    /// <summary>
+    /// Resolve a module request the way ModuleEvaluator's host resolver will see it:
+    /// absolute specifiers as-is, otherwise relative to the requesting module, and for
+    /// the inline entry module (no absolute referrer) relative to the document base.
+    /// </summary>
+    private static Uri ResolveModuleRequestUri(string specifier, string referrer, Uri moduleBase)
+    {
+        if (Uri.TryCreate(specifier, UriKind.Absolute, out var absolute))
+        {
+            return absolute;
+        }
+        if (Uri.TryCreate(referrer, UriKind.Absolute, out var referrerUri) &&
+            Uri.TryCreate(referrerUri, specifier, out var relativeToReferrer))
+        {
+            return relativeToReferrer;
+        }
+        if (moduleBase != null && Uri.TryCreate(moduleBase, specifier, out var relativeToBase))
+        {
+            return relativeToBase;
+        }
+        return null;
+    }
+
+    // Upper bound on in-flight module fetches during graph prefetch. Browsers issue
+    // every request of a level at once; the cap only keeps a huge graph from opening
+    // an unbounded number of connections against an HTTP/1.1 origin.
+    private const int ModuleGraphPrefetchConcurrency = 16;
+
+    /// <summary>
+    /// HTML "fetch the descendants of a module script": walk the static import graph,
+    /// scheduling every request of a module the moment that module's source arrives,
+    /// so independent branches of the graph are in flight together and the critical
+    /// path is the graph's depth, not its size. Sources land in the per-document
+    /// module source cache, where the evaluator's synchronous resolver finds them
+    /// instead of paying one blocking round-trip per import.
+    /// </summary>
+    private async Task PrefetchModuleGraphAsync(string entrySpecifier, string entryCode, Uri moduleBase)
+    {
+        var sync = new object();
+        var scheduled = new HashSet<string>(StringComparer.Ordinal);
+        var pending = new List<Task>();
+        using var gate = new System.Threading.SemaphoreSlim(ModuleGraphPrefetchConcurrency);
+
+        void Schedule(string referrer, string specifier)
+        {
+            var uri = ResolveModuleRequestUri(specifier, referrer, moduleBase);
+            if (uri == null) return;
+            var key = uri.AbsoluteUri;
+            lock (sync)
+            {
+                if (_moduleSourceCache.ContainsKey(key) || !scheduled.Add(key)) return;
+            }
+            if (SubresourceAllowed != null && !SubresourceAllowed(uri, "script")) return;
+            var visit = VisitAsync(uri, key);
+            lock (sync)
+            {
+                pending.Add(visit);
+            }
+        }
+
+        async Task VisitAsync(Uri uri, string key)
+        {
+            string source;
+            await gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                source = await FetchModuleTextAsync(uri).ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+            _moduleSourceCache[key] = source;
+            if (source.Length == 0) return;
+            foreach (var request in FenBrowser.Js.Modules.ModuleEvaluator.CollectModuleRequests(source))
+            {
+                Schedule(key, request);
+            }
+        }
+
+        foreach (var request in FenBrowser.Js.Modules.ModuleEvaluator.CollectModuleRequests(entryCode))
+        {
+            Schedule(entrySpecifier, request);
+        }
+
+        // Visits append to `pending` as they discover imports; drain until a full
+        // pass completes with nothing new in flight.
+        while (true)
+        {
+            Task[] inFlight;
+            lock (sync)
+            {
+                pending.RemoveAll(t => t.IsCompleted);
+                if (pending.Count == 0) return;
+                inFlight = pending.ToArray();
+            }
+            await Task.WhenAll(inFlight).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -4274,40 +4391,66 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     /// </summary>
     private void EvaluateModuleWithFenJs(string code, Uri moduleUri = null)
     {
+        Uri moduleBase = moduleUri ?? _currentBaseUri;
+        // Inline module scripts get a unique key each: they are distinct modules
+        // even when several appear on one page, unlike an external URL, which the
+        // module map evaluates once regardless of how many tags or imports name it.
+        string entrySpecifier = moduleUri?.AbsoluteUri
+            ?? $"<inline-module-{Interlocked.Increment(ref _inlineModuleCounter)}>";
+        // Fetch the whole static graph before taking the engine lock: the evaluator
+        // below resolves imports synchronously, so anything not prefetched costs a
+        // blocking round-trip per import while the engine is held.
+        PrefetchModuleGraphAsync(entrySpecifier, code, moduleBase).GetAwaiter().GetResult();
+
         RunFenJsWithLargeStack<object>(() =>
         {
             using (ScriptEngineLockProbe.Hold(_fenJsLock))
             {
                 _fenJsEvaluationCount++;
-                Uri moduleBase = moduleUri ?? _currentBaseUri;
-                var evaluator = new FenBrowser.Js.Modules.ModuleEvaluator(_interpreter, specifier =>
-                {
-                    Uri resolvedUri = null;
-                    if (Uri.TryCreate(specifier, UriKind.Absolute, out var absUri))
-                    {
-                        resolvedUri = absUri;
-                    }
-                    else if (moduleBase != null)
-                    {
-                        Uri.TryCreate(moduleBase, specifier, out resolvedUri);
-                    }
-
-                    if (resolvedUri != null)
-                    {
-                        if (SubresourceAllowed != null && !SubresourceAllowed(resolvedUri, "script"))
-                        {
-                            return null;
-                        }
-                        return FetchModuleTextSync(resolvedUri);
-                    }
-                    return null;
-                });
-
-                string entrySpecifier = moduleUri?.AbsoluteUri ?? "<entry>";
+                var evaluator = _moduleEvaluator ??= CreateModuleEvaluator();
                 evaluator.RegisterSource(entrySpecifier, code);
                 evaluator.Evaluate(entrySpecifier);
                 return null;
             }
+        });
+    }
+
+    private async Task<string> FetchModuleScriptGraphAsync(Uri scriptUri, Task<string> fetch)
+    {
+        var code = await fetch.ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(code))
+        {
+            await PrefetchModuleGraphAsync(scriptUri.AbsoluteUri, code, scriptUri).ConfigureAwait(false);
+        }
+        return code;
+    }
+
+    /// <summary>
+    /// The per-document module evaluator. Its resolver serves sources from the
+    /// module source cache and falls back to a blocking fetch for anything the
+    /// prefetch did not reach (dynamic import() of a URL not statically imported).
+    /// </summary>
+    private FenBrowser.Js.Modules.ModuleEvaluator CreateModuleEvaluator()
+    {
+        return new FenBrowser.Js.Modules.ModuleEvaluator(_interpreter, specifier =>
+        {
+            var resolvedUri = ResolveModuleRequestUri(specifier, referrer: null, _currentBaseUri);
+            if (resolvedUri == null)
+            {
+                return null;
+            }
+            if (SubresourceAllowed != null && !SubresourceAllowed(resolvedUri, "script"))
+            {
+                return null;
+            }
+            var key = resolvedUri.AbsoluteUri;
+            if (_moduleSourceCache.TryGetValue(key, out var cachedSource))
+            {
+                return cachedSource;
+            }
+            var source = FetchModuleTextSync(resolvedUri);
+            _moduleSourceCache[key] = source;
+            return source;
         });
     }
 
@@ -5448,6 +5591,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 ParserMaxRecursionDepth = FenJsBrowserParserMaxRecursionDepth
             };
             _interpreter.Heap.AddRootSource(this);
+            _moduleEvaluator = null;
+            _moduleSourceCache.Clear();
+            _inlineModuleCounter = 0;
             EnsureFenJsHeapDiagnosticSink();
             ConfigureFenJsMicrotaskTracing(_interpreter);
 

@@ -42,6 +42,49 @@ public sealed class ModuleEvaluator
         _sources[specifier] = source;
     }
 
+    /// <summary>
+    /// The static module requests of a module source, in source order and without
+    /// duplicates: every `import ... from "x"` plus every `export ... from "x"`.
+    /// Hosts use this to fetch a module graph ahead of evaluation (HTML "fetch the
+    /// descendants of a module script"), which walks all requests of a module in
+    /// parallel rather than blocking on each one inside Evaluate. Returns an empty
+    /// list when the source does not parse; Evaluate reports the syntax error.
+    /// </summary>
+    public static IReadOnlyList<string> CollectModuleRequests(string source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ProgramNode program;
+        try
+        {
+            program = JsParser.ParseModule(new SourceText(source));
+        }
+        catch (Exception)
+        {
+            return Array.Empty<string>();
+        }
+
+        var requests = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var stmt in program.Body)
+        {
+            switch (stmt)
+            {
+                case ImportDeclarationNode import:
+                    if (seen.Add(import.ModuleRequest))
+                        requests.Add(import.ModuleRequest);
+                    break;
+                case ExportDeclarationNode export:
+                    foreach (var entry in export.Entries)
+                    {
+                        if (entry.ModuleRequest is { } request && seen.Add(request))
+                            requests.Add(request);
+                    }
+                    break;
+            }
+        }
+        return requests;
+    }
+
     public IReadOnlyDictionary<string, JsValue> Evaluate(string specifier)
         => Evaluate(specifier, referrer: null);
 
