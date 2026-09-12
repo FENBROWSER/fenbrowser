@@ -73,7 +73,7 @@ public sealed partial class BytecodeInterpreter
             else
             {
                 throw new JsThrownException(CreateTypeError(
-                    "Value is not iterable (no @@iterator and not array-like)."));
+                    "Value is not iterable (no @@iterator and not array-like): " + DescribeValueShort(source) + "."));
             }
         }
         else if (source.Tag == JsValueTag.String)
