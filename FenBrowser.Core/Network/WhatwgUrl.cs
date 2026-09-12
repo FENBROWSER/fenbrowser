@@ -443,9 +443,15 @@ namespace FenBrowser.Core.Network
                         }
                         else if (overrideState == null)
                         {
+                            // 4.4 scheme state: "set buffer to the empty string, state to
+                            // no scheme state, and start over (from the first code point
+                            // in input)". Reprocess directly: an input made only of
+                            // scheme characters ("b") reaches this branch at EOF, and the
+                            // loop's EOF exit below would end the parse before the restart.
                             buffer.Clear();
                             state = State.NoScheme;
-                            pointer = -1; // will be incremented to 0
+                            pointer = 0;
+                            continue;
                         }
                         else
                         {
@@ -637,9 +643,15 @@ namespace FenBrowser.Core.Network
                                 errors?.Add("missing-host");
                                 return null;
                             }
-                            pointer -= buffer.Length + 1;
+                            // 4.4 authority state: "decrease pointer by buffer's code point
+                            // length + 1" and rerun from the host state. Resume the loop
+                            // at that position directly rather than falling through to
+                            // the pointer increment: at EOF ("http://a") the loop's EOF
+                            // exit would otherwise end the parse before the host was read.
+                            pointer -= buffer.Length;
                             buffer.Clear();
                             state = State.Host;
+                            continue;
                         }
                         else
                         {
