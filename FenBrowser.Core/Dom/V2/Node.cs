@@ -1,7 +1,8 @@
-// WHATWG DOM Living Standard compliant implementation
+﻿// WHATWG DOM Living Standard compliant implementation
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using SkiaSharp;
@@ -259,6 +260,19 @@ namespace FenBrowser.Core.Dom.V2
         /// <summary>Returns true if any descendant needs repainting.</summary>
         public bool ChildPaintDirty => (_flags & NodeFlags.ChildPaintDirty) != 0;
 
+        private static long _styleMutationSequence;
+
+        /// <summary>
+        /// Advances on every style invalidation, whether or not a flag flipped.
+        /// A style pass reads it before collecting dirty subtrees and again after
+        /// cascading them: a change in between means script mutated the tree
+        /// while the pass ran, and the pass has to go again rather than leave
+        /// those nodes styled against the tree as it was.
+        /// </summary>
+        public static long StyleMutationSequence => Volatile.Read(ref _styleMutationSequence);
+
+        private static void NoteStyleMutation() => Interlocked.Increment(ref _styleMutationSequence);
+
         /// <summary>
         /// Marks this node as dirty and propagates child dirty flags up.
         /// </summary>
@@ -268,10 +282,14 @@ namespace FenBrowser.Core.Dom.V2
             bool propagateLayout = false;
             bool propagatePaint = false;
 
-            if ((kind & InvalidationKind.Style) != 0 && !StyleDirty)
+            if ((kind & InvalidationKind.Style) != 0)
             {
-                _flags |= NodeFlags.StyleDirty;
-                propagateStyle = true;
+                NoteStyleMutation();
+                if (!StyleDirty)
+                {
+                    _flags |= NodeFlags.StyleDirty;
+                    propagateStyle = true;
+                }
             }
             if ((kind & InvalidationKind.Layout) != 0 && !LayoutDirty)
             {
@@ -302,6 +320,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void MarkInsertedSubtreeDirty()
         {
+            NoteStyleMutation();
             _flags |= NodeFlags.StyleDirty;
             PropagateChildDirtyUp(
                 style: true,
@@ -310,50 +329,24 @@ namespace FenBrowser.Core.Dom.V2
             _ownerDocument?.NotifyTreeDirty();
         }
 
-        // A document that is itself parented (a frame's content document). Its dirty
-        // flags are managed by a different style pass than its embedder's, so the
-        // "ancestors are already marked" shortcut cannot be trusted here.
-        private static bool IsNestedBrowsingContextRoot(Node node) =>
-            node is Document && node._parentNode != null;
-
         private void PropagateChildDirtyUp(bool style, bool layout, bool paint)
         {
+            // Every ancestor up to the root is marked, with no "already marked so
+            // everything above is too" shortcut. That shortcut assumed flags are
+            // only ever cleared from a subtree root downwards, and they are not:
+            // an incremental style pass clears the subtree it cascaded, the
+            // renderer clears the path it laid out, and a frame's document is
+            // cleared by a different pass than its embedder. Any of those leaves
+            // a marked node below a clean one, after which the walk stopped at
+            // the marked node and the root never learned of the change - a node
+            // inserted into a frame stayed unstyled because the page root read
+            // as clean. The walk is a few dozen flag writes per mutation.
             var parent = _parentNode;
             while (parent != null)
             {
-                bool changed = false;
-
-                if (style && (parent._flags & NodeFlags.ChildStyleDirty) == 0)
-                {
-                    parent._flags |= NodeFlags.ChildStyleDirty;
-                    changed = true;
-                }
-                if (layout && (parent._flags & NodeFlags.ChildLayoutDirty) == 0)
-                {
-                    parent._flags |= NodeFlags.ChildLayoutDirty;
-                    changed = true;
-                }
-                if (paint && (parent._flags & NodeFlags.ChildPaintDirty) == 0)
-                {
-                    parent._flags |= NodeFlags.ChildPaintDirty;
-                    changed = true;
-                }
-
-                // Stopping at an already-marked ancestor assumes "this node is
-                // marked" implies "everything above it is marked". That holds inside
-                // one document, because flags are only ever cleared from a subtree
-                // root downwards. It does NOT hold across a nested browsing context:
-                // a frame's #document is cleared by the frame's own style pass while
-                // the page path above it is cleared by the page's, so the frame's
-                // document can stay marked while the iframe element and everything
-                // above it are clean. The walk then stopped at the boundary and the
-                // page never learned the frame had changed — frame content mutated
-                // and nothing repainted.
-                if (!changed && !IsNestedBrowsingContextRoot(parent))
-                {
-                    break; // Path already marked
-                }
-
+                if (style) parent._flags |= NodeFlags.ChildStyleDirty;
+                if (layout) parent._flags |= NodeFlags.ChildLayoutDirty;
+                if (paint) parent._flags |= NodeFlags.ChildPaintDirty;
                 parent = parent._parentNode;
             }
         }

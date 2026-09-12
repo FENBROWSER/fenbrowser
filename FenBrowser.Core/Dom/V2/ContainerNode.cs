@@ -1,4 +1,4 @@
-// WHATWG DOM Living Standard compliant implementation
+﻿// WHATWG DOM Living Standard compliant implementation
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
 using System;
@@ -492,6 +492,7 @@ namespace FenBrowser.Core.Dom.V2
             // Mark the parent itself for layout so incremental layout rebuilds
             // the sibling positions, not just the newly inserted subtree.
             MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+            InvalidateStyleForChildListChange(node);
 
             InvalidateStructuralCachesAfterMutation();
 
@@ -551,6 +552,7 @@ namespace FenBrowser.Core.Dom.V2
             // Insertion can reflow every following sibling in the containing
             // block; the parent must be the incremental layout root.
             MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+            InvalidateStyleForChildListChange(node);
 
             InvalidateStructuralCachesAfterMutation();
 
@@ -604,12 +606,10 @@ namespace FenBrowser.Core.Dom.V2
             InvalidateChildCache();
             InvalidateStructuralCachesAfterMutation();
 
-            // Mark parent style-dirty: removal may affect sibling selectors
-            this.MarkDirty(InvalidationKind.Style);
-
             // Removing a child also changes the containing block's flow and
             // paint geometry, including all following siblings.
             this.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+            InvalidateStyleForChildListChange(child);
 
             // Notify observers
             NotifyChildListMutation(
@@ -624,6 +624,80 @@ namespace FenBrowser.Core.Dom.V2
             }
 
             return child;
+        }
+
+        /// <summary>
+        /// Style invalidation for a child-list change under this node. The parent
+        /// is re-cascaded as a whole because a sibling's presence is what
+        /// :first-child, :last-child, :only-child, :nth-*, :empty and the + and ~
+        /// combinators match on (Selectors 4 §14, §15); marking only the moved
+        /// node leaves the sibling that just stopped being :first-child styled as
+        /// if it still were. A change to a stylesheet-bearing subtree invalidates
+        /// the whole document instead, since any element may match its rules
+        /// (CSSOM §6.1: the style sheets of a document are those of its
+        /// style/link elements, in tree order).
+        /// </summary>
+        private void InvalidateStyleForChildListChange(Node changed)
+        {
+            if (IsStylesheetSource(this) || ContainsStylesheetSource(changed))
+            {
+                InvalidateDocumentStyle();
+                return;
+            }
+
+            MarkDirty(InvalidationKind.Style);
+        }
+
+        internal void InvalidateDocumentStyle()
+        {
+            var root = (_ownerDocument ?? this as Document)?.DocumentElement;
+            if (root != null)
+            {
+                root.MarkDirty(InvalidationKind.Style);
+            }
+            else
+            {
+                MarkDirty(InvalidationKind.Style);
+            }
+        }
+
+        internal static bool IsStylesheetSource(Node node)
+        {
+            if (node is not Element element)
+            {
+                return false;
+            }
+
+            return string.Equals(element.LocalName, "style", StringComparison.OrdinalIgnoreCase) ||
+                   (string.Equals(element.LocalName, "link", StringComparison.OrdinalIgnoreCase) &&
+                    (element.GetAttribute("rel") ?? string.Empty)
+                        .Contains("stylesheet", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool ContainsStylesheetSource(Node node)
+        {
+            if (node is not Element)
+            {
+                return false;
+            }
+
+            if (IsStylesheetSource(node))
+            {
+                return true;
+            }
+
+            if (node is ContainerNode container && container.FirstChild != null)
+            {
+                foreach (var descendant in container.Descendants())
+                {
+                    if (IsStylesheetSource(descendant))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         private void InvalidateStructuralCachesAfterMutation()

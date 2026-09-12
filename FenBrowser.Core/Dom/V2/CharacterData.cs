@@ -1,4 +1,4 @@
-// WHATWG DOM Living Standard compliant implementation
+﻿// WHATWG DOM Living Standard compliant implementation
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
 using System;
@@ -215,6 +215,24 @@ namespace FenBrowser.Core.Dom.V2
         protected virtual void OnDataChanged(string oldValue)
         {
             MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+            if (_parentNode is ContainerNode parent)
+            {
+                if (ContainerNode.IsStylesheetSource(parent))
+                {
+                    // The text of a <style> element is a stylesheet: editing it
+                    // changes the rules every element in the document is matched
+                    // against.
+                    parent.InvalidateDocumentStyle();
+                }
+                else if (_data.Length == 0 || (oldValue?.Length ?? 0) == 0)
+                {
+                    // Text appearing in or vanishing from an element flips :empty
+                    // (Selectors 4 §14.2) and, for whitespace-only text, the
+                    // element's inline flow; the parent is re-cascaded.
+                    parent.MarkDirty(InvalidationKind.Style);
+                }
+            }
+
             NotifyCharacterDataMutation(oldValue);
         }
 
