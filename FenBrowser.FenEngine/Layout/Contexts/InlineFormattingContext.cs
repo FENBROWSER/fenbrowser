@@ -3173,15 +3173,61 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 finalW = Math.Max(0f, finalW - horizontalChrome);
             }
 
+            // CSS 2.1 §10.3.3: a block-level box with a specified width and `auto`
+            // horizontal margins takes the remaining containing-block width as
+            // margin (both auto → centred). Floats, out-of-flow and inline-level
+            // boxes resolve auto margins to 0 and are left alone here.
+            if (style != null &&
+                !widthUnconstrained &&
+                (style.MarginLeftAuto || style.MarginRightAuto) &&
+                (specifiedWidth.HasValue || specifiedWidthPercent.HasValue || !string.IsNullOrEmpty(specifiedWidthExpression)) &&
+                IsBlockLevelForAutoMargins(box, style))
+            {
+                float horizontalChrome = (float)(p.Left + p.Right + b.Left + b.Right);
+                float marginLeft = style.MarginLeftAuto ? 0f : (float)m.Left;
+                float marginRight = style.MarginRightAuto ? 0f : (float)m.Right;
+                float remaining = rawAvailable - finalW - horizontalChrome - marginLeft - marginRight;
+                if (style.MarginLeftAuto && style.MarginRightAuto)
+                {
+                    marginLeft = marginRight = Math.Max(0f, remaining / 2f);
+                }
+                else if (style.MarginLeftAuto)
+                {
+                    marginLeft = Math.Max(0f, remaining);
+                }
+                else
+                {
+                    marginRight = Math.Max(0f, remaining);
+                }
+                m = new Thickness(marginLeft, m.Top, marginRight, m.Bottom);
+            }
+
             float left = box.Geometry.ContentBox.Left;
             float top = box.Geometry.ContentBox.Top;
             box.Geometry.ContentBox = new SKRect(left, top, left + finalW, top);
-            
+
             box.Geometry.Padding = p;
             box.Geometry.Border = b;
             box.Geometry.Margin = m;
 
             LayoutBoxOps.SyncBoxes(box.Geometry);
+        }
+
+        private static bool IsBlockLevelForAutoMargins(LayoutBox box, CssComputed style)
+        {
+            if (box.IsOutOfFlow)
+            {
+                return false;
+            }
+
+            var floatValue = style.Float?.Trim().ToLowerInvariant();
+            if (floatValue == "left" || floatValue == "right")
+            {
+                return false;
+            }
+
+            var display = style.Display?.Trim().ToLowerInvariant();
+            return display is null or "block" or "flow-root" or "list-item";
         }
 
         private static float ResolveLineContentLimit(LayoutBox box, LayoutState state, bool isShrinkToFitProbe, bool isAnonymousBlock)
