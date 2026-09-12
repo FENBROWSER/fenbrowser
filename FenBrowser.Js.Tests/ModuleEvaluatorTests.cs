@@ -427,4 +427,35 @@ public sealed class ModuleEvaluatorTests
             """);
         Assert.Equal(new[] { "./a.js", "./b.js", "./c.js" }, requests);
     }
+    // The module map outlives each evaluation. A collection between two
+    // script graphs must not free or move out from under the environments and
+    // export values a later import reads from the map.
+    [Fact]
+    public void EvaluatedModulesSurviveCollectionsBetweenGraphs()
+    {
+        var (interpreter, evaluator) = Setup();
+        evaluator.RegisterSource("shared", """
+            export const registry = { items: [] };
+            export default class Widget { constructor(n) { registry.items.push(n); } }
+            export function count() { return registry.items.length; }
+            """);
+        evaluator.RegisterSource("first", "import W from 'shared'; new W('a');");
+        _ = evaluator.Evaluate("first");
+
+        for (var i = 0; i < 3; i++)
+        {
+            _ = interpreter.Execute(new Bytecode.BytecodeCompiler().CompileScript(
+                new Source.SourceText("var junk = []; for (var i = 0; i < 20000; i++) junk.push({ i: i, s: 'x' + i });")));
+            interpreter.Heap.CollectGarbage();
+        }
+
+        evaluator.RegisterSource("second", """
+            import W, { registry, count } from 'shared';
+            new W('b');
+            globalThis.result = count() + ':' + registry.items.join(',');
+            """);
+        _ = evaluator.Evaluate("second");
+        Assert.True(interpreter.TryReadGlobalValue("result", out var v));
+        Assert.Equal("2:a,b", v.AsString());
+    }
 }

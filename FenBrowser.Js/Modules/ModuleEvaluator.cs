@@ -1,6 +1,7 @@
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
@@ -15,7 +16,7 @@ namespace FenBrowser.Js.Modules;
 // the exporter mutates `let`/`var` state. Namespace imports and unresolved re-export
 // chains still use the namespace/export table path until full ResolveExport linking
 // is implemented.
-public sealed class ModuleEvaluator
+public sealed class ModuleEvaluator : IHeapRootSource
 {
     private readonly BytecodeInterpreter _interpreter;
     private readonly Dictionary<string, EvaluatedModule> _evaluated = new(StringComparer.Ordinal);
@@ -33,6 +34,31 @@ public sealed class ModuleEvaluator
         _interpreter = interpreter;
         _hostSourceResolver = hostSourceResolver;
         _interpreter.DynamicImportResolver = EvaluateDynamicImport;
+        // The module map outlives every evaluation: a later import reads an
+        // earlier module's environment and export values straight out of
+        // _evaluated, which the collector cannot see on its own.
+        _interpreter.Heap.AddRootSource(this);
+    }
+
+    /// <summary>
+    /// The module map is a GC root: each evaluated module's environment (its
+    /// live bindings) and harvested export values must survive every
+    /// collection for as long as the map that hands them to later importers.
+    /// </summary>
+    public void TraceRoots(IHeapTracer tracer)
+    {
+        ArgumentNullException.ThrowIfNull(tracer);
+        foreach (var module in _evaluated.Values)
+        {
+            module.Environment.Trace(tracer);
+            foreach (var value in module.Exports.Values)
+            {
+                if (value.Tag == JsValueTag.Object)
+                {
+                    tracer.TraceRoot("module-export", value.AsObjectHandle());
+                }
+            }
+        }
     }
 
     public void RegisterSource(string specifier, string source)
