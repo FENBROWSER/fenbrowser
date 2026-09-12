@@ -689,7 +689,10 @@ namespace FenBrowser.Tests.Layout
             var noseBox = FindBox(rootBox, nose);
 
             Assert.NotNull(noseBox);
-            Assert.InRange(noseBox.Geometry.ContentBox.Height, 20f, 30f);
+            // Percentage heights fall back to auto, so max-height: 3em (36px) wins for
+            // the content box; the 1em bottom border sits outside it (48px border box).
+            Assert.InRange(noseBox.Geometry.ContentBox.Height, 35.5f, 36.5f);
+            Assert.InRange(noseBox.Geometry.BorderBox.Height, 47.5f, 48.5f);
         }
 
         [Fact]

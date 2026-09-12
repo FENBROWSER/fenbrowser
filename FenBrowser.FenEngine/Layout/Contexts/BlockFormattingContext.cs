@@ -770,10 +770,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         (float)(blockBox.ComputedStyle.FontSize ?? 16d));
                 }
 
-                // Keep auto-height clamping in the same basis as the auto-height accumulator
-                // used by this context (outer size including padding/border), then map back
-                // to content height for geometry storage.
-                if (!explicitHeight.HasValue)
+                // CSS 2.1 §10.7: min/max-height constrain the content height; only
+                // `box-sizing: border-box` measures them on the padding/border box, in
+                // which case map them back to content size (Acid2's nose: max-height
+                // 3em on a content-box float keeps 36px of content under its border).
+                if (!explicitHeight.HasValue && heightIsBorderBox)
                 {
                     float nonContentHeight =
                         (float)blockBox.Geometry.Padding.Top +
