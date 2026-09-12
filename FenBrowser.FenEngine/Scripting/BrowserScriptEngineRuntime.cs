@@ -9979,13 +9979,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         typeof candidate.specified === 'boolean';
                 });
 
-                defineCtor('NamedNodeMap', null, ['NamedNodeMap'], function (candidate) {
+                var NamedNodeMap = defineCtor('NamedNodeMap', null, ['NamedNodeMap'], function (candidate) {
                     return typeof candidate.length !== 'undefined' &&
                         typeof candidate.item === 'function' &&
                         typeof candidate.getNamedItem === 'function';
                 });
 
-                defineCtor('DOMTokenList', null, ['DOMTokenList'], function (candidate) {
+                var DOMTokenList = defineCtor('DOMTokenList', null, ['DOMTokenList'], function (candidate) {
                     return typeof candidate.length !== 'undefined' &&
                         typeof candidate.item === 'function' &&
                         typeof candidate.contains === 'function' &&
@@ -10029,6 +10029,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     configurable: true
                 });
                 Object.defineProperty(HTMLCollection.prototype, Symbol.iterator, {
+                    value: createCollectionIterator,
+                    writable: true,
+                    configurable: true
+                });
+                // WebIDL 3.7.10: every interface with an indexed property getter and
+                // a length is iterable. Polymer walks `Array.from(node.attributes)`
+                // to find its bindings.
+                Object.defineProperty(NamedNodeMap.prototype, Symbol.iterator, {
+                    value: createCollectionIterator,
+                    writable: true,
+                    configurable: true
+                });
+                Object.defineProperty(DOMTokenList.prototype, Symbol.iterator, {
                     value: createCollectionIterator,
                     writable: true,
                     configurable: true
@@ -14321,10 +14334,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             Attr => "Attr",
             DomRange => "Range",
             FenJsHtmlCollectionHost => "HTMLCollection",
+            NamedNodeMap => "NamedNodeMap",
+            DOMTokenList => "DOMTokenList",
             FenJsTreeWalkerHost => "TreeWalker",
             FenJsNodeIteratorHost => "NodeIterator",
             Node when kind == HostObjectKind.DomNode => "Node",
             BrowserSurfaceProfile => "Navigator",
+            FenJsLocationHost => "Location",
+            FenJsHistoryHost => "History",
             FenJsDomStringMapHost => "DOMStringMap",
             _ => null
         };

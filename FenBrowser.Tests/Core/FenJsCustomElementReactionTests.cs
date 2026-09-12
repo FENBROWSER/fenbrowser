@@ -56,6 +56,27 @@ public sealed class FenJsCustomElementReactionTests
             result?.ToString());
     }
 
+    // WebIDL 3.7.10: NamedNodeMap and DOMTokenList are iterable and array-like,
+    // so Array.from, spread and for-of see every entry.
+    [Fact]
+    public async Task AttributeAndTokenCollectionsAreIterable()
+    {
+        var engine = await CreateEngineAsync("<span id='s' a='1' b='2' class='p q'></span>");
+
+        var result = engine.Evaluate("""
+            (function () {
+                var s = document.getElementById('s');
+                var names = Array.from(s.attributes).map(function (a) { return a.name; });
+                var spread = [...s.attributes].length;
+                var count = 0;
+                for (var a of s.attributes) count++;
+                return [names.join(','), spread, count, Array.from(s.classList).join('+'), s.attributes instanceof NamedNodeMap].join('|');
+            })();
+            """);
+
+        Assert.Equal("id,a,b,class|4|4|p+q|true", result?.ToString());
+    }
+
     private static JsHostAdapter CreateHost()
         => new(
             navigate: _ => { },
