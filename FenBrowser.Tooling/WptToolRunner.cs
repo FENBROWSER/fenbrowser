@@ -632,20 +632,24 @@ namespace FenBrowser.Tooling
                             analysis.TestsWithUnexpectedSubtests.Contains(test));
                         analysis.ResultClassCounts.TryGetValue(resultClass, out var classCount);
                         analysis.ResultClassCounts[resultClass] = classCount + 1;
+                        // mozlog only carries `expected` when the result was unexpected. A
+                        // testharness file completes with OK, but a reftest/crashtest ends
+                        // with PASS — a passing reftest must not be flagged as unexpected.
+                        var defaultExpected = string.Equals(status, "PASS", StringComparison.Ordinal) ? "PASS" : "OK";
                         analysis.TestResults.Add(new WptTestResult
                         {
                             Test = test,
                             Status = status,
-                            Expected = ReadExpectedStatus(root, "OK"),
+                            Expected = ReadExpectedStatus(root, defaultExpected),
                             ResultClass = resultClass,
                             Message = ReadString(root, "message", string.Empty),
                             BrowserPid = ReadBrowserPid(root)
                         });
 
-                        if (IsUnexpectedStatus(root, status, "OK"))
+                        if (IsUnexpectedStatus(root, status, defaultExpected))
                         {
                             analysis.UnexpectedTestFailures++;
-                            analysis.Failures.Add(ReadFailure(root, "test", status, "OK"));
+                            analysis.Failures.Add(ReadFailure(root, "test", status, defaultExpected));
                         }
                     }
                 }
@@ -850,6 +854,12 @@ namespace FenBrowser.Tooling
             if (string.Equals(status, "OK", StringComparison.Ordinal))
             {
                 return hasUnexpectedSubtest ? ResultClasses.AssertionFailure : ResultClasses.Pass;
+            }
+
+            // Reftests and crashtests complete with PASS rather than OK.
+            if (string.Equals(status, "PASS", StringComparison.Ordinal))
+            {
+                return ResultClasses.Pass;
             }
 
             if (string.Equals(status, "FAIL", StringComparison.Ordinal))
