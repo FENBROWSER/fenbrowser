@@ -40,7 +40,7 @@ def main():
                 break
             if st["index"] == last:
                 same += 1
-                if same >= 6: break
+                if same >= 24: break
             else:
                 same = 0; last = st["index"]
             time.sleep(0.5)
