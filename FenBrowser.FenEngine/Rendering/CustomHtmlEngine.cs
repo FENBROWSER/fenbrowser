@@ -1814,6 +1814,11 @@ public void Dispose()
              try
              {
                  EngineLogCompat.Debug("[RenderAsync] Starting CSS load...", LogCategory.Rendering);
+                 // A whole-document pass clears the tree's style flags once it has
+                 // styled it, but only when nothing dirtied the tree while it ran:
+                 // a mark made during the pass names a node styled against an older
+                 // tree, and the next incremental pass has to see it.
+                 var styleSequenceAtStart = Node.StyleMutationSequence;
                  var resolvedViewportWidth = viewportWidth ?? _activeViewportWidth;
                  var resolvedViewportHeight = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
                  var cssTask = CssLoader.ComputeWithResultAsync(
@@ -1863,9 +1868,16 @@ public void Dispose()
                         if (kvp.Key != null) kvp.Key.SetComputedStyle(kvp.Value);
                 }
 
-                // DO NOT clear dirty flags here - let the renderer see them and clear after processing.
-                // The renderer needs to see StyleDirty=true to know it must recompute layout.
-                // ClearStyleDirtyFlags(dom); // REMOVED - causes race condition
+                // Style flags belong to the style pass. The layout engine used to
+                // clear them after laying out, which also cleared an iframe host
+                // while the frame document inside stayed marked - the page root then
+                // read as clean and CSSOM reads in the frame stopped flushing. The
+                // renderer is told to relayout through the layout/paint flags instead.
+                if (Node.StyleMutationSequence == styleSequenceAtStart)
+                {
+                    ClearStyleDirtyFlags(dom);
+                }
+                dom.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
 
                 // Sync _activeDom to the real parsed DOM (dom parameter) so that when
                 // OnRepaintReady fires, GetActiveDom() returns the same tree whose nodes
@@ -2002,14 +2014,27 @@ public void Dispose()
 
                 try
                 {
-                    if (fullRecascade)
+                    // Style recalc is a rendering-update step: it has to see a
+                    // DOM no script is mutating, so it runs on the script thread
+                    // between tasks whenever a script engine is attached (HTML
+                    // "update the rendering"). Two passes racing a running script
+                    // were the source of elements styled against a tree they were
+                    // never in and of fresh styles overwritten by an older pass.
+                    Func<Task> pass = fullRecascade
+                        ? () =>
+                        {
+                            EngineLogCompat.Info("[CustomHtmlEngine] Full recascade (stylesheet change)", LogCategory.CSS);
+                            return RecascadeAsync();
+                        }
+                        : IncrementalRecascadeAsync;
+                    var scriptEngine = _activeJs;
+                    if (scriptEngine != null)
                     {
-                        EngineLogCompat.Info("[CustomHtmlEngine] Full recascade (stylesheet change)", LogCategory.CSS);
-                        await RecascadeAsync().ConfigureAwait(false);
+                        await scriptEngine.RunOnScriptThreadAsync(pass).ConfigureAwait(false);
                     }
                     else
                     {
-                        await IncrementalRecascadeAsync().ConfigureAwait(false);
+                        await pass().ConfigureAwait(false);
                     }
                 }
                 catch (Exception ex)
@@ -2081,13 +2106,12 @@ private void FlushPendingLayoutForScript(Element element)
 
             if (layoutRoot.StyleDirty || layoutRoot.ChildStyleDirty)
             {
-                ScheduleRecascade();
-            }
-
-            var pendingRecascade = _pendingRecascade;
-            if (pendingRecascade != null && !pendingRecascade.IsCompleted)
-            {
-                pendingRecascade.GetAwaiter().GetResult();
+                // This is the script thread (getComputedStyle and geometry reads
+                // call in from script), which is also where scheduled passes run.
+                // A scheduled pass is queued behind the running script, so waiting
+                // for it here would wait for ourselves; run the pass inline instead.
+                // The queued pass then finds nothing dirty and returns.
+                IncrementalRecascadeAsync().GetAwaiter().GetResult();
             }
 
             renderer.EnsureLayout(
@@ -2151,7 +2175,12 @@ private void FlushPendingLayoutForScript(Element element)
                      ?? (activeDom as FenBrowser.Core.Dom.V2.Document)?.DocumentElement;
             if (domEl == null || activeFetchCss == null) return;
 
-            // Collect dirty subtree roots by walking ChildStyleDirty flags
+            // Collect dirty subtree roots by walking ChildStyleDirty flags. The
+            // mutation sequence is read first: a pass that yields (an external
+            // stylesheet fetch) lets script run again, and anything it dirties
+            // after this point has to be picked up by another pass rather than
+            // lost when the flags are cleared below.
+            var sequenceAtStart = Node.StyleMutationSequence;
             var dirtyRoots = new List<Element>();
             int totalElements = 0;
             CollectDirtySubtrees(domEl, dirtyRoots, ref totalElements);
@@ -2198,6 +2227,12 @@ private void FlushPendingLayoutForScript(Element element)
 
             foreach (var root in dirtyRoots)
             {
+                // Clear before cascading, not after: a mutation that lands in this
+                // subtree while it is being cascaded re-marks it and the next pass
+                // sees it. Clearing afterwards erased exactly those marks, so an
+                // element inserted during the pass kept the style of a tree it was
+                // never part of.
+                ClearStyleDirtyFlags(root);
                 try
                 {
                     // Collect rules from the owning document, but cascade only the dirty
@@ -2237,12 +2272,21 @@ private void FlushPendingLayoutForScript(Element element)
                         // from the previous computed styles (notably resized iframes).
                         root.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                     }
-                    
-                    ClearStyleDirtyFlags(root);
                 }
                 catch (Exception ex)
                 {
                     EngineLogCompat.Warn($"[CustomHtmlEngine] Incremental subtree recascade failed for <{root.TagName}>: {ex.Message}", LogCategory.CSS);
+                    root.MarkDirty(InvalidationKind.Style);
+                }
+            }
+
+            if (Node.StyleMutationSequence != sequenceAtStart)
+            {
+                // Script dirtied the tree while this pass ran; go again so a flush
+                // that awaits the worker gets styles for the tree as it is now.
+                lock (_recascadeScheduleLock)
+                {
+                    _recascadeRequested = true;
                 }
             }
 
@@ -3006,7 +3050,19 @@ private void FlushPendingLayoutForScript(Element element)
                             if (NeedsPostScriptStyleRefresh(capturedDom, LastComputedStyles))
                             {
                                 EngineLogCompat.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
-                                await LoadCssAsync((capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement, capturedBaseUri, capturedCssFetcher, capturedViewportWidth, capturedViewportHeight, renderGeneration, cancellationToken).ConfigureAwait(false);
+                                // The refresh is a whole-document style pass. Timers and
+                                // load handlers are already running by now, so it runs on
+                                // the script thread like every other pass: a cascade over
+                                // a tree a script is mutating wrote styles for nodes that
+                                // had moved and overwrote fresher ones on its way out.
+                                await js.RunOnScriptThreadAsync(() => LoadCssAsync(
+                                    (capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement,
+                                    capturedBaseUri,
+                                    capturedCssFetcher,
+                                    capturedViewportWidth,
+                                    capturedViewportHeight,
+                                    renderGeneration,
+                                    cancellationToken)).ConfigureAwait(false);
                                 ClearDeferredPostScriptRecascade(renderGeneration);
                                 if (!IsCurrentRenderGeneration(renderGeneration))
                                 {

@@ -355,6 +355,16 @@ Action<Element> FlushPendingLayout { get; set; }
     Func<Element, Uri, Task> FrameElementLoader { get; set; }
 
     /// <summary>
+    /// Runs <paramref name="work"/> on the thread that executes this engine's
+    /// scripts, after any script currently running and before the next one:
+    /// the slot where a browser's main thread does style recalc and other
+    /// rendering-update steps (HTML "update the rendering"), so the work sees a
+    /// DOM no script is mutating. Runs inline when already on that thread. The
+    /// returned task completes when the work has finished.
+    /// </summary>
+    Task RunOnScriptThreadAsync(Func<Task> work);
+
+    /// <summary>
     /// Enters the host's image-loader request scope, so image fetches the
     /// script engine starts share the cache and cache keys of the ones
     /// layout starts. Null means unscoped.
@@ -2656,6 +2666,30 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         return (T)result;
+    }
+
+    public Task RunOnScriptThreadAsync(Func<Task> work)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        if (_onFenJsLargeStackThread)
+        {
+            return work();
+        }
+
+        // The work is not script: it runs with no instruction budget of its own
+        // and is never abandoned on timeout. Blocking the worker on the task is
+        // what makes the pass atomic with respect to scripts; a continuation of
+        // the work on another thread can still run, but no script runs
+        // alongside it because the only script thread is waiting here.
+        return RunFenJsWithLargeStackAsync<object>(
+            () =>
+            {
+                work().GetAwaiter().GetResult();
+                return null;
+            },
+            timeoutMs: -1,
+            instructionBudget: int.MaxValue,
+            workKind: "RenderingUpdate");
     }
 
     /// <summary>
@@ -22332,6 +22366,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     element.SetAttribute(property, CoerceToHostString(value));
                     _owner.NotifyResizeObservers(element);
                     return true;
+                case Element element when HtmlAttributeReflection.TryGetEntry(element, property, out var reflected):
+                    // HTML §2.6.1: the setter of a reflected IDL attribute sets the
+                    // content attribute, so `input.disabled = true` is observable to
+                    // selectors (:disabled) and to getAttribute like any other attribute.
+                    HtmlAttributeReflection.Write(
+                        element, reflected, value, CoerceToHostString, CoerceToHostBoolean, v => CoerceToFiniteNumber(v, 0));
+                    return true;
                 case Element element:
                     // Catch-all for arbitrary element properties (e.g. Google sets
                     // __gwbp, __jsl, and other internal bookkeeping properties on
@@ -24464,6 +24505,15 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = _owner.CreateComputedStyleObjectForElement(element);
                     return true;
                 default:
+                    // HTML §2.6.1 reflected IDL attributes (disabled, htmlFor,
+                    // colSpan, ...) read straight from the content attribute.
+                    if (HtmlAttributeReflection.TryGetEntry(element, property, out var reflected))
+                    {
+                        value = HtmlAttributeReflection.Read(
+                            element, reflected, raw => ResolveElementUrlProperty(element, reflected.Attribute));
+                        return true;
+                    }
+
                     // Fall back to user-assigned properties (e.g. Google sets
                     // __gwbp, __jsl on elements for internal bookkeeping).
                     value = _owner.GetStoredHostPropertyOrUndefined(element, property);

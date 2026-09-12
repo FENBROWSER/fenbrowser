@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core;
 using FenBrowser.Core.Memory;
@@ -359,42 +359,32 @@ namespace FenBrowser.FenEngine.Layout
             return false;
         }
 
-        private bool ClearSubtreeDirtyFlags(Node node)
+        /// <summary>
+        /// Clears the layout flags of a laid-out subtree. Style flags are left
+        /// alone: they belong to the style pass, which clears each subtree as it
+        /// cascades it. Clearing them here cleared an iframe host element's
+        /// child-dirty bit while the frame document below it (which this walk
+        /// does not enter) stayed marked, so the page root read as clean and the
+        /// frame's pending style work was never flushed.
+        /// </summary>
+        private void ClearSubtreeDirtyFlags(Node node)
         {
             if (node == null)
             {
-                return false;
+                return;
             }
 
-            bool hasUnresolvedDescendantStyle = false;
             bool isFrameHost = node is Element element &&
                                string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
             if (!isFrameHost && node.ChildNodes != null)
             {
                 foreach (var child in node.ChildNodes)
                 {
-                    hasUnresolvedDescendantStyle |= ClearSubtreeDirtyFlags(child);
+                    ClearSubtreeDirtyFlags(child);
                 }
             }
 
             node.ClearDirty(InvalidationKind.Layout);
-
-            bool hasResolvedStyle = node is not Element ||
-                                    _context.Styles.ContainsKey(node) ||
-                                    node.GetComputedStyle() != null;
-            if (hasResolvedStyle)
-            {
-                if (hasUnresolvedDescendantStyle)
-                {
-                    node.ClearStyleDirty();
-                }
-                else
-                {
-                    node.ClearDirty(InvalidationKind.Style);
-                }
-            }
-
-            return !hasResolvedStyle || hasUnresolvedDescendantStyle;
         }
         
         private Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> _generatedBoxes;
