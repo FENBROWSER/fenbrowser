@@ -1,4 +1,4 @@
-using FenBrowser.Core.Logging;
+﻿using FenBrowser.Core.Logging;
 using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.DevTools.Domains.DTOs;
 using System.Collections.Generic;
@@ -7,7 +7,7 @@ using System.Text.Json;
 
 namespace FenBrowser.DevTools.Domains;
 
-public class LogDomain : IProtocolHandler
+public class LogDomain : IProtocolHandler, IDisposable
 {
     public string Domain => "Log";
 
@@ -50,13 +50,29 @@ public class LogDomain : IProtocolHandler
 
     private Task<ProtocolResponse> DisableAsync(ProtocolRequest request)
     {
+        Unsubscribe();
+        return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
+    }
+
+    /// <summary>
+    /// Releases the engine-log subscription. Once enabled, the domain stays
+    /// attached to the process-wide <see cref="EngineLog.EngineEventWritten"/>
+    /// event; a server that drops the domain without disposing it keeps
+    /// re-broadcasting every engine log line through a handler nobody routes to.
+    /// </summary>
+    public void Dispose()
+    {
+        Unsubscribe();
+    }
+
+    private void Unsubscribe()
+    {
         if (_enabled)
         {
             EngineLog.EngineEventWritten -= _handler;
         }
 
         _enabled = false;
-        return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
     }
 
     private Task<ProtocolResponse> ClearAsync(ProtocolRequest request)

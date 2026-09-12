@@ -1,4 +1,4 @@
-using FenBrowser.Core.Dom.V2;
+﻿using FenBrowser.Core.Dom.V2;
 using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.DevTools.Domains;
 using FenBrowser.Core.Css;
@@ -79,6 +79,7 @@ public class DevToolsServer : IDisposable
 
     public void InitializeLog()
     {
+        _logDomain?.Dispose();
         _logDomain = new LogDomain(BroadcastEvent);
         _router.RegisterHandler(_logDomain);
     }
@@ -208,6 +209,7 @@ public class DevToolsServer : IDisposable
         _networkDomain = null;
         _debuggerDomain = null;
         _cssDomain = null;
+        _logDomain?.Dispose();
         _logDomain = null;
         _pageDomain = null;
         _overlayDomain = null;
@@ -232,6 +234,9 @@ public class DevToolsServer : IDisposable
         {
             listener.Dispose();
         }
+
+        _logDomain?.Dispose();
+        _logDomain = null;
 
         GC.SuppressFinalize(this);
     }
