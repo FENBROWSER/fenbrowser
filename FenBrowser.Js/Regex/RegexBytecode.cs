@@ -87,6 +87,12 @@ public sealed class RegexProgram
     // Used by the VM to call UnicodePropertyEscapeData.TryHasPropertyCodePoint.
     public string[]? UnicodePropertyBodies { get; init; }
 
+    /// <summary>
+    /// The pattern text this program was compiled from, for diagnostics: an
+    /// execution-limit error names the pattern that hit it.
+    /// </summary>
+    public string? Source { get; init; }
+
     // Character range tables: pre-computed arrays for character classes.
     // Used by CharClass instruction at runtime.
     public int[][]? CharClassRanges { get; init; }

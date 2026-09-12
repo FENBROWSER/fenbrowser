@@ -195,8 +195,7 @@ public static class RegExpCompiler
         {
             // Validate Unicode property escapes against the known database.
             ValidateUnicodePropsInDisjunction(ast.Disjunction, ast.Flags);
-            var program = RegexCompiler.Compile(ast);
-            return program;
+            return RegexCompiler.Compile(ast, pattern);
         }
         catch (RegexSyntaxError)
         {

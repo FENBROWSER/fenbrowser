@@ -14,7 +14,7 @@ namespace FenBrowser.Js.Regex;
 
 public static class RegexCompiler
 {
-    public static RegexProgram Compile(RegexPattern pattern)
+    public static RegexProgram Compile(RegexPattern pattern, string? source = null)
     {
         var c = new CompilerState(pattern.Flags, pattern.CaptureCount);
         c.CollectNamedGroups(pattern.Disjunction);
@@ -35,7 +35,8 @@ public static class RegexCompiler
         {
             UnicodePropertyBodies = c._unicodePropertyBodies.Count > 0
                 ? c._unicodePropertyBodies.ToArray()
-                : null
+                : null,
+            Source = source
         };
 
         return program;

@@ -35,4 +35,16 @@ public sealed class RegexExecutionLimitTests
 
         Assert.True(new BytecodeInterpreter().Execute(function).AsBoolean());
     }
+
+    // A greedy class run followed by a literal that never follows it is
+    // quadratic, not exponential: Polymer's dir-mixin runs this over every
+    // element stylesheet and must finish rather than trip the budget.
+    [Fact]
+    public void QuadraticPatternOverAStylesheetCompletes()
+    {
+        var program = RegExpCompiler.Compile(@"([\s\w-#\.\[\]\*]*):dir\((ltr|rtl)\)", string.Empty).Program;
+        var css = string.Concat(Enumerable.Repeat(".paper-input-container .label-is-floating { transform: translateY(-75%) scale(0.75); } ", 100));
+
+        Assert.False(new RegexVM(program).Execute(css).Success);
+    }
 }

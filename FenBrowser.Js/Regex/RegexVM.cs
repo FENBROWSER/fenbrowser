@@ -26,9 +26,12 @@ public sealed class RegexVM
 
     // Backtrack limit to prevent exponential blowup (DoS protection).
     // The effective limit grows with input length (see ExecuteFrom).
-    private const int MaxBacktracks = 50000;
-    private int _backtrackCount;
-    private int _maxBacktracks = MaxBacktracks;
+    private const long MaxBacktracks = 1_000_000;
+    // Ceiling on the quadratic allowance: about a second of stepping for
+    // the largest inputs, after which the match is abandoned as a hang.
+    private const long MaxQuadraticAllowance = 40_000_000;
+    private long _backtrackCount;
+    private long _maxBacktracks = MaxBacktracks;
 
     public RegexVM(RegexProgram program)
     {
@@ -66,11 +69,14 @@ public sealed class RegexVM
 
         // Try each starting position from startCp to end.
         // Per ECMAScript, the regex is not anchored unless it starts with ^.
-        // Budget scales with input: unwinding a failed greedy loop and probing
-        // every start position are both O(input) legitimate work; the cap only
-        // exists to stop exponential blowup.
+        // Budget scales with input: probing every start position is O(input),
+        // and a greedy run followed by a literal that never follows it (Polymer's
+        // /([\s\w-#.\[\]*]*):dir\(/ over a stylesheet) is O(input^2) -- every
+        // engine grinds through that. The cap only exists to stop exponential
+        // blowup, so it admits the quadratic case up to a ceiling.
         _backtrackCount = 0;
-        _maxBacktracks = MaxBacktracks + 4 * _cpLen;
+        _maxBacktracks = MaxBacktracks + 4L * _cpLen +
+            Math.Min((long)_cpLen * _cpLen / 4, MaxQuadraticAllowance);
         _stackExhausted = false;
         // One stack and one visited-set for the whole run. Both used to be
         // allocated afresh - the stack for every start position tried, the
@@ -100,9 +106,10 @@ public sealed class RegexVM
             {
                 _stack = null;
                 throw new RegexExecutionLimitException(
-                    _stackExhausted
-                        ? "Regular expression backtracking stack limit exceeded."
-                        : "Regular expression backtracking budget exceeded.");
+                    (_stackExhausted
+                        ? "Regular expression backtracking stack limit exceeded"
+                        : "Regular expression backtracking budget exceeded") +
+                    $" (pattern /{_program.Source ?? "?"}/ against {_cpLen} code points).");
             }
             var state = stack.Pop();
             var pc = state.PC;
