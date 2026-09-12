@@ -267,7 +267,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 // Replaced/media/form elements never fragment.
                 switch (el.TagName?.ToUpperInvariant())
                 {
-                    case "IMG": case "CANVAS": case "IFRAME": case "OBJECT": case "EMBED":
+                    case "OBJECT":
+                        // HTML §4.8.7: an <object> showing its fallback content is not a
+                        // replaced element — it is an ordinary inline box whose fallback
+                        // children flow in the surrounding line (width/height don't apply).
+                        // Acid2's eyes are three nested objects: two fallbacks around an
+                        // image object that must right-align in the line as one inline run.
+                        return ReplacedElementSizing.ShouldUseObjectFallbackContent(el) &&
+                               candidate.Children.Any(static child => !child.IsOutOfFlow);
+                    case "IMG": case "CANVAS": case "IFRAME": case "EMBED":
                     case "INPUT": case "TEXTAREA": case "SELECT": case "BUTTON": case "SVG":
                     case "VIDEO": case "AUDIO": case "PICTURE":
                         return false;
@@ -346,14 +354,25 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 float itemHeightForMetrics = Math.Max(0f, childSize.Height);
                 float itemBaselineForMetrics = ResolveInlineItemBaseline(atomicChild, itemHeightForMetrics);
-                ResolveInlineItemLineMetrics(
-                    currentLine,
-                    itemHeightForMetrics,
-                    itemBaselineForMetrics,
-                    atomicChild.ComputedStyle,
-                    out float itemAscentForLine,
-                    out float itemDescentForLine);
-                currentLine.IncludeMetrics(itemAscentForLine, itemDescentForLine);
+                if (IsLineRelativeVerticalAlign(atomicChild.ComputedStyle?.VerticalAlign))
+                {
+                    // CSS 2.1 §10.8.1: `top`/`bottom` boxes don't take part in the
+                    // baseline-relative line height; they are aligned to the finished
+                    // line box and only enlarge it when taller (Acid2's eye objects sit
+                    // on the bottom of a 2em line without pushing its baseline down).
+                    currentLine.Height = Math.Max(currentLine.Height, Math.Max(0f, itemHeightForMetrics));
+                }
+                else
+                {
+                    ResolveInlineItemLineMetrics(
+                        currentLine,
+                        itemHeightForMetrics,
+                        itemBaselineForMetrics,
+                        atomicChild.ComputedStyle,
+                        out float itemAscentForLine,
+                        out float itemDescentForLine);
+                    currentLine.IncludeMetrics(itemAscentForLine, itemDescentForLine);
+                }
                 curX += childSize.Width;
                 previousEndedWithSpace = false;
             }
@@ -2382,10 +2401,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     verticalOffset = ((lineAscent + lineDescent - safeHeight) / 2f) - baseOffset;
                     break;
                 case "top":
-                case "text-top":
                     verticalOffset = -(lineAscent - safeAscent);
                     break;
                 case "bottom":
+                    // Bottom of the finished line box, which may exceed ascent+descent
+                    // when a line-relative box is the tallest thing on the line.
+                    verticalOffset = Math.Max(lineAscent + lineDescent, line?.Height ?? 0f) - safeHeight - baseOffset;
+                    break;
+                case "text-top":
+                    verticalOffset = -(lineAscent - safeAscent);
+                    break;
                 case "text-bottom":
                     verticalOffset = lineDescent - safeDescent;
                     break;
@@ -2404,6 +2429,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return resolved;
+        }
+
+        private static bool IsLineRelativeVerticalAlign(string verticalAlign)
+        {
+            var value = verticalAlign?.Trim().ToLowerInvariant();
+            return value == "top" || value == "bottom";
         }
 
         private static void ResolveInlineItemLineMetrics(

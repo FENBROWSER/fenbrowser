@@ -210,7 +210,7 @@ namespace FenBrowser.Tests.Layout
     <div id='eyes-a'>
       <object id='outer' data='data:application/x-unknown,ERROR'>
         <object data='http://example.invalid/' type='text/html'>
-          <object id='inner' data='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAABnRSTlMAAAAAAABupgeRAAAABmJLR0QA/wD/AP+gvaeTAAAAEUlEQVR42mP4/58BCv7/ZwAAHfAD/FabwPj4AAAAASUVORK5CYII='>ERROR</object>
+          <object id='inner' data='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAABnRSTlMAAAAAAABupgeRAAAABmJLR0QA/wD/AP+gvaeTAAAAEUlEQVR42mP4/58BCv7/ZwAAHfAD/abwPj4AAAAASUVORK5CYII='>ERROR</object>
         </object>
       </object>
     </div>
@@ -397,7 +397,7 @@ namespace FenBrowser.Tests.Layout
     <div id='eyes-a'>
       <object data='data:application/x-unknown,ERROR'>
         <object data='http://example.invalid/' type='text/html'>
-          <object data='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAABnRSTlMAAAAAAABupgeRAAAABmJLR0QA/wD/AP+gvaeTAAAAEUlEQVR42mP4/58BCv7/ZwAAHfAD/FabwPj4AAAAASUVORK5CYII='>ERROR</object>
+          <object data='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAABnRSTlMAAAAAAABupgeRAAAABmJLR0QA/wD/AP+gvaeTAAAAEUlEQVR42mP4/58BCv7/ZwAAHfAD/abwPj4AAAAASUVORK5CYII='>ERROR</object>
         </object>
       </object>
     </div>
