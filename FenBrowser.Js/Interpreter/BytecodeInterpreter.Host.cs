@@ -1,4 +1,4 @@
-using FenBrowser.Js.Heap;
+﻿using FenBrowser.Js.Heap;
 using FenBrowser.Js.Host;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Promises;
@@ -97,9 +97,22 @@ public sealed partial class BytecodeInterpreter
         // construction window keeps every cell allocated inside the hook
         // alive until the hook returns its final value.
         using var _constructionWindow = _heap.BeginConstructionWindow();
-        return _hostHooks.TryGetHostProperty(handle, key, out value)
-            ? value
-            : JsValue.Undefined;
+        if (_hostHooks.TryGetHostProperty(handle, key, out value))
+        {
+            return value;
+        }
+
+        // WebIDL 3.7.3: a platform object's own interface members (the host
+        // hook) shadow %Object.prototype%; the implicit prototype is only
+        // consulted for what the interface does not define (hasOwnProperty,
+        // the generic toString, ...).
+        if (!HasHostObjectPrototype(handle) &&
+            TryGetPropertyValue(_heap.GetObject(EnsureObjectPrototype()), receiver, key, out value))
+        {
+            return value;
+        }
+
+        return JsValue.Undefined;
     }
 
     // Write a property on a host object. Resolves the handle first, then
@@ -297,7 +310,7 @@ public sealed partial class BytecodeInterpreter
 
     private void CopyHostObjectAssignedPrototypeProperties(HostObjectHandle sourceHandle, HostObjectHandle targetHandle)
     {
-        var prototype = GetHostObjectPrototype(sourceHandle);
+        var prototype = GetExplicitHostObjectPrototype(sourceHandle);
         if (prototype.Tag != JsValueTag.Object)
         {
             return;
@@ -315,10 +328,20 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    // WebIDL 3.7.3: every platform object's prototype chain ends at
+    // %Object.prototype%, so a host object the embedder gave no interface
+    // prototype still has toString, hasOwnProperty and the rest. An explicit
+    // null (Object.setPrototypeOf(host, null)) is honoured as null.
     private JsValue GetHostObjectPrototype(HostObjectHandle handle)
         => _hostObjectPrototypes.TryGetValue(handle, out var prototype)
             ? prototype
-            : JsValue.Null;
+            : JsValue.FromObject(EnsureObjectPrototype());
+
+    // The prototype an object was explicitly given, for the property walk:
+    // the implicit %Object.prototype% is consulted after the host hook, not
+    // before it (see GetHostObjectProperty).
+    private JsValue GetExplicitHostObjectPrototype(HostObjectHandle handle)
+        => _hostObjectPrototypes.TryGetValue(handle, out var prototype) ? prototype : JsValue.Null;
 
     private bool HasHostObjectPrototype(HostObjectHandle handle)
         => _hostObjectPrototypes.ContainsKey(handle);
@@ -339,7 +362,7 @@ public sealed partial class BytecodeInterpreter
         string key,
         out JsValue value)
     {
-        var prototype = GetHostObjectPrototype(handle);
+        var prototype = GetExplicitHostObjectPrototype(handle);
         if (prototype.Tag != JsValueTag.Object)
         {
             value = JsValue.Undefined;
@@ -356,7 +379,7 @@ public sealed partial class BytecodeInterpreter
         long symbolId,
         out JsValue value)
     {
-        var prototype = GetHostObjectPrototype(handle);
+        var prototype = GetExplicitHostObjectPrototype(handle);
         if (prototype.Tag != JsValueTag.Object)
         {
             value = JsValue.Undefined;
@@ -415,7 +438,7 @@ public sealed partial class BytecodeInterpreter
 
     private bool ShouldApplyDefaultHostObjectPrototype(HostObjectHandle handle, JsValue prototype)
     {
-        var current = GetHostObjectPrototype(handle);
+        var current = GetExplicitHostObjectPrototype(handle);
         if (current.Tag == JsValueTag.Null)
         {
             return true;
@@ -573,6 +596,24 @@ public sealed partial class BytecodeInterpreter
     public bool CanCallValue(JsValue value)
     {
         return IsCallable(value);
+    }
+
+    /// <summary>
+    /// ECMA-262 7.3.15 Construct(F, argumentsList): a host-initiated <c>new</c>
+    /// of a script constructor, for host objects the embedder models in
+    /// script (DOMException) rather than as native cells.
+    /// </summary>
+    public JsValue ConstructValue(JsValue constructor, IReadOnlyList<JsValue> args)
+    {
+        try
+        {
+            return ConstructFunction(constructor, args);
+        }
+        catch (JsThrownException thrown)
+        {
+            StampDescription(thrown);
+            throw;
+        }
     }
 
     public JsValue InvokeFunction(JsValue function, IReadOnlyList<JsValue> args, JsValue thisValue)
