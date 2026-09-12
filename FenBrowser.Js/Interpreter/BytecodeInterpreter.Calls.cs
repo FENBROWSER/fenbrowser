@@ -744,10 +744,33 @@ public sealed partial class BytecodeInterpreter
     {
         try
         {
-            if (_activeFrames.Count == 0) return null;
-            var frame = _activeFrames.Peek();
-            var fn = frame.Function;
-            var callIp = frame.InstructionPointer - 1;
+            BytecodeFunction fn;
+            int callIp;
+            ReadOnlyMemory<JsValue> registers;
+            // The two loops nest in either order; the innermost activation is
+            // the classic frame unless a register window was pushed after it.
+            var classic = _activeFrames.Count > 0 ? _activeFrames.Peek() : null;
+            var windowIsInnermost = _interp2 != null &&
+                                    _interp2.Depth > (classic?.Interp2DepthAtEntry ?? 0);
+            if (classic != null && !windowIsInnermost)
+            {
+                fn = classic.Function;
+                callIp = classic.InstructionPointer - 1;
+                registers = classic.Registers;
+            }
+            else if (_interp2?.CurrentFrameForDiagnostics is { } window)
+            {
+                // The register-window loop stores the call's own ip before it
+                // delegates a callee it cannot enter, so the same walk applies.
+                fn = window.Function;
+                callIp = window.Ip - 1;
+                registers = window.Registers;
+            }
+            else
+            {
+                return null;
+            }
+
             if ((uint)callIp >= (uint)fn.Instructions.Count) return null;
             var call = fn.Instructions[callIp];
             switch (call.OpCode)
@@ -772,7 +795,9 @@ public sealed partial class BytecodeInterpreter
                 {
                     if ((uint)ins.C >= (uint)fn.PropertyNames.Count) return null;
                     var receiverName = DescribeRegisterSource(fn, i, ins.B);
-                    return (receiverName ?? DescribeValueShort(frame.Registers[ins.B])) + "." + fn.PropertyNames[ins.C];
+                    var receiverText = receiverName
+                        ?? ((uint)ins.B < (uint)registers.Length ? DescribeValueShort(registers.Span[ins.B]) : "<receiver>");
+                    return receiverText + "." + fn.PropertyNames[ins.C];
                 }
                 if (ins.OpCode == OpCode.LoadVar && ins.A == calleeRegister)
                 {

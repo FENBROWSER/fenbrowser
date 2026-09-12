@@ -52,6 +52,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _interpreter = interpreter;
             _frame = frame;
             _function = frame.Function;
+            frame.Interp2DepthAtEntry = interpreter._interp2?.Depth ?? 0;
             interpreter._activeFrames.Push(frame);
         }
         public void Dispose()

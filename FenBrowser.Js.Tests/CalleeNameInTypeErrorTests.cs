@@ -38,4 +38,14 @@ public class CalleeNameInTypeErrorTests
         var msg = RunString("var f; try { f(); } catch (e) { e.message }");
         Assert.StartsWith("f is not a function", msg);
     }
+
+    [Fact]
+    public void MissingMethodInsideFunctionBodyIsNamedToo()
+    {
+        // Function bodies run on the register-window loop; the walk has to work
+        // from its frames as well as from the classic loop's.
+        var msg = RunString(
+            "function probe(doc) { try { doc.createRange(); } catch (e) { return e.message; } return 'no'; } probe({});");
+        Assert.StartsWith("doc.createRange is not a function", msg);
+    }
 }

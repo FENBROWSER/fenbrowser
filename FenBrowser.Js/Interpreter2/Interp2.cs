@@ -123,6 +123,23 @@ internal sealed class Interp2
     internal int Depth => _depth;
 
     /// <summary>
+    /// The innermost window's function, its instruction pointer (the index
+    /// just past the instruction being executed, as the old loop counts it)
+    /// and its register span, for diagnostics that name the callee of a
+    /// failing call. Null when no window is live.
+    /// </summary>
+    internal (BytecodeFunction Function, int Ip, ReadOnlyMemory<JsValue> Registers)? CurrentFrameForDiagnostics
+    {
+        get
+        {
+            if (_depth <= 0) return null;
+            ref var f = ref _frames[_depth - 1];
+            var count = Math.Min(f.Layout.RegisterCount, Math.Max(0, _stack.Length - f.Base));
+            return (f.Layout.Function, f.Ip, new ReadOnlyMemory<JsValue>(_stack, f.Base, count));
+        }
+    }
+
+    /// <summary>
     /// A frame is bookkeeping, not an object: it lives in an array of structs
     /// that is reused for the life of the interpreter and never allocated per
     /// call. <see cref="ReturnSlot"/> is the absolute stack index in the

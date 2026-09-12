@@ -86,6 +86,13 @@ public sealed class InterpreterFrame
 
 	public int InstructionPointer { get; set; }
 
+	/// <summary>
+	/// How many register-window frames were live when this frame was pushed.
+	/// The two loops nest in either order, so diagnostics use it to tell
+	/// whether this frame or a window pushed after it is the innermost one.
+	/// </summary>
+	internal int Interp2DepthAtEntry { get; set; }
+
 	public JsFunctionObject? CalleeFunctionObject { get; set; }
 
 	public JsValue NewTarget { get; set; } = JsValue.Undefined;
