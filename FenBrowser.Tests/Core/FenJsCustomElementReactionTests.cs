@@ -56,6 +56,30 @@ public sealed class FenJsCustomElementReactionTests
             result?.ToString());
     }
 
+    // Elements produced by the fragment parser upgrade too: innerHTML on an
+    // element or a shadow root, and insertAdjacentHTML.
+    [Fact]
+    public async Task CustomElementsUpgradeAfterInnerHtmlAndInsertAdjacentHtml()
+    {
+        var engine = await CreateEngineAsync("<div id='d'></div><div id='h'></div>");
+
+        var result = engine.Evaluate("""
+            (function () {
+                var seen = [];
+                class W extends HTMLElement { connectedCallback() { seen.push(this.id); } }
+                customElements.define('x-w', W);
+                var d = document.getElementById('d');
+                d.innerHTML = '<x-w id="a"></x-w>';
+                var shadow = document.getElementById('h').attachShadow({ mode: 'open' });
+                shadow.innerHTML = '<x-w id="b"></x-w>';
+                d.insertAdjacentHTML('beforeend', '<x-w id="c"></x-w>');
+                return seen.join(',') + '|' + shadow.childNodes.length + '|' + shadow.innerHTML;
+            })();
+            """);
+
+        Assert.Equal("a,b,c|1|<x-w id=\"b\"></x-w>", result?.ToString());
+    }
+
     // WebIDL 3.7.10: NamedNodeMap and DOMTokenList are iterable and array-like,
     // so Array.from, spread and for-of see every entry.
     [Fact]

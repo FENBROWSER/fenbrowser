@@ -15852,6 +15852,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 {
                     ExecuteInlineScriptsFromElement(element);
                 }
+                // The fragment parser inserted the new children: they upgrade
+                // like any other insertion (HTML 4.13.4 / DOM "insert").
+                UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(element));
                 break;
             case "textContent":
                 element.TextContent = CoerceToHostString(value);
@@ -22942,6 +22945,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     {
                         _owner.ExecuteInlineScriptsFromElement(element);
                     }
+                    _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(element));
                     return true;
                 case Element element when string.Equals(property, "textContent", StringComparison.Ordinal):
                     element.TextContent = CoerceToHostString(value);
@@ -23084,6 +23088,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case DocumentFragment documentFragment when
                     string.Equals(property, "textContent", StringComparison.Ordinal):
                     documentFragment.TextContent = CoerceToHostString(value);
+                    return true;
+                case ShadowRoot shadowRoot when string.Equals(property, "innerHTML", StringComparison.Ordinal):
+                    shadowRoot.InnerHTML = CoerceToHostString(value);
+                    _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(shadowRoot));
                     return true;
                 case FenJsDomStringMapHost domStringMap:
                     domStringMap.Element.SetAttribute(PropertyNameToDatasetAttribute(property), CoerceToHostString(value));
@@ -25317,6 +25325,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var position = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
                             var html = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
                             _owner.InsertAdjacentHtml(element, position, html);
+                            // beforebegin/afterend land in the parent; upgrade from there.
+                            _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(
+                                string.Equals(position, "beforebegin", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(position, "afterend", StringComparison.OrdinalIgnoreCase)
+                                    ? element.ParentNode ?? element
+                                    : element));
                             return JsValue.Undefined;
                         },
                         length: 2);
@@ -25985,6 +25999,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case "host" when fragment is ShadowRoot shadowRoot:
                     value = _owner.ToHostOrNull(shadowRoot.Host, HostObjectKind.DomElement);
+                    return true;
+                // DOM Parsing 2.3: innerHTML is defined on ShadowRoot (not on a plain
+                // DocumentFragment). lit and Polymer render by assigning it.
+                case "innerHTML" when fragment is ShadowRoot shadowRoot:
+                    value = JsValue.FromString(shadowRoot.InnerHTML ?? string.Empty);
                     return true;
                 case "mode" when fragment is ShadowRoot shadowRoot:
                     value = JsValue.FromString(shadowRoot.Mode == ShadowRootMode.Closed ? "closed" : "open");
