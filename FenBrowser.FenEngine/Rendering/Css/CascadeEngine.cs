@@ -1,4 +1,4 @@
-// SpecRef: CSS Cascading and Inheritance Level 4, Cascade order
+﻿// SpecRef: CSS Cascading and Inheritance Level 4, Cascade order
 // CapabilityId: CSS-CASCADE-ORDER-01
 // Determinism: strict
 // FallbackPolicy: spec-defined
@@ -1295,8 +1295,95 @@ return computed;
                 case "background":
                     return IsValidBackgroundShorthand(value);
                 default:
+                    return !KeywordProperties.TryGetValue(property, out var keywords) || IsKeywordValue(value, keywords);
+            }
+        }
+
+        // Properties whose grammar is a plain keyword set. CSS Syntax 3 §8: a
+        // declaration whose value does not match the property's grammar is
+        // invalid and dropped, so `white-space: pre-wrap; white-space: x-bogus`
+        // computes to pre-wrap and `cursor: -acid3-bogus` leaves cursor alone.
+        private static readonly Dictionary<string, HashSet<string>> KeywordProperties = BuildKeywordProperties();
+
+        private static Dictionary<string, HashSet<string>> BuildKeywordProperties()
+        {
+            var table = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            void Add(string property, params string[] keywords)
+                => table[property] = new HashSet<string>(keywords, StringComparer.OrdinalIgnoreCase);
+
+            Add("white-space", "normal", "pre", "nowrap", "pre-wrap", "pre-line", "break-spaces");
+            Add("cursor", "auto", "default", "none", "context-menu", "help", "pointer", "progress", "wait", "cell", "crosshair",
+                "text", "vertical-text", "alias", "copy", "move", "no-drop", "not-allowed", "grab", "grabbing", "e-resize", "n-resize",
+                "ne-resize", "nw-resize", "s-resize", "se-resize", "sw-resize", "w-resize", "ew-resize", "ns-resize", "nesw-resize",
+                "nwse-resize", "col-resize", "row-resize", "all-scroll", "zoom-in", "zoom-out", "hand", "-webkit-grab", "-webkit-grabbing",
+                "-webkit-zoom-in", "-webkit-zoom-out");
+            Add("position", "static", "relative", "absolute", "fixed", "sticky", "-webkit-sticky");
+            Add("float", "none", "left", "right", "inline-start", "inline-end");
+            Add("clear", "none", "left", "right", "both", "inline-start", "inline-end");
+            Add("visibility", "visible", "hidden", "collapse");
+            Add("text-transform", "none", "capitalize", "uppercase", "lowercase", "full-width", "full-size-kana", "math-auto");
+            Add("text-align", "left", "right", "center", "justify", "start", "end", "match-parent", "justify-all", "-webkit-center",
+                "-webkit-left", "-webkit-right", "-moz-center");
+            Add("font-style", "normal", "italic", "oblique");
+            Add("overflow-x", "visible", "hidden", "clip", "scroll", "auto", "overlay", "-webkit-paged-x", "-webkit-paged-y");
+            Add("overflow-y", "visible", "hidden", "clip", "scroll", "auto", "overlay", "-webkit-paged-x", "-webkit-paged-y");
+            Add("box-sizing", "content-box", "border-box", "padding-box");
+            Add("direction", "ltr", "rtl");
+            Add("unicode-bidi", "normal", "embed", "isolate", "bidi-override", "isolate-override", "plaintext", "-webkit-isolate",
+                "-webkit-isolate-override", "-webkit-plaintext");
+            Add("pointer-events", "auto", "none", "visiblepainted", "visiblefill", "visiblestroke", "visible", "painted", "fill",
+                "stroke", "all", "bounding-box");
+            Add("table-layout", "auto", "fixed");
+            Add("border-collapse", "collapse", "separate");
+            Add("caption-side", "top", "bottom", "block-start", "block-end", "inline-start", "inline-end");
+            Add("empty-cells", "show", "hide");
+            Add("word-break", "normal", "break-all", "keep-all", "break-word", "auto-phrase");
+            Add("overflow-wrap", "normal", "break-word", "anywhere");
+            Add("word-wrap", "normal", "break-word", "anywhere");
+            Add("resize", "none", "both", "horizontal", "vertical", "block", "inline");
+            Add("list-style-position", "inside", "outside");
+            Add("font-kerning", "auto", "normal", "none");
+            Add("text-rendering", "auto", "optimizespeed", "optimizelegibility", "geometricprecision");
+            Add("backface-visibility", "visible", "hidden");
+            Add("mix-blend-mode", "normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn",
+                "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity", "plus-lighter");
+            Add("isolation", "auto", "isolate");
+            Add("object-fit", "fill", "contain", "cover", "none", "scale-down");
+            Add("scroll-behavior", "auto", "smooth");
+            Add("user-select", "auto", "text", "none", "contain", "all", "-webkit-auto", "-moz-none");
+            return table;
+        }
+
+        private static bool IsKeywordValue(string value, HashSet<string> keywords)
+        {
+            var trimmed = value.Trim();
+            switch (trimmed.ToLowerInvariant())
+            {
+                case "inherit":
+                case "initial":
+                case "unset":
+                case "revert":
+                case "revert-layer":
                     return true;
             }
+
+            // var() is resolved later; url(...) (cursor images) and other
+            // functional values are grammar this check does not model, so they
+            // pass through rather than being dropped.
+            if (trimmed.IndexOf('(') >= 0)
+            {
+                return true;
+            }
+
+            // A trailing !important is handled by the parser; a stray one here is
+            // still the same keyword.
+            var bang = trimmed.IndexOf('!');
+            if (bang > 0)
+            {
+                trimmed = trimmed.Substring(0, bang).Trim();
+            }
+
+            return keywords.Contains(trimmed);
         }
 
         private static bool IsValidColorValue(string value)
