@@ -896,6 +896,22 @@ namespace FenBrowser.FenEngine.Rendering
                         else currentContext.AddBlockNodes(clipList);
                     }
                 }
+                else if (isPositioned && node is Element)
+                {
+                    // CSS 2.1 Appendix E step 8: a positioned, z-index:auto box paints as if
+                    // it were a stacking context — its floats and in-flow content go with it
+                    // at its tree-order slot — while positioned descendants and real
+                    // stacking contexts still belong to the enclosing context. Without
+                    // this the floats inside Acid2's absolutely positioned smile frame were
+                    // painted in the ancestor's float phase, underneath the frame's border.
+                    var positionedCtx = new BuilderStackingContext(node) { EscapeTarget = currentContext };
+                    ProcessChildren(node, positionedCtx, depth + 1, escapeContext, nodeVisibilityHidden);
+                    var positionedContent = positionedCtx.Flatten();
+                    if (positionedContent.Count > 0)
+                    {
+                        currentContext.AddPositionedNodes(positionedContent, zIndex);
+                    }
+                }
                 else if (!isPositioned && node is Element && (isFloat || IsAtomicInlineDisplay(display)))
                 {
                     // CSS 2.1 Appendix E steps 5 / 7.2.1: the float or atomic inline paints its
