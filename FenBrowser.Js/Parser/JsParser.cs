@@ -3157,6 +3157,25 @@ public sealed class JsParser
         if (PeekKeyword(0, "default"))
         {
             Advance();
+
+            // ECMA-262 16.2.3.7 ExportDeclaration: `export default` followed by a
+            // *named* HoistableDeclaration or ClassDeclaration declares that name as
+            // a module-scope binding (the function is hoisted like any declaration)
+            // and exports it as "default". Only the anonymous forms and plain
+            // expressions bind the synthetic *default* alone.
+            if (IsNamedDefaultExportDeclaration())
+            {
+                var declaration = ParseStatement();
+                var localName = CollectExportableLocalNames(declaration).First();
+                entries.Add(new FenBrowser.Js.Modules.ExportEntry(
+                    ExportName: FenBrowser.Js.Modules.ImportEntry.DefaultImport,
+                    ModuleRequest: null,
+                    ImportName: null,
+                    LocalName: localName));
+                return new ExportDeclarationNode(entries, LocalDeclaration: declaration, DefaultExpression: null,
+                    MergeSpan(start.Span, Previous().Span));
+            }
+
             var expr = ParseExpression(2);
             ConsumeSemicolon();
             entries.Add(new FenBrowser.Js.Modules.ExportEntry(
@@ -3242,6 +3261,43 @@ public sealed class JsParser
 
         return new ExportDeclarationNode(entries, LocalDeclaration: inner, DefaultExpression: null,
             MergeSpan(start.Span, Previous().Span));
+    }
+
+    // True when the tokens after `export default` start a ClassDeclaration or
+    // HoistableDeclaration that carries a binding name: `class C`, `function f`,
+    // `function* g`, `async function f`, `async function* g`.
+    private bool IsNamedDefaultExportDeclaration()
+    {
+        bool IsBindingName(int offset)
+        {
+            var idx = Math.Min(_index + offset, _tokens.Count - 1);
+            var token = _tokens[idx];
+            return token.Kind == TokenKind.Identifier ||
+                   (IsIdentifierLike(token) && token.Text is not ("extends" or "function"));
+        }
+
+        if (PeekKeyword(0, "class"))
+        {
+            return IsBindingName(1);
+        }
+
+        var functionOffset = -1;
+        if (PeekKeyword(0, "function"))
+        {
+            functionOffset = 0;
+        }
+        else if (PeekKeyword(0, "async") && PeekKeyword(1, "function") && !HasLineTerminatorBetweenCurrentAnd(1))
+        {
+            functionOffset = 1;
+        }
+        if (functionOffset < 0)
+        {
+            return false;
+        }
+
+        return PeekIsPunctuator(functionOffset + 1, "*")
+            ? IsBindingName(functionOffset + 2)
+            : IsBindingName(functionOffset + 1);
     }
 
     private static IEnumerable<string> CollectExportableLocalNames(StatementNode stmt)

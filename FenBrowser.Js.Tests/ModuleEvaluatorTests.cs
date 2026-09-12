@@ -374,4 +374,44 @@ public sealed class ModuleEvaluatorTests
         var evaluator = new ModuleEvaluator(interpreter, hostSourceResolver: _ => null);
         Assert.Throws<System.InvalidOperationException>(() => evaluator.Evaluate("missing"));
     }
+    // ECMA-262 16.2.3.7: `export default class C {}` declares C in the module
+    // scope, so the module's own top-level code can refer to it by name.
+    [Fact]
+    public void ExportDefaultNamedClassBindsItsNameInTheModule()
+    {
+        var (interpreter, evaluator) = Setup();
+        evaluator.RegisterSource("mod", """
+            export default class Widget { tag() { return 'w'; } }
+            Widget.prototype.alias = Widget.prototype.tag;
+            """);
+        evaluator.RegisterSource("main", "import W from 'mod'; globalThis.result = new W().alias();");
+        _ = evaluator.Evaluate("main");
+        Assert.True(interpreter.TryReadGlobalValue("result", out var v));
+        Assert.Equal("w", v.AsString());
+    }
+
+    [Fact]
+    public void ExportDefaultNamedFunctionIsHoistedAndBound()
+    {
+        var (interpreter, evaluator) = Setup();
+        evaluator.RegisterSource("mod", """
+            globalThis.early = helper();
+            export default function helper() { return 5; }
+            """);
+        evaluator.RegisterSource("main", "import h from 'mod'; globalThis.result = h() + globalThis.early;");
+        _ = evaluator.Evaluate("main");
+        Assert.True(interpreter.TryReadGlobalValue("result", out var v));
+        Assert.Equal(10d, v.AsNumber());
+    }
+
+    [Fact]
+    public void ExportDefaultAnonymousClassStillExportsDefault()
+    {
+        var (interpreter, evaluator) = Setup();
+        evaluator.RegisterSource("mod", "export default class { id() { return 3; } }");
+        evaluator.RegisterSource("main", "import C from 'mod'; globalThis.result = new C().id();");
+        _ = evaluator.Evaluate("main");
+        Assert.True(interpreter.TryReadGlobalValue("result", out var v));
+        Assert.Equal(3d, v.AsNumber());
+    }
 }
