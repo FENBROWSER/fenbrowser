@@ -467,9 +467,14 @@ namespace FenBrowser.Tests.Layout
                     Width = 50,
                     Height = 20
                 },
+                // A new block formatting context may not overlap the float (CSS 2.1
+                // §9.5.1) — a plain block would, keeping its border box at y=0 while
+                // only its line boxes shorten — so it is the BFC root that must move
+                // below the float, and it must do so by the float's LOCAL extent.
                 [follower] = new CssComputed
                 {
                     Display = "block",
+                    Overflow = "hidden",
                     Width = 200,
                     Height = 20
                 }

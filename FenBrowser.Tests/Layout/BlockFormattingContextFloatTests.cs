@@ -84,7 +84,9 @@ namespace FenBrowser.Tests.Layout
             {
                 [root] = new CssComputed { Display = "block", Width = 200, Height = 180 },
                 [floated] = new CssComputed { Display = "block", Float = "left", Width = 120, Height = 40 },
-                [block] = new CssComputed { Display = "block", Width = 150, Height = 20 }
+                // CSS 2.1 §9.5.1: only a box establishing a new block formatting
+                // context must not overlap a float; a plain block's border box does.
+                [block] = new CssComputed { Display = "block", Overflow = "hidden", Width = 150, Height = 20 }
             };
 
             var rootBox = LayoutRoot(root, styles, 200, 180);
@@ -96,6 +98,34 @@ namespace FenBrowser.Tests.Layout
 
             Assert.True(blockBox.Geometry.MarginBox.Top >= floatBox.Geometry.MarginBox.Bottom - 0.5f);
             Assert.Equal(0f, blockBox.Geometry.MarginBox.Left, 1);
+        }
+
+        [Fact]
+        public void PlainBlock_OverlapsFloatAndKeepsItsBorderBox()
+        {
+            var root = new Element("div");
+            var floated = new Element("div");
+            var block = new Element("div");
+
+            root.AppendChild(floated);
+            root.AppendChild(block);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 200, Height = 180 },
+                [floated] = new CssComputed { Display = "block", Float = "left", Width = 120, Height = 40 },
+                [block] = new CssComputed { Display = "block", Width = 150, Height = 20 }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 200, 180);
+            var blockBox = FindBox(rootBox, block);
+
+            Assert.NotNull(blockBox);
+            // CSS 2.1 §9.5.1: a block in normal flow is laid out as if the float were
+            // not there; only its line boxes are shortened (Acid2's `.empty`).
+            Assert.Equal(0f, blockBox.Geometry.BorderBox.Top, 1);
+            Assert.Equal(0f, blockBox.Geometry.BorderBox.Left, 1);
+            Assert.Equal(150f, blockBox.Geometry.BorderBox.Width, 1);
         }
 
         [Fact]
@@ -119,13 +149,18 @@ namespace FenBrowser.Tests.Layout
             var rootBox = LayoutRoot(root, styles, 300, 240);
             var floatBox = FindBox(rootBox, floated);
             var paragraphBox = FindBox(rootBox, paragraph);
+            var textBox = FindBox(rootBox, paragraph.FirstChild);
 
             Assert.NotNull(floatBox);
             Assert.NotNull(paragraphBox);
+            Assert.NotNull(textBox);
 
-            Assert.Equal(120f, paragraphBox.Geometry.MarginBox.Left, 1);
-            Assert.True(paragraphBox.Geometry.MarginBox.Right <= 300.5f);
-            Assert.True(paragraphBox.Geometry.MarginBox.Width <= 180.5f);
+            // The paragraph's border box spans the container (it may overlap the
+            // float); its line boxes are what shorten to the float-reduced band.
+            Assert.Equal(0f, paragraphBox.Geometry.MarginBox.Left, 1);
+            Assert.Equal(300f, paragraphBox.Geometry.MarginBox.Width, 1);
+            Assert.True(textBox.Geometry.MarginBox.Left >= 119.5f, $"Expected text to start beside the float, got {textBox.Geometry.MarginBox}.");
+            Assert.True(textBox.Geometry.MarginBox.Right <= 300.5f, $"Expected text to stay inside the container, got {textBox.Geometry.MarginBox}.");
         }
 
         [Fact]

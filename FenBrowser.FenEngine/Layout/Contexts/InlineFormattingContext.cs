@@ -566,11 +566,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             }
 
                             currentLine.Height = Math.Max(currentLine.Height, lineHeight);
+                            recomputeFloatAdjustedLine();
                             currentLine = new LineBox();
                             lines.Add(currentLine);
-                            curX = 0;
+                            // CSS 2.1 §9.5: the next line box starts past whatever float
+                            // intrudes at its own vertical position.
+                            curX = floatLineStartAdjust;
                             currentLineStartIdx = startIdx;
-                            currentLineStartX = 0;
+                            currentLineStartX = curX;
                         }
 
                         currentLine.Width = curX + wordWidth;
@@ -3233,8 +3236,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float leftIntrusion = Math.Max(0f, space.LeftOffset - bfcLineLeft);
             float rightIntrusion = Math.Max(0f, bfcLineRight - (containerWidth - space.RightOffset));
 
+            // The line runs from the left intrusion to the right intrusion. Callers
+            // advance curX from startX, so the limit is the line's RIGHT EDGE in the
+            // same coordinate space, not the remaining width.
             float adjustedStartX = leftIntrusion;
-            float adjustedLimit = Math.Max(0f, contentLimit - leftIntrusion - rightIntrusion);
+            float adjustedLimit = Math.Max(adjustedStartX, contentLimit - rightIntrusion);
 
             return (adjustedStartX, adjustedLimit);
         }

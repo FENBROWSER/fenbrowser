@@ -122,7 +122,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 string floatStyle = child.ComputedStyle?.Float?.ToLowerInvariant() ?? "none";
                 string clearStyle = child.ComputedStyle?.Clear?.ToLowerInvariant() ?? "none";
                 
-                if (clearStyle != "none")
+                bool childIsFloat = floatStyle == "left" || floatStyle == "right";
+                if (clearStyle != "none" && !childIsFloat)
                 {
                     float childMarginTopForClear = ResolveUsedTopMargin(child);
                     float collapsedMarginForClear;
@@ -172,7 +173,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         containerInline = Math.Max(floatWidth, state.ViewportWidth);
                     }
 
-                    float placementY = currentY + lastMarginBottom;
+                    // §9.5.1 rule 4: the float's outer top is never above its containing
+                    // block's content top, and §9.5.2 `clear` on a float requires that
+                    // outer top to be below the earlier floats it clears. A negative
+                    // top margin then pulls the border box up from that outer edge.
+                    float placementY = Math.Max(0f, currentY + lastMarginBottom);
+                    if (clearStyle != "none")
+                    {
+                        placementY = Math.Max(placementY, floatManager.GetClearanceY(clearStyle, placementY));
+                    }
                     float fx = xOffset;
                     int placementGuard = 0;
 
@@ -320,10 +329,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     bool ignoreFloatIntrusionForOutOfFlowAutoWidth = blockBox.IsOutOfFlow && blockAutoWidth;
 
+                    // CSS 2.1 §9.5.1: only a table, a replaced box or a box establishing a
+                    // new block formatting context is pushed beside/below floats. Any
+                    // other block's border box overlaps them; its line boxes shorten
+                    // instead (the IFC's float avoidance). Acid2's `.empty` keeps its
+                    // full width beside the nose float.
                     if (!ignoreFloatIntrusionForOutOfFlowAutoWidth &&
                         floatManager.HasFloats &&
                         float.IsFinite(contentWidth) &&
-                        contentWidth > 0f)
+                        contentWidth > 0f &&
+                        MustAvoidFloats(child))
                     {
                         float placementHeight = Math.Max(1f, child.Geometry.MarginBox.Height);
                         float requiredInline = Math.Max(0f, child.Geometry.MarginBox.Width);
@@ -2374,6 +2389,55 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             collapsedMargin = positive + negative;
             return true;
+        }
+
+        /// <summary>
+        /// §9.5.1: boxes whose border box may not overlap a float's margin box —
+        /// tables, replaced elements and new block formatting context roots.
+        /// </summary>
+        private static bool MustAvoidFloats(LayoutBox box)
+        {
+            var style = box?.ComputedStyle;
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (box.SourceNode is Element element && ReplacedElementSizing.IsReplacedElementTag(element.TagName))
+            {
+                return true;
+            }
+
+            var display = style.Display?.Trim().ToLowerInvariant();
+            switch (display)
+            {
+                case "table":
+                case "inline-table":
+                case "flow-root":
+                case "inline-block":
+                case "flex":
+                case "inline-flex":
+                case "grid":
+                case "inline-grid":
+                case "table-cell":
+                case "table-caption":
+                    return true;
+            }
+
+            var overflowX = (style.OverflowX ?? style.Overflow)?.Trim().ToLowerInvariant();
+            var overflowY = (style.OverflowY ?? style.Overflow)?.Trim().ToLowerInvariant();
+            if (PreventsMarginCollapseByOverflow(overflowX) || PreventsMarginCollapseByOverflow(overflowY))
+            {
+                return true;
+            }
+
+            return ContainmentEvaluator.HasLayoutContainment(style);
+        }
+
+        private static bool IsFloatedBox(LayoutBox box)
+        {
+            var floatValue = box?.ComputedStyle?.Float?.Trim().ToLowerInvariant();
+            return floatValue == "left" || floatValue == "right";
         }
 
         private static void CombineCollapsedMargin(ref float positive, ref float negative, float margin)
