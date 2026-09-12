@@ -14096,6 +14096,44 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         };
     }
 
+    /// <summary>
+    /// The nodes an insertion actually moves into the tree. A DocumentFragment
+    /// hands its children over and comes back empty, so upgrading the returned
+    /// node afterwards would find nothing; snapshot them first (DOM 4.2.3
+    /// "insert": custom element reactions are enqueued for the moved nodes).
+    /// </summary>
+    private static Node[] SnapshotFragmentChildren(Node child)
+    {
+        if (child is not DocumentFragment fragment)
+        {
+            return null;
+        }
+
+        var moved = new List<Node>();
+        for (var node = fragment.FirstChild; node != null; node = node.NextSibling)
+        {
+            moved.Add(node);
+        }
+        return moved.ToArray();
+    }
+
+    private void UpgradeInsertedCustomElements(Node child, Node[] movedFromFragment)
+    {
+        if (movedFromFragment == null)
+        {
+            UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(child));
+            return;
+        }
+
+        foreach (var node in movedFromFragment)
+        {
+            if (node is Element)
+            {
+                UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(node));
+            }
+        }
+    }
+
     private JsValue UpgradeCustomElementTreeIfDefined(JsValue rootValue)
     {
         if (rootValue.Tag != JsValueTag.HostObject || _interpreter == null)
@@ -20389,7 +20427,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 switch (method)
                 {
                     case "appendChild":
-                        return UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(container.AppendChild(first)));
+                    {
+                        var moved = SnapshotFragmentChildren(first);
+                        var appended = ToHostNodeOrNull(container.AppendChild(first));
+                        UpgradeInsertedCustomElements(first, moved);
+                        return appended;
+                    }
                     case "removeChild":
                         return ToHostNodeOrNull(container.RemoveChild(first));
                     case "insertBefore":
@@ -20402,7 +20445,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             ThrowDomException("TypeError", "Failed to execute 'insertBefore' on 'Node': parameter 2 is not of type 'Node'.");
                         }
 
-                        return UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(container.InsertBefore(first, reference)));
+                        var moved = SnapshotFragmentChildren(first);
+                        var inserted = ToHostNodeOrNull(container.InsertBefore(first, reference));
+                        UpgradeInsertedCustomElements(first, moved);
+                        return inserted;
                     }
                     default:
                     {
@@ -20412,7 +20458,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             ThrowDomException("TypeError", "Failed to execute 'replaceChild' on 'Node': parameter 2 is not of type 'Node'.");
                         }
 
-                        return UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(container.ReplaceChild(first, child)));
+                        var moved = SnapshotFragmentChildren(first);
+                        var replaced = ToHostNodeOrNull(container.ReplaceChild(first, child));
+                        UpgradeInsertedCustomElements(first, moved);
+                        return replaced;
                     }
                 }
             },
@@ -23417,8 +23466,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 _owner.ThrowDomException("HierarchyRequestError", "Document child must be a DOM node.");
                             }
 
-                            return _owner.UpgradeCustomElementTreeIfDefined(
-                                _owner.ToHostNodeOrNull(document.AppendChild(child)));
+                            var moved = SnapshotFragmentChildren(child);
+                            var appended = _owner.ToHostNodeOrNull(document.AppendChild(child));
+                            _owner.UpgradeInsertedCustomElements(child, moved);
+                            return appended;
                         },
                         length: 1);
                     return true;
@@ -23466,8 +23517,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                             try
                             {
+                                var moved = SnapshotFragmentChildren(child);
                                 var replaced = document.ReplaceChild(child, oldChild);
-                                _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(child));
+                                _owner.UpgradeInsertedCustomElements(child, moved);
                                 return _owner.ToHostNodeOrNull(replaced);
                             }
                             catch (DomException ex)
@@ -24670,6 +24722,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 return JsValue.Null;
                             }
 
+                            var moved = SnapshotFragmentChildren(child);
                             var appended = element.AppendChild(child);
                             _owner.QueueFrameLoadsForTree(appended);
                             if (child is Element childElement &&
@@ -24678,7 +24731,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 _owner.ExecuteDynamicScriptElement(childElement);
                             }
 
-                            return _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(appended));
+                            _owner.UpgradeInsertedCustomElements(child, moved);
+                            return _owner.ToHostNodeOrNull(appended);
                         },
                         length: 1);
                     return true;
@@ -24701,8 +24755,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                     continue;
                                 }
 
+                                var moved = SnapshotFragmentChildren(child);
                                 element.AppendChild(child);
-                                _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(child));
+                                _owner.UpgradeInsertedCustomElements(child, moved);
                                 _owner.QueueFrameLoadsForTree(child);
                                 if (child is Element childElement &&
                                     string.Equals(childElement.TagName, "SCRIPT", StringComparison.OrdinalIgnoreCase))
@@ -24746,8 +24801,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                         ? new[] { childElement }
                                         : Array.Empty<Element>();
 
+                                var moved = SnapshotFragmentChildren(child);
                                 element.InsertBefore(child, referenceNode);
-                                _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(child));
+                                _owner.UpgradeInsertedCustomElements(child, moved);
                                 _owner.QueueFrameLoadsForTree(child);
                                 foreach (var scriptElement in scriptCandidates)
                                 {
@@ -24791,6 +24847,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             }
 
                             var referenceNode = args.Count > 1 ? _owner.ResolveHostObjectOrNull<Node>(args[1]) : null;
+                            var moved = SnapshotFragmentChildren(child);
                             var inserted = element.InsertBefore(child, referenceNode);
                             _owner.QueueFrameLoadsForTree(inserted);
                             if (child is Element childElement &&
@@ -24799,7 +24856,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 _owner.ExecuteDynamicScriptElement(childElement);
                             }
 
-                            return _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(inserted));
+                            _owner.UpgradeInsertedCustomElements(child, moved);
+                            return _owner.ToHostNodeOrNull(inserted);
                         },
                         length: 2);
                     return true;
@@ -24852,6 +24910,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                             try
                             {
+                                var moved = SnapshotFragmentChildren(child);
                                 var replaced = element.ReplaceChild(child, oldChild);
                                 if (child is Element childElement &&
                                     string.Equals(childElement.TagName, "SCRIPT", StringComparison.OrdinalIgnoreCase))
@@ -24859,7 +24918,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                     _owner.ExecuteDynamicScriptElement(childElement);
                                 }
 
-                                _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(child));
+                                _owner.UpgradeInsertedCustomElements(child, moved);
                                 return _owner.ToHostNodeOrNull(replaced);
                             }
                             catch (DomException ex)
@@ -25785,7 +25844,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 return JsValue.Null;
                             }
 
-                            return _owner.ToHostNodeOrNull(fragment.AppendChild(child));
+                            // A ShadowRoot is a DocumentFragment too: what lands in
+                            // it is in the (shadow-including) tree and upgrades like
+                            // an insertion into an element (DOM 4.2.3 "insert").
+                            var moved = SnapshotFragmentChildren(child);
+                            var appended = _owner.ToHostNodeOrNull(fragment.AppendChild(child));
+                            _owner.UpgradeInsertedCustomElements(child, moved);
+                            return appended;
                         },
                         length: 1);
                     return true;
@@ -25809,7 +25874,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var referenceNode = args.Count > 1 ? _owner.ResolveHostObjectOrNull<Node>(args[1]) : null;
                             try
                             {
-                                return _owner.ToHostNodeOrNull(fragment.InsertBefore(child, referenceNode));
+                                var moved = SnapshotFragmentChildren(child);
+                                var inserted = _owner.ToHostNodeOrNull(fragment.InsertBefore(child, referenceNode));
+                                _owner.UpgradeInsertedCustomElements(child, moved);
+                                return inserted;
                             }
                             catch (DomException ex)
                             {
@@ -25879,7 +25947,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                             try
                             {
-                                return _owner.ToHostNodeOrNull(fragment.ReplaceChild(child, oldChild));
+                                var moved = SnapshotFragmentChildren(child);
+                                var replaced = _owner.ToHostNodeOrNull(fragment.ReplaceChild(child, oldChild));
+                                _owner.UpgradeInsertedCustomElements(child, moved);
+                                return replaced;
                             }
                             catch (DomException ex)
                             {
@@ -25929,7 +26000,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                                 if (child != null)
                                 {
+                                    var moved = SnapshotFragmentChildren(child);
                                     fragment.AppendChild(child);
+                                    _owner.UpgradeInsertedCustomElements(child, moved);
                                 }
                             }
 
@@ -25959,7 +26032,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                                 if (child != null)
                                 {
+                                    var moved = SnapshotFragmentChildren(child);
                                     fragment.InsertBefore(child, referenceNode);
+                                    _owner.UpgradeInsertedCustomElements(child, moved);
                                 }
                             }
 
