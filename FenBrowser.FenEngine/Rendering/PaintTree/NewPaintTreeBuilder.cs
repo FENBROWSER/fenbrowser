@@ -1515,6 +1515,18 @@ namespace FenBrowser.FenEngine.Rendering
             return width > 0f && height > 0f;
         }
 
+        private static bool IsBlockifiedInline(CssComputed style)
+        {
+            var floatValue = style?.Float?.Trim().ToLowerInvariant();
+            if (floatValue == "left" || floatValue == "right")
+            {
+                return true;
+            }
+
+            var position = style?.Position?.Trim().ToLowerInvariant();
+            return position == "absolute" || position == "fixed";
+        }
+
         /// <summary>
         /// Scroll offset of the viewport a fixed box is positioned against: the
         /// embedding iframe's scroll state for a nested document, the root state
@@ -1737,10 +1749,14 @@ namespace FenBrowser.FenEngine.Rendering
             // painting and should not route through the inline-fragment background builder.
             bool isAtomicInlineElement = elemNode != null && IsAtomicInlinePaintElement(elemNode);
             bool usesNativeInputChrome = elemNode != null && ReplacedElementSizing.IsNativeCheckboxOrRadio(elemNode);
+            // A floated or absolutely positioned `display:inline` element is blockified
+            // (CSS 2.1 §9.7) and laid out as a block box, so it paints from its box —
+            // not from inline fragments (Acid2's floated smile <span>/<em>).
             bool isInlineGroup = elemNode != null &&
                                  string.Equals(style?.Display, "inline", StringComparison.OrdinalIgnoreCase) &&
                                  !(node is Text) &&
-                                 !isAtomicInlineElement;
+                                 !isAtomicInlineElement &&
+                                 !IsBlockifiedInline(style);
             
             if (isInlineGroup)
             {
