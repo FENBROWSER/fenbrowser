@@ -10773,8 +10773,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     };
                 }
 
+                // WHATWG URL 6.2 "update steps": a list owned by a URL object writes
+                // its serialization back into that URL's query after every change.
+                function updateOwningUrl(params) {
+                    if (params._url) {
+                        params._url._setSearchFromParams(params.toString());
+                    }
+                }
                 URLSearchParams.prototype.append = function (name, value) {
                     this._pairs.push({ name: String(name), value: String(value) });
+                    updateOwningUrl(this);
                 };
                 URLSearchParams.prototype.delete = function (name) {
                     name = String(name);
@@ -10783,6 +10791,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             this._pairs.splice(index, 1);
                         }
                     }
+                    updateOwningUrl(this);
                 };
                 URLSearchParams.prototype.get = function (name) {
                     name = String(name);
@@ -10825,11 +10834,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     if (!found) {
                         this.append(name, value);
                     }
+                    updateOwningUrl(this);
                 };
                 URLSearchParams.prototype.sort = function () {
                     this._pairs.sort(function (left, right) {
                         return left.name < right.name ? -1 : (left.name > right.name ? 1 : 0);
                     });
+                    updateOwningUrl(this);
                 };
                 URLSearchParams.prototype.forEach = function (callback, thisArg) {
                     if (typeof callback !== 'function') {
@@ -10906,28 +10917,136 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         throw new TypeError("Failed to construct 'URL': Please use the 'new' operator.");
                     }
 
-                    var parsed = __fenParseUrl(input, base);
+                    var parsed = __fenParseUrl(String(input), base === undefined ? undefined : String(base));
                     if (!parsed) {
-                        throw new TypeError('Invalid URL');
+                        throw new TypeError("Failed to construct 'URL': Invalid URL");
                     }
 
-                    applyParsedUrl(this, parsed);
+                    Object.defineProperty(this, '_parsed', { value: parsed, writable: true, configurable: true });
+                    Object.defineProperty(this, '_searchParams', { value: null, writable: true, configurable: true });
                 };
 
-                function applyParsedUrl(target, parsed) {
-                    target.href = parsed.href;
-                    target.origin = parsed.origin;
-                    target.protocol = parsed.protocol;
-                    target.username = '';
-                    target.password = '';
-                    target.host = parsed.host;
-                    target.hostname = parsed.hostname;
-                    target.port = parsed.port;
-                    target.pathname = parsed.pathname;
-                    target.search = parsed.search;
-                    target.hash = parsed.hash;
-                    target.searchParams = new URLSearchParams(target.search);
+                // WHATWG URL 6.1. The parser hands back components, not a record, so a
+                // setter re-serializes the components with one piece replaced and runs
+                // the whole string through the parser again: the same states the spec's
+                // state-override setters run, applied to a full URL. A candidate that
+                // does not parse leaves the URL unchanged, as the setters specify.
+                function urlIsOpaque(parsed) {
+                    // No authority and a path that does not start with "/": an opaque
+                    // path (mailto:, data:, javascript:). Host/port/pathname setters are
+                    // no-ops for these.
+                    return parsed.host === '' && parsed.pathname.charAt(0) !== '/';
                 }
+                function serializeUrl(parsed, overrides) {
+                    var p = {};
+                    for (var key in parsed) p[key] = parsed[key];
+                    for (var name in overrides) p[name] = overrides[name];
+                    var out = p.protocol;
+                    if (p.host !== '' || p.protocol === 'file:') {
+                        out += '//';
+                        if (p.username !== '' || p.password !== '') {
+                            out += p.username;
+                            if (p.password !== '') out += ':' + p.password;
+                            out += '@';
+                        }
+                        out += p.host;
+                    }
+                    return out + p.pathname + p.search + p.hash;
+                }
+                function reparseUrl(url, overrides) {
+                    var parsed = __fenParseUrl(serializeUrl(url._parsed, overrides));
+                    if (parsed) {
+                        url._parsed = parsed;
+                        if (url._searchParams) {
+                            url._searchParams._pairs = new URLSearchParams(parsed.search)._pairs;
+                        }
+                    }
+                }
+                URL.prototype._setSearchFromParams = function (serialized) {
+                    var parsed = __fenParseUrl(serializeUrl(this._parsed, { search: serialized === '' ? '' : '?' + serialized }));
+                    if (parsed) this._parsed = parsed;
+                };
+                function defineUrlAccessor(name, setter) {
+                    Object.defineProperty(URL.prototype, name, {
+                        get: function () { return this._parsed[name]; },
+                        set: setter,
+                        enumerable: true,
+                        configurable: true
+                    });
+                }
+                defineUrlAccessor('href', function (value) {
+                    var parsed = __fenParseUrl(String(value));
+                    if (!parsed) {
+                        throw new TypeError("Failed to set the 'href' property on 'URL': Invalid URL");
+                    }
+                    this._parsed = parsed;
+                    if (this._searchParams) {
+                        this._searchParams._pairs = new URLSearchParams(parsed.search)._pairs;
+                    }
+                });
+                Object.defineProperty(URL.prototype, 'origin', {
+                    get: function () { return this._parsed.origin; },
+                    enumerable: true,
+                    configurable: true
+                });
+                defineUrlAccessor('protocol', function (value) {
+                    var scheme = String(value);
+                    var colon = scheme.indexOf(':');
+                    if (colon >= 0) scheme = scheme.slice(0, colon);
+                    if (scheme === '') return;
+                    reparseUrl(this, { protocol: scheme + ':' });
+                });
+                defineUrlAccessor('username', function (value) {
+                    if (this._parsed.host === '') return;
+                    reparseUrl(this, { username: encodeURIComponent(String(value)) });
+                });
+                defineUrlAccessor('password', function (value) {
+                    if (this._parsed.host === '') return;
+                    reparseUrl(this, { password: encodeURIComponent(String(value)) });
+                });
+                defineUrlAccessor('host', function (value) {
+                    if (urlIsOpaque(this._parsed)) return;
+                    reparseUrl(this, { host: String(value) });
+                });
+                defineUrlAccessor('hostname', function (value) {
+                    if (urlIsOpaque(this._parsed)) return;
+                    var port = this._parsed.port;
+                    reparseUrl(this, { host: String(value) + (port === '' ? '' : ':' + port) });
+                });
+                defineUrlAccessor('port', function (value) {
+                    if (urlIsOpaque(this._parsed) || this._parsed.host === '') return;
+                    var port = String(value);
+                    var digits = /^\d*/.exec(port)[0];
+                    reparseUrl(this, { host: this._parsed.hostname + (digits === '' ? '' : ':' + digits) });
+                });
+                defineUrlAccessor('pathname', function (value) {
+                    if (urlIsOpaque(this._parsed)) return;
+                    var path = String(value);
+                    if (path.charAt(0) !== '/') path = '/' + path;
+                    reparseUrl(this, { pathname: path });
+                });
+                defineUrlAccessor('search', function (value) {
+                    var search = String(value);
+                    if (search !== '' && search.charAt(0) !== '?') search = '?' + search;
+                    reparseUrl(this, { search: search === '?' ? '' : search });
+                });
+                defineUrlAccessor('hash', function (value) {
+                    var hash = String(value);
+                    if (hash !== '' && hash.charAt(0) !== '#') hash = '#' + hash;
+                    reparseUrl(this, { hash: hash === '#' ? '' : hash });
+                });
+                Object.defineProperty(URL.prototype, 'searchParams', {
+                    get: function () {
+                        if (!this._searchParams) {
+                            var params = new URLSearchParams(this._parsed.search);
+                            Object.defineProperty(params, '_url', { value: this, configurable: true });
+                            this._searchParams = params;
+                        }
+                        return this._searchParams;
+                    },
+                    enumerable: true,
+                    configurable: true
+                });
 
                 URL.prototype.toString = function () {
                     return this.href;
@@ -15111,6 +15230,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return result;
     }
 
+    /// <summary>
+    /// The URL API's parser (WHATWG URL 6.1 "URL(url, base)"): the input against the
+    /// given base only -- unlike an attribute or fetch, `new URL` never consults the
+    /// document's base, so a bare relative reference fails. Returns null on failure
+    /// so `new URL` can throw and `URL.canParse` can answer false.
+    /// </summary>
     private JsValue ParseFenJsUrl(IReadOnlyList<JsValue> args)
     {
         if (args == null ||
@@ -15121,53 +15246,35 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         var input = CoerceToHostString(args[0]);
-        Uri baseUri = null;
+        FenBrowser.Core.Network.WhatwgUrl baseUrl = null;
         if (args.Count > 1 && args[1].Tag != JsValueTag.Undefined)
         {
-            var baseText = CoerceToHostString(args[1]);
-            if (!Uri.TryCreate(baseText, UriKind.Absolute, out baseUri))
-            {
-                return JsValue.Null;
-            }
-        }
-        else
-        {
-            var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
-            baseUri = _currentBaseUri ?? TryCreateUri(document?.URL);
-        }
-
-        if (!Uri.TryCreate(input, UriKind.Absolute, out var uri))
-        {
-            if (baseUri == null || !Uri.TryCreate(baseUri, input, out uri))
+            baseUrl = FenBrowser.Core.Network.WhatwgUrl.Parse(CoerceToHostString(args[1]));
+            if (baseUrl == null)
             {
                 return JsValue.Null;
             }
         }
 
-        if (uri == null || !uri.IsAbsoluteUri)
+        var url = FenBrowser.Core.Network.WhatwgUrl.Parse(input, baseUrl);
+        if (url == null)
         {
             return JsValue.Null;
         }
 
-        var port = uri.IsDefaultPort ? string.Empty : uri.Port.ToString(CultureInfo.InvariantCulture);
-        var host = string.IsNullOrEmpty(port) ? uri.Host : $"{uri.Host}:{port}";
-        var origin =
-            string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
-                ? uri.GetLeftPart(UriPartial.Authority)
-                : "null";
-
         return _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
-            ["href"] = JsValue.FromString(uri.AbsoluteUri),
-            ["origin"] = JsValue.FromString(origin),
-            ["protocol"] = JsValue.FromString(string.IsNullOrEmpty(uri.Scheme) ? string.Empty : uri.Scheme + ":"),
-            ["host"] = JsValue.FromString(host ?? string.Empty),
-            ["hostname"] = JsValue.FromString(uri.Host ?? string.Empty),
-            ["port"] = JsValue.FromString(port),
-            ["pathname"] = JsValue.FromString(string.IsNullOrEmpty(uri.AbsolutePath) ? "/" : uri.AbsolutePath),
-            ["search"] = JsValue.FromString(uri.Query ?? string.Empty),
-            ["hash"] = JsValue.FromString(uri.Fragment ?? string.Empty)
+            ["href"] = JsValue.FromString(url.Href),
+            ["origin"] = JsValue.FromString(url.Origin),
+            ["protocol"] = JsValue.FromString(url.Protocol),
+            ["username"] = JsValue.FromString(url.Username),
+            ["password"] = JsValue.FromString(url.Password),
+            ["host"] = JsValue.FromString(url.Host),
+            ["hostname"] = JsValue.FromString(url.Hostname),
+            ["port"] = JsValue.FromString(url.Port),
+            ["pathname"] = JsValue.FromString(url.Pathname),
+            ["search"] = JsValue.FromString(url.Search),
+            ["hash"] = JsValue.FromString(url.Hash)
         });
     }
 
