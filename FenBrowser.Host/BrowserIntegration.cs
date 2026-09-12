@@ -3687,6 +3687,51 @@ public class BrowserIntegration : IDisposable
     /// Get the content height for scroll calculation.
     /// </summary>
     public float ContentHeight => _contentHeight;
+
+    /// <summary>
+    /// CSS Overflow §3.3: the root element's overflow (or the body's, when the root's
+    /// is visible) is the viewport's. `hidden`/`clip` there means the document shows no
+    /// scrollbar and the user cannot scroll it, though scripts still can. Acid2 sets
+    /// `html { overflow: hidden }` for exactly this.
+    /// </summary>
+    public bool ViewportOverflowHidden
+    {
+        get
+        {
+            var styles = _styles;
+            var root = _root;
+            if (styles == null || root == null)
+            {
+                return false;
+            }
+
+            var html = root.OwnerDocument?.DocumentElement ?? root;
+            string rootOverflow = ResolveBlockOverflow(styles, html);
+            if (!IsVisibleOverflow(rootOverflow))
+            {
+                return IsHiddenOverflow(rootOverflow);
+            }
+
+            var body = root.OwnerDocument?.Body;
+            return body != null && IsHiddenOverflow(ResolveBlockOverflow(styles, body));
+        }
+    }
+
+    private static string ResolveBlockOverflow(Dictionary<Node, CssComputed> styles, Element element)
+    {
+        if (element == null || !styles.TryGetValue(element, out var style) || style == null)
+        {
+            return null;
+        }
+
+        return (style.OverflowY ?? style.Overflow)?.Trim().ToLowerInvariant();
+    }
+
+    private static bool IsVisibleOverflow(string overflow) =>
+        string.IsNullOrEmpty(overflow) || overflow == "visible";
+
+    private static bool IsHiddenOverflow(string overflow) =>
+        overflow == "hidden" || overflow == "clip";
     
     /// <summary>
     /// Set DPI scale for coordinate translation.

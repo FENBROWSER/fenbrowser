@@ -169,7 +169,7 @@ public class WebContentWidget : Widget
 
         float contentHeight = browser.ContentHeight;
         float viewportHeight = viewport.Height;
-        if (contentHeight <= viewportHeight + 0.5f || viewportHeight <= 0f)
+        if (contentHeight <= viewportHeight + 0.5f || viewportHeight <= 0f || browser.ViewportOverflowHidden)
         {
             return;
         }
