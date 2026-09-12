@@ -317,4 +317,25 @@ public sealed class HostObjectIntegrationTests
             noop.apply(null, 5);
             """));
     }
+    // ECMA-262 23.1.2.1 step 7: a platform object with a length and indices
+    // (NamedNodeMap, CSSStyleDeclaration) is array-like through the host hook,
+    // and one with @@iterator on its prototype is iterable.
+    [Fact]
+    public void ArrayFromReadsHostObjectsAsArrayLikeAndIterable()
+    {
+        var (interpreter, hooks, handle) = Setup();
+        hooks.Store[(handle.Index, "length")] = JsValue.FromInt32(2);
+        hooks.Store[(handle.Index, "0")] = JsValue.FromString("a");
+        hooks.Store[(handle.Index, "1")] = JsValue.FromString("b");
+
+        Assert.Equal("a,b", Run(interpreter, "Array.from(myHost).join(',');").AsString());
+        Assert.Equal("A,B", Run(interpreter, "Array.from(myHost, function (v) { return v.toUpperCase(); }).join(',');").AsString());
+
+        var iterated = Run(interpreter, """
+            var proto = { [Symbol.iterator]: function* () { yield 'x'; yield 'y'; } };
+            Object.setPrototypeOf(myHost, proto);
+            Array.from(myHost).join(',');
+            """);
+        Assert.Equal("x,y", iterated.AsString());
+    }
 }

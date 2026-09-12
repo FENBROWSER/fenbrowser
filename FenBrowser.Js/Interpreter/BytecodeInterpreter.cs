@@ -16534,8 +16534,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     obj0.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc) &&
                     iterDesc.Value.Tag == JsValueTag.Object;
             }
+            else if (!useIterator && source.Tag == JsValueTag.HostObject)
+            {
+                // A platform object (NamedNodeMap, CSSStyleDeclaration, ...) answers
+                // @@iterator and length through the host, so ask by receiver.
+                var iterId = GetWellKnownSymbolId("iterator");
+                useIterator = iterId != 0 && IsCallable(GetReceiverSymbolProperty(source, iterId));
+            }
 
-            if (useIterator && source.Tag == JsValueTag.Object)
+            if (useIterator && (source.Tag == JsValueTag.Object || source.Tag == JsValueTag.HostObject))
             {
                 // ECMA-262 23.1.2.1 Array.from, iterator path. Pull the iterator
                 // lazily one step at a time so that (a) an abrupt completion from
@@ -16545,10 +16552,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 // path buffers every value up front and loops forever on an
                 // iterator whose next() never reports done (see
                 // built-ins/Array/from/iter-map-fn-err.js).
-                var srcObj = _heap.GetObject(source.AsObjectHandle());
                 var iterId = GetWellKnownSymbolId("iterator");
-                srcObj.TryGetSymbolProperty(iterId, ResolvePrototypeDelegate, out var iterDesc);
-                var iterator = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
+                var iterFn = GetReceiverSymbolProperty(source, iterId);
+                var iterator = CallFunction(iterFn, Array.Empty<JsValue>(), source);
                 if (iterator.Tag != JsValueTag.Object)
                 {
                     throw new JsThrownException(CreateTypeError(
@@ -16654,6 +16660,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     var key = JsIndexKeys.For(i);
                     TryGetPropertyValue(obj, source, key, out var v);
+                    if (mapFn.HasValue)
+                    {
+                        v = CallFunction(mapFn.Value, new[] { v, JsValue.FromNumber(i) }, thisArg);
+                    }
+                    items.Add(v);
+                }
+            }
+            else if (source.Tag == JsValueTag.HostObject)
+            {
+                // 23.1.2.1 step 7, array-like path for a platform object: length
+                // and indices come through the host's property hook.
+                var lenDouble = ToLengthNumber(GetReceiverProperty(source, "length"));
+                ThrowIfArrayLengthExceedsLimit(lenDouble);
+                var length = (int)Math.Min(lenDouble, int.MaxValue);
+                for (var i = 0; i < length; i++)
+                {
+                    var v = GetReceiverProperty(source, JsIndexKeys.For(i));
                     if (mapFn.HasValue)
                     {
                         v = CallFunction(mapFn.Value, new[] { v, JsValue.FromNumber(i) }, thisArg);
