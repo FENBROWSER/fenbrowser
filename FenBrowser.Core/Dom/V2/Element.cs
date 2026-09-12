@@ -1,4 +1,4 @@
-// WHATWG DOM Living Standard compliant implementation
+﻿// WHATWG DOM Living Standard compliant implementation
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
 using System;
@@ -502,6 +502,17 @@ namespace FenBrowser.Core.Dom.V2
                     : (_flags | NodeFlags.HasStyleAttribute);
             }
 
+            // Update ancestor filter for selector optimization. This has to
+            // happen before anyone is told about the change: a style pass run
+            // from the StyleAttributeChanged handler matched descendant
+            // selectors against the stale filter and missed the new class.
+            if (name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("class", StringComparison.OrdinalIgnoreCase))
+            {
+                RecomputeAncestorFeatureHash();
+                UpdateAncestorFilter(forceDescendantRefresh: true);
+            }
+
             // Mark style dirty for style-affecting attributes
             if (IsStyleAffectingAttribute(name))
             {
@@ -511,14 +522,6 @@ namespace FenBrowser.Core.Dom.V2
                 {
                     EngineLogCompat.Debug($"[DOM] StyleAttributeChanged callback failed for '{TagName}': {ex.Message}", LogCategory.DOM);
                 }
-            }
-
-            // Update ancestor filter for selector optimization
-            if (name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
-                name.Equals("class", StringComparison.OrdinalIgnoreCase))
-            {
-                RecomputeAncestorFeatureHash();
-                UpdateAncestorFilter(forceDescendantRefresh: true);
             }
 
             NotifySlotAssignmentMayHaveChanged(name);
@@ -549,16 +552,6 @@ namespace FenBrowser.Core.Dom.V2
             if (name.Equals("style", StringComparison.OrdinalIgnoreCase))
                 _flags &= ~NodeFlags.HasStyleAttribute;
 
-            if (IsStyleAffectingAttribute(name))
-            {
-                MarkDirty(InvalidationKind.Style);
-                try { StyleAttributeChanged?.Invoke(this); }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Debug($"[DOM] StyleAttributeChanged callback failed for '{TagName}': {ex.Message}", LogCategory.DOM);
-                }
-            }
-
             var changesAncestorFeatures =
                 name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
                 name.Equals("class", StringComparison.OrdinalIgnoreCase);
@@ -568,6 +561,16 @@ namespace FenBrowser.Core.Dom.V2
             }
 
             UpdateAncestorFilter(forceDescendantRefresh: changesAncestorFeatures);
+
+            if (IsStyleAffectingAttribute(name))
+            {
+                MarkDirty(InvalidationKind.Style);
+                try { StyleAttributeChanged?.Invoke(this); }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug($"[DOM] StyleAttributeChanged callback failed for '{TagName}': {ex.Message}", LogCategory.DOM);
+                }
+            }
             NotifySlotAssignmentMayHaveChanged(name);
             NotifyAttributeMutation(attr, oldValue);
         }

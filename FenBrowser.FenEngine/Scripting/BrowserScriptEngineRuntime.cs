@@ -359,8 +359,10 @@ Action<Element> FlushPendingLayout { get; set; }
     /// scripts, after any script currently running and before the next one:
     /// the slot where a browser's main thread does style recalc and other
     /// rendering-update steps (HTML "update the rendering"), so the work sees a
-    /// DOM no script is mutating. Runs inline when already on that thread. The
-    /// returned task completes when the work has finished.
+    /// DOM no script is mutating. Always queued, even when called from the
+    /// script thread itself: a mutation observer or attribute setter that
+    /// schedules work must not have it run before the mutation has finished.
+    /// The returned task completes when the work has finished.
     /// </summary>
     Task RunOnScriptThreadAsync(Func<Task> work);
 
@@ -2672,25 +2674,35 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     public Task RunOnScriptThreadAsync(Func<Task> work)
     {
         ArgumentNullException.ThrowIfNull(work);
-        if (_onFenJsLargeStackThread)
+        if (_realmAbandoned)
         {
-            return work();
+            return Task.CompletedTask;
         }
 
+        // Queued even from the script thread: a style pass scheduled from
+        // inside an attribute setter ran before the element had finished
+        // updating (its ancestor selector filter was still stale) and styled
+        // the subtree against the old state, after which nothing was dirty.
+        // Running after the current task also coalesces a script's many
+        // mutations into one pass instead of one per mutation.
+        //
         // The work is not script: it runs with no instruction budget of its own
         // and is never abandoned on timeout. Blocking the worker on the task is
         // what makes the pass atomic with respect to scripts; a continuation of
         // the work on another thread can still run, but no script runs
         // alongside it because the only script thread is waiting here.
-        return RunFenJsWithLargeStackAsync<object>(
+        EnsureFenJsWorkerRunning();
+        var workItem = CreateFenJsWorkItem(
             () =>
             {
                 work().GetAwaiter().GetResult();
                 return null;
             },
-            timeoutMs: -1,
-            instructionBudget: int.MaxValue,
-            workKind: "RenderingUpdate");
+            int.MaxValue,
+            "RenderingUpdate");
+        _fenJsWorkQueue.Enqueue(workItem);
+        _fenJsWorkAvailable.Set();
+        return workItem.Completion.Task;
     }
 
     /// <summary>
