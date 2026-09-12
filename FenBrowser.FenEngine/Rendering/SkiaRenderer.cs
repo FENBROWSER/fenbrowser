@@ -614,6 +614,29 @@ namespace FenBrowser.FenEngine.Rendering
                     childViewport.Inflate(filterVisualOutset, filterVisualOutset);
                 }
 
+                // Children of a scroller keep unscrolled (layout) bounds while the
+                // translation above moves them on screen, so cull them against the
+                // viewport expressed in their own coordinate space — otherwise a nested
+                // scroll container (an iframe scrolled thousands of px, an overflow:auto
+                // panel) drops everything past the window's unscrolled extent.
+                if (pushedScroll)
+                {
+                    var scroll = (ScrollPaintNode)node;
+                    childViewport.Offset(scroll.ScrollX, scroll.ScrollY);
+                }
+                if (pushedSticky)
+                {
+                    var sticky = (StickyPaintNode)node;
+                    childViewport.Offset(-sticky.StickyOffset.X, -sticky.StickyOffset.Y);
+                }
+                // Likewise a transformed context: its children are culled in their own
+                // pre-transform space, so bring the viewport there (the mapped bounding
+                // box is a conservative superset for rotations/skews).
+                if (pushedTransform && node.Transform.Value.TryInvert(out var inverseTransform))
+                {
+                    childViewport = inverseTransform.MapRect(childViewport);
+                }
+
                 foreach (var child in node.Children)
                 {
                     DrawNodeSafe(backend, child, childViewport, stats, hoverPaintedSources);
