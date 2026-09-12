@@ -10883,9 +10883,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return encodeURIComponent(String(value)).split('%20').join('+');
                 }
 
+                // WebIDL 3.7.10.1: an iterable's keys()/values()/entries() return an
+                // iterator that is itself iterable (%IteratorPrototype%'s @@iterator
+                // returns this), so `for (const [k, v] of params.entries())` works.
                 function createUrlSearchParamsIterator(items) {
                     var index = 0;
-                    return {
+                    var iterator = {
                         next: function () {
                             if (index >= items.length) {
                                 return { value: undefined, done: true };
