@@ -230,6 +230,15 @@ private int _inlineStyleCacheEvictions;
             }
 
             normalized = rawName.Trim().TrimStart(':').ToLowerInvariant();
+            if (normalized == "slotted")
+            {
+                // CSS Scoping 3.5: ::slotted() is tree-abiding -- its subject is the
+                // slotted element itself, not a generated box, so the rule belongs to
+                // that element's own cascade rather than a pseudo-element pass.
+                normalized = null;
+                return false;
+            }
+
             return normalized.Length > 0;
         }
 
@@ -968,11 +977,78 @@ return computed;
             }
         }
         
+        /// <summary>
+        /// CSS Scoping 3.3 and 3.5: a shadow tree's stylesheet reaches exactly two
+        /// things outside the tree -- its own host, through :host / :host() /
+        /// :host-context() as the selector's subject, and the host's light-DOM
+        /// children pulled into the tree through ::slotted(). Everything else stays
+        /// scoped. Polymer components size themselves with `:host { display: block }`
+        /// and iron-pages hides the unselected page with
+        /// `:host > ::slotted(:not(.iron-selected)) { display: none }`.
+        /// </summary>
+        private static bool ReachesAcrossShadowBoundary(Element element, CssStyleRule styleRule)
+        {
+            var scope = styleRule.ShadowScopeRoot;
+            var selector = styleRule.Selector;
+            if (scope == null || selector == null)
+            {
+                return false;
+            }
+
+            if (selector.Chains == null || selector.Chains.Count == 0)
+            {
+                selector.Chains = SelectorMatcher.ParseSelectorList(selector.Raw);
+            }
+
+            var chains = selector.Chains;
+
+            var isScopeHost = ReferenceEquals(scope.Host, element);
+            var isSlottedCandidate = element.ParentElement is Element parent && ReferenceEquals(parent.ShadowRoot, scope);
+            if (!isScopeHost && !isSlottedCandidate)
+            {
+                return false;
+            }
+
+            foreach (var chain in chains)
+            {
+                if (chain.Segments.Count == 0)
+                {
+                    continue;
+                }
+
+                var subject = chain.Segments[chain.Segments.Count - 1];
+                if (isScopeHost)
+                {
+                    foreach (var pseudo in subject.PseudoClasses)
+                    {
+                        if (pseudo.Name == "host" || pseudo.Name == "host-context")
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                if (isSlottedCandidate)
+                {
+                    foreach (var pseudo in subject.PseudoElements)
+                    {
+                        if (pseudo.Name == "slotted")
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
         private void TryMatchRule(Element element, CssStyleRule styleRule, List<MatchedDeclaration> results, string pseudoElement, ShadowRoot elementShadowRoot)
         {
             if (styleRule.ShadowScopeRoot != null)
             {
-                if (!ReferenceEquals(styleRule.ShadowScopeRoot, elementShadowRoot))
+                if (!ReferenceEquals(styleRule.ShadowScopeRoot, elementShadowRoot) &&
+                    !ReachesAcrossShadowBoundary(element, styleRule))
                 {
                     return;
                 }
