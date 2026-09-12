@@ -103,6 +103,26 @@ public sealed class FenJsUrlApiTests
         Assert.Equal("TypeError|false|true|TypeError|false", result?.ToString());
     }
 
+    // HTML 7.10 / 7.9: Location and History are interface objects on window even
+    // though their instances are host singletons; Polymer's app-location declares
+    // `location: { type: Location }` and reads the global.
+    [Fact]
+    public async Task LocationAndHistoryInterfaceObjectsExist()
+    {
+        var engine = await CreateEngineAsync();
+
+        var result = engine.Evaluate("""
+            (function () {
+                return [
+                    typeof Location, location instanceof Location, ({}) instanceof Location,
+                    typeof History, history instanceof History
+                ].join('|');
+            })();
+            """);
+
+        Assert.Equal("function|true|false|function|true", result?.ToString());
+    }
+
     private static JsHostAdapter CreateHost()
         => new(
             navigate: _ => { },

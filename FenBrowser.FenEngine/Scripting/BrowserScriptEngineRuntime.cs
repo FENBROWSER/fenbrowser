@@ -5196,7 +5196,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         'MutationRecord', 'IntersectionObserver', 'ResizeObserver',
                         'customElements', 'CustomElementRegistry',
                         'localStorage', 'sessionStorage', 'Storage',
-                        'history', 'History', 'screen', 'Screen', 'visualViewport',
+                        'history', 'History', 'Location', 'screen', 'Screen', 'visualViewport',
                         'alert', 'confirm', 'prompt', 'print', 'open',
                         'focus', 'blur', 'scroll', 'scrollTo', 'scrollBy',
                         'getComputedStyle', 'matchMedia',
@@ -9766,6 +9766,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                 var Navigator = defineCtor('Navigator', null, ['Navigator'], function (candidate) {
                     return candidate === globalThis.navigator || (candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('Navigator') >= 0);
+                });
+
+                // HTML 7.10 Location and 7.9 History: the interface objects exist even
+                // though the instances are host-owned singletons -- Polymer declares
+                // `location: { type: Location }` and checks `x instanceof Location`.
+                defineCtor('Location', null, ['Location'], function (candidate) {
+                    return candidate === globalThis.location;
+                });
+                defineCtor('History', null, ['History'], function (candidate) {
+                    return candidate === globalThis.history;
                 });
 
                 // WebDriver: the attribute lives on the prototype and reads
