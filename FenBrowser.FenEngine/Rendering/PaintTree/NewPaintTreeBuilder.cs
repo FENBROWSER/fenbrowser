@@ -623,6 +623,27 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
+                // position:fixed — laid out against its viewport in unscrolled document
+                // coordinates while everything around it is painted translated by that
+                // viewport's scroll (the window's canvas translate, or an <iframe>'s
+                // ScrollPaintNode). Counter-translate the whole stacking context so the
+                // box stays put on screen (Acid2's scalp inside the scrolled reftest
+                // frame; sticky site headers). A transformed ancestor makes that ancestor
+                // the containing block instead (CSS Transforms §2), so it scrolls along.
+                if (string.Equals(style?.Position, "fixed", StringComparison.OrdinalIgnoreCase) &&
+                    node is Element fixedElement &&
+                    !HasTransformedAncestor(fixedElement))
+                {
+                    var fixedScroll = ResolveViewportScrollForFixed(fixedElement);
+                    if (Math.Abs(fixedScroll.X) > 0.01f || Math.Abs(fixedScroll.Y) > 0.01f)
+                    {
+                        var counter = SKMatrix.CreateTranslation(fixedScroll.X, fixedScroll.Y);
+                        childContext.TransformMatrix = childContext.TransformMatrix.HasValue
+                            ? counter.PreConcat(childContext.TransformMatrix.Value)
+                            : counter;
+                    }
+                }
+
                 string containerDisplay = style?.Display?.ToLowerInvariant() ?? "inline";
 
                 // Check for overflow/scroll
@@ -1476,6 +1497,47 @@ namespace FenBrowser.FenEngine.Rendering
             width = Math.Abs(w);
             height = Math.Abs(h);
             return width > 0f && height > 0f;
+        }
+
+        /// <summary>
+        /// Scroll offset of the viewport a fixed box is positioned against: the
+        /// embedding iframe's scroll state for a nested document, the root state
+        /// (which the host mirrors from its own document scroll) for the top level.
+        /// </summary>
+        private SKPoint ResolveViewportScrollForFixed(Element element)
+        {
+            if (_scrollManager == null)
+            {
+                return SKPoint.Empty;
+            }
+
+            for (var current = element?.ParentNode; current != null; current = current.ParentNode)
+            {
+                if (current is Element ancestor &&
+                    string.Equals(ancestor.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase))
+                {
+                    var frameOffset = _scrollManager.GetScrollOffset(ancestor);
+                    return new SKPoint(frameOffset.x, frameOffset.y);
+                }
+            }
+
+            var viewportOffset = _scrollManager.GetScrollOffset(null);
+            return new SKPoint(viewportOffset.x, viewportOffset.y);
+        }
+
+        private bool HasTransformedAncestor(Element element)
+        {
+            for (var current = element?.ParentElement; current != null; current = current.ParentElement)
+            {
+                if (_styles.TryGetValue(current, out var ancestorStyle) &&
+                    !string.IsNullOrEmpty(ancestorStyle.Transform) &&
+                    !string.Equals(ancestorStyle.Transform, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private Element FindNearestScrollContainer(Element startNode)
