@@ -59,8 +59,9 @@ namespace FenBrowser.FenEngine.Layout
             }
             else
             {
+                // Padding box even when empty (§10.1); see GetContainingBlockRect.
                 cbRect = containerGeometry.PaddingBox;
-                if (cbRect.Width <= 0 || cbRect.Height <= 0)
+                if (cbRect.Width <= 0 && cbRect.Height <= 0 && cbRect.Left == 0 && cbRect.Top == 0)
                 {
                     cbRect = containerGeometry.ContentBox;
                 }
@@ -254,16 +255,16 @@ namespace FenBrowser.FenEngine.Layout
         {
             if (cbBox?.Geometry != null)
             {
+                // CSS 2.1 §10.1: the containing block is the ancestor's padding box,
+                // whatever its size. A positioned ancestor whose only children are
+                // out-of-flow (Acid2's `.picture`) has a zero-height padding box, and
+                // its descendants must still resolve `top:0` against it — not the
+                // viewport. Only a never-synced (all-zero) geometry falls through.
                 var paddingBox = cbBox.Geometry.PaddingBox;
-                if (paddingBox.Width > 0 && paddingBox.Height > 0)
+                if (paddingBox.Width > 0 || paddingBox.Height > 0 ||
+                    paddingBox.Left != 0 || paddingBox.Top != 0)
                 {
                     return paddingBox;
-                }
-
-                var contentBox = cbBox.Geometry.ContentBox;
-                if (contentBox.Width > 0 && contentBox.Height > 0)
-                {
-                    return contentBox;
                 }
             }
 
@@ -287,9 +288,14 @@ namespace FenBrowser.FenEngine.Layout
                 return;
             }
 
+            // The static position is where the box's margin edge would have been in
+            // flow (CSS 2.1 §10.3.7 / §10.6.4); `solved` addresses the content box.
             if (IsAutoInset(style, "left") && IsAutoInset(style, "right"))
             {
-                solved.X = point.X - containingBlockRect.Left;
+                solved.X = point.X - containingBlockRect.Left
+                    + (float)style.Margin.Left
+                    + (float)style.BorderThickness.Left
+                    + (float)style.Padding.Left;
             }
 
             if (IsAutoInset(style, "top") && IsAutoInset(style, "bottom"))
