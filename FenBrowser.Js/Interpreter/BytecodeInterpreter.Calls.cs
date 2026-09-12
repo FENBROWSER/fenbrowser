@@ -717,12 +717,98 @@ public sealed partial class BytecodeInterpreter
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private JsValue ThrowCallTargetIsNullish(JsValue value, in CallArgs args, JsValue thisValue)
     {
+        // Name the callee the way V8 does ("x.foo is not a function") when the
+        // bytecode shows which property or variable produced it; a page's own
+        // error handling and any human reading the log get the missing member
+        // rather than only a register-level dump.
+        var calleeName = DescribeCalleeExpression();
+        var head = calleeName != null
+            ? calleeName + " is not a function"
+            : "Cannot read properties of " +
+              (value.Tag == JsValueTag.Undefined ? "undefined" : "null") +
+              " while resolving call target";
         throw new JsThrownException(CreateTypeError(
-            "Cannot read properties of " +
-            (value.Tag == JsValueTag.Undefined ? "undefined" : "null") +
-            " while resolving call target. this=" + DescribeValueShort(thisValue) +
+            head + ". this=" + DescribeValueShort(thisValue) +
             " arg0=" + (args.Count > 0 ? DescribeValueShort(args[0]) : "<none>") +
             " " + DescribeFrameStack()));
+    }
+
+    /// <summary>
+    /// Best-effort source-level name for the callee of the call instruction that
+    /// is executing in the innermost frame: walks back from the call to the
+    /// instruction that last wrote the callee register and renders
+    /// <c>recv.prop</c> for a named property load or the slot name for a
+    /// variable load. Returns null when the dataflow is not that simple.
+    /// </summary>
+    private string? DescribeCalleeExpression()
+    {
+        try
+        {
+            if (_activeFrames.Count == 0) return null;
+            var frame = _activeFrames.Peek();
+            var fn = frame.Function;
+            var callIp = frame.InstructionPointer - 1;
+            if ((uint)callIp >= (uint)fn.Instructions.Count) return null;
+            var call = fn.Instructions[callIp];
+            switch (call.OpCode)
+            {
+                case OpCode.Call0:
+                case OpCode.Call1:
+                case OpCode.CallN:
+                case OpCode.CallMethod0:
+                case OpCode.CallMethod1:
+                case OpCode.CallMethodN:
+                    break;
+                default:
+                    return null;
+            }
+
+            var calleeRegister = call.B;
+            var from = System.Math.Max(0, callIp - 16);
+            for (var i = callIp - 1; i >= from; i--)
+            {
+                var ins = fn.Instructions[i];
+                if (ins.OpCode == OpCode.GetPropByName && ins.A == calleeRegister)
+                {
+                    if ((uint)ins.C >= (uint)fn.PropertyNames.Count) return null;
+                    var receiverName = DescribeRegisterSource(fn, i, ins.B);
+                    return (receiverName ?? DescribeValueShort(frame.Registers[ins.B])) + "." + fn.PropertyNames[ins.C];
+                }
+                if (ins.OpCode == OpCode.LoadVar && ins.A == calleeRegister)
+                {
+                    return SlotNameTable.GetName(fn, ins.B);
+                }
+                if (ins.A == calleeRegister)
+                {
+                    return null;
+                }
+            }
+        }
+        catch
+        {
+            // Diagnostics only.
+        }
+
+        return null;
+    }
+
+    private static string? DescribeRegisterSource(BytecodeFunction fn, int beforeIp, int register)
+    {
+        var from = System.Math.Max(0, beforeIp - 8);
+        for (var i = beforeIp - 1; i >= from; i--)
+        {
+            var ins = fn.Instructions[i];
+            if (ins.A != register) continue;
+            if (ins.OpCode == OpCode.LoadVar) return SlotNameTable.GetName(fn, ins.B);
+            if (ins.OpCode == OpCode.GetPropByName && (uint)ins.C < (uint)fn.PropertyNames.Count)
+            {
+                var inner = DescribeRegisterSource(fn, i, ins.B);
+                return inner != null ? inner + "." + fn.PropertyNames[ins.C] : null;
+            }
+            return null;
+        }
+
+        return null;
     }
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private JsValue ThrowCallTargetIsNullish(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
