@@ -13449,14 +13449,6 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         var handle = receiver.AsHostObjectHandle();
-        var traceMutation = ShouldTraceHostMutationMethod(methodName);
-        if (traceMutation)
-        {
-            EngineLogCompat.Warn(
-                $"[FenHostMutationProbe] enter method={methodName} receiver={DescribeHostMutationValue(receiver)} arg0={(args != null && args.Count > 0 ? DescribeHostMutationValue(args[0]) : "<none>")} arg1={(args != null && args.Count > 1 ? DescribeHostMutationValue(args[1]) : "<none>")}",
-                LogCategory.JavaScript);
-        }
-
         if (!_hostHooks.TryGetHostProperty(handle, methodName, out var method) ||
             !_interpreter.CanCallValue(method))
         {
@@ -13473,52 +13465,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             ThrowDomException("TypeError", "Illegal invocation");
         }
 
-        try
-        {
-            var result = _interpreter.InvokeFunction(method, args ?? Array.Empty<JsValue>(), receiver);
-            if (traceMutation)
-            {
-                EngineLogCompat.Warn(
-                    $"[FenHostMutationProbe] exit method={methodName} receiver={DescribeHostMutationValue(receiver)} result={DescribeHostMutationValue(result)} arg0Now={(args != null && args.Count > 0 ? DescribeHostMutationValue(args[0]) : "<none>")}",
-                    LogCategory.JavaScript);
-            }
-
-            return result;
-        }
-        catch (Exception ex)
-        {
-            if (traceMutation)
-            {
-                EngineLogCompat.Warn(
-                    $"[FenHostMutationProbe] throw method={methodName} receiver={DescribeHostMutationValue(receiver)} arg0={(args != null && args.Count > 0 ? DescribeHostMutationValue(args[0]) : "<none>")} error={ex.GetType().Name}:{ex.Message}",
-                    LogCategory.JavaScript);
-            }
-
-            throw;
-        }
-    }
-
-    private static bool ShouldTraceHostMutationMethod(string methodName)
-        => string.Equals(methodName, "appendChild", StringComparison.Ordinal) ||
-           string.Equals(methodName, "insertBefore", StringComparison.Ordinal) ||
-           string.Equals(methodName, "replaceChild", StringComparison.Ordinal) ||
-           string.Equals(methodName, "removeChild", StringComparison.Ordinal);
-
-    private string DescribeHostMutationValue(JsValue value)
-    {
-        if (value.Tag != JsValueTag.HostObject)
-        {
-            return value.Tag.ToString();
-        }
-
-        var host = ResolveHostObjectOrNull(value);
-        return host switch
-        {
-            Element element => $"{element.NodeName}#{element.Id}({element.GetType().Name}) parent={element.ParentNode?.NodeName ?? "null"} children={element.ChildNodes.Length}",
-            DocumentFragment fragment => $"{fragment.NodeName}({fragment.GetType().Name}) parent={fragment.ParentNode?.NodeName ?? "null"} children={fragment.ChildNodes.Length}",
-            Node node => $"{node.NodeName}({node.GetType().Name}) parent={node.ParentNode?.NodeName ?? "null"}",
-            _ => host?.GetType().Name ?? "unresolved"
-        };
+        return _interpreter.InvokeFunction(method, args ?? Array.Empty<JsValue>(), receiver);
     }
 
     private HostObjectHandle RegisterHostObject(object hostObject, HostObjectKind kind)
@@ -24086,13 +24033,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 return JsValue.Null;
                             }
 
-                            EngineLogCompat.Warn(
-                                $"[FenJsProbe] element.appendChild entering parent={element.NodeName}#{element.Id} child={child.NodeName} type={child.NodeType} childParent={child.ParentNode?.NodeName ?? "null"} childCount={(child is ContainerNode childContainer ? childContainer.ChildNodes.Length : 0)}",
-                                LogCategory.JavaScript);
                             var appended = element.AppendChild(child);
-                            EngineLogCompat.Warn(
-                                $"[FenJsProbe] element.appendChild returned parent={element.NodeName}#{element.Id} appended={appended.NodeName} childCount={(child is ContainerNode afterChildContainer ? afterChildContainer.ChildNodes.Length : 0)}",
-                                LogCategory.JavaScript);
                             _owner.QueueFrameLoadsForTree(appended);
                             if (child is Element childElement &&
                                 string.Equals(childElement.TagName, "SCRIPT", StringComparison.OrdinalIgnoreCase))
