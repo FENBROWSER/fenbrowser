@@ -333,21 +333,7 @@ namespace FenBrowser.Tooling
                 return;
             }
 
-            // Settle: let subresources, scripts, and async work run. Poll DOM size until
-            // stable. A quiet DOM is not settled while the document is still loading:
-            // deferred and module scripts fetch off the engine thread and touch nothing
-            // until they run, so stability only counts once `load` has fired.
-            int lastCount = -1, stableTicks = 0;
-            var deadline = DateTime.UtcNow.AddMilliseconds(settleMs);
-            while (DateTime.UtcNow < deadline)
-            {
-                await Task.Delay(250).ConfigureAwait(false);
-                var domRoot = host.GetDomRoot();
-                int count = CountDomNodes(domRoot);
-                var loaded = domRoot?.OwnerDocument?.ReadyState == FenBrowser.Core.Dom.V2.DocumentReadyState.Complete;
-                if (count == lastCount && loaded) { if (++stableTicks >= 8) break; }
-                else { stableTicks = 0; lastCount = count; }
-            }
+            await SettleDomAsync(host, settleMs).ConfigureAwait(false);
             sw.Stop();
 
             // Probe the live page global state (runs on the same script interpreter).
@@ -540,15 +526,7 @@ namespace FenBrowser.Tooling
                 navigateException = ex.ToString();
             }
 
-            int lastCount = -1, stableTicks = 0;
-            var deadline = DateTime.UtcNow.AddMilliseconds(settleMs);
-            while (DateTime.UtcNow < deadline)
-            {
-                await Task.Delay(250).ConfigureAwait(false);
-                int count = CountDomNodes(host.GetDomRoot());
-                if (count == lastCount) { if (++stableTicks >= 8) break; }
-                else { stableTicks = 0; lastCount = count; }
-            }
+            await SettleDomAsync(host, settleMs).ConfigureAwait(false);
 
             // ── Timer / redirect drain ──────────────────────────────────
             // Pages like Google CAPTCHA schedule setTimeout callbacks that
@@ -560,6 +538,7 @@ namespace FenBrowser.Tooling
             // the size is truly stable.
             var drainDeadline = DateTime.UtcNow.AddMilliseconds(settleMs);
             int drainStable = 0;
+            int lastCount = CountDomNodes(host.GetDomRoot());
             while (DateTime.UtcNow < drainDeadline)
             {
                 await Task.Delay(500).ConfigureAwait(false);
@@ -2951,6 +2930,28 @@ namespace FenBrowser.Tooling
         private static T SafeCall<T>(Func<T> fn)
         {
             try { return fn(); } catch { return default; }
+        }
+
+        /// <summary>
+        /// Let subresources, scripts, and async work run: poll the DOM size until it
+        /// has held still for two seconds or the deadline passes. A quiet DOM is not
+        /// settled while the document is still loading — deferred and module scripts
+        /// fetch off the engine thread and touch nothing until they run — so stability
+        /// only counts once the document has reached "complete".
+        /// </summary>
+        private static async Task SettleDomAsync(BrowserHost host, int settleMs)
+        {
+            int lastCount = -1, stableTicks = 0;
+            var deadline = DateTime.UtcNow.AddMilliseconds(settleMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(250).ConfigureAwait(false);
+                var domRoot = host.GetDomRoot();
+                int count = CountDomNodes(domRoot);
+                var loaded = domRoot?.OwnerDocument?.ReadyState == FenBrowser.Core.Dom.V2.DocumentReadyState.Complete;
+                if (count == lastCount && loaded) { if (++stableTicks >= 8) break; }
+                else { stableTicks = 0; lastCount = count; }
+            }
         }
 
         private static int CountDomNodes(FenBrowser.Core.Dom.V2.Node root)
