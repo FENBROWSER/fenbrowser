@@ -5296,7 +5296,14 @@ private static double? ExtractPx(string text, string prop)
                 css.BorderStyleRight = sideStyle;
             }
             
-            // Parse individual border-style-* properties (override shorthand)
+            // Per-side width longhands. The cascade expands every border shorthand
+            // into these in declaration order, so they are the authoritative
+            // per-side widths (`border-bottom: red solid` lands here as `medium`).
+            if (TryParseBorderWidthToken(Safe(DictGet(css.Map, "border-top-width")), currentEmBase, out var longhandTopWidth)) bTop = longhandTopWidth;
+            if (TryParseBorderWidthToken(Safe(DictGet(css.Map, "border-right-width")), currentEmBase, out var longhandRightWidth)) bRight = longhandRightWidth;
+            if (TryParseBorderWidthToken(Safe(DictGet(css.Map, "border-bottom-width")), currentEmBase, out var longhandBottomWidth)) bBottom = longhandBottomWidth;
+            if (TryParseBorderWidthToken(Safe(DictGet(css.Map, "border-left-width")), currentEmBase, out var longhandLeftWidth)) bLeft = longhandLeftWidth;
+
             // Parse individual border-style-* properties (override shorthand)
             var bsTopVal = Safe(DictGet(css.Map, "border-top-style"));
             if (!string.IsNullOrEmpty(bsTopVal)) css.BorderStyleTop = bsTopVal.ToLowerInvariant();

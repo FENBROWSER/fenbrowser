@@ -364,8 +364,11 @@ namespace FenBrowser.Tests.Layout
             Assert.NotNull(innerBox);
             Assert.NotNull(spanBox);
             Assert.NotNull(emBox);
-            Assert.True(spanBox.BorderBox.Height >= 30f, $"Expected the floated smile span to blockify and include its border-driven height, got {spanBox.BorderBox}.");
-            Assert.True(emBox.BorderBox.Height >= 20f, $"Expected the inherited floated <em> to establish the nested smile stroke, got {emBox.BorderBox}.");
+            // `border-style: none solid` zeroes the span's top/bottom borders, so the
+            // blockified float is exactly its `height: 1em` (12px) tall — the nested
+            // <em> float (24px of borders) overflows it rather than growing it.
+            Assert.InRange(spanBox.BorderBox.Height, 11.5f, 12.5f);
+            Assert.InRange(emBox.BorderBox.Height, 23.5f, 24.5f);
             Assert.True(spanBox.BorderBox.Right <= innerBox.ContentBox.Right + 1f, $"Expected the floated smile span to stay inside the absolute smile container, got span={spanBox.BorderBox} inner={innerBox.ContentBox}.");
         }
 

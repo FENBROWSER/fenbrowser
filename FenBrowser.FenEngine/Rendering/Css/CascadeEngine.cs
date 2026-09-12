@@ -1140,6 +1140,15 @@ return computed;
                 case "border-left":
                     ApplyBorderShorthand(computed, declaration, value, property);
                     break;
+                case "border-style":
+                    ApplyBorderSidesShorthand(computed, declaration, value, "style");
+                    break;
+                case "border-width":
+                    ApplyBorderSidesShorthand(computed, declaration, value, "width");
+                    break;
+                case "border-color":
+                    ApplyBorderSidesShorthand(computed, declaration, value, "color");
+                    break;
                 case "background":
                     ApplyBackgroundShorthand(computed, declaration, value);
                     break;
@@ -1502,36 +1511,48 @@ return computed;
                 else color = part;
             }
 
+            // CSS Backgrounds 3 §3.4: a shorthand resets every longhand it covers, so
+            // `border: solid` is a medium currentcolor border and `border-bottom: red
+            // solid` is 3px — an omitted component takes its initial value, not an
+            // earlier declaration's.
+            width ??= "medium";
+            style ??= "none";
+            color ??= "currentcolor";
+
             if (string.IsNullOrEmpty(sideProperty))
             {
-                if (width != null)
-                {
-                    SetExpanded(computed, "border-top-width", width, source);
-                    SetExpanded(computed, "border-right-width", width, source);
-                    SetExpanded(computed, "border-bottom-width", width, source);
-                    SetExpanded(computed, "border-left-width", width, source);
-                }
-                if (style != null)
-                {
-                    SetExpanded(computed, "border-top-style", style, source);
-                    SetExpanded(computed, "border-right-style", style, source);
-                    SetExpanded(computed, "border-bottom-style", style, source);
-                    SetExpanded(computed, "border-left-style", style, source);
-                }
-                if (color != null)
-                {
-                    SetExpanded(computed, "border-top-color", color, source);
-                    SetExpanded(computed, "border-right-color", color, source);
-                    SetExpanded(computed, "border-bottom-color", color, source);
-                    SetExpanded(computed, "border-left-color", color, source);
-                }
+                SetExpanded(computed, "border-top-width", width, source);
+                SetExpanded(computed, "border-right-width", width, source);
+                SetExpanded(computed, "border-bottom-width", width, source);
+                SetExpanded(computed, "border-left-width", width, source);
+                SetExpanded(computed, "border-top-style", style, source);
+                SetExpanded(computed, "border-right-style", style, source);
+                SetExpanded(computed, "border-bottom-style", style, source);
+                SetExpanded(computed, "border-left-style", style, source);
+                SetExpanded(computed, "border-top-color", color, source);
+                SetExpanded(computed, "border-right-color", color, source);
+                SetExpanded(computed, "border-bottom-color", color, source);
+                SetExpanded(computed, "border-left-color", color, source);
             }
             else
             {
-                if (width != null) SetExpanded(computed, sideProperty + "-width", width, source);
-                if (style != null) SetExpanded(computed, sideProperty + "-style", style, source);
-                if (color != null) SetExpanded(computed, sideProperty + "-color", color, source);
+                SetExpanded(computed, sideProperty + "-width", width, source);
+                SetExpanded(computed, sideProperty + "-style", style, source);
+                SetExpanded(computed, sideProperty + "-color", color, source);
             }
+        }
+
+        /// <summary>
+        /// `border-style` / `border-width` / `border-color` are four-value box
+        /// shorthands over the per-side longhands; expanding them in declaration
+        /// order lets `border: solid 1em; border-style: none solid` zero the top and
+        /// bottom sides (CSS 2.1 §8.5.3, Acid2's smile) instead of the earlier
+        /// `border` expansion winning.
+        /// </summary>
+        private static void ApplyBorderSidesShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value, string suffix)
+        {
+            ApplyBoxShorthand(computed, source, value,
+                "border-top-" + suffix, "border-right-" + suffix, "border-bottom-" + suffix, "border-left-" + suffix);
         }
 
         private static void ApplyBackgroundShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
