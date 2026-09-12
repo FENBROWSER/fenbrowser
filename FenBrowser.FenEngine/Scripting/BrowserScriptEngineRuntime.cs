@@ -6559,7 +6559,22 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             "  debug: function() { __fenLog('debug', Array.prototype.slice.call(arguments).join(' ')); }," +
             "  trace: function() { __fenLog('trace', Array.prototype.slice.call(arguments).join(' ')); }," +
             "  clear: function() {}," +
-            "  dir:   function() { __fenLog('dir',   Array.prototype.slice.call(arguments).join(' ')); }" +
+            "  dir:   function() { __fenLog('dir',   Array.prototype.slice.call(arguments).join(' ')); }," +
+            // Console Standard 1.1.1 assert(condition, ...data): logs only when the
+            // condition is falsy, prefixed 'Assertion failed'. Polymer's dom-repeat
+            // calls it unconditionally, so its absence threw inside connectedCallback.
+            "  assert: function(condition) { if (condition) return; var data = Array.prototype.slice.call(arguments, 1); __fenLog('error', data.length ? 'Assertion failed: ' + data.join(' ') : 'Assertion failed'); }," +
+            // 1.1.x count/countReset, group/groupEnd, time/timeEnd, table: accepted and
+            // routed to the log so a call never throws.
+            "  count: function(label) { __fenLog('log', String(label === undefined ? 'default' : label) + ': count'); }," +
+            "  countReset: function() {}," +
+            "  group: function() { __fenLog('log', Array.prototype.slice.call(arguments).join(' ')); }," +
+            "  groupCollapsed: function() { __fenLog('log', Array.prototype.slice.call(arguments).join(' ')); }," +
+            "  groupEnd: function() {}," +
+            "  time: function() {}," +
+            "  timeEnd: function() {}," +
+            "  timeLog: function() {}," +
+            "  table: function() { __fenLog('log', Array.prototype.slice.call(arguments).join(' ')); }" +
             "};" +
             // â”€â”€ navigator.sendBeacon â”€â”€
             "navigator.sendBeacon = function(url, data) { return true; };" +
