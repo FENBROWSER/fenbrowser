@@ -654,31 +654,38 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 ? state.ContainingBlockHeight
                 : state.ViewportHeight;
 
+            // CSS Box Sizing 3 §3: with box-sizing:border-box the height, min-height
+            // and max-height are border-box sizes, so each is that much larger than
+            // the content height it constrains.
+            float chrome = string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase)
+                ? (float)(style.Padding.Top + style.Padding.Bottom + style.BorderThickness.Top + style.BorderThickness.Bottom)
+                : 0f;
+
             if (style.Height.HasValue)
             {
-                resolved = (float)style.Height.Value;
+                resolved = (float)style.Height.Value - chrome;
             }
             else if (style.HeightPercent.HasValue && containingHeight > 0f)
             {
-                resolved = (float)(style.HeightPercent.Value / 100d * containingHeight);
+                resolved = (float)(style.HeightPercent.Value / 100d * containingHeight) - chrome;
             }
 
             if (style.MinHeight.HasValue)
             {
-                resolved = Math.Max(resolved, (float)style.MinHeight.Value);
+                resolved = Math.Max(resolved, (float)style.MinHeight.Value - chrome);
             }
             else if (style.MinHeightPercent.HasValue && containingHeight > 0f)
             {
-                resolved = Math.Max(resolved, (float)(style.MinHeightPercent.Value / 100d * containingHeight));
+                resolved = Math.Max(resolved, (float)(style.MinHeightPercent.Value / 100d * containingHeight) - chrome);
             }
 
             if (style.MaxHeight.HasValue)
             {
-                resolved = Math.Min(resolved, (float)style.MaxHeight.Value);
+                resolved = Math.Min(resolved, (float)style.MaxHeight.Value - chrome);
             }
             else if (style.MaxHeightPercent.HasValue && containingHeight > 0f)
             {
-                resolved = Math.Min(resolved, (float)(style.MaxHeightPercent.Value / 100d * containingHeight));
+                resolved = Math.Min(resolved, (float)(style.MaxHeightPercent.Value / 100d * containingHeight) - chrome);
             }
 
             return Math.Max(0f, resolved);
