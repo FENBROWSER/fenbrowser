@@ -2771,12 +2771,25 @@ return computed;
             if (string.IsNullOrEmpty(value)) return false;
             if (value == "0") return true;
             if (value == "thin" || value == "medium" || value == "thick") return true;
+            // CSS Values 4 §10: a math function (calc/min/max/clamp) is a <length>
+            // wherever a length is accepted, so `border: solid max(1px, .0625rem) red`
+            // carries a width, not a color.
+            if (IsCssMathFunction(value)) return true;
             // Check if it ends with a unit
             return value.EndsWith("px") || value.EndsWith("em") || value.EndsWith("rem") ||
                    value.EndsWith("pt") || value.EndsWith("vh") || value.EndsWith("vw") ||
                    value.EndsWith("%") || value.EndsWith("ch") || value.EndsWith("ex") ||
                    value.EndsWith("cm") || value.EndsWith("mm") || value.EndsWith("in") ||
                    value.EndsWith("pc");
+        }
+
+        private static bool IsCssMathFunction(string value)
+        {
+            if (value.Length < 5 || value[value.Length - 1] != ')') return false;
+            return value.StartsWith("calc(", StringComparison.OrdinalIgnoreCase) ||
+                   value.StartsWith("min(", StringComparison.OrdinalIgnoreCase) ||
+                   value.StartsWith("max(", StringComparison.OrdinalIgnoreCase) ||
+                   value.StartsWith("clamp(", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsBackgroundRepeat(string value)
