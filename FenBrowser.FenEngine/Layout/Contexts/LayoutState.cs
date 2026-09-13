@@ -104,6 +104,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         public float ForcedWidth = float.NaN;
         public float ForcedHeight = float.NaN;
 
+        /// <summary>
+        /// The width of the containing block an inline formatting context offers
+        /// its inline-level children: the context root's content width once that
+        /// is resolved, +∞ while the root is still a shrink-to-fit probe (a
+        /// percentage is then cyclic and behaves as auto), NaN before the root has
+        /// resolved. <see cref="ContainingBlockWidth"/> cannot carry this: inside an
+        /// inline context it is the enclosing block formatting context's width,
+        /// which the float manager positions against.
+        /// </summary>
+        public float InlineContainingBlockWidth = float.NaN;
+
         public LayoutState(SKSize available, float cbWidth, float cbHeight, float vpWidth, float vpHeight, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             AvailableSize = available;
@@ -122,6 +133,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             IsForced = false;
             ForcedWidth = float.NaN;
             ForcedHeight = float.NaN;
+            InlineContainingBlockWidth = float.NaN;
         }
 
         public LayoutState Clone()

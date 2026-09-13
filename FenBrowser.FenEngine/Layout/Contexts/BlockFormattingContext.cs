@@ -58,7 +58,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 blockBox.ComputedStyle == null ||
                 (!blockBox.ComputedStyle.Width.HasValue &&
                  !blockBox.ComputedStyle.WidthPercent.HasValue &&
-                 string.IsNullOrEmpty(blockBox.ComputedStyle.WidthExpression));
+                 string.IsNullOrEmpty(blockBox.ComputedStyle.WidthExpression)) ||
+                LayoutBoxOps.IsCyclicPercentageWidth(blockBox.ComputedStyle, state);
 
             // 2. Prepare for Child Layout
             float yOffset = blockBox.Geometry.ContentBox.Top;
@@ -1827,7 +1828,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
                 else if (style.WidthPercent.HasValue)
                 {
-                    width = (float)(style.WidthPercent.Value / 100.0 * available);
+                    // A percentage resolves against the containing block only while
+                    // that block has a definite width. Inside a shrink-to-fit probe
+                    // neither the available width nor the containing block is known,
+                    // so the percentage is cyclic (CSS Sizing 3 §5.2.1) and behaves as
+                    // auto; resolving it against the viewport fallback instead made a
+                    // `width:100%` child stretch its auto-width parent to the screen.
+                    if (!LayoutBoxOps.IsCyclicPercentageWidth(style, state))
+                    {
+                        width = (float)(style.WidthPercent.Value / 100.0 * available);
+                    }
                 }
                 else if (!string.IsNullOrEmpty(style.WidthExpression))
                 {

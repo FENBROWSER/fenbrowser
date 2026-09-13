@@ -136,13 +136,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             bool widthUnconstrained = float.IsInfinity(state.AvailableSize.Width) || float.IsNaN(state.AvailableSize.Width);
+            // A percentage with no definite containing block is cyclic and sizes as
+            // auto, so it is not an explicit width here.
             bool hasExplicitWidth =
                 box.ComputedStyle?.Width.HasValue == true ||
-                box.ComputedStyle?.WidthPercent.HasValue == true ||
+                (box.ComputedStyle?.WidthPercent.HasValue == true &&
+                 !LayoutBoxOps.IsCyclicPercentageWidth(box.ComputedStyle, state)) ||
                 !string.IsNullOrEmpty(box.ComputedStyle?.WidthExpression);
             bool isShrinkToFitProbe = widthUnconstrained && !hasExplicitWidth;
 
             ResolveContextWidth(box, state);
+
+            // This box is the containing block of the inline-level boxes it lays out
+            // (CSS 2.1 §10.1): definite once its own width is resolved, indefinite
+            // while it is only being probed for shrink-to-fit.
+            state.InlineContainingBlockWidth = isShrinkToFitProbe
+                ? float.PositiveInfinity
+                : Math.Max(0f, box.Geometry.ContentBox.Width);
 
             float contentLimit = ResolveLineContentLimit(box, state, isShrinkToFitProbe, isAnonymousBlock);
             // Robustness: Handle unconstrained width (shrink-to-fit root)
@@ -1148,7 +1158,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // inline-table) are always shrink-to-fit per CSS, even when re-laid out
             // with a finite available width — they must size to their intrinsic content.
             float finalContentWidth = box.Geometry.ContentBox.Width;
-            if (box.ComputedStyle != null && !box.ComputedStyle.Width.HasValue)
+            if (box.ComputedStyle != null && !hasExplicitWidth)
             {
                 string display = box.ComputedStyle.Display?.ToLowerInvariant() ?? string.Empty;
                 bool isInlineAtomic = display == "inline-block" || display == "inline-flex" ||
@@ -2050,9 +2060,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             ? state.AvailableSize.Height
                             : state.ViewportHeight;
                         probeState.AvailableSize = new SKSize(float.PositiveInfinity, probeHeight);
-                        probeState.ContainingBlockWidth = float.IsFinite(state.AvailableSize.Width) && state.AvailableSize.Width > 0
-                            ? state.AvailableSize.Width
-                            : (state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth);
+                        probeState.ContainingBlockWidth = ResolveAtomicInlineContainingBlockWidth(state);
                         probeState.ContainingBlockHeight = probeHeight;
                         ResetInlineProbeOrigin(inlineBox);
                         FormattingContext.Resolve(inlineBox).Layout(inlineBox, probeState);
@@ -2153,9 +2161,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     ? state.AvailableSize.Height
                     : state.ViewportHeight;
                 probeState.AvailableSize = new SKSize(float.PositiveInfinity, probeHeight);
-                probeState.ContainingBlockWidth = float.IsFinite(state.AvailableSize.Width) && state.AvailableSize.Width > 0
-                    ? state.AvailableSize.Width
-                    : (state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth);
+                probeState.ContainingBlockWidth = ResolveAtomicInlineContainingBlockWidth(state);
                 probeState.ContainingBlockHeight = probeHeight;
                 ResetInlineProbeOrigin(child);
                 FormattingContext.Resolve(child).Layout(child, probeState);
@@ -2201,6 +2207,26 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return new SKSize(10,10); // Minimal fallback for unknown items
+        }
+
+        /// <summary>
+        /// The containing block of an inline-level box is the block this context is
+        /// laying out: its content width once resolved, indefinite while the context
+        /// is itself being probed for shrink-to-fit — a percentage width on the atomic
+        /// box is then cyclic (CSS Sizing 3 §5.2.1) and behaves as auto. Falling back
+        /// to the outer containing block or the viewport here let a width:100%
+        /// inline-flex button stretch its shrink-to-fit slot to the screen edge.
+        /// </summary>
+        private static float ResolveAtomicInlineContainingBlockWidth(LayoutState state)
+        {
+            if (!float.IsNaN(state.InlineContainingBlockWidth))
+            {
+                return state.InlineContainingBlockWidth;
+            }
+
+            return float.IsFinite(state.AvailableSize.Width) && state.AvailableSize.Width > 0f
+                ? state.AvailableSize.Width
+                : float.PositiveInfinity;
         }
 
         private bool TryMeasureAtomicInlineReplacedChild(LayoutBox child, LayoutState state, out SKSize size)
@@ -3175,10 +3201,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 finalW = (float)specifiedWidth.Value;
             }
-            else if (specifiedWidthPercent.HasValue)
+            else if (specifiedWidthPercent.HasValue && !LayoutBoxOps.IsCyclicPercentageWidth(style, state))
             {
                 float cbWidth = LayoutBoxOps.ResolvePercentageBaseWidth(box, state);
-                if (cbWidth > 0f)
+                if (float.IsFinite(cbWidth) && cbWidth > 0f)
                 {
                     finalW = (float)(specifiedWidthPercent.Value / 100.0 * cbWidth);
                 }

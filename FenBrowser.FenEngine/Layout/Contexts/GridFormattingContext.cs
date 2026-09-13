@@ -105,9 +105,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         childHeight = 0f;
                     }
 
+                    // An intrinsic measurement of a grid that is itself shrink-to-fit
+                    // offers no definite containing block: a percentage width on the
+                    // item is cyclic (CSS Sizing 3 §5.2.1) and behaves as auto, so the
+                    // measurement reports the item's content, not the probe width the
+                    // container happens to hold.
                     float containingWidth = (!float.IsInfinity(childWidth) && childWidth > 0f)
                         ? childWidth
-                        : Math.Max(0f, container.Geometry.ContentBox.Width);
+                        : (IsShrinkToFitWidth(containerStyle, state)
+                            ? float.PositiveInfinity
+                            : Math.Max(0f, container.Geometry.ContentBox.Width));
 
                     var childState = new LayoutState(
                         new SKSize(childWidth, childHeight),
@@ -227,14 +234,44 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 measureHeightConstraint = state.ViewportHeight;
             }
 
+            bool shrinkToFitWidth = IsShrinkToFitWidth(containerStyle, state);
             var metrics = GridLayoutComputer.Measure(
                 containerElement,
-                new SKSize(container.Geometry.ContentBox.Width, measureHeightConstraint),
+                new SKSize(shrinkToFitWidth ? float.PositiveInfinity : container.Geometry.ContentBox.Width, measureHeightConstraint),
                 styles,
                 0,
                 MeasureNode,
                 childrenSource,
                 state.SubgridContext);
+
+            // CSS Grid §5.2 / CSS Sizing 3 §5.1: an auto-width grid container being
+            // intrinsically sized (unconstrained inline space) is fit-content wide - the
+            // sum of its columns' max-content sizes, capped by the space it was offered.
+            // Without this a `display:grid` flex item took the whole line: github.com's
+            // search button (grid, width:100%) claimed 620px of the masthead and squeezed
+            // the Sign in / Sign up buttons on top of each other.
+            if (shrinkToFitWidth)
+            {
+                float offered = Math.Max(0f, container.Geometry.ContentBox.Width);
+                float maxContent = float.IsFinite(metrics.MaxContentWidth) && metrics.MaxContentWidth > 0f
+                    ? metrics.MaxContentWidth
+                    : (float.IsFinite(metrics.MaxChildWidth) ? metrics.MaxChildWidth : offered);
+                float fit = Math.Min(offered, Math.Max(float.IsFinite(metrics.MinContentWidth) ? metrics.MinContentWidth : 0f, maxContent));
+                if (containerStyle.MinWidth.HasValue) fit = Math.Max(fit, (float)containerStyle.MinWidth.Value);
+                if (containerStyle.MaxWidth.HasValue) fit = Math.Min(fit, (float)containerStyle.MaxWidth.Value);
+                if (Math.Abs(fit - offered) > 0.5f)
+                {
+                    LayoutBoxOps.ComputeBoxModelFromContent(container, fit, Math.Max(0f, container.Geometry.ContentBox.Height));
+                    metrics = GridLayoutComputer.Measure(
+                        containerElement,
+                        new SKSize(fit, measureHeightConstraint),
+                        styles,
+                        0,
+                        MeasureNode,
+                        childrenSource,
+                        state.SubgridContext);
+                }
+            }
 
             float arrangeHeight = float.IsFinite(definiteContentHeight)
                 ? definiteContentHeight
@@ -647,6 +684,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return Math.Max(0f, resolved);
         }
 
+        private static bool IsShrinkToFitWidth(CssComputed style, LayoutState state)
+        {
+            if (!float.IsInfinity(state.AvailableSize.Width) && !float.IsNaN(state.AvailableSize.Width))
+            {
+                return false;
+            }
+
+            return style == null ||
+                   (!style.Width.HasValue &&
+                    string.IsNullOrEmpty(style.WidthExpression) &&
+                    (!style.WidthPercent.HasValue || LayoutBoxOps.IsCyclicPercentageWidth(style, state)));
+        }
+
         private static void ResolveContainerWidth(LayoutBox box, CssComputed style, LayoutState state)
         {
             style ??= new CssComputed();
@@ -665,21 +715,30 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 style.BorderThickness.Left + style.BorderThickness.Right +
                 style.Margin.Left + style.Margin.Right);
 
+            // CSS Box Sizing 3 §3: with box-sizing:border-box the specified width
+            // covers padding and border, so the content box is that much narrower.
+            bool isBorderBox = string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
+            float paddingAndBorder = (float)(
+                style.Padding.Left + style.Padding.Right +
+                style.BorderThickness.Left + style.BorderThickness.Right);
+
             float width;
             if (style.Width.HasValue)
             {
                 width = (float)style.Width.Value;
+                if (isBorderBox) width = Math.Max(0f, width - paddingAndBorder);
             }
-            else if (style.WidthPercent.HasValue)
+            else if (style.WidthPercent.HasValue && !LayoutBoxOps.IsCyclicPercentageWidth(style, state))
             {
                 width = (float)(style.WidthPercent.Value / 100d * available);
-                if (Environment.GetEnvironmentVariable("FEN_GRID_TRACE") == "1")
-                {
-                    Console.Error.WriteLine($"[gridtrace] pct={style.WidthPercent.Value} raw={rawAvailable} resolvedAvail={available} src={widthResolution.Source} cb={widthResolution.ContainingBlock} vp={widthResolution.Viewport} -> width={width}");
-                }
+                if (isBorderBox) width = Math.Max(0f, width - paddingAndBorder);
             }
             else if (widthUnconstrained)
             {
+                // Intrinsic pass: a percentage width is cyclic here (CSS Sizing 3
+                // §5.2.1) and behaves as auto, and auto shrinks to fit. Start from the
+                // available band; LayoutCore trims it to the tracks' max-content once
+                // the grid has been measured.
                 width = Math.Max(0f, available - horizontalChrome);
             }
             else

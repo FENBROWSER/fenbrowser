@@ -351,6 +351,26 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
         // inside a 100px wrapper and came out 5760px wide, then 17280px, instead of
         // 300px. Every tile then framed a sliver of a hugely magnified image, which
         // is why the challenge rendered as smeared bands rather than photographs.
+        /// <summary>
+        /// A percentage width resolves against the containing block only while that
+        /// block has a definite width. Inside a shrink-to-fit probe neither the
+        /// available width nor the containing block is known, so the percentage is
+        /// cyclic (CSS Sizing 3 §5.2.1) and the box sizes as auto — which also means
+        /// its own children are laid out in a shrink-to-fit pass rather than against
+        /// a probe width they would then be measured back from.
+        /// </summary>
+        internal static bool IsCyclicPercentageWidth(CssComputed style, LayoutState state)
+        {
+            if (style == null || !style.WidthPercent.HasValue || style.Width.HasValue)
+            {
+                return false;
+            }
+
+            bool availableUnconstrained = float.IsInfinity(state.AvailableSize.Width) || float.IsNaN(state.AvailableSize.Width);
+            bool containingBlockDefinite = float.IsFinite(state.ContainingBlockWidth) && state.ContainingBlockWidth > 0f;
+            return availableUnconstrained && !containingBlockDefinite;
+        }
+
         internal static float ResolvePercentageBaseWidth(LayoutBox box, LayoutState state)
         {
             for (var ancestor = box?.Parent; ancestor != null; ancestor = ancestor.Parent)

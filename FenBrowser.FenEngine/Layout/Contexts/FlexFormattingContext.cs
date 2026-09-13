@@ -89,6 +89,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 ? hasExplicitHeightForFlexSizing
                 : HasExplicitWidthForFlexSizing(style);
             bool shrinkToContentMainAxis = !hasExplicitMainSize && (!isRow || mainAxisUnconstrained);
+            // While this container's own inline size is still being found (auto width
+            // under an unconstrained probe), it cannot be the base for its items'
+            // percentages: CSS Sizing 3 §5.2.1 makes such a percentage cyclic, so the
+            // items must see an indefinite containing block and size as auto. Handing
+            // them the viewport instead let a `width:100%` button stretch a
+            // shrink-to-fit slot to the screen edge.
+            bool inlineSizeIndefinite =
+                !HasExplicitWidthForFlexSizing(style) &&
+                (float.IsInfinity(state.AvailableSize.Width) || float.IsNaN(state.AvailableSize.Width));
 
             // 2. Collect Flex Items (In-flow children)
             // Anonymous text nodes should be wrapped in anonymous blocks? 
@@ -239,9 +248,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 var childState = state.Clone();
                 childState.AvailableSize = new SKSize(childAvailWidth, childAvailHeight);
-                childState.ContainingBlockWidth = float.IsFinite(container.Geometry.ContentBox.Width) && container.Geometry.ContentBox.Width > 0
-                    ? container.Geometry.ContentBox.Width
-                    : state.ViewportWidth;
+                childState.ContainingBlockWidth = inlineSizeIndefinite
+                    ? float.PositiveInfinity
+                    : (float.IsFinite(container.Geometry.ContentBox.Width) && container.Geometry.ContentBox.Width > 0
+                        ? container.Geometry.ContentBox.Width
+                        : state.ViewportWidth);
                 // When the flex container cross-size is auto/indefinite, do not fall back to
                 // viewport height. Doing so makes percent/auto heights inside controls (e.g.
                 // Google search textarea wrapper) expand to viewport scale.
@@ -1216,7 +1227,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 // In intrinsic/probe passes (available width = infinity), auto-width flex items
                 // must not eagerly fill the containing block; that produces oversized bases and
                 // breaks shrink calculations for control clusters.
-                width = hasExplicitWidth
+                // A percentage that found no definite containing block above is cyclic
+                // (CSS Sizing 3 §5.2.1) and behaves as auto here too: `width:100%` on an
+                // inline-flex button inside a shrink-to-fit slot is the button's content
+                // width, not the viewport's.
+                bool cyclicPercentWidth = boxStyle?.WidthPercent.HasValue == true && !resolvedDefiniteWidth;
+                width = hasExplicitWidth && !cyclicPercentWidth
                     ? Math.Max(0, available - (float)margin.Horizontal - horizontalChrome)
                     : 0f;
             }
@@ -1314,13 +1330,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 {
                     float parentWidth = state.AvailableSize.Width;
                     if (float.IsInfinity(parentWidth) || parentWidth <= 0) parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
-                    if (parentWidth > 0) minW = (float)(boxStyle.MinWidthPercent.Value / 100.0 * parentWidth);
+                    if (float.IsFinite(parentWidth) && parentWidth > 0) minW = (float)(boxStyle.MinWidthPercent.Value / 100.0 * parentWidth);
                 }
                 else if (!string.IsNullOrEmpty(boxStyle.MinWidthExpression))
                 {
                     float parentWidth = state.AvailableSize.Width;
                     if (float.IsInfinity(parentWidth) || parentWidth <= 0) parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
-                    minW = LayoutHelper.EvaluateCssExpression(boxStyle.MinWidthExpression, parentWidth, state.ViewportWidth, state.ViewportHeight);
+                    if (float.IsFinite(parentWidth)) minW = LayoutHelper.EvaluateCssExpression(boxStyle.MinWidthExpression, parentWidth, state.ViewportWidth, state.ViewportHeight);
                 }
                 if (isBorderBox)
                 {
@@ -1332,13 +1348,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 {
                     float parentWidth = state.AvailableSize.Width;
                     if (float.IsInfinity(parentWidth) || parentWidth <= 0) parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
-                    if (parentWidth > 0) maxW = (float)(boxStyle.MaxWidthPercent.Value / 100.0 * parentWidth);
+                    if (float.IsFinite(parentWidth) && parentWidth > 0) maxW = (float)(boxStyle.MaxWidthPercent.Value / 100.0 * parentWidth);
                 }
                 else if (!string.IsNullOrEmpty(boxStyle.MaxWidthExpression))
                 {
                     float parentWidth = state.AvailableSize.Width;
                     if (float.IsInfinity(parentWidth) || parentWidth <= 0) parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
-                    maxW = LayoutHelper.EvaluateCssExpression(boxStyle.MaxWidthExpression, parentWidth, state.ViewportWidth, state.ViewportHeight);
+                    if (float.IsFinite(parentWidth)) maxW = LayoutHelper.EvaluateCssExpression(boxStyle.MaxWidthExpression, parentWidth, state.ViewportWidth, state.ViewportHeight);
                 }
                 if (isBorderBox && float.IsFinite(maxW))
                 {
