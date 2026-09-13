@@ -1574,21 +1574,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
             }
 
-            // If a flex wrapper has a single replaced child and unresolved size,
-            // use a small non-zero fallback to prevent collapse.
-            if ((width <= 0 || height <= 0) &&
-                string.Equals(boxStyle?.Display, "flex", StringComparison.OrdinalIgnoreCase) &&
-                box.Children.Count == 1 &&
-                box.Children[0].SourceNode is Element iconChild)
-            {
-                string childTag = iconChild.TagName?.ToUpperInvariant() ?? string.Empty;
-                if (childTag == "SVG" || childTag == "IMG" || childTag == "CANVAS")
-                {
-                    if (width <= 0) width = 24f;
-                    if (height <= 0) height = 24f;
-                }
-            }
-            
             float contentLeft = marginLeft + (float)border.Left + (float)padding.Left;
             box.Geometry.ContentBox = new SKRect(contentLeft, 0, contentLeft + width, height);
             box.Geometry.Padding = padding;

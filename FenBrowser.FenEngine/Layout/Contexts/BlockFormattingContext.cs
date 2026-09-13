@@ -475,8 +475,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 currentY += lastMarginBottom;
                 maxBottom = Math.Max(maxBottom, currentY);
             }
-            // Handle intrinsic height for empty replaced elements (IMG, SVG, etc.)
-            if (blockBox.Children.Count == 0)
+            // Handle intrinsic size for replaced elements (IMG, SVG, etc.) and empty
+            // controls. A replaced element is sized from its intrinsic size whether
+            // or not it has child nodes: an inline <svg>'s <path> children are SVG
+            // content, not CSS boxes, so an icon with width="16" is 16px wide and
+            // not an auto-width block that fills its flex slot.
+            bool isAtomicReplaced =
+                blockBox.SourceNode is FenBrowser.Core.Dom.V2.Element replacedCandidate &&
+                ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(replacedCandidate);
+            if (blockBox.Children.Count == 0 || isAtomicReplaced)
             {
                 var el = blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element;
                 string t = el?.TagName?.ToUpperInvariant();
@@ -587,7 +594,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 blockAutoWidth &&
                 ContainmentEvaluator.HasInlineSizeContainment(blockBox.ComputedStyle);
 
-            if (blockAutoWidth && (float.IsInfinity(state.AvailableSize.Width) || isFloatingBox || isInlineAtomicInner || inlineSizeContained))
+            // A replaced box's width is its intrinsic size (resolved above), never
+            // the extent of its child nodes.
+            if (!isAtomicReplaced &&
+                blockAutoWidth && (float.IsInfinity(state.AvailableSize.Width) || isFloatingBox || isInlineAtomicInner || inlineSizeContained))
             {
                 float previousWidth = blockBox.Geometry.ContentBox.Width;
                 float previousBottom = blockBox.Geometry.ContentBox.Bottom;

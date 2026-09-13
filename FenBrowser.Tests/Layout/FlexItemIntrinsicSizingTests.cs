@@ -43,6 +43,37 @@ namespace FenBrowser.Tests.Layout
             return box;
         }
 
+        [Fact]
+        public async Task FlexContainerHoldingOnlyAnSvg_IsTheSvgsHeight_NotALineBox()
+        {
+            // CSS Flexbox §4: the svg is a flex item (blockified), not inline content
+            // on a line, so there is no line-height strut around it. Chrome: 16px.
+            var (doc, computer) = await LayoutAsync(
+                "<div class='row'><span id='c' style='display:flex'><svg width='16' height='16'></svg></span></div>");
+
+            var box = Box(doc, computer, "c");
+            Assert.InRange(box.BorderBox.Height, 15.5f, 16.5f);
+            Assert.InRange(box.BorderBox.Width, 15.5f, 16.5f);
+        }
+
+        [Fact]
+        public async Task BlockLevelSvgWithPathChildren_IsItsAttributeSize()
+        {
+            // An <svg>'s <path> children are SVG content, not CSS boxes: the element
+            // is replaced and sized from width/height whatever its display. github's
+            // octicons are `display:block` svgs holding a path. Chrome: 16x16.
+            var (doc, computer) = await LayoutAsync(
+                "<div class='row'><span id='c' style='display:flex'>" +
+                "<svg id='s' style='display:block' width='16' height='16' viewBox='0 0 16 16'><path d='M1 1h14v14H1z'></path></svg>" +
+                "</span></div>");
+
+            var svg = Box(doc, computer, "s");
+            Assert.InRange(svg.BorderBox.Width, 15.5f, 16.5f);
+            Assert.InRange(svg.BorderBox.Height, 15.5f, 16.5f);
+            var box = Box(doc, computer, "c");
+            Assert.InRange(box.BorderBox.Width, 15.5f, 16.5f);
+        }
+
         [Theory]
         [InlineData("inline-flex")]
         [InlineData("grid")]
