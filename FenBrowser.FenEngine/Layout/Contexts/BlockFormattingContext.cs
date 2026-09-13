@@ -3,6 +3,7 @@
 // Determinism: strict
 // FallbackPolicy: spec-defined
 using System;
+using System.Text;
 using System.Globalization;
 using System.Linq;
 using FenBrowser.FenEngine.Layout.Tree;
@@ -1526,7 +1527,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     return false;
                 }
 
-                text = LayoutHelper.GetRenderableTextContentTrimmed(element);
+                // Walk the box tree rather than the DOM so display:none descendants
+                // stay out of the label: github.com's icon-only search button hides
+                // its "Search" text and "/" hint below a breakpoint, and measuring
+                // them anyway made the button 38px wider than its icon.
+                var textBuilder = new StringBuilder();
+                AppendRenderableBoxText(box, textBuilder);
+                text = textBuilder.ToString();
             }
 
             text = CollapseShrinkToFitWhitespace(text).Trim();
@@ -1565,6 +1572,30 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             width = Math.Max(0f, textWidth + horizontalChrome);
             return width > 0f;
+        }
+
+        private static void AppendRenderableBoxText(LayoutBox box, StringBuilder builder)
+        {
+            if (box == null)
+            {
+                return;
+            }
+
+            if (box is TextLayoutBox text)
+            {
+                builder.Append(text.TextContent);
+                return;
+            }
+
+            if (string.Equals(box.ComputedStyle?.Display, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            foreach (var child in box.Children)
+            {
+                AppendRenderableBoxText(child, builder);
+            }
         }
 
         private static string CollapseShrinkToFitWhitespace(string text)
