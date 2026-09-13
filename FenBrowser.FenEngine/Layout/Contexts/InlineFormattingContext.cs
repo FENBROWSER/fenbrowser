@@ -2055,7 +2055,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     // and produce real geometry for descendants.
                     if (inlineBox.Geometry != null)
                     {
-                        var probeState = state.Clone();
+                        var probeState = CreateAtomicProbeState(state);
                         float probeHeight = float.IsFinite(state.AvailableSize.Height) && state.AvailableSize.Height > 0
                             ? state.AvailableSize.Height
                             : state.ViewportHeight;
@@ -2092,7 +2092,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             float contentW = fitWidth - nonContentWidth;
                             if (contentW > 0.5f)
                             {
-                                var fitState = state.Clone();
+                                var fitState = CreateAtomicProbeState(state);
                                 fitState.AvailableSize = new SKSize(fitWidth, Math.Max(probedHeight, minLineHeight * 2f));
                                 fitState.ContainingBlockWidth = fitWidth;
                                 ResetInlineProbeOrigin(inlineBox);
@@ -2156,7 +2156,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // Handle IMG, INPUT, SVG or other elements that result in generic LayoutBox
             if (child.Children.Count > 0)
             {
-                var probeState = state.Clone();
+                var probeState = CreateAtomicProbeState(state);
                 float probeHeight = float.IsFinite(state.AvailableSize.Height) && state.AvailableSize.Height > 0
                     ? state.AvailableSize.Height
                     : state.ViewportHeight;
@@ -2217,6 +2217,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// to the outer containing block or the viewport here let a width:100%
         /// inline-flex button stretch its shrink-to-fit slot to the screen edge.
         /// </summary>
+        /// <summary>
+        /// A measurement pass over an atomic inline is this context's own probe, not
+        /// the forced-size pass a parent flex container may be running over this
+        /// context. Carrying IsForced through let an inline-flex button adopt the
+        /// probe's generous available height as its used height.
+        /// </summary>
+        private static LayoutState CreateAtomicProbeState(LayoutState state)
+        {
+            var probe = state.Clone();
+            probe.IsForced = false;
+            probe.ForcedWidth = float.NaN;
+            probe.ForcedHeight = float.NaN;
+            return probe;
+        }
+
         private static float ResolveAtomicInlineContainingBlockWidth(LayoutState state)
         {
             if (!float.IsNaN(state.InlineContainingBlockWidth))
