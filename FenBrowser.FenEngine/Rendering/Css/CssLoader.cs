@@ -4243,6 +4243,10 @@ private static double? ExtractPx(string text, string prop)
                     }
                 }
 
+                // Border longhands a var()-carrying shorthand left pending are split
+                // from the shorthand now that its references are substituted.
+                CascadeEngine.ResolvePendingBorderShorthands(css.Map);
+
                 // Normalize known aliases/logical checklist tokens to canonical longhands
                 // before typed projections parse computed map values.
                 ApplyInventoryPropertyAliasNormalizations(css.Map);

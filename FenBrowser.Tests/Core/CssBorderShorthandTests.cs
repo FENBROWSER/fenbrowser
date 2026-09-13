@@ -44,5 +44,41 @@ namespace FenBrowser.Tests.Core
             Assert.Equal("red", style.Map["border-top-color"]);
             Assert.InRange(style.BorderThickness.Top, 0.5, 2.5);
         }
+
+        [Theory]
+        [InlineData("--w: max(1px, .0625rem); --c: red", "border: solid var(--w) var(--c);", 1.0, "red")]
+        [InlineData("--w: 2px", "border: solid var(--w) transparent;", 2.0, "transparent")]
+        [InlineData("--b: 2px dashed blue", "border: var(--b);", 2.0, "blue")]
+        [InlineData("--w: 2px", "border: solid var(--w) red; border-width: 4px;", 4.0, "red")]
+        [InlineData("--w: 2px", "border: solid var(--w) red; border-color: green;", 2.0, "green")]
+        public async Task BorderShorthand_WithVar_IsSplitAfterSubstitution(string custom, string declarations, double expectedWidth, string expectedColor)
+        {
+            // CSS Variables §3.1: a shorthand carrying var() makes its longhands
+            // pending-substitution values, split only once the reference is
+            // resolved. Classifying the raw tokens filed the var() as the color and
+            // left the width at `medium`; a later longhand still overrides.
+            string html = @"
+<!doctype html>
+<html>
+<head>
+    <style>:root { " + custom + @" } .box { " + declarations + @" }</style>
+</head>
+<body>
+    <div class='box'>Probe</div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html, new Uri("https://test.local"));
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var box = doc.Descendants().OfType<Element>().First(e => e.ClassList.Contains("box"));
+
+            Assert.True(computed.TryGetValue(box, out var style));
+            Assert.InRange(style.BorderThickness.Top, expectedWidth - 0.1, expectedWidth + 0.1);
+            Assert.InRange(style.BorderThickness.Left, expectedWidth - 0.1, expectedWidth + 0.1);
+            Assert.Equal(expectedColor, style.Map["border-top-color"]);
+            Assert.DoesNotContain("pending", style.Map["border-top-style"]);
+        }
     }
 }

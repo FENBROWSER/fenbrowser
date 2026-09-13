@@ -1665,22 +1665,24 @@ return computed;
                 return;
             }
 
-            var parts = SplitCssValue(value);
-            string width = null, style = null, color = null;
-            foreach (var part in parts)
+            // CSS Variables §3.1: a shorthand that contains var() cannot be split until
+            // the reference is substituted at computed-value time, so its longhands
+            // become pending-substitution values and are filled in by
+            // ResolvePendingBorderShorthands once the shorthand has been resolved. A
+            // later longhand declaration overwrites the marker, as the cascade requires.
+            // Classifying the raw tokens instead filed `border: solid var(--w) red`'s
+            // var() as the color and left the width at `medium`.
+            if (value.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                if (IsBorderStyle(part)) style = part;
-                else if (IsCssLength(part)) width = part;
-                else color = part;
+                string pending = PendingBorderShorthandPrefix + (string.IsNullOrEmpty(sideProperty) ? "border" : sideProperty);
+                foreach (var longhand in BorderLonghandsFor(sideProperty))
+                {
+                    SetExpanded(computed, longhand, pending, source);
+                }
+                return;
             }
 
-            // CSS Backgrounds 3 §3.4: a shorthand resets every longhand it covers, so
-            // `border: solid` is a medium currentcolor border and `border-bottom: red
-            // solid` is 3px — an omitted component takes its initial value, not an
-            // earlier declaration's.
-            width ??= "medium";
-            style ??= "none";
-            color ??= "currentcolor";
+            SplitBorderShorthand(value, out string width, out string style, out string color);
 
             if (string.IsNullOrEmpty(sideProperty))
             {
@@ -1702,6 +1704,90 @@ return computed;
                 SetExpanded(computed, sideProperty + "-width", width, source);
                 SetExpanded(computed, sideProperty + "-style", style, source);
                 SetExpanded(computed, sideProperty + "-color", color, source);
+            }
+        }
+
+        private const string PendingBorderShorthandPrefix = "__pending-shorthand:";
+
+        private static readonly string[] BorderSides = { "border-top", "border-right", "border-bottom", "border-left" };
+
+        private static IEnumerable<string> BorderLonghandsFor(string sideProperty)
+        {
+            var sides = string.IsNullOrEmpty(sideProperty) ? BorderSides : new[] { sideProperty };
+            foreach (var side in sides)
+            {
+                yield return side + "-width";
+                yield return side + "-style";
+                yield return side + "-color";
+            }
+        }
+
+        /// <summary>
+        /// Classifies the tokens of a `border` shorthand. CSS Backgrounds 3 §3.4: a
+        /// shorthand resets every longhand it covers, so `border: solid` is a medium
+        /// currentcolor border and `border-bottom: red solid` is 3px — an omitted
+        /// component takes its initial value, not an earlier declaration's.
+        /// </summary>
+        private static void SplitBorderShorthand(string value, out string width, out string style, out string color)
+        {
+            width = null; style = null; color = null;
+            foreach (var part in SplitCssValue(value))
+            {
+                if (IsBorderStyle(part)) style = part;
+                else if (IsCssLength(part)) width = part;
+                else color = part;
+            }
+
+            width ??= "medium";
+            style ??= "none";
+            color ??= "currentcolor";
+        }
+
+        /// <summary>
+        /// Fills the border longhands left pending by a var()-carrying shorthand from
+        /// the shorthand's now-substituted value. Runs after custom-property
+        /// substitution; a shorthand that failed to resolve leaves its longhands at
+        /// their initial values (invalid at computed-value time).
+        /// </summary>
+        internal static void ResolvePendingBorderShorthands(Dictionary<string, string> map)
+        {
+            List<KeyValuePair<string, string>> pending = null;
+            foreach (var kv in map)
+            {
+                if (kv.Value != null && kv.Value.StartsWith(PendingBorderShorthandPrefix, StringComparison.Ordinal))
+                {
+                    (pending ??= new List<KeyValuePair<string, string>>()).Add(kv);
+                }
+            }
+
+            if (pending == null)
+            {
+                return;
+            }
+
+            foreach (var kv in pending)
+            {
+                string shorthand = kv.Value.Substring(PendingBorderShorthandPrefix.Length);
+                string resolved = map.TryGetValue(shorthand, out var raw) ? raw?.Trim() : null;
+
+                string width = "medium", style = "none", color = "currentcolor";
+                if (!string.IsNullOrEmpty(resolved) &&
+                    resolved.IndexOf("var(", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    if (resolved == "none" || resolved == "0")
+                    {
+                        width = "0";
+                    }
+                    else
+                    {
+                        SplitBorderShorthand(resolved, out width, out style, out color);
+                    }
+                }
+
+                string longhand = kv.Key;
+                map[longhand] = longhand.EndsWith("-width", StringComparison.Ordinal) ? width
+                              : longhand.EndsWith("-style", StringComparison.Ordinal) ? style
+                              : color;
             }
         }
 
