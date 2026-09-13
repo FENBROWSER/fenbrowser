@@ -98,5 +98,19 @@ namespace FenBrowser.Tests.Layout
             Assert.InRange(Math.Abs(child.BorderBox.Width - item.BorderBox.Width), 0f, 1f);
             Assert.InRange(child.BorderBox.Height, 24f, 28f);
         }
+
+        [Fact]
+        public async Task InlineFlexOnALine_ContributesItsFirstItemBaseline_NotItsBottomEdge()
+        {
+            // CSS Flexbox §8.5: an inline-flex box's baseline is its first item's
+            // baseline. With the 14px label centred in a 32px min-height box the
+            // line box fits the box exactly. Chrome: 32px for the block.
+            var (doc, computer) = await LayoutAsync(
+                "<div id='line' style='width:600px'><a style='display:inline-flex;border:1px solid red;align-items:center;min-height:32px;box-sizing:border-box'>" +
+                "<span style='display:flex'><span style='font-size:14px'>Sign in</span></span></a></div>");
+
+            var line = Box(doc, computer, "line");
+            Assert.InRange(line.BorderBox.Height, 31.5f, 32.5f);
+        }
     }
 }

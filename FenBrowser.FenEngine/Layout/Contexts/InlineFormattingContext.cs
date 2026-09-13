@@ -2935,21 +2935,37 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float bestBaseline = float.MinValue;
             float itemTop = item.Geometry.MarginBox.Top;
 
+            // CSS 2.1 §10.8.1: an inline-block's baseline is that of its last line
+            // box in the normal flow - line boxes inside in-flow block children
+            // count - unless it has none or its overflow is not visible, when the
+            // bottom margin edge is used instead. CSS Flexbox §8.5: a flex
+            // container's baseline is its first item's, synthesised from that
+            // item's border box when the item has none of its own.
+            string itemDisplay = item.ComputedStyle?.Display?.Trim().ToLowerInvariant() ?? string.Empty;
+            bool itemIsFlexContainer = itemDisplay == "flex" || itemDisplay == "inline-flex";
+
             foreach (var child in item.Children)
             {
-                if (child?.Geometry == null)
+                if (child?.Geometry == null || child.IsOutOfFlow)
                 {
                     continue;
                 }
 
-                string display = child.ComputedStyle?.Display;
-                if (!string.IsNullOrWhiteSpace(display) &&
-                    !display.Equals("inline", StringComparison.OrdinalIgnoreCase) &&
-                    !display.Equals("inline-block", StringComparison.OrdinalIgnoreCase))
+                string display = child.ComputedStyle?.Display?.Trim().ToLowerInvariant();
+                if (display == "none")
                 {
-                    // A block-level child establishes its own formatting context.
-                    // Its descendant line boxes are not line boxes of this
-                    // inline-block, whose fallback baseline is its bottom margin edge.
+                    continue;
+                }
+
+                if (!itemIsFlexContainer &&
+                    (IsScrollContainer(child.ComputedStyle) ||
+                     (display != null && display.StartsWith("table", StringComparison.Ordinal))))
+                {
+                    // A scroll container's line boxes are clipped away, and a
+                    // table's baseline is its first row's (CSS 2.1 §17.5.3) - the
+                    // row bottom when no cell is baseline-aligned - which the line
+                    // search below does not model. Neither contributes here, so an
+                    // inline-block holding only one of them keeps its bottom edge.
                     continue;
                 }
 
@@ -2976,6 +2992,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     childBaseline = 0f;
                 }
 
+                if (itemIsFlexContainer)
+                {
+                    if (!found || !float.IsFinite(childBaseline))
+                    {
+                        childBaseline = child.Geometry.BorderBox.Bottom - itemTop;
+                    }
+
+                    baseline = childBaseline;
+                    return float.IsFinite(baseline);
+                }
+
                 if (found && float.IsFinite(childBaseline))
                 {
                     bestBaseline = Math.Max(bestBaseline, childBaseline);
@@ -2989,6 +3016,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return false;
+        }
+
+        private static bool IsScrollContainer(CssComputed style)
+        {
+            string overflow = style?.Overflow?.Trim().ToLowerInvariant();
+            return !string.IsNullOrEmpty(overflow) && overflow != "visible" && overflow != "clip";
         }
 
         private static bool TryGetLengthAttribute(Element element, string attributeName, out float value)
