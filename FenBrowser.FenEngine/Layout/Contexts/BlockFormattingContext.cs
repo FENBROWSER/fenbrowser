@@ -1372,6 +1372,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 if (descendantWidth > 0f)
                 {
+                    // The children's outer widths are this box's content width; its
+                    // max-content contribution adds its own padding, border and
+                    // margin, as the label path above does. Without it a padded
+                    // percent-width button measured as bare as its icon.
+                    if (box is not AnonymousBlockBox && box.ComputedStyle is { } ownStyle)
+                    {
+                        descendantWidth += (float)(ownStyle.Padding.Left + ownStyle.Padding.Right +
+                                                   ownStyle.BorderThickness.Left + ownStyle.BorderThickness.Right +
+                                                   ownStyle.Margin.Left + ownStyle.Margin.Right);
+                    }
+
                     if (!float.IsFinite(directWidth) || directWidth <= 0.5f)
                     {
                         return descendantWidth;
