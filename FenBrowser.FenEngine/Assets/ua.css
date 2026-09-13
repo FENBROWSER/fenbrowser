@@ -60,8 +60,16 @@ iframe          { display: inline-block; overflow: hidden; }
 
 /* Form element defaults — lowest specificity, site CSS overrides naturally */
 input, textarea { padding: 5px 2px; border: 1px solid gray; border-radius: 4px; background-color: white; }
+/* Buttons follow Chromium/Gecko html.css rather than a page-like look: the
+   13.333px control font, line-height:normal (a control never inherits the
+   page's line-height), 1px 6px padding inside a 2px border, and border-box
+   sizing so `width:100%` on a padded button fills its container instead of
+   overflowing it. A site's own button CSS overrides all of this at the
+   lowest specificity. */
 button, input[type="submit"], input[type="button"], input[type="reset"]
-                { padding: 6px 12px; border: 1px solid #f8f9fa; border-radius: 4px; background-color: #f8f9fa; }
+                { font-size: 13.3333px; line-height: normal; letter-spacing: normal; word-spacing: normal;
+                  text-transform: none; text-indent: 0; text-shadow: none; text-align: center; color: black;
+                  padding: 1px 6px; border: 2px outset #767676; background-color: #efefef; box-sizing: border-box; }
 big             { font-size: 1.17em }
 small, sub, sup { font-size: 0.83em }
 sub             { vertical-align: sub }

@@ -5661,6 +5661,9 @@ private static double? ExtractPx(string text, string prop)
                 double lh;
                 if (TryPx(lhRaw, out lh, currentEmBase, 0, allowUnitless: true)) css.LineHeight = lh;
                 else if (double.TryParse(lhRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out lh)) css.LineHeight = lh;
+                // An explicit `normal` overrides the inherited value, not just a
+                // missing one: form controls reset the page's line-height this way.
+                else if (string.Equals(lhRaw.Trim(), "normal", StringComparison.OrdinalIgnoreCase)) css.LineHeight = null;
             }
 
             // Parse word-spacing and letter-spacing
