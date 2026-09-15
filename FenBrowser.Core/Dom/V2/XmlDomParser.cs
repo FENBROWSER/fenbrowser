@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -95,7 +95,7 @@ public static class XmlDomParser
                     doc.AppendChild(doc.CreateComment(comment.Value));
                     break;
                 case XProcessingInstruction pi:
-                    doc.AppendChild(doc.CreateComment($"?{pi.Target} {pi.Data}?"));
+                    doc.AppendChild(doc.CreateProcessingInstruction(pi.Target, pi.Data));
                     break;
             }
         }
@@ -144,9 +144,13 @@ public static class XmlDomParser
 
         if (!string.IsNullOrEmpty(elementName.NamespaceName))
         {
+            // The DOM element carries the source qualified name (prefix:local);
+            // XName.ToString() is the expanded {namespace}local form and is not
+            // a qualified name at all.
+            var prefix = element.GetPrefixOfNamespace(elementName.Namespace);
             created = doc.CreateElementNS(
                 elementName.NamespaceName,
-                elementName.ToString());
+                string.IsNullOrEmpty(prefix) ? elementName.LocalName : prefix + ":" + elementName.LocalName);
         }
         else
         {
@@ -155,7 +159,25 @@ public static class XmlDomParser
 
         foreach (var attribute in element.Attributes())
         {
-            created.SetAttribute(attribute.Name.LocalName, attribute.Value);
+            if (attribute.IsNamespaceDeclaration)
+            {
+                created.SetAttributeNS(
+                    "http://www.w3.org/2000/xmlns/",
+                    attribute.Name.LocalName == "xmlns" ? "xmlns" : "xmlns:" + attribute.Name.LocalName,
+                    attribute.Value);
+            }
+            else if (!string.IsNullOrEmpty(attribute.Name.NamespaceName))
+            {
+                var attributePrefix = element.GetPrefixOfNamespace(attribute.Name.Namespace);
+                created.SetAttributeNS(
+                    attribute.Name.NamespaceName,
+                    string.IsNullOrEmpty(attributePrefix) ? attribute.Name.LocalName : attributePrefix + ":" + attribute.Name.LocalName,
+                    attribute.Value);
+            }
+            else
+            {
+                created.SetAttribute(attribute.Name.LocalName, attribute.Value);
+            }
         }
 
         foreach (var node in element.Nodes())
@@ -172,7 +194,7 @@ public static class XmlDomParser
                     created.AppendChild(doc.CreateComment(comment.Value));
                     break;
                 case XProcessingInstruction pi:
-                    created.AppendChild(doc.CreateComment($"?{pi.Target} {pi.Data}?"));
+                    created.AppendChild(doc.CreateProcessingInstruction(pi.Target, pi.Data));
                     break;
             }
         }
