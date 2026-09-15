@@ -1951,6 +1951,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         EnsureImageLoadObserver();
         EnsureLinkLoadObserver();
+        EnsureObjectLoadObserver();
 
         if (resetSession && _parentRealmOwner != null && _embeddingFrameElement != null)
         {
@@ -1979,6 +1980,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             // have had the chance to attach listeners, the way an image that
             // loads asynchronously during parsing would be seen.
             TrackImagesInSubtree(domRoot);
+            TrackObjectsInSubtree(domRoot);
             ApplyScriptingEnabledSanitizer(domRoot);
             DispatchStartupLifecycleEvents();
         }
@@ -4793,6 +4795,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         UnsubscribeAttributeReactionObserver();
         UnsubscribeImageLoadObserver();
         UnsubscribeLinkLoadObserver();
+        UnsubscribeObjectLoadObserver();
 
         foreach (var childRealm in DetachFrameRealms())
         {
