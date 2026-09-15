@@ -5312,6 +5312,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return JsValue.FromInt32(-1);
         }
 
+        // new Worker(blobUrl) passes the blob's text from the creating realm's blob URL
+        // store (File API 8.3). The worker runs it without a fetch, with the creator's
+        // URL as its base so it keeps the creator's origin, as a blob URL worker does.
+        var blobSource = args.Count > 2 && args[2].Tag == JsValueTag.String ? args[2].AsString() : null;
+        var realmUri = blobSource != null ? _currentBaseUri ?? scriptUri : scriptUri;
+
         var id = Interlocked.Increment(ref _dedicatedWorkerIdCounter);
         var worker = new DedicatedWorkerInstance
         {
@@ -5331,7 +5337,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             string source;
             try
             {
-                source = FetchWorkerScriptAsync(scriptUri, _currentBaseUri).GetAwaiter().GetResult();
+                source = blobSource ?? FetchWorkerScriptAsync(scriptUri, _currentBaseUri).GetAwaiter().GetResult();
             }
             catch (Exception ex)
             {
@@ -5356,7 +5362,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
             try
             {
-                worker.Realm = CreateWorkerRealm(scriptUri, id);
+                worker.Realm = CreateWorkerRealm(realmUri, id);
                 worker.Realm.EvaluateWithFenJsRaw(DedicatedWorkerBootstrapScript);
                 worker.Realm.EvaluateWithFenJsRaw(source);
                 DrainWorkerDiagnostics(worker);
@@ -11498,10 +11504,41 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         return null;
                     }
                 };
-                URL.createObjectURL = function () {
-                    return 'blob:fenbrowser/' + Math.random().toString(36).slice(2);
+                // File API 8.3 blob URL store. createObjectURL used to return an
+                // unregistered random string, so a Worker or fetch given it had nothing
+                // to load; Cloudflare Turnstile's challenge frame starts a worker that way.
+                var blobUrlStore = new Map();
+                function blobUrlOrigin() {
+                    try {
+                        var origin = globalThis.location && globalThis.location.origin;
+                        return origin && origin !== 'null' ? String(origin) : 'null';
+                    } catch (_) {
+                        return 'null';
+                    }
+                }
+                function newBlobUuid() {
+                    var hex = '';
+                    for (var i = 0; i < 32; i++) {
+                        hex += Math.floor(Math.random() * 16).toString(16);
+                    }
+                    return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-4' + hex.slice(13, 16) + '-a' +
+                        hex.slice(17, 20) + '-' + hex.slice(20, 32);
+                }
+                // Resolving ignores the fragment (File API 8.3.3).
+                function resolveBlobUrl(url) {
+                    var key = String(url == null ? '' : url);
+                    var hash = key.indexOf('#');
+                    if (hash >= 0) key = key.slice(0, hash);
+                    return blobUrlStore.has(key) ? blobUrlStore.get(key) : null;
+                }
+                URL.createObjectURL = function (obj) {
+                    var url = 'blob:' + blobUrlOrigin() + '/' + newBlobUuid();
+                    blobUrlStore.set(url, obj);
+                    return url;
                 };
-                URL.revokeObjectURL = function () {};
+                URL.revokeObjectURL = function (url) {
+                    blobUrlStore.delete(String(url == null ? '' : url));
+                };
 
                 var _trustedPolicies = Object.create(null);
                 var _trustedPolicyNames = [];
@@ -12038,8 +12075,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         // A worker that accepted messages and never answered was
                         // indistinguishable from one still working: callers that
                         // await a reply simply hung until their own deadline.
+                        // A blob: URL's script comes from this realm's blob URL store,
+                        // not from the network.
+                        var blobEntry = resolveBlobUrl(this.scriptURL);
+                        var blobSource = blobEntry && blobEntry._parts
+                            ? __fenTextDecode(blobBytes(blobEntry), false)
+                            : undefined;
                         this._fenWorkerId = (typeof __fenWorkerStart === 'function')
-                            ? __fenWorkerStart(this.scriptURL, this)
+                            ? __fenWorkerStart(this.scriptURL, this, blobSource)
                             : -1;
                     };
                     Worker.prototype.postMessage = function (data, transfer) {
@@ -13201,6 +13244,29 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         }
                         if (signal && typeof signal.addEventListener === 'function') {
                             signal.addEventListener('abort', onAbort);
+                        }
+                        if (/^blob:/i.test(request.url || '')) {
+                            // Fetch 4.2 scheme fetch "blob": a GET returns the entry's bytes
+                            // and type; any other method, or an unknown or revoked URL, is a
+                            // network error.
+                            var blobEntry = String(request.method || 'GET').toUpperCase() === 'GET'
+                                ? resolveBlobUrl(request.url)
+                                : null;
+                            settled = true;
+                            if (!blobEntry || !blobEntry._parts) {
+                                reject(new TypeError('Failed to fetch'));
+                                return;
+                            }
+                            var blobBody = blobBytes(blobEntry);
+                            resolve(responseFromFetchResult({
+                                status: 200,
+                                statusText: 'OK',
+                                headers: { 'content-type': blobEntry.type || '', 'content-length': String(blobBody.length) },
+                                url: request.url,
+                                responseText: __fenTextDecode(blobBody, false),
+                                responseBytes: blobBody
+                            }, request));
+                            return;
                         }
                         try {
                             if (typeof __fenFetchAsync === 'function') {
