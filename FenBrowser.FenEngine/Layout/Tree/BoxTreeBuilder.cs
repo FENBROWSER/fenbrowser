@@ -566,6 +566,18 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     // Update parent to be the anon box
                     child.Parent = currentAnon;
                 }
+                else if (currentAnon != null && IsFloated(child))
+                {
+                    // CSS 2.1 §9.5.1 rules 6 and 7: a float that follows inline content may
+                    // start on that content's line, not only below it. As a block sibling after
+                    // the run it started where the run ended, so bing.com's profile menu
+                    // (float:right after the inline-block search form, before the block scope
+                    // bar) dropped below the search box. Place it before the run it follows, as
+                    // the float-only path above does, and keep the run open so inline content
+                    // after the float stays on the same lines. The float starts at the run's
+                    // first line, which is exact for a one-line run.
+                    newChildren.Insert(newChildren.IndexOf(currentAnon), child);
+                }
                 else
                 {
                     // It's a block

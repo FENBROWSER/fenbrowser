@@ -99,6 +99,34 @@ a { display: inline-block; }
             }
         }
 
+        // The profile menu floats right after the inline-block search form and before the
+        // block scope bar. The float was treated as a block sibling of the form's line, so it
+        // started below that line instead of on it (CSS 2.1 §9.5.1 rules 6 and 7 only keep it
+        // from rising above that line's top).
+        private const string FloatAfterInlineFormHtml = @"<!doctype html><html><head><style>
+body { margin: 0; font: 14px Arial, sans-serif; }
+header { padding-top: 22px; }
+form { display: inline-block; margin-right: 10px; }
+.box { display: inline-block; width: 600px; height: 44px; }
+#menu { float: right; position: relative; line-height: 50px; }
+#menu a { display: inline-block; width: 50px; }
+</style></head><body><header><form id='form'><div class='box'></div></form><div id='menu'><a href='#'>P</a></div><nav id='nav'>ALL IMAGES</nav></header></body></html>";
+
+        [Fact]
+        public async Task FloatBetweenAnInlineFormAndABlock_StaysOnTheFormsLine()
+        {
+            var (renderer, doc) = await RenderAsync(FloatAfterInlineFormHtml);
+
+            var form = Rect(renderer, doc, "form");
+            var menu = Rect(renderer, doc, "menu");
+            var nav = Rect(renderer, doc, "nav");
+
+            // Chrome: form and menu both at y = 22, menu at the right edge, nav below the form.
+            Assert.Equal(form.Top, menu.Top, 1);
+            Assert.Equal(1280f, menu.Right, 1);
+            Assert.True(nav.Top >= form.Bottom - 0.5f, $"nav should start below the form: nav {nav.Top}, form bottom {form.Bottom}");
+        }
+
         private static async Task<(SkiaDomRenderer Renderer, Document Doc)> RenderAsync(string html)
         {
             const int width = 1280;
