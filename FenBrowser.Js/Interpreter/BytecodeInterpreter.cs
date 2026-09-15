@@ -14904,7 +14904,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromBoolean(false);
         }
 
-        if (value.Tag != JsValueTag.Object)
+        // ECMA-262 7.3.22 OrdinaryHasInstance step 3: only a non-Object returns
+        // false; a platform (host) object is an Object whose prototype chain is
+        // walked like any other, so `caption instanceof HTMLTableCaptionElement`
+        // through the inherited Function.prototype[@@hasInstance] holds.
+        if (value.Tag != JsValueTag.Object && value.Tag != JsValueTag.HostObject)
         {
             return JsValue.FromBoolean(false);
         }
