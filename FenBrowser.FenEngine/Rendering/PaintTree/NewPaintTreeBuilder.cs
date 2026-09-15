@@ -646,6 +646,27 @@ namespace FenBrowser.FenEngine.Rendering
 
                 string containerDisplay = style?.Display?.ToLowerInvariant() ?? "inline";
 
+                // CSS 2.1 11.1.2: legacy clip applies to absolutely positioned boxes whether or
+                // not they create a stacking context. Only the non-stacking path read it, so
+                // bing.com's skip links (`position:absolute; z-index:100; clip:rect(1px,1px,1px,1px)`
+                // until focused) painted over the header.
+                // The clip covers the context's own background and border, so it wraps the whole
+                // context in a clipping one rather than using ClipBounds, which clips content only.
+                BuilderStackingContext legacyClipContext = null;
+                string stackingPosition = style?.Position;
+                if ((string.Equals(stackingPosition, "absolute", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(stackingPosition, "fixed", StringComparison.OrdinalIgnoreCase)) &&
+                    box != null &&
+                    TryResolveLegacyRectClip(style, box.BorderBox, out var stackingLegacyClip))
+                {
+                    legacyClipContext = new BuilderStackingContext(node)
+                    {
+                        ZIndex = childContext.ZIndex,
+                        ClipBounds = stackingLegacyClip
+                    };
+                    legacyClipContext.AddChildContext(childContext);
+                }
+
                 // Check for overflow/scroll
                 bool isScrollable = (style?.OverflowX == "scroll" || style?.OverflowX == "auto" || 
                                      style?.OverflowY == "scroll" || style?.OverflowY == "auto");
@@ -712,7 +733,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 
                 // Add to parent context based on z-index
-                currentContext.AddChildContext(childContext);
+                currentContext.AddChildContext(legacyClipContext ?? childContext);
                 
                 // Process children in the new context
                 ProcessChildren(node, childContext, depth + 1, null, nodeVisibilityHidden);
@@ -6527,7 +6548,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 
                 result.AddRange(contentNodes);
-                
+
                 // Apply Mask (if any)
                 if (!string.IsNullOrEmpty(MaskImage) && MaskImage != "none")
                 {
