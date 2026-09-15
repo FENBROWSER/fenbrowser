@@ -62,7 +62,6 @@ namespace FenBrowser.Core.Security.Corb
             "text/xml",
             "application/xml",
             "application/xhtml+xml",
-            "image/svg+xml",
             "application/json",
             "text/json",
             "application/ld+json",
@@ -221,8 +220,41 @@ namespace FenBrowser.Core.Security.Corb
             if (SensitiveMimeTypes.Contains(mime))
                 return true;
 
+            // CORB protects HTML, XML and JSON. image/svg+xml is the one XML type it
+            // leaves alone: SVG is an image, and blocking it strips every
+            // cross-origin <img src="logo.svg"> off the page.
+            if (string.Equals(mime, "image/svg+xml", StringComparison.OrdinalIgnoreCase))
+                return false;
+
             return mime.EndsWith("+json", StringComparison.OrdinalIgnoreCase) ||
                    mime.EndsWith("+xml", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // `<?xml ...?>` followed (after whitespace, comments and a DOCTYPE) by `<svg`.
+        private static bool StartsWithSvgAfterXmlDeclaration(ReadOnlySpan<byte> prefix)
+        {
+            int close = prefix.IndexOf("?>"u8);
+            if (close < 0) return false;
+            var rest = prefix.Slice(close + 2);
+            while (true)
+            {
+                rest = TrimLeadingNoise(rest);
+                if (rest.StartsWith("<!--"u8))
+                {
+                    int end = rest.IndexOf("-->"u8);
+                    if (end < 0) return false;
+                    rest = rest.Slice(end + 3);
+                    continue;
+                }
+                if (rest.StartsWith("<!"u8))
+                {
+                    int end = rest.IndexOf((byte)'>');
+                    if (end < 0) return false;
+                    rest = rest.Slice(end + 1);
+                    continue;
+                }
+                return StartsWithMarkupToken(rest, "<svg"u8);
+            }
         }
 
         private bool IsSniffableMimeType(string mime)
@@ -247,10 +279,16 @@ namespace FenBrowser.Core.Security.Corb
                 return "text/html";
             }
 
-            if (StartsWithMarkupToken(prefix, "<?xml"u8, declarationToken: true) ||
-                StartsWithMarkupToken(prefix, "<svg"u8))
+            // An SVG document sniffs as an image, not as protected XML, for the
+            // same reason image/svg+xml is not a sensitive type.
+            if (StartsWithMarkupToken(prefix, "<svg"u8))
             {
-                return "text/xml";
+                return "image/svg+xml";
+            }
+
+            if (StartsWithMarkupToken(prefix, "<?xml"u8, declarationToken: true))
+            {
+                return StartsWithSvgAfterXmlDeclaration(prefix) ? "image/svg+xml" : "text/xml";
             }
 
             // JSON sniffing remains intentionally conservative: an opaque response
