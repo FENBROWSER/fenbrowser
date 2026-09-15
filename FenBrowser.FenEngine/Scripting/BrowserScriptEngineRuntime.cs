@@ -22782,6 +22782,64 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         public bool TryGetHostProperty(HostObjectHandle handle, string property, out JsValue value)
             => TryGetHostProperty(handle, property, HostPropertyAccessKind.Read, out value);
 
+        /// <summary>
+        /// WebIDL 3.9 [[OwnPropertyKeys]] for the collection-shaped host objects:
+        /// the indices, then the supported property names (an element's id and
+        /// name, each once, in tree order - DOM 4.2.10.2), so Object.keys and
+        /// for-in see what bracket access can reach.
+        /// </summary>
+        public bool TryGetHostOwnKeys(HostObjectHandle handle, out IReadOnlyList<string> keys)
+        {
+            keys = Array.Empty<string>();
+            if (_owner == null || _owner._interpreter == null)
+            {
+                return false;
+            }
+
+            var resolution = _owner._interpreter.HostObjectTable.Resolve(handle, _owner._interpreter.HostResolveContext);
+            if (!resolution.IsOk)
+            {
+                return false;
+            }
+
+            switch (resolution.HostObject)
+            {
+                case FenJsHtmlCollectionHost collectionHost:
+                {
+                    var list = new List<string>();
+                    var names = new HashSet<string>(StringComparer.Ordinal);
+                    var index = 0;
+                    var namedCandidates = new List<string>();
+                    foreach (var element in collectionHost.Collection)
+                    {
+                        list.Add(index.ToString(CultureInfo.InvariantCulture));
+                        index++;
+                        var id = element.Id;
+                        if (!string.IsNullOrEmpty(id) && names.Add(id)) namedCandidates.Add(id);
+                        var name = element.GetAttribute("name");
+                        if (!string.IsNullOrEmpty(name) && names.Add(name)) namedCandidates.Add(name);
+                    }
+
+                    list.AddRange(namedCandidates);
+                    keys = list;
+                    return true;
+                }
+                case DOMTokenList tokenList:
+                {
+                    var list = new List<string>();
+                    for (var i = 0; i < tokenList.Length; i++)
+                    {
+                        list.Add(i.ToString(CultureInfo.InvariantCulture));
+                    }
+
+                    keys = list;
+                    return true;
+                }
+                default:
+                    return false;
+            }
+        }
+
         public bool TryGetHostProperty(
             HostObjectHandle handle,
             string property,

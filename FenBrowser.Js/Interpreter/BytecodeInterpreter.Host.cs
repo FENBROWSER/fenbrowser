@@ -194,6 +194,29 @@ public sealed partial class BytecodeInterpreter
             ? properties.Keys
             : Array.Empty<string>();
 
+    // WebIDL 3.9 [[OwnPropertyKeys]] for a platform object: the host's own keys
+    // (indices, then supported names) first, then properties script defined
+    // on the object, each once.
+    private IReadOnlyList<string> EnumerateHostObjectOwnKeys(HostObjectHandle handle)
+    {
+        var keys = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (_hostHooks.TryGetHostOwnKeys(handle, out var hostKeys))
+        {
+            foreach (var key in hostKeys)
+            {
+                if (seen.Add(key)) keys.Add(key);
+            }
+        }
+
+        foreach (var key in EnumerateHostObjectDefinedPropertyNames(handle))
+        {
+            if (seen.Add(key)) keys.Add(key);
+        }
+
+        return keys;
+    }
+
     private void DefineHostObjectProperty(HostObjectHandle handle, string key, JsPropertyDescriptor descriptor)
     {
         if (!_hostDefinedProperties.TryGetValue(handle, out var properties))

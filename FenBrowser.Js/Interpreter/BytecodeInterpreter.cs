@@ -13189,7 +13189,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 RequireHostObject(targetValue, "get host own property names");
                 var hostItems = new List<JsValue>();
-                foreach (var key in EnumerateHostObjectDefinedPropertyNames(targetValue.AsHostObjectHandle()))
+                foreach (var key in EnumerateHostObjectOwnKeys(targetValue.AsHostObjectHandle()))
                 {
                     hostItems.Add(JsValue.FromString(key));
                 }
@@ -13910,9 +13910,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             RequireHostObject(targetValue, "enumerate host object own properties");
             var hostItems = new List<JsValue>();
             var hostHandle = targetValue.AsHostObjectHandle();
-            foreach (var key in EnumerateHostObjectDefinedPropertyNames(hostHandle))
+            foreach (var key in EnumerateHostObjectOwnKeys(hostHandle))
             {
-                if (!TryGetHostObjectDefinedProperty(hostHandle, key, out var descriptor) ||
+                if (TryGetHostObjectDefinedProperty(hostHandle, key, out var descriptor) &&
                     !descriptor.Enumerable)
                 {
                     continue;

@@ -1,3 +1,4 @@
+﻿using System;
 using FenBrowser.Js.Promises;
 using FenBrowser.Js.Runtime;
 
@@ -59,6 +60,18 @@ public interface IHostHooks
 
     // Companion to TryGetHostProperty. False return = host rejected the write.
     bool TrySetHostProperty(HostObjectHandle handle, string property, JsValue value);
+
+    /// <summary>
+    /// WebIDL 3.9 legacy platform objects [[OwnPropertyKeys]]: the host object's
+    /// own enumerable keys that are not explicitly defined properties - for a
+    /// collection, its indices then its supported names, in order. False when the
+    /// host object exposes no such keys.
+    /// </summary>
+    bool TryGetHostOwnKeys(HostObjectHandle handle, out IReadOnlyList<string> keys)
+    {
+        keys = Array.Empty<string>();
+        return false;
+    }
 
     bool TryConvertHostObjectToPrimitive(
         HostObjectHandle handle,

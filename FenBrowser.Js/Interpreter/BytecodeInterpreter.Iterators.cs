@@ -1,4 +1,4 @@
-using FenBrowser.Js.Heap;
+﻿using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 
@@ -471,6 +471,29 @@ public sealed partial class BytecodeInterpreter
         {
             var seen = new HashSet<string>(StringComparer.Ordinal);
             CollectEnumerableKeys(_heap.GetObject(value.AsObjectHandle()), keys, seen);
+        }
+        else if (value.Tag == JsValueTag.HostObject)
+        {
+            // ECMA-262 14.7.5.6 EnumerateObjectProperties over a platform object:
+            // its own keys, then the enumerable keys of its prototype chain.
+            var hostHandle = value.AsHostObjectHandle();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var key in EnumerateHostObjectOwnKeys(hostHandle))
+            {
+                if (TryGetHostObjectDefinedProperty(hostHandle, key, out var descriptor) && !descriptor.Enumerable)
+                {
+                    seen.Add(key);
+                    continue;
+                }
+
+                if (seen.Add(key)) keys.Add(key);
+            }
+
+            var prototype = GetHostObjectPrototype(hostHandle);
+            if (prototype.Tag == JsValueTag.Object)
+            {
+                CollectEnumerableKeys(_heap.GetObject(prototype.AsObjectHandle()), keys, seen);
+            }
         }
 
         var iterator = new ForInIteratorObject(keys);
