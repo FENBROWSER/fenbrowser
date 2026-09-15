@@ -169,6 +169,28 @@ public sealed class ModuleEvaluatorTests
     }
 
     [Fact]
+    public void StaticAndDynamicImportsShareOneNamespaceObject()
+    {
+        // ECMA-262 16.2.1.10 GetModuleNamespace: one namespace object per module.
+        const string entryUrl = "https://example.test/app.js";
+        const string depUrl = "https://example.test/dep.js";
+        var interpreter = new BytecodeInterpreter();
+        var evaluator = new ModuleEvaluator(interpreter, hostSourceResolver: specifier =>
+            specifier == depUrl ? "export const answer = 42;" : null);
+        evaluator.RegisterSource(
+            entryUrl,
+            """
+            import * as dep from './dep.js';
+            import('./dep.js').then(ns => { globalThis.sameNamespace = ns === dep; });
+            """);
+
+        _ = evaluator.Evaluate(entryUrl);
+
+        Assert.True(interpreter.TryReadGlobalValue("sameNamespace", out var value));
+        Assert.True(value.AsBoolean());
+    }
+
+    [Fact]
     public void DynamicImportUsesHostResolverAndReturnsChunkNamespace()
     {
         const string entryUrl = "https://example.test/static/client/runtime.js";

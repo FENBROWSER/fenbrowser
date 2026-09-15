@@ -58,6 +58,10 @@ public sealed class ModuleEvaluator : IHeapRootSource
                     tracer.TraceRoot("module-export", value.AsObjectHandle());
                 }
             }
+            if (module.Namespace.Tag == JsValueTag.Object)
+            {
+                tracer.TraceRoot("module-namespace", module.Namespace.AsObjectHandle());
+            }
         }
     }
 
@@ -344,11 +348,18 @@ public sealed class ModuleEvaluator : IHeapRootSource
         return _interpreter.AllocateNamespaceObject(exports);
     }
 
+    // ECMA-262 16.2.1.10 GetModuleNamespace: a module has one namespace object,
+    // so `import * as a` and a later `import()` of the same module compare equal.
     private JsValue BuildNamespaceObject(EvaluatedModule module)
     {
-        return module.ExportBindings.Count > 0
-            ? _interpreter.AllocateModuleNamespaceObject(module.Environment, module.ExportBindings)
-            : BuildNamespaceObject(module.Exports);
+        if (module.Namespace.Tag != JsValueTag.Object)
+        {
+            module.Namespace = module.ExportBindings.Count > 0
+                ? _interpreter.AllocateModuleNamespaceObject(module.Environment, module.ExportBindings)
+                : BuildNamespaceObject(module.Exports);
+        }
+
+        return module.Namespace;
     }
 
     private sealed class EvaluatedModule
@@ -361,5 +372,6 @@ public sealed class ModuleEvaluator : IHeapRootSource
         public ModuleEnvironmentRecord Environment { get; }
         public Dictionary<string, JsValue> Exports { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, string> ExportBindings { get; } = new(StringComparer.Ordinal);
+        public JsValue Namespace = JsValue.Undefined;
     }
 }
