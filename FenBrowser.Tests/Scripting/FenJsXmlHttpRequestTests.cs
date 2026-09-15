@@ -332,6 +332,7 @@ namespace FenBrowser.Tests.Scripting
             };
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
+            await WaitForGlobalAsync(engine, "globalThis.__fetchToken !== undefined");
 
             Assert.Equal(true, engine.Evaluate("globalThis.__fetchOk"));
             Assert.Equal("200", engine.Evaluate("String(globalThis.__fetchStatus)")?.ToString());
@@ -438,6 +439,7 @@ namespace FenBrowser.Tests.Scripting
             };
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
+            await WaitForGlobalAsync(engine, "globalThis.__binaryFetchStatus !== undefined");
 
             Assert.Equal(new byte[] { 10, 24, 65, 55, 75 }, capturedBody);
             Assert.Equal("200", engine.Evaluate("String(globalThis.__binaryFetchStatus)")?.ToString());
@@ -686,6 +688,23 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal(1, eventLoop.Events.Count(e =>
                 e.EventName == "CallbackCompleted" &&
                 e.Detail == "requestAnimationFrame"));
+        }
+
+
+        // fetch() settles in a later task now that it is asynchronous, so a test
+        // waits for the page script's own signal instead of reading it back at once.
+        private static async Task WaitForGlobalAsync(FenJsBrowserScriptEngine engine, string expression)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (string.Equals(engine.Evaluate("String(" + expression + ")")?.ToString(), "true", StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                await Task.Delay(20);
+            }
         }
 
         private static JsHostAdapter CreateHost()

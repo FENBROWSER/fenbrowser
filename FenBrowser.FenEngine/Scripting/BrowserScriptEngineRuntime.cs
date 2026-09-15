@@ -10870,6 +10870,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 "__fenSyncXhr",
                 (_, args) => ExecuteSynchronousXmlHttpRequest(args)));
         _interpreter.RegisterGlobalValue(
+            "__fenFetchAsync",
+            _interpreter.AllocateNativeFunction(
+                "__fenFetchAsync",
+                (_, args) => StartAsynchronousFetchRequest(args),
+                length: 6));
+        _interpreter.RegisterGlobalValue(
             "__fenSyncFetch",
             _interpreter.AllocateNativeFunction(
                 "__fenSyncFetch",
@@ -12121,6 +12127,31 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 XMLHttpRequest.prototype.send = function (body) {
                     var self = this;
                     self._dispatch('loadstart');
+                    // XHR §send(): an asynchronous request returns at once and
+                    // finishes in a later task; only open(..., false) may block.
+                    if (self._async && typeof __fenFetchAsync === 'function') {
+                        var asyncIsBinaryBody = body != null && typeof ArrayBuffer !== 'undefined' &&
+                            (body instanceof ArrayBuffer || (typeof ArrayBuffer.isView === 'function' && ArrayBuffer.isView(body)));
+                        var asyncRequestBody = body === undefined ? '' : (asyncIsBinaryBody ? body : String(body));
+                        __fenFetchAsync(self._method || 'GET', self._url || '', asyncRequestBody, self._requestHeaders || {}, asyncIsBinaryBody, function (result) {
+                            if (self._aborted) return;
+                            self.readyState = XMLHttpRequest.DONE;
+                            self.status = result && typeof result.status === 'number' ? result.status : 0;
+                            self.statusText = result && result.statusText ? String(result.statusText) : '';
+                            self.responseText = result && result.responseText ? String(result.responseText) : '';
+                            self.responseURL = result && result.url ? String(result.url) : (self._url || '');
+                            self._responseHeaders = result && result.headers ? result.headers : {};
+                            self.response = self.responseType === 'arraybuffer'
+                                ? (result && result.responseBytes ? new Uint8Array(result.responseBytes).buffer : new ArrayBuffer(0))
+                                : self.responseType === 'json'
+                                    ? (function () { try { return JSON.parse(self.responseText); } catch (e) { return null; } })()
+                                    : self.responseText;
+                            if (self.onreadystatechange) self.onreadystatechange();
+                            self._dispatch(self.status >= 200 && self.status < 400 ? 'load' : 'error');
+                            self._dispatch('loadend');
+                        });
+                        return;
+                    }
                     if (typeof __fenSyncXhr === 'function') {
                         var isBinaryBody = body != null && typeof ArrayBuffer !== 'undefined' &&
                             (body instanceof ArrayBuffer || (typeof ArrayBuffer.isView === 'function' && ArrayBuffer.isView(body)));
@@ -12149,10 +12180,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     this._dispatch('loadend');
                 };
                 XMLHttpRequest.prototype.getResponseHeader = function (name) {
-                    return null;
+                    var headers = this._responseHeaders;
+                    if (!headers || name == null) return null;
+                    var key = String(name).toLowerCase();
+                    return Object.prototype.hasOwnProperty.call(headers, key) ? String(headers[key]) : null;
                 };
                 XMLHttpRequest.prototype.getAllResponseHeaders = function () {
-                    return '';
+                    var headers = this._responseHeaders;
+                    if (!headers) return '';
+                    var lines = [];
+                    for (var key in headers) {
+                        if (Object.prototype.hasOwnProperty.call(headers, key)) lines.push(key + ': ' + headers[key]);
+                    }
+                    return lines.length ? lines.join('\r\n') + '\r\n' : '';
                 };
                 XMLHttpRequest.prototype.overrideMimeType = function (mime) {};
 
@@ -13048,30 +13088,79 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     if (init.body !== undefined) this.body = init.body;
                 };
 
+                // Bytes of a body given as ArrayBuffer / typed array / DataView, else null.
+                function bodyBytes(body) {
+                    if (typeof ArrayBuffer === 'undefined' || body == null) return null;
+                    if (body instanceof ArrayBuffer) return new Uint8Array(body.slice(0));
+                    if (typeof ArrayBuffer.isView === 'function' && ArrayBuffer.isView(body)) {
+                        return new Uint8Array(body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength));
+                    }
+                    return null;
+                }
+                function bytesToText(bytes) {
+                    return typeof TextDecoder === 'function' ? new TextDecoder().decode(bytes) : String.fromCharCode.apply(null, bytes);
+                }
+
                 globalThis.Response = function Response(body, init) {
                     init = init || {};
-                    this._body = body == null ? '' : String(body);
+                    // Fetch §Response: the body is a byte sequence; text() decodes it,
+                    // arrayBuffer() copies it out. `_bytes` holds binary bodies (a
+                    // fetched font or model), `_body` the text form.
+                    this._bytes = init.__fenBytes || bodyBytes(body);
+                    // The text form: what the host decoded (charset-aware) for a
+                    // fetched body, the string given for a constructed one, or
+                    // decoded from the bytes on demand.
+                    this._body = init.__fenBytes ? (body == null ? '' : String(body)) : (this._bytes ? null : (body == null ? '' : String(body)));
+                    this.bodyUsed = false;
                     this.status = init.status === undefined ? 200 : Number(init.status);
                     this.statusText = init.statusText || '';
                     this.headers = new Headers(init.headers || {});
                     this.url = init.url || '';
                     this.ok = this.status >= 200 && this.status < 300;
+                    this.type = 'basic';
+                    this.redirected = false;
                 };
                 Response.prototype.text = function () {
-                    return Promise.resolve(this._body);
+                    this.bodyUsed = true;
+                    return Promise.resolve(this._body != null ? this._body : bytesToText(this._bytes));
                 };
                 Response.prototype.json = function () {
-                    return Promise.resolve(JSON.parse(this._body || 'null'));
+                    return this.text().then(function (text) { return JSON.parse(text || 'null'); });
+                };
+                Response.prototype.arrayBuffer = function () {
+                    this.bodyUsed = true;
+                    var bytes = this._bytes ? new Uint8Array(this._bytes) : __fenTextEncode(this._body || '');
+                    return Promise.resolve(new Uint8Array(bytes).buffer);
+                };
+                Response.prototype.blob = function () {
+                    this.bodyUsed = true;
+                    return Promise.resolve(new Blob([this._bytes ? new Uint8Array(this._bytes) : (this._body || '')], { type: this.headers.get('content-type') || '' }));
                 };
                 Response.prototype.clone = function () {
                     return new Response(this._body, {
                         status: this.status,
                         statusText: this.statusText,
                         headers: this.headers,
-                        url: this.url
+                        url: this.url,
+                        __fenBytes: this._bytes ? new Uint8Array(this._bytes) : null
                     });
                 };
 
+                function responseFromFetchResult(result, request) {
+                    return new Response(result && result.responseText ? result.responseText : '', {
+                        status: result && typeof result.status === 'number' ? result.status : 0,
+                        statusText: result && result.statusText ? String(result.statusText) : '',
+                        headers: result && result.headers ? result.headers : {},
+                        url: result && result.url ? String(result.url) : request.url,
+                        __fenBytes: result && result.responseBytes ? result.responseBytes : null
+                    });
+                }
+
+                // Fetch §"fetch(input, init)": the request is sent off the script
+                // thread and the promise settles when the response arrives (a later
+                // task), so scripts keep running - and other loads that need the
+                // script thread are not deadlocked behind a blocking network wait.
+                // A network error rejects with a TypeError, as the spec requires.
                 globalThis.fetch = function (input, init) {
                     init = init || {};
                     var request = input instanceof Request ? new Request(input, init) : new Request(input, init);
@@ -13080,17 +13169,46 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     if (body.contentType && !headers.has('content-type')) {
                         headers.set('content-type', body.contentType);
                     }
-                    try {
-                        var result = __fenSyncFetch(request.method || 'GET', request.url || '', body.value, plainHeaders(headers), body.isBinary);
-                        return Promise.resolve(new Response(result && result.responseText ? result.responseText : '', {
-                            status: result && typeof result.status === 'number' ? result.status : 0,
-                            statusText: result && result.statusText ? String(result.statusText) : '',
-                            headers: result && result.headers ? result.headers : {},
-                            url: result && result.url ? String(result.url) : request.url
-                        }));
-                    } catch (error) {
-                        return Promise.reject(error);
-                    }
+                    var signal = init.signal || (input instanceof Request ? input.signal : null);
+                    return new Promise(function (resolve, reject) {
+                        if (signal && signal.aborted) {
+                            reject(signal.reason || new DOMException('The operation was aborted.', 'AbortError'));
+                            return;
+                        }
+                        var settled = false;
+                        function onAbort() {
+                            if (settled) return;
+                            settled = true;
+                            reject(signal.reason || new DOMException('The operation was aborted.', 'AbortError'));
+                        }
+                        if (signal && typeof signal.addEventListener === 'function') {
+                            signal.addEventListener('abort', onAbort);
+                        }
+                        try {
+                            if (typeof __fenFetchAsync === 'function') {
+                                __fenFetchAsync(request.method || 'GET', request.url || '', body.value, plainHeaders(headers), body.isBinary, function (result) {
+                                    if (settled) return;
+                                    settled = true;
+                                    if (!result || result.status === 0) {
+                                        reject(new TypeError('Failed to fetch'));
+                                        return;
+                                    }
+                                    resolve(responseFromFetchResult(result, request));
+                                });
+                                return;
+                            }
+                            var syncResult = __fenSyncFetch(request.method || 'GET', request.url || '', body.value, plainHeaders(headers), body.isBinary);
+                            settled = true;
+                            if (!syncResult || syncResult.status === 0) {
+                                reject(new TypeError('Failed to fetch'));
+                                return;
+                            }
+                            resolve(responseFromFetchResult(syncResult, request));
+                        } catch (error) {
+                            settled = true;
+                            reject(error);
+                        }
+                    });
                 };
 
                 // â”€â”€ TextEncoder â”€â”€ https://encoding.spec.whatwg.org/#textencoder
@@ -13517,6 +13635,132 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
     }
 
+    /// <summary>
+    /// Fetch §"fetch(input, init)": the request goes out on a background task
+    /// and the response is delivered to <c>onDone</c> as a later task on the
+    /// script thread. Blocking the script thread on the network (the old
+    /// __fenSyncFetch) stalled every page that fetched while other loads needed
+    /// the script thread, and deadlocked github.com once its images were let in.
+    /// Arguments: method, url, body, headers, isBinaryBody, onDone(result).
+    /// </summary>
+    private JsValue StartAsynchronousFetchRequest(IReadOnlyList<JsValue> args)
+    {
+        var callback = args.Count > 5 ? args[5] : JsValue.Undefined;
+        if (!_interpreter.CanCallValue(callback))
+        {
+            return JsValue.Undefined;
+        }
+
+        var methodText = args.Count > 0 ? CoerceToHostString(args[0]) : "GET";
+        var urlText = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+        var bodyValue = args.Count > 2 ? args[2] : JsValue.FromString(string.Empty);
+        var isBinaryBody = args.Count > 4 && args[4].Tag == JsValueTag.Boolean && args[4].AsBoolean();
+
+        // The callback and its receiver stay rooted until the completion runs.
+        var pin = PinFenJsValues(callback);
+
+        void Deliver(int status, string statusText, string text, string url, HttpResponseMessage response, byte[] bytes, HttpRequestMessage request)
+        {
+            QueueOnDeliveryTail(() =>
+            {
+                try
+                {
+                    using (ScriptEngineLockProbe.Hold(_fenJsLock))
+                    {
+                        var result = CreateFetchResult(status, statusText, text, url, response, bytes);
+                        TryInvokeFenJsEventCallback(callback, _fenJsGlobalThis, result, "fetch");
+                        _interpreter.PumpMicrotasks();
+                    }
+                }
+                finally
+                {
+                    pin.Dispose();
+                    response?.Dispose();
+                    request?.Dispose();
+                }
+            }, "fetch completion failed");
+        }
+
+        if (FetchHandler == null || !TryResolveUri(urlText, _currentBaseUri, out var requestUri))
+        {
+            Deliver(0, "Network Error", string.Empty, urlText ?? string.Empty, null, null, null);
+            return JsValue.Undefined;
+        }
+
+        HttpRequestMessage request;
+        try
+        {
+            request = new HttpRequestMessage(new HttpMethod(string.IsNullOrWhiteSpace(methodText) ? "GET" : methodText.ToUpperInvariant()), requestUri);
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
+            if (_currentBaseUri != null)
+            {
+                request.Headers.Referrer = _currentBaseUri;
+                if (!CorsHandler.IsSameOrigin(requestUri, _currentBaseUri))
+                {
+                    var origin = CorsHandler.SerializeOrigin(new UriBuilder(
+                        _currentBaseUri.Scheme,
+                        _currentBaseUri.Host,
+                        _currentBaseUri.IsDefaultPort ? -1 : _currentBaseUri.Port).Uri);
+                    if (!string.IsNullOrWhiteSpace(origin))
+                    {
+                        request.Headers.TryAddWithoutValidation("Origin", origin);
+                    }
+                }
+            }
+
+            if (!string.Equals(request.Method.Method, "GET", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(request.Method.Method, "HEAD", StringComparison.OrdinalIgnoreCase))
+            {
+                request.Content = CreateRequestContent(bodyValue, isBinaryBody);
+            }
+
+            if (args.Count > 3 && args[3].Tag == JsValueTag.Object)
+            {
+                ApplyXhrRequestHeaders(request, args[3]);
+            }
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] fetch could not build request for '{requestUri}': {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+            Deliver(0, "Network Error", string.Empty, requestUri.ToString(), null, null, null);
+            return JsValue.Undefined;
+        }
+
+        var handler = FetchHandler;
+        _ = Task.Run(async () =>
+        {
+            HttpResponseMessage response = null;
+            try
+            {
+                response = await handler(request).ConfigureAwait(false);
+                var bytes = response.Content != null
+                    ? await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
+                    : Array.Empty<byte>();
+                var text = DecodeResponseText(bytes, response.Content?.Headers?.ContentType?.CharSet);
+                Deliver(
+                    (int)response.StatusCode,
+                    response.ReasonPhrase ?? string.Empty,
+                    text,
+                    response.RequestMessage?.RequestUri?.ToString() ?? requestUri.ToString(),
+                    response,
+                    bytes,
+                    request);
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] fetch failed for '{requestUri}': {ex.Message}",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                Deliver(0, "Network Error", string.Empty, requestUri.ToString(), response, null, request);
+            }
+        });
+
+        return JsValue.Undefined;
+    }
+
     private JsValue ExecuteSynchronousFetchRequest(IReadOnlyList<JsValue> args)
     {
         var methodText = args.Count > 0 ? CoerceToHostString(args[0]) : "GET";
@@ -13562,13 +13806,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             }
 
             using var response = FetchHandler(request).GetAwaiter().GetResult();
-            var responseText = response.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? string.Empty;
+            // Fetch §"body": the body is bytes; text() decodes them and arrayBuffer()
+            // hands them over as they are. Reading only a string lost every binary
+            // response (a font, a model, a wasm module) to UTF-8 replacement.
+            var responseBytes = response.Content?.ReadAsByteArrayAsync().GetAwaiter().GetResult() ?? Array.Empty<byte>();
+            var responseText = DecodeResponseText(responseBytes, response.Content?.Headers?.ContentType?.CharSet);
             return CreateFetchResult(
                 (int)response.StatusCode,
                 response.ReasonPhrase ?? string.Empty,
                 responseText,
                 response.RequestMessage?.RequestUri?.ToString() ?? requestUri.ToString(),
-                response);
+                response,
+                responseBytes);
         }
         catch (Exception ex)
         {
@@ -13674,7 +13923,41 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         });
     }
 
-    private JsValue CreateFetchResult(int status, string statusText, string responseText, string url, HttpResponseMessage response)
+    /// <summary>
+    /// Encoding Standard "decode": the declared charset when it names a known
+    /// encoding, UTF-8 otherwise, with the BOM stripped.
+    /// </summary>
+    private static string DecodeResponseText(byte[] bytes, string charset)
+    {
+        if (bytes == null || bytes.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        System.Text.Encoding encoding = System.Text.Encoding.UTF8;
+        if (!string.IsNullOrWhiteSpace(charset))
+        {
+            try
+            {
+                encoding = System.Text.Encoding.GetEncoding(charset.Trim().Trim('"'));
+            }
+            catch (ArgumentException)
+            {
+                // Unknown label: the Encoding Standard falls back to UTF-8.
+            }
+        }
+
+        int offset = 0;
+        var preamble = encoding.GetPreamble();
+        if (preamble.Length > 0 && bytes.Length >= preamble.Length && bytes.AsSpan(0, preamble.Length).SequenceEqual(preamble))
+        {
+            offset = preamble.Length;
+        }
+
+        return encoding.GetString(bytes, offset, bytes.Length - offset);
+    }
+
+    private JsValue CreateFetchResult(int status, string statusText, string responseText, string url, HttpResponseMessage response, byte[] responseBytes = null)
     {
         var headers = new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
         if (response != null)
@@ -13698,6 +13981,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             ["status"] = JsValue.FromNumber(status),
             ["statusText"] = JsValue.FromString(statusText ?? string.Empty),
             ["responseText"] = JsValue.FromString(responseText ?? string.Empty),
+            ["responseBytes"] = responseBytes != null && responseBytes.Length > 0
+                ? _interpreter.AllocateUint8ArrayFromBytes(responseBytes)
+                : JsValue.Null,
             ["url"] = JsValue.FromString(url ?? string.Empty),
             ["headers"] = _interpreter.AllocateObject(headers)
         });
@@ -13727,6 +14013,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         {
             var obj = _interpreter.Heap.GetObject(value.AsObjectHandle());
             if (obj == null) return Array.Empty<byte>();
+            // A real buffer or view hands its bytes over directly - no per-element
+            // property reads and no size cap, which a fetched model or font needs.
+            if (obj is FenBrowser.Js.Objects.TypedArrayView view && !view.IsViewDetached && !view.IsViewOutOfBounds())
+            {
+                return view.Buffer.Data.AsSpan(view.ByteOffset, view.ByteLength).ToArray();
+            }
+            if (obj is FenBrowser.Js.Objects.ArrayBufferObject buffer && !buffer.IsDetached)
+            {
+                return buffer.Data.AsSpan(0, buffer.ByteLength).ToArray();
+            }
             // Try to get the "length" property.
             var context = (IBuiltinContext)_interpreter;
             if (!context.TryGetPropertyValue(obj, value, "length", out var lengthVal))

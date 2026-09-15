@@ -101,6 +101,16 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    /// <summary>
+    /// A fresh Uint8Array over a copy of <paramref name="data"/>, for hosts that
+    /// hand binary payloads (a fetched response body) to script.
+    /// </summary>
+    public JsValue AllocateUint8ArrayFromBytes(byte[] data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        return MakeUint8Array(data);
+    }
+
     private JsValue MakeUint8Array(byte[] data)
     {
         var buffer = new ArrayBufferObject(data.Length);
