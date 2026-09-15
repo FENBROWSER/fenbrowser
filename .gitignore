@@ -78,7 +78,8 @@ pub/
 test_skia.cs
 build.binlog
 nul
-.claude/
+.claude/*
+!.claude/skills/
 test262/
 wpt/
 html5lib-tests/
