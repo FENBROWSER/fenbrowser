@@ -644,15 +644,12 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
             }
 
-            // Collect iframe elements in the just-cascaded tree.
-            var frames = root.Descendants().OfType<Element>()
+            // Collect iframe elements in the just-cascaded tree, root included. Shadow trees
+            // are part of it: a frame inside a shadow root (Cloudflare Turnstile's) got a box
+            // from the cascade, but its document was never styled and painted nothing.
+            var frames = EnumerateElementsIncludingShadowTrees(root)
                 .Where(static e => string.Equals(e.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
                 .ToList();
-            if (root is Element rootEl &&
-                string.Equals(rootEl.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
-            {
-                frames.Insert(0, rootEl);
-            }
 
             foreach (var frame in frames)
             {

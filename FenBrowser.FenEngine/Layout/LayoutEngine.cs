@@ -260,11 +260,7 @@ namespace FenBrowser.FenEngine.Layout
                 return;
             }
 
-            var frameElements = layoutRoot
-                .DescendantsAndSelf()
-                .OfType<Element>()
-                .Where(static element => string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
-                .ToArray();
+            var frameElements = EnumerateFrameElements(layoutRoot).ToArray();
 
             foreach (var frameElement in frameElements)
             {
@@ -333,13 +329,8 @@ namespace FenBrowser.FenEngine.Layout
                 return false;
             }
 
-            foreach (var frameElement in layoutRoot.DescendantsAndSelf().OfType<Element>())
+            foreach (var frameElement in EnumerateFrameElements(layoutRoot))
             {
-                if (!string.Equals(frameElement.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
                 // A frame may be inserted between style/layout snapshots before its
                 // child Document is attached. Do not reuse a result that predates the
                 // atomic iframe host box: paint and input both need that geometry.
@@ -357,6 +348,36 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             return false;
+        }
+
+        // Frames inside shadow trees are part of the rendered tree: Cloudflare Turnstile's
+        // challenge iframe sits in a closed shadow root. Walking the light tree only gave that
+        // frame a host box but never laid out its document, so it painted empty.
+        private static IEnumerable<Element> EnumerateFrameElements(Node root)
+        {
+            var stack = new Stack<Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                if (node is Element element)
+                {
+                    if (string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        yield return element;
+                    }
+
+                    if (element.GetAttachedShadowRoot() is { } shadowRoot)
+                    {
+                        stack.Push(shadowRoot);
+                    }
+                }
+
+                for (var child = node.LastChild; child != null; child = child.PreviousSibling)
+                {
+                    stack.Push(child);
+                }
+            }
         }
 
         /// <summary>
@@ -382,6 +403,11 @@ namespace FenBrowser.FenEngine.Layout
                 {
                     ClearSubtreeDirtyFlags(child);
                 }
+            }
+
+            if (node is Element host && host.GetAttachedShadowRoot() is { } attachedShadowRoot)
+            {
+                ClearSubtreeDirtyFlags(attachedShadowRoot);
             }
 
             node.ClearDirty(InvalidationKind.Layout);
