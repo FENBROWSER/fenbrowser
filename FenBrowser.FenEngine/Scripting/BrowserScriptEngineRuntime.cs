@@ -20034,6 +20034,23 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     /// stored in the host property store so DispatchEventForElement can invoke
     /// them when the corresponding native event fires.
     /// </summary>
+    // Event handler attribute names that correspond to DOM events.
+    // Body onload is also invoked separately by InvokeBodyOnloadAttribute.
+    private static readonly string[] InlineEventHandlerEventNames =
+    {
+        "click", "dblclick", "contextmenu",
+        "mousedown", "mouseup", "mouseover", "mouseout", "mousemove",
+        "keydown", "keyup", "keypress",
+        "submit", "reset", "change", "input",
+        "focus", "blur", "focusin", "focusout",
+        "scroll", "wheel",
+        "load", "error", "abort",
+        "touchstart", "touchend", "touchmove", "touchcancel"
+    };
+
+    private static readonly HashSet<string> InlineEventHandlerAttributeNames =
+        new(InlineEventHandlerEventNames.Select(eventName => "on" + eventName), StringComparer.Ordinal);
+
     private void WireInlineEventHandlers(Node domRoot)
     {
         if (domRoot == null)
@@ -20041,24 +20058,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return;
         }
 
-        // Event handler attribute names that correspond to DOM events.
-        // Excludes onload (handled separately by InvokeBodyOnloadAttribute).
-        var eventNames = new[]
-        {
-            "click", "dblclick", "contextmenu",
-            "mousedown", "mouseup", "mouseover", "mouseout", "mousemove",
-            "keydown", "keyup", "keypress",
-            "submit", "reset", "change", "input",
-            "focus", "blur", "focusin", "focusout",
-            "scroll", "wheel",
-            "load", "error", "abort",
-            "touchstart", "touchend", "touchmove", "touchcancel"
-        };
-
         var elements = domRoot.Descendants().OfType<Element>();
         foreach (var element in elements)
         {
-            foreach (var eventName in eventNames)
+            foreach (var eventName in InlineEventHandlerEventNames)
             {
                 var attrName = "on" + eventName;
                 var attrValue = element.GetAttribute(attrName);
@@ -20067,33 +20070,68 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     continue;
                 }
 
-                try
-                {
-                    using (ScriptEngineLockProbe.Hold(_fenJsLock))
-                    {
-                        // Wrap the attribute value in a function that receives
-                        // `event` as its parameter â€” matches what real browsers
-                        // do for inline handlers.
-                        var source = new SourceText(
-                            "(function(event){" + attrValue + "\n})",
-                            "<fenbrowser-inline-handler:" + attrName + ">");
-                        var compiled = _compiler.CompileScript(source);
-                        new BytecodeVerifier().Verify(compiled);
-                        var handler = _interpreter.Execute(compiled);
-                        // handler is now a callable function; store it so that
-                        // DispatchEventForElement can find it via
-                        // GetStoredHostPropertyOrUndefined(element, "on" + type).
-                        SetStoredHostProperty(element, attrName, handler);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    FenLogger.Warn(
-                        $"[FenJsBridge] Failed to wire inline {attrName} handler on " +
-                        $"<{element.LocalName}>: {ex.Message}",
-                        LogCategory.JavaScript);
-                }
+                CompileInlineEventHandler(element, attrName, attrValue);
             }
+        }
+    }
+
+    /// <summary>
+    /// HTML 8.1.8.1 event handler content attributes, "attribute change steps":
+    /// a script setting an on* attribute installs the handler it names, replacing
+    /// any handler assigned through the IDL property, and removing the attribute
+    /// deactivates it. <paramref name="value"/> is null for a removal.
+    /// </summary>
+    private void ApplyEventHandlerContentAttributeChange(Element element, string attributeName, string value)
+    {
+        if (element == null || string.IsNullOrEmpty(attributeName))
+        {
+            return;
+        }
+
+        var attrName = attributeName.ToLowerInvariant();
+        if (!InlineEventHandlerAttributeNames.Contains(attrName))
+        {
+            return;
+        }
+
+        if (value == null)
+        {
+            SetStoredHostProperty(element, attrName, JsValue.Null);
+            return;
+        }
+
+        CompileInlineEventHandler(element, attrName, value);
+    }
+
+    private void CompileInlineEventHandler(Element element, string attrName, string attrValue)
+    {
+        try
+        {
+            using (ScriptEngineLockProbe.Hold(_fenJsLock))
+            {
+                // Wrap the attribute value in a function that receives
+                // `event` as its parameter â€” matches what real browsers
+                // do for inline handlers.
+                var source = new SourceText(
+                    "(function(event){" + attrValue + "\n})",
+                    "<fenbrowser-inline-handler:" + attrName + ">");
+                var compiled = _compiler.CompileScript(source);
+                new BytecodeVerifier().Verify(compiled);
+                var handler = _interpreter.Execute(compiled);
+                // handler is now a callable function; store it so that
+                // DispatchEventForElement can find it via
+                // GetStoredHostPropertyOrUndefined(element, "on" + type).
+                SetStoredHostProperty(element, attrName, handler);
+            }
+        }
+        catch (Exception ex)
+        {
+            // A handler whose body does not compile is null, not the one it replaced.
+            SetStoredHostProperty(element, attrName, JsValue.Null);
+            FenLogger.Warn(
+                $"[FenJsBridge] Failed to wire inline {attrName} handler on " +
+                $"<{element.LocalName}>: {ex.Message}",
+                LogCategory.JavaScript);
         }
     }
 
@@ -25789,6 +25827,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var attributeName = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
                             var attributeValue = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
                             element.SetAttribute(attributeName, attributeValue);
+                            _owner.ApplyEventHandlerContentAttributeChange(element, attributeName, attributeValue);
                             if ((string.Equals(attributeName, "src", StringComparison.OrdinalIgnoreCase) ||
                                  string.Equals(attributeName, "srcdoc", StringComparison.OrdinalIgnoreCase)) &&
                                 IsIFrameElement(element))
@@ -25838,7 +25877,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         (_, args) =>
                         {
                             var attributeName = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            // Removing an attribute that is not there runs no change
+                            // steps, so a handler assigned through the property stays.
+                            var hadAttribute = element.HasAttribute(attributeName);
                             element.RemoveAttribute(attributeName);
+                            if (hadAttribute)
+                            {
+                                _owner.ApplyEventHandlerContentAttributeChange(element, attributeName, null);
+                            }
                             return JsValue.Undefined;
                         },
                         length: 1);
