@@ -24,6 +24,30 @@ namespace FenBrowser.Tests.Core
             }
         }
 
+        // Shadow content renders in its host's flat tree (CSS Scoping 1 §2), so a change
+        // inside a shadow root has to reach the page root like any other. The walk followed
+        // parent nodes, and a shadow root has none: Cloudflare Turnstile's iframe, resized
+        // inside a closed shadow root, never got restyled.
+        [Theory]
+        [InlineData(ShadowRootMode.Open)]
+        [InlineData(ShadowRootMode.Closed)]
+        public void StyleChangeInsideAShadowTreeMarksTheHostAndTheDocumentRoot(ShadowRootMode mode)
+        {
+            var doc = Parse("<body><div id='host'></div></body>");
+            var host = doc.GetElementById("host");
+            var shadowRoot = host.AttachShadow(new ShadowRootInit { Mode = mode });
+            var box = doc.CreateElement("div");
+            shadowRoot.AppendChild(box);
+            Clean(doc);
+            Clean(shadowRoot);
+
+            box.SetAttribute("style", "width: 300px; height: 65px");
+
+            Assert.True(box.StyleDirty);
+            Assert.True(host.ChildStyleDirty);
+            Assert.True(doc.DocumentElement.ChildStyleDirty);
+        }
+
         [Fact]
         public void InsertingAChildMarksTheParentSoSiblingSelectorsAreReevaluated()
         {

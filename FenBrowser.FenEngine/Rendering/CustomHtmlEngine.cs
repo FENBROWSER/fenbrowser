@@ -2351,6 +2351,15 @@ private void FlushPendingLayoutForScript(Element element)
                     continue;
                 }
 
+                // Shadow content is cascaded with its host (CssLoader walks attached
+                // shadow roots), so a dirty shadow tree makes the host the subtree root.
+                var shadowRoot = el.GetAttachedShadowRoot();
+                if (shadowRoot != null && (shadowRoot.StyleDirty || shadowRoot.ChildStyleDirty))
+                {
+                    dirtyRoots.Add(el);
+                    continue;
+                }
+
                 if (!el.ChildStyleDirty)
                     continue; // Prune: no dirty descendants in this branch
 
@@ -2438,6 +2447,10 @@ private void FlushPendingLayoutForScript(Element element)
             {
                 var node = stack.Pop();
                 node.ClearDirty(InvalidationKind.Style);
+                if (node is Element element && element.GetAttachedShadowRoot() is { } shadowRoot)
+                {
+                    stack.Push(shadowRoot);
+                }
 
                 var children = node.ChildNodes;
                 if (children == null || children.Length == 0)

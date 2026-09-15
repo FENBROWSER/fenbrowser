@@ -355,14 +355,24 @@ namespace FenBrowser.Core.Dom.V2
             // the marked node and the root never learned of the change - a node
             // inserted into a frame stayed unstyled because the page root read
             // as clean. The walk is a few dozen flag writes per mutation.
-            var parent = _parentNode;
+            //
+            // A shadow root has no parent node, only a host, so the walk follows the
+            // flat tree across it. Stopping there left the page root clean after any
+            // change inside a shadow tree: Cloudflare Turnstile resizes its iframe in a
+            // closed shadow root and the widget stayed at its initial 0x0.
+            var parent = FlatTreeParent(this);
             while (parent != null)
             {
                 if (style) parent._flags |= NodeFlags.ChildStyleDirty;
                 if (layout) parent._flags |= NodeFlags.ChildLayoutDirty;
                 if (paint) parent._flags |= NodeFlags.ChildPaintDirty;
-                parent = parent._parentNode;
+                parent = FlatTreeParent(parent);
             }
+        }
+
+        private static Node FlatTreeParent(Node node)
+        {
+            return node._parentNode ?? (node as ShadowRoot)?.Host;
         }
 
         /// <summary>

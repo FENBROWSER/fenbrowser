@@ -2048,6 +2048,14 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     target.Add(element);
                 }
+                else if (current is Element shadowHost &&
+                         shadowHost.GetAttachedShadowRoot() is { } attachedShadowRoot &&
+                         (attachedShadowRoot.LayoutDirty || attachedShadowRoot.ChildLayoutDirty))
+                {
+                    // Shadow content is laid out with its host, so a layout-dirty shadow
+                    // tree makes the host the dirty element.
+                    target.Add(shadowHost);
+                }
 
                 var children = current.ChildNodes;
                 if (children == null)
@@ -2877,6 +2885,12 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (node == null) return;
             node.ClearDirty(kind);
+            if (node is Element element && element.GetAttachedShadowRoot() is { } shadowRoot)
+            {
+                // Flags left set inside a shadow tree stop the next change there from
+                // propagating, because marking only walks up when a flag flips.
+                RecursivelyClearDirty(shadowRoot, kind);
+            }
 
             // This walk only mutates dirty flags, so DOM sibling links remain stable.
             // Avoid NodeList's mutation-safe snapshot allocation on every visited node.
@@ -2913,6 +2927,14 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     roots.Add(node);
                     continue; // don't descend; this subtree is already captured
+                }
+                if (node is Element shadowHost &&
+                    shadowHost.GetAttachedShadowRoot() is { } attachedShadowRoot &&
+                    (attachedShadowRoot.PaintDirty || attachedShadowRoot.ChildPaintDirty))
+                {
+                    // Clearing from the host reaches its shadow tree.
+                    roots.Add(node);
+                    continue;
                 }
                 // Descend into children looking for deeper dirty nodes.
                 for (var child = node.FirstChild; child != null; child = child.NextSibling)

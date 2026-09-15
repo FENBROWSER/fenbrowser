@@ -73,6 +73,22 @@ namespace FenBrowser.FenEngine.Rendering
             // and root font size.
             ComputeSingleNode(root, engine, result, log, deadline, root);
 
+            // An incremental recascade is rooted at the element that went dirty, and that
+            // can be a shadow host. Its shadow tree is part of its subtree; the loop below
+            // walks light children only, so shadow content never got a computed style.
+            var rootShadowRoot = root.GetAttachedShadowRoot();
+            if (rootShadowRoot != null)
+            {
+                foreach (var child in rootShadowRoot.ChildNodes)
+                {
+                    if (child is Element shadowChild)
+                    {
+                        ComputeSingleNode(shadowChild, engine, result, log, deadline, root);
+                        ProcessSubtreeSerial(shadowChild, engine, result, log, deadline, root);
+                    }
+                }
+            }
+
             // Walk root's children serially (typically <head> and <body>).
             // For <body>, we defer its children to parallel phase.
             Element bodyElement = null;
