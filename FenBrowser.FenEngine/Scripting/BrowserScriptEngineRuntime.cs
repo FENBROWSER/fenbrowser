@@ -11143,6 +11143,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             return { value: items[index++], done: false };
                         }
                     };
+                    Object.defineProperty(iterator, Symbol.iterator, {
+                        value: function () { return this; },
+                        configurable: true
+                    });
+                    return iterator;
                 }
 
                 // WHATWG URL 6.2 "update steps": a list owned by a URL object writes
