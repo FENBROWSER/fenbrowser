@@ -797,12 +797,29 @@ namespace FenBrowser.Tooling
                 using var canvas = new SKCanvas(bitmap);
                 canvas.Clear(SKColors.White);
 
+                // FEN_DEBUG_SITE_SCROLL_Y captures the viewport scrolled that far down
+                // the document, the way the host renders a scrolled page: the canvas
+                // is translated and the viewport rect shifted by the same amount, and
+                // the renderer's root scroll state is told so fixed boxes and
+                // scroll-driven paint see the same origin.
+                float scrollY = 0f;
+                if (float.TryParse(Environment.GetEnvironmentVariable("FEN_DEBUG_SITE_SCROLL_Y"), NumberStyles.Float, CultureInfo.InvariantCulture, out var requestedScrollY) &&
+                    requestedScrollY > 0f)
+                {
+                    scrollY = requestedScrollY;
+                }
+
                 var renderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
+                if (scrollY > 0f)
+                {
+                    renderer.ScrollManager.SetScrollPosition(null, 0f, scrollY);
+                    canvas.Translate(0f, -scrollY);
+                }
                 renderer.Render(
                     root,
                     canvas,
                     styles,
-                    new SKRect(0, 0, width, height),
+                    new SKRect(0, scrollY, width, scrollY + height),
                     baseUrl,
                     emitVerificationReport: false);
                 canvas.Flush();
