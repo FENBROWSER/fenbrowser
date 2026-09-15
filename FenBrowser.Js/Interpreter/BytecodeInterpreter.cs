@@ -14241,6 +14241,38 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return _asyncGeneratorFunctionConstructorHandle!.Value;
     }
 
+    /// <summary>
+    /// The innermost active frames as a diagnostic string, for a host probe
+    /// asking what a long-running job is doing. Read racily from another
+    /// thread: a torn read yields a partial or empty description, never a
+    /// throw, and the interpreter itself is not disturbed.
+    /// </summary>
+    public string DescribeActiveFrames(int maxFrames = 12)
+    {
+        try
+        {
+            var snapshot = _activeFrames.ToArray();
+            if (snapshot.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            return string.Join(" <- ", snapshot.Take(maxFrames).Select(frame =>
+            {
+                var function = frame.Function;
+                var name = string.IsNullOrWhiteSpace(function.Name) ? "<anonymous>" : function.Name;
+                var path = string.IsNullOrEmpty(function.SourcePath) ? string.Empty : " (" + function.SourcePath + ")";
+                var ip = Math.Clamp(frame.InstructionPointer - 1, 0, Math.Max(0, function.Instructions.Count - 1));
+                var opcode = function.Instructions.Count == 0 ? "none" : function.Instructions[ip].OpCode.ToString();
+                return name + "[ip=" + ip + " op=" + opcode + "]" + path;
+            }));
+        }
+        catch
+        {
+            return "<unavailable>";
+        }
+    }
+
     private string FormatCallStack(string errorName, string message)
     {
         var header = string.IsNullOrEmpty(message) ? errorName : errorName + ": " + message;
