@@ -19400,9 +19400,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         JsValue ports)
     {
         AdoptTransferredMessagePorts(ports, targetWindow);
+        // Every caller is the user agent firing a message event for postMessage, a
+        // worker or a MessagePort (HTML 9.3.3, 9.4.4, 10.2.6), so the event is trusted
+        // (DOM 2.5 isTrusted). Cloudflare Turnstile ignores untrusted messages, so its
+        // widget never answered its own frame's handshake.
         return _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
             ["type"] = JsValue.FromString("message"),
+            ["isTrusted"] = JsValue.FromBoolean(true),
             ["data"] = data,
             ["origin"] = JsValue.FromString(origin ?? string.Empty),
             ["lastEventId"] = JsValue.FromString(string.Empty),

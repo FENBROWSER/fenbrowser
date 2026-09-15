@@ -139,6 +139,28 @@ namespace FenBrowser.Tests.Scripting
                 await WaitForValueAsync(world, world.SecondFrameDocument, "globalThis.__sourceName"));
         }
 
+        // DOM 2.5: an event the user agent dispatches is trusted, and postMessage's
+        // message event is one (HTML 9.3.3). Ours had no isTrusted at all, so
+        // Cloudflare Turnstile, which checks event.isTrusted, dropped every message
+        // from its own challenge frame and never showed the widget.
+        [Fact]
+        public async Task PostMessage_DeliversATrustedMessageEvent()
+        {
+            var world = await CreateTwoFrameDocumentAsync();
+
+            Eval(
+                world,
+                world.SecondFrameDocument,
+                "globalThis.__trusted = null;" +
+                "window.addEventListener('message', function (event) { globalThis.__trusted = String(event.isTrusted); });");
+
+            Eval(world, world.FirstFrameDocument, "parent.frames['second-frame'].postMessage('ping', '*');");
+
+            Assert.Equal(
+                "true",
+                await WaitForValueAsync(world, world.SecondFrameDocument, "globalThis.__trusted"));
+        }
+
         // reCAPTCHA builds its challenge frame long after the anchor frame, so a
         // frame that already exists has to notice a sibling that appears later.
         [Fact]
