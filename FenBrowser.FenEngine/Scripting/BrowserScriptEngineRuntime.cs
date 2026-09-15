@@ -23100,6 +23100,27 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         public bool TrySetHostProperty(HostObjectHandle handle, string property, JsValue value)
         {
+            // A setter that fails per spec (table.tHead = <div>, a cyclic
+            // insertion) throws a DomException from the DOM layer; it has to
+            // reach script as a DOMException like a method call's would, not
+            // escape the interpreter as a CLR exception.
+            try
+            {
+                return TrySetHostPropertyCore(handle, property, value);
+            }
+            catch (DomException domException)
+            {
+                _owner.ThrowDomException(
+                    domException.Name,
+                    string.IsNullOrEmpty(domException.Message)
+                        ? $"Failed to set the '{property}' property."
+                        : domException.Message);
+                return false;
+            }
+        }
+
+        private bool TrySetHostPropertyCore(HostObjectHandle handle, string property, JsValue value)
+        {
             if (_owner == null || _owner._interpreter == null)
             {
                 return false;
