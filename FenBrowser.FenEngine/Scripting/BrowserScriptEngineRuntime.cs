@@ -10297,6 +10297,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     writable: true,
                     configurable: true
                 });
+                // WebIDL 3.7.9: NodeList is iterable<Node>, so it carries forEach, entries,
+                // keys and values; the generic Array.prototype methods read its length and
+                // indexed properties.
+                ['forEach', 'entries', 'keys', 'values'].forEach(function (methodName) {
+                    Object.defineProperty(NodeList.prototype, methodName, {
+                        value: Array.prototype[methodName],
+                        writable: true,
+                        enumerable: true,
+                        configurable: true
+                    });
+                });
                 Object.defineProperty(HTMLCollection.prototype, Symbol.iterator, {
                     value: createCollectionIterator,
                     writable: true,
@@ -14953,6 +14964,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             Attr => "Attr",
             DomRange => "Range",
             FenJsHtmlCollectionHost => "HTMLCollection",
+            NodeList => "NodeList",
             NamedNodeMap => "NamedNodeMap",
             DOMTokenList => "DOMTokenList",
             FenJsTreeWalkerHost => "TreeWalker",
@@ -23262,6 +23274,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     keys = list;
                     return true;
                 }
+                case NodeList nodeList:
+                {
+                    var list = new List<string>(nodeList.Length);
+                    for (var i = 0; i < nodeList.Length; i++)
+                    {
+                        list.Add(i.ToString(CultureInfo.InvariantCulture));
+                    }
+
+                    keys = list;
+                    return true;
+                }
                 case DOMTokenList tokenList:
                 {
                     var list = new List<string>();
@@ -23392,6 +23415,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case FenJsHtmlCollectionHost htmlCollection:
                     found = TryGetHtmlCollectionProperty(htmlCollection, property, out value);
                     break;
+                case NodeList nodeList:
+                    found = TryGetNodeListProperty(nodeList, property, out value);
+                    break;
                 case FenJsTreeWalkerHost treeWalker:
                     found = TryGetTreeWalkerProperty(treeWalker, property, out value);
                     break;
@@ -23464,6 +23490,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 DocumentFragment => "DocumentFragment",
                 DomRange => "Range",
                 FenJsHtmlCollectionHost => "HTMLCollection",
+                NodeList => "NodeList",
                 FenJsTreeWalkerHost => "TreeWalker",
                 FenJsNodeIteratorHost => "NodeIterator",
                 FenJsAnimationHost => "Animation",
@@ -24047,7 +24074,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = JsValue.Null;
                     return true;
                 case "childNodes":
-                    value = _owner.CreateNodeArrayLike(document.ChildNodes.ToArray());
+                    value = _owner.ToHostOrNull(document.ChildNodes, HostObjectKind.Other);
                     return true;
                 // DOM §4.2.6 ParentNode mixin: Document has it too. github.com's
                 // behaviors bundle reads document.firstElementChild.classList.
@@ -24831,7 +24858,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = _owner.ToHostNodeOrNull(node.NextSibling);
                     return true;
                 case "childNodes":
-                    value = _owner.CreateNodeArrayLike(node.ChildNodes.ToArray());
+                    value = _owner.ToHostOrNull(node.ChildNodes, HostObjectKind.Other);
                     return true;
                 case "compareDocumentPosition":
                     value = _owner.CreateCompareDocumentPositionCallable(node);
@@ -26499,7 +26526,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = _owner.ToHostNodeOrNull(element.AssignedSlot);
                     return true;
                 case "childNodes":
-                    value = _owner.CreateNodeArrayLike(element.ChildNodes.ToArray());
+                    // DOM 4.4: childNodes is the same live NodeList on every read. A copy
+                    // never shrinks, so bing.com's `for(;f.length;) frag.appendChild(f[0])`
+                    // drain loop spun until the script budget ran out.
+                    value = _owner.ToHostOrNull(element.ChildNodes, HostObjectKind.Other);
                     return true;
                 case "children":
                     {
@@ -27034,7 +27064,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = JsValue.Null;
                     return true;
                 case "childNodes":
-                    value = _owner.CreateNodeArrayLike(characterData.ChildNodes.ToArray());
+                    value = _owner.ToHostOrNull(characterData.ChildNodes, HostObjectKind.Other);
                     return true;
                 case "nextSibling":
                     value = _owner.ToHostNodeOrNull(characterData.NextSibling);
@@ -27202,7 +27232,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = _owner.ToHostNodeOrNull(fragment.NextSibling);
                     return true;
                 case "childNodes":
-                    value = _owner.CreateNodeArrayLike(fragment.ChildNodes.ToArray());
+                    value = _owner.ToHostOrNull(fragment.ChildNodes, HostObjectKind.Other);
                     return true;
                 case "firstElementChild":
                     value = _owner.ToHostNodeOrNull(fragment.FirstElementChild);
@@ -27920,6 +27950,44 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     if (named != null)
                     {
                         value = _owner.ToHostNodeOrNull(named);
+                        return true;
+                    }
+
+                    value = JsValue.Undefined;
+                    return false;
+            }
+        }
+
+        // DOM 4.2.10.1 NodeList: length, item() and indexed access read the underlying list
+        // on every access, so a list captured once keeps tracking the node's children.
+        // forEach/entries/keys/values come from NodeList.prototype (WebIDL iterable<Node>).
+        private bool TryGetNodeListProperty(NodeList nodeList, string property, out JsValue value)
+        {
+            switch (property)
+            {
+                case "length":
+                    value = JsValue.FromInt32(nodeList.Length);
+                    return true;
+                case "item":
+                    value = _owner.GetOrCreateHostCallable(
+                        nodeList,
+                        "item",
+                        (_, args) =>
+                        {
+                            var index = args.Count > 0 && TryCoerceIndex(args[0], out var parsedIndex)
+                                ? parsedIndex
+                                : -1;
+                            return index >= 0 && index < nodeList.Length
+                                ? _owner.ToHostNodeOrNull(nodeList[index])
+                                : JsValue.Null;
+                        },
+                        length: 1);
+                    return true;
+                default:
+                    if (int.TryParse(property, NumberStyles.None, CultureInfo.InvariantCulture, out var index) &&
+                        index < nodeList.Length)
+                    {
+                        value = _owner.ToHostNodeOrNull(nodeList[index]);
                         return true;
                     }
 
