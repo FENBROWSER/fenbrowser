@@ -2258,12 +2258,21 @@ private void FlushPendingLayoutForScript(Element element)
                                 return;
                             }
 
-                            // Merge into main styles dictionary
+                            // Merge into a copy and publish it. The renderer takes this
+                            // dictionary without the lock and enumerates it for the whole
+                            // frame, so writing into the published instance threw "Collection
+                            // was modified" mid-render (seen on bing.com while its scripts
+                            // restyle the results page). A frame keeps the snapshot it took.
+                            var merged = LastComputedStyles != null
+                                ? new Dictionary<Node, CssComputed>(LastComputedStyles)
+                                : new Dictionary<Node, CssComputed>();
                             foreach (var kvp in subtreeStyles)
                             {
-                                LastComputedStyles[kvp.Key] = kvp.Value;
+                                merged[kvp.Key] = kvp.Value;
                                 kvp.Key.SetComputedStyle(kvp.Value);
                             }
+
+                            LastComputedStyles = merged;
                         }
 
                         // The cascade has replaced style objects for this subtree.
