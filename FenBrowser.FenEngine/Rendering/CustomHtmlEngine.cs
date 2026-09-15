@@ -2563,7 +2563,12 @@ private void FlushPendingLayoutForScript(Element element)
                      scriptProvenance: FenBrowser.Core.Security.CspScriptProvenance.TrustedDynamic);
              };
 
-             js.ExecuteInlineScriptsOnInnerHTML = allowJs;
+             // HTML "parsing HTML fragments" (13.4) marks every script it creates as
+             // "already started", so markup assigned through innerHTML or
+             // insertAdjacentHTML never executes. Pages depend on that: bing.com's
+             // sj_appHTML parses server markup through innerHTML and then recreates each
+             // <script> itself, so running them at parse time as well ran them twice.
+             js.ExecuteInlineScriptsOnInnerHTML = false;
 
              // Wire up CSP Nonce check
              js.NonceAllowed = (nonce) =>
