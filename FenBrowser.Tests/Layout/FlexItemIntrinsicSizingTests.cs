@@ -74,6 +74,28 @@ namespace FenBrowser.Tests.Layout
             Assert.InRange(box.BorderBox.Width, 15.5f, 16.5f);
         }
 
+        [Fact]
+        public async Task ShrinkToFitBoxHoldingAnInlineRun_IsAsWideAsTheRun_NotItsWidestChild()
+        {
+            // CSS Sizing 3 §4.1: max-content lays inline content out with no soft
+            // wraps, so a shrink-to-fit box holding three nowrap inline-block
+            // buttons is as wide as the three together. github.com's segmented
+            // control measured one button wide and stacked the rest.
+            var (doc, computer) = await LayoutAsync(
+                "<div style='display:flex;flex-direction:column;align-items:center;width:1000px'>" +
+                "<div id='pill' style='display:flex;white-space:nowrap;border:1px solid red'>" +
+                "<div id='run' style='width:100%;padding:8px'>" +
+                "<button style='min-width:130px;height:40px'>Code</button>" +
+                "<button style='min-width:130px;height:40px'>Plan</button>" +
+                "<button style='min-width:130px;height:40px'>Secure</button>" +
+                "</div></div></div>");
+
+            var pill = Box(doc, computer, "pill");
+            var run = Box(doc, computer, "run");
+            Assert.InRange(pill.BorderBox.Width, 3 * 130 + 16 + 2 - 1f, 3 * 130 + 16 + 2 + 12f);
+            Assert.InRange(run.BorderBox.Height, 54f, 62f);
+        }
+
         [Theory]
         [InlineData("inline-flex")]
         [InlineData("grid")]

@@ -1365,10 +1365,25 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // widest descendant instead of the wrapper's provisional width.
             if (box.Children.Count > 0 && (!hasExplicitWidth || box is AnonymousBlockBox))
             {
+                // Block children stack, so the box is as wide as its widest child.
+                // Inline content sits on one line at max-content (CSS Sizing 3 §4.1:
+                // no soft wraps), so a box laying out an inline run is as wide as
+                // the run - the sum of its inline-level children, not the widest.
+                // github.com's five inline-block tab buttons measured as one button
+                // and stacked into a column.
+                bool laysOutInlineRun = FormattingContext.Resolve(box) is InlineFormattingContext;
                 float descendantWidth = 0f;
                 foreach (var child in box.Children)
                 {
-                    descendantWidth = Math.Max(descendantWidth, MeasureShrinkToFitWidth(child));
+                    if (child == null || child.IsOutOfFlow)
+                    {
+                        continue;
+                    }
+
+                    float childWidth = MeasureShrinkToFitWidth(child);
+                    descendantWidth = laysOutInlineRun
+                        ? descendantWidth + Math.Max(0f, childWidth)
+                        : Math.Max(descendantWidth, childWidth);
                 }
 
                 if (descendantWidth > 0f)
