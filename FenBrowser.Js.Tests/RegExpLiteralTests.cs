@@ -138,6 +138,31 @@ public sealed class RegExpLiteralTests
         Assert.Throws<JsThrownException>(() => Run(@"new RegExp('^[z-a]$');"));
     }
 
+    // ECMA-262 22.2.1 NonemptyClassRanges: a completed range is followed by fresh
+    // ClassRanges, so the `-` after `a-z` is a literal. bing.com's bundles use
+    // /[^+\/0-9A-Za-z-_]/g, which was rejected as the reversed range `z-_`.
+    [Fact]
+    public void DashAfterACompletedRangeIsALiteralInARegexLiteral()
+    {
+        var result = Run(@"var r = /[^+\/0-9A-Za-z-_]/g;
+            var s = /[A-Za-z-_]/;
+            r.test('*') && s.test('-') && s.test('_') && !s.test('*');");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void DashAfterACompletedRangeIsALiteralInTheRegExpConstructor()
+    {
+        var result = Run(@"var r = new RegExp('^[A-Za-z-_]+$'); r.test('a-_Z') && !r.test('a*');");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ReversedRangeAfterALiteralDashIsStillRejected()
+    {
+        Assert.Throws<JsThrownException>(() => Run(@"new RegExp('[a-z-_-!]');"));
+    }
+
     [Fact]
     public void NativeRegexMatchesNamedBackreferenceInLegacyModeWhenPatternHasNamedCaptures()
     {

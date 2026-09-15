@@ -1188,7 +1188,12 @@ public static class RegExpCompiler
                 return true;
             }
 
-            previous = next;
+            // ECMA-262 22.2.1 NonemptyClassRanges: `ClassAtom - ClassAtom ClassRanges`, so a
+            // completed range is followed by fresh ClassRanges and its end atom cannot start
+            // another range. The `-` after `a-z` in `[A-Za-z-_]` is a literal; carrying `z`
+            // forward read it as the reversed range `z-_` and rejected a valid pattern that
+            // bing.com's bundles use. After a literal `-`, the next atom may start a range.
+            previous = previous.HasValue ? null : next;
             pos = nextPos;
         }
 
