@@ -16100,39 +16100,49 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
     }
 
+    // DOM 4.2.3 "insert" runs the insertion steps for every shadow-including inclusive
+    // descendant. An iframe therefore loads when it lands in a shadow root, and when a
+    // host whose shadow root already holds one is connected. Walking only the light tree
+    // never loaded Cloudflare Turnstile's challenge iframe, which sits in a closed root.
     private void QueueFrameLoadsForTree(Node node)
     {
-        if (node is not Element element)
+        if (node == null)
         {
             return;
         }
 
-        if (DiagnosticPaths.IframeDiagnosticsEnabled && string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+        var pending = new Stack<Node>();
+        pending.Push(node);
+        while (pending.Count > 0)
         {
-            var src = element.GetAttribute("src") ?? "";
-            var isChallenge = src.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
-                             element.GetAttribute("class")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true ||
-                             element.GetAttribute("id")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true;
-            DiagnosticPaths.AppendLogText(
-                "iframe_diagnostics.txt",
-                $"{DateTimeOffset.UtcNow:O} QueueFrameLoadsForTree: new iframe src='{src}' isChallenge={isChallenge} connected={element.IsConnected} parent={element.ParentElement?.TagName ?? "null"}");
-        }
-
-        QueueFrameElementLoad(element);
-
-        foreach (var descendant in element.Descendants().OfType<Element>())
-        {
-            if (DiagnosticPaths.IframeDiagnosticsEnabled && string.Equals(descendant.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+            var current = pending.Pop();
+            if (current is Element element)
             {
-                var src = descendant.GetAttribute("src") ?? "";
-                var isChallenge = src.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
-                                 descendant.GetAttribute("class")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true ||
-                                 descendant.GetAttribute("id")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true;
-                DiagnosticPaths.AppendLogText(
-                    "iframe_diagnostics.txt",
-                    $"{DateTimeOffset.UtcNow:O} QueueFrameLoadsForTree: descendant iframe src='{src}' isChallenge={isChallenge} connected={descendant.IsConnected} parent={descendant.ParentElement?.TagName ?? "null"}");
+                if (DiagnosticPaths.IframeDiagnosticsEnabled && string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                {
+                    var src = element.GetAttribute("src") ?? "";
+                    var isChallenge = src.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
+                                     element.GetAttribute("class")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true ||
+                                     element.GetAttribute("id")?.Contains("challenge", StringComparison.OrdinalIgnoreCase) == true;
+                    var label = ReferenceEquals(current, node) ? "new" : "descendant";
+                    DiagnosticPaths.AppendLogText(
+                        "iframe_diagnostics.txt",
+                        $"{DateTimeOffset.UtcNow:O} QueueFrameLoadsForTree: {label} iframe src='{src}' isChallenge={isChallenge} connected={element.IsConnected} parent={element.ParentElement?.TagName ?? "null"}");
+                }
+
+                QueueFrameElementLoad(element);
+
+                var attachedShadowRoot = element.GetAttachedShadowRoot();
+                if (attachedShadowRoot != null)
+                {
+                    pending.Push(attachedShadowRoot);
+                }
             }
-            QueueFrameElementLoad(descendant);
+
+            for (var child = current.LastChild; child != null; child = child.PreviousSibling)
+            {
+                pending.Push(child);
+            }
         }
     }
 
@@ -21416,6 +21426,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         var moved = SnapshotFragmentChildren(first);
                         var appended = ToHostNodeOrNull(container.AppendChild(first));
                         UpgradeInsertedCustomElements(first, moved);
+                        QueueFrameLoadsForTree(first);
                         return appended;
                     }
                     case "removeChild":
@@ -21433,6 +21444,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         var moved = SnapshotFragmentChildren(first);
                         var inserted = ToHostNodeOrNull(container.InsertBefore(first, reference));
                         UpgradeInsertedCustomElements(first, moved);
+                        QueueFrameLoadsForTree(first);
                         return inserted;
                     }
                     default:
@@ -21446,6 +21458,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         var moved = SnapshotFragmentChildren(first);
                         var replaced = ToHostNodeOrNull(container.ReplaceChild(first, child));
                         UpgradeInsertedCustomElements(first, moved);
+                        QueueFrameLoadsForTree(first);
                         return replaced;
                     }
                 }
@@ -27326,6 +27339,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var moved = SnapshotFragmentChildren(child);
                             var appended = _owner.ToHostNodeOrNull(fragment.AppendChild(child));
                             _owner.UpgradeInsertedCustomElements(child, moved);
+                            _owner.QueueFrameLoadsForTree(child);
                             return appended;
                         },
                         length: 1);
@@ -27353,6 +27367,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 var moved = SnapshotFragmentChildren(child);
                                 var inserted = _owner.ToHostNodeOrNull(fragment.InsertBefore(child, referenceNode));
                                 _owner.UpgradeInsertedCustomElements(child, moved);
+                                _owner.QueueFrameLoadsForTree(child);
                                 return inserted;
                             }
                             catch (DomException ex)
@@ -27426,6 +27441,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 var moved = SnapshotFragmentChildren(child);
                                 var replaced = _owner.ToHostNodeOrNull(fragment.ReplaceChild(child, oldChild));
                                 _owner.UpgradeInsertedCustomElements(child, moved);
+                                _owner.QueueFrameLoadsForTree(child);
                                 return replaced;
                             }
                             catch (DomException ex)
@@ -27479,6 +27495,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                     var moved = SnapshotFragmentChildren(child);
                                     fragment.AppendChild(child);
                                     _owner.UpgradeInsertedCustomElements(child, moved);
+                                    _owner.QueueFrameLoadsForTree(child);
                                 }
                             }
 
@@ -27511,6 +27528,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                     var moved = SnapshotFragmentChildren(child);
                                     fragment.InsertBefore(child, referenceNode);
                                     _owner.UpgradeInsertedCustomElements(child, moved);
+                                    _owner.QueueFrameLoadsForTree(child);
                                 }
                             }
 
