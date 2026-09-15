@@ -225,13 +225,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // container block size. When the container's own height is definite, size
             // the tracks against that, not the parent's available height (which is the
             // viewport or infinity for an auto-height parent and left every 1fr row at 0).
-            float definiteContentHeight = ResolveDefiniteContentHeight(containerStyle, state);
+            float definiteContentHeight = ResolveDefiniteContentHeight(container, containerStyle, state);
             float measureHeightConstraint = float.IsFinite(definiteContentHeight)
                 ? definiteContentHeight
                 : state.AvailableSize.Height;
             if (float.IsNaN(measureHeightConstraint))
             {
                 measureHeightConstraint = state.ViewportHeight;
+            }
+
+            // A percentage/calc() height that did not resolve is indefinite. The grid
+            // computer treats any finite constraint as that resolved height, so handing it
+            // the parent's available (viewport) height stretched bing.com's search form
+            // rows to 800px; an unbounded constraint keeps the rows content-sized.
+            if (!float.IsFinite(definiteContentHeight) &&
+                (containerStyle.HeightPercent.HasValue || !string.IsNullOrEmpty(containerStyle.HeightExpression)))
+            {
+                measureHeightConstraint = float.PositiveInfinity;
             }
 
             bool shrinkToFitWidth = IsShrinkToFitWidth(containerStyle, state);
@@ -290,7 +300,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 ArrangeNodeWithSubgrid);
 
             float computedContentHeight = Math.Max(metrics.ContentHeight, ComputeChildrenBottom(container));
-            computedContentHeight = ApplyHeightConstraints(containerStyle, computedContentHeight, state);
+            computedContentHeight = ApplyHeightConstraints(container, containerStyle, computedContentHeight, state);
 
             LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, computedContentHeight);
 
@@ -580,16 +590,22 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// percentage of a definite containing block, or a resolvable calc()), clamped by
         /// min/max-height; NaN when the height is auto / indefinite.
         /// </summary>
-        private static float ResolveDefiniteContentHeight(CssComputed style, LayoutState state)
+        private static float ResolveDefiniteContentHeight(LayoutBox container, CssComputed style, LayoutState state)
         {
             if (style == null)
             {
                 return float.NaN;
             }
 
-            float containingHeight = state.ContainingBlockHeight > 0f
-                ? state.ContainingBlockHeight
-                : float.NaN;
+            // A percentage height needs a definite containing block (CSS 2.2 §10.5). The
+            // state's containing-block height falls back to the viewport, so bing.com's
+            // `height:100%` search form under an auto-height fixed wrapper resolved to 800px
+            // and its tracks were aligned ~370px below the 52px box they belong to.
+            float containingHeight = LayoutBoxOps.ResolveDefinitePercentageBaseHeight(container, state);
+            if (!float.IsFinite(containingHeight) || containingHeight <= 0f)
+            {
+                containingHeight = float.NaN;
+            }
 
             float height;
             if (style.Height.HasValue)
@@ -642,7 +658,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return Math.Max(0f, height - chrome);
         }
 
-        private static float ApplyHeightConstraints(CssComputed style, float contentHeight, LayoutState state)
+        private static float ApplyHeightConstraints(LayoutBox container, CssComputed style, float contentHeight, LayoutState state)
         {
             float resolved = Math.Max(0f, contentHeight);
             if (style == null)
@@ -650,9 +666,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return resolved;
             }
 
-            float containingHeight = state.ContainingBlockHeight > 0f
-                ? state.ContainingBlockHeight
-                : state.ViewportHeight;
+            // Percentages only apply against a definite containing block height (CSS 2.2
+            // §10.5); otherwise height/min-height/max-height percentages behave as auto/none.
+            float containingHeight = LayoutBoxOps.ResolveDefinitePercentageBaseHeight(container, state);
+            if (!float.IsFinite(containingHeight))
+            {
+                containingHeight = 0f;
+            }
 
             // CSS Box Sizing 3 §3: with box-sizing:border-box the height, min-height
             // and max-height are border-box sizes, so each is that much larger than
