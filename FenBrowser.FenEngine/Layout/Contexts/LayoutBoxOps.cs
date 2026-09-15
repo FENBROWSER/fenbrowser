@@ -457,10 +457,22 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                     return float.NaN;
                 }
 
-                break;
+                // The basis is definite, but its used value is only known from the ancestor's
+                // length or from the containing-block height its formatting context handed down.
+                // The ancestor's laid-out box is not a basis: it may already contain this box,
+                // and bing.com's mic icon grew 5.5px on every pass against its own line box.
+                // Falling back to the viewport made the same icon 800px tall. With neither
+                // known, the percentage behaves as auto (CSS 2.2 §10.5).
+                if (style?.Height is double specified && specified > 0d)
+                {
+                    return (float)specified;
+                }
+
+                return state.ContainingBlockHeight > 0f ? state.ContainingBlockHeight : float.NaN;
             }
 
-            return ResolvePercentageBaseHeight(box, state);
+            // No block ancestor: the initial containing block, which is the viewport.
+            return state.ViewportHeight > 0f ? state.ViewportHeight : float.NaN;
         }
 
         // An absolutely positioned box with auto height has a definite height only when both
