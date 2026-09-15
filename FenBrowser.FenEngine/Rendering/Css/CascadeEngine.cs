@@ -1243,6 +1243,15 @@ return computed;
                 case "gap":
                     ApplyGapShorthand(computed, declaration, value);
                     break;
+                case "place-items":
+                    ApplyPlaceShorthand(computed, declaration, value, "align-items", "justify-items");
+                    break;
+                case "place-content":
+                    ApplyPlaceShorthand(computed, declaration, value, "align-content", "justify-content");
+                    break;
+                case "place-self":
+                    ApplyPlaceShorthand(computed, declaration, value, "align-self", "justify-self");
+                    break;
                 case "border-radius":
                     ApplyBorderRadiusShorthand(computed, declaration, value);
                     break;
@@ -1896,6 +1905,42 @@ return computed;
             {
                 SetExpanded(computed, "row-gap", parts[0], source);
                 SetExpanded(computed, "column-gap", parts[1], source);
+            }
+        }
+
+        /// <summary>
+        /// CSS Box Alignment 3 §5.3 / §6.1 / §6.3 (place-content, place-self, place-items):
+        /// the first value sets the align-* longhand, the second the justify-* longhand, and a
+        /// single value sets both. Expanding here, in cascade order, lets a winning
+        /// `place-items:start` override `align-items:center` from a less specific rule.
+        /// Multi-keyword forms (baseline, safe/unsafe) are left to computed-style resolution.
+        /// </summary>
+        private static void ApplyPlaceShorthand(
+            Dictionary<string, CssDeclaration> computed,
+            CssDeclaration source,
+            string value,
+            string alignLonghand,
+            string justifyLonghand)
+        {
+            if (string.IsNullOrEmpty(value) ||
+                value.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                value.IndexOf("baseline", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return;
+            }
+
+            var parts = SplitCssValue(value);
+            if (parts.Length == 1)
+            {
+                SetExpanded(computed, alignLonghand, parts[0], source);
+                SetExpanded(computed, justifyLonghand, parts[0], source);
+            }
+            else if (parts.Length == 2 &&
+                     !parts[0].Equals("safe", StringComparison.OrdinalIgnoreCase) &&
+                     !parts[0].Equals("unsafe", StringComparison.OrdinalIgnoreCase))
+            {
+                SetExpanded(computed, alignLonghand, parts[0], source);
+                SetExpanded(computed, justifyLonghand, parts[1], source);
             }
         }
 
