@@ -1301,6 +1301,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 return replacedWidth;
             }
+
+            // Any other percentage-width box contributes as auto too: its own padding,
+            // border and margin plus whatever its content needs (measured below), never
+            // the provisional width it was stretched to. An empty `::after { display:block;
+            // width:100% }` underline reported the full page width, so bing.com's scope bar
+            // tabs each became page-wide and stacked instead of sitting in one row.
+            if (widthIsPercentage && box.ComputedStyle is { } percentStyle)
+            {
+                directWidth = (float)(percentStyle.Padding.Left + percentStyle.Padding.Right +
+                                      percentStyle.BorderThickness.Left + percentStyle.BorderThickness.Right +
+                                      percentStyle.Margin.Left + percentStyle.Margin.Right);
+            }
+
             // A definite px width is the box's max-content contribution regardless of what
             // the probe pass left in its geometry: a flex item measured inside a too-narrow
             // provisional container has already been flex-shrunk below its own width.
