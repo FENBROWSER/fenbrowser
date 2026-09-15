@@ -35,9 +35,12 @@ internal static class HtmlAttributeReflection
 
         /// <summary>long limited to only non-negative numbers, -1 when absent (maxlength, minlength).</summary>
         NonNegativeLongOrMinusOne,
+
+        /// <summary>unsigned long "clamped to the range [Min, Max]" (colspan, rowspan): out-of-range values clamp rather than fall back.</summary>
+        ClampedLong,
     }
 
-    internal readonly record struct Entry(string Attribute, Kind Kind, string[]? Tags, long Default = 0);
+    internal readonly record struct Entry(string Attribute, Kind Kind, string[]? Tags, long Default = 0, long Min = 0, long Max = int.MaxValue);
 
     // Keyed by IDL property name (case-sensitive, as JS sees it). A null tag list
     // means the property is on HTMLElement itself.
@@ -46,8 +49,8 @@ internal static class HtmlAttributeReflection
     private static Dictionary<string, Entry> BuildTable()
     {
         var t = new Dictionary<string, Entry>(StringComparer.Ordinal);
-        void Add(string property, string attribute, Kind kind, string[]? tags = null, long @default = 0)
-            => t[property] = new Entry(attribute, kind, tags, @default);
+        void Add(string property, string attribute, Kind kind, string[]? tags = null, long @default = 0, long min = 0, long max = int.MaxValue)
+            => t[property] = new Entry(attribute, kind, tags, @default, min, max);
 
         string[] formControls = { "button", "input", "select", "textarea", "optgroup", "option", "fieldset", "link" };
         string[] media = { "audio", "video" };
@@ -141,9 +144,10 @@ internal static class HtmlAttributeReflection
         Add("abbr", "abbr", Kind.String, new[] { "th" });
         Add("scope", "scope", Kind.String, new[] { "th" });
         Add("headers", "headers", Kind.String, tableCell);
-        Add("colSpan", "colspan", Kind.PositiveLong, tableCell, 1);
-        Add("rowSpan", "rowspan", Kind.PositiveLong, tableCell, 1);
-        Add("span", "span", Kind.PositiveLong, new[] { "col", "colgroup" }, 1);
+        // HTML 4.9.11: colspan is clamped to [1, 1000], rowspan to [0, 65534].
+        Add("colSpan", "colspan", Kind.ClampedLong, tableCell, 1, 1, 1000);
+        Add("rowSpan", "rowspan", Kind.ClampedLong, tableCell, 1, 0, 65534);
+        Add("span", "span", Kind.ClampedLong, new[] { "col", "colgroup" }, 1, 1, 1000);
         Add("summary", "summary", Kind.String, new[] { "table" });
 
         // Obsolete but reflected (HTML §16.3)
@@ -233,6 +237,11 @@ internal static class HtmlAttributeReflection
                 return JsValue.FromNumber(ParseInteger(raw, out var p) && p > 0 && p <= 2147483647 ? p : entry.Default);
             case Kind.NonNegativeLongOrMinusOne:
                 return JsValue.FromNumber(ParseInteger(raw, out var n) && n >= 0 && n <= 2147483647 ? n : -1);
+            case Kind.ClampedLong:
+                // A value that fails to parse takes the default; one that parses
+                // but is out of range clamps to the nearer bound.
+                if (!ParseInteger(raw, out var c) || c < 0) return JsValue.FromNumber(entry.Default);
+                return JsValue.FromNumber(Math.Min(entry.Max, Math.Max(entry.Min, c)));
             default:
                 return JsValue.Undefined;
         }
@@ -266,6 +275,14 @@ internal static class HtmlAttributeReflection
             {
                 var n = ToInt32Clamped(toNumber(value));
                 if (n < 0) n = 0;
+                element.SetAttribute(entry.Attribute, n.ToString(CultureInfo.InvariantCulture));
+                break;
+            }
+            case Kind.ClampedLong:
+            {
+                // WebIDL [Clamp]-style: the setter stores the clamped value.
+                var raw = toNumber(value);
+                var n = double.IsNaN(raw) ? entry.Default : (long)Math.Min(entry.Max, Math.Max(entry.Min, Math.Truncate(raw)));
                 element.SetAttribute(entry.Attribute, n.ToString(CultureInfo.InvariantCulture));
                 break;
             }
