@@ -722,7 +722,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
         {
             if (pseudoElement == null) return;
 
-            var text = NormalizePseudoText(rawContent);
+            var text = NormalizePseudoText(rawContent, pseudoElement.OriginatingElement);
             if (string.IsNullOrEmpty(text)) return;
 
             if (pseudoElement.ChildNodes.Length == 0)
@@ -756,7 +756,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             string listStyleType = listStyle?.ListStyleType ?? "disc";
             string listStyleImage = listStyle?.ListStyleImage ?? "none";
             var markerStyle = listStyle?.Marker;
-            string markerText = NormalizePseudoText(markerStyle?.Content);
+            string markerText = NormalizePseudoText(markerStyle?.Content, element);
 
             if (string.IsNullOrEmpty(markerText))
             {
@@ -850,12 +850,26 @@ namespace FenBrowser.FenEngine.Layout.Tree
             return ordinals.TryGetValue(item, out int ordinal) ? ordinal : 1;
         }
 
-        private static string NormalizePseudoText(string rawContent)
+        /// <summary>
+        /// CSS Generated Content §2 ('content'): the value is a list of strings, attr()
+        /// references and quote keywords concatenated in order, so
+        /// `attr(data-replicated-value) " "` yields the attribute text plus a space, never
+        /// the declaration text. url() images and counters contribute no text here.
+        /// </summary>
+        private static string NormalizePseudoText(string rawContent, Element originatingElement)
         {
             if (string.IsNullOrWhiteSpace(rawContent)) return null;
-            if (string.Equals(rawContent, "none", StringComparison.OrdinalIgnoreCase)) return null;
-            if (rawContent.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0) return null;
-            return rawContent.Trim().Trim('"', '\'');
+
+            var text = new System.Text.StringBuilder();
+            foreach (var item in PseudoBoxFactory.ParseContent(rawContent.Trim(), originatingElement))
+            {
+                if (item is StringContentItem or AttrContentItem or QuoteContentItem)
+                {
+                    text.Append(item.GetText());
+                }
+            }
+
+            return text.Length == 0 ? null : text.ToString();
         }
 
         private static void LogLayoutDecision(Node node, string decision, string display)

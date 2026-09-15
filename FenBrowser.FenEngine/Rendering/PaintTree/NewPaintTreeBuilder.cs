@@ -2215,7 +2215,25 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrEmpty(content)) return null;
             
             content = content.Trim();
-            
+
+            // CSS Generated Content §2: 'content' is a list of strings, attr() references and
+            // quote keywords concatenated in order, so `attr(x) " "` must not fall through to
+            // the raw declaration text. Counter functions keep the single-value handling
+            // below, which reads the paint-time counter state.
+            if (content.IndexOf("counter", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                var text = new System.Text.StringBuilder();
+                foreach (var item in Layout.PseudoBoxFactory.ParseContent(content, parent))
+                {
+                    if (item is Layout.StringContentItem or Layout.AttrContentItem or Layout.QuoteContentItem)
+                    {
+                        text.Append(item.GetText());
+                    }
+                }
+
+                return text.ToString();
+            }
+
             // Handle quoted strings: "text" or 'text'
             if ((content.StartsWith("\"") && content.EndsWith("\"")) ||
                 (content.StartsWith("'") && content.EndsWith("'")))

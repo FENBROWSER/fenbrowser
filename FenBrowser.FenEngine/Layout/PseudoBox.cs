@@ -352,7 +352,7 @@ namespace FenBrowser.FenEngine.Layout
         /// <summary>
         /// Parses the CSS 'content' property value into content items.
         /// </summary>
-        private static List<ContentItem> ParseContent(string contentValue, Element element)
+        internal static List<ContentItem> ParseContent(string contentValue, Element element)
         {
             var items = new List<ContentItem>();
 
