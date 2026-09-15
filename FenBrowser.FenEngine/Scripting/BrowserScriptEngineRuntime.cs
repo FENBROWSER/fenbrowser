@@ -24108,7 +24108,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = _owner.ToHostOrNull(_owner.GetCurrentScriptElement(), HostObjectKind.DomElement);
                     return true;
                 case "activeElement":
-                    value = _owner.ToHostOrNull(document.ActiveElement, HostObjectKind.DomElement);
+                    // HTML §6.6.1: with nothing focused the document's active
+                    // element is its body (null only for a document without one).
+                    value = _owner.ToHostOrNull(document.ActiveElement ?? document.Body, HostObjectKind.DomElement);
                     return true;
                 case "defaultView":
                     value = _owner.GetStoredHostPropertyOrUndefined(document, "__fenDefaultView");
