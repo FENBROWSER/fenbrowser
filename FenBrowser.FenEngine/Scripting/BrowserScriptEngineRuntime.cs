@@ -15063,6 +15063,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return Uri.TryCreate(raw, UriKind.Absolute, out var parsed) ? parsed : null;
     }
 
+    // HTML 4.12.1 defines the script element in the HTML namespace and SVG 2
+    // gives SVG its own. A <script> in any other namespace - an XHTML file with a
+    // mistyped xmlns, as in Acid3's xhtml.3 - is an unknown element and never runs.
+    private static bool IsExecutableScriptElement(Element element) =>
+        string.Equals(element.LocalName, "script", StringComparison.Ordinal) &&
+        (string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) ||
+         string.Equals(element.NamespaceUri, Namespaces.Svg, StringComparison.Ordinal));
+
     private IEnumerable<Element> EnumerateScriptElements(Node domRoot)
     {
         int totalElements = 0;
@@ -15073,7 +15081,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             if (node is Element element)
             {
                 totalElements++;
-                if (string.Equals(element.TagName, "script", StringComparison.OrdinalIgnoreCase))
+                if (IsExecutableScriptElement(element))
                 {
                     scriptElements++;
                     var src = element.GetAttribute("src") ?? string.Empty;

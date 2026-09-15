@@ -116,11 +116,11 @@ public static class XmlDomParser
     /// well-formed. This mirrors the browser-observable DOMParser behavior of
     /// returning an error document instead of throwing.
     /// </summary>
-    public static Document ParseWithErrorDocument(string xml)
+    public static Document ParseWithErrorDocument(string xml, string contentType = XmlContentType)
     {
         try
         {
-            return Parse(xml);
+            return Parse(xml, contentType);
         }
         catch (XmlDomParseException ex)
         {

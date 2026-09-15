@@ -5505,9 +5505,7 @@ pre {{
                 }
 
                 var finalUri = result.FinalUri ?? frameUri;
-                var parsedDocument = HtmlParser.ParseDocument(
-                    result.Content,
-                    new HtmlParserOptions { BaseUri = finalUri });
+                var parsedDocument = ParseFrameDocument(result.Content, ResolveFrameContentType(result), finalUri);
                 var parsedRoot = parsedDocument?.DocumentElement;
                 if (parsedRoot == null)
                 {
@@ -5553,6 +5551,39 @@ pre {{
             {
                 TryLogWarn($"[BrowserHost] failed loading iframe '{frameUri}': {ex.Message}", LogCategory.Navigation);
             }
+        }
+
+        /// <summary>
+        /// HTML 7.4.x "page load processing model for XML files": a frame whose
+        /// response has an XML MIME type is parsed by the XML parser, and a
+        /// document that is not well-formed is replaced by an error document, so
+        /// none of its scripts run. Every other response is parsed as HTML.
+        /// </summary>
+        internal static Document ParseFrameDocument(string content, string contentType, Uri documentUri)
+        {
+            var essence = contentType?.Split(';')[0].Trim().ToLowerInvariant();
+            if (!XmlDomParser.IsXmlMimeType(essence))
+            {
+                return HtmlParser.ParseDocument(content, new HtmlParserOptions { BaseUri = documentUri });
+            }
+
+            var document = XmlDomParser.ParseWithErrorDocument(content, essence);
+            var address = (documentUri ?? new Uri("about:blank")).AbsoluteUri;
+            document.URL = address;
+            document.BaseURI = address;
+            return document;
+        }
+
+        private static string ResolveFrameContentType(FetchResult result)
+        {
+            if (!string.IsNullOrWhiteSpace(result?.ContentType))
+            {
+                return result.ContentType;
+            }
+
+            return result != null && result.TryGetHeaderValues("Content-Type", out var values)
+                ? values.FirstOrDefault()
+                : null;
         }
 
         private void DispatchFrameLoadCompleted(Element frameElement, Uri frameUri)
@@ -5652,9 +5683,7 @@ pre {{
 
             try
             {
-                var parsedDocument = HtmlParser.ParseDocument(
-                    frameHtml,
-                    new HtmlParserOptions { BaseUri = frameUri });
+                var parsedDocument = ParseFrameDocument(frameHtml, ResolveFrameContentType(frameFetchResult), frameUri);
 
                 var parsedRoot = parsedDocument?.DocumentElement;
                 if (parsedRoot == null)
