@@ -10947,7 +10947,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     if (args.Count == 0) return JsValue.FromString(string.Empty);
                     var bytes = ExtractBytesFromArrayLike(args[0]);
                     if (bytes == null || bytes.Length == 0) return JsValue.FromString(string.Empty);
-                    return JsValue.FromString(System.Text.Encoding.UTF8.GetString(bytes));
+                    // Encoding Standard "decode": a leading BOM is consumed, not
+                    // emitted, unless the decoder was created with ignoreBOM.
+                    bool ignoreBom = args.Count > 1 && args[1].Tag == JsValueTag.Boolean && args[1].AsBoolean();
+                    int offset = !ignoreBom && bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+                    return JsValue.FromString(System.Text.Encoding.UTF8.GetString(bytes, offset, bytes.Length - offset));
                 }));
 
         // â”€â”€ crypto.subtle â”€â”€
@@ -13083,7 +13087,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 };
                 TextDecoder.prototype.decode = function (input, options) {
                     if (input == null) return '';
-                    return __fenTextDecode(input);
+                    return __fenTextDecode(input, this.ignoreBOM === true);
                 };
 
                 // â”€â”€ atob / btoa â”€â”€ https://html.spec.whatwg.org/#atob
