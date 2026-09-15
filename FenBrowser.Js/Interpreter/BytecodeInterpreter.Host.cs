@@ -434,7 +434,13 @@ public sealed partial class BytecodeInterpreter
             return true;
         }
 
-        return _hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.InCheck, out _);
+        if (_hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.InCheck, out _))
+        {
+            return true;
+        }
+
+        return !HasHostObjectPrototype(handle) &&
+               TryGetPropertyValue(_heap.GetObject(EnsureObjectPrototype()), receiver, key, out _);
     }
 
     private bool HasHostObjectDefinedOrEmbedderProperty(HostObjectHandle handle, string key)
