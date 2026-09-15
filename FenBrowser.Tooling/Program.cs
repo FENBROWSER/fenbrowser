@@ -567,7 +567,8 @@ namespace FenBrowser.Tooling
                 var beforeScreenshot = CaptureDebugSiteScreenshot(
                     beforeRoot,
                     beforeStyles,
-                    host.CurrentUri?.AbsoluteUri ?? url);
+                    host.CurrentUri?.AbsoluteUri ?? url,
+                    host.EnterImageLoaderContext);
                 if (beforeScreenshot.Captured)
                 {
                     TryCopyFile(
@@ -630,7 +631,7 @@ namespace FenBrowser.Tooling
             string rawHtml = SafeCall(() => host.GetRawHtml()) ?? string.Empty;
             string text = SafeCall(() => host.GetTextContent()) ?? string.Empty;
             var styles = SafeCall(() => host.ComputedStyles);
-            var screenshot = CaptureDebugSiteScreenshot(root, styles, host.CurrentUri?.AbsoluteUri ?? url);
+            var screenshot = CaptureDebugSiteScreenshot(root, styles, host.CurrentUri?.AbsoluteUri ?? url, host.EnterImageLoaderContext);
             if (interaction != null)
             {
                 interaction = interaction with
@@ -770,7 +771,8 @@ namespace FenBrowser.Tooling
         internal static DebugSiteScreenshotResult CaptureDebugSiteScreenshot(
             FenBrowser.Core.Dom.V2.Node root,
             Dictionary<FenBrowser.Core.Dom.V2.Node, CssComputed> styles,
-            string baseUrl)
+            string baseUrl,
+            Func<IDisposable> enterResourceContext = null)
         {
             const int width = DebugSiteViewportWidth;
             const int height = DebugSiteViewportHeight;
@@ -809,6 +811,11 @@ namespace FenBrowser.Tooling
                     scrollY = requestedScrollY;
                 }
 
+                // The page's images and fonts were fetched and cached under the browser's
+                // resource-loader context. Rendering outside it looks each one up under a
+                // different cache key and paints the placeholder, which is why bing.com's
+                // homepage photo was missing from debug-site captures but not the Host.
+                using var resourceContext = enterResourceContext?.Invoke();
                 var renderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
                 if (scrollY > 0f)
                 {
