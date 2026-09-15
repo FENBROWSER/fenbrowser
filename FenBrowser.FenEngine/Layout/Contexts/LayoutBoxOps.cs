@@ -430,6 +430,54 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
             return state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
         }
 
+        /// <summary>
+        /// CSS 2.2 §10.5: a percentage height resolves against the containing block's height
+        /// only when that height does not depend on content; otherwise it computes to 'auto'.
+        /// Returns NaN in that case instead of falling back to the viewport the way
+        /// <see cref="ResolvePercentageBaseHeight"/> does. Flex/grid items and out-of-flow boxes
+        /// keep the height their formatting context established.
+        /// </summary>
+        internal static float ResolveDefinitePercentageBaseHeight(LayoutBox box, LayoutState state)
+        {
+            for (var ancestor = box?.Parent; ancestor != null; ancestor = ancestor.Parent)
+            {
+                if (ancestor is InlineBox || ancestor is AnonymousBlockBox)
+                {
+                    continue;
+                }
+
+                var style = ancestor.ComputedStyle;
+                bool heightIsAuto = style == null ||
+                                    (!style.Height.HasValue &&
+                                     !style.HeightPercent.HasValue &&
+                                     string.IsNullOrEmpty(style.HeightExpression));
+                if (heightIsAuto && !IsFlexOrGridItem(ancestor) &&
+                    (!ancestor.IsOutOfFlow || !HasBothVerticalInsets(style)))
+                {
+                    return float.NaN;
+                }
+
+                break;
+            }
+
+            return ResolvePercentageBaseHeight(box, state);
+        }
+
+        // An absolutely positioned box with auto height has a definite height only when both
+        // top and bottom are set: CSS 2.2 §10.6.4 then solves the height from the insets.
+        private static bool HasBothVerticalInsets(CssComputed style) =>
+            style != null &&
+            (style.Top.HasValue || style.TopPercent.HasValue) &&
+            (style.Bottom.HasValue || style.BottomPercent.HasValue);
+
+        private static bool IsFlexOrGridItem(LayoutBox box)
+        {
+            string display = box.Parent?.ComputedStyle?.Display;
+            return display != null &&
+                   (display.Contains("flex", StringComparison.OrdinalIgnoreCase) ||
+                    display.Contains("grid", StringComparison.OrdinalIgnoreCase));
+        }
+
         // CSS 2.1 9.4.3: percentage left/right resolve against the containing
         // block's width and top/bottom against its height - not against the box's
         // own size, and not against the viewport. reCAPTCHA nudges each challenge

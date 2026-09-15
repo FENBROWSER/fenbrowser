@@ -2646,7 +2646,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float w = (float)(box.ComputedStyle?.Width ?? 0);
             float h = (float)(box.ComputedStyle?.Height ?? 0);
             float cbWidth = LayoutBoxOps.ResolvePercentageBaseWidth(box, state);
-            float cbHeight = LayoutBoxOps.ResolvePercentageBaseHeight(box, state);
+            // Percentage heights need a definite containing block (CSS 2.2 §10.5); NaN leaves
+            // 'h' auto so the intrinsic ratio sizes the box rather than the viewport height.
+            float cbHeight = LayoutBoxOps.ResolveDefinitePercentageBaseHeight(box, state);
             if (w <= 0f && box.ComputedStyle?.WidthPercent.HasValue == true && cbWidth > 0f)
             {
                 w = (float)(box.ComputedStyle.WidthPercent.Value / 100.0 * cbWidth);
@@ -2734,8 +2736,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     attrH,
                     constrainAutoToAvailableWidth: false);
 
-                if (w <= 0) w = resolved.Width;
-                if (h <= 0) h = resolved.Height;
+                // CSS 2.2 §10.6.2 / §10.3.2: when one dimension is already used and the other
+                // is auto, an element with an intrinsic ratio derives the auto one from it.
+                bool hasRatio = tag is "IMG" or "SVG" or "CANVAS" or "VIDEO" &&
+                                resolved.Width > 0f && resolved.Height > 0f &&
+                                ((intrinsicW > 0f && intrinsicH > 0f) || (attrW > 0f && attrH > 0f));
+                bool widthUsed = w > 0;
+                bool heightUsed = h > 0;
+                if (!widthUsed) w = hasRatio && heightUsed ? h * resolved.Width / resolved.Height : resolved.Width;
+                if (!heightUsed) h = hasRatio && widthUsed ? w * resolved.Height / resolved.Width : resolved.Height;
             }
             else
             {
