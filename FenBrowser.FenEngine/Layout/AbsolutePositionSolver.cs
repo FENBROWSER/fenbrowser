@@ -158,6 +158,7 @@ namespace FenBrowser.FenEngine.Layout
 
             // Solve horizontal axis
             SolveHorizontal(style, containingBlock.Width, intrinsicWidth, preserveIntrinsicAutoSize, ref result);
+            ResolveHorizontalMinMax(style, containingBlock.Width, intrinsicWidth, preserveIntrinsicAutoSize, ref result);
 
             // Solve vertical axis
             SolveVertical(style, containingBlock.Height, intrinsicHeight, preserveIntrinsicAutoSize, ref result);
@@ -166,6 +167,61 @@ namespace FenBrowser.FenEngine.Layout
             ApplyConstraints(style, containingBlock, ref result);
 
             return result;
+        }
+
+        /// <summary>
+        /// CSS 2.2 §10.4 "Minimum and maximum widths": the tentative width comes from the
+        /// §10.3.7 constraint equation; when it exceeds 'max-width' (or falls below
+        /// 'min-width') the equation is solved again with that limit as 'width', so auto
+        /// margins and auto offsets absorb the freed space. `left:0; right:0; margin:0 auto;
+        /// max-width:975px` therefore centers the box instead of pinning it to the left edge.
+        /// </summary>
+        private static void ResolveHorizontalMinMax(
+            CssComputed style,
+            float cbWidth,
+            float intrinsicWidth,
+            bool preserveIntrinsicAutoSize,
+            ref AbsoluteLayoutResult result)
+        {
+            float fixedSpace = (float)(style.BorderThickness.Left + style.Padding.Left +
+                                       style.Padding.Right + style.BorderThickness.Right);
+            bool borderBox = string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
+
+            float? maxWidth = ResolveWidthLimit(style.MaxWidth, style.MaxWidthPercent, style.MaxWidthExpression, cbWidth);
+            if (maxWidth.HasValue && result.Width > ToContentWidth(maxWidth.Value) + 0.01f)
+            {
+                SolveHorizontal(WithWidth(style, maxWidth.Value), cbWidth, intrinsicWidth, preserveIntrinsicAutoSize, ref result);
+            }
+
+            float? minWidth = ResolveWidthLimit(style.MinWidth, style.MinWidthPercent, style.MinWidthExpression, cbWidth);
+            if (minWidth.HasValue && result.Width < ToContentWidth(minWidth.Value) - 0.01f)
+            {
+                SolveHorizontal(WithWidth(style, minWidth.Value), cbWidth, intrinsicWidth, preserveIntrinsicAutoSize, ref result);
+            }
+
+            float ToContentWidth(float limit) => borderBox ? Math.Max(0f, limit - fixedSpace) : limit;
+        }
+
+        private static float? ResolveWidthLimit(double? px, double? percent, string expression, float cbWidth)
+        {
+            if (px.HasValue) return (float)px.Value;
+            if (percent.HasValue) return (float)(percent.Value * cbWidth / 100.0);
+            if (expression != null)
+            {
+                return LayoutHelper.EvaluateCssExpression(expression, cbWidth,
+                    (float)(CssParser.MediaViewportWidth ?? 0), (float)(CssParser.MediaViewportHeight ?? 0));
+            }
+
+            return null;
+        }
+
+        private static CssComputed WithWidth(CssComputed style, float width)
+        {
+            var constrained = style.Clone();
+            constrained.Width = width;
+            constrained.WidthPercent = null;
+            constrained.WidthExpression = null;
+            return constrained;
         }
 
         /// <summary>
@@ -480,21 +536,7 @@ namespace FenBrowser.FenEngine.Layout
             ContainingBlock cb,
             ref AbsoluteLayoutResult result)
         {
-            float minWidth = 0;
-            if (style.MinWidth.HasValue) minWidth = (float)style.MinWidth.Value;
-            else if (style.MinWidthExpression != null) 
-                 minWidth = LayoutHelper.EvaluateCssExpression(style.MinWidthExpression, cb.Width, (float)(CssParser.MediaViewportWidth ?? 0), (float)(CssParser.MediaViewportHeight ?? 0));
-                 
-            float maxWidth = float.MaxValue;
-            if (style.MaxWidth.HasValue) maxWidth = (float)style.MaxWidth.Value;
-            else if (style.MaxWidthExpression != null)
-                 maxWidth = LayoutHelper.EvaluateCssExpression(style.MaxWidthExpression, cb.Width, (float)(CssParser.MediaViewportWidth ?? 0), (float)(CssParser.MediaViewportHeight ?? 0));
-
-            if (result.Width < minWidth)
-                result.Width = minWidth;
-            else if (maxWidth > 0 && result.Width > maxWidth)
-                result.Width = maxWidth;
-
+            // Widths were already re-solved against min/max-width in ResolveHorizontalMinMax.
             float minHeight = 0;
             if (style.MinHeight.HasValue) minHeight = (float)style.MinHeight.Value;
             else if (style.MinHeightExpression != null)
