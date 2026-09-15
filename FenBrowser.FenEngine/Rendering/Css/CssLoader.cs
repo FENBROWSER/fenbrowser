@@ -1472,7 +1472,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
-                var shadowChildren = element.ShadowRoot?.ChildNodes;
+                var shadowChildren = element.GetAttachedShadowRoot()?.ChildNodes;
                 if (shadowChildren == null)
                 {
                     continue;

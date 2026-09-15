@@ -703,7 +703,12 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public ShadowRoot ShadowRoot => _shadowRoot?.Mode == ShadowRootMode.Open ? _shadowRoot : null;
 
-        internal ShadowRoot GetAttachedShadowRoot() => _shadowRoot;
+        /// <summary>
+        /// Returns the attached shadow root whatever its mode. Closed mode only hides the
+        /// root from script's shadowRoot getter; styling, layout and frame loading still
+        /// see it.
+        /// </summary>
+        public ShadowRoot GetAttachedShadowRoot() => _shadowRoot;
         internal void InvalidateAttachedShadowSlotAssignments() => _shadowRoot?.InvalidateSlotAssignments();
 
         /// <summary>

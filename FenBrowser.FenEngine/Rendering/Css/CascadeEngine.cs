@@ -1003,7 +1003,7 @@ return computed;
             var chains = selector.Chains;
 
             var isScopeHost = ReferenceEquals(scope.Host, element);
-            var isSlottedCandidate = element.ParentElement is Element parent && ReferenceEquals(parent.ShadowRoot, scope);
+            var isSlottedCandidate = element.ParentElement is Element parent && ReferenceEquals(parent.GetAttachedShadowRoot(), scope);
             if (!isScopeHost && !isSlottedCandidate)
             {
                 return false;

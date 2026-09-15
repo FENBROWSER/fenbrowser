@@ -1707,9 +1707,10 @@ namespace FenBrowser.FenEngine.Rendering
                 return assignedNodes.Count > 0 ? assignedNodes : element.ChildNodes;
             }
 
-            if (element.ShadowRoot != null)
+            var attachedShadowRoot = element.GetAttachedShadowRoot();
+            if (attachedShadowRoot != null)
             {
-                return element.ShadowRoot.ChildNodes;
+                return attachedShadowRoot.ChildNodes;
             }
 
             return element.ChildNodes;

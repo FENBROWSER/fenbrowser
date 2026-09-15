@@ -905,7 +905,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             {
                 if (ps.Name == "slotted")
                 {
-                    if (el.ParentElement is Element parent && parent.ShadowRoot != null) // ParentElement check
+                    if (el.ParentElement is Element parent && parent.GetAttachedShadowRoot() != null) // ParentElement check
                     {
                         return string.IsNullOrEmpty(ps.Args) || Matches(el, ps.Args, depth + 1);
                     }
@@ -1049,12 +1049,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 // Shadow DOM Scoping
                 case "host": 
                     // Matches if element is a Shadow Host
-                    if (el.ShadowRoot == null) return false;
+                    if (el.GetAttachedShadowRoot() == null) return false;
                     return string.IsNullOrEmpty(args) || Matches(el, args, depth + 1);
 
                 case "host-context":
                     // Matches if element is a Shadow Host AND has an ancestor matching the selector
-                    if (el.ShadowRoot == null) return false;
+                    if (el.GetAttachedShadowRoot() == null) return false;
                     if (string.IsNullOrEmpty(args)) return true;
                     
                     // Check ancestors

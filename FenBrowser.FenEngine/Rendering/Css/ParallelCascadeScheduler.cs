@@ -162,7 +162,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static void PushChildElements(Element parent, Stack<Element> stack)
         {
-            var shadowChildren = parent.ShadowRoot?.ChildNodes;
+            var shadowChildren = parent.GetAttachedShadowRoot()?.ChildNodes;
             if (shadowChildren != null)
             {
                 for (int i = shadowChildren.Length - 1; i >= 0; i--)

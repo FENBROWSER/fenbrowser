@@ -290,9 +290,11 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 return Array.Empty<Node>();
             }
 
-            if (element.ShadowRoot != null)
+            // A closed shadow root is hidden from script, not from rendering.
+            var attachedShadowRoot = element.GetAttachedShadowRoot();
+            if (attachedShadowRoot != null)
             {
-                return element.ShadowRoot.ChildNodes;
+                return attachedShadowRoot.ChildNodes;
             }
             return element.ChildNodes;
         }
