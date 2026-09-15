@@ -24192,6 +24192,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case "nodeName":
                     value = JsValue.FromString(element.TagName ?? string.Empty);
                     return true;
+                case "prefix":
+                    // DOM 4.9 dom-element-prefix: null when the element has none.
+                    value = string.IsNullOrEmpty(element.Prefix) ? JsValue.Null : JsValue.FromString(element.Prefix);
+                    return true;
                 case "localName":
                     value = JsValue.FromString(element.LocalName ?? string.Empty);
                     return true;

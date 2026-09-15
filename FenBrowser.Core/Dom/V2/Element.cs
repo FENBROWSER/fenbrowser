@@ -29,7 +29,19 @@ namespace FenBrowser.Core.Dom.V2
         /// The qualified tag name (uppercase for HTML).
         /// https://dom.spec.whatwg.org/#dom-element-tagname
         /// </summary>
-        public string TagName { get; }
+        /// <summary>
+        /// DOM 4.9 dom-element-tagname: the HTML-uppercased qualified name, so an
+        /// element created as createElementNS(html, "foo:div") reports "FOO:DIV".
+        /// Engine-internal tag checks compare LocalName.
+        /// </summary>
+        public string TagName =>
+            string.IsNullOrEmpty(Prefix)
+                ? _tagName
+                : string.Equals(NamespaceUri, Namespaces.Html, StringComparison.Ordinal)
+                    ? (Prefix + ":" + LocalName).ToUpperInvariant()
+                    : Prefix + ":" + LocalName;
+
+        private readonly string _tagName;
 
         /// <summary>
         /// The local name (lowercase for HTML).
@@ -170,12 +182,12 @@ namespace FenBrowser.Core.Dom.V2
             // HTML tagName. Foreign namespace names preserve their source/local case.
             if (isHtmlElement)
             {
-                TagName = localName.ToUpperInvariant();
+                _tagName = localName.ToUpperInvariant();
                 NamespaceUri = Namespaces.Html;
             }
             else
             {
-                TagName = localName;
+                _tagName = localName;
                 NamespaceUri = namespaceUri;
             }
 
