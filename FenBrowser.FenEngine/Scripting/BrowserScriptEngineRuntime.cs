@@ -23975,6 +23975,25 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case "childNodes":
                     value = _owner.CreateNodeArrayLike(document.ChildNodes.ToArray());
                     return true;
+                // DOM §4.2.6 ParentNode mixin: Document has it too. github.com's
+                // behaviors bundle reads document.firstElementChild.classList.
+                case "children":
+                    {
+                        var kids = new List<Node>();
+                        for (int i = 0; i < document.ChildNodes.Length; i++)
+                            if (document.ChildNodes[i] is Element) kids.Add(document.ChildNodes[i]);
+                        value = _owner.CreateNodeArrayLike(kids);
+                    }
+                    return true;
+                case "firstElementChild":
+                    value = _owner.ToHostNodeOrNull(document.FirstElementChild);
+                    return true;
+                case "lastElementChild":
+                    value = _owner.ToHostNodeOrNull(document.LastElementChild);
+                    return true;
+                case "childElementCount":
+                    value = JsValue.FromInt32(document.ChildElementCount);
+                    return true;
                 case "id":
                     // Document nodes have no id attribute; return empty string per Chrome behavior.
                     value = JsValue.FromString(string.Empty);
