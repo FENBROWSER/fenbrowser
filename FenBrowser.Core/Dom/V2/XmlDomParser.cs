@@ -88,8 +88,11 @@ public static class XmlDomParser
                 case XElement element:
                     doc.AppendChild(CreateElement(doc, element));
                     break;
-                case XText text:
-                    AppendText(doc, doc, text.Value);
+                case XText:
+                    // Whitespace around the document element - the newline after
+                    // </html> that most files end with - is not part of the DOM: a
+                    // Document cannot hold Text. Anything else there is not
+                    // well-formed and the reader has already rejected it.
                     break;
                 case XComment comment:
                     doc.AppendChild(doc.CreateComment(comment.Value));
