@@ -1950,6 +1950,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         EnsureImageLoadObserver();
+        EnsureLinkLoadObserver();
 
         if (resetSession && _parentRealmOwner != null && _embeddingFrameElement != null)
         {
@@ -4791,6 +4792,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         UnsubscribeFrameTeardownObserver();
         UnsubscribeAttributeReactionObserver();
         UnsubscribeImageLoadObserver();
+        UnsubscribeLinkLoadObserver();
 
         foreach (var childRealm in DetachFrameRealms())
         {
