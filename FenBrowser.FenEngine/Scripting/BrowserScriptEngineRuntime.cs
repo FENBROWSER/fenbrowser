@@ -11052,11 +11052,40 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 globalThis.Blob.prototype.slice = function (start, end, contentType) {
                     return new globalThis.Blob(this._parts.slice(start || 0, end), { type: contentType || this._type });
                 };
+                // File API §Blob: parts are strings (UTF-8 encoded) or binary
+                // buffers; text() and arrayBuffer() see the concatenated bytes.
+                function blobPartBytes(part) {
+                    if (part instanceof globalThis.Blob) return blobBytes(part);
+                    if (typeof ArrayBuffer !== 'undefined') {
+                        if (part instanceof ArrayBuffer) return new Uint8Array(part);
+                        if (typeof ArrayBuffer.isView === 'function' && ArrayBuffer.isView(part)) {
+                            return new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
+                        }
+                    }
+                    return __fenTextEncode(String(part));
+                }
+                function blobBytes(blob) {
+                    var chunks = [];
+                    var total = 0;
+                    for (var i = 0; i < blob._parts.length; i++) {
+                        var chunk = blobPartBytes(blob._parts[i]);
+                        chunks.push(chunk);
+                        total += chunk.length;
+                    }
+                    var out = new Uint8Array(total);
+                    var offset = 0;
+                    for (var j = 0; j < chunks.length; j++) {
+                        out.set(chunks[j], offset);
+                        offset += chunks[j].length;
+                    }
+                    return out;
+                }
                 globalThis.Blob.prototype.text = function () {
-                    return Promise.resolve(this._parts.join(''));
+                    var bytes = blobBytes(this);
+                    return Promise.resolve(typeof TextDecoder === 'function' ? new TextDecoder().decode(bytes) : this._parts.join(''));
                 };
                 globalThis.Blob.prototype.arrayBuffer = function () {
-                    return Promise.resolve(new ArrayBuffer(0));
+                    return Promise.resolve(blobBytes(this).buffer);
                 };
                 // â”€â”€ trustedTypes â”€â”€ https://w3c.github.io/trusted-types/dist/spec/
                 // Facebook creates a "comet-deferred-scripts" policy to safely
