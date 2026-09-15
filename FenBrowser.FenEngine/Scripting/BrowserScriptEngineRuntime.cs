@@ -25384,6 +25384,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             ? hyperlinkUrl.Substring(fragmentIndex)
                             : string.Empty);
                     return true;
+                case "origin" or "protocol" or "username" or "password" or "host" or "hostname" or "port" or "pathname" or "search"
+                    when IsHyperlinkElement(element):
+                    value = JsValue.FromString(ReadHyperlinkUrlPart(element, property));
+                    return true;
                 case "type" when IsHyperlinkElement(element) || IsStyleElement(element):
                     // Both reflect a plain type content attribute.
                     value = JsValue.FromString(element.GetAttribute("type") ?? string.Empty);
@@ -29452,6 +29456,34 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         private static bool IsHyperlinkElement(Element element) =>
             string.Equals(element?.TagName, "a", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(element?.TagName, "area", StringComparison.OrdinalIgnoreCase);
+
+        // HTML 4.6.3 HTMLHyperlinkElementUtils getters read the element's url, parsed from
+        // its resolved href. With no href, or one that does not parse, every part is empty
+        // except protocol, which is ":". search is empty when the query is empty too.
+        private string ReadHyperlinkUrlPart(Element element, string part)
+        {
+            var url = element.GetAttribute("href") == null
+                ? null
+                : FenBrowser.Core.Network.WhatwgUrl.Parse(ResolveElementUrlProperty(element, "href"));
+            if (url == null)
+            {
+                return part == "protocol" ? ":" : string.Empty;
+            }
+
+            return part switch
+            {
+                "origin" => url.Origin,
+                "protocol" => url.Protocol,
+                "username" => url.Username,
+                "password" => url.Password,
+                "host" => url.Host,
+                "hostname" => url.Hostname,
+                "port" => url.Port,
+                "pathname" => url.Pathname,
+                "search" => url.Search == "?" ? string.Empty : url.Search,
+                _ => string.Empty
+            };
+        }
 
         // rel/relList is defined on link in addition to the hyperlink elements.
         private static bool IsRelListElement(Element element) =>
