@@ -292,6 +292,47 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 
+    /// <summary>
+    /// A live HTMLCollection whose membership is recomputed by a delegate on
+    /// every access, for collections whose order is not tree order (a table's
+    /// rows: thead rows first, tfoot rows last - HTML §4.9.1).
+    /// </summary>
+    public sealed class ComputedHTMLCollection : HTMLCollection
+    {
+        private readonly Func<List<Element>> _compute;
+        private readonly bool _nameMatches;
+
+        public ComputedHTMLCollection(Func<List<Element>> compute, bool nameMatches = false)
+        {
+            _compute = compute ?? throw new ArgumentNullException(nameof(compute));
+            _nameMatches = nameMatches;
+        }
+
+        public override int Length => _compute().Count;
+
+        public override Element this[int index]
+        {
+            get
+            {
+                var items = _compute();
+                return index >= 0 && index < items.Count ? items[index] : null;
+            }
+        }
+
+        public override Element NamedItem(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            foreach (var el in _compute())
+            {
+                if (el.Id == name || (_nameMatches && el.GetAttribute("name") == name))
+                    return el;
+            }
+            return null;
+        }
+
+        public override IEnumerator<Element> GetEnumerator() => _compute().GetEnumerator();
+    }
+
     internal sealed class TagNameHTMLCollection : HTMLCollection
     {
         private readonly ContainerNode _root;

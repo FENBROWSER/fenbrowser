@@ -23760,6 +23760,38 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     element.SetAttribute(property, CoerceToHostString(value));
                     _owner.NotifyResizeObservers(element);
                     return true;
+                case Element element when HtmlTableDom.IsTable(element) &&
+                                          (property == "caption" || property == "tHead" || property == "tFoot"):
+                    // HTML dom-table-caption/thead/tfoot setters: null removes,
+                    // an element of the wrong kind is a HierarchyRequestError.
+                    {
+                        var replacement = value.Tag == JsValueTag.Null || value.Tag == JsValueTag.Undefined
+                            ? null
+                            : _owner.ResolveHostObjectOrNull<Element>(value);
+                        // WebIDL: the attribute types are HTMLTableCaptionElement and
+                        // HTMLTableSectionElement, so anything else fails conversion
+                        // with a TypeError; a section of the wrong kind (a tbody for
+                        // tHead) converts fine and is the HierarchyRequestError the
+                        // setter algorithm throws.
+                        var acceptable = replacement != null &&
+                            string.Equals(replacement.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                            (property == "caption"
+                                ? string.Equals(replacement.LocalName, "caption", StringComparison.OrdinalIgnoreCase)
+                                : HtmlTableDom.IsSection(replacement));
+                        if (!acceptable && value.Tag != JsValueTag.Null && value.Tag != JsValueTag.Undefined)
+                        {
+                            _owner.ThrowDomException("TypeError", $"Failed to set the '{property}' property on 'HTMLTableElement'.");
+                        }
+
+                        switch (property)
+                        {
+                            case "caption": HtmlTableDom.SetCaption(element, replacement); break;
+                            case "tHead": HtmlTableDom.SetTHead(element, replacement); break;
+                            default: HtmlTableDom.SetTFoot(element, replacement); break;
+                        }
+
+                        return true;
+                    }
                 case Element element when HtmlAttributeReflection.TryGetEntry(element, property, out var reflected):
                     // HTML §2.6.1: the setter of a reflected IDL attribute sets the
                     // content attribute, so `input.disabled = true` is observable to
@@ -24869,6 +24901,306 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = JsValue.Undefined;
                     return false;
             }
+        }
+
+        /// <summary>
+        /// HTML §4.9.1-4.9.11: the table, table section, row and cell DOM
+        /// members that are not attribute reflection.
+        /// </summary>
+        private bool TryGetTableProperty(Element element, string property, out JsValue value)
+        {
+            value = JsValue.Undefined;
+            if (HtmlTableDom.IsTable(element))
+            {
+                switch (property)
+                {
+                    case "caption":
+                        value = _owner.ToHostNodeOrNull(HtmlTableDom.GetCaption(element));
+                        return true;
+                    case "tHead":
+                        value = _owner.ToHostNodeOrNull(HtmlTableDom.GetTHead(element));
+                        return true;
+                    case "tFoot":
+                        value = _owner.ToHostNodeOrNull(HtmlTableDom.GetTFoot(element));
+                        return true;
+                    case "tBodies":
+                        value = _owner.ToHostOrNull(new FenJsHtmlCollectionHost(HtmlTableDom.GetTBodies(element)), HostObjectKind.Other);
+                        return true;
+                    case "rows":
+                        value = _owner.ToHostOrNull(
+                            new FenJsHtmlCollectionHost(new ComputedHTMLCollection(() => HtmlTableDom.GetRows(element))),
+                            HostObjectKind.Other);
+                        return true;
+                    case "createCaption":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, _) => _owner.ToHostNodeOrNull(HtmlTableDom.CreateCaption(element)), length: 0);
+                        return true;
+                    case "deleteCaption":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, _) => { HtmlTableDom.DeleteCaption(element); return JsValue.Undefined; }, length: 0);
+                        return true;
+                    case "createTHead":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, _) => _owner.ToHostNodeOrNull(HtmlTableDom.CreateTHead(element)), length: 0);
+                        return true;
+                    case "deleteTHead":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, _) => { HtmlTableDom.DeleteTHead(element); return JsValue.Undefined; }, length: 0);
+                        return true;
+                    case "createTFoot":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, _) => _owner.ToHostNodeOrNull(HtmlTableDom.CreateTFoot(element)), length: 0);
+                        return true;
+                    case "deleteTFoot":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, _) => { HtmlTableDom.DeleteTFoot(element); return JsValue.Undefined; }, length: 0);
+                        return true;
+                    case "createTBody":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, _) =>
+                        {
+                            // dom-table-createtbody: after the last tbody child, else appended.
+                            var tbody = element.OwnerDocument.CreateElement("tbody");
+                            Node lastTBody = null;
+                            for (var child = element.FirstChild; child != null; child = child.NextSibling)
+                            {
+                                if (child is Element el && string.Equals(el.LocalName, "tbody", StringComparison.OrdinalIgnoreCase))
+                                    lastTBody = el;
+                            }
+
+                            element.InsertBefore(tbody, lastTBody?.NextSibling);
+                            return _owner.ToHostNodeOrNull(tbody);
+                        }, length: 0);
+                        return true;
+                    case "insertRow":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, args) =>
+                            _owner.ToHostNodeOrNull(HtmlTableDom.InsertRow(element, ReadTableIndex(args))), length: 0);
+                        return true;
+                    case "deleteRow":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, args) =>
+                        {
+                            HtmlTableDom.DeleteRow(element, ReadTableIndex(args));
+                            return JsValue.Undefined;
+                        }, length: 1);
+                        return true;
+                }
+
+                return false;
+            }
+
+            if (HtmlTableDom.IsSection(element))
+            {
+                switch (property)
+                {
+                    case "rows":
+                        value = _owner.ToHostOrNull(
+                            new FenJsHtmlCollectionHost(new ComputedHTMLCollection(() => HtmlTableDom.GetSectionRows(element))),
+                            HostObjectKind.Other);
+                        return true;
+                    case "insertRow":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, args) =>
+                            _owner.ToHostNodeOrNull(HtmlTableDom.InsertSectionRow(element, ReadTableIndex(args))), length: 0);
+                        return true;
+                    case "deleteRow":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, args) =>
+                        {
+                            HtmlTableDom.DeleteSectionRow(element, ReadTableIndex(args));
+                            return JsValue.Undefined;
+                        }, length: 1);
+                        return true;
+                }
+
+                return false;
+            }
+
+            if (HtmlTableDom.IsRow(element))
+            {
+                switch (property)
+                {
+                    case "rowIndex":
+                        value = JsValue.FromInt32(HtmlTableDom.GetRowIndex(element));
+                        return true;
+                    case "sectionRowIndex":
+                        value = JsValue.FromInt32(HtmlTableDom.GetSectionRowIndex(element));
+                        return true;
+                    case "cells":
+                        value = _owner.ToHostOrNull(
+                            new FenJsHtmlCollectionHost(new ComputedHTMLCollection(() => HtmlTableDom.GetCells(element))),
+                            HostObjectKind.Other);
+                        return true;
+                    case "insertCell":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, args) =>
+                            _owner.ToHostNodeOrNull(HtmlTableDom.InsertCell(element, ReadTableIndex(args))), length: 0);
+                        return true;
+                    case "deleteCell":
+                        value = _owner.GetOrCreateHostCallable(element, property, (_, args) =>
+                        {
+                            HtmlTableDom.DeleteCell(element, ReadTableIndex(args));
+                            return JsValue.Undefined;
+                        }, length: 1);
+                        return true;
+                }
+
+                return false;
+            }
+
+            if (HtmlTableDom.IsCell(element) && property == "cellIndex")
+            {
+                value = JsValue.FromInt32(HtmlTableDom.GetCellIndex(element));
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// HTML §4.10.3 form.elements / form.length, §4.10.7 select.options /
+        /// add / remove / length / selectedOptions, §4.10.10 option.index.
+        /// </summary>
+        private bool TryGetFormProperty(Element element, string property, out JsValue value)
+        {
+            value = JsValue.Undefined;
+            if (HtmlFormDom.IsForm(element))
+            {
+                switch (property)
+                {
+                    case "elements":
+                        value = _owner.ToHostOrNull(
+                            new FenJsHtmlCollectionHost(new ComputedHTMLCollection(() => HtmlFormDom.ListedElements(element), nameMatches: true)),
+                            HostObjectKind.Other);
+                        return true;
+                    case "length":
+                        value = JsValue.FromInt32(HtmlFormDom.ListedElements(element).Count);
+                        return true;
+                    default:
+                        // dom-form-nameditem: a control by id or name is a property
+                        // of the form itself (form.first).
+                        if (int.TryParse(property, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index))
+                        {
+                            var listed = HtmlFormDom.ListedElements(element);
+                            if (index >= 0 && index < listed.Count)
+                            {
+                                value = _owner.ToHostNodeOrNull(listed[index]);
+                                return true;
+                            }
+
+                            return false;
+                        }
+
+                        foreach (var control in HtmlFormDom.ListedElements(element))
+                        {
+                            if (control.Id == property || control.GetAttribute("name") == property)
+                            {
+                                value = _owner.ToHostNodeOrNull(control);
+                                return true;
+                            }
+                        }
+
+                        return false;
+                }
+            }
+
+            if (HtmlFormDom.IsSelect(element))
+            {
+                switch (property)
+                {
+                    case "options":
+                        value = _owner.ToHostOrNull(
+                            new FenJsHtmlCollectionHost(new ComputedHTMLCollection(() => HtmlFormDom.Options(element), nameMatches: true)),
+                            HostObjectKind.Other);
+                        return true;
+                    case "length":
+                        value = JsValue.FromInt32(HtmlFormDom.Options(element).Count);
+                        return true;
+                    case "selectedOptions":
+                        value = _owner.ToHostOrNull(
+                            new FenJsHtmlCollectionHost(new ComputedHTMLCollection(() =>
+                                HtmlFormDom.Options(element).FindAll(FenBrowser.FenEngine.Rendering.SelectSelection.IsSelected))),
+                            HostObjectKind.Other);
+                        return true;
+                    case "add":
+                        value = _owner.GetOrCreateHostCallable(element, "add", (_, args) =>
+                        {
+                            var added = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Element>(args[0]) : null;
+                            Element beforeElement = null;
+                            int? beforeIndex = null;
+                            if (args.Count > 1 && args[1].Tag != JsValueTag.Null && args[1].Tag != JsValueTag.Undefined)
+                            {
+                                beforeElement = _owner.ResolveHostObjectOrNull<Element>(args[1]);
+                                if (beforeElement == null)
+                                {
+                                    beforeIndex = (int)CoerceToFiniteNumber(args[1], -1);
+                                }
+                            }
+
+                            HtmlFormDom.Add(element, added, beforeElement, beforeIndex);
+                            FenBrowser.FenEngine.Rendering.SelectSelection.AskForReset(element);
+                            return JsValue.Undefined;
+                        }, length: 1);
+                        return true;
+                    case "remove":
+                        value = _owner.GetOrCreateHostCallable(element, "remove", (_, args) =>
+                        {
+                            if (args.Count == 0)
+                            {
+                                // ChildNode.remove() when called without an index.
+                                (element.ParentNode as ContainerNode)?.RemoveChild(element);
+                                return JsValue.Undefined;
+                            }
+
+                            HtmlFormDom.Remove(element, (int)CoerceToFiniteNumber(args[0], -1));
+                            FenBrowser.FenEngine.Rendering.SelectSelection.AskForReset(element);
+                            return JsValue.Undefined;
+                        }, length: 0);
+                        return true;
+                    case "item":
+                        value = _owner.GetOrCreateHostCallable(element, "item", (_, args) =>
+                        {
+                            var options = HtmlFormDom.Options(element);
+                            var index = args.Count > 0 ? (int)CoerceToFiniteNumber(args[0], -1) : -1;
+                            return index >= 0 && index < options.Count ? _owner.ToHostNodeOrNull(options[index]) : JsValue.Null;
+                        }, length: 1);
+                        return true;
+                    default:
+                        if (int.TryParse(property, NumberStyles.Integer, CultureInfo.InvariantCulture, out var optionIndex))
+                        {
+                            var options = HtmlFormDom.Options(element);
+                            if (optionIndex >= 0 && optionIndex < options.Count)
+                            {
+                                value = _owner.ToHostNodeOrNull(options[optionIndex]);
+                                return true;
+                            }
+                        }
+
+                        return false;
+                }
+            }
+
+            if (HtmlFormDom.IsOption(element))
+            {
+                switch (property)
+                {
+                    case "index":
+                        value = JsValue.FromInt32(HtmlFormDom.OptionIndex(element));
+                        return true;
+                    case "form":
+                        value = _owner.ToHostNodeOrNull(HtmlFormDom.FormOwner(element));
+                        return true;
+                }
+
+                return false;
+            }
+
+            if (property == "form" && HtmlFormDom.IsListedElement(element))
+            {
+                // dom-fae-form: the control's form owner.
+                value = _owner.ToHostNodeOrNull(HtmlFormDom.FormOwner(element));
+                return true;
+            }
+
+            return false;
+        }
+
+        // WebIDL long with a default of -1 for the row/cell index arguments.
+        private static int ReadTableIndex(IReadOnlyList<JsValue> args)
+        {
+            if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
+                return -1;
+            var number = CoerceToFiniteNumber(args[0], -1);
+            return (int)Math.Truncate(Math.Max(int.MinValue, Math.Min(int.MaxValue, number)));
         }
 
         private bool TryGetElementProperty(Element element, string property, out JsValue value)
@@ -26153,6 +26485,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     value = _owner.CreateComputedStyleObjectForElement(element);
                     return true;
                 default:
+                    // HTML §4.9 table DOM (caption/tHead/tFoot/tBodies/rows,
+                    // insertRow, cells, rowIndex, ...).
+                    if (TryGetTableProperty(element, property, out value))
+                    {
+                        return true;
+                    }
+
+                    // HTML §4.10 form, select and option members.
+                    if (TryGetFormProperty(element, property, out value))
+                    {
+                        return true;
+                    }
+
                     // HTML §2.6.1 reflected IDL attributes (disabled, htmlFor,
                     // colSpan, ...) read straight from the content attribute.
                     if (HtmlAttributeReflection.TryGetEntry(element, property, out var reflected))
