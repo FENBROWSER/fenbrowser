@@ -417,7 +417,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     ? existingSegments.Count
                     : 0;
 
-                string rawText = (textBox.SourceNode as Text)?.Data ?? "";
+                string rawText = TextTransformer.Apply((textBox.SourceNode as Text)?.Data ?? "", textBox.ComputedStyle);
                 string wsMode = (textBox.ComputedStyle?.WhiteSpace ?? box.ComputedStyle?.WhiteSpace ?? "normal").Trim().ToLowerInvariant();
                 bool wsPreservesNewlines = wsMode == "pre" || wsMode == "pre-wrap" || wsMode == "pre-line";
                 bool wsPreservesSpaces = wsMode == "pre" || wsMode == "pre-wrap";
@@ -1624,7 +1624,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     continue;
                 }
 
-                string text = (textBox.SourceNode as Text)?.Data ?? string.Empty;
+                string text = TextTransformer.Apply((textBox.SourceNode as Text)?.Data ?? string.Empty, textBox.ComputedStyle);
                 text = CollapseWhitespace(text);
                 if (text.Length == 0)
                 {
@@ -1833,7 +1833,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
 
-            string text = NormalizeIsolatedText(textBox.TextContent);
+            string text = NormalizeIsolatedText(TextTransformer.Apply(textBox.TextContent, textBox.ComputedStyle));
             if (text.Length == 0)
             {
                 ResetTextBoxGeometry(textBox);
@@ -2028,7 +2028,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 // whitespace; using it here can leave the aggregated width short
                 // of the word-flow total by the trimmed spaces' widths and trigger
                 // spurious wraps.
-                string collapsed = CollapseWhitespace(textBox.TextContent ?? string.Empty);
+                string collapsed = CollapseWhitespace(TextTransformer.Apply(textBox.TextContent ?? string.Empty, textBox.ComputedStyle));
                 if (collapsed.Length == 0)
                 {
                     return SKSize.Empty;

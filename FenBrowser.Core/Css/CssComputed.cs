@@ -707,6 +707,12 @@ namespace FenBrowser.Core.Css
                     Map[prop] = val;
                 }
             }
+
+            // Layout reads the typed property, which the map copy above does not set.
+            if (string.IsNullOrEmpty(TextTransform) && Map.TryGetValue("text-transform", out var textTransform))
+            {
+                TextTransform = textTransform;
+            }
             InheritCustomProperties(parent);
         }
         

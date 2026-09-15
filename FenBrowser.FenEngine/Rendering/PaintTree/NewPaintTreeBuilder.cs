@@ -4094,7 +4094,7 @@ namespace FenBrowser.FenEngine.Rendering
 
 
             // FALLBACK (Single Line) - OLD LOGIC
-            string displayText = System.Text.RegularExpressions.Regex.Replace(textNode.Data, @"\s+", " ");
+            string displayText = System.Text.RegularExpressions.Regex.Replace(Layout.TextTransformer.Apply(textNode.Data, parentStyle), @"\s+", " ");
             if (displayText.Contains("&#"))
             {
                 displayText = displayText.Replace("&#10003;", "✔")

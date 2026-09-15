@@ -1545,7 +1545,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             string text = null;
             if (box is TextLayoutBox textBox)
             {
-                text = textBox.TextContent;
+                text = TextTransformer.Apply(textBox.TextContent, textBox.ComputedStyle);
             }
             else if (box.SourceNode is Element element)
             {
@@ -1611,7 +1611,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (box is TextLayoutBox text)
             {
-                builder.Append(text.TextContent);
+                builder.Append(TextTransformer.Apply(text.TextContent, text.ComputedStyle));
                 return;
             }
 

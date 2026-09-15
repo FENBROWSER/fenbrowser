@@ -5929,6 +5929,14 @@ private static double? ExtractPx(string text, string prop)
                         css.Map[inheritedProperty] = inheritedValue;
                     }
                 }
+
+                // The typed text-transform was read from the map before inherited values were
+                // copied in, so a child of `li { text-transform: uppercase }` kept none: bing.com's
+                // scope bar links showed "All" and "Images" instead of "ALL" and "IMAGES".
+                if (string.IsNullOrEmpty(css.TextTransform))
+                {
+                    css.TextTransform = Safe(DictGet(css.Map, "text-transform"));
+                }
             }
 
             return css;
