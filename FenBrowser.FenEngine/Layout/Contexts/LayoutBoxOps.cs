@@ -359,6 +359,29 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
         /// its own children are laid out in a shrink-to-fit pass rather than against
         /// a probe width they would then be measured back from.
         /// </summary>
+        // Inline boxes and anonymous blocks are never containing blocks. An atomic inline
+        // (inline-block, inline-flex, inline-grid, inline-table) is a block container that
+        // sits on a line, and it is one (CSS 2.1 §10.1). It is still an InlineBox in the
+        // box tree, and skipping it made bing.com's `li::after { display:block; width:100% }`
+        // tab underline resolve against the whole scope bar instead of its tab.
+        private static bool IsPercentageContainingBlock(LayoutBox ancestor)
+        {
+            if (ancestor is AnonymousBlockBox)
+            {
+                return false;
+            }
+
+            if (ancestor is InlineBox)
+            {
+                string display = ancestor.ComputedStyle?.Display;
+                return !string.IsNullOrEmpty(display) &&
+                       !string.Equals(display, "inline", StringComparison.OrdinalIgnoreCase) &&
+                       !string.Equals(display, "contents", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return true;
+        }
+
         internal static bool IsCyclicPercentageWidth(CssComputed style, LayoutState state)
         {
             if (style == null || !style.WidthPercent.HasValue || style.Width.HasValue)
@@ -375,7 +398,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
         {
             for (var ancestor = box?.Parent; ancestor != null; ancestor = ancestor.Parent)
             {
-                if (ancestor is InlineBox || ancestor is AnonymousBlockBox)
+                if (!IsPercentageContainingBlock(ancestor))
                 {
                     continue;
                 }
@@ -401,7 +424,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
         {
             for (var ancestor = box?.Parent; ancestor != null; ancestor = ancestor.Parent)
             {
-                if (ancestor is InlineBox || ancestor is AnonymousBlockBox)
+                if (!IsPercentageContainingBlock(ancestor))
                 {
                     continue;
                 }

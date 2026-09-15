@@ -72,6 +72,33 @@ li::after { content: ''; width: 100%; height: 3px; display: block; background: #
             Assert.True(t2.Left > t1.Right && t3.Left > t2.Right, "tabs should sit in one row");
         }
 
+        // The underline itself: once the tab has shrunk to its label, a width:100% block inside
+        // it must resolve against the tab, not keep the page width it was given while the tab
+        // was being measured. The active tab's underline ran across the whole scope bar.
+        private const string TabUnderlineHtml = @"<!doctype html><html><head><style>
+body { margin: 0; font: 14px Arial, sans-serif; }
+ul { margin: 0; padding: 0; list-style: none; }
+li { display: inline-block; margin: 0 12px; padding: 3px 0; line-height: 30px; font-size: 11px; vertical-align: top; }
+a { display: inline-block; }
+.u { width: 100%; height: 3px; display: block; background: #000; margin: 3px auto 0; }
+</style></head><body><nav><ul><li id='t1'><a href='#'>ALL</a><span class='u' id='u1'></span></li><li id='t2'><a href='#'>IMAGES</a><span class='u' id='u2'></span></li></ul></nav>
+<div id='d' style='display:inline-block'><a href='#'>Inline block with a block child</a><div class='u' id='u3'></div></div></body></html>";
+
+        [Fact]
+        public async Task PercentageWidthBlockInsideAShrunkInlineBlock_ResolvesAgainstThatInlineBlock()
+        {
+            var (renderer, doc) = await RenderAsync(TabUnderlineHtml);
+
+            foreach (var (tabId, underlineId) in new[] { ("t1", "u1"), ("t2", "u2"), ("d", "u3") })
+            {
+                var tab = Rect(renderer, doc, tabId);
+                var underline = Rect(renderer, doc, underlineId);
+                Assert.True(Math.Abs(underline.Width - tab.Width) < 1f,
+                    $"#{underlineId} should be as wide as #{tabId} ({tab.Width}), was {underline.Width}");
+                Assert.Equal(tab.Left, underline.Left, 1);
+            }
+        }
+
         private static async Task<(SkiaDomRenderer Renderer, Document Doc)> RenderAsync(string html)
         {
             const int width = 1280;
