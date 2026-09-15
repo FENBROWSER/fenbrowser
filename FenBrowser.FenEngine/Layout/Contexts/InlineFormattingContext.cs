@@ -335,6 +335,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
 
                 if (atomicChild.Geometry == null) atomicChild.Geometry = new BoxModel();
+                float previousContentLeft = atomicChild.Geometry.ContentBox.Left;
+                float previousContentTop = atomicChild.Geometry.ContentBox.Top;
                 var pad = atomicChild.ComputedStyle?.Padding ?? new Thickness();
                 var brd = atomicChild.ComputedStyle?.BorderThickness ?? new Thickness();
                 var mar = atomicChild.ComputedStyle?.Margin ?? new Thickness();
@@ -348,6 +350,20 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 atomicChild.Geometry.Border = brd;
                 atomicChild.Geometry.Margin = mar;
                 LayoutBoxOps.SyncBoxes(atomicChild.Geometry);
+
+                // The measuring probes left the atomic box and its descendants together at the
+                // box's local origin. Moving only the box's own rect here left the descendants
+                // behind: the final pass resets the subtree to the origin and, when the layout
+                // cache answers the re-layout, never rebuilds them, so they ended up offset by
+                // exactly this move. bing.com's query field and search button sat 160px left of
+                // the search box, at the page edge. Carry the descendants along.
+                float movedX = curX - previousContentLeft;
+                float movedY = -previousContentTop;
+                if (float.IsFinite(movedX) && float.IsFinite(movedY) &&
+                    (MathF.Abs(movedX) > 0.001f || MathF.Abs(movedY) > 0.001f))
+                {
+                    LayoutBoxOps.ShiftDescendants(atomicChild, movedX, movedY);
+                }
 
                 for (int w = 0; w < activeWrapperStack.Count; w++)
                 {

@@ -127,6 +127,30 @@ form { display: inline-block; margin-right: 10px; }
             Assert.True(nav.Top >= form.Bottom - 0.5f, $"nav should start below the form: nav {nav.Top}, form bottom {form.Bottom}");
         }
 
+        // bing.com's search box, reduced: an inline-block box inside an inline-block form inside
+        // a block, holding the query field and a submit button with an empty icon element.
+        // The field and the button came out at the page's left edge instead of inside the box.
+        private const string WrappedSearchBoxHtml = @"<!doctype html><html><head><style>
+form, .logo, .box { display: inline-block; }
+.logo { width: 32px; height: 32px; margin: 8px 97px 0 31px; vertical-align: top; }
+.box { background-color: #fff; }
+</style></head><body><div><form><a class='logo' href='#'></a><div class='box' id='box'><input id='q' value='test'><button type='submit' id='go'><i></i></button></div></form></div></body></html>";
+
+        [Fact]
+        public async Task SearchBoxInsideAWrappedInlineForm_KeepsItsFieldAndButtonInsideItself()
+        {
+            var (renderer, doc) = await RenderAsync(WrappedSearchBoxHtml);
+
+            var box = Rect(renderer, doc, "box");
+            var field = Rect(renderer, doc, "q");
+            var button = Rect(renderer, doc, "go");
+
+            // Chrome: box at x = 168, the field at its left edge and the button right after it.
+            Assert.Equal(168f, box.Left, 1);
+            Assert.True(field.Left >= box.Left - 0.5f, $"field {field.Left} should start inside the box at {box.Left}");
+            Assert.True(button.Left >= field.Right - 0.5f, $"button {button.Left} should follow the field ending at {field.Right}");
+        }
+
         private static async Task<(SkiaDomRenderer Renderer, Document Doc)> RenderAsync(string html)
         {
             const int width = 1280;
