@@ -738,6 +738,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         TraceJsRoot(tracer, _fenJsTopWindowFacade);
         TraceJsRoot(tracer, _fenJsSameOriginTopWindowFacade);
         TraceJsRoot(tracer, _embeddedParentWindowProxy);
+        TraceJsRoot(tracer, _embeddedParentWindowTarget);
 
         // The stand-in windows a frame sees for its siblings are held only
         // here, in a C# dictionary the collector cannot see. Left untraced
@@ -5979,6 +5980,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             // iframe on its second document, which is exactly what reCAPTCHA
             // builds -- took one and died.
             _embeddedParentWindowProxy = JsValue.Undefined;
+            _embeddedParentWindowTarget = JsValue.Undefined;
             _siblingWindowProxies.Clear();
             _pendingPromiseRejectionDiagnostics.Clear();
 
@@ -17820,6 +17822,24 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 },
                 length: 1));
 
+        _embeddedParentWindowTarget = parentProxy;
+        if (sameOrigin && _parentRealmOwner != null)
+        {
+            // Names the parent page defined resolve through the parent realm
+            // (BrowserScriptEngineRuntime.ParentWindowAccess.cs).
+            var windowProxy = CreateSameOriginParentWindowProxy(parentProxy);
+            if (windowProxy.Tag == JsValueTag.Object && !windowProxy.Equals(parentProxy))
+            {
+                _embeddedParentWindowProxy = windowProxy;
+                foreach (var selfName in new[] { "window", "self", "parent", "top", "frames" })
+                {
+                    _interpreter.SetObjectProperty(parentProxy, selfName, windowProxy);
+                }
+
+                parentProxy = windowProxy;
+            }
+        }
+
         _interpreter.RegisterGlobalValue("parent", parentProxy);
         _interpreter.RegisterGlobalValue("top", parentProxy);
         _interpreter.RegisterGlobalValue(
@@ -17846,6 +17866,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private void RefreshEmbeddedParentFrameTable()
     {
         var parentProxy = _embeddedParentWindowProxy;
+        // Writes go to the plain stand-in: a same-origin frame's parent is a
+        // Proxy over it, and SetObjectProperty on the Proxy bypasses its traps.
+        var parentTarget = _embeddedParentWindowTarget.Tag == JsValueTag.Object
+            ? _embeddedParentWindowTarget
+            : parentProxy;
         var embeddingFrame = _embeddingFrameElement;
         if (parentProxy.Tag != JsValueTag.Object || embeddingFrame == null || _interpreter == null)
         {
@@ -17871,15 +17896,15 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 continue;
             }
 
-            _interpreter.SetObjectProperty(parentProxy, index.ToString(CultureInfo.InvariantCulture), window);
+            _interpreter.SetObjectProperty(parentTarget, index.ToString(CultureInfo.InvariantCulture), window);
             var name = frame.GetAttribute("name");
             if (!string.IsNullOrWhiteSpace(name))
             {
-                _interpreter.SetObjectProperty(parentProxy, name, window);
+                _interpreter.SetObjectProperty(parentTarget, name, window);
             }
         }
 
-        _interpreter.SetObjectProperty(parentProxy, "length", JsValue.FromInt32(children.Count));
+        _interpreter.SetObjectProperty(parentTarget, "length", JsValue.FromInt32(children.Count));
 
         // Drop proxies for frames that have left the tree: everything still in
         // the map stays reachable from the rooted parent proxy, so nothing we
