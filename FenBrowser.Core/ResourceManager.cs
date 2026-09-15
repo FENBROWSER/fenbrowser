@@ -2361,14 +2361,16 @@ public Uri LastTextResponseUri { get; private set; }
                 url = initialMixedContentDecision.UpgradedUrl;
             }
             
-            // CSP Check (fonts, media, etc)
+            // CSP3 §6.7.2.4 "get the effective directive for request": the
+            // destination picks the directive (image -> img-src, font -> font-src,
+            // ...), each falling back to default-src on its own. Mapping only fonts,
+            // media and objects sent every image straight to default-src, which a
+            // site with `default-src 'none'` and a permissive img-src (github.com)
+            // answers with a block for every picture on the page.
             if (context.ContentSecurityPolicy != null)
             {
-                var directive = "default-src";
-                if (secFetchDest == "font") directive = "font-src";
-                else if (secFetchDest == "audio" || secFetchDest == "video") directive = "media-src";
-                else if (secFetchDest == "object") directive = "object-src";
-                
+                var directive = ResolveCspFetchDirective(secFetchDest);
+
                 if (!context.ContentSecurityPolicy.IsAllowed(directive, url, context.CspNonce, ExtractOrigin(referer), scriptProvenance: context.ScriptProvenance))
                 {
                     return BinaryFailure(BinaryFetchFailureReason.CspBlocked, url, $"Blocked by {directive}", cspAllowed: false);

@@ -422,6 +422,55 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async Task ImageFetch_IsGovernedByImgSrc_NotDefaultSrc()
+        {
+            // CSP3 §6.7.2.4: an image request's effective directive is img-src,
+            // falling back to default-src only when img-src is absent. github.com
+            // ships `default-src 'none'` with a permissive img-src that also names
+            // a path prefix; the binary fetch used to consult default-src for images.
+            var dispatchCount = 0;
+            using var client = new HttpClient(new StubHandler(_ =>
+            {
+                dispatchCount++;
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(new byte[] { 1, 2, 3 })
+                };
+            }));
+            var manager = new ResourceManager(client, isPrivate: true);
+            var pageUri = new Uri("https://example.test/page");
+            var policy = CspPolicy.Parse("default-src 'none'; img-src 'self' data: images.cdn.test/space-a/");
+
+            var allowed = await manager.FetchBytesDetailedAsync(new FetchContext
+            {
+                RequestUri = new Uri("https://images.cdn.test/space-a/hero.webp"),
+                InitiatorUri = pageUri,
+                FrameDocumentUri = pageUri,
+                TopLevelDocumentUri = pageUri,
+                Destination = "image",
+                Mode = "no-cors",
+                CredentialsMode = "include",
+                ContentSecurityPolicy = policy
+            });
+            var outsidePrefix = await manager.FetchBytesDetailedAsync(new FetchContext
+            {
+                RequestUri = new Uri("https://images.cdn.test/space-b/hero.webp"),
+                InitiatorUri = pageUri,
+                FrameDocumentUri = pageUri,
+                TopLevelDocumentUri = pageUri,
+                Destination = "image",
+                Mode = "no-cors",
+                CredentialsMode = "include",
+                ContentSecurityPolicy = policy
+            });
+
+            Assert.True(allowed.Succeeded, $"img-src should allow the prefixed path, got {allowed.FailureReason}");
+            Assert.False(outsidePrefix.Succeeded);
+            Assert.Equal(BinaryFetchFailureReason.CspBlocked, outsidePrefix.FailureReason);
+            Assert.Equal(1, dispatchCount);
+        }
+
+        [Fact]
         public async Task ScriptFetch_StrictDynamic_CarriesAuthorizingNonceToResourcePolicy()
         {
             var dispatchCount = 0;
