@@ -2033,6 +2033,15 @@ namespace FenBrowser.FenEngine.Rendering
                 return null;
             }
 
+            // CSS 2.2 §11.2: visibility:hidden generated content keeps its space but paints
+            // nothing. bing.com's search field hides a measuring ::after this way.
+            string pseudoVisibility = pseudoStyle.Visibility?.Trim();
+            if (string.Equals(pseudoVisibility, "hidden", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(pseudoVisibility, "collapse", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
             var pseudoNode = pseudoStyle.PseudoElementInstance;
             if (pseudoNode == null)
             {
