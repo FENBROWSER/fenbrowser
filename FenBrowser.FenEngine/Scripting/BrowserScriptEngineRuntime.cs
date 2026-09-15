@@ -11646,6 +11646,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     this.detail = detail !== undefined ? detail : null;
                 };
 
+                // HTML §8.1.3.7.1 ErrorEvent: what "report an exception" fires at window.
+                globalThis.ErrorEvent = function ErrorEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.message = options.message !== undefined ? String(options.message) : '';
+                    this.filename = options.filename !== undefined ? String(options.filename) : '';
+                    this.lineno = options.lineno !== undefined ? Number(options.lineno) || 0 : 0;
+                    this.colno = options.colno !== undefined ? Number(options.colno) || 0 : 0;
+                    this.error = options.error !== undefined ? options.error : null;
+                };
+                ErrorEvent.prototype = Object.create(Event.prototype);
+                ErrorEvent.prototype.constructor = ErrorEvent;
+
                 globalThis.UIEvent = function UIEvent(type, options) {
                     Event.call(this, type, options);
                     options = options || {};

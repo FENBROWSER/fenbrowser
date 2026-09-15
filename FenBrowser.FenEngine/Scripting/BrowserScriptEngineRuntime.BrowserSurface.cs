@@ -217,12 +217,25 @@ public sealed partial class FenJsBrowserScriptEngine
                         globalThis.cancelIdleCallback = function (handle) { clearTimeout(handle); };
                     }
 
+                    // HTML §8.1.3.7.2 "report an exception": fire an ErrorEvent at
+                    // window (so onerror and every 'error' listener see it) and, unless
+                    // a handler cancelled it, report it to the console. React 19 routes
+                    // every uncaught render error through here; when it only reached a
+                    // page's own onerror beacon, a landing page emptied itself in silence.
                     if (typeof globalThis.reportError !== 'function') {
                         globalThis.reportError = function (error) {
-                            if (typeof globalThis.onerror === 'function') {
-                                globalThis.onerror(String(error && error.message || error), '', 0, 0, error);
-                            } else if (globalThis.console && typeof console.error === 'function') {
-                                console.error(error);
+                            var message = String(error && error.message !== undefined ? error.message : error);
+                            var handled = false;
+                            try {
+                                if (typeof globalThis.ErrorEvent === 'function' && typeof globalThis.dispatchEvent === 'function') {
+                                    var event = new ErrorEvent('error', { message: message, error: error, cancelable: true });
+                                    handled = globalThis.dispatchEvent(event) === false;
+                                } else if (typeof globalThis.onerror === 'function') {
+                                    handled = globalThis.onerror(message, '', 0, 0, error) === true;
+                                }
+                            } catch (dispatchFailure) {}
+                            if (!handled && globalThis.console && typeof console.error === 'function') {
+                                console.error('Uncaught ' + (error && error.stack ? error.stack : message));
                             }
                         };
                     }
