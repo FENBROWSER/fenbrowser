@@ -4045,6 +4045,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // does NOT pre-materialise).
     private JsValue CreateArrayIterator(JsValue source, ArrayIteratorKind kind)
     {
+        // ECMA-262 23.1.5.1 CreateArrayIterator accepts any object. A host object (a DOM
+        // collection such as NodeList) is an object too, so Array.prototype.values/keys/
+        // entries work on it; its length and indices are read through the host property
+        // path, as Array.prototype.forEach already does. Rejecting it broke Cloudflare
+        // Turnstile's message handler on bing.com.
+        if (source.Tag == JsValueTag.HostObject)
+        {
+            var hostIter = new ArrayIteratorObject(source, kind);
+            hostIter.SetPrototype(EnsureArrayIteratorPrototype());
+            return JsValue.FromObject(_heap.AllocateObject(hostIter, AllocationSite.Current()));
+        }
+
         if (source.Tag != JsValueTag.Object)
         {
             throw new JsThrownException(CreateTypeError(
@@ -4105,6 +4117,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             if (iter.IsExhausted)
                 return BuildIteratorResult(JsValue.Undefined, done: true);
+            if (iter.IsHostSource)
+            {
+                return NextHostArrayIteratorResult(iter);
+            }
+
             var sourceObj = _heap.GetObject(iter.SourceHandle);
             var length = GetArrayLength(sourceObj);
             if (iter.Index >= length)
@@ -4322,7 +4339,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             Kind = kind;
         }
 
+        // A host object source lives in the host object table, not the FenJS heap, so
+        // there is no heap handle to trace; the table keeps it alive.
+        public ArrayIteratorObject(JsValue hostSource, ArrayIteratorKind kind)
+        {
+            HostSource = hostSource;
+            IsHostSource = true;
+            Kind = kind;
+        }
+
         public ObjectHandle SourceHandle { get; }
+        public JsValue HostSource { get; }
+        public bool IsHostSource { get; }
         public ArrayIteratorKind Kind { get; }
         public int Index { get; set; }
         public bool IsExhausted { get; set; }
@@ -4330,7 +4358,38 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         public override void Trace(IHeapTracer tracer)
         {
             base.Trace(tracer);
-            tracer.Trace(SourceHandle);
+            if (!IsHostSource)
+            {
+                tracer.Trace(SourceHandle);
+            }
+        }
+    }
+
+    // ECMA-262 23.1.5.2.1 %ArrayIteratorPrototype%.next for a host object source: the
+    // length is re-read on every step, as for an ordinary array.
+    private JsValue NextHostArrayIteratorResult(ArrayIteratorObject iter)
+    {
+        var length = GetHostArrayLikeLength(iter.HostSource);
+        if (iter.Index >= length)
+        {
+            iter.IsExhausted = true;
+            return BuildIteratorResult(JsValue.Undefined, done: true);
+        }
+
+        var index = iter.Index++;
+        switch (iter.Kind)
+        {
+            case ArrayIteratorKind.Key:
+                return BuildIteratorResult(JsValue.FromNumber(index), done: false);
+            case ArrayIteratorKind.Value:
+                return BuildIteratorResult(GetReceiverProperty(iter.HostSource, JsIndexKeys.For(index)), done: false);
+            default:
+            {
+                var element = GetReceiverProperty(iter.HostSource, JsIndexKeys.For(index));
+                var pair = CreateArrayFromElements(new[] { JsValue.FromNumber(index), element });
+                var pairHandle = _heap.AllocateObject(pair, AllocationSite.Current());
+                return BuildIteratorResult(JsValue.FromObject(pairHandle), done: false);
+            }
         }
     }
 
