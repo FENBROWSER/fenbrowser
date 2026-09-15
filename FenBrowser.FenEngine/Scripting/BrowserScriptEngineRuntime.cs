@@ -704,6 +704,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private FenBrowser.Js.Modules.ModuleEvaluator _moduleEvaluator;
     private readonly ConcurrentDictionary<string, string> _moduleSourceCache = new(StringComparer.Ordinal);
     private int _inlineModuleCounter;
+    // HTML 8.1.6.2 "import map": the document's resolution rules for module
+    // specifiers, filled from <script type=importmap>. Bare specifiers ("react")
+    // resolve only through it; without a matching entry they are not URLs.
+    private readonly ImportMap _importMap = new();
     private DocumentEpoch _documentEpoch = DocumentEpoch.Initial;
     private Node _currentDomRoot;
     private Uri _currentBaseUri;
@@ -3365,6 +3369,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     "[FenJsBridge] Script element seen",
                     seenFields);
 
+                if (type == "importmap")
+                {
+                    RegisterImportMapScript(scriptElement);
+                    MarkScriptSkipped(scriptRecord, "importmap");
+                    continue;
+                }
+
                 if (!string.IsNullOrEmpty(type) &&
                     type != "text/javascript" &&
                     type != "application/javascript" &&
@@ -4297,26 +4308,239 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     }
 
     /// <summary>
-    /// Resolve a module request the way ModuleEvaluator's host resolver will see it:
-    /// absolute specifiers as-is, otherwise relative to the requesting module, and for
-    /// the inline entry module (no absolute referrer) relative to the document base.
+    /// HTML "resolve a module specifier": a URL-like specifier (absolute, or
+    /// starting with "/", "./" or "../") resolves against the requesting module -
+    /// or the document base for the inline entry module - and the import map may
+    /// still remap the resulting URL; a bare specifier ("react") resolves only
+    /// through the import map. A bare specifier no map entry covers is resolved as
+    /// a relative URL, which fails at fetch time the way the spec's TypeError would.
     /// </summary>
-    private static Uri ResolveModuleRequestUri(string specifier, string referrer, Uri moduleBase)
+    private Uri ResolveModuleRequestUri(string specifier, string referrer, Uri moduleBase)
     {
-        if (Uri.TryCreate(specifier, UriKind.Absolute, out var absolute))
+        Uri baseUri = Uri.TryCreate(referrer, UriKind.Absolute, out var referrerUri) ? referrerUri : moduleBase;
+        Uri asUrl = ImportMap.ParseUrlLikeSpecifier(specifier, baseUri);
+        if (_importMap.TryResolve(specifier, asUrl, baseUri, out var mapped))
         {
-            return absolute;
+            return mapped;
         }
-        if (Uri.TryCreate(referrer, UriKind.Absolute, out var referrerUri) &&
-            Uri.TryCreate(referrerUri, specifier, out var relativeToReferrer))
+        if (asUrl != null)
         {
-            return relativeToReferrer;
+            return asUrl;
         }
-        if (moduleBase != null && Uri.TryCreate(moduleBase, specifier, out var relativeToBase))
+        return baseUri != null && Uri.TryCreate(baseUri, specifier, out var relativeToBase)
+            ? relativeToBase
+            : null;
+    }
+
+    /// <summary>
+    /// HTML 8.1.6.2.2 "register an import map": parse the JSON of a
+    /// &lt;script type=importmap&gt;, normalise its keys and values against the
+    /// document base, and merge it into the document's import map.
+    /// </summary>
+    private void RegisterImportMapScript(Element scriptElement)
+    {
+        var text = scriptElement?.TextContent;
+        if (string.IsNullOrWhiteSpace(text) || !string.IsNullOrEmpty(scriptElement.GetAttribute("src")))
         {
-            return relativeToBase;
+            return;
         }
-        return null;
+
+        try
+        {
+            _importMap.Merge(text, _currentBaseUri);
+        }
+        catch (JsonException ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Ignoring malformed import map: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+    }
+
+    /// <summary>
+    /// HTML 8.1.6.2 import map: top-level "imports" plus "scopes", each a specifier
+    /// map whose keys are bare specifiers or normalised URLs. Keys ending in "/"
+    /// are package prefixes and remap everything below them.
+    /// </summary>
+    private sealed class ImportMap
+    {
+        private readonly Dictionary<string, Uri> _imports = new(StringComparer.Ordinal);
+        private readonly List<KeyValuePair<string, Dictionary<string, Uri>>> _scopes = new();
+
+        public void Clear()
+        {
+            _imports.Clear();
+            _scopes.Clear();
+        }
+
+        /// <summary>
+        /// A specifier is URL-like when it parses as an absolute URL or starts with
+        /// "/", "./" or "../"; only those resolve against a base.
+        /// </summary>
+        public static Uri ParseUrlLikeSpecifier(string specifier, Uri baseUri)
+        {
+            if (string.IsNullOrEmpty(specifier))
+            {
+                return null;
+            }
+
+            if (specifier.StartsWith("/", StringComparison.Ordinal) ||
+                specifier.StartsWith("./", StringComparison.Ordinal) ||
+                specifier.StartsWith("../", StringComparison.Ordinal))
+            {
+                return baseUri != null && Uri.TryCreate(baseUri, specifier, out var relative) ? relative : null;
+            }
+
+            return Uri.TryCreate(specifier, UriKind.Absolute, out var absolute) && absolute.Scheme.Length > 1
+                ? absolute
+                : null;
+        }
+
+        /// <summary>
+        /// "Merge existing and new import maps": later maps add entries; an entry an
+        /// earlier map already has keeps the earlier value.
+        /// </summary>
+        public void Merge(string json, Uri baseUri)
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            if (root.TryGetProperty("imports", out var imports) && imports.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var entry in NormalizeSpecifierMap(imports, baseUri))
+                {
+                    _imports.TryAdd(entry.Key, entry.Value);
+                }
+            }
+
+            if (root.TryGetProperty("scopes", out var scopes) && scopes.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var scope in scopes.EnumerateObject())
+                {
+                    if (scope.Value.ValueKind != JsonValueKind.Object ||
+                        !Uri.TryCreate(baseUri, scope.Name, out var scopeUri))
+                    {
+                        continue;
+                    }
+
+                    var key = scopeUri.AbsoluteUri;
+                    var index = _scopes.FindIndex(existing => string.Equals(existing.Key, key, StringComparison.Ordinal));
+                    var map = index >= 0 ? _scopes[index].Value : new Dictionary<string, Uri>(StringComparer.Ordinal);
+                    foreach (var entry in NormalizeSpecifierMap(scope.Value, baseUri))
+                    {
+                        map.TryAdd(entry.Key, entry.Value);
+                    }
+                    if (index < 0)
+                    {
+                        _scopes.Add(new KeyValuePair<string, Dictionary<string, Uri>>(key, map));
+                        // Longest (most specific) scope first.
+                        _scopes.Sort((a, b) => b.Key.Length.CompareTo(a.Key.Length));
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// "Sort and normalize a module specifier map": URL-like keys and every value
+        /// resolve against the base; a "/"-ending key needs a "/"-ending value.
+        /// </summary>
+        private static IEnumerable<KeyValuePair<string, Uri>> NormalizeSpecifierMap(JsonElement map, Uri baseUri)
+        {
+            foreach (var property in map.EnumerateObject())
+            {
+                if (property.Name.Length == 0 || property.Value.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var key = ParseUrlLikeSpecifier(property.Name, baseUri)?.AbsoluteUri ?? property.Name;
+                var value = property.Value.GetString();
+                var valueUri = ParseUrlLikeSpecifier(value, baseUri);
+                if (valueUri == null ||
+                    (key.EndsWith("/", StringComparison.Ordinal) && !valueUri.AbsoluteUri.EndsWith("/", StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                yield return new KeyValuePair<string, Uri>(key, valueUri);
+            }
+        }
+
+        /// <summary>
+        /// "Resolve a module specifier" steps 6-10: the most specific scope whose
+        /// prefix covers the referrer is consulted first, then the top-level imports.
+        /// </summary>
+        public bool TryResolve(string specifier, Uri asUrl, Uri referrerBase, out Uri resolved)
+        {
+            resolved = null;
+            if (_imports.Count == 0 && _scopes.Count == 0)
+            {
+                return false;
+            }
+
+            var normalized = asUrl?.AbsoluteUri ?? specifier;
+            if (referrerBase != null)
+            {
+                var referrerKey = referrerBase.AbsoluteUri;
+                foreach (var scope in _scopes)
+                {
+                    bool covers = string.Equals(scope.Key, referrerKey, StringComparison.Ordinal) ||
+                                  (scope.Key.EndsWith("/", StringComparison.Ordinal) &&
+                                   referrerKey.StartsWith(scope.Key, StringComparison.Ordinal));
+                    if (covers && TryResolveImportsMatch(normalized, scope.Value, out resolved))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return TryResolveImportsMatch(normalized, _imports, out resolved);
+        }
+
+        /// <summary>
+        /// "Resolve an imports match": an exact key wins; otherwise the longest
+        /// "/"-ending key that prefixes the specifier maps the remainder under its value.
+        /// </summary>
+        private static bool TryResolveImportsMatch(string normalized, Dictionary<string, Uri> map, out Uri resolved)
+        {
+            resolved = null;
+            if (map.TryGetValue(normalized, out var exact))
+            {
+                resolved = exact;
+                return true;
+            }
+
+            string bestKey = null;
+            foreach (var key in map.Keys)
+            {
+                if (key.EndsWith("/", StringComparison.Ordinal) &&
+                    normalized.StartsWith(key, StringComparison.Ordinal) &&
+                    (bestKey == null || key.Length > bestKey.Length))
+                {
+                    bestKey = key;
+                }
+            }
+
+            if (bestKey == null)
+            {
+                return false;
+            }
+
+            var remainder = normalized.Substring(bestKey.Length);
+            var prefix = map[bestKey];
+            if (!Uri.TryCreate(prefix, remainder, out var candidate) ||
+                !candidate.AbsoluteUri.StartsWith(prefix.AbsoluteUri, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            resolved = candidate;
+            return true;
+        }
     }
 
     // Upper bound on in-flight module fetches during graph prefetch. Browsers issue
@@ -4443,7 +4667,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     /// </summary>
     private FenBrowser.Js.Modules.ModuleEvaluator CreateModuleEvaluator()
     {
-        return new FenBrowser.Js.Modules.ModuleEvaluator(_interpreter, specifier =>
+        return new FenBrowser.Js.Modules.ModuleEvaluator(_interpreter, hostSourceResolver: specifier =>
         {
             var resolvedUri = ResolveModuleRequestUri(specifier, referrer: null, _currentBaseUri);
             if (resolvedUri == null)
@@ -4462,6 +4686,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             var source = FetchModuleTextSync(resolvedUri);
             _moduleSourceCache[key] = source;
             return source;
+        },
+        hostSpecifierResolver: (specifier, referrer) =>
+        {
+            // Answer only what HTML resolves: an import-map match or a URL-like
+            // specifier. Anything else (an inline entry module's synthetic key,
+            // a bare specifier with no map) is left to the evaluator's own rules.
+            Uri baseUri = Uri.TryCreate(referrer, UriKind.Absolute, out var referrerUri) ? referrerUri : _currentBaseUri;
+            Uri asUrl = ImportMap.ParseUrlLikeSpecifier(specifier, baseUri);
+            return _importMap.TryResolve(specifier, asUrl, baseUri, out var mapped)
+                ? mapped.AbsoluteUri
+                : asUrl?.AbsoluteUri;
         });
     }
 
@@ -5688,6 +5923,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _moduleEvaluator = null;
             _moduleSourceCache.Clear();
             _inlineModuleCounter = 0;
+            _importMap.Clear();
             EnsureAttributeReactionObserver();
             EnsureFenJsHeapDiagnosticSink();
             ConfigureFenJsMicrotaskTracing(_interpreter);
@@ -20093,6 +20329,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         var scriptRecord = AddDynamicScriptLoadingRecord(scriptElement);
         var src = scriptElement.GetAttribute("src");
+        if (string.Equals(scriptElement.GetAttribute("type")?.Trim(), "importmap", StringComparison.OrdinalIgnoreCase))
+        {
+            RegisterImportMapScript(scriptElement);
+            MarkScriptSkipped(scriptRecord, "importmap");
+            return ToHostNodeOrNull(scriptElement);
+        }
         var discoveredFields = CreateScriptRecordFields(scriptRecord);
         discoveredFields["dynamic"] = true;
         LogScriptLoading(

@@ -22,6 +22,7 @@ public sealed class ModuleEvaluator : IHeapRootSource
     private readonly Dictionary<string, EvaluatedModule> _evaluated = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _sources = new(StringComparer.Ordinal);
     private readonly Func<string, string?>? _hostSourceResolver;
+    private readonly Func<string, string?, string?>? _hostSpecifierResolver;
 
     public ModuleEvaluator(BytecodeInterpreter interpreter)
         : this(interpreter, hostSourceResolver: null)
@@ -29,10 +30,27 @@ public sealed class ModuleEvaluator : IHeapRootSource
     }
 
     public ModuleEvaluator(BytecodeInterpreter interpreter, Func<string, string?>? hostSourceResolver)
+        : this(interpreter, hostSourceResolver, hostSpecifierResolver: null)
+    {
+    }
+
+    /// <summary>
+    /// <paramref name="hostSpecifierResolver"/> is HTML's "resolve a module
+    /// specifier" (ECMA-262 16.2.1.7 HostLoadImportedModule leaves the meaning of a
+    /// specifier to the host): given a specifier and the referrer module's key it
+    /// returns the module key to load, or null to fall back to plain URL
+    /// resolution. A browser host answers bare specifiers such as "react" from the
+    /// document's import map here.
+    /// </summary>
+    public ModuleEvaluator(
+        BytecodeInterpreter interpreter,
+        Func<string, string?>? hostSourceResolver,
+        Func<string, string?, string?>? hostSpecifierResolver)
     {
         ArgumentNullException.ThrowIfNull(interpreter);
         _interpreter = interpreter;
         _hostSourceResolver = hostSourceResolver;
+        _hostSpecifierResolver = hostSpecifierResolver;
         _interpreter.DynamicImportResolver = EvaluateDynamicImport;
         // The module map outlives every evaluation: a later import reads an
         // earlier module's environment and export values straight out of
@@ -331,8 +349,13 @@ public sealed class ModuleEvaluator : IHeapRootSource
         return BuildNamespaceObject(_evaluated[resolvedSpecifier]);
     }
 
-    private static string ResolveModuleSpecifier(string specifier, string? referrer)
+    private string ResolveModuleSpecifier(string specifier, string? referrer)
     {
+        if (_hostSpecifierResolver?.Invoke(specifier, referrer) is { } hostResolved)
+        {
+            return hostResolved;
+        }
+
         if (string.IsNullOrWhiteSpace(referrer) ||
             !Uri.TryCreate(referrer, UriKind.Absolute, out var referrerUri) ||
             !Uri.TryCreate(referrerUri, specifier, out var resolvedUri))

@@ -169,6 +169,32 @@ public sealed class ModuleEvaluatorTests
     }
 
     [Fact]
+    public void HostSpecifierResolverMapsBareSpecifiersBeforeUrlResolution()
+    {
+        // HTML resolves "react" through the document's import map; the engine
+        // hands the specifier and referrer to the host and loads whatever key
+        // comes back instead of treating the bare name as a relative URL.
+        const string entryUrl = "https://example.test/app.js";
+        const string reactUrl = "https://cdn.example.test/react-1.0.js";
+        var interpreter = new BytecodeInterpreter();
+        var seen = new System.Collections.Generic.List<(string Specifier, string? Referrer)>();
+        var evaluator = new ModuleEvaluator(
+            interpreter,
+            hostSourceResolver: specifier => specifier == reactUrl ? "export const createContext = () => 'ctx';" : null,
+            hostSpecifierResolver: (specifier, referrer) =>
+            {
+                seen.Add((specifier, referrer));
+                return specifier == "react" ? reactUrl : null;
+            });
+        evaluator.RegisterSource(entryUrl, "import { createContext } from 'react'; export var made = createContext();");
+
+        var exports = evaluator.Evaluate(entryUrl);
+
+        Assert.Equal("ctx", exports["made"].AsString());
+        Assert.Contains(("react", entryUrl), seen);
+    }
+
+    [Fact]
     public void StaticAndDynamicImportsShareOneNamespaceObject()
     {
         // ECMA-262 16.2.1.10 GetModuleNamespace: one namespace object per module.
