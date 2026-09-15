@@ -140,7 +140,8 @@ public sealed class ModuleEvaluator : IHeapRootSource
         var inProgress = new EvaluatedModule(_interpreter.CreateModuleEnvironment(specifier));
         _evaluated[specifier] = inProgress;
 
-        var program = JsParser.ParseModule(new SourceText(source));
+        var sourceText = new SourceText(source, specifier);
+        var program = JsParser.ParseModule(sourceText);
         var exportTargets = new List<(string ExportName, string LocalName)>();
         const string DefaultLocalAlias = "__fenjs_default__";
         foreach (var stmt in program.Body)
@@ -282,7 +283,7 @@ public sealed class ModuleEvaluator : IHeapRootSource
         }
 
         var rewrittenProgram = new ProgramNode(ProgramKind.Module, rewritten, program.Span);
-        var fn = new BytecodeCompiler().CompileProgram(rewrittenProgram);
+        var fn = new BytecodeCompiler().CompileModule(rewrittenProgram, sourceText);
         new BytecodeVerifier().Verify(fn);
         _ = _interpreter.ExecuteWithEnvironment(fn, inProgress.Environment);
 

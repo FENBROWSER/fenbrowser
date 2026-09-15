@@ -14,6 +14,11 @@ public sealed class BytecodeFunction
     // recoverable source (Function constructor, synthesised constructors).
     public string? SourceText { get; internal set; }
 
+    // Where the source came from - the script URL, module URL or a host label -
+    // so a stack frame from a minified bundle can be traced back to its file.
+    // Null when the host gave the compiler no path.
+    public string? SourcePath { get; internal set; }
+
     public required IReadOnlyList<Instruction> Instructions { get; init; }
 
     // The dispatch loop reads an instruction for every step it takes, and
@@ -348,6 +353,7 @@ public sealed class BytecodeFunction
         {
             Name = Name,
             SourceText = SourceText,
+            SourcePath = SourcePath,
             Instructions = Instructions,
             Constants = Constants,
             VariableSlots = VariableSlots,

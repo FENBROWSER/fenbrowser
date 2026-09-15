@@ -2112,9 +2112,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     // as one number cannot say whether to attack the parser, the
                     // bytecode emitter or the verifier.
                     var compileWatch = System.Diagnostics.Stopwatch.StartNew();
-                    var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
+                    // Name the source after the script being run so stack frames from
+                    // a minified bundle say which file they came from.
+                    var currentRecord = GetCurrentScriptRecord();
+                    var sourcePath = !string.IsNullOrWhiteSpace(currentRecord?.Src)
+                        ? currentRecord.Src
+                        : !string.IsNullOrWhiteSpace(currentRecord?.SourceLabel)
+                            ? currentRecord.SourceLabel
+                            : "<fenbrowser-fenjs-eval>";
+                    var function = _compiler.CompileScript(new SourceText(script, sourcePath));
                     var compileMs = compileWatch.ElapsedMilliseconds;
-                    RegisterCallbackFunctionProvenance(function, GetCurrentScriptRecord());
+                    RegisterCallbackFunctionProvenance(function, currentRecord);
                     compileWatch.Restart();
                     new BytecodeVerifier().Verify(function);
                     var verifyMs = compileWatch.ElapsedMilliseconds;

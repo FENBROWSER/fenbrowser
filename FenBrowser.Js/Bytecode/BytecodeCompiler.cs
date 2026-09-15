@@ -122,6 +122,7 @@ public sealed class BytecodeCompiler
     // nested-function spans (which are absolute offsets into this same text)
     // resolve at any depth. Not reset by CompileProgramCore.
     internal string? _rawSource;
+    internal string? _sourcePath;
     private int _nextRegister = 1;
 
     // The file has to be as large as the most registers ever live at once, not
@@ -155,6 +156,7 @@ public sealed class BytecodeCompiler
 
         var program = JsParser.ParseScript(source!, inheritedStrictMode: false, ParserMaxRecursionDepth);
         _rawSource = source?.Text;
+        _sourcePath = source?.Path;
         // ECMA-262 Static Semantics: Early Error validation.
         new AstValidator().Validate(program, new Diagnostics.DiagnosticBag());
 
@@ -168,6 +170,18 @@ public sealed class BytecodeCompiler
 
     public BytecodeFunction CompileProgram(ProgramNode program)
     {
+        return CompileProgram(program, inheritedStrictMode: false);
+    }
+
+    /// <summary>
+    /// Compiles a parsed module body with its source attached, so the functions
+    /// it defines carry their source text (Function.prototype.toString, stack
+    /// frames) and the module's path the way script functions do.
+    /// </summary>
+    public BytecodeFunction CompileModule(ProgramNode program, SourceText source)
+    {
+        _rawSource = source?.Text;
+        _sourcePath = source?.Path;
         return CompileProgram(program, inheritedStrictMode: false);
     }
 
@@ -207,6 +221,7 @@ public sealed class BytecodeCompiler
         // inside it resolve against it. The assembled outer function is a
         // separate matter and CreateDynamicFunction still clears its source.
         _rawSource = body?.Text;
+        _sourcePath = body?.Path;
         return CompileProgramCore(
             program,
             parameters,
@@ -430,6 +445,7 @@ public sealed class BytecodeCompiler
         {
             nested.SourceText = _rawSource.Substring(span.Start, span.Length);
         }
+        nested.SourcePath ??= _sourcePath;
         return nested;
     }
 
@@ -737,7 +753,7 @@ public sealed class BytecodeCompiler
             functionDecl.ParameterBindings,
             out var prologueCount,
             functionDecl.ParameterDefaults);
-        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource };
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource, _sourcePath = _sourcePath };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             functionDecl.Parameters,
@@ -1469,7 +1485,7 @@ public sealed class BytecodeCompiler
         // a class expression or function expression in a field initializer).
         // Instead, the caller for the direct class constructor passes
         // FunctionKind.Constructor via explicitKind.
-        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _rawSource = _rawSource };
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _rawSource = _rawSource, _sourcePath = _sourcePath };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
@@ -3992,7 +4008,7 @@ public sealed class BytecodeCompiler
                 // ECMA-262 NamedEvaluation: an anonymous function expression adopts
                 // the binding/assignment name; a named expression keeps its own name.
                 var fnExprName = fnExpr.Name ?? ConsumeNameHint();
-                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource };
+                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource, _sourcePath = _sourcePath };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     fnExpr.Parameters,
@@ -4052,7 +4068,7 @@ public sealed class BytecodeCompiler
                 // ECMA-262 NamedEvaluation: arrows are always anonymous, so they take
                 // the binding/assignment name when one is in scope, else the empty name.
                 var arrowName = ConsumeNameHint() ?? string.Empty;
-                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource };
+                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource, _sourcePath = _sourcePath };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     arrow.Parameters,

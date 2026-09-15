@@ -14269,7 +14269,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 // one, and is the only thing that makes a stack from a bundle
                 // readable at all.
                 var source = SummarizeFrameSource(frame.Function.SourceText);
-                return $"    at {functionName} [ip={ip}, op={opcode}{parameters}{source}]";
+                var path = string.IsNullOrEmpty(frame.Function.SourcePath)
+                    ? string.Empty
+                    : " (" + frame.Function.SourcePath + ")";
+                return $"    at {functionName} [ip={ip}, op={opcode}{parameters}{source}]{path}";
             });
         return header + "\n" + string.Join("\n", frames);
     }
