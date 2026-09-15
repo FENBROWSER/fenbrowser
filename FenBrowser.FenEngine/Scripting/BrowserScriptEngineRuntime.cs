@@ -15497,18 +15497,24 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         _interpreter.SetObjectProperty(eventValue, "currentTarget", currentTarget);
 
-        for (int i = 0; i < listeners.Count; i++)
+        // DOM §2.9 "inner invoke": the listener list is cloned before any listener
+        // runs, so one added during this dispatch waits for the next event and one
+        // removed is skipped. Walking the live list let a window capture listener
+        // that re-registers itself while a page is still loading (web-vitals'
+        // onLoad helper, on every <img> load) run its own new copy without end.
+        var snapshot = listeners.ToArray();
+        for (int i = 0; i < snapshot.Length; i++)
         {
             if (ReadImmediatePropagationStopped(eventValue, dispatchState))
                 break;
 
-            var listener = listeners[i];
+            var listener = snapshot[i];
             if (!string.Equals(listener.Type, type, StringComparison.Ordinal))
                 continue;
             if (capture.HasValue && listener.Capture != capture.Value)
                 continue;
-
-            TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
+            if (!listeners.Contains(listener))
+                continue;
 
             if (listener.Once)
             {
@@ -15516,8 +15522,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     string.Equals(existing.Type, listener.Type, StringComparison.Ordinal) &&
                     existing.Capture == listener.Capture &&
                     existing.Callback.Equals(listener.Callback));
-                i--;
             }
+
+            TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
         }
     }
 
@@ -19789,7 +19796,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         foreach (var listener in callbacks)
         {
-            TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
+            // DOM §2.9: a listener removed by an earlier one in this dispatch is
+            // skipped, and a once listener is removed before it is called.
+            if (!listeners.Contains(listener))
+            {
+                continue;
+            }
+
             if (listener.Once)
             {
                 listeners.RemoveAll(existing =>
@@ -19797,6 +19810,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     existing.Capture == listener.Capture &&
                     existing.Callback.Equals(listener.Callback));
             }
+
+            TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
         }
     }
 
