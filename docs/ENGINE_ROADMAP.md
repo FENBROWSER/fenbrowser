@@ -45,47 +45,49 @@ is 10 MB of mostly-null context.
 
 ## Tier 0 — open blockers with a known first move
 
-### 0.1 Polymer/ShadyCSS component styles never reach the document
+### 0.1 An inactive page is instantiated and painted
 
-**Evidence.** On youtube.com every custom element is defined and upgraded,
-`ShadyDOM.inUse === true`, `nativeShadow === false` — and `document.head` holds
-only **9 `<style>` elements totalling 6.7 KB**. Component CSS is simply absent, so
-`ytd-watch-flexy` computes `display: inline` and the watch page paints beside the
-home page instead of being hidden by it.
+**Corrected 2026-09-16.** This was filed as "Polymer/ShadyCSS component styles never
+reach the document". That premise was wrong, and the way it was wrong is worth
+keeping: only 9 `<style>` elements totalling 6.7 KB reach `document.head`, and the
+inference was that component styles were being lost somewhere in the style-module
+pipeline. They are not being lost. **There are none to lose.**
 
-**What is already ruled out.** The cascade is fine. All three dynamic-injection paths
-were verified working against a controlled page: `style.textContent` before append,
-after append, and `style.sheet.insertRule` all produce the expected computed value.
-Template contents are correct too (`<template>` children land in `.content`, both from
-the parser and from `innerHTML` on a JS-created template).
+What the evidence actually says:
 
-**So the break is upstream**, in Polymer's style-module pipeline — which is worth
-fixing precisely because every web-components site on the platform shares it.
+- `ShadyCSS.disableRuntime === true`. YouTube ships CSS pre-scoped by its build, so
+  the runtime shim is deliberately switched off. Driving `ShadyCSS.prepareTemplate`
+  and `ShadyCSS.styleElement` by hand confirms it: both run clean and emit nothing,
+  and no scoping class is added.
+- `customElements.get('ytd-watch-flexy').prototype._template` has 24 children and
+  **zero** `<style>` elements. The components genuinely carry no per-component CSS;
+  it lives in the external stylesheets, which the engine does load and apply — the
+  masthead renders styled.
 
-**First move:** instrument `ShadyCSS.prepareTemplate` / `styleElementForTemplate` the
-same way the polymer-resin failure was bisected, and find where the scoped style is
-computed but never appended.
+So the real defect is upstream of styling: **`ytd-watch-flexy`, the watch page, is
+instantiated and laid out on the home page.** It computes `display: inline`, which is
+the UA default for an unknown element and means no rule matched it — because the
+watch page's CSS is not loaded on the home page, because in a browser that element is
+never created there. `ytd-page-manager` should only have the active page.
 
-### 0.2 `document.styleSheets` is hardcoded empty
+That is what paints the large black `#full-bleed-container` rectangle beside the home
+feed. It is a page-manager / `dom-if` instantiation question, not a CSS one.
 
-`CreateEmptyStyleSheetListObject` in `BrowserScriptEngineRuntime.cs` returns
-`{length: 0}` unconditionally. ShadyCSS, every CSS-in-JS runtime, and every theming
-library reads this collection. It is very likely a contributing cause of 0.1, and it is
-independently wrong.
+**First move:** find why `ytd-page-manager` instantiates a non-active page — most
+likely a `dom-if`/`dom-repeat` condition evaluating truthy when it should not, which
+is testable in isolation rather than against the whole site.
 
-The right shape is not another JS shim. `HTMLStyleElement.sheet` today is built by a
-JS-side `__fenCreateStyleSheet` whose rule parser is `split('}')` — it will mangle
-`@media`, `@supports`, and any `}` inside a string, and it never seeds rules from the
-element's existing text. **The CSSOM should be a view over the engine's own parsed
-stylesheets** (`FenBrowser.Core/Css`, `CssParser`, `CssLoader`), which already parse
-these correctly for the cascade. That is the Engineering Constitution's own rule —
-layout and style authority live in the engine — applied to the CSSOM.
+### 0.2 `document.styleSheets` — DONE (ca00f96b)
 
-Scope: `document.styleSheets` (live, tree order), `CSSStyleSheet` with real
-`cssRules`, `CSSRule` subtypes for style/media/supports/keyframes/font-face,
-`insertRule`/`deleteRule` writing back through the engine, `link.sheet`, and
-`adoptedStyleSheets` + constructable stylesheets (currently `undefined`; Lit depends
-on them).
+Was a hardcoded empty list, with an existing test pinning that shape. Now live, in
+tree order, stable identity, and backed by `CssSyntaxParser` — the same parser the
+cascade uses — instead of the JavaScript shim that split stylesheet text on `}`. On
+youtube.com the collection goes from 0 sheets to 17.
+
+Still open in this area: `<link>` sheets expose `href`/`ownerNode`/`media` but an empty
+rule list, because the fetched bytes are not retained per element; and
+`adoptedStyleSheets` / constructable stylesheets remain absent, which is Lit's default
+styling path.
 
 ### 0.3 One script batch takes 12.7 seconds
 
@@ -260,10 +262,10 @@ two runs" without re-reading either bundle.
 
 ## Suggested order
 
-1. **0.2 CSSOM over the engine's parsed stylesheets** — likely unlocks 0.1, and is a
-   prerequisite for a large class of sites regardless.
-2. **0.1 Polymer/ShadyCSS style pipeline** — one root cause behind every
-   web-components site.
+1. ~~**0.2 CSSOM over the engine's parsed stylesheets**~~ — done (ca00f96b). It did
+   not unlock 0.1, because 0.1 was not a styling problem; see the correction there.
+2. **0.1 an inactive page being instantiated** — what actually paints the watch page
+   over the home feed.
 3. **Prototype-level feature-detection sweep** (Tier 1) — cheap, and each finding is a
    whole site behaving as though a working API were absent.
 4. **0.3 large-bundle JS throughput**, judged by a checked-in real-bundle benchmark.
