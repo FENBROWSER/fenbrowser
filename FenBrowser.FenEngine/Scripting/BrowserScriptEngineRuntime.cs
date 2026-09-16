@@ -7386,6 +7386,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsMutationObserver();
         InstallFenJsBrowserUiApis(baseUri);
         InstallFenJsRemainingWebApis();
+        InstallFenJsDocumentAll();
         InstallFenJsBrowserSurfaceFillers();
         InstallTopWindowPostMessageBridge(globalThisValue);
     }
@@ -10865,6 +10866,133 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     /// DOM Living Standard. Required by modern frameworks (GitHub elements, React
     /// custom elements) that extend or instantiate EventTarget directly.
     /// </summary>
+    /// <summary>
+    /// Installs <c>document.all</c>: an HTMLAllCollection carrying the Annex B
+    /// [[IsHTMLDDA]] slot (HTML 3.1.5 / ECMA-262 B.3.6).
+    /// </summary>
+    /// <remarks>
+    /// The slot is the whole point. A great deal of library code - Closure and
+    /// anything built on it, which includes polymer-resin - tests a value with
+    /// <c>value || value === document.all</c>, meaning "not nullish, but let the
+    /// one object that lies about being undefined through". With no
+    /// document.all the right-hand side degenerates into
+    /// <c>value === undefined</c>, so every ordinary undefined takes the branch
+    /// reserved for document.all. On YouTube that branch runs the sanitizer over
+    /// a value that was never meant to reach it, and every unset Polymer
+    /// binding came back as polymer-resin's placeholder string: the page's own
+    /// content area ended up with <c>hidden="zClosurez"</c> and never rendered.
+    /// </remarks>
+    private void InstallFenJsDocumentAll()
+    {
+        try
+        {
+            EvaluateWithFenJsRaw("""
+                globalThis.__fenDocumentAll = (function () {
+                    // Every call site reads the collection fresh: it is live, and
+                    // a snapshot taken at install time would be empty (this runs
+                    // before the parser has produced any content).
+                    function elements() {
+                        return document.getElementsByTagName('*');
+                    }
+
+                    function resolve(key) {
+                        var list = elements();
+                        var index = Number(key);
+                        if (Number.isInteger(index) && index >= 0 && index < list.length) {
+                            return list[index];
+                        }
+
+                        return named(String(key));
+                    }
+
+                    function named(name) {
+                        var list = elements();
+                        var matches = [];
+                        for (var i = 0; i < list.length; i++) {
+                            var element = list[i];
+                            // HTML: an id matches for any element; a name attribute
+                            // matches only for the legacy form/embed/object family,
+                            // which is close enough to `name` on anything here.
+                            if (element.id === name || element.getAttribute('name') === name) {
+                                matches.push(element);
+                            }
+                        }
+
+                        if (matches.length === 0) return null;
+                        return matches.length === 1 ? matches[0] : matches;
+                    }
+
+                    // Legacy callable: document.all(x) is document.all.item(x),
+                    // and document.all() with no argument is null.
+                    function all(nameOrIndex) {
+                        return arguments.length === 0 ? null : resolve(nameOrIndex);
+                    }
+
+                    Object.defineProperty(all, 'length', {
+                        get: function () { return elements().length; },
+                        configurable: true
+                    });
+                    all.item = function (nameOrIndex) {
+                        return arguments.length === 0 ? null : resolve(nameOrIndex);
+                    };
+                    all.namedItem = function (name) {
+                        return named(String(name));
+                    };
+                    Object.defineProperty(all, Symbol.toStringTag, {
+                        value: 'HTMLAllCollection',
+                        configurable: true
+                    });
+
+                    // Indexed access (document.all[3]) is part of the interface
+                    // and the collection is live, so the indices cannot be
+                    // materialised as own properties up front - they are
+                    // answered on demand instead.
+                    return new Proxy(all, {
+                        get: function (target, key, receiver) {
+                            if (typeof key === 'string') {
+                                var index = Number(key);
+                                if (Number.isInteger(index) && index >= 0) {
+                                    var list = elements();
+                                    return index < list.length ? list[index] : undefined;
+                                }
+                            }
+
+                            return Reflect.get(target, key, receiver);
+                        }
+                    });
+                })();
+                """);
+
+            var collection = EvaluateWithFenJsRaw("globalThis.__fenDocumentAll");
+            if (collection.Tag != JsValue.Undefined.Tag)
+            {
+                _interpreter.MarkAsHtmlDda(collection);
+            }
+
+            // The property lives on the document, not the global, and the temp
+            // global goes away so a page cannot find the collection by that name.
+            EvaluateWithFenJsRaw("""
+                (function () {
+                    try {
+                        Object.defineProperty(document, 'all', {
+                            value: globalThis.__fenDocumentAll,
+                            writable: false,
+                            enumerable: false,
+                            configurable: true
+                        });
+                    } catch (_documentAllError) { }
+                    try { delete globalThis.__fenDocumentAll; } catch (_cleanupError) { }
+                })()
+                """);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] document.all installation failed: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+    }
+
     private void InstallFenJsEventTarget()
     {
         try
