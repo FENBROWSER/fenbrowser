@@ -1,4 +1,4 @@
-// SpecRef: CSS Cascading and Inheritance Level 4 – Parallel style computation
+﻿// SpecRef: CSS Cascading and Inheritance Level 4 – Parallel style computation
 // CapabilityId: CSS-CASCADE-PARALLEL-01
 // Determinism: strict (parent→child ordering preserved per subtree)
 // FallbackPolicy: serial-degrade
@@ -228,7 +228,17 @@ namespace FenBrowser.FenEngine.Rendering
                 var mainProps = engine.ComputeCascadedValues(n, null);
                 var css = CssLoader.ResolveStyle(n, parentCss, mainProps);
 
-                if (ReferenceEquals(n, root) && css.FontSize.HasValue && css.FontSize.Value > 0 && double.IsFinite(css.FontSize.Value))
+                // CSS Values 4 5.1.2: rem is the font size of the *document
+                // element*. `root` here is only the root of this cascade, and an
+                // incremental recascade is rooted at whichever subtree went dirty -
+                // so any element at all could redefine the rem basis for the whole
+                // page. On youtube.com the search field is `font-size: 1.6rem`, and
+                // re-styling its subtree made 1.6rem mean 1.6x its own size: the
+                // text grew by 1.6x on every click, without bound.
+                if (css.FontSize.HasValue &&
+                    css.FontSize.Value > 0 &&
+                    double.IsFinite(css.FontSize.Value) &&
+                    ReferenceEquals(n, n.OwnerDocument?.DocumentElement))
                 {
                     CssLoader.SetRootFontSize(css.FontSize.Value);
                 }

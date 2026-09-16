@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -73,6 +73,10 @@
     <Compile Include="Architecture\RendererChildLoopIoTests.cs" />
     <!-- Startup window geometry contract for the windowed-mode flags. -->
     <Compile Include="Host\ProgramWindowLayoutTests.cs" />
+    <!-- rem must resolve against the document element even when an incremental
+         recascade is rooted elsewhere; the rest of the Rendering tree stays
+         excluded pending review. -->
+    <Compile Include="Rendering\RemUnitRootBasisTests.cs" />
     <!-- Phase 1 animation-scoping regression (BrowserIntegration is in Host,
          which is otherwise excluded). -->
     <Compile Include="Host\Phase1AnimationScopingTests.cs" />

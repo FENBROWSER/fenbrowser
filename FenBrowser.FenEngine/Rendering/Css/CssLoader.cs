@@ -4448,6 +4448,7 @@ private static double? ExtractPx(string text, string prop)
             double currentEmBase = emBase;
             double fsPx;
             string rawFontSize = DictGet(css.Map, "font-size");
+
             if (TryPx(rawFontSize, out fsPx, emBase, percentBase: emBase)) 
             {
                 css.FontSize = fsPx;
