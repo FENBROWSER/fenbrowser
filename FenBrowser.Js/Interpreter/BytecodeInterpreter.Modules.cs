@@ -8,15 +8,39 @@ using FenBrowser.Js.Runtime;
 namespace FenBrowser.Js.Interpreter;
 
 // ECMA-262 13.3.10 ImportCall + 13.3.12 ImportMeta runtime helpers.
-// FenJS does not yet wire a host module resolver, so ImportCall produces a
-// rejected Promise (TypeError) and ImportMeta returns a fresh host-populated object.
-// These are placeholders: they're sufficient for the test262 syntax cohort
-// (where dynamic import expressions only need to parse and produce a thenable)
-// and for assertion-style tests that expect a TypeError. Tests that depend on
-// a host-loaded module namespace still fail at the assertion phase.
+//
+// ImportCall is asynchronous in the spec and has to be asynchronous here too: the
+// thread that evaluates a module body is the same one that drains the host's event
+// queue, so a loader that produces the namespace before returning stalls input for
+// the length of a network round-trip per import. A host therefore sets
+// DynamicImportLoader and settles the capability it is handed once the module has
+// loaded. DynamicImportResolver is the older synchronous shape, kept for hosts that
+// can answer from memory (test262's module fixtures, an embedder with a preloaded
+// map); it must never be given a resolver that performs I/O.
+//
+// With neither hook set, ImportCall resolves to an empty module namespace exotic
+// object, which has the right shape for the test262 syntax cohort - dynamic import
+// expressions only need to parse and produce a thenable - though tests that read a
+// real export still fail at the assertion phase.
 public sealed partial class BytecodeInterpreter
 {
     public Func<string, string?, JsValue>? DynamicImportResolver { get; set; }
+
+    /// <summary>
+    /// ECMA-262 16.2.1.8 HostLoadImportedModule. Receives the specifier, the
+    /// referrer's <c>import.meta.url</c> (null outside a module) and a capability to
+    /// settle when the module is ready. <c>import()</c> returns that capability's
+    /// promise immediately, so the calling thread goes back to its loop rather than
+    /// waiting on the load. Takes precedence over <see cref="DynamicImportResolver"/>.
+    /// </summary>
+    public Action<string, string?, PromiseCapability>? DynamicImportLoader { get; set; }
+
+    /// <summary>
+    /// A fresh {[[Promise]], [[Resolve]], [[Reject]]} triple over %Promise%, for a
+    /// host that produces a promise now and settles it later. The host owns keeping
+    /// all three values reachable until it settles them - nothing else roots them.
+    /// </summary>
+    public PromiseCapability CreatePromiseCapability() => NewPromiseCapability();
 
     internal JsValue HandleDynamicImport(JsValue specifier, JsValue options, EnvironmentRecord environment)
     {
@@ -28,6 +52,16 @@ public sealed partial class BytecodeInterpreter
         {
             specifierText = ToStringValue(specifier);
             ProcessDynamicImportOptions(options);
+            if (DynamicImportLoader is { } loader)
+            {
+                // The capability is created before the loader runs so a loader that
+                // completes inline - a cache hit - settles a promise that already
+                // exists, and one that goes to the network leaves it pending.
+                var capability = NewPromiseCapability();
+                loader(specifierText, FindImportMetaUrl(environment), capability);
+                return capability.Promise;
+            }
+
             if (DynamicImportResolver is { } resolver)
             {
                 return BuildResolvedPromise(resolver(specifierText, FindImportMetaUrl(environment)));

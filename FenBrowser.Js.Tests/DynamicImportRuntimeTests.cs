@@ -1,5 +1,8 @@
+using System;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Promises;
+using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
 using Xunit;
 
@@ -11,6 +14,12 @@ public class DynamicImportRuntimeTests
     {
         var function = new BytecodeCompiler().CompileScript(new SourceText(source));
         _ = new BytecodeInterpreter().Execute(function);
+    }
+
+    private static JsValue Execute(BytecodeInterpreter interpreter, string source)
+    {
+        var function = new BytecodeCompiler().CompileScript(new SourceText(source));
+        return interpreter.Execute(function);
     }
 
     [Fact]
@@ -56,5 +65,86 @@ public class DynamicImportRuntimeTests
                 throw new Error('attributes were not enumerated');
             }
         ");
+    }
+
+    // The point of the loader hook: a host that has to go to the network answers
+    // nothing at call time, and import() still returns. A loader that blocked here
+    // would hold the thread that has to drain the host's event queue.
+    [Fact]
+    public void LoaderThatDoesNotAnswerInlineLeavesTheImportPending()
+    {
+        var interpreter = new BytecodeInterpreter();
+        var calls = 0;
+        interpreter.DynamicImportLoader = (_, _, _) => calls++;
+
+        var state = Execute(interpreter, @"
+            var state = 'pending';
+            import('./m.js').then(function () { state = 'settled'; });
+            state;
+        ");
+
+        Assert.Equal(1, calls);
+        Assert.Equal("pending", state.AsString());
+
+        interpreter.PumpMicrotasks();
+        Assert.Equal("pending", Execute(interpreter, "state;").AsString());
+    }
+
+    [Fact]
+    public void SettlingTheCapabilityLaterFulfilsTheImportPromise()
+    {
+        var interpreter = new BytecodeInterpreter();
+        var capability = PromiseCapability.Empty;
+        interpreter.DynamicImportLoader = (_, _, cap) => capability = cap;
+
+        Execute(interpreter, @"
+            var seen = 'none';
+            import('./m.js').then(function (value) { seen = value; });
+        ");
+        Assert.True(capability.IsComplete);
+        Assert.Equal("none", Execute(interpreter, "seen;").AsString());
+
+        interpreter.InvokeFunction(
+            capability.Resolve,
+            new[] { JsValue.FromString("loaded") },
+            JsValue.Undefined);
+        interpreter.PumpMicrotasks();
+
+        Assert.Equal("loaded", Execute(interpreter, "seen;").AsString());
+    }
+
+    [Fact]
+    public void RejectingTheCapabilityRejectsTheImportPromise()
+    {
+        var interpreter = new BytecodeInterpreter();
+        var capability = PromiseCapability.Empty;
+        interpreter.DynamicImportLoader = (_, _, cap) => capability = cap;
+
+        Execute(interpreter, @"
+            var reason = 'none';
+            import('./missing.js').catch(function (error) { reason = error; });
+        ");
+
+        interpreter.InvokeFunction(
+            capability.Reject,
+            new[] { JsValue.FromString("404") },
+            JsValue.Undefined);
+        interpreter.PumpMicrotasks();
+
+        Assert.Equal("404", Execute(interpreter, "reason;").AsString());
+    }
+
+    [Fact]
+    public void LoaderReceivesTheSpecifierAndTakesPrecedenceOverTheResolver()
+    {
+        var interpreter = new BytecodeInterpreter();
+        string? seenSpecifier = null;
+        interpreter.DynamicImportLoader = (specifier, _, _) => seenSpecifier = specifier;
+        interpreter.DynamicImportResolver = (_, _) =>
+            throw new InvalidOperationException("the synchronous resolver must not run");
+
+        Execute(interpreter, "import('./m.js');");
+
+        Assert.Equal("./m.js", seenSpecifier);
     }
 }
