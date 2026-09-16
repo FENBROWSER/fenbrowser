@@ -576,9 +576,15 @@ namespace FenBrowser.FenEngine.Rendering
 
         private void TryCaptureEngineSourceSnapshot(long navigationId, Uri uri, Node activeNode, int domNodeCount)
         {
+            // Capture whenever the node count MOVED, in either direction. Skipping
+            // anything that was not larger than the last capture made this dump a
+            // high-water mark, so a page whose script tears its own body down left
+            // the newest engine_source_*.html showing the tree from before the
+            // teardown - the one state an investigation into a blank page must not
+            // be shown.
             var capturedNavigationId = Interlocked.Read(ref _engineDiagnosticsCapturedNavigationId);
             if (capturedNavigationId == navigationId &&
-                domNodeCount <= Volatile.Read(ref _engineDiagnosticsCapturedNodeCount))
+                domNodeCount == Volatile.Read(ref _engineDiagnosticsCapturedNodeCount))
             {
                 return;
             }
