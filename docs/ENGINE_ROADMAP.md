@@ -117,19 +117,41 @@ Measured directly in this checkout:
 | --- | --- | --- |
 | `WebAssembly` | `undefined` | Feature-detected by ~5% of top sites; several fall back to nothing rather than to JS |
 | `document.adoptedStyleSheets` | `undefined` | Constructable stylesheets; Lit's default styling path |
-| `HTMLCanvasElement.prototype.getContext` | `undefined` | `getContext` exists on instances but not the prototype — libraries feature-detect on the prototype and conclude canvas is missing |
+| ~~`HTMLCanvasElement.prototype.getContext`~~ | **fixed (a08ae1ac)** | See below |
 | `speechSynthesis` | `undefined` | Low priority, listed for completeness |
 | `getComputedStyle(el).top` | returns the **string** `"undefined"` | Should be `auto` or a used px value; any code doing arithmetic on it gets `NaN` |
 
-The canvas one deserves emphasis because it is a whole class of bug: **an API that
-works when called but cannot be detected is worse than one that is absent**, because
-the site takes the "no support" branch anyway and you get no error to trace. Anywhere
-the engine exposes a method as an instance-level host property that a browser exposes
-on a prototype, feature detection silently fails. A sweep for that mismatch is cheap
-and will find more than canvas.
+The canvas one was a whole class of bug: **an API that works when called but cannot
+be detected is worse than one that is absent**, because the site takes the "no
+support" branch anyway and you get no error to trace.
 
-The existing `FenJsFingerprintProbeTests` is the right regression shape for this and
-should grow to cover prototype-level detection, not just `typeof window.X`.
+**Swept and fixed (a08ae1ac, 03e0a9ca).** Across 15 interfaces the sweep found **67
+members answering on an instance but missing from the prototype**, including
+`Element.innerHTML`, `Element.getBoundingClientRect`, `Node.textContent`,
+`Document.body`, `HTMLAnchorElement.href` and `HTMLTemplateElement.content`. That is
+exactly what made the web-components polyfill patch nothing: it decides what it can
+wrap with `Object.getOwnPropertyDescriptor(Element.prototype, name)`, and every one
+came back undefined. Node, Element, Document, CharacterData and forty-odd element
+interfaces now publish their members; the sweep reports zero instance-only members.
+
+Three things that fell out and are worth remembering:
+
+- **Do not publish what the host does not implement.** The mirror-image lie is just as
+  bad. Each member is checked against a probe element, so the 19 genuinely missing
+  ones (`HTMLMediaElement.play`, input validation, selection) stay absent.
+- **Ask, do not read.** Probing by fetching the value cost fourteen layout flushes per
+  document, because reading `clientWidth` resolves layout. `in` was also invoking
+  accessors during the chain walk, which is an ECMA-262 violation in its own right.
+- **The engine probing itself is not a site hitting a gap.** Unsuppressed, the probe
+  filed 122 missing-API reports per document and drowned the tracker.
+
+`HTMLElement.prototype` is deliberately excluded — it is host-backed already and its
+members install lazily elsewhere.
+
+Still open in this area: `HTMLInputElement.checked`, `select`, `setSelectionRange`,
+form validation, and the whole `HTMLMediaElement` surface are genuinely unimplemented.
+`FenJsFingerprintProbeTests` remains the right shape for the `typeof window.X` half;
+`InterfacePrototypeMemberTests` now covers the prototype half.
 
 ---
 
@@ -266,7 +288,7 @@ two runs" without re-reading either bundle.
    not unlock 0.1, because 0.1 was not a styling problem; see the correction there.
 2. **0.1 an inactive page being instantiated** — what actually paints the watch page
    over the home feed.
-3. **Prototype-level feature-detection sweep** (Tier 1) — cheap, and each finding is a
-   whole site behaving as though a working API were absent.
+3. ~~**Prototype-level feature-detection sweep**~~ — done (a08ae1ac); 67 members were
+   invisible to detection and now are not.
 4. **0.3 large-bundle JS throughput**, judged by a checked-in real-bundle benchmark.
 5. **WebAssembly**, once 1–4 have stopped producing blank pages.
