@@ -228,6 +228,104 @@ public sealed partial class BytecodeInterpreter
         properties[key] = descriptor;
     }
 
+    // Host embedder seam: read a host object's own property straight from
+    // IHostHooks, skipping the defined-property and prototype-chain walk that
+    // GetHostObjectProperty does first.
+    //
+    // WebIDL puts an interface's members on its prototype, and feature detection
+    // reads them there - `Object.getOwnPropertyDescriptor(Element.prototype,
+    // 'innerHTML')` is how a library decides whether it can patch innerHTML at
+    // all. An embedder that answers those names only from the host hook is
+    // invisible to that test. It can now publish real accessors on the prototype
+    // that call back in here, and this entry point is what keeps that from
+    // re-entering the prototype it was just found on.
+    public bool TryGetHostPropertyDirect(JsValue receiver, string key, out JsValue value)
+    {
+        value = JsValue.Undefined;
+        if (receiver.Tag != JsValueTag.HostObject)
+        {
+            return false;
+        }
+
+        ArgumentException.ThrowIfNullOrEmpty(key);
+        var resolution = _hostObjectTable.Resolve(receiver.AsHostObjectHandle(), _hostResolveContext);
+        if (!resolution.IsOk)
+        {
+            return false;
+        }
+
+        using var _constructionWindow = _heap.BeginConstructionWindow();
+        return _hostHooks.TryGetHostProperty(receiver.AsHostObjectHandle(), key, out value);
+    }
+
+    /// <summary>
+    /// Whether the host implements a member, asked the way `in` asks it.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not a read. Answering "is this member here" by fetching its
+    /// value runs the member's side effects - reading clientWidth forces layout -
+    /// so probing an interface's whole member list that way costs a layout flush
+    /// per geometry member, on every document.
+    /// </remarks>
+    public bool HostImplementsProperty(JsValue receiver, string key)
+    {
+        if (receiver.Tag != JsValueTag.HostObject)
+        {
+            return false;
+        }
+
+        ArgumentException.ThrowIfNullOrEmpty(key);
+        var resolution = _hostObjectTable.Resolve(receiver.AsHostObjectHandle(), _hostResolveContext);
+        if (!resolution.IsOk)
+        {
+            return false;
+        }
+
+        return _hostHooks.TryGetHostProperty(
+            receiver.AsHostObjectHandle(), key, HostPropertyAccessKind.InCheck, out _);
+    }
+
+    /// <summary>The write half of <see cref="TryGetHostPropertyDirect"/>.</summary>
+    public bool TrySetHostPropertyDirect(JsValue receiver, string key, JsValue value)
+    {
+        if (receiver.Tag != JsValueTag.HostObject)
+        {
+            return false;
+        }
+
+        ArgumentException.ThrowIfNullOrEmpty(key);
+        var resolution = _hostObjectTable.Resolve(receiver.AsHostObjectHandle(), _hostResolveContext);
+        if (!resolution.IsOk)
+        {
+            return false;
+        }
+
+        return _hostHooks.TrySetHostProperty(receiver.AsHostObjectHandle(), key, value);
+    }
+
+    /// <summary>
+    /// Host embedder seam: define an accessor property on an ordinary object,
+    /// for publishing an interface's members on its prototype.
+    /// </summary>
+    public bool DefineObjectAccessor(
+        JsValue target,
+        string key,
+        JsValue getter,
+        JsValue setter,
+        bool enumerable = true,
+        bool configurable = true)
+    {
+        if (target.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        ArgumentException.ThrowIfNullOrEmpty(key);
+        return _heap.GetObject(target.AsObjectHandle()).DefineOwnProperty(
+            key,
+            JsPropertyDescriptor.Accessor(getter, setter, enumerable, configurable));
+    }
+
     // Host embedder seam: define a data property on a host-object facade whose
     // value the GC must trace — _hostDefinedProperties is walked by
     // IHeapRootSource.TraceRoots. Use this to root JS values a CLR wrapper holds
@@ -379,6 +477,32 @@ public sealed partial class BytecodeInterpreter
         _hostObjectPrototypes[handle] = prototype;
     }
 
+    /// <summary>
+    /// Whether the host object's prototype chain carries <paramref name="key"/>,
+    /// without reading it.
+    /// </summary>
+    private bool HasHostObjectPrototypeProperty(HostObjectHandle handle, string key)
+    {
+        var prototype = GetExplicitHostObjectPrototype(handle);
+        if (prototype.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var current = _heap.GetObject(prototype.AsObjectHandle());
+        while (current is not null)
+        {
+            if (current.TryGetOwnProperty(key, out _))
+            {
+                return true;
+            }
+
+            current = current.PrototypeHandle is { } next ? _heap.GetObject(next) : null;
+        }
+
+        return false;
+    }
+
     private bool TryGetHostObjectPrototypeProperty(
         HostObjectHandle handle,
         JsValue receiver,
@@ -429,7 +553,11 @@ public sealed partial class BytecodeInterpreter
             return true;
         }
 
-        if (TryGetHostObjectPrototypeProperty(handle, receiver, key, out _))
+        // ECMA-262 HasProperty walks the chain for a property's *presence*; it must
+        // not run an accessor. Fetching the value here meant `'clientWidth' in el`
+        // invoked the getter and resolved layout, which is both wrong and, once an
+        // interface publishes its members as accessors, expensive.
+        if (HasHostObjectPrototypeProperty(handle, key))
         {
             return true;
         }
