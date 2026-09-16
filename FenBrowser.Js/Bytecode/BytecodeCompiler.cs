@@ -2550,18 +2550,26 @@ public sealed class BytecodeCompiler
         var sourceReg = CompileExpression(forAwaitOfStmt.Iterable);
         CloseHeadTdzScope(headTdz);
         var iteratorReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.EnumerateValues, iteratorReg, sourceReg, 0));
+        // GetIterator(source, async): @@asyncIterator when there is one, else the
+        // sync iterator driven with async-from-sync semantics.
+        _instructions.Add(new Instruction(OpCode.EnumerateValuesAsync, iteratorReg, sourceReg, 0));
 
         var pushHandlerIndex = EmitPlaceholder(OpCode.PushHandler);
 
         var loopStart = _instructions.Count;
-        var valueReg = AllocateRegister();
+        var rawReg = AllocateRegister();
         var nextIndex = _instructions.Count;
-        _instructions.Add(new Instruction(OpCode.ForOfNext, valueReg, iteratorReg, -1));
+        // A sync-backed iterator settles `done` here and may jump straight out; an
+        // async-backed one only produces the promise, so its exit is decided below.
+        _instructions.Add(new Instruction(OpCode.AsyncIterNext, rawReg, iteratorReg, -1));
 
         var awaitedReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.Await, awaitedReg, valueReg, 0));
-        EmitForBindingAssignment(targetSlot, targetPattern, awaitedReg);
+        _instructions.Add(new Instruction(OpCode.Await, awaitedReg, rawReg, 0));
+
+        var valueReg = AllocateRegister();
+        var finishIndex = _instructions.Count;
+        _instructions.Add(new Instruction(OpCode.AsyncIterFinish, valueReg, awaitedReg, iteratorReg, -1));
+        EmitForBindingAssignment(targetSlot, targetPattern, valueReg);
 
         var ctx = new LoopContext
         {
@@ -2595,6 +2603,9 @@ public sealed class BytecodeCompiler
             }
 
             _instructions[nextIndex] = _instructions[nextIndex] with { C = normalExit };
+            // The async-backed exit: AsyncIterFinish is where an async iterator's
+            // done is discovered, so it needs the same loop-end target.
+            _instructions[finishIndex] = _instructions[finishIndex] with { D = normalExit };
 
             foreach (var continueJump in ctx.ContinueJumpIndices)
             {

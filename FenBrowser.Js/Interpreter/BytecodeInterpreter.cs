@@ -3158,6 +3158,80 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
+                case OpCode.EnumerateValuesAsync:
+                {
+                    // GetIterator(source, async) runs user code (@@asyncIterator and
+                    // the sync fallback alike), so it takes the handler stack route.
+                    try
+                    {
+                        registers[ins.A] = CreateForAwaitIteratorState(registers[ins.B]);
+                    }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                }
+                case OpCode.AsyncIterNext:
+                {
+                    try
+                    {
+                        var iter = ResolveObject(registers[ins.B]) as ForOfIteratorObject
+                            ?? throw new InvalidOperationException("Invalid for-await-of iterator object.");
+                        if (iter.IsAsyncIterator)
+                        {
+                            // next() hands back a promise OF the result: done is not
+                            // knowable until the Await that follows this instruction.
+                            registers[ins.A] = CallFunction(
+                                iter.NextMethod,
+                                Array.Empty<JsValue>(),
+                                iter.IteratorObject);
+                        }
+                        else if (ForOfStepDone(iter, out var value))
+                        {
+                            frame.InstructionPointer = ins.C;
+                        }
+                        else
+                        {
+                            // Async-from-sync: done came from the sync result, and it
+                            // is the VALUE that the following Await unwraps.
+                            registers[ins.A] = value;
+                        }
+                    }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                }
+                case OpCode.AsyncIterFinish:
+                {
+                    try
+                    {
+                        var iter = ResolveObject(registers[ins.C]) as ForOfIteratorObject
+                            ?? throw new InvalidOperationException("Invalid for-await-of iterator object.");
+                        if (!iter.IsAsyncIterator)
+                        {
+                            registers[ins.A] = registers[ins.B];
+                            break;
+                        }
+
+                        var awaited = registers[ins.B];
+                        if (awaited.Tag != JsValueTag.Object)
+                        {
+                            throw new JsThrownException(CreateTypeError(
+                                "Async iterator result is not an object."));
+                        }
+
+                        var resultObj = _heap.GetObject(awaited.AsObjectHandle());
+                        _ = TryGetPropertyValue(resultObj, awaited, "done", out var doneValue);
+                        if (IsTruthy(doneValue))
+                        {
+                            iter.Done = true;
+                            frame.InstructionPointer = ins.D;
+                            break;
+                        }
+
+                        _ = TryGetPropertyValue(resultObj, awaited, "value", out var resultValue);
+                        registers[ins.A] = resultValue;
+                    }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                }
                 case OpCode.IteratorClose:
                 {
                     // ECMA-262 7.4.11 — emitted on the for-of break exit path and by

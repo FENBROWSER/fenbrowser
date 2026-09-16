@@ -167,6 +167,54 @@ public sealed partial class BytecodeInterpreter
         return true;
     }
 
+    /// <summary>
+    /// ECMA-262 7.4.2 GetIterator(obj, async). Uses @@asyncIterator when the source
+    /// has a callable one; otherwise falls back to the ordinary sync iterator state,
+    /// which the for-await-of loop drives with async-from-sync semantics (27.1.4.3):
+    /// done is read from the sync result and only the value is awaited.
+    /// </summary>
+    private JsValue CreateForAwaitIteratorState(JsValue source)
+    {
+        if (source.Tag == JsValueTag.Object)
+        {
+            var asyncIterId = GetWellKnownSymbolId("asyncIterator");
+            if (asyncIterId != 0)
+            {
+                var obj = _heap.GetObject(source.AsObjectHandle());
+                if (obj.TryGetSymbolProperty(asyncIterId, ResolvePrototypeDelegate, out var asyncDesc) &&
+                    asyncDesc.Value.Tag != JsValueTag.Undefined &&
+                    asyncDesc.Value.Tag != JsValueTag.Null)
+                {
+                    if (!IsCallable(asyncDesc.Value))
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Value is not async iterable (Symbol.asyncIterator is not callable)."));
+                    }
+
+                    var asyncIterator = CallFunction(asyncDesc.Value, Array.Empty<JsValue>(), source);
+                    if (asyncIterator.Tag != JsValueTag.Object)
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Result of the Symbol.asyncIterator method is not an object."));
+                    }
+
+                    var asyncIterObj = _heap.GetObject(asyncIterator.AsObjectHandle());
+                    if (!TryGetPropertyValue(asyncIterObj, asyncIterator, "next", out var asyncNext) ||
+                        !IsCallable(asyncNext))
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Async iterator has no callable 'next' method."));
+                    }
+
+                    var asyncState = new ForOfIteratorObject(asyncIterator, asyncNext, isAsyncIterator: true);
+                    return JsValue.FromObject(_heap.AllocateObject(asyncState, AllocationSite.Current()));
+                }
+            }
+        }
+
+        return CreateForOfIteratorState(source, requireIterable: false);
+    }
+
     private JsValue CreateLazyForOfIteratorState(JsValue iterator)
     {
         if (iterator.Tag != JsValueTag.Object)
@@ -534,13 +582,19 @@ public sealed partial class BytecodeInterpreter
             _values = values;
         }
 
-        public ForOfIteratorObject(JsValue iteratorObject, JsValue nextMethod)
+        public ForOfIteratorObject(JsValue iteratorObject, JsValue nextMethod, bool isAsyncIterator = false)
         {
             _values = System.Array.Empty<JsValue>();
             IsLazy = true;
             IteratorObject = iteratorObject;
             NextMethod = nextMethod;
+            IsAsyncIterator = isAsyncIterator;
         }
+
+        // True when this state came from @@asyncIterator. Its next() returns a
+        // promise OF the IteratorResult, so done cannot be read until that promise
+        // settles - the one thing that separates the two for-await-of paths.
+        public bool IsAsyncIterator { get; }
 
         public bool IsLazy { get; }
 

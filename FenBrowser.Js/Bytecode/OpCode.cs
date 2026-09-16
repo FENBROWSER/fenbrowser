@@ -284,7 +284,24 @@ public enum OpCode : byte
 		Exp,
 
 		// ECMA-262 14.7.5.1 - for-await-of async iterator materialisation.
+		// A=destination iterator-state register, B=source register. Performs
+		// GetIterator(source, async) per 7.4.2: @@asyncIterator when the source has
+		// one, otherwise the sync @@iterator state, which the loop then drives with
+		// async-from-sync semantics (27.1.4.3).
 		EnumerateValuesAsync,
+
+		// One step of a for-await-of loop. A=raw register, B=iterator-state, C=loop
+		// end IP. A sync-backed state behaves exactly like ForOfNext - done is known
+		// before the await, so it may jump to C and leaves the VALUE in A. An
+		// async-backed state calls next() and leaves its PROMISE in A without
+		// jumping, because done is only known after that promise settles.
+		AsyncIterNext,
+
+		// Completes the step after the Await. A=value register, B=awaited register,
+		// C=iterator-state, D=loop end IP. Sync-backed: the awaited value IS the
+		// loop value. Async-backed: the awaited value is the IteratorResult, so read
+		// done (jumping to D when set) and unwrap value.
+		AsyncIterFinish,
 
 		// ECMA-262 13.2.5.5 PropertyDefinition : ... AssignmentExpression
 		// (object spread, e.g. `{ ...src }`). A=target object reg, B=source value
