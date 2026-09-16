@@ -144,6 +144,39 @@ The roadmap's earlier note still stands: large-bundle throughput is the metric t
 work should be judged by, and the per-script `parse+compile / verify / execute` line
 the engine already logs is the cheapest way to see the split.
 
+### 0.4 Cascade cost on interaction — pseudo-element matching (fixed, ddc6602b)
+
+Found from a live session: every click on youtube.com's watch page triggered an
+incremental recascade costing 70–100 ms, and the counters said where it went.
+
+The pseudo-element rule index was one flat list per pseudo-element, and the guard
+that decided whether to run a pseudo pass was **document-wide** — one `::before` rule
+anywhere meant every element ran a full `::before` match against every `::before`
+rule on the page. On youtube.com:
+
+```
+mainPass=8477  pseudoPass=23723  pseudoCollectMs=973  collectMs=1395
+```
+
+70% of all selector-matching time, almost all of it finding nothing. Keying each
+pseudo-element's rules the way the main index is keyed — ID, class, attribute, tag,
+universal — fixed it:
+
+```
+pseudo matching   973 ms -> 18 ms
+total selector   1395 ms -> 468 ms
+per recascade   104.6 ms -> 75.8 ms   (same page, same method)
+```
+
+Page *load* time is unchanged; it is dominated by JS, not the cascade. This is an
+interaction-responsiveness win.
+
+**Still open in the cascade:** `cacheHits=0` for a whole page load. `_styleCache` is
+keyed per element and skipped whenever the element is StyleDirty, which during a
+subtree recascade is every element in the subtree — so the cache never earns its
+keep. Whether that is right depends on what actually invalidates, and the answer
+wants the explicit invalidation set the Firefox note below argues for.
+
 ---
 
 ## Tier 1 — capability gaps confirmed absent
