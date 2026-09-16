@@ -89,23 +89,60 @@ rule list, because the fetched bytes are not retained per element; and
 `adoptedStyleSheets` / constructable stylesheets remain absent, which is Lit's default
 styling path.
 
-### 0.3 One script batch takes 12.7 seconds
+### 0.3 Compilation is eager, and almost none of it is ever used
+
+**Measured 2026-09-17 (b156e190).** The 12.7 s script batch breaks down. For
+youtube.com's main bundle — 10.8M characters, the single largest thing on the page:
 
 ```
-max 12734ms x72 total 22125ms   JS job ExecuteScriptBatchAsync
-max 12015ms  x5 total 30047ms   JS job ExecuteScriptBatchAsync executing
+parse+compile 2248 ms | verify 0 ms | execute 5760 ms
 ```
 
-YouTube ships a ~10 MB kevlar bundle and loads twice (its own `?themeRefresh=1`
-round-trip, which Chrome also performs on a cookieless first visit). That is ~45 s of
-wall clock where Chrome is under a second. Nothing else on this list changes the felt
-experience as much.
+And `FEN_JS_COMPILED_CODE_COVERAGE=1` says what that compile bought:
 
-This is the same lever `docs/INTERPRETER2.md` and the baseline-JIT work already
-target. The roadmap point is only that **large-bundle throughput should be the metric
-those efforts are judged by**, with a checked-in benchmark that runs a real bundle,
-rather than microbenchmarks. Prior memory already warns that the FenJS profiler's
-leaf self-time is unreliable — use the call ladder.
+```
+functions compiled=107601  entered=257            (0.2% used)
+instructions compiled=5493888  reachable=1364979  (24.8% reachable)
+```
+
+The compiler is eager. Every function in a script is parsed and compiled to
+bytecode when the script is compiled, whether or not it is ever called — there is no
+lazy path anywhere in `FenBrowser.Js/Parser/` or `Bytecode/`. So the engine compiles
+a hundred thousand functions to run a few hundred, and holds ~5.5M instructions of
+bytecode of which three quarters is unreachable.
+
+**The fix is lazy function compilation**, which is what every production engine does:
+pre-parse a function body only far enough to find its end and record its source
+extent, then parse and compile it on first call. It is worth being clear about what
+that does and does not buy:
+
+- It attacks the **2,248 ms**, not the 5,760 ms. Pre-parsing is not free — expect to
+  keep perhaps a quarter to a third of the compile time — so the realistic saving on
+  this bundle is on the order of **1.5 s**, not 2.2 s.
+- The memory saving is larger in proportion and may matter more: ~5.5M instructions
+  of bytecode, plus 107K `BytecodeFunction` objects, most of which are never touched.
+- It does nothing for `execute`, which is the bigger half. That is interpreter
+  throughput and is the separate, harder problem `docs/INTERPRETER2.md` targets.
+
+It is a substantial change — the parser needs a pre-parse mode, `BytecodeFunction`
+needs a not-yet-compiled state, and closure creation and `Function.prototype.toString`
+both have to cope with it — so it wants its own run rather than being squeezed in
+beside something else.
+
+**Re-measure with the same command**, so the claim stays honest:
+
+```bash
+FEN_JS_COMPILED_CODE_COVERAGE=1 ./FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe debug-site <url> 20000
+```
+
+A caveat on the numbers: `entered` counts functions reached through the ordinary call
+path, so generators, async resumption and construct paths may be undercounted. The
+instruction ratio is the sturdier of the two figures. Even allowing an order of
+magnitude, the conclusion does not move.
+
+The roadmap's earlier note still stands: large-bundle throughput is the metric this
+work should be judged by, and the per-script `parse+compile / verify / execute` line
+the engine already logs is the cheapest way to see the split.
 
 ---
 
@@ -290,5 +327,7 @@ two runs" without re-reading either bundle.
    over the home feed.
 3. ~~**Prototype-level feature-detection sweep**~~ — done (a08ae1ac); 67 members were
    invisible to detection and now are not.
-4. **0.3 large-bundle JS throughput**, judged by a checked-in real-bundle benchmark.
+4. **0.3 lazy function compilation** — measured at 0.2% of compiled functions ever
+   entered; worth ~1.5 s on youtube's bundle plus a large memory saving. Wants its
+   own run.
 5. **WebAssembly**, once 1–4 have stopped producing blank pages.
