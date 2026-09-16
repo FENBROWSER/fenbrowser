@@ -814,6 +814,14 @@ public sealed class Test262Runner
                         : strictPrefix + prelude + "\n" + includePrelude + "\n" + body;
                 }
 
+                // A flags:[async] test reports success by calling $DONE() and failure
+                // by calling it with an error. Nothing observed either before, so such
+                // a test passed merely by not throwing synchronously.
+                var isAsyncTest = frontmatter.Flags.Any(
+                    f => string.Equals(f, "async", StringComparison.OrdinalIgnoreCase));
+                var asyncDoneCalled = false;
+                string? asyncDoneError = null;
+
                 var interruptRequested = 0;
                 // Fire interrupt after timeoutMs so the interpreter self-terminates
                 // via its WallClockTimeoutMs check + InterruptCallback polling.
@@ -861,6 +869,22 @@ public sealed class Test262Runner
                                 "<evalScript>"),
                             length: 1);
                         perTestInterpreter.RegisterGlobalValue("__fenEvalScript", evalScript);
+                        // $DONE routes here so the host sees whether it was called at
+                        // all, which is what decides a flags:[async] test.
+                        var doneSignal = perTestInterpreter.AllocateNativeFunction(
+                            "__fenDoneSignal",
+                            (_, doneArgs) =>
+                            {
+                                asyncDoneCalled = true;
+                                if (doneArgs.Count > 0 && doneArgs[0].Tag != JsValueTag.Undefined)
+                                {
+                                    asyncDoneError ??= perTestInterpreter.DescribeThrownValue(doneArgs[0]);
+                                }
+
+                                return JsValue.Undefined;
+                            },
+                            length: 1);
+                        perTestInterpreter.RegisterGlobalValue("__fenDoneSignal", doneSignal);
                         try
                         {
                             _ = perTestInterpreter.Execute(function);
@@ -869,6 +893,19 @@ public sealed class Test262Runner
                         {
                             thrown.Description ??= perTestInterpreter.DescribeThrownValue(thrown.Value);
                             throw;
+                        }
+
+                        // An async test finishes over microtask turns, so without
+                        // draining them the run ends before its continuations ever go.
+                        // Bounded: a promise chain that re-queues forever must hit the
+                        // test's own timeout rather than spin here.
+                        for (var drain = 0; drain < 1000; drain++)
+                        {
+                            if (Volatile.Read(ref interruptRequested) != 0 || token.IsCancellationRequested)
+                                break;
+                            perTestInterpreter.PumpMicrotasks();
+                            if (!isAsyncTest || asyncDoneCalled)
+                                break;
                         }
                     }
                 }, timeoutMs);
@@ -928,6 +965,40 @@ public sealed class Test262Runner
                     efTe.Category = "runtime-semantic-bug";
                     efTe.Message = "Expected failure did not occur in runtime-subset execution.";
                     tests.Add(efTe);
+                    continue;
+                }
+
+                // flags:[async]: the test is only over once it has called $DONE, and it
+                // only passed if it called it with nothing. Never calling it is a
+                // failure - that is how a test whose promise rejected, or whose chain
+                // stalled, used to be counted as a pass.
+                if (isAsyncTest && (!asyncDoneCalled || asyncDoneError is not null))
+                {
+                    var asyncMessage = asyncDoneError is not null
+                        ? $"Async test called $DONE with an error: {asyncDoneError}"
+                        : "Async test never called $DONE (its promise chain never completed).";
+                    runtimeErrors++;
+                    var expectedAsync = FindMatchingExpectation(expectations, relativePath, "RuntimeFail");
+                    if (expectedAsync is not null) expectedFailures++;
+                    failures.Add(new Test262FailureEntry
+                    {
+                        Path = file,
+                        RelativePath = relativePath,
+                        Classification = "async-incomplete",
+                        Message = asyncMessage,
+                        Details = asyncMessage,
+                        Expected = expectedAsync is not null,
+                        ExpectedReason = expectedAsync?.Reason,
+                        ExpectedOwner = expectedAsync?.Owner,
+                        ExpectedArea = expectedAsync?.Area,
+                        ExpiresAtMilestone = expectedAsync?.ExpiresAtMilestone
+                    });
+                    var asyncTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    asyncTe.Status = expectedAsync is null ? "Failed" : "ExpectedFailure";
+                    asyncTe.DurationMs = testSw.ElapsedMilliseconds;
+                    asyncTe.Category = "async-incomplete";
+                    asyncTe.Message = asyncMessage;
+                    tests.Add(asyncTe);
                     continue;
                 }
 
@@ -1514,7 +1585,10 @@ public sealed class Test262Runner
                  });
                  return AbstractModuleSource;
                }
-               function $DONE(error) { if (error !== undefined) { throw error; } }
+               function $DONE(error) {
+                 if (typeof __fenDoneSignal === 'function') { __fenDoneSignal(error); }
+                 if (error !== undefined) { throw error; }
+               }
                var $262 = {
                  evalScript: function (sourceText) { return __fenEvalScript(String(sourceText)); },
                  global: globalThis,
