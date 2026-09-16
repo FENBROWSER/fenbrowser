@@ -10590,6 +10590,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 [
                     'contains',
                     'compareDocumentPosition',
+                    // DOM 2.7/2.8/2.9. These three are the EventTarget surface a
+                    // node inherits. They are pinned to Node.prototype as native
+                    // forwarders because Node.prototype's [[Prototype]] is
+                    // EventTarget.prototype, whose polyfill bodies keep their own
+                    // listener map and would otherwise shadow the engine's.
+                    'addEventListener',
+                    'removeEventListener',
                     'dispatchEvent',
                     'cloneNode',
                     'appendChild',
@@ -10868,7 +10875,50 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     // Minimal EventTarget polyfill per DOM Living Standard.
                     // Provides addEventListener, removeEventListener, dispatchEvent.
                     function EventTarget() {
-                        this._fenListeners = Object.create(null);
+                        fenListenerMap(this);
+                    }
+
+                    // An object can reach these methods without EventTarget ever
+                    // having constructed it - the global does, and so does every
+                    // subclass whose constructor never chains up. The listener map
+                    // is therefore created on first use instead of being assumed;
+                    // reading a property off an absent map was a TypeError thrown
+                    // out of addEventListener itself.
+                    function fenListenerMap(target) {
+                        var map = target._fenListeners;
+                        if (map) return map;
+                        map = Object.create(null);
+                        try {
+                            Object.defineProperty(target, '_fenListeners', {
+                                value: map,
+                                writable: true,
+                                configurable: true,
+                                enumerable: false
+                            });
+                        } catch (_listenerMapError) {
+                            target._fenListeners = map;
+                        }
+                        return map;
+                    }
+
+                    // The window is an EventTarget whose implementation lives in
+                    // the engine, not here. Scripts reach it two ways - directly as
+                    // window.addEventListener, and inherited through
+                    // EventTarget.prototype - and both have to land on the same
+                    // listener list, or a library that captures the prototype
+                    // method (the web-components polyfill does exactly that)
+                    // registers handlers the engine will never fire.
+                    var fenGlobalEventMethods = Object.create(null);
+                    ['addEventListener', 'removeEventListener', 'dispatchEvent'].forEach(
+                        function (name) {
+                            var own = Object.getOwnPropertyDescriptor(globalThis, name);
+                            if (own && typeof own.value === 'function') {
+                                fenGlobalEventMethods[name] = own.value;
+                            }
+                        });
+
+                    function fenGlobalEventMethod(receiver, name) {
+                        return receiver === globalThis ? fenGlobalEventMethods[name] : undefined;
                     }
                     // Options were stored and never looked at, so once, signal and
                     // the capture half of listener identity all did nothing here.
@@ -10892,11 +10942,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         };
                     };
                     EventTarget.prototype.addEventListener = function(type, callback) {
+                        var delegate = fenGlobalEventMethod(this, 'addEventListener');
+                        if (delegate) return delegate.apply(this, arguments);
                         if (typeof callback !== 'function') return;
                         var flat = this._fenFlattenOptions(arguments[2]);
                         // DOM 2.7 step 2.
                         if (flat.signal && flat.signal.aborted) return;
-                        var listeners = this._fenListeners[type] || (this._fenListeners[type] = []);
+                        var map = fenListenerMap(this);
+                        var listeners = map[type] || (map[type] = []);
                         // DOM 2.7 step 4: identity is type + callback + capture.
                         for (var i = 0; i < listeners.length; i++) {
                             if (listeners[i].callback === callback &&
@@ -10913,7 +10966,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         if (flat.signal && typeof flat.signal.addEventListener === 'function') {
                             var target = this;
                             flat.signal.addEventListener('abort', function () {
-                                var live = target._fenListeners[type];
+                                var live = fenListenerMap(target)[type];
                                 if (!live) return;
                                 var at = live.indexOf(entry);
                                 if (at >= 0) live.splice(at, 1);
@@ -10921,8 +10974,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         }
                     };
                     EventTarget.prototype.removeEventListener = function(type, callback) {
+                        var delegate = fenGlobalEventMethod(this, 'removeEventListener');
+                        if (delegate) return delegate.apply(this, arguments);
                         var capture = this._fenFlattenOptions(arguments[2]).capture;
-                        var listeners = this._fenListeners[type];
+                        var listeners = fenListenerMap(this)[type];
                         if (!listeners) return;
                         for (var i = listeners.length - 1; i >= 0; i--) {
                             if (listeners[i].callback === callback &&
@@ -10930,16 +10985,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         }
                     };
                     EventTarget.prototype.dispatchEvent = function(event) {
+                        var delegate = fenGlobalEventMethod(this, 'dispatchEvent');
+                        if (delegate) return delegate.apply(this, arguments);
                         if (!event || typeof event.type !== 'string') return true;
                         event.target = this;
-                        var listeners = (this._fenListeners[event.type] || []).slice();
+                        var map = fenListenerMap(this);
+                        var listeners = (map[event.type] || []).slice();
                         for (var i = 0; i < listeners.length; i++) {
                             var entry = listeners[i];
                             // DOM 2.9 step 5: a once listener is removed before it
                             // is called, so a handler that dispatches the same
                             // event again does not re-enter it.
                             if (entry.once) {
-                                var live = this._fenListeners[event.type];
+                                var live = map[event.type];
                                 var at = live ? live.indexOf(entry) : -1;
                                 if (at >= 0) live.splice(at, 1);
                             }
@@ -10973,6 +11031,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                     globalThis.EventTarget = EventTarget;
                     globalThis.Event = Event;
+
+                    // DOM 4.4 "interface Node : EventTarget" and HTML 8.1
+                    // "interface Window : EventTarget". The DOM constructors are
+                    // installed before this polyfill exists, so they are rooted at
+                    // Object.prototype and the inheritance is stitched up here.
+                    // It is not cosmetic: the web-components polyfill installs its
+                    // __shady_* surface on EventTarget.prototype when the global is
+                    // present, and every element has to be able to see it.
+                    [globalThis.Node, globalThis.Window].forEach(function (ctor) {
+                        if (typeof ctor !== 'function' || !ctor.prototype) return;
+                        if (Object.getPrototypeOf(ctor.prototype) !== Object.prototype) return;
+                        try { Object.setPrototypeOf(ctor.prototype, EventTarget.prototype); }
+                        catch (_eventTargetLinkError) { }
+                    });
 
                     // Stub HTML element constructors for custom elements /
                     // instanceof checks in modern frameworks (GitHub, React).
