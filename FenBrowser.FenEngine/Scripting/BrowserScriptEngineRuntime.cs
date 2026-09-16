@@ -7401,6 +7401,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsBrowserUiApis(baseUri);
         InstallFenJsRemainingWebApis();
         InstallFenJsDocumentAll();
+        _interpreter.RegisterGlobalValue(
+            "__fenStyleSheetRules",
+            _interpreter.AllocateNativeFunction(
+                "__fenStyleSheetRules",
+                (_, args) => BuildStyleSheetRuleDescriptors(args),
+                length: 1));
         InstallFenJsBrowserSurfaceFillers();
         InstallTopWindowPostMessageBridge(globalThisValue);
     }
@@ -10374,56 +10380,169 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     });
                     return rule;
                 }
+                // A rule the engine parsed, wrapped in its CSSOM interface.
+                // Declarations arrive already serialised, so the only work here is
+                // giving them the shape CSSOM asks for.
+                function __fenBuildCssRule(descriptor, parentStyleSheet) {
+                    var rule;
+                    if (descriptor.type === 4) {
+                        rule = Object.create(CSSRule.prototype);
+                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule'], enumerable: false });
+                        rule.type = 4;
+                        rule.conditionText = descriptor.conditionText || '';
+                        rule.media = {
+                            mediaText: rule.conditionText,
+                            length: rule.conditionText ? 1 : 0,
+                            item: function (i) { return i === 0 ? rule.conditionText : null; }
+                        };
+                        rule.cssRules = __fenBuildCssRules(descriptor.rules, parentStyleSheet);
+                        Object.defineProperty(rule, 'cssText', {
+                            get: function () {
+                                return '@media ' + this.conditionText + ' { ' +
+                                    Array.prototype.map.call(this.cssRules, function (r) { return r.cssText; }).join(' ') +
+                                    ' }';
+                            },
+                            configurable: true, enumerable: true
+                        });
+                    } else if (descriptor.type === 1) {
+                        rule = Object.create(CSSStyleRule.prototype);
+                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSStyleRule'], enumerable: false });
+                        rule.type = 1;
+                        rule.selectorText = descriptor.selectorText || '';
+                        rule.style = { cssText: descriptor.declarations || '' };
+                        if (descriptor.rules && descriptor.rules.length) {
+                            rule.cssRules = __fenBuildCssRules(descriptor.rules, parentStyleSheet);
+                        }
+                        Object.defineProperty(rule, 'cssText', {
+                            get: function () {
+                                return this.selectorText + ' { ' + this.style.cssText +
+                                    (this.style.cssText ? ' ' : '') + '}';
+                            },
+                            configurable: true, enumerable: true
+                        });
+                    } else {
+                        rule = Object.create(CSSRule.prototype);
+                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule'], enumerable: false });
+                        rule.type = descriptor.type || 0;
+                        if (descriptor.name !== undefined) rule.name = descriptor.name;
+                        if (descriptor.declarations !== undefined) {
+                            rule.style = { cssText: descriptor.declarations };
+                        }
+                        if (descriptor.rules && descriptor.rules.length) {
+                            rule.cssRules = __fenBuildCssRules(descriptor.rules, parentStyleSheet);
+                        }
+                        var keyword = descriptor.atKeyword;
+                        Object.defineProperty(rule, 'cssText', {
+                            get: function () {
+                                var head = keyword ? ('@' + keyword + (this.name ? ' ' + this.name : '')) : '';
+                                var body = this.style ? this.style.cssText
+                                    : (this.cssRules
+                                        ? Array.prototype.map.call(this.cssRules, function (r) { return r.cssText; }).join(' ')
+                                        : '');
+                                return head + ' { ' + body + (body ? ' ' : '') + '}';
+                            },
+                            configurable: true, enumerable: true
+                        });
+                    }
+
+                    rule.parentStyleSheet = parentStyleSheet || null;
+                    return rule;
+                }
+
+                function __fenBuildCssRules(descriptors, parentStyleSheet) {
+                    var built = [];
+                    built.item = function (i) { return i >= 0 && i < built.length ? built[i] : null; };
+                    if (!descriptors) return built;
+                    for (var i = 0; i < descriptors.length; i++) {
+                        built.push(__fenBuildCssRule(descriptors[i], parentStyleSheet));
+                    }
+                    return built;
+                }
+
                 Object.defineProperty(globalThis, '__fenCreateStyleSheet', {
                     value: function (ownerNode) {
                         var sheet = Object.create(CSSStyleSheet.prototype);
                         Object.defineProperty(sheet, '__fenDomBrands', { value: ['StyleSheet', 'CSSStyleSheet'], enumerable: false });
-                        var rules = [];
-                        rules.item = function (i) { return i >= 0 && i < rules.length ? rules[i] : null; };
-                        sheet.cssRules = rules;
-                        sheet.rules = rules;
+                        var rules = null;
+
+                        // CSSOM 6.4: cssRules reflects what the engine parsed. Building
+                        // it costs a parse of the whole sheet, and most sheets are never
+                        // read back, so it happens on the first access and not before.
+                        function materialise() {
+                            if (rules) return rules;
+                            var descriptors = null;
+                            try {
+                                if (typeof globalThis.__fenStyleSheetRules === 'function') {
+                                    descriptors = globalThis.__fenStyleSheetRules(ownerNode);
+                                }
+                            } catch (_ruleError) { descriptors = null; }
+                            rules = __fenBuildCssRules(descriptors, sheet);
+                            return rules;
+                        }
+
+                        Object.defineProperty(sheet, 'cssRules', {
+                            get: materialise, configurable: true, enumerable: true
+                        });
+                        Object.defineProperty(sheet, 'rules', {
+                            get: materialise, configurable: true, enumerable: true
+                        });
                         sheet.ownerNode = ownerNode || null;
+                        sheet.parentStyleSheet = null;
+                        sheet.title = (ownerNode && ownerNode.getAttribute)
+                            ? (ownerNode.getAttribute('title') || null) : null;
                         sheet.type = 'text/css';
                         sheet.disabled = false;
-                        sheet.href = null;
-                        sheet.media = { length: 0, mediaText: '', item: function () { return null; } };
+                        // CSSOM 6.1: href is the location an external sheet came from,
+                        // and null for one the document carries inline.
+                        sheet.href = (ownerNode && ownerNode.tagName === 'LINK' && ownerNode.href)
+                            ? String(ownerNode.href) : null;
+                        var mediaText = (ownerNode && ownerNode.getAttribute)
+                            ? (ownerNode.getAttribute('media') || '') : '';
+                        sheet.media = {
+                            mediaText: mediaText,
+                            length: mediaText ? 1 : 0,
+                            item: function (i) { return i === 0 && mediaText ? mediaText : null; }
+                        };
                         function sync() {
                             if (ownerNode && ownerNode.textContent !== undefined) {
-                                ownerNode.textContent = rules.map(function (r) { return r.cssText; }).join(String.fromCharCode(10));
+                                ownerNode.textContent = materialise().map(function (r) { return r.cssText; }).join(String.fromCharCode(10));
                             }
                         }
                         sheet.insertRule = function (text, index) {
+                            var live = materialise();
                             index = index === undefined ? 0 : (index | 0);
-                            if (index < 0 || index > rules.length) {
-                                var err = new Error("Failed to execute 'insertRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + rules.length + ").");
+                            if (index < 0 || index > live.length) {
+                                var err = new Error("Failed to execute 'insertRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + live.length + ").");
                                 err.name = 'IndexSizeError';
                                 throw err;
                             }
                             var rule = __fenParseCssRule(text);
                             rule.parentStyleSheet = sheet;
-                            rules.splice(index, 0, rule);
+                            live.splice(index, 0, rule);
                             sync();
                             return index;
                         };
                         sheet.addRule = function (selector, block, index) {
-                            sheet.insertRule(selector + ' { ' + block + ' }', index === undefined ? rules.length : index);
+                            sheet.insertRule(selector + ' { ' + block + ' }', index === undefined ? materialise().length : index);
                             return -1;
                         };
                         sheet.deleteRule = function (index) {
+                            var live = materialise();
                             index = index | 0;
-                            if (index < 0 || index >= rules.length) {
-                                var err = new Error("Failed to execute 'deleteRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + (rules.length - 1) + ").");
+                            if (index < 0 || index >= live.length) {
+                                var err = new Error("Failed to execute 'deleteRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + (live.length - 1) + ").");
                                 err.name = 'IndexSizeError';
                                 throw err;
                             }
-                            rules.splice(index, 1);
+                            live.splice(index, 1);
                             sync();
                         };
                         sheet.removeRule = sheet.deleteRule;
                         sheet.replaceSync = function (text) {
-                            rules.length = 0;
+                            var live = materialise();
+                            live.length = 0;
                             String(text || '').split('}').forEach(function (chunk) {
-                                if (chunk.trim()) { rules.push(__fenParseCssRule(chunk + '}')); }
+                                if (chunk.trim()) { live.push(__fenParseCssRule(chunk + '}')); }
                             });
                             sync();
                         };
@@ -23392,16 +23511,294 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return sheet;
     }
 
-    private JsValue CreateEmptyStyleSheetListObject()
+    /// <summary>
+    /// CSSOM 6.2: the elements that own a document stylesheet - a &lt;style&gt;, or a
+    /// &lt;link&gt; whose rel includes "stylesheet".
+    /// </summary>
+    private bool IsStyleSheetOwnerElement(Element element)
     {
-        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        if (element == null)
         {
-            ["length"] = JsValue.FromInt32(0),
-            ["item"] = _interpreter.AllocateNativeFunction(
-                "item",
-                (_, _) => JsValue.Null,
-                length: 1)
-        });
+            return false;
+        }
+
+        if (string.Equals(element.TagName, "STYLE", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.Equals(element.TagName, "LINK", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var rel = element.GetAttribute("rel");
+        if (string.IsNullOrWhiteSpace(rel))
+        {
+            return false;
+        }
+
+        foreach (var token in rel.Split((char[])null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (string.Equals(token, "stylesheet", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// CSSOM 6.2 document.styleSheets. The list object is kept per document so
+    /// `document.styleSheets === document.styleSheets` holds the way it does in a
+    /// browser; its contents are refreshed on every read, because the collection is
+    /// live and a page adds stylesheets long after load.
+    /// </summary>
+    private JsValue GetDocumentStyleSheetList(Document document)
+    {
+        var list = GetStoredHostPropertyOrUndefined(document, "__fenStyleSheetList");
+        if (list.Tag != JsValueTag.Object)
+        {
+            list = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["length"] = JsValue.FromInt32(0),
+                ["item"] = _interpreter.AllocateNativeFunction(
+                    "item",
+                    (thisValue, args) =>
+                    {
+                        if (args.Count == 0)
+                        {
+                            return JsValue.Null;
+                        }
+
+                        var index = (int)CoerceToFiniteNumber(args[0], -1);
+                        var indexed = ReadJsProperty(thisValue, index.ToString(CultureInfo.InvariantCulture));
+                        return indexed.Tag == JsValueTag.Undefined ? JsValue.Null : indexed;
+                    },
+                    length: 1)
+            });
+            SetStoredHostProperty(document, "__fenStyleSheetList", list);
+        }
+
+        RefreshStyleSheetList(document, list);
+        return list;
+    }
+
+    private void RefreshStyleSheetList(Document document, JsValue list)
+    {
+        var owners = CollectStyleSheetOwners(document);
+        var previousLength = (int)CoerceToFiniteNumber(ReadJsProperty(list, "length"), 0);
+
+        for (var i = 0; i < owners.Count; i++)
+        {
+            _interpreter.SetObjectProperty(
+                list,
+                i.ToString(CultureInfo.InvariantCulture),
+                GetOrCreateStyleElementSheet(owners[i]));
+        }
+
+        // A stylesheet the page removed has to leave the list, not linger at the
+        // index it used to occupy.
+        for (var i = owners.Count; i < previousLength; i++)
+        {
+            _interpreter.SetObjectProperty(
+                list,
+                i.ToString(CultureInfo.InvariantCulture),
+                JsValue.Undefined);
+        }
+
+        _interpreter.SetObjectProperty(list, "length", JsValue.FromInt32(owners.Count));
+    }
+
+    private List<Element> CollectStyleSheetOwners(Document document)
+    {
+        var owners = new List<Element>();
+        var root = (Node)document?.DocumentElement ?? document;
+        if (root == null)
+        {
+            return owners;
+        }
+
+        CollectStyleSheetOwners(root, owners);
+        return owners;
+    }
+
+    private void CollectStyleSheetOwners(Node node, List<Element> owners)
+    {
+        // Tree order, which is the order the cascade applies them in and the order
+        // CSSOM requires the list to be in.
+        foreach (var child in node.ChildNodes)
+        {
+            if (child is Element element)
+            {
+                if (IsStyleSheetOwnerElement(element))
+                {
+                    owners.Add(element);
+                }
+
+                CollectStyleSheetOwners(element, owners);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Parses a style element's text with the engine's own CSS parser and returns one
+    /// descriptor per rule for the CSSOM layer to wrap.
+    /// </summary>
+    /// <remarks>
+    /// The rules have to come from the same parser the cascade uses. The previous
+    /// JavaScript shim split the text on "}", which mangles @media, @supports and any
+    /// brace inside a string - so what a page read back through cssRules did not match
+    /// what the engine had actually applied.
+    /// </remarks>
+    private JsValue BuildStyleSheetRuleDescriptors(IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0 || args[0].Tag != JsValueTag.HostObject)
+        {
+            return _interpreter.AllocateArray(Array.Empty<JsValue>());
+        }
+
+        if (ResolveHostObjectOrNull(args[0]) is not Element element ||
+            !string.Equals(element.TagName, "STYLE", StringComparison.OrdinalIgnoreCase))
+        {
+            // A <link> sheet's text is not held by the DOM. Its rules stay empty,
+            // which is also what a cross-origin sheet looks like to script.
+            return _interpreter.AllocateArray(Array.Empty<JsValue>());
+        }
+
+        var cssText = element.TextContent;
+        if (string.IsNullOrWhiteSpace(cssText))
+        {
+            return _interpreter.AllocateArray(Array.Empty<JsValue>());
+        }
+
+        try
+        {
+            var parsed = new FenBrowser.FenEngine.Rendering.Css.CssSyntaxParser(
+                new FenBrowser.FenEngine.Rendering.Css.CssTokenizer(cssText)).ParseStylesheet();
+            return DescribeCssRules(parsed.Rules);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] cssRules parse failed: {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.CSS);
+            return _interpreter.AllocateArray(Array.Empty<JsValue>());
+        }
+    }
+
+    private JsValue DescribeCssRules(IReadOnlyList<FenBrowser.FenEngine.Rendering.Css.CssRule> rules)
+    {
+        var described = new List<JsValue>(rules.Count);
+        foreach (var rule in rules)
+        {
+            var descriptor = DescribeCssRule(rule);
+            if (descriptor.Tag != JsValueTag.Undefined)
+            {
+                described.Add(descriptor);
+            }
+        }
+
+        return _interpreter.AllocateArray(described);
+    }
+
+    private JsValue DescribeCssRule(FenBrowser.FenEngine.Rendering.Css.CssRule rule)
+    {
+        switch (rule)
+        {
+            // CSSRule.STYLE_RULE
+            case FenBrowser.FenEngine.Rendering.Css.CssStyleRule style:
+                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                {
+                    ["type"] = JsValue.FromInt32(1),
+                    ["selectorText"] = JsValue.FromString(style.Selector?.Raw ?? string.Empty),
+                    ["declarations"] = JsValue.FromString(SerializeDeclarations(style.Declarations)),
+                    ["rules"] = DescribeCssRules(style.NestedRules)
+                });
+
+            // CSSRule.MEDIA_RULE
+            case FenBrowser.FenEngine.Rendering.Css.CssMediaRule media:
+                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                {
+                    ["type"] = JsValue.FromInt32(4),
+                    ["conditionText"] = JsValue.FromString(media.Condition ?? string.Empty),
+                    ["rules"] = DescribeCssRules(media.Rules)
+                });
+
+            // CSSRule.FONT_FACE_RULE
+            case FenBrowser.FenEngine.Rendering.Css.CssFontFaceRule fontFace:
+                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                {
+                    ["type"] = JsValue.FromInt32(5),
+                    ["declarations"] = JsValue.FromString(SerializeDeclarations(fontFace.Declarations))
+                });
+
+            // @layer and @scope postdate the numbered constants, so they report 0 the
+            // way every rule type added since does.
+            case FenBrowser.FenEngine.Rendering.Css.CssLayerRule layer:
+                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                {
+                    ["type"] = JsValue.FromInt32(0),
+                    ["atKeyword"] = JsValue.FromString("layer"),
+                    ["name"] = JsValue.FromString(layer.Name ?? string.Empty),
+                    ["rules"] = DescribeCssRules(layer.Rules)
+                });
+
+            case FenBrowser.FenEngine.Rendering.Css.CssScopeRule scope:
+                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                {
+                    ["type"] = JsValue.FromInt32(0),
+                    ["atKeyword"] = JsValue.FromString("scope"),
+                    ["name"] = JsValue.FromString(scope.EndSelector ?? string.Empty),
+                    ["rules"] = DescribeCssRules(scope.Rules)
+                });
+
+            case FenBrowser.FenEngine.Rendering.Css.CssPropertyRule property:
+                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                {
+                    ["type"] = JsValue.FromInt32(0),
+                    ["atKeyword"] = JsValue.FromString("property"),
+                    ["name"] = JsValue.FromString(property.Name ?? string.Empty),
+                    ["declarations"] = JsValue.FromString(SerializeDeclarations(property.Declarations))
+                });
+
+            default:
+                return JsValue.Undefined;
+        }
+    }
+
+    private static string SerializeDeclarations(
+        IReadOnlyList<FenBrowser.FenEngine.Rendering.Css.CssDeclaration> declarations)
+    {
+        if (declarations == null || declarations.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder();
+        foreach (var declaration in declarations)
+        {
+            if (string.IsNullOrEmpty(declaration?.Property))
+            {
+                continue;
+            }
+
+            if (builder.Length > 0)
+            {
+                builder.Append(' ');
+            }
+
+            builder.Append(declaration.Property).Append(": ").Append(declaration.Value);
+            if (declaration.IsImportant)
+            {
+                builder.Append(" !important");
+            }
+
+            builder.Append(';');
+        }
+
+        return builder.ToString();
     }
 
     private static bool CssSupports(IReadOnlyList<JsValue> args)
@@ -24877,7 +25274,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         length: 0);
                     return true;
                 case "styleSheets":
-                    value = _owner.CreateEmptyStyleSheetListObject();
+                    value = _owner.GetDocumentStyleSheetList(document);
                     return true;
                 case "prerendering":
                     value = JsValue.FromBoolean(false);
@@ -26429,7 +26826,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case "dataset":
                     value = _owner.ToHostOrNull(new FenJsDomStringMapHost(element), HostObjectKind.Other);
                     return true;
-                case "sheet" when string.Equals(element.TagName, "STYLE", StringComparison.OrdinalIgnoreCase):
+                case "sheet" when _owner.IsStyleSheetOwnerElement(element):
                     value = _owner.GetOrCreateStyleElementSheet(element);
                     return true;
                 case "addEventListener":

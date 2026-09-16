@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Parsing;
@@ -37,7 +37,7 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
-        public async Task DocumentStyleSheets_ExposesEmptyListShape()
+        public async Task DocumentStyleSheets_ExposesTheDocumentsOwnStyleSheets()
         {
             var baseUri = new Uri("https://www.google.com/");
             var document = new HtmlParser("<html><head><style>body{display:block}</style></head><body></body></html>", baseUri).Parse();
@@ -48,16 +48,20 @@ namespace FenBrowser.Tests.Scripting
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
+            // This used to assert "object|0|null": the list was a hardcoded empty
+            // stub, so a document that plainly had a stylesheet reported none.
             var result = engine.Evaluate(
                 """
                 [
                     typeof document.styleSheets,
                     String(document.styleSheets.length),
-                    String(document.styleSheets.item(0))
+                    String(document.styleSheets.item(0) === document.styleSheets[0]),
+                    document.styleSheets[0].cssRules[0].selectorText,
+                    String(document.styleSheets.item(1))
                 ].join('|');
                 """);
 
-            Assert.Equal("object|0|null", result?.ToString());
+            Assert.Equal("object|1|true|body|null", result?.ToString());
         }
 
         private static JsHostAdapter CreateHost()
