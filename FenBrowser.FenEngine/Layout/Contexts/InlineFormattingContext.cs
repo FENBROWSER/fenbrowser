@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.FenEngine.Layout.Tree;
@@ -2665,12 +2665,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // Percentage heights need a definite containing block (CSS 2.2 §10.5); NaN leaves
             // 'h' auto so the intrinsic ratio sizes the box rather than the viewport height.
             float cbHeight = LayoutBoxOps.ResolveDefinitePercentageBaseHeight(box, state);
-            if (w <= 0f && box.ComputedStyle?.WidthPercent.HasValue == true && cbWidth > 0f)
+            // `cbWidth > 0` is also true of infinity, and an intrinsic-sizing pass
+            // hands down exactly that. CSS Sizing 3 5.2.1 makes a percentage against
+            // an indefinite containing block cyclic, so it behaves as auto and the
+            // control keeps its own intrinsic size. Resolving it anyway turned
+            // `width: 100%` on a search field into an infinitely wide box.
+            if (w <= 0f && box.ComputedStyle?.WidthPercent.HasValue == true && IsDefiniteSize(cbWidth))
             {
                 w = (float)(box.ComputedStyle.WidthPercent.Value / 100.0 * cbWidth);
             }
 
-            if (h <= 0f && box.ComputedStyle?.HeightPercent.HasValue == true && cbHeight > 0f)
+            if (h <= 0f && box.ComputedStyle?.HeightPercent.HasValue == true && IsDefiniteSize(cbHeight))
             {
                 h = (float)(box.ComputedStyle.HeightPercent.Value / 100.0 * cbHeight);
             }
@@ -2771,6 +2776,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return true;
         }
 
+        /// <summary>A length is definite only when it is finite and positive.</summary>
+        private static bool IsDefiniteSize(float value) => float.IsFinite(value) && value > 0f;
+
         private static void ApplyMinMaxConstraints(CssComputed style, LayoutState state, ref float width, ref float height)
         {
             if (style == null)
@@ -2780,33 +2788,56 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
 
-            float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
-            float cbHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+            // An intrinsic-sizing pass hands down an indefinite containing block, and
+            // `infinity > 0` is true - so a percentage min-width resolved against it
+            // came back as infinity and `Math.Max(minW, ...)` below made the box
+            // infinitely wide. CSS Sizing 3 5.2.1: a percentage against an indefinite
+            // containing block is cyclic and behaves as auto, which for min-* is zero
+            // and for max-* is none.
+            float cbWidth = IsDefiniteSize(state.ContainingBlockWidth)
+                ? state.ContainingBlockWidth
+                : state.ViewportWidth;
+            float cbHeight = IsDefiniteSize(state.ContainingBlockHeight)
+                ? state.ContainingBlockHeight
+                : state.ViewportHeight;
+            bool definiteWidthBase = IsDefiniteSize(cbWidth);
+            bool definiteHeightBase = IsDefiniteSize(cbHeight);
             float fontSize = (float)(style.FontSize > 0 ? style.FontSize : 16.0);
 
             float minW = 0f;
             if (style.MinWidth.HasValue) minW = (float)style.MinWidth.Value;
-            else if (style.MinWidthPercent.HasValue) minW = (float)(style.MinWidthPercent.Value / 100.0 * cbWidth);
+            else if (style.MinWidthPercent.HasValue)
+                minW = definiteWidthBase ? (float)(style.MinWidthPercent.Value / 100.0 * cbWidth) : 0f;
             else if (!string.IsNullOrEmpty(style.MinWidthExpression))
                 minW = LayoutHelper.EvaluateCssExpression(style.MinWidthExpression, cbWidth, state.ViewportWidth, state.ViewportHeight, fontSize);
 
             float maxW = float.PositiveInfinity;
             if (style.MaxWidth.HasValue) maxW = (float)style.MaxWidth.Value;
-            else if (style.MaxWidthPercent.HasValue) maxW = (float)(style.MaxWidthPercent.Value / 100.0 * cbWidth);
+            else if (style.MaxWidthPercent.HasValue)
+                maxW = definiteWidthBase ? (float)(style.MaxWidthPercent.Value / 100.0 * cbWidth) : float.PositiveInfinity;
             else if (!string.IsNullOrEmpty(style.MaxWidthExpression))
                 maxW = LayoutHelper.EvaluateCssExpression(style.MaxWidthExpression, cbWidth, state.ViewportWidth, state.ViewportHeight, fontSize);
 
             float minH = 0f;
             if (style.MinHeight.HasValue) minH = (float)style.MinHeight.Value;
-            else if (style.MinHeightPercent.HasValue) minH = (float)(style.MinHeightPercent.Value / 100.0 * cbHeight);
+            else if (style.MinHeightPercent.HasValue)
+                minH = definiteHeightBase ? (float)(style.MinHeightPercent.Value / 100.0 * cbHeight) : 0f;
             else if (!string.IsNullOrEmpty(style.MinHeightExpression))
                 minH = LayoutHelper.EvaluateCssExpression(style.MinHeightExpression, cbHeight, state.ViewportWidth, state.ViewportHeight, fontSize);
 
             float maxH = float.PositiveInfinity;
             if (style.MaxHeight.HasValue) maxH = (float)style.MaxHeight.Value;
-            else if (style.MaxHeightPercent.HasValue) maxH = (float)(style.MaxHeightPercent.Value / 100.0 * cbHeight);
+            else if (style.MaxHeightPercent.HasValue)
+                maxH = definiteHeightBase ? (float)(style.MaxHeightPercent.Value / 100.0 * cbHeight) : float.PositiveInfinity;
             else if (!string.IsNullOrEmpty(style.MaxHeightExpression))
                 maxH = LayoutHelper.EvaluateCssExpression(style.MaxHeightExpression, cbHeight, state.ViewportWidth, state.ViewportHeight, fontSize);
+
+            // A calc() over an indefinite base, or a bad expression, must not become
+            // the floor the box is sized to.
+            if (!float.IsFinite(minW)) minW = 0f;
+            if (!float.IsFinite(minH)) minH = 0f;
+            if (float.IsNaN(maxW)) maxW = float.PositiveInfinity;
+            if (float.IsNaN(maxH)) maxH = float.PositiveInfinity;
 
             if (string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
             {

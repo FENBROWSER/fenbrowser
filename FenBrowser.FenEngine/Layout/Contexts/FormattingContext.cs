@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using FenBrowser.FenEngine.Layout.Tree;
 
 namespace FenBrowser.FenEngine.Layout.Contexts

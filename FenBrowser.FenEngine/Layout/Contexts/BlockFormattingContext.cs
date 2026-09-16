@@ -494,15 +494,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     float w = blockBox.Geometry.ContentBox.Width;
                     float h = (float)(blockBox.ComputedStyle?.Height ?? 0);
 
-                    // An intrinsic-sizing probe runs with an infinite inline axis
-                    // (CSS Sizing 3 max-content). A control's auto width in that
-                    // pass is its own intrinsic width - taking the available width
-                    // instead made the box infinitely wide, which then had to be
-                    // clamped downstream and lost the control's real size.
-                    if (!float.IsFinite(w))
-                    {
-                        w = 0f;
-                    }
                     bool hasExplicitWidth = blockBox.ComputedStyle?.Width.HasValue == true;
                     bool hasExplicitHeight = blockBox.ComputedStyle?.Height.HasValue == true;
 
@@ -542,6 +533,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         blockBox.Geometry.Border = new Thickness();
                     }
 
+                    // An intrinsic-sizing probe runs with an infinite inline axis
+                    // (CSS Sizing 3 max-content), and a control's auto size in that
+                    // pass is its own intrinsic size - never the available space.
+                    // This sits after the replaced-size resolution above because
+                    // that is where the infinity comes back in: it is handed
+                    // state.AvailableSize and returns it verbatim for an auto width.
+                    if (!float.IsFinite(w)) w = 0f;
+                    if (!float.IsFinite(h)) h = 0f;
+
                     if (w <= 0 && !hasExplicitWidth)
                     {
                         if (nativeCheckboxOrRadio) w = ReplacedElementSizing.NativeCheckboxRadioSize;
@@ -551,6 +551,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         else if (t == "SELECT") w = 120f;
                         else w = 300f;
                     }
+
+                    if (!float.IsFinite(w)) w = 0f;
+                    if (!float.IsFinite(h)) h = 0f;
 
                     blockBox.Geometry.ContentBox = new SKRect(
                         blockBox.Geometry.ContentBox.Left,
