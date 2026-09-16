@@ -4263,9 +4263,6 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
     }
 
-    private string FetchModuleTextSync(Uri uri)
-        => FetchModuleTextAsync(uri).GetAwaiter().GetResult();
-
     private async Task<string> FetchModuleTextAsync(Uri uri)
     {
         if (uri == null) return string.Empty;
@@ -4671,7 +4668,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     /// </summary>
     private FenBrowser.Js.Modules.ModuleEvaluator CreateModuleEvaluator()
     {
-        return new FenBrowser.Js.Modules.ModuleEvaluator(_interpreter, hostSourceResolver: specifier =>
+        var evaluator = new FenBrowser.Js.Modules.ModuleEvaluator(_interpreter, hostSourceResolver: specifier =>
         {
             var resolvedUri = ResolveModuleRequestUri(specifier, referrer: null, _currentBaseUri);
             if (resolvedUri == null)
@@ -4682,14 +4679,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             {
                 return null;
             }
-            var key = resolvedUri.AbsoluteUri;
-            if (_moduleSourceCache.TryGetValue(key, out var cachedSource))
-            {
-                return cachedSource;
-            }
-            var source = FetchModuleTextSync(resolvedUri);
-            _moduleSourceCache[key] = source;
-            return source;
+            // Reads the cache and nothing else. This runs on the FenJS worker, which
+            // is the one thread that also drains the input queue, so a miss must not
+            // turn into a fetch: it means no loader has run for this module yet, and
+            // reporting it as unresolved is how that bug stays visible instead of
+            // becoming a network round-trip that freezes the page.
+            return _moduleSourceCache.TryGetValue(resolvedUri.AbsoluteUri, out var cachedSource)
+                ? cachedSource
+                : null;
         },
         hostSpecifierResolver: (specifier, referrer) =>
         {
@@ -4702,6 +4699,174 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 ? mapped.AbsoluteUri
                 : asUrl?.AbsoluteUri;
         });
+
+        // ECMA-262 16.2.1.8 HostLoadImportedModule. Installed after construction
+        // because ModuleEvaluator's constructor claims the synchronous hook for
+        // itself, and this one takes precedence over that.
+        _interpreter.DynamicImportLoader = StartDynamicModuleImport;
+        return evaluator;
+    }
+
+    /// <summary>
+    /// Loads a dynamically imported module and settles <paramref name="capability"/>
+    /// when it is ready. Returns as soon as the fetch is scheduled, so the worker
+    /// goes back to its queue instead of holding the page still for a round-trip -
+    /// a page whose chunks all arrive through import(), as a rolldown or Vite build's
+    /// do, otherwise spends its whole load unable to answer a click.
+    /// </summary>
+    private void StartDynamicModuleImport(string specifier, string referrerUrl, PromiseCapability capability)
+    {
+        Uri referrerBase = Uri.TryCreate(referrerUrl, UriKind.Absolute, out var parsedReferrer)
+            ? parsedReferrer
+            : _currentBaseUri;
+        var resolvedUri = ResolveModuleRequestUri(specifier, referrerUrl, referrerBase);
+
+        // The capability is three heap objects the JS side no longer references -
+        // the promise is pending and its resolvers are held only here - so without a
+        // pin a collection before it settles would sweep them.
+        var pin = PinFenJsValues(capability.Promise, capability.Resolve, capability.Reject);
+
+        // Every path settles from the delivery tail, never inline. This runs inside
+        // the import() that is still executing, and settling here would pump that
+        // script's microtasks in the middle of its own evaluation.
+        void Settle(string failure) => QueueOnDeliveryTail(
+            () =>
+            {
+                try
+                {
+                    SettleDynamicModuleImport(capability, specifier, referrerUrl, failure);
+                }
+                finally
+                {
+                    pin?.Dispose();
+                }
+            },
+            $"import('{specifier}') completion failed");
+
+        if (resolvedUri == null)
+        {
+            Settle($"Failed to resolve module specifier '{specifier}'.");
+            return;
+        }
+
+        if (SubresourceAllowed != null && !SubresourceAllowed(resolvedUri, "script"))
+        {
+            Settle($"Refused to load the module '{resolvedUri}'.");
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            string failure = null;
+            try
+            {
+                await LoadModuleGraphAsync(resolvedUri).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] import('{specifier}') could not load '{resolvedUri}': {ex.Message}",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+                failure = $"Failed to fetch the module '{resolvedUri}': {ex.Message}";
+            }
+
+            Settle(failure);
+        });
+    }
+
+    /// <summary>
+    /// Evaluates an imported module whose source is already cached and settles the
+    /// capability with its namespace, or rejects it. Runs on the FenJS worker: every
+    /// source it needs was fetched before this was queued, so the evaluation the
+    /// synchronous resolver performs here reads memory and never the network.
+    /// </summary>
+    private void SettleDynamicModuleImport(
+        PromiseCapability capability,
+        string specifier,
+        string referrerUrl,
+        string failure)
+    {
+        if (!capability.IsComplete)
+        {
+            return;
+        }
+
+        using (ScriptEngineLockProbe.Hold(_fenJsLock))
+        {
+            try
+            {
+                if (failure != null)
+                {
+                    RejectDynamicModuleImport(capability, failure);
+                    return;
+                }
+
+                var resolver = _interpreter.DynamicImportResolver;
+                if (resolver == null)
+                {
+                    RejectDynamicModuleImport(capability, $"No module evaluator for '{specifier}'.");
+                    return;
+                }
+
+                // The referrer decides what a relative specifier resolves against,
+                // so it has to survive the trip through the fetch: a chunk that
+                // imports "./b.js" means the one beside itself, not beside the page.
+                var moduleNamespace = resolver(specifier, referrerUrl);
+                _interpreter.InvokeFunction(
+                    capability.Resolve,
+                    new[] { moduleNamespace },
+                    JsValue.Undefined);
+            }
+            catch (FenBrowser.Js.Interpreter.JsThrownException thrown)
+            {
+                // A module that throws while evaluating rejects the import promise
+                // with the thrown value, not with a host-built error.
+                _interpreter.InvokeFunction(
+                    capability.Reject,
+                    new[] { thrown.Value },
+                    JsValue.Undefined);
+            }
+            catch (Exception ex)
+            {
+                RejectDynamicModuleImport(capability, ex.Message);
+            }
+            finally
+            {
+                _interpreter.PumpMicrotasks();
+            }
+        }
+    }
+
+    private void RejectDynamicModuleImport(PromiseCapability capability, string message)
+    {
+        _interpreter.InvokeFunction(
+            capability.Reject,
+            new[] { _interpreter.CreateTypeErrorValue(message) },
+            JsValue.Undefined);
+    }
+
+    /// <summary>
+    /// Fetches a module and everything it statically imports into the source cache.
+    /// The one loader in the engine: static graphs go through
+    /// <see cref="PrefetchModuleGraphAsync"/> at discovery time and dynamic imports
+    /// come here, so nothing ever fetches a module from the FenJS worker thread.
+    /// </summary>
+    private async Task LoadModuleGraphAsync(Uri uri)
+    {
+        var key = uri.AbsoluteUri;
+        if (_moduleSourceCache.ContainsKey(key))
+        {
+            return;
+        }
+
+        var source = await FetchModuleTextAsync(uri).ConfigureAwait(false);
+        _moduleSourceCache[key] = source;
+        if (source.Length == 0)
+        {
+            return;
+        }
+
+        await PrefetchModuleGraphAsync(key, source, uri).ConfigureAwait(false);
     }
 
     private async Task<string> FetchExternalPageScriptAsync(Uri scriptUri, Uri referer, string cspNonce = null)
