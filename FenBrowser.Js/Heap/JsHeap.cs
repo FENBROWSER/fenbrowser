@@ -1725,9 +1725,32 @@ public sealed class JsHeap
         public bool SawYoungReference { get; private set; }
 
         // Reused across cards/records within one scan: clears the per-item flag.
+        // Deliberately does NOT clear _visitedEnvironments - that set is what
+        // makes the scan linear, and it is valid for the whole pass.
         public void Reset() => SawYoungReference = false;
 
         public bool TraceEnvironmentChains => false;
+
+        // One entry per environment reached during this scan pass. The tracer is
+        // built fresh at the top of each scan, so the set covers exactly that pass.
+        private readonly HashSet<FenBrowser.Js.Environments.EnvironmentRecord> _visitedEnvironments = new();
+
+        /// <summary>
+        /// A module record's own edges include its import targets, and tracing one
+        /// walks that module's whole transitive import graph. Without this the
+        /// remembered-set scan walks that graph once per remembered record - on a
+        /// page that loads hundreds of chunks, a thousand records each re-walking
+        /// hundreds of environments, which is what turns one minor collection into
+        /// tens of seconds.
+        ///
+        /// Skipping an already-visited environment does not lose a young edge. Its
+        /// cells were marked by the walk that reached it first, and a record whose
+        /// only young reference is behind an import does not own that reference -
+        /// the target environment does, and the target is scanned on its own and
+        /// rooted by the module map besides.
+        /// </summary>
+        public bool BeginEnvironment(FenBrowser.Js.Environments.EnvironmentRecord record)
+            => _visitedEnvironments.Add(record);
 
         public void Trace(ObjectHandle handle)
         {
