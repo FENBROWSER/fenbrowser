@@ -414,6 +414,12 @@ namespace FenBrowser.Tooling
 
             PrintDebugSiteReport(report);
             Console.WriteLine();
+            if (FenBrowser.Js.Diagnostics.CompiledCodeCoverage.Enabled)
+            {
+                Console.WriteLine(
+                    $"[compiled-code-coverage] {FenBrowser.Js.Diagnostics.CompiledCodeCoverage.Describe()}");
+            }
+
             Console.WriteLine($"[debug-site] Bundle: {bundleDir}");
         }
 

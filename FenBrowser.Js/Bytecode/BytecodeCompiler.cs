@@ -369,6 +369,11 @@ public sealed class BytecodeCompiler
         var referencesArguments = !argumentsNameIsParameter && ReferencesArgumentsBinding();
         var needsOwnArgumentsObject = hasOwnArgumentsObject && referencesArguments;
 
+        if (FenBrowser.Js.Diagnostics.CompiledCodeCoverage.Enabled)
+        {
+            FenBrowser.Js.Diagnostics.CompiledCodeCoverage.RecordCompiled(_instructions.Count);
+        }
+
         return new BytecodeFunction
         {
             Name = _name,

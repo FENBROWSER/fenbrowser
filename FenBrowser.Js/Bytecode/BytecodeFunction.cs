@@ -5,6 +5,10 @@ namespace FenBrowser.Js.Bytecode;
 
 public sealed class BytecodeFunction
 {
+    // Set the first time this function is entered, so CompiledCodeCoverage counts
+    // it once. Only written while that diagnostic is on.
+    internal bool CoverageEntryRecorded;
+
     public string? Name { get; init; }
 
     // The exact source text of this function (from `function`/parameter list

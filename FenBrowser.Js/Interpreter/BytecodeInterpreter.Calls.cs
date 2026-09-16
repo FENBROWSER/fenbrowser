@@ -427,6 +427,14 @@ public sealed partial class BytecodeInterpreter
                 }
             }
 
+            if (FenBrowser.Js.Diagnostics.CompiledCodeCoverage.Enabled &&
+                !fn.Function.CoverageEntryRecorded)
+            {
+                fn.Function.CoverageEntryRecorded = true;
+                FenBrowser.Js.Diagnostics.CompiledCodeCoverage.RecordFirstEntry(
+                    fn.Function.Instructions.Count);
+            }
+
             return ExecuteInternal(fn.Function, args, thisValue, ResolveFunctionOuterEnvironment(fn), callee: fn);
         }
 
