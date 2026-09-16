@@ -13196,6 +13196,37 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     if (transform && transform.readable) return transform.readable;
                     return this;
                 };
+                // Streams "ReadableStream async iteration": for await (const chunk of
+                // stream). Without this a stream is not async-iterable at all, and the
+                // for-await throws before a single chunk is read.
+                ReadableStream.prototype.values = function (options) {
+                    var reader = this.getReader();
+                    var preventCancel = !!(options && options.preventCancel);
+                    var iterator = {
+                        next: function () {
+                            return reader.read().then(function (record) {
+                                if (record.done) {
+                                    reader.releaseLock();
+                                }
+                                return record;
+                            });
+                        },
+                        'return': function (value) {
+                            if (!preventCancel) {
+                                reader.cancel(value);
+                            }
+                            reader.releaseLock();
+                            return Promise.resolve({ value: value, done: true });
+                        },
+                        'throw': function (reason) {
+                            reader.releaseLock();
+                            return Promise.reject(reason);
+                        }
+                    };
+                    iterator[Symbol.asyncIterator] = function () { return this; };
+                    return iterator;
+                };
+                ReadableStream.prototype[Symbol.asyncIterator] = ReadableStream.prototype.values;
                 globalThis.ReadableStreamDefaultReader = ReadableStreamDefaultReader;
                 globalThis.ReadableStreamDefaultController = ReadableStreamDefaultController;
 
