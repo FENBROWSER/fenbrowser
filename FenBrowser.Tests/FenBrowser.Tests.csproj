@@ -77,6 +77,8 @@
          recascade is rooted elsewhere; the rest of the Rendering tree stays
          excluded pending review. -->
     <Compile Include="Rendering\RemUnitRootBasisTests.cs" />
+    <!-- Pseudo-element rule indexing; every key-segment shape must still match. -->
+    <Compile Include="Rendering\PseudoElementRuleIndexTests.cs" />
     <!-- Phase 1 animation-scoping regression (BrowserIntegration is in Host,
          which is otherwise excluded). -->
     <Compile Include="Host\Phase1AnimationScopingTests.cs" />

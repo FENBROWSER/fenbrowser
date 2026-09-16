@@ -31,7 +31,7 @@ private List<CssStyleRule> _universalRules; // * and attribute-only rules
 // Rules whose key segment names a pseudo-element, bucketed by that pseudo-element.
 // A ::before pass can only ever match rules in the "before" bucket, so this keeps a
 // pseudo sweep proportional to the rules that name it rather than to the whole sheet.
-private Dictionary<string, List<CssStyleRule>> _pseudoIndex;
+private Dictionary<string, PseudoRuleIndex> _pseudoIndex;
 private bool _indexed = false;
 [ThreadStatic] private static HashSet<CssStyleRule> _processedRules; // Track duplicates
 internal static long TCollect, TSort, TApply, NMatches, NElems, TCacheHit, NCacheHit, NMain, NPseudo, TPseudoCollect;
@@ -123,7 +123,7 @@ private int _inlineStyleCacheEvictions;
             _attributeIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _tagIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _universalRules = new List<CssStyleRule>();
-            _pseudoIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
+            _pseudoIndex = new Dictionary<string, PseudoRuleIndex>(StringComparer.OrdinalIgnoreCase);
             
             _pseudoElementsWithRules = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             
@@ -315,7 +315,7 @@ private int _inlineStyleCacheEvictions;
                 {
                     if (TryNormalizePseudoElementName(pe?.Name, out var normalized))
                     {
-                        AddToPseudoIndex(normalized, styleRule);
+                        AddToPseudoIndex(normalized, styleRule, keySeg);
                     }
                 }
             }
@@ -326,25 +326,96 @@ private int _inlineStyleCacheEvictions;
                 {
                     if (TryNormalizeLegacyPseudoElementName(pc?.Name, out var normalized))
                     {
-                        AddToPseudoIndex(normalized, styleRule);
+                        AddToPseudoIndex(normalized, styleRule, keySeg);
                     }
                 }
             }
         }
 
-        private void AddToPseudoIndex(string pseudoName, CssStyleRule styleRule)
+        /// <summary>
+        /// The rules naming one pseudo-element, keyed the same way the main index is.
+        /// </summary>
+        /// <remarks>
+        /// A flat list per pseudo-element meant every element was tested against every
+        /// <c>::before</c> rule on the page, and the pass ran for every element as soon
+        /// as the document contained one such rule anywhere. On youtube.com that was
+        /// 23,723 pseudo passes against 8,477 real ones, and 973 ms of the 1,395 ms the
+        /// cascade spent matching selectors - 70% of it, almost all finding nothing.
+        /// Keying by the rule's own key segment lets an element skip the rules that
+        /// could never have matched it, exactly as the main pass does.
+        /// </remarks>
+        private sealed class PseudoRuleIndex
         {
-            ref List<CssStyleRule> list = ref CollectionsMarshal.GetValueRefOrAddDefault(_pseudoIndex, pseudoName, out bool exists);
+            public readonly Dictionary<string, List<CssStyleRule>> IdIndex =
+                new(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, List<CssStyleRule>> ClassIndex =
+                new(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, List<CssStyleRule>> AttributeIndex =
+                new(StringComparer.OrdinalIgnoreCase);
+            public readonly Dictionary<string, List<CssStyleRule>> TagIndex =
+                new(StringComparer.OrdinalIgnoreCase);
+            public readonly List<CssStyleRule> UniversalRules = new();
+        }
+
+        private void AddToPseudoIndex(string pseudoName, CssStyleRule styleRule, SelectorSegment keySeg)
+        {
+            ref PseudoRuleIndex index = ref CollectionsMarshal.GetValueRefOrAddDefault(
+                _pseudoIndex, pseudoName, out bool exists);
+            if (!exists)
+            {
+                index = new PseudoRuleIndex();
+            }
+
+            // Same priority as the main index: ID > class > attribute > tag >
+            // universal. A rule reaches here once per chain naming the
+            // pseudo-element, so each bucket's last-entry check keeps the common
+            // repeat out without a set per bucket.
+            if (keySeg == null)
+            {
+                AddToPseudoBucket(index!.UniversalRules, styleRule);
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(keySeg.Id))
+            {
+                AddToPseudoBucket(BucketFor(index!.IdIndex, keySeg.Id), styleRule);
+            }
+            else if (keySeg.Classes != null && keySeg.Classes.Count > 0)
+            {
+                AddToPseudoBucket(BucketFor(index!.ClassIndex, keySeg.Classes[0]), styleRule);
+            }
+            else if (keySeg.Attributes != null &&
+                     keySeg.Attributes.Count > 0 &&
+                     !string.IsNullOrEmpty(keySeg.Attributes[0]?.Name))
+            {
+                AddToPseudoBucket(BucketFor(index!.AttributeIndex, keySeg.Attributes[0].Name), styleRule);
+            }
+            else if (!string.IsNullOrEmpty(keySeg.TagName) && keySeg.TagName != "*")
+            {
+                AddToPseudoBucket(BucketFor(index!.TagIndex, keySeg.TagName), styleRule);
+            }
+            else
+            {
+                AddToPseudoBucket(index!.UniversalRules, styleRule);
+            }
+        }
+
+        private static List<CssStyleRule> BucketFor(Dictionary<string, List<CssStyleRule>> index, string key)
+        {
+            ref List<CssStyleRule> list = ref CollectionsMarshal.GetValueRefOrAddDefault(index, key, out bool exists);
             if (!exists)
             {
                 list = new List<CssStyleRule>();
             }
 
-            // A rule reaches this bucket once per chain naming the pseudo-element; the
-            // last-entry check keeps the common repeat out without a set per bucket.
-            if (list.Count == 0 || !ReferenceEquals(list[list.Count - 1], styleRule))
+            return list!;
+        }
+
+        private static void AddToPseudoBucket(List<CssStyleRule> bucket, CssStyleRule styleRule)
+        {
+            if (bucket.Count == 0 || !ReferenceEquals(bucket[bucket.Count - 1], styleRule))
             {
-                list.Add(styleRule);
+                bucket.Add(styleRule);
             }
         }
 
@@ -896,22 +967,54 @@ return computed;
                 var requestedPseudo = pseudoElement.Trim().TrimStart(':').ToLowerInvariant();
                 if (_pseudoIndex.TryGetValue(requestedPseudo, out var pseudoRules))
                 {
-                    foreach (var rule in pseudoRules)
-                    {
-                        if (_processedRules.Add(rule))
-                            TryMatchRule(element, rule, results, pseudoElement, elementShadowRoot);
-                    }
+                    CollectFromKeyedIndex(
+                        element,
+                        results,
+                        pseudoElement,
+                        elementShadowRoot,
+                        pseudoRules.IdIndex,
+                        pseudoRules.ClassIndex,
+                        pseudoRules.AttributeIndex,
+                        pseudoRules.TagIndex,
+                        pseudoRules.UniversalRules);
                 }
 
                 return;
             }
 
+            CollectFromKeyedIndex(
+                element,
+                results,
+                pseudoElement,
+                elementShadowRoot,
+                _idIndex,
+                _classIndex,
+                _attributeIndex,
+                _tagIndex,
+                _universalRules);
+        }
+
+        /// <summary>
+        /// Walks one keyed rule index - ID, then classes, attributes, tag and finally
+        /// the universal bucket - matching each candidate against the element.
+        /// </summary>
+        private void CollectFromKeyedIndex(
+            Element element,
+            List<MatchedDeclaration> results,
+            string pseudoElement,
+            ShadowRoot elementShadowRoot,
+            Dictionary<string, List<CssStyleRule>> idIndex,
+            Dictionary<string, List<CssStyleRule>> classIndex,
+            Dictionary<string, List<CssStyleRule>> attributeRuleIndex,
+            Dictionary<string, List<CssStyleRule>> tagIndex,
+            List<CssStyleRule> universalRules)
+        {
             // Get attributes via properties
             string elemId = element.Id;
             string elemClass = element.GetAttribute("class");
             
             // 1. Check ID-specific rules (highest priority index)
-            if (!string.IsNullOrEmpty(elemId) && _idIndex.TryGetValue(elemId, out var idRules))
+            if (!string.IsNullOrEmpty(elemId) && idIndex.TryGetValue(elemId, out var idRules))
             {
                 foreach (var rule in idRules)
                 {
@@ -926,7 +1029,7 @@ return computed;
                 var classes = element.ClassList; // Use ClassList for splitting
                 foreach (var cls in classes)
                 {
-                    if (_classIndex.TryGetValue(cls, out var classRules))
+                    if (classIndex.TryGetValue(cls, out var classRules))
                     {
                         foreach (var rule in classRules)
                         {
@@ -947,7 +1050,7 @@ return computed;
                     var attribute = attributes[attributeIndex];
                     string attributeName = attribute?.LocalName ?? attribute?.Name;
                     if (!string.IsNullOrEmpty(attributeName) &&
-                        _attributeIndex.TryGetValue(attributeName, out var attributeRules))
+                        attributeRuleIndex.TryGetValue(attributeName, out var attributeRules))
                     {
                         foreach (var rule in attributeRules)
                         {
@@ -960,7 +1063,7 @@ return computed;
 
             // 4. Check tag-specific rules (_tagIndex is OrdinalIgnoreCase)
             string tag = element.TagName;
-            if (!string.IsNullOrEmpty(tag) && _tagIndex.TryGetValue(tag, out var tagRules))
+            if (!string.IsNullOrEmpty(tag) && tagIndex.TryGetValue(tag, out var tagRules))
             {
                 foreach (var rule in tagRules)
                 {
@@ -970,7 +1073,7 @@ return computed;
             }
             
             // 5. Always check universal rules
-            foreach (var rule in _universalRules)
+            foreach (var rule in universalRules)
             {
                 if (_processedRules.Add(rule))
                     TryMatchRule(element, rule, results, pseudoElement, elementShadowRoot);
