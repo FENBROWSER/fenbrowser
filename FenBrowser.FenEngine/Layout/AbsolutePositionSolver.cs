@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 // AbsolutePositionSolver.cs
 // CSS 2.1 Absolute Positioning - The Equation of 7 Variables
 // CSS Anchor Positioning Level 1 - anchor() / anchor-size() resolution
@@ -528,7 +528,14 @@ namespace FenBrowser.FenEngine.Layout
                 return Math.Max(0f, Math.Min(intrinsicHeight, availableHeight));
             }
 
-            return Math.Max(0f, availableHeight);
+            // CSS 2.1 10.6.4 rules 1 and 3: with height auto and exactly one of
+            // top/bottom auto, the used height is the content height. The gap
+            // between the two offsets is only filled when both are given, which
+            // is a different branch of the solver. Returning the available space
+            // here stretched every empty positioned box to its containing block -
+            // YouTube's empty `position:fixed; bottom:0` permission bar became a
+            // full-viewport light rectangle painted over the entire page.
+            return 0f;
         }
 
         private static void ApplyConstraints(
