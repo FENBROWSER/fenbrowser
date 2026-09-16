@@ -1133,7 +1133,65 @@ namespace FenBrowser.Core.Dom.V2
         /// Gets the HTML representation of this element and its contents.
         /// https://dom.spec.whatwg.org/#dom-element-outerhtml
         /// </summary>
-        public string OuterHTML => SerializeElement();
+        public string OuterHTML
+        {
+            get => SerializeElement();
+            set
+            {
+                // DOM "outerHTML" setter. An element with no parent has nothing to
+                // be replaced in, and the spec makes that a no-op rather than an
+                // error; replacing a child of the Document is the one case that
+                // throws.
+                var parentNode = ParentNode;
+                if (parentNode == null)
+                {
+                    return;
+                }
+
+                if (parentNode is Document)
+                {
+                    throw new DomException(
+                        "NoModificationAllowedError",
+                        "Cannot set outerHTML on an element whose parent is a Document.");
+                }
+
+                if (parentNode is not ContainerNode parent)
+                {
+                    return;
+                }
+
+                // The fragment parses against the PARENT, not against this element:
+                // "<td>" only stays a cell when the context is the row it is being
+                // written into.
+                var context = parentNode as Element ?? this;
+                Node parsedFragment;
+                try
+                {
+                    parsedFragment = Parsing.HtmlParser.ParseFragment(context, value ?? string.Empty, options: null, out _);
+                }
+                catch
+                {
+                    // Matches InnerHTML: malformed markup degrades to text rather
+                    // than tearing the tree down.
+                    parent.ReplaceChild(new Text(value ?? string.Empty, _ownerDocument), this);
+                    return;
+                }
+
+                // Move the parsed children in ahead of this element, then drop it -
+                // ReplaceChild only takes one node and the fragment may hold several.
+                while (parsedFragment.FirstChild != null)
+                {
+                    // InsertBefore reparents, the way InnerHTML's AppendChild loop does.
+                    parent.InsertBefore(parsedFragment.FirstChild, this);
+                }
+
+                parent.RemoveChild(this);
+                if (parent is Element parentElement)
+                {
+                    parentElement.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+                }
+            }
+        }
 
         private string SerializeElement()
         {

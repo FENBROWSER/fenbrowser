@@ -16743,6 +16743,22 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 // like any other insertion (HTML 4.13.4 / DOM "insert").
                 UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(element));
                 break;
+            case "outerHTML":
+            {
+                // The element replaces itself, so the tree to upgrade and to run
+                // inline scripts from is the parent it was replaced inside.
+                var outerHtmlParent = element.ParentNode;
+                element.OuterHTML = CoerceToHostString(value);
+                if (outerHtmlParent is Element replacedIn)
+                {
+                    if (ExecuteInlineScriptsOnInnerHTML)
+                    {
+                        ExecuteInlineScriptsFromElement(replacedIn);
+                    }
+                    UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(replacedIn));
+                }
+                break;
+            }
             case "textContent":
                 element.TextContent = CoerceToHostString(value);
                 break;
@@ -25871,6 +25887,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case "innerHTML":
                     value = JsValue.FromString(element.InnerHTML ?? string.Empty);
+                    return true;
+                case "outerHTML":
+                    value = JsValue.FromString(element.OuterHTML ?? string.Empty);
                     return true;
                 case "onload":
                     value = _owner.GetStoredHostPropertyOrUndefined(element, "onload");
