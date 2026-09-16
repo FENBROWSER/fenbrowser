@@ -9,4 +9,6 @@ curl -sL -o react19.mjs         "https://esm.sh/react@19.0.0/es2022/react.mjs"
 curl -sL -o react19-dom.core.mjs "https://esm.sh/react-dom@19.0.0/es2022/client.bundle.mjs"
 # esm.sh emits an absolute import for react; point it at the local copy.
 sed -i 's#from"/react@19.0.0/es2022/react.mjs"#from"./react19.mjs"#g' react19-dom.core.mjs
+curl -sL -o tstore.mjs "https://esm.sh/@tanstack/store@0.7.0/es2022/store.mjs"
+curl -sL -o alien.mjs  "https://esm.sh/alien-signals@1.0.13/es2022/alien-signals.mjs"
 echo "ready - serve with: python -m http.server 8731"
