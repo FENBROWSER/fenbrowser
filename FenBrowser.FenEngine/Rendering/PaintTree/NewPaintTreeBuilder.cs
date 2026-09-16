@@ -675,7 +675,7 @@ namespace FenBrowser.FenEngine.Rendering
                                   IsOverflowClipMode(style?.OverflowX) ||
                                   IsOverflowClipMode(style?.OverflowY));
 
-                if (isScrollable || isClipped)
+                if ((isScrollable || isClipped) && !PropagatesOverflowToViewport(node, style))
                 {
                     // Scrollable containers clip purely to padding box (usually) or content box?
                     // Spec: overflow applies to padding box.
@@ -810,7 +810,9 @@ namespace FenBrowser.FenEngine.Rendering
                 bool paintContained = ContainmentEvaluator.HasPaintContainment(style);
                 bool clipX = IsOverflowClipMode(overflowX) || IsOverflowScrollMode(overflowX) || paintContained;
                 bool clipY = IsOverflowClipMode(overflowY) || IsOverflowScrollMode(overflowY) || paintContained;
-                bool isClipped = AllowsOverflowClipping(node, style, display) && (clipX || clipY);
+                bool isClipped = AllowsOverflowClipping(node, style, display) &&
+                                 (clipX || clipY) &&
+                                 !PropagatesOverflowToViewport(node, style);
 
                 if (isClipped)
                 {
@@ -1027,6 +1029,60 @@ namespace FenBrowser.FenEngine.Rendering
 
             return float.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
         }
+
+        /// <summary>
+        /// css-overflow-3 3.3: the overflow of the root element - or of the body
+        /// when the root is visible - is propagated to the viewport, and the
+        /// element it came from then paints as if it were overflow: visible.
+        /// </summary>
+        /// <remarks>
+        /// Without the propagation, `html { overflow-y: scroll }` clips the page
+        /// to the root box. YouTube puts its whole application in an absolutely
+        /// positioned ytd-app, which leaves the root element's own height at
+        /// zero, so the clip was 1280x0 and every painted node underneath it
+        /// disappeared: a fully laid-out page rendered as a blank background.
+        /// </remarks>
+        private bool PropagatesOverflowToViewport(Node node, CssComputed style)
+        {
+            if (node is not Element element)
+            {
+                return false;
+            }
+
+            var documentElement = element.OwnerDocument?.DocumentElement;
+            if (ReferenceEquals(element, documentElement))
+            {
+                return true;
+            }
+
+            if (!string.Equals(element.TagName, "BODY", StringComparison.OrdinalIgnoreCase) ||
+                !ReferenceEquals(element.ParentNode, documentElement))
+            {
+                return false;
+            }
+
+            // The body only donates its overflow while the root element has none
+            // of its own to give.
+            CssComputed rootStyle = null;
+            _styles?.TryGetValue(documentElement, out rootStyle);
+            return !HasNonVisibleOverflow(rootStyle);
+        }
+
+        private static bool HasNonVisibleOverflow(CssComputed style)
+        {
+            if (style is null)
+            {
+                return false;
+            }
+
+            return IsNonVisibleOverflowKeyword(style.Overflow) ||
+                   IsNonVisibleOverflowKeyword(style.OverflowX) ||
+                   IsNonVisibleOverflowKeyword(style.OverflowY);
+        }
+
+        private static bool IsNonVisibleOverflowKeyword(string value)
+            => !string.IsNullOrEmpty(value) &&
+               !string.Equals(value, "visible", StringComparison.OrdinalIgnoreCase);
 
         private static bool AllowsOverflowClipping(Node node, CssComputed style, string display)
         {
