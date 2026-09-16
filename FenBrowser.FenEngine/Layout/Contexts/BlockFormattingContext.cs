@@ -1,4 +1,4 @@
-// SpecRef: CSS2.2 Visual Formatting Model and positioned layout sizing
+﻿// SpecRef: CSS2.2 Visual Formatting Model and positioned layout sizing
 // CapabilityId: LAYOUT-POSITIONING-SIZING-01
 // Determinism: strict
 // FallbackPolicy: spec-defined
@@ -493,6 +493,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 {
                     float w = blockBox.Geometry.ContentBox.Width;
                     float h = (float)(blockBox.ComputedStyle?.Height ?? 0);
+
+                    // An intrinsic-sizing probe runs with an infinite inline axis
+                    // (CSS Sizing 3 max-content). A control's auto width in that
+                    // pass is its own intrinsic width - taking the available width
+                    // instead made the box infinitely wide, which then had to be
+                    // clamped downstream and lost the control's real size.
+                    if (!float.IsFinite(w))
+                    {
+                        w = 0f;
+                    }
                     bool hasExplicitWidth = blockBox.ComputedStyle?.Width.HasValue == true;
                     bool hasExplicitHeight = blockBox.ComputedStyle?.Height.HasValue == true;
 

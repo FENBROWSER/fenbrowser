@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -115,10 +115,44 @@ namespace FenBrowser.FenEngine.Layout
             float maxWidth = Math.Max(viewportWidth * 10, 50000f);
             float maxHeight = Math.Max(viewportHeight * 10, 50000f);
 
-            box.Geometry.ContentBox = SanitizeBounds(box.Geometry.ContentBox, maxWidth, maxHeight, "ContentBox");
-            box.Geometry.PaddingBox = SanitizeBounds(box.Geometry.PaddingBox, maxWidth, maxHeight, "PaddingBox");
-            box.Geometry.BorderBox = SanitizeBounds(box.Geometry.BorderBox, maxWidth, maxHeight, "BorderBox");
-            box.Geometry.MarginBox = SanitizeBounds(box.Geometry.MarginBox, maxWidth, maxHeight, "MarginBox");
+            // Name the box in the log. "ContentBox: Width=Infinity" repeated a few
+            // hundred times says a probe leaked, but not which subtree leaked it,
+            // and that is the only thing the message is read for.
+            string who = DescribeBox(box);
+
+            box.Geometry.ContentBox = SanitizeBounds(box.Geometry.ContentBox, maxWidth, maxHeight, who + " ContentBox");
+            box.Geometry.PaddingBox = SanitizeBounds(box.Geometry.PaddingBox, maxWidth, maxHeight, who + " PaddingBox");
+            box.Geometry.BorderBox = SanitizeBounds(box.Geometry.BorderBox, maxWidth, maxHeight, who + " BorderBox");
+            box.Geometry.MarginBox = SanitizeBounds(box.Geometry.MarginBox, maxWidth, maxHeight, who + " MarginBox");
+        }
+
+        /// <summary>
+        /// A short tag#id.class identity for a layout box, for diagnostics only.
+        /// </summary>
+        private static string DescribeBox(FenBrowser.FenEngine.Layout.Tree.LayoutBox box)
+        {
+            var element = box.SourceNode as FenBrowser.Core.Dom.V2.Element;
+            if (element == null)
+            {
+                return box.GetType().Name;
+            }
+
+            string name = element.TagName ?? "?";
+            string id = element.GetAttribute("id");
+            string className = element.GetAttribute("class");
+            if (!string.IsNullOrEmpty(id))
+            {
+                name += "#" + id;
+            }
+
+            if (!string.IsNullOrEmpty(className))
+            {
+                int cut = className.IndexOf(' ');
+                name += "." + (cut > 0 ? className.Substring(0, cut) : className);
+            }
+
+            string display = box.ComputedStyle?.Display;
+            return string.IsNullOrEmpty(display) ? name : name + "[" + display + "]";
         }
     }
 }
