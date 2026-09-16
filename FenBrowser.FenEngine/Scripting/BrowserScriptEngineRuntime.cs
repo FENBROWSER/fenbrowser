@@ -7235,6 +7235,91 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return JsValue.FromBoolean(true);
                 },
                 length: 2));
+        // WebIDL 3.7: an interface's members live on its prototype, and that is
+        // where feature detection looks for them -
+        // `Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML')` is how
+        // a library decides whether it can patch innerHTML. Members answered only
+        // from the host hook are invisible to that test: they work when called and
+        // report absent when probed, so a page takes its no-support branch and
+        // there is no error anywhere to trace it by.
+        // Publishing a member the host does not implement would trade one
+        // detection bug for its mirror image: the page would take the supported
+        // branch and call something that answers undefined. This reports whether
+        // the host actually has the member on a given object.
+        _interpreter.RegisterGlobalValue(
+            "__fenHostSupports",
+            _interpreter.AllocateNativeFunction(
+                "__fenHostSupports",
+                (_, args) =>
+                {
+                    if (args.Count < 2)
+                    {
+                        return JsValue.FromBoolean(false);
+                    }
+
+                    var name = CoerceToHostString(args[1]);
+                    if (string.IsNullOrEmpty(name))
+                    {
+                        return JsValue.FromBoolean(false);
+                    }
+
+                    // Which members the host implements is decided by this build,
+                    // not by the document, so the answer is computed once per
+                    // process. Every navigation gets fresh prototypes and has to
+                    // define the accessors again, but it does not have to ask
+                    // again - that was most of the cost of doing this per load.
+                    var owner = ResolveHostObjectOrNull(args[0]) is Element probeElement
+                        ? probeElement.TagName ?? string.Empty
+                        : "#document";
+                    var cacheKey = owner + "." + name;
+                    if (HostMemberSupportCache.TryGetValue(cacheKey, out var cached))
+                    {
+                        return JsValue.FromBoolean(cached);
+                    }
+
+                    var supported = _interpreter.HostImplementsProperty(args[0], name);
+                    HostMemberSupportCache[cacheKey] = supported;
+                    return JsValue.FromBoolean(supported);
+                },
+                length: 2));
+        _interpreter.RegisterGlobalValue(
+            "__fenDefineNativeHostAccessor",
+            _interpreter.AllocateNativeFunction(
+                "__fenDefineNativeHostAccessor",
+                (_, args) =>
+                {
+                    if (args.Count < 2 || args[0].Tag != JsValueTag.Object)
+                    {
+                        return JsValue.FromBoolean(false);
+                    }
+
+                    var name = CoerceToHostString(args[1]);
+                    if (string.IsNullOrEmpty(name))
+                    {
+                        return JsValue.FromBoolean(false);
+                    }
+
+                    var getter = _interpreter.AllocateNativeFunction(
+                        "get " + name,
+                        (thisValue, _) =>
+                            _interpreter.TryGetHostPropertyDirect(thisValue, name, out var hostValue)
+                                ? hostValue
+                                : JsValue.Undefined);
+
+                    var setter = _interpreter.AllocateNativeFunction(
+                        "set " + name,
+                        (thisValue, setArgs) =>
+                        {
+                            var incoming = setArgs.Count > 0 ? setArgs[0] : JsValue.Undefined;
+                            _interpreter.TrySetHostPropertyDirect(thisValue, name, incoming);
+                            return JsValue.Undefined;
+                        },
+                        length: 1);
+
+                    return JsValue.FromBoolean(
+                        _interpreter.DefineObjectAccessor(args[0], name, getter, setter));
+                },
+                length: 2));
         _interpreter.RegisterGlobalValue(
             "__fenCreateCustomElementConstructionElement",
             _interpreter.AllocateNativeFunction(
@@ -7401,6 +7486,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsBrowserUiApis(baseUri);
         InstallFenJsRemainingWebApis();
         InstallFenJsDocumentAll();
+        // Last: this only publishes members nothing else has claimed, so it has to
+        // see the finished surface.
+        InstallFenJsInterfaceMembers();
         _interpreter.RegisterGlobalValue(
             "__fenStyleSheetRules",
             _interpreter.AllocateNativeFunction(
@@ -11131,6 +11219,321 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             FenBrowser.Core.EngineLogCompat.Warn(
                 $"[FenJsBridge] document.all installation failed: {ex.Message}",
                 FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+    }
+
+    /// <summary>
+    /// Publishes each element interface's members on its own prototype.
+    /// </summary>
+    /// <remarks>
+    /// Runs after the element-interface constructors exist, which is why it is not
+    /// part of InstallFenJsBrowserConstructors: HTMLCanvasElement and the rest are
+    /// created later, so a member published there would land on nothing.
+    /// </remarks>
+    // Keyed "TAG.member"; see __fenHostSupports. Process-wide because the answer
+    // depends on the build, never on the page.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool>
+        HostMemberSupportCache = new(StringComparer.Ordinal);
+
+    // Set only while the bootstrap asks the host which members it implements; see
+    // RecordMissingHostApi.
+    private bool _probingHostInterfaceMembers;
+
+    private void InstallFenJsInterfaceMembers()
+    {
+        _probingHostInterfaceMembers = true;
+        try
+        {
+        EvaluateWithFenJsRaw("""
+            (function () {
+                // Only a member the host really answers for gets published. The
+                // question is asked against a probe element of the right kind,
+                // because host properties are answered per object.
+                function supported(probe, name) {
+                    if (!probe || typeof globalThis.__fenHostSupports !== 'function') return false;
+                    try { return !!globalThis.__fenHostSupports(probe, name); }
+                    catch (_supportError) { return false; }
+                }
+
+                function defineHostAccessors(prototype, names, probe) {
+                    if (!prototype || typeof globalThis.__fenDefineNativeHostAccessor !== 'function') {
+                        return;
+                    }
+                    for (var i = 0; i < names.length; i++) {
+                        if (names[i] in prototype) continue;
+                        if (!supported(probe, names[i])) continue;
+                        globalThis.__fenDefineNativeHostAccessor(prototype, names[i]);
+                    }
+                }
+
+                function defineHostMethods(prototype, names, probe) {
+                    if (!prototype || typeof globalThis.__fenDefineNativeHostMethod !== 'function') {
+                        return;
+                    }
+                    for (var i = 0; i < names.length; i++) {
+                        if (names[i] in prototype) continue;
+                        if (!supported(probe, names[i])) continue;
+                        globalThis.__fenDefineNativeHostMethod(prototype, names[i]);
+                    }
+                }
+
+                // WebIDL 3.7: every interface member belongs on its interface
+                // prototype. These are answered by the host, so they are published
+                // as accessors that call straight back into it - which is what
+                // makes them visible to `'x' in Element.prototype` and to
+                // Object.getOwnPropertyDescriptor, the two things libraries
+                // actually feature-detect and patch with.
+                var __fenElementProbe = null;
+                try { __fenElementProbe = document.createElement('div'); } catch (_probeError) { }
+
+                defineHostAccessors(Node.prototype, [
+                    'nodeName', 'nodeType', 'nodeValue', 'textContent', 'childNodes',
+                    'firstChild', 'lastChild', 'parentNode', 'parentElement',
+                    'nextSibling', 'previousSibling', 'ownerDocument', 'isConnected',
+                    'baseURI'
+                ], __fenElementProbe);
+                defineHostMethods(Node.prototype, [
+                    'getRootNode',
+                    'normalize',
+                    'hasChildNodes',
+                    'isEqualNode',
+                    'isSameNode',
+                    'lookupPrefix',
+                    'lookupNamespaceURI',
+                    'isDefaultNamespace'
+                ], __fenElementProbe);
+
+                defineHostAccessors(Element.prototype, [
+                    'id', 'className', 'classList', 'tagName', 'localName', 'namespaceURI',
+                    'prefix', 'attributes', 'innerHTML', 'outerHTML', 'slot', 'part',
+                    'shadowRoot', 'children', 'childElementCount',
+                    'firstElementChild', 'lastElementChild',
+                    'nextElementSibling', 'previousElementSibling',
+                    'clientWidth', 'clientHeight', 'clientTop', 'clientLeft',
+                    'scrollWidth', 'scrollHeight', 'scrollTop', 'scrollLeft'
+                ], __fenElementProbe);
+                defineHostMethods(Element.prototype, [
+                    'getBoundingClientRect',
+                    'getClientRects',
+                    'scrollIntoView',
+                    'scroll',
+                    'scrollTo',
+                    'scrollBy',
+                    'insertAdjacentHTML',
+                    'insertAdjacentElement',
+                    'insertAdjacentText',
+                    'replaceChildren',
+                    'replaceWith',
+                    'remove',
+                    'before',
+                    'after',
+                    'getAttributeNames',
+                    'getAttributeNS',
+                    'setAttributeNS',
+                    'removeAttributeNS',
+                    'hasAttributeNS',
+                    'requestFullscreen',
+                    'getElementsByClassName',
+                    'getElementsByTagNameNS'
+                ], __fenElementProbe);
+
+                defineHostAccessors(Document.prototype, [
+                    'body', 'head', 'title', 'documentElement', 'readyState',
+                    'characterSet', 'contentType', 'doctype', 'referrer', 'cookie',
+                    'activeElement', 'forms', 'images', 'links', 'scripts',
+                    'embeds', 'styleSheets', 'defaultView', 'visibilityState', 'hidden'
+                ], document);
+                defineHostMethods(Document.prototype, [
+                    'elementFromPoint',
+                    'elementsFromPoint',
+                    'adoptNode',
+                    'execCommand',
+                    'queryCommandSupported',
+                    'createNodeIterator',
+                    'createProcessingInstruction',
+                    'createCDATASection',
+                    'getElementsByClassName',
+                    'getElementsByName',
+                    'write',
+                    'writeln',
+                    'open',
+                    'close',
+                    'replaceChildren'
+                ], document);
+
+                defineHostAccessors(CharacterData.prototype, ['data', 'length'], null);
+                defineHostMethods(CharacterData.prototype, [
+                    'substringData',
+                    'appendData',
+                    'insertData',
+                    'deleteData',
+                    'replaceData'
+                ], null);
+
+                // Element interfaces whose members a page reads by feature test.
+                // HTMLElement.prototype carries what every element has; the rest go
+                // on the interface that actually defines them, the way WebIDL has it.
+                // HTMLElement.prototype is host-backed already: its members are
+                // installed elsewhere, lazily, and answer correctly on the
+                // prototype itself. Publishing over them replaced working
+                // accessors with ones that return undefined off an element, so
+                // this interface is deliberately left alone.
+
+
+                // The element each interface is probed with. An interface with no
+                // entry here is not published at all, rather than published on
+                // the strength of a member list nobody verified.
+                var probeTags = {
+                    HTMLAnchorElement: 'a', HTMLImageElement: 'img',
+                    HTMLCanvasElement: 'canvas', HTMLInputElement: 'input',
+                    HTMLTextAreaElement: 'textarea', HTMLSelectElement: 'select',
+                    HTMLOptionElement: 'option', HTMLButtonElement: 'button',
+                    HTMLFormElement: 'form', HTMLScriptElement: 'script',
+                    HTMLLinkElement: 'link', HTMLStyleElement: 'style',
+                    HTMLIFrameElement: 'iframe', HTMLTemplateElement: 'template',
+                    HTMLMediaElement: 'video', HTMLVideoElement: 'video',
+                    HTMLAudioElement: 'audio', HTMLTableElement: 'table',
+                    HTMLTableRowElement: 'tr', HTMLTableCellElement: 'td',
+                    HTMLLabelElement: 'label', HTMLFieldSetElement: 'fieldset',
+                    HTMLOptGroupElement: 'optgroup', HTMLDialogElement: 'dialog',
+                    HTMLDetailsElement: 'details', HTMLSlotElement: 'slot',
+                    HTMLMetaElement: 'meta', HTMLBaseElement: 'base',
+                    HTMLTitleElement: 'title', HTMLOListElement: 'ol',
+                    HTMLProgressElement: 'progress', HTMLMeterElement: 'meter',
+                    HTMLOutputElement: 'output', HTMLDataElement: 'data',
+                    HTMLTimeElement: 'time', HTMLObjectElement: 'object',
+                    HTMLEmbedElement: 'embed', HTMLSourceElement: 'source',
+                    HTMLTrackElement: 'track', HTMLAreaElement: 'area',
+                    HTMLMapElement: 'map', HTMLQuoteElement: 'blockquote',
+                    HTMLModElement: 'ins', HTMLTableColElement: 'col',
+                    HTMLTableSectionElement: 'tbody', HTMLTableCaptionElement: 'caption'
+                };
+
+                // name -> [accessors, methods]
+                var interfaces = {
+                    HTMLAnchorElement: [['href', 'target', 'rel', 'relList', 'download',
+                        'hreflang', 'referrerPolicy', 'protocol', 'username', 'password',
+                        'host', 'hostname', 'port', 'pathname', 'search', 'hash', 'origin',
+                        'text'], []],
+                    HTMLImageElement: [['src', 'srcset', 'sizes', 'alt', 'crossOrigin',
+                        'useMap', 'isMap', 'width', 'height', 'naturalWidth',
+                        'naturalHeight', 'complete', 'currentSrc', 'referrerPolicy',
+                        'decoding', 'loading'], ['decode']],
+                    HTMLCanvasElement: [['width', 'height'],
+                        ['getContext', 'toDataURL', 'toBlob', 'transferControlToOffscreen']],
+                    HTMLInputElement: [['value', 'defaultValue', 'checked', 'defaultChecked',
+                        'type', 'name', 'placeholder', 'disabled', 'readOnly', 'required',
+                        'multiple', 'accept', 'min', 'max', 'step', 'pattern', 'maxLength',
+                        'minLength', 'size', 'files', 'form', 'indeterminate', 'autocomplete',
+                        'selectionStart', 'selectionEnd', 'selectionDirection', 'validity',
+                        'validationMessage', 'willValidate', 'labels'],
+                        ['select', 'setSelectionRange', 'setRangeText', 'stepUp', 'stepDown',
+                         'checkValidity', 'reportValidity', 'setCustomValidity']],
+                    HTMLTextAreaElement: [['value', 'defaultValue', 'name', 'placeholder',
+                        'disabled', 'readOnly', 'required', 'rows', 'cols', 'maxLength',
+                        'minLength', 'wrap', 'form', 'textLength', 'selectionStart',
+                        'selectionEnd', 'selectionDirection', 'validity',
+                        'validationMessage', 'willValidate', 'labels'],
+                        ['select', 'setSelectionRange', 'setRangeText', 'checkValidity',
+                         'reportValidity', 'setCustomValidity']],
+                    HTMLSelectElement: [['value', 'name', 'disabled', 'required', 'multiple',
+                        'size', 'options', 'selectedOptions', 'selectedIndex', 'length',
+                        'form', 'validity', 'validationMessage', 'willValidate', 'labels'],
+                        ['add', 'remove', 'item', 'namedItem', 'checkValidity',
+                         'reportValidity', 'setCustomValidity']],
+                    HTMLOptionElement: [['value', 'text', 'label', 'selected',
+                        'defaultSelected', 'disabled', 'index', 'form'], []],
+                    HTMLButtonElement: [['type', 'value', 'name', 'disabled', 'form',
+                        'validity', 'validationMessage', 'willValidate', 'labels'],
+                        ['checkValidity', 'reportValidity', 'setCustomValidity']],
+                    HTMLFormElement: [['action', 'method', 'target', 'name', 'elements',
+                        'length', 'enctype', 'encoding', 'acceptCharset', 'noValidate',
+                        'autocomplete'],
+                        ['submit', 'reset', 'requestSubmit', 'checkValidity',
+                         'reportValidity']],
+                    HTMLScriptElement: [['src', 'type', 'async', 'defer', 'noModule',
+                        'crossOrigin', 'integrity', 'referrerPolicy', 'text'], []],
+                    HTMLLinkElement: [['href', 'rel', 'relList', 'type', 'media', 'as',
+                        'crossOrigin', 'integrity', 'referrerPolicy', 'disabled', 'sheet'], []],
+                    HTMLStyleElement: [['media', 'type', 'disabled', 'sheet'], []],
+                    HTMLIFrameElement: [['src', 'srcdoc', 'name', 'sandbox', 'allow',
+                        'allowFullscreen', 'width', 'height', 'loading', 'referrerPolicy',
+                        'contentWindow', 'contentDocument'], ['getSVGDocument']],
+                    HTMLTemplateElement: [['content'], []],
+                    HTMLMediaElement: [['src', 'currentSrc', 'currentTime', 'duration',
+                        'paused', 'ended', 'muted', 'volume', 'playbackRate', 'autoplay',
+                        'loop', 'controls', 'preload', 'readyState', 'networkState',
+                        'buffered', 'seeking', 'crossOrigin', 'error'],
+                        ['play', 'pause', 'load', 'canPlayType', 'fastSeek']],
+                    HTMLVideoElement: [['width', 'height', 'videoWidth', 'videoHeight',
+                        'poster', 'playsInline'], []],
+                    HTMLAudioElement: [[], []],
+                    HTMLTableElement: [['rows', 'tBodies', 'tHead', 'tFoot', 'caption'],
+                        ['insertRow', 'deleteRow', 'createTHead', 'createTBody',
+                         'createTFoot', 'createCaption']],
+                    HTMLTableRowElement: [['cells', 'rowIndex', 'sectionRowIndex'],
+                        ['insertCell', 'deleteCell']],
+                    HTMLTableCellElement: [['cellIndex', 'colSpan', 'rowSpan', 'headers',
+                        'scope', 'abbr'], []],
+                    HTMLLabelElement: [['htmlFor', 'control', 'form'], []],
+                    HTMLFieldSetElement: [['disabled', 'name', 'type', 'elements', 'form'], []],
+                    HTMLOptGroupElement: [['disabled', 'label'], []],
+                    HTMLDialogElement: [['open', 'returnValue'],
+                        ['show', 'showModal', 'close']],
+                    HTMLDetailsElement: [['open'], []],
+                    HTMLSlotElement: [['name'], []],
+                    HTMLMetaElement: [['name', 'content', 'httpEquiv', 'media'], []],
+                    HTMLBaseElement: [['href', 'target'], []],
+                    HTMLTitleElement: [['text'], []],
+                    HTMLOListElement: [['start', 'reversed', 'type'], []],
+                    HTMLProgressElement: [['value', 'max', 'position', 'labels'], []],
+                    HTMLMeterElement: [['value', 'min', 'max', 'low', 'high', 'optimum',
+                        'labels'], []],
+                    HTMLOutputElement: [['value', 'defaultValue', 'name', 'htmlFor',
+                        'form'], []],
+                    HTMLDataElement: [['value'], []],
+                    HTMLTimeElement: [['dateTime'], []],
+                    HTMLObjectElement: [['data', 'type', 'name', 'width', 'height',
+                        'contentDocument', 'contentWindow'], []],
+                    HTMLEmbedElement: [['src', 'type', 'width', 'height'], []],
+                    HTMLSourceElement: [['src', 'srcset', 'sizes', 'type', 'media'], []],
+                    HTMLTrackElement: [['src', 'srclang', 'label', 'kind', 'default'], []],
+                    HTMLAreaElement: [['alt', 'coords', 'shape', 'target', 'href',
+                        'rel', 'relList'], []],
+                    HTMLMapElement: [['name', 'areas'], []],
+                    HTMLQuoteElement: [['cite'], []],
+                    HTMLModElement: [['cite', 'dateTime'], []],
+                    HTMLTableColElement: [['span'], []],
+                    HTMLTableSectionElement: [['rows'], ['insertRow', 'deleteRow']],
+                    HTMLTableCaptionElement: [[], []],
+                    ShadowRoot: [['host', 'mode', 'delegatesFocus', 'activeElement',
+                        'innerHTML'], []],
+                    DocumentFragment: [['children', 'childElementCount',
+                        'firstElementChild', 'lastElementChild'], []],
+                    Attr: [['name', 'value', 'localName', 'namespaceURI', 'prefix',
+                        'ownerElement', 'specified'], []],
+                    DocumentType: [['name', 'publicId', 'systemId'], []],
+                    Text: [['wholeText', 'assignedSlot'], ['splitText']],
+                    Comment: [[], []]
+                };
+
+                Object.keys(interfaces).forEach(function (name) {
+                    var ctor = globalThis[name];
+                    if (typeof ctor !== 'function' || !ctor.prototype) return;
+                    var tag = probeTags[name];
+                    if (!tag) return;
+                    var probe = null;
+                    try { probe = document.createElement(tag); } catch (_probeError) { return; }
+                    var spec = interfaces[name];
+                    defineHostAccessors(ctor.prototype, spec[0], probe);
+                    defineHostMethods(ctor.prototype, spec[1], probe);
+                });
+            })()
+            """);
+        }
+        finally
+        {
+            _probingHostInterfaceMembers = false;
         }
     }
 
@@ -24480,6 +24883,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 return exists;
             }
 
+            // CSSOM View 4: reading one of these resolves layout. Asking whether the
+            // member exists must not - `'clientWidth' in el` is a feature test, and
+            // making it flush the whole document is both wrong and expensive. They
+            // are answered by name for anything that is an element.
+            if (accessKind != HostPropertyAccessKind.Read &&
+                hostObject is Element &&
+                IsLayoutResolvingElementMember(property))
+            {
+                value = JsValue.Undefined;
+                return true;
+            }
+
             var found = TryGetHostObjectDefinedProperty(hostObject, property, out value);
 
             if (!found)
@@ -24493,6 +24908,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
             return found;
         }
+
+        /// <summary>
+        /// Element members whose value cannot be produced without resolving layout.
+        /// </summary>
+        private static bool IsLayoutResolvingElementMember(string property) => property switch
+        {
+            "clientWidth" or "clientHeight" or "clientTop" or "clientLeft" or
+            "scrollWidth" or "scrollHeight" or "scrollTop" or "scrollLeft" or
+            "offsetWidth" or "offsetHeight" or "offsetTop" or "offsetLeft" or
+            "offsetParent" => true,
+            _ => false
+        };
 
         public void ObserveMissingHostPropertyOperation(
             HostObjectHandle handle,
@@ -24656,6 +25083,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             string property,
             MissingApiOperationKind operationKind = MissingApiOperationKind.Read)
         {
+            // The engine asking its own surface what it implements is not a site
+            // hitting a gap. Without this the bootstrap's interface probe files a
+            // report for every member it declines to publish, and missing_apis.json
+            // - which exists to say what a page actually needed - fills up with the
+            // engine talking to itself.
+            if (_owner != null && _owner._probingHostInterfaceMembers)
+            {
+                return;
+            }
+
             if (!ShouldRecordMissingHostApi(ownerName, property))
             {
                 return;
