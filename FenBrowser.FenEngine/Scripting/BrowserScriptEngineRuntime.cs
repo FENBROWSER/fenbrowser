@@ -2332,6 +2332,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     // Work belongs to a document that has since been replaced: its results can no
     // longer be observed, so running it only starves the live document.
+    // The document a timer was scheduled against is gone, so the timer goes with
+    // it. Mirrors IsWorkItemStale, which is what refuses the callback itself.
+    private bool IsRetiredTimerDocument(string timerDocumentId)
+    {
+        if (string.IsNullOrEmpty(timerDocumentId))
+        {
+            return false;
+        }
+
+        var currentDocumentId = _currentDocumentId;
+        return currentDocumentId.Length != 0 &&
+               !string.Equals(timerDocumentId, currentDocumentId, StringComparison.Ordinal);
+    }
+
     private bool IsWorkItemStale(FenJsWorkItem workItem)
     {
         if (workItem == null || workItem.DocumentId.Length == 0)
@@ -8937,7 +8951,15 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 finally
                 {
                     Volatile.Write(ref registration.CallbackPending, 0);
-                    if (!repeat && _fenJsTimers.TryRemove(id, out var completed))
+                    // HTML "unloading document cleanup steps": a replaced document's
+                    // timers are removed. A repeating one otherwise survives the
+                    // navigation and keeps rearming - every firing is refused as
+                    // stale work, so it never completes and never stops, and the
+                    // document that replaced it is starved by a callback that can
+                    // no longer do anything. Observed on youtube.com, whose own
+                    // ?themeRefresh=1 reload then sat on its loading skeleton.
+                    if ((!repeat || IsRetiredTimerDocument(callbackDocumentId)) &&
+                        _fenJsTimers.TryRemove(id, out var completed))
                     {
                         completed.Dispose();
                     }
