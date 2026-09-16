@@ -11837,7 +11837,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 // GitHub uses new Event('click'), new Event('DOMContentLoaded'), etc.
                 // Minimal constructor: stores type + options, supports stopPropagation /
                 // preventDefault / stopImmediatePropagation.
-                globalThis.Event = function Event(type, options) {
+                var Event = globalThis.Event = function Event(type, options) {
                     if (typeof type !== 'string') {
                         throw new TypeError("Failed to construct 'Event': 1 argument required.");
                     }
@@ -11897,7 +11897,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 Event.BUBBLING_PHASE = 3;
 
                 // â”€â”€ CustomEvent â”€â”€ https://dom.spec.whatwg.org/#interface-customevent
-                globalThis.CustomEvent = function CustomEvent(type, options) {
+                var CustomEvent = globalThis.CustomEvent = function CustomEvent(type, options) {
                     Event.call(this, type, options);
                     options = options || {};
                     this.detail = options.detail !== undefined ? options.detail : null;
@@ -11911,7 +11911,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 };
 
                 // HTML §8.1.3.7.1 ErrorEvent: what "report an exception" fires at window.
-                globalThis.ErrorEvent = function ErrorEvent(type, options) {
+                var ErrorEvent = globalThis.ErrorEvent = function ErrorEvent(type, options) {
                     Event.call(this, type, options);
                     options = options || {};
                     this.message = options.message !== undefined ? String(options.message) : '';
@@ -11923,7 +11923,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 ErrorEvent.prototype = Object.create(Event.prototype);
                 ErrorEvent.prototype.constructor = ErrorEvent;
 
-                globalThis.UIEvent = function UIEvent(type, options) {
+                var UIEvent = globalThis.UIEvent = function UIEvent(type, options) {
                     Event.call(this, type, options);
                     options = options || {};
                     this.view = options.view || null;
@@ -11938,7 +11938,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     this.detail = detail || 0;
                 };
 
-                globalThis.MouseEvent = function MouseEvent(type, options) {
+                var MouseEvent = globalThis.MouseEvent = function MouseEvent(type, options) {
                     UIEvent.call(this, type, options);
                     options = options || {};
                     this.screenX = options.screenX || 0;
@@ -11975,7 +11975,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                 // Pointer Events: the constructor scripts feature-detect, over
                 // the same MouseEvent shape the engine already dispatches.
-                globalThis.PointerEvent = function PointerEvent(type, options) {
+                var PointerEvent = globalThis.PointerEvent = function PointerEvent(type, options) {
                     MouseEvent.call(this, type, options);
                     options = options || {};
                     this.pointerId = options.pointerId || 0;
@@ -11994,7 +11994,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 PointerEvent.prototype.getCoalescedEvents = function () { return [this]; };
                 PointerEvent.prototype.getPredictedEvents = function () { return []; };
 
-                globalThis.WheelEvent = function WheelEvent(type, options) {
+                var WheelEvent = globalThis.WheelEvent = function WheelEvent(type, options) {
                     MouseEvent.call(this, type, options);
                     options = options || {};
                     this.deltaX = Number(options.deltaX || 0);
@@ -12038,7 +12038,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     this.deltaMode = Number(deltaMode || 0);
                 };
 
-                globalThis.KeyboardEvent = function KeyboardEvent(type, options) {
+                var KeyboardEvent = globalThis.KeyboardEvent = function KeyboardEvent(type, options) {
                     UIEvent.call(this, type, options);
                     options = options || {};
                     this.key = options.key || '';
@@ -12069,14 +12069,234 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     this.metaKey = modifiers.indexOf('Meta') >= 0;
                 };
 
-                globalThis.BeforeUnloadEvent = function BeforeUnloadEvent(type, options) {
+                // -- UI Events the input stack produces --
+                // https://w3c.github.io/uievents/ -- scripts that wrap focus,
+                // text input or composition construct these directly, and a
+                // bundle that references one it cannot find dies on the
+                // ReferenceError before any of its other work runs.
+                var FocusEvent = globalThis.FocusEvent = function FocusEvent(type, options) {
+                    UIEvent.call(this, type, options);
+                    options = options || {};
+                    this.relatedTarget = options.relatedTarget || null;
+                };
+                FocusEvent.prototype = Object.create(UIEvent.prototype);
+                FocusEvent.prototype.constructor = FocusEvent;
+
+                var CompositionEvent = globalThis.CompositionEvent = function CompositionEvent(type, options) {
+                    UIEvent.call(this, type, options);
+                    options = options || {};
+                    this.data = options.data !== undefined && options.data !== null
+                        ? String(options.data) : '';
+                };
+                CompositionEvent.prototype = Object.create(UIEvent.prototype);
+                CompositionEvent.prototype.constructor = CompositionEvent;
+                CompositionEvent.prototype.initCompositionEvent = function (
+                    type, bubbles, cancelable, view, data) {
+                    if (this._fenDispatching) return;
+                    UIEvent.prototype.initUIEvent.call(this, type, bubbles, cancelable, view, 0);
+                    this.data = data !== undefined && data !== null ? String(data) : '';
+                };
+
+                // https://w3c.github.io/input-events/
+                var InputEvent = globalThis.InputEvent = function InputEvent(type, options) {
+                    UIEvent.call(this, type, options);
+                    options = options || {};
+                    this.data = options.data !== undefined && options.data !== null
+                        ? String(options.data) : null;
+                    this.isComposing = !!options.isComposing;
+                    this.inputType = options.inputType !== undefined ? String(options.inputType) : '';
+                    this.dataTransfer = options.dataTransfer || null;
+                };
+                InputEvent.prototype = Object.create(UIEvent.prototype);
+                InputEvent.prototype.constructor = InputEvent;
+                InputEvent.prototype.getTargetRanges = function () { return []; };
+
+                var DragEvent = globalThis.DragEvent = function DragEvent(type, options) {
+                    MouseEvent.call(this, type, options);
+                    options = options || {};
+                    this.dataTransfer = options.dataTransfer || null;
+                };
+                DragEvent.prototype = Object.create(MouseEvent.prototype);
+                DragEvent.prototype.constructor = DragEvent;
+
+                var ClipboardEvent = globalThis.ClipboardEvent = function ClipboardEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.clipboardData = options.clipboardData || null;
+                };
+                ClipboardEvent.prototype = Object.create(Event.prototype);
+                ClipboardEvent.prototype.constructor = ClipboardEvent;
+
+                // -- CSS animation and transition events --
+                // https://drafts.csswg.org/css-animations/#interface-animationevent
+                var AnimationEvent = globalThis.AnimationEvent = function AnimationEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.animationName = options.animationName !== undefined
+                        ? String(options.animationName) : '';
+                    this.elapsedTime = Number(options.elapsedTime || 0);
+                    this.pseudoElement = options.pseudoElement !== undefined
+                        ? String(options.pseudoElement) : '';
+                };
+                AnimationEvent.prototype = Object.create(Event.prototype);
+                AnimationEvent.prototype.constructor = AnimationEvent;
+
+                var TransitionEvent = globalThis.TransitionEvent = function TransitionEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.propertyName = options.propertyName !== undefined
+                        ? String(options.propertyName) : '';
+                    this.elapsedTime = Number(options.elapsedTime || 0);
+                    this.pseudoElement = options.pseudoElement !== undefined
+                        ? String(options.pseudoElement) : '';
+                };
+                TransitionEvent.prototype = Object.create(Event.prototype);
+                TransitionEvent.prototype.constructor = TransitionEvent;
+
+                // -- Navigation and lifecycle events --
+                var PopStateEvent = globalThis.PopStateEvent = function PopStateEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.state = options.state !== undefined ? options.state : null;
+                };
+                PopStateEvent.prototype = Object.create(Event.prototype);
+                PopStateEvent.prototype.constructor = PopStateEvent;
+
+                var HashChangeEvent = globalThis.HashChangeEvent = function HashChangeEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.oldURL = options.oldURL !== undefined ? String(options.oldURL) : '';
+                    this.newURL = options.newURL !== undefined ? String(options.newURL) : '';
+                };
+                HashChangeEvent.prototype = Object.create(Event.prototype);
+                HashChangeEvent.prototype.constructor = HashChangeEvent;
+
+                var PageTransitionEvent = globalThis.PageTransitionEvent = function PageTransitionEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.persisted = !!options.persisted;
+                };
+                PageTransitionEvent.prototype = Object.create(Event.prototype);
+                PageTransitionEvent.prototype.constructor = PageTransitionEvent;
+
+                // XHR 3.2 / fetch upload progress.
+                var ProgressEvent = globalThis.ProgressEvent = function ProgressEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.lengthComputable = !!options.lengthComputable;
+                    this.loaded = Number(options.loaded || 0);
+                    this.total = Number(options.total || 0);
+                };
+                ProgressEvent.prototype = Object.create(Event.prototype);
+                ProgressEvent.prototype.constructor = ProgressEvent;
+
+                var StorageEvent = globalThis.StorageEvent = function StorageEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.key = options.key !== undefined && options.key !== null
+                        ? String(options.key) : null;
+                    this.oldValue = options.oldValue !== undefined && options.oldValue !== null
+                        ? String(options.oldValue) : null;
+                    this.newValue = options.newValue !== undefined && options.newValue !== null
+                        ? String(options.newValue) : null;
+                    this.url = options.url !== undefined ? String(options.url) : '';
+                    this.storageArea = options.storageArea || null;
+                };
+                StorageEvent.prototype = Object.create(Event.prototype);
+                StorageEvent.prototype.constructor = StorageEvent;
+                StorageEvent.prototype.initStorageEvent = function (
+                    type, bubbles, cancelable, key, oldValue, newValue, url, storageArea) {
+                    if (this._fenDispatching) return;
+                    Event.prototype.initEvent.call(this, type, bubbles, cancelable);
+                    this.key = key !== undefined && key !== null ? String(key) : null;
+                    this.oldValue = oldValue !== undefined && oldValue !== null ? String(oldValue) : null;
+                    this.newValue = newValue !== undefined && newValue !== null ? String(newValue) : null;
+                    this.url = url !== undefined ? String(url) : '';
+                    this.storageArea = storageArea || null;
+                };
+
+                // -- Form events -- HTML 4.10
+                var SubmitEvent = globalThis.SubmitEvent = function SubmitEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.submitter = options.submitter || null;
+                };
+                SubmitEvent.prototype = Object.create(Event.prototype);
+                SubmitEvent.prototype.constructor = SubmitEvent;
+
+                var FormDataEvent = globalThis.FormDataEvent = function FormDataEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.formData = options.formData || null;
+                };
+                FormDataEvent.prototype = Object.create(Event.prototype);
+                FormDataEvent.prototype.constructor = FormDataEvent;
+
+                // HTML 4.11.2 -- details/dialog/popover state changes.
+                var ToggleEvent = globalThis.ToggleEvent = function ToggleEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.oldState = options.oldState !== undefined ? String(options.oldState) : '';
+                    this.newState = options.newState !== undefined ? String(options.newState) : '';
+                };
+                ToggleEvent.prototype = Object.create(Event.prototype);
+                ToggleEvent.prototype.constructor = ToggleEvent;
+
+                // -- Promise and CSP reporting --
+                var PromiseRejectionEvent = globalThis.PromiseRejectionEvent = function PromiseRejectionEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.promise = options.promise || null;
+                    this.reason = options.reason;
+                };
+                PromiseRejectionEvent.prototype = Object.create(Event.prototype);
+                PromiseRejectionEvent.prototype.constructor = PromiseRejectionEvent;
+
+                var SecurityPolicyViolationEvent = globalThis.SecurityPolicyViolationEvent =
+                    function SecurityPolicyViolationEvent(type, options) {
+                        Event.call(this, type, options);
+                        options = options || {};
+                        this.documentURI = options.documentURI !== undefined
+                            ? String(options.documentURI) : '';
+                        this.referrer = options.referrer !== undefined ? String(options.referrer) : '';
+                        this.blockedURI = options.blockedURI !== undefined
+                            ? String(options.blockedURI) : '';
+                        this.violatedDirective = options.violatedDirective !== undefined
+                            ? String(options.violatedDirective) : '';
+                        this.effectiveDirective = options.effectiveDirective !== undefined
+                            ? String(options.effectiveDirective) : '';
+                        this.originalPolicy = options.originalPolicy !== undefined
+                            ? String(options.originalPolicy) : '';
+                        this.sourceFile = options.sourceFile !== undefined
+                            ? String(options.sourceFile) : '';
+                        this.sample = options.sample !== undefined ? String(options.sample) : '';
+                        this.disposition = options.disposition !== undefined
+                            ? String(options.disposition) : 'enforce';
+                        this.statusCode = Number(options.statusCode || 0);
+                        this.lineNumber = Number(options.lineNumber || 0);
+                        this.columnNumber = Number(options.columnNumber || 0);
+                    };
+                SecurityPolicyViolationEvent.prototype = Object.create(Event.prototype);
+                SecurityPolicyViolationEvent.prototype.constructor = SecurityPolicyViolationEvent;
+
+                var CloseEvent = globalThis.CloseEvent = function CloseEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.wasClean = !!options.wasClean;
+                    this.code = Number(options.code || 0);
+                    this.reason = options.reason !== undefined ? String(options.reason) : '';
+                };
+                CloseEvent.prototype = Object.create(Event.prototype);
+                CloseEvent.prototype.constructor = CloseEvent;
+
+                var BeforeUnloadEvent = globalThis.BeforeUnloadEvent = function BeforeUnloadEvent(type, options) {
                     Event.call(this, type || 'beforeunload', options);
                     this.returnValue = '';
                 };
                 BeforeUnloadEvent.prototype = Object.create(Event.prototype);
                 BeforeUnloadEvent.prototype.constructor = BeforeUnloadEvent;
 
-                globalThis.MessageEvent = function MessageEvent(type, options) {
+                var MessageEvent = globalThis.MessageEvent = function MessageEvent(type, options) {
                     Event.call(this, type, options);
                     options = options || {};
                     this.data = options.data;
