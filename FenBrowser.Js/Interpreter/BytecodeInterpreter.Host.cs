@@ -723,6 +723,14 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    /// <summary>
+    /// A TypeError carrying <paramref name="message"/>, built the way the engine
+    /// builds its own. A host that has to reject a promise - a module load that
+    /// 404s, a blocked subresource - reports it with the error a page would see
+    /// from the engine rather than one of its own shape.
+    /// </summary>
+    public JsValue CreateTypeErrorValue(string message) => CreateTypeError(message);
+
     // E.6 - install a JS value as a global binding under the given name. Used
     // by ModuleEvaluator to wire imported bindings into the importer's
     // execution context before the module body runs.
