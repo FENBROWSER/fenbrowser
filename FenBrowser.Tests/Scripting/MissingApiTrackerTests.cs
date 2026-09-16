@@ -828,7 +828,7 @@ public sealed class MissingApiTrackerTests
                 var scriptProbe = document.createElement('script');
                 scriptProbe.fetchPriority = 'high';
                 var linkProbe = document.createElement('link');
-                linkProbe.as = 'script';
+                linkProbe.fetchPriority = 'high';
                 var imageProbe = document.createElement('img');
                 imageProbe.fetchPriority = 'low';
                 'assigned';")?.ToString());
@@ -839,7 +839,7 @@ public sealed class MissingApiTrackerTests
                 .ToDictionary(record => record.GetProperty("apiName").GetString()!, record => record);
 
             AssertStandardWrite(records, "HTMLScriptElement.fetchPriority", "HTMLScriptElement");
-            AssertStandardWrite(records, "HTMLLinkElement.as", "HTMLLinkElement");
+            AssertStandardWrite(records, "HTMLLinkElement.fetchPriority", "HTMLLinkElement");
             AssertStandardWrite(records, "HTMLImageElement.fetchPriority", "HTMLImageElement");
         }
         finally

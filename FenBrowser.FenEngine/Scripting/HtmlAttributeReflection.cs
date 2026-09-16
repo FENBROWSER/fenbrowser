@@ -38,6 +38,15 @@ internal static class HtmlAttributeReflection
 
         /// <summary>unsigned long "clamped to the range [Min, Max]" (colspan, rowspan): out-of-range values clamp rather than fall back.</summary>
         ClampedLong,
+
+        /// <summary>
+        /// HTML §4.13.2 CORS settings attribute, reflected as a nullable DOMString
+        /// (<c>crossOrigin</c>). Absent reflects as null - not "" - and any present
+        /// value other than "use-credentials" reflects as "anonymous", since the
+        /// attribute's invalid value default and its empty-string default are both
+        /// the Anonymous state. Setting null removes the content attribute.
+        /// </summary>
+        CorsSetting,
     }
 
     internal readonly record struct Entry(string Attribute, Kind Kind, string[]? Tags, long Default = 0, long Min = 0, long Max = int.MaxValue);
@@ -106,6 +115,12 @@ internal static class HtmlAttributeReflection
         // Links, images, embedded content
         Add("rel", "rel", Kind.String, new[] { "a", "area", "link", "form" });
         Add("hreflang", "hreflang", Kind.String, new[] { "a", "link" });
+        // HTML §4.2.4: the destination a <link rel=preload> is fetching for, and
+        // §4.13.2's CORS settings attribute. React sets both on every preload link
+        // it creates for a chunk, so a bundle split into a hundred chunks assigns
+        // them a hundred times before it renders anything.
+        Add("as", "as", Kind.String, new[] { "link" });
+        Add("crossOrigin", "crossorigin", Kind.CorsSetting, new[] { "link", "img", "script", "audio", "video" });
         Add("download", "download", Kind.String, new[] { "a", "area" });
         Add("ping", "ping", Kind.String, new[] { "a", "area" });
         Add("referrerPolicy", "referrerpolicy", Kind.String, new[] { "a", "area", "img", "iframe", "link", "script" });
@@ -226,6 +241,12 @@ internal static class HtmlAttributeReflection
                 return JsValue.FromBoolean(raw != null);
             case Kind.String:
                 return JsValue.FromString(raw ?? string.Empty);
+            case Kind.CorsSetting:
+                if (raw == null) return JsValue.Null;
+                return JsValue.FromString(
+                    string.Equals(raw, "use-credentials", StringComparison.OrdinalIgnoreCase)
+                        ? "use-credentials"
+                        : "anonymous");
             case Kind.Url:
                 // HTML §2.6.1: a URL attribute reflects as "" when absent and as the
                 // parsed-and-serialised URL otherwise (the raw value when parsing fails).
@@ -258,6 +279,13 @@ internal static class HtmlAttributeReflection
             case Kind.String:
             case Kind.Url:
                 element.SetAttribute(entry.Attribute, toString(value));
+                break;
+            case Kind.CorsSetting:
+                // WebIDL: a nullable reflected DOMString removes the content
+                // attribute when set to null. Undefined stringifies like any other
+                // value, so only an explicit null removes.
+                if (value.Tag == JsValueTag.Null) element.RemoveAttribute(entry.Attribute);
+                else element.SetAttribute(entry.Attribute, toString(value));
                 break;
             case Kind.Long:
                 element.SetAttribute(entry.Attribute, ToInt32Clamped(toNumber(value)).ToString(CultureInfo.InvariantCulture));
