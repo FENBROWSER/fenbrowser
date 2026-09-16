@@ -724,6 +724,23 @@ public sealed partial class BytecodeInterpreter
     }
 
     /// <summary>
+    /// Reads a property off a JS object for a host that has to inspect a value the
+    /// page handed it - an options bag, for instance. Returns false for a non-object
+    /// or a property that is not there.
+    /// </summary>
+    public bool TryGetObjectProperty(JsValue target, string name, out JsValue value)
+    {
+        value = JsValue.Undefined;
+        if (target.Tag != JsValueTag.Object || string.IsNullOrEmpty(name))
+        {
+            return false;
+        }
+
+        var obj = _heap.GetObject(target.AsObjectHandle());
+        return TryGetPropertyValue(obj, target, name, out value);
+    }
+
+    /// <summary>
     /// A TypeError carrying <paramref name="message"/>, built the way the engine
     /// builds its own. A host that has to reject a promise - a module load that
     /// 404s, a blocked subresource - reports it with the error a page would see

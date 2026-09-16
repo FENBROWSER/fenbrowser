@@ -16262,8 +16262,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return promise;
     }
 
-    private JsValue CreateViewTransitionResult(JsValue updateCallback)
+    private JsValue CreateViewTransitionResult(JsValue updateArgument)
     {
+        // CSS View Transitions Level 2: the argument is either the update callback
+        // itself or an options object { update, types }. React 19's commit path uses
+        // the object form, and treating that as "no callback" silently drops every
+        // DOM mutation of the commit while still handing back settled promises - the
+        // page then looks like it rendered nothing, with nothing thrown.
+        var updateCallback = updateArgument;
+        if (!_interpreter.CanCallValue(updateCallback) &&
+            _interpreter.TryGetObjectProperty(updateArgument, "update", out var fromOptions))
+        {
+            updateCallback = fromOptions;
+        }
+
         if (_interpreter.CanCallValue(updateCallback))
         {
             try
