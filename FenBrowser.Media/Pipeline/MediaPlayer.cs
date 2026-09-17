@@ -23,17 +23,24 @@ public sealed record MediaPlayerServices(
 
     /// <summary>How often the element hears the playback position while playing.</summary>
     public TimeSpan PositionInterval { get; init; } = TimeSpan.FromMilliseconds(40);
+
+    /// <summary>
+    /// Where demuxing and decoding run: null means in this process from the registries;
+    /// the browser sets the media-process transport here (ADR-0004).
+    /// </summary>
+    public IAudioDecodeSourceFactory? DecodeSources { get; init; }
 }
 
 /// <summary>
 /// One player: the media session of design §2.2 running the §2.3 pipeline for an audio
-/// resource. It owns the demuxer, the decoder, the audio renderer and the output stream,
-/// drives them from a single media task, and reports to the element through
-/// <see cref="IMediaResourceClient"/> on the element's thread.
+/// resource. It owns the decode source (demuxer and decoder, here or in the media
+/// process), the audio renderer and the output stream, drives them from a single media
+/// task, and reports to the element through <see cref="IMediaResourceClient"/> on the
+/// element's thread.
 /// </summary>
 /// <remarks>
 /// Every public member is safe to call from the element thread: they post commands to the
-/// media task. The media task is the only thing that touches the demuxer and decoder. The
+/// media task. The media task is the only thing that touches the decode source. The
 /// audio device pulls from the renderer on its own thread and the master clock reads the
 /// device position, so <c>currentTime</c> is what is audible, not what was decoded.
 /// </remarks>
@@ -52,12 +59,10 @@ public sealed class MediaPlayer : IMediaResource
     private Task? _task;
 
     // Media-task state.
-    private IDemuxer? _demuxer;
-    private IMediaDecoder<AudioBlock>? _decoder;
+    private IAudioDecodeSource? _decodeSource;
     private IAudioOutput? _output;
     private AudioRenderer? _renderer;
     private AudioMasterClock? _clock;
-    private MediaTrackInfo? _track;
     private MediaTime _duration = MediaTime.PositiveInfinity;
     private bool _endOfStream;
     private bool _endReported;
@@ -238,47 +243,34 @@ public sealed class MediaPlayer : IMediaResource
 
     private async ValueTask<bool> LoadAsync(CancellationToken cancellation)
     {
-        // Sniff (MIME Sniffing §6.2 resource header) and choose the container.
-        var header = new byte[Sniffing.MediaSniffer.ResourceHeaderLength];
-        int headerLength = await _source.ReadAtLeastAsync(0, header, cancellation).ConfigureAwait(false);
-        var factory = _services.Demuxers.Select(header.AsSpan(0, headerLength), _declaredMime, _context);
-        if (factory is null)
-        {
-            Report(() => _client.Failed(MediaResourceFailure.Unsupported, "No demuxer recognises the resource."));
-            return false;
-        }
+        var factory = _services.DecodeSources ?? new LocalAudioDecodeSourceFactory(_services.Demuxers, _services.Decoders);
+        _decodeSource = factory.Create(_source, _declaredMime, _context);
 
-        DemuxerInfo info;
+        AudioSourceInfo info;
         try
         {
-            _demuxer = factory.Create(_source, _context);
-            info = await _demuxer.InitializeAsync(cancellation).ConfigureAwait(false);
+            info = await _decodeSource.OpenAsync(cancellation).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is MediaFormatException or MediaLimitExceededException)
+        catch (MediaUnsupportedException ex)
+        {
+            if (ex.InnerException is not null)
+                LogLimit(ex.InnerException);
+            string message = ex.Message;
+            Report(() => _client.Failed(MediaResourceFailure.Unsupported, message));
+            return false;
+        }
+        catch (Exception ex) when (ex is MediaFormatException or MediaDecoderException or MediaLimitExceededException or MediaProcessLostException)
         {
             LogLimit(ex);
-            Report(() => _client.Failed(MediaResourceFailure.Unsupported, $"The {factory.Name} container could not be read: {ex.Message}"));
+            Fail(ex);
             return false;
         }
 
-        _track = info.Tracks.FirstOrDefault(t => t.Kind == MediaTrackKind.Audio);
-        if (_track is null)
-        {
-            Report(() => _client.Failed(MediaResourceFailure.Unsupported, "The resource has no audio track; video playback is not available yet."));
-            return false;
-        }
-
-        var candidates = _services.Decoders.GetAudioCandidates(_track.Config);
-        _decoder = await DecoderSelector.SelectAsync(candidates, _track.Config, _context, cancellation).ConfigureAwait(false);
-        if (_decoder is null)
-        {
-            Report(() => _client.Failed(MediaResourceFailure.Unsupported, $"No decoder for {_track.Config.Codec}."));
-            return false;
-        }
+        var track = info.AudioTrack;
 
         // The device decides the format the renderer produces; the clock follows the device.
         _output = _services.AudioOutputs.Create();
-        var format = await _output.OpenAsync(new AudioStreamFormat(_track.Config.SampleRate, _track.Config.Channels), _relay, cancellation).ConfigureAwait(false);
+        var format = await _output.OpenAsync(new AudioStreamFormat(track.Config.SampleRate, track.Config.Channels), _relay, cancellation).ConfigureAwait(false);
         _clock = new AudioMasterClock(_output.Position);
         _renderer = new AudioRenderer(format, _clock);
         _relay.Target = _renderer;
@@ -302,37 +294,30 @@ public sealed class MediaPlayer : IMediaResource
     private async ValueTask FillAheadAsync(CancellationToken cancellation)
     {
         var renderer = _renderer!;
-        var demuxer = _demuxer!;
-        var decoder = _decoder!;
+        var source = _decodeSource!;
         var output = new RendererOutput(renderer, this);
 
         try
         {
             while (!_endOfStream && renderer.QueuedDuration < _services.DecodeAhead)
             {
-                var packet = await demuxer.ReadPacketAsync(cancellation).ConfigureAwait(false);
-                if (packet is null)
+                var block = await source.ReadAsync(cancellation).ConfigureAwait(false);
+                if (block is null)
                 {
-                    await decoder.DrainAsync(output, cancellation).ConfigureAwait(false);
                     output.FlushStretcher();
                     renderer.MarkEndOfStream();
                     _endOfStream = true;
                     break;
                 }
 
-                using (packet)
-                {
-                    if (packet.TrackId != _track!.Id)
-                        continue;
-                    await decoder.DecodeAsync(packet, output, cancellation).ConfigureAwait(false);
-                }
+                output.Emit(block);
             }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
             throw;
         }
-        catch (Exception ex) when (ex is MediaFormatException or MediaDecoderException or MediaLimitExceededException)
+        catch (Exception ex) when (ex is MediaFormatException or MediaDecoderException or MediaLimitExceededException or MediaProcessLostException)
         {
             LogLimit(ex);
             Fail(ex);
@@ -429,8 +414,17 @@ public sealed class MediaPlayer : IMediaResource
         _trimBefore = target;
         _endOfStream = false;
         _endReported = false;
-        await _decoder!.ResetAsync(cancellation).ConfigureAwait(false);
-        await _demuxer!.SeekAsync(target, cancellation).ConfigureAwait(false);
+        try
+        {
+            await _decodeSource!.SeekAsync(target, cancellation).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is MediaFormatException or MediaDecoderException or MediaLimitExceededException or MediaProcessLostException)
+        {
+            LogLimit(ex);
+            Fail(ex);
+            return;
+        }
+
         if (report)
         {
             _readyState = MediaReadyState.HaveMetadata;
@@ -456,7 +450,7 @@ public sealed class MediaPlayer : IMediaResource
         if (_failed)
             return;
         _failed = true;
-        var failure = ex is MediaFormatException or MediaLimitExceededException or MediaDecoderException
+        var failure = ex is MediaFormatException or MediaLimitExceededException or MediaDecoderException or MediaProcessLostException
             ? MediaResourceFailure.Decode
             : MediaResourceFailure.Network;
         _context.Log.Emit(_context.Player, MediaEventKind.Error, MediaLogLevel.Error, ex.Message, ("reason", ex.GetType().Name));
@@ -503,11 +497,10 @@ public sealed class MediaPlayer : IMediaResource
             }
 
             _renderer?.Dispose();
-            if (_decoder is not null)
-                await _decoder.DisposeAsync().ConfigureAwait(false);
-            if (_demuxer is not null)
-                await _demuxer.DisposeAsync().ConfigureAwait(false);
-            await _source.DisposeAsync().ConfigureAwait(false);
+            if (_decodeSource is not null)
+                await _decodeSource.DisposeAsync().ConfigureAwait(false);
+            else
+                await _source.DisposeAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
