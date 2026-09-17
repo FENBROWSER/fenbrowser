@@ -308,6 +308,17 @@ public static partial class Kernel32Interop
         IntPtr hProcess);
 
     /// <summary>
+    /// Reports whether <paramref name="hProcess"/> runs inside <paramref name="hJob"/>,
+    /// or inside any job when <paramref name="hJob"/> is <see cref="IntPtr.Zero"/>.
+    /// </summary>
+    [DllImport(Kernel32, SetLastError = true, EntryPoint = "IsProcessInJob")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsProcessInJob(
+        IntPtr hProcess,
+        IntPtr hJob,
+        [MarshalAs(UnmanagedType.Bool)] out bool result);
+
+    /// <summary>
     /// Retrieves limit and job state information from the job object.
     /// </summary>
     /// <param name="hJob">A handle to the job object.</param>
