@@ -257,6 +257,34 @@ public sealed class FenJsMediaElementTests
         Assert.Equal("|https://example.test/|pending|https://example.test/movie.webm|http://[bad|true", result);
     }
 
+    [Fact]
+    public async Task NavigatorReportsTheAutoplayPolicy()
+    {
+        var previous = MediaAutoplayPolicy.Default.Mode;
+        MediaAutoplayPolicy.Default.Mode = AutoplayPolicyMode.AllowedMuted;
+        try
+        {
+            var engine = await CreateEngineAsync("<html><body></body></html>");
+            var result = engine.Evaluate("""
+                var v = document.createElement('video');
+                var m = document.createElement('video'); m.muted = true;
+                [
+                  navigator.getAutoplayPolicy('mediaelement'),
+                  navigator.getAutoplayPolicy('audiocontext'),
+                  navigator.getAutoplayPolicy(v),
+                  navigator.getAutoplayPolicy(m),
+                  (function () { try { navigator.getAutoplayPolicy('bogus'); return 'no-throw'; } catch (e) { return e.name; } })()
+                ].join('|')
+                """)?.ToString();
+
+            Assert.Equal("allowed-muted|allowed|allowed-muted|allowed|TypeError", result);
+        }
+        finally
+        {
+            MediaAutoplayPolicy.Default.Mode = previous;
+        }
+    }
+
     private static async Task<string> WaitForAsync(FenJsBrowserScriptEngine engine, string expression)
     {
         var stopwatch = Stopwatch.StartNew();

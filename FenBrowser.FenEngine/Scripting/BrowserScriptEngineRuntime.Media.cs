@@ -653,6 +653,58 @@ public sealed partial class FenJsBrowserScriptEngine
         private sealed record MediaPromise(JsValue Promise, JsValue Resolve, JsValue Reject);
     }
 
+    /// <summary>
+    /// Autoplay Policy Detection §3 navigator.getAutoplayPolicy(): for "mediaelement" or a
+    /// media element, the document's policy (with a muted element allowed-muted collapses
+    /// to allowed); for "audiocontext" or an AudioContext there is no muted state, so it
+    /// is allowed or disallowed. Anything else is a TypeError, as for a bad enum value.
+    /// </summary>
+    private JsValue GetAutoplayPolicy(JsValue argument)
+    {
+        var documentPolicy = MediaEngineServices.Autoplay.PolicyFor(HasUserActivation);
+        if (argument.Tag == JsValueTag.String)
+        {
+            switch (CoerceToHostString(argument))
+            {
+                case "mediaelement":
+                    return JsValue.FromString(MediaAutoplayPolicy.ToDomString(documentPolicy));
+                case "audiocontext":
+                    return JsValue.FromString(documentPolicy == AutoplayPolicyMode.Disallowed ? "disallowed" : "allowed");
+            }
+        }
+        else if (argument.Tag == JsValueTag.HostObject && ResolveHostObjectOrNull(argument) is Element element && IsMediaElement(element))
+        {
+            var policy = documentPolicy;
+            if (policy == AutoplayPolicyMode.AllowedMuted && TryGetMediaBinding(element, out var binding) &&
+                (binding.Controller.Muted || binding.Controller.Volume <= 0.0))
+            {
+                policy = AutoplayPolicyMode.Allowed;
+            }
+
+            return JsValue.FromString(MediaAutoplayPolicy.ToDomString(policy));
+        }
+        else if (argument.Tag == JsValueTag.Object && IsAudioContextValue(argument))
+        {
+            return JsValue.FromString(documentPolicy == AutoplayPolicyMode.Disallowed ? "disallowed" : "allowed");
+        }
+
+        ThrowDomException("TypeError", "Failed to execute 'getAutoplayPolicy' on 'Navigator': the argument is not an AutoplayPolicyMediaType, HTMLMediaElement or AudioContext.");
+        return JsValue.Undefined;
+    }
+
+    private bool IsAudioContextValue(JsValue value)
+    {
+        var ctor = ReadJsProperty(value, "constructor");
+        if (ctor.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var name = CoerceToHostString(ReadJsProperty(ctor, "name"));
+        return string.Equals(name, "AudioContext", StringComparison.Ordinal) ||
+               string.Equals(name, "OfflineAudioContext", StringComparison.Ordinal);
+    }
+
     // ---- The IDL surface (HTML §4.8.9 HTMLVideoElement, §4.8.11 HTMLMediaElement) ---------------
 
     private JsValue CreateDomExceptionValue(string name, string message)

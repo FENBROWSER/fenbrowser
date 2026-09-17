@@ -7575,6 +7575,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             }));
         SetStoredHostProperty(
             navigator,
+            "getAutoplayPolicy",
+            _interpreter.AllocateNativeFunction(
+                "getAutoplayPolicy",
+                (_, args) => GetAutoplayPolicy(args.Count > 0 ? args[0] : JsValue.Undefined),
+                length: 1));
+        SetStoredHostProperty(
+            navigator,
             "sendBeacon",
             _interpreter.AllocateNativeFunction(
                 "sendBeacon",
