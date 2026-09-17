@@ -687,7 +687,7 @@ internal static class WebIdlInventoryRunner
             RepositoryRoot = root,
             IdlDirectory = Path.Combine(root, "FenBrowser.Core", "WebIDL", "Idl"),
             OutputDirectory = Path.Combine(root, "Results", "webidl", "manual-binding-inventory"),
-            SelectedWptRoot = @"C:\Users\udayk\Videos\wpt",
+            SelectedWptRoot = @"D:\wpt",
             SelectedWptPaths = new List<string>()
         };
 

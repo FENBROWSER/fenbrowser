@@ -43,7 +43,7 @@ Do not begin with all DOM interfaces. The deterministic inventory names `EventIn
 ## Inventory command and artifacts
 
 ```powershell
-dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- webidl-inventory --output-dir Results/webidl/manual-binding-inventory --wpt-root C:/Users/udayk/Videos/wpt --selected-wpt dom/lists/DOMTokenList-stringifier.html,dom/lists/DOMTokenList-value.html,html/semantics/forms/the-input-element/checkbox-click-events.html
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- webidl-inventory --output-dir Results/webidl/manual-binding-inventory --wpt-root D:/wpt --selected-wpt dom/lists/DOMTokenList-stringifier.html,dom/lists/DOMTokenList-value.html,html/semantics/forms/the-input-element/checkbox-click-events.html
 ```
 
 - `Results/webidl/manual-binding-inventory/webidl_manual_binding_inventory.json`
