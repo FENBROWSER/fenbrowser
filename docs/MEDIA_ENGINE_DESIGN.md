@@ -290,6 +290,13 @@ Each phase has exit criteria. Phases are ordered by site-breakage value, not by 
 
 Every phase follows the Commit & Push discipline: small, verified, human-style commits.
 
+### Progress
+
+| Phase | Status | Notes |
+|---|---|---|
+| M0 | DONE (2026-09-17, branch `feat/media-engine`) | `FenBrowser.Media` core: `MediaTime`, `MediaTimeRanges`, tracks and codecs, `MediaLimits`, `IMediaLogSink`, the spec-exact `MediaSniffer`, pooled `EncodedPacket` / `VideoFrame` / `AudioBlock` on a private zeroing pool, the pipeline contracts, `DemuxerRegistry`, `DecoderRegistry` with kill switch and quarantine, `DecoderSelector`, `AudioMasterClock`, `MonotonicMediaClock`. `LogCategory.Media`, ADR-0001 to ADR-0006, `scripts/media/gen_fixtures.py` with 16 fixtures, `fenplay probe`/`limits`, and a blocking CI job. The `IMediaLogSink` to `FenLogger` adapter moves to M1, where FenEngine first references the media library. |
+| M1 | NEXT | |
+
 ---
 
 ## 9. Decisions (all accepted 2026-09-17)
