@@ -4,7 +4,7 @@ namespace FenBrowser.Media;
 /// An immutable, normalized set of time ranges.
 /// </summary>
 /// <remarks>
-/// WHATWG HTML §4.8.11.10 "Time ranges": a normalized TimeRanges object has ranges that
+/// WHATWG HTML §4.8.11.14 "Time ranges": a normalized TimeRanges object has ranges that
 /// are ordered, do not overlap, are not empty, and do not touch (adjacent ranges are
 /// folded into one). Every instance of this type satisfies those rules, so the DOM
 /// <c>buffered</c>, <c>seekable</c> and <c>played</c> attributes can expose it directly.
