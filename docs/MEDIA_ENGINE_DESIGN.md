@@ -292,9 +292,9 @@ Every phase follows the Commit & Push discipline: small, verified, human-style c
 
 ---
 
-## 9. Decisions needing sign-off (BLOCKED_NEEDS_HUMAN_DECISION until accepted)
+## 9. Decisions (all accepted 2026-09-17)
 
-Each becomes an ADR in `docs/DECISION_RECORDS/`.
+Recorded as ADR-0001 to ADR-0006 in `docs/DECISION_RECORDS/`. D1 maps to ADR-0001, D2 to ADR-0002, and so on.
 
 | ID | Decision | Recommendation |
 |---|---|---|
