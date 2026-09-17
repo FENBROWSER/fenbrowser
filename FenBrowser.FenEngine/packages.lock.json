@@ -158,6 +158,9 @@
           "Microsoft.Extensions.Logging.Abstractions": "[10.0.9, )",
           "NodaTime": "[3.3.2, )"
         }
+      },
+      "fenbrowser.media": {
+        "type": "Project"
       }
     }
   }
