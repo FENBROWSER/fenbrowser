@@ -38,7 +38,8 @@ public sealed partial class FenJsBrowserScriptEngine
     private FenJsBrowserScriptEngine MediaObserverOwner => _parentRealmOwner?.MediaObserverOwner ?? this;
 
     internal static bool IsMediaElement(Element element) =>
-        IsVideoElement(element) || IsAudioElement(element);
+        (IsVideoElement(element) || IsAudioElement(element)) &&
+        HtmlElementInterfaceCatalog.IsHtmlNamespace(element.NamespaceUri);
 
     private static bool IsVideoElement(Element element) =>
         string.Equals(element?.TagName, "video", StringComparison.OrdinalIgnoreCase);
@@ -46,8 +47,12 @@ public sealed partial class FenJsBrowserScriptEngine
     private static bool IsAudioElement(Element element) =>
         string.Equals(element?.TagName, "audio", StringComparison.OrdinalIgnoreCase);
 
+    // Only an HTML source element is a candidate (§4.8.11.5); one created in
+    // another namespace with the same local name is an ordinary child.
     private static bool IsSourceElement(Node node) =>
-        node is Element element && string.Equals(element.TagName, "source", StringComparison.OrdinalIgnoreCase);
+        node is Element element &&
+        string.Equals(element.LocalName, "source", StringComparison.OrdinalIgnoreCase) &&
+        HtmlElementInterfaceCatalog.IsHtmlNamespace(element.NamespaceUri);
 
     private bool HasUserActivation => _stickyUserActivation || _transientUserActivationDepth > 0;
 
@@ -104,6 +109,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 if (target is Element element &&
                     IsMediaElement(element) &&
                     string.Equals(attributeName, "src", StringComparison.OrdinalIgnoreCase) &&
+                    string.IsNullOrEmpty(attributeNamespace) &&
                     OwnsDocumentForImageEvents(element.OwnerDocument))
                 {
                     // HTML §4.8.11.2: "If a src attribute of a media element is set or
@@ -377,7 +383,7 @@ public sealed partial class FenJsBrowserScriptEngine
         /// </summary>
         public void Start()
         {
-            if (_element.HasAttribute("src"))
+            if (SrcAttribute != null)
             {
                 Controller.OnSrcAttributeSet();
                 return;
@@ -397,17 +403,44 @@ public sealed partial class FenJsBrowserScriptEngine
 
         public bool IsVideo => IsVideoElement(_element);
 
-        public string SrcAttribute => _element.GetAttribute("src");
+        public string SrcAttribute => HtmlAttribute(_element, "src");
 
-        public bool HasAutoplayAttribute => _element.HasAttribute("autoplay");
+        public bool HasAutoplayAttribute => HtmlAttribute(_element, "autoplay") != null;
 
-        public bool HasLoopAttribute => _element.HasAttribute("loop");
+        public bool HasLoopAttribute => HtmlAttribute(_element, "loop") != null;
 
-        public bool HasMutedAttribute => _element.HasAttribute("muted");
+        public bool HasMutedAttribute => HtmlAttribute(_element, "muted") != null;
 
-        public string CrossOriginAttribute => _element.GetAttribute("crossorigin");
+        public string CrossOriginAttribute => HtmlAttribute(_element, "crossorigin");
 
-        public string PreloadAttribute => _element.GetAttribute("preload");
+        public string PreloadAttribute => HtmlAttribute(_element, "preload");
+
+        /// <summary>
+        /// An HTML content attribute: the one in the null namespace with this local name.
+        /// getAttribute() matches by qualified name and would also find an attribute of the
+        /// same name set with setAttributeNS in some other namespace, which is not the
+        /// media element's src (or a source's src) at all.
+        /// </summary>
+        private static string HtmlAttribute(Element element, string name)
+        {
+            if (element == null || !element.HasAttributes())
+            {
+                return null;
+            }
+
+            var attributes = element.Attributes;
+            for (var i = 0; i < attributes.Length; i++)
+            {
+                var attribute = attributes[i];
+                if (string.IsNullOrEmpty(attribute.NamespaceUri) &&
+                    string.Equals(attribute.LocalName, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return attribute.Value ?? string.Empty;
+                }
+            }
+
+            return null;
+        }
 
         public object FirstChild => _element.FirstChild;
 
@@ -415,7 +448,7 @@ public sealed partial class FenJsBrowserScriptEngine
 
         public bool IsSourceElement(object node) => node is Node n && FenJsBrowserScriptEngine.IsSourceElement(n);
 
-        public string GetSourceAttribute(object source, string name) => (source as Element)?.GetAttribute(name);
+        public string GetSourceAttribute(object source, string name) => HtmlAttribute(source as Element, name);
 
         /// <summary>HTML "encoding-parse a URL" against the node document's base URL.</summary>
         public string ResolveUrl(string value)

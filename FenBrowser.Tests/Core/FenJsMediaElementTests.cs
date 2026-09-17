@@ -193,6 +193,25 @@ public sealed class FenJsMediaElementTests
         Assert.Equal("true|true|true|true|function|true|true|true|auto:3:https://example.test/song.mp3", results);
     }
 
+    [Fact]
+    public async Task SourcesAndSrcInAnotherNamespaceDoNotStartSelection()
+    {
+        var engine = await CreateEngineAsync("<html><body><video id=v></video></body></html>");
+
+        var state = engine.Evaluate("""
+            var v = document.getElementById('v');
+            v.appendChild(document.createElementNS('bogus', 'source'));
+            var afterForeignSource = v.networkState;
+            v.setAttributeNS('bogus', 'src', 'movie.webm');
+            var afterForeignSrc = v.networkState + ':' + v.getAttributeNS('bogus', 'src') + ':' + String(v.getAttributeNS(null, 'src'));
+            v.removeAttributeNS('bogus', 'src');
+            v.setAttributeNS(null, 'src', 'movie.webm');
+            [afterForeignSource, afterForeignSrc, v.hasAttributeNS('bogus', 'src'), v.networkState].join('|')
+            """)?.ToString();
+
+        Assert.Equal("0|0:movie.webm:null|false|3", state);
+    }
+
     private static async Task<string> WaitForAsync(FenJsBrowserScriptEngine engine, string expression)
     {
         var stopwatch = Stopwatch.StartNew();
