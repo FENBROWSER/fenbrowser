@@ -190,8 +190,7 @@ namespace FenBrowser.Tooling
                 "--log-wptreport",
                 reportPath,
                 "--log-mach",
-                machLogPath,
-                "fenbrowser"
+                machLogPath
             });
 
             if (options.TestTypes.Count > 0)
@@ -245,6 +244,9 @@ namespace FenBrowser.Tooling
                 arguments.Add(options.ChunkType);
             }
 
+            // argparse stops filling the positional test list at the first option
+            // it meets after the product, so the product and the tests go last.
+            arguments.Add("fenbrowser");
             arguments.AddRange(options.Tests);
 
             // Invoke the WPT venv's interpreter directly. The bare "python" on PATH
@@ -1011,7 +1013,9 @@ namespace FenBrowser.Tooling
                 ThisChunk = 1,
                 ChunkType = "id_hash",
                 UpdateManifest = false,
-                VenvPath = FindFirstExisting(Path.Combine(@"D:\wpt", "_venv3")),
+                VenvPath = FindFirstExisting(
+                    Path.Combine(@"D:\wpt", "_venv3"),
+                    @"D:\Videosenbrowser-wpt-venv"),
                 SkipVenvSetup = false,
                 Tests = new List<string> { "dom/" }
             };
