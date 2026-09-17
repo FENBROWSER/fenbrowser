@@ -115,7 +115,7 @@ internal static class DemuxerFuzz
         }
         catch (Exception ex) when (ex is not Xunit.Sdk.XunitException)
         {
-            Assert.Fail($"{factory.Name} threw {ex.GetType().Name} ({ex.Message}) on {MediaFuzzCorpus.Hex(input)}");
+            Assert.Fail($"{factory.Name} threw {ex.GetType().Name} ({ex.Message}) on {MediaFuzzCorpus.Hex(input)}{Environment.NewLine}{ex.StackTrace}");
             throw;
         }
         finally
