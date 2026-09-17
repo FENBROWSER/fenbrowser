@@ -1,0 +1,20 @@
+// Selected declarations from local WPT interfaces/html.idl at
+// 08008df7afd0916a2afdc41d919dd322ecf295cc (HTML 4.8.9, 4.8.10).
+// Metadata only: generated FenEngine bindings remain excluded from compilation.
+[Exposed=Window]
+interface HTMLVideoElement : HTMLMediaElement {
+  [HTMLConstructor] constructor();
+
+  [CEReactions, Reflect] attribute unsigned long width;
+  [CEReactions, Reflect] attribute unsigned long height;
+  readonly attribute unsigned long videoWidth;
+  readonly attribute unsigned long videoHeight;
+  [CEReactions, ReflectURL] attribute USVString poster;
+  [CEReactions, Reflect] attribute boolean playsInline;
+};
+
+[Exposed=Window,
+ LegacyFactoryFunction=Audio(optional DOMString src)]
+interface HTMLAudioElement : HTMLMediaElement {
+  [HTMLConstructor] constructor();
+};
