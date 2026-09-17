@@ -23669,6 +23669,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return sb.ToString();
     }
 
+    // WebIDL DOMString? for a namespace: null, undefined and "" are all the null namespace.
+    private static string CoerceToNamespace(JsValue value)
+    {
+        if (value.Tag == JsValueTag.Null || value.Tag == JsValueTag.Undefined)
+        {
+            return null;
+        }
+
+        var text = CoerceToHostString(value);
+        return string.IsNullOrEmpty(text) ? null : text;
+    }
+
     private static string CoerceToHostString(JsValue value)
     {
         return value.Tag switch
@@ -27557,6 +27569,79 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             {
                                 _owner.NotifyResizeObservers(element);
                             }
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
+                    return true;
+                // DOM 4.9 dom-element-getattributens and friends: a namespace given
+                // as null, undefined or "" is the null namespace, and lookups are by
+                // local name within it. The namespaced setter never runs the
+                // HTML-namespace change steps (src on a media element, on* handlers).
+                case "getAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "getAttributeNS",
+                        (_, args) =>
+                        {
+                            var namespaceUri = args.Count > 0 ? CoerceToNamespace(args[0]) : null;
+                            var localName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            var attributeValue = element.GetAttributeNS(namespaceUri, localName);
+                            return attributeValue == null ? JsValue.Null : JsValue.FromString(attributeValue);
+                        },
+                        length: 2);
+                    return true;
+                case "hasAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "hasAttributeNS",
+                        (_, args) =>
+                        {
+                            var namespaceUri = args.Count > 0 ? CoerceToNamespace(args[0]) : null;
+                            var localName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            return JsValue.FromBoolean(element.HasAttributeNS(namespaceUri, localName));
+                        },
+                        length: 2);
+                    return true;
+                case "setAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "setAttributeNS",
+                        (_, args) =>
+                        {
+                            var namespaceUri = args.Count > 0 ? CoerceToNamespace(args[0]) : null;
+                            var qualifiedName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            var attributeValue = args.Count > 2 ? CoerceToHostString(args[2]) : string.Empty;
+                            if (namespaceUri == null)
+                            {
+                                element.SetAttribute(qualifiedName, attributeValue);
+                                _owner.ApplyEventHandlerContentAttributeChange(element, qualifiedName, attributeValue);
+                            }
+                            else
+                            {
+                                element.SetAttributeNS(namespaceUri, qualifiedName, attributeValue);
+                            }
+
+                            return JsValue.Undefined;
+                        },
+                        length: 3);
+                    return true;
+                case "removeAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "removeAttributeNS",
+                        (_, args) =>
+                        {
+                            var namespaceUri = args.Count > 0 ? CoerceToNamespace(args[0]) : null;
+                            var localName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            if (namespaceUri == null)
+                            {
+                                element.RemoveAttribute(localName);
+                            }
+                            else
+                            {
+                                element.RemoveAttributeNS(namespaceUri, localName);
+                            }
+
                             return JsValue.Undefined;
                         },
                         length: 2);
