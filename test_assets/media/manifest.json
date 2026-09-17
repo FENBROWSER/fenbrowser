@@ -155,6 +155,25 @@
       ]
     },
     {
+      "file": "sine_aac.aac",
+      "bytes": 8639,
+      "sha256": "f59d0ed61204bcdc962bc6db82ae677c0e189690e62a012422780b657f28eeb6",
+      "sniff": null,
+      "note": "ADTS frames: no signature in the sniffing table",
+      "container": "aac",
+      "durationSeconds": 1.024,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "aac",
+          "timeBase": "1/28224000",
+          "sampleRate": 48000,
+          "channels": 1
+        }
+      ]
+    },
+    {
       "file": "sine_opus.webm",
       "bytes": 5671,
       "sha256": "09f7ed9985124362e2d8943d3fd150841476100811796d63113741a98f9c8f0f",

@@ -1,4 +1,5 @@
 using FenBrowser.Media.Codecs;
+using FenBrowser.Media.Containers.Adts;
 using FenBrowser.Media.Containers.Flac;
 using FenBrowser.Media.Containers.Mp3;
 using FenBrowser.Media.Containers.Ogg;
@@ -24,6 +25,7 @@ public static class MediaFormats
         demuxers.Register(Mp3DemuxerFactory.Instance);
         demuxers.Register(OggDemuxerFactory.Instance);
         demuxers.Register(FlacDemuxerFactory.Instance);
+        demuxers.Register(AdtsDemuxerFactory.Instance);
         decoders.Register(PcmDecoderFactory.Instance);
     }
 }

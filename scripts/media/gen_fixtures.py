@@ -54,6 +54,8 @@ FIXTURES: list[tuple[str, list[str], str | None, str]] = [
      "audio/wave", "RIFF WAVE pattern row"),
     ("sine_aac.m4a", SINE + ["-c:a", "aac", "-b:a", "64k"],
      None, "ftyp M4A with no brand starting mp4"),
+    ("sine_aac.aac", SINE + ["-c:a", "aac", "-b:a", "64k", "-f", "adts"],
+     None, "ADTS frames: no signature in the sniffing table"),
     ("sine_opus.webm", SINE + ["-c:a", "libopus", "-b:a", "32k"],
      "video/webm", "EBML DocType webm (audio-only WebM still sniffs as video/webm)"),
     ("pattern_vp9.webm", PATTERN + VIDEO_ONE_THREAD + ["-c:v", "libvpx-vp9", "-b:v", "50k", "-deadline", "good", "-cpu-used", "4"],
