@@ -39,6 +39,7 @@ public sealed class AudioRenderer : IAudioRenderCallback
     private double _volume = 1.0;
     private double _rate = 1.0;
     private int _muted;
+    private int _pitchPreserved;
 
     public AudioRenderer(AudioStreamFormat output, AudioMasterClock clock)
     {
@@ -76,14 +77,27 @@ public sealed class AudioRenderer : IAudioRenderCallback
         }
     }
 
-    /// <summary>Media time waiting to be played, at the source rate; the player decodes ahead until this is full.</summary>
+    /// <summary>
+    /// True while a time stretcher feeds this renderer: blocks are already stretched, so
+    /// they play at rate 1 while the clock still maps them to media time at <see cref="Rate"/>.
+    /// </summary>
+    public bool PitchPreserved
+    {
+        get => Volatile.Read(ref _pitchPreserved) != 0;
+        set => Volatile.Write(ref _pitchPreserved, value ? 1 : 0);
+    }
+
+    /// <summary>Media time waiting to be played; the player decodes ahead until this is full.</summary>
     public MediaTime QueuedDuration
     {
         get
         {
             long frames = Interlocked.Read(ref _queuedFrames);
             int rate = Volatile.Read(ref _sourceRate);
-            return rate > 0 ? MediaTime.FromTimescale(frames, rate) : MediaTime.Zero;
+            if (rate <= 0)
+                return MediaTime.Zero;
+            var queued = MediaTime.FromTimescale(frames, rate);
+            return PitchPreserved ? MediaTime.FromSeconds(queued.TotalSeconds * Rate) : queued;
         }
     }
 
@@ -133,6 +147,7 @@ public sealed class AudioRenderer : IAudioRenderCallback
         int written = 0;
         double volume = Muted ? 0.0 : Volume;
         double rate = Rate;
+        double resample = PitchPreserved ? 1.0 : rate;
 
         int generation = Volatile.Read(ref _flushGeneration);
         if (generation != _renderedGeneration)
@@ -152,7 +167,7 @@ public sealed class AudioRenderer : IAudioRenderCallback
             }
 
             var block = _current;
-            double step = (double)block.SampleRate * rate / _output.SampleRate;
+            double step = (double)block.SampleRate * resample / _output.SampleRate;
             int runStart = written;
             var mediaStart = block.Timestamp + MediaTime.FromMicroseconds((long)(_position / block.SampleRate * MediaTime.MicrosecondsPerSecond));
 

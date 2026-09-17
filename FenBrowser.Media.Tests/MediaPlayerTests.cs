@@ -180,6 +180,35 @@ public class MediaPlayerTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RateTwo_PlaysInHalfTheTimeWithOrWithoutPitchPreservation(bool preservesPitch)
+    {
+        var client = new RecordingClient();
+        var outputs = new CapturingOutputFactory();
+        var (demuxers, decoders) = Registries();
+        var services = new MediaPlayerServices(demuxers, decoders, outputs, TimeProvider.System);
+        var player = new MediaPlayer(new MemoryByteSource(MediaFixtures.Read("sine_pcm16.wav")), null, client, action => action(), services, MediaPipelineContext.ForTests());
+        player.Start();
+        try
+        {
+            await client.WaitForAsync(() => client.ReadyState == MediaReadyState.HaveEnoughData);
+            player.UpdatePlayback(potentiallyPlaying: true, playbackRate: 2.0, preservesPitch: preservesPitch, effectiveVolume: 1.0);
+            var output = outputs.Last!;
+            await client.WaitForAsync(() => output.IsRunning);
+
+            // 250 ms of device time covers 500 ms of media at rate 2, either way.
+            output.Pump(output.Format.SampleRate / 4);
+            await Task.Delay(50);
+            Assert.InRange(player.Clock!.CurrentTime.TotalSeconds, 0.45, 0.55);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
     [Fact]
     public async Task NotMedia_FailsAsUnsupported()
     {

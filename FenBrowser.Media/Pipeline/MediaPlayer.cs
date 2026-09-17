@@ -64,8 +64,13 @@ public sealed class MediaPlayer : IMediaResource
     private bool _potentiallyPlaying;
     private bool _outputRunning;
     private bool _preservesPitch = true;
+    private double _rate = 1.0;
+    private TimeStretcher? _stretcher;
+    private int _stretcherRate;
+    private int _stretcherChannels;
     private MediaReadyState _readyState = MediaReadyState.HaveNothing;
     private MediaTime? _pendingSeek;
+    private MediaTime? _pendingResync;
     private MediaTime? _trimBefore;
     private int _seekSequence;
     private long _lastPositionTick;
@@ -114,11 +119,25 @@ public sealed class MediaPlayer : IMediaResource
         {
             _potentiallyPlaying = potentiallyPlaying;
             _preservesPitch = preservesPitch;
+            _rate = playbackRate > 0 ? playbackRate : 1.0;
             if (_renderer is not null)
             {
-                _renderer.Rate = playbackRate > 0 ? playbackRate : 1.0;
+                bool stretch = _preservesPitch && Math.Abs(_rate - 1.0) > 1e-9;
+                bool wasStretched = _renderer.PitchPreserved;
+                bool rateChanged = Math.Abs(_renderer.Rate - _rate) > 1e-9;
+                _renderer.PitchPreserved = stretch;
+                _renderer.Rate = _rate;
                 _renderer.Volume = effectiveVolume;
                 _renderer.Muted = effectiveVolume <= 0;
+                if (_stretcher is not null)
+                    _stretcher.Rate = _rate;
+
+                // Queued audio was prepared for the old mode or rate (plain blocks for a
+                // stretched renderer, or stretched at another rate); rebuild it from the
+                // current position rather than play it at the wrong speed.
+                bool modeChanged = wasStretched != stretch || (stretch && rateChanged);
+                if (modeChanged && _clock is not null && !_pendingSeek.HasValue && _renderer.QueuedDuration > MediaTime.Zero)
+                    _pendingResync = _clock.CurrentTime;
             }
         });
     }
@@ -183,7 +202,13 @@ public sealed class MediaPlayer : IMediaResource
                 if (_pendingSeek is { } seekTarget)
                 {
                     _pendingSeek = null;
-                    await SeekCoreAsync(seekTarget, cancellation).ConfigureAwait(false);
+                    _pendingResync = null;
+                    await SeekCoreAsync(seekTarget, cancellation, report: true).ConfigureAwait(false);
+                }
+                else if (_pendingResync is { } resyncTarget)
+                {
+                    _pendingResync = null;
+                    await SeekCoreAsync(resyncTarget, cancellation, report: false).ConfigureAwait(false);
                 }
 
                 await FillAheadAsync(cancellation).ConfigureAwait(false);
@@ -289,6 +314,7 @@ public sealed class MediaPlayer : IMediaResource
                 if (packet is null)
                 {
                     await decoder.DrainAsync(output, cancellation).ConfigureAwait(false);
+                    output.FlushStretcher();
                     renderer.MarkEndOfStream();
                     _endOfStream = true;
                     break;
@@ -384,7 +410,12 @@ public sealed class MediaPlayer : IMediaResource
         Report(() => _client.PositionChanged(position, monotonic: true));
     }
 
-    private async ValueTask SeekCoreAsync(MediaTime target, CancellationToken cancellation)
+    /// <summary>
+    /// Repositions the pipeline at <paramref name="target"/>. With <paramref name="report"/>
+    /// the element hears a seek; without it this is an internal rebuild of the queue at the
+    /// same position (a rate or pitch-mode change) and the element sees nothing.
+    /// </summary>
+    private async ValueTask SeekCoreAsync(MediaTime target, CancellationToken cancellation, bool report)
     {
         var renderer = _renderer!;
         if (!_duration.IsInfinite && target > _duration)
@@ -394,16 +425,20 @@ public sealed class MediaPlayer : IMediaResource
 
         _context.Log.Emit(_context.Player, MediaEventKind.SeekStart, MediaLogLevel.Debug, $"Seek to {target}.", ("target", target.ToString()));
         renderer.Flush(target);
+        _stretcher?.Flush();
         _trimBefore = target;
         _endOfStream = false;
         _endReported = false;
         await _decoder!.ResetAsync(cancellation).ConfigureAwait(false);
         await _demuxer!.SeekAsync(target, cancellation).ConfigureAwait(false);
-        _readyState = MediaReadyState.HaveMetadata;
-        Report(() => _client.ReadyStateChanged(MediaReadyState.HaveMetadata));
+        if (report)
+        {
+            _readyState = MediaReadyState.HaveMetadata;
+            Report(() => _client.ReadyStateChanged(MediaReadyState.HaveMetadata));
+        }
 
         await FillAheadAsync(cancellation).ConfigureAwait(false);
-        if (_failed)
+        if (_failed || !report)
             return;
 
         var landed = target;
@@ -516,7 +551,7 @@ public sealed class MediaPlayer : IMediaResource
             if (trimBefore is null || item.Timestamp >= trimBefore.Value)
             {
                 owner._trimBefore = null;
-                renderer.Enqueue(item);
+                Deliver(item);
                 return;
             }
 
@@ -539,7 +574,50 @@ public sealed class MediaPlayer : IMediaResource
             item.Samples[(int)(skipFrames * item.Channels)..].CopyTo(trimmed.Samples);
             item.Dispose();
             owner._trimBefore = null;
-            renderer.Enqueue(trimmed);
+            Deliver(trimmed);
+        }
+
+        /// <summary>Straight to the renderer, or through the time stretcher when pitch is preserved at a rate other than 1.</summary>
+        private void Deliver(AudioBlock block)
+        {
+            if (!renderer.PitchPreserved)
+            {
+                renderer.Enqueue(block);
+                return;
+            }
+
+            var stretcher = owner._stretcher;
+            bool formatChanged = block.SampleRate != owner._stretcherRate || block.Channels != owner._stretcherChannels;
+            if (stretcher is null || (formatChanged && stretcher.BufferedFrames == 0))
+            {
+                stretcher = new TimeStretcher(block.SampleRate, block.Channels) { Rate = owner._rate };
+                owner._stretcher = stretcher;
+                owner._stretcherRate = block.SampleRate;
+                owner._stretcherChannels = block.Channels;
+                formatChanged = false;
+            }
+
+            if (formatChanged)
+            {
+                // A format change mid-stream: play what is stretched, then continue plain.
+                FlushStretcher();
+                renderer.Enqueue(block);
+                return;
+            }
+
+            stretcher.Push(block);
+            while (stretcher.Pull(owner._context.Limits) is { } stretched)
+                renderer.Enqueue(stretched);
+        }
+
+        /// <summary>At the end of the stream the stretcher's remaining input plays as it is.</summary>
+        public void FlushStretcher()
+        {
+            var stretcher = owner._stretcher;
+            if (stretcher is null)
+                return;
+            while (stretcher.Pull(owner._context.Limits, flush: true) is { } stretched)
+                renderer.Enqueue(stretched);
         }
     }
 }
