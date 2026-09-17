@@ -16398,7 +16398,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             CollectElementsByName(child, name, results);
     }
 
-    private static void ApplyScriptingEnabledSanitizer(Node root)
+    internal static void ApplyScriptingEnabledSanitizer(Node root)
     {
         if (root == null)
         {
@@ -16421,23 +16421,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             var parts = new HashSet<string>(
                 classValue.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries),
                 StringComparer.OrdinalIgnoreCase);
-            var changed = false;
-
-            if (parts.Remove("no-js"))
+            // Only the no-js -> js convention (Modernizr and friends): a page that
+            // marks itself no-js expects script to swap the class. Adding "js" to any
+            // <html> or <body> that merely has a class is not something a browser
+            // does, and the class change restyles the whole body after the first
+            // cascade - on en.wikipedia.org that forced an extra full relayout.
+            if (!parts.Remove("no-js"))
             {
-                changed = true;
+                return;
             }
 
-            if (!parts.Contains("js"))
-            {
-                parts.Add("js");
-                changed = true;
-            }
-
-            if (changed)
-            {
-                element.SetAttribute("class", string.Join(" ", parts));
-            }
+            parts.Add("js");
+            element.SetAttribute("class", string.Join(" ", parts));
         }
 
         var container = root as ContainerNode ?? root.OwnerDocument;

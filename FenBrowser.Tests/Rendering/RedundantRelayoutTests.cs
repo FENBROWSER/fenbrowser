@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Scripting;
 using Xunit;
 
 namespace FenBrowser.Tests.Rendering;
@@ -77,5 +78,35 @@ public class RedundantRelayoutTests
         body.ClearDirty(InvalidationKind.Style);
 
         Assert.True(CustomHtmlEngine.NeedsPostScriptStyleRefresh(html, styles));
+    }
+
+    [Fact]
+    public void ScriptingSanitizer_LeavesClassesWithoutNoJsAlone()
+    {
+        var (html, body, _, _) = BuildStyledDocument();
+        html.SetAttribute("class", "client-nojs vector-feature");
+        body.SetAttribute("class", "skin-vector mediawiki");
+        html.ClearDirty(InvalidationKind.Style);
+        body.ClearDirty(InvalidationKind.Style);
+
+        FenJsBrowserScriptEngine.ApplyScriptingEnabledSanitizer(html.OwnerDocument);
+
+        Assert.Equal("client-nojs vector-feature", html.GetAttribute("class"));
+        Assert.Equal("skin-vector mediawiki", body.GetAttribute("class"));
+        Assert.False(body.StyleDirty);
+    }
+
+    [Fact]
+    public void ScriptingSanitizer_SwapsNoJsForJs()
+    {
+        var (html, _, _, _) = BuildStyledDocument();
+        html.SetAttribute("class", "no-js theme");
+
+        FenJsBrowserScriptEngine.ApplyScriptingEnabledSanitizer(html.OwnerDocument);
+
+        var classes = new HashSet<string>(html.GetAttribute("class").Split(' '));
+        Assert.Contains("js", classes);
+        Assert.Contains("theme", classes);
+        Assert.DoesNotContain("no-js", classes);
     }
 }
