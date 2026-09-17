@@ -18,8 +18,8 @@
       },
       "HarfBuzzSharp.NativeAssets.Linux": {
         "type": "Transitive",
-        "resolved": "8.3.1.3",
-        "contentHash": "RI6A1LgmooU30+4QIyFt5rmBCzP0VzTR+587IJSGvYIsHHWlahFufihYxtraLfsIhW7I8dn6+xX+DZGygOPKWQ=="
+        "resolved": "14.2.0",
+        "contentHash": "KgdkGoqCoRPAdekskR9asBbY5tzfqRcYQ0/+hz8rvPMAmbQqX1g57xr6rbGUyIVY5j5ioExZWUZ10QocUVpgwQ=="
       },
       "HarfBuzzSharp.NativeAssets.macOS": {
         "type": "Transitive",
@@ -181,14 +181,6 @@
           "SkiaSharp": "4.148.0"
         }
       },
-      "SkiaSharp.NativeAssets.Linux": {
-        "type": "Transitive",
-        "resolved": "2.88.7",
-        "contentHash": "i9VitS7/5D8Te3B1Gu7F6kakW9PYVnI3YC6MoR6NidreD9hDl1EIOQEBaa0eBsOsWNX5Bz92OVf6+7KbDrJvyg==",
-        "dependencies": {
-          "SkiaSharp": "2.88.7"
-        }
-      },
       "SkiaSharp.NativeAssets.Linux.NoDependencies": {
         "type": "Transitive",
         "resolved": "4.148.0",
@@ -300,6 +292,7 @@
           "FenBrowser.Core": "[1.0.0, )",
           "FenBrowser.Js": "[1.0.0, )",
           "HarfBuzzSharp": "[14.2.0, )",
+          "HarfBuzzSharp.NativeAssets.Linux": "[14.2.0, )",
           "SkiaSharp": "[4.148.0, )",
           "SkiaSharp.HarfBuzz": "[4.148.0, )",
           "SkiaSharp.NativeAssets.Linux.NoDependencies": "[4.148.0, )",
