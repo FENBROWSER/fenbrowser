@@ -163,6 +163,7 @@ namespace FenBrowser.FenEngine.Layout
                 if (LayoutDebugLogEnabled)
                     DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] Resolved Context: {context?.GetType().Name}\n");
                 FenBrowser.FenEngine.Layout.Contexts.FormattingContext.ResetPassCounters();
+                TextLayoutComputer.ResetCacheCounters();
                 try
                 {
                     context.Layout(rootBox, initialState);
@@ -173,8 +174,11 @@ namespace FenBrowser.FenEngine.Layout
                     // exactly the one whose call count needs explaining.
                     var (layoutCalls, layoutCacheHits) =
                         FenBrowser.FenEngine.Layout.Contexts.FormattingContext.PassCounters;
+                    var (textHits, textMisses, textEvictions, textEntries) =
+                        TextLayoutComputer.CacheCounters;
                     FenBrowser.Core.EngineLogCompat.Debug(
-                        $"[PERF-LAYOUT] Formatting-context pass: calls={layoutCalls} cacheHits={layoutCacheHits}",
+                        $"[PERF-LAYOUT] Formatting-context pass: calls={layoutCalls} cacheHits={layoutCacheHits} " +
+                        $"textHits={textHits} textMisses={textMisses} textEvictions={textEvictions} textEntries={textEntries}",
                         FenBrowser.Core.Logging.LogCategory.Layout);
                 }
                 if (LayoutDebugLogEnabled)

@@ -16,7 +16,7 @@ namespace FenBrowser.FenEngine.Layout
     public static class TextLayoutComputer
     {
         private const float DefaultFontSize = 16f;
-        private const int MaxTextLayoutCacheSize = 5000;
+        private const int MaxTextLayoutCacheSize = 50000;
         private const int MaxCacheableTextChars = 64 * 1024;
         private const float FallbackMaxWidth = 1_000_000f;
 
@@ -27,7 +27,30 @@ namespace FenBrowser.FenEngine.Layout
         // Insertion order of the cache keys, so a full cache evicts in O(1). Only ever
         // touched under s_cacheMutationLock, alongside every insert and the clear below.
         private static readonly Queue<TextLayoutCacheKey> s_cacheInsertionOrder = new();
+
         private static long s_fontGeneration;
+
+        private static long s_cacheHits;
+        private static long s_cacheMisses;
+        private static long s_cacheEvictions;
+
+        /// <summary>
+        /// Text-layout cache counters since <see cref="ResetCacheCounters"/>. A miss rate
+        /// near 100% with a high eviction count means the cache is thrashing and every
+        /// text node is being shaped from scratch on each pass.
+        /// </summary>
+        internal static (long Hits, long Misses, long Evictions, int Entries) CacheCounters =>
+            (Interlocked.Read(ref s_cacheHits),
+             Interlocked.Read(ref s_cacheMisses),
+             Interlocked.Read(ref s_cacheEvictions),
+             s_textLayoutCache.Count);
+
+        internal static void ResetCacheCounters()
+        {
+            Interlocked.Exchange(ref s_cacheHits, 0);
+            Interlocked.Exchange(ref s_cacheMisses, 0);
+            Interlocked.Exchange(ref s_cacheEvictions, 0);
+        }
 
         private readonly record struct TextLayoutCacheKey(
             string Text,
@@ -100,6 +123,7 @@ namespace FenBrowser.FenEngine.Layout
             // value on repeated frames.
             if (cacheable && s_textLayoutCache.TryGetValue(cacheKey, out var cached))
             {
+                Interlocked.Increment(ref s_cacheHits);
                 var cachedLines = CloneLines(cached.Lines);
                 ApplyHorizontalAlignment(cachedLines, maxLineWidth, style?.TextAlign);
                 return (cached.Metrics, cachedLines);
@@ -229,6 +253,7 @@ namespace FenBrowser.FenEngine.Layout
 
             if (cacheable)
             {
+                Interlocked.Increment(ref s_cacheMisses);
                 AddToCache(cacheKey, metrics, lines);
             }
 
@@ -315,6 +340,7 @@ namespace FenBrowser.FenEngine.Layout
                            s_cacheInsertionOrder.Count > 0)
                     {
                         s_textLayoutCache.TryRemove(s_cacheInsertionOrder.Dequeue(), out _);
+                        Interlocked.Increment(ref s_cacheEvictions);
                     }
                 }
 
