@@ -480,10 +480,12 @@ namespace FenBrowser.FenEngine.Rendering
             pipelineContext.SetViewport(_viewportWidth, _viewportHeight);
 
             // Check if resize occurred or if root node changed (new page navigation)
-            bool forceLayout = _lastLayout == null ||
-                               root != _lastRoot ||
-                               Math.Abs(_viewportWidth - _lastViewportWidth) > 0.1f ||
-                               Math.Abs(_viewportHeight - _lastViewportHeight) > 0.1f;
+            bool noPriorLayout = _lastLayout == null;
+            bool rootChanged = root != _lastRoot;
+            bool viewportChanged =
+                Math.Abs(_viewportWidth - _lastViewportWidth) > 0.1f ||
+                Math.Abs(_viewportHeight - _lastViewportHeight) > 0.1f;
+            bool forceLayout = noPriorLayout || rootChanged || viewportChanged;
             // Phase 15: cache the unmaterialized iframe set. Only re-scan the DOM
             // for unmaterialized nested browsing contexts when the root changed or
             // the DOM node count changed since the last scan. On most frames this
@@ -514,7 +516,9 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 // Track dirty state
-                bool isLayoutDirty = forceLayout || (root.LayoutDirty || root.ChildLayoutDirty);
+                bool rootLayoutDirty = root.LayoutDirty;
+                bool rootChildLayoutDirty = root.ChildLayoutDirty;
+                bool isLayoutDirty = forceLayout || (rootLayoutDirty || rootChildLayoutDirty);
                 if (styleSnapshotIdentityChanged)
                 {
                     // A replacement style dictionary can carry geometry changes
@@ -687,6 +691,19 @@ namespace FenBrowser.FenEngine.Rendering
                         if (!usedIncrementalLayout)
                         {
                             var effectiveStyles = (IReadOnlyDictionary<Node, CssComputed>)(styles ?? new Dictionary<Node, CssComputed>());
+                            bool freshLayoutEngine = WouldCreateLayoutEngine(effectiveStyles, baseUrl);
+                            // A full layout on a large page costs seconds, so say why it ran:
+                            // a page that keeps re-laying out without DOM changes is otherwise
+                            // indistinguishable from one whose script is mutating it.
+                            EngineLogCompat.Log(
+                                LogCategory.Layout,
+                                LogLevel.Info,
+                                $"[LayoutReason] full layout: noPriorLayout={noPriorLayout} rootChanged={rootChanged} " +
+                                $"viewportChanged={viewportChanged} unmaterializedIframes={_knownUnmaterializedIframes?.Count ?? 0} " +
+                                $"styleSnapshotChanged={styleSnapshotIdentityChanged} rootLayoutDirty={rootLayoutDirty} " +
+                                $"childLayoutDirty={rootChildLayoutDirty} animationLayout={(animationInvalidation & InvalidationKind.Layout) != 0} " +
+                                $"planFull={incrementalPlan.FullLayoutRequired} freshEngine={freshLayoutEngine} " +
+                                $"reason={invalidationReason}");
                             var layoutEngine = GetOrCreateLayoutEngine(effectiveStyles, baseUrl);
 
                             _lastLayout = layoutEngine.ComputeLayout(
@@ -1968,6 +1985,16 @@ namespace FenBrowser.FenEngine.Rendering
             LastFrameUsedIncrementalLayout = true;
             LastFrameIncrementalLayoutRootCount = appliedRoots;
             return true;
+        }
+
+        private bool WouldCreateLayoutEngine(IReadOnlyDictionary<Node, CssComputed> styles, string baseUrl)
+        {
+            var effectiveStyles = styles ?? new Dictionary<Node, CssComputed>();
+            return _retainedLayoutEngine == null ||
+                !ReferenceEquals(_retainedLayoutStyles, effectiveStyles) ||
+                Math.Abs(_retainedLayoutViewportWidth - _viewportWidth) > 0.01f ||
+                Math.Abs(_retainedLayoutViewportHeight - _viewportHeight) > 0.01f ||
+                !string.Equals(_retainedLayoutBaseUrl, baseUrl, StringComparison.Ordinal);
         }
 
         private LayoutEngine GetOrCreateLayoutEngine(IReadOnlyDictionary<Node, CssComputed> styles, string baseUrl)
