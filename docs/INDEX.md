@@ -112,6 +112,7 @@ These files are evidence-led audit and execution ledgers. The six volumes above 
 - [Security Model](SECURITY_MODEL.md)
 - [Memory and Lifetime Model](MEMORY_MODEL.md)
 - [Native Interop Model](NATIVE_INTEROP_MODEL.md)
+- [Media Engine Design](MEDIA_ENGINE_DESIGN.md)
 - [Architecture Decision Records](DECISION_RECORDS/README.md)
 
 ### Reality, diagnostics, and real-site work
