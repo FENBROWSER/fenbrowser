@@ -61,6 +61,11 @@ namespace FenBrowser.FenEngine.Rendering
                 return new Dictionary<Node, CssComputed>();
             }
 
+            // :link / :visited consult the document's iframe URLs, which are cached per
+            // document. Drop that cache here so this pass sees frames added or renavigated
+            // since the last one; the DOM does not change while the pass runs.
+            ElementStateManager.Instance.InvalidateFrameUrlCache();
+
             var result = new ConcurrentDictionary<Node, CssComputed>();
             var engine = new CascadeEngine(styleSet);
 

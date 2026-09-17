@@ -76,6 +76,12 @@ namespace FenBrowser.FenEngine.Rendering
         // Track visited URLs for :visited/:link matching.
         private readonly HashSet<string> _visitedUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly object _visitedUrlsLock = new object();
+
+        // Normalized src URLs of every iframe in a document, so :visited/:link do not
+        // rescan the tree per link. Built lazily per document and dropped at the start
+        // of each cascade pass (see InvalidateFrameUrlCache) — within a pass the DOM is
+        // stable, which is the same freshness the per-call rescan used to give.
+        private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Document, HashSet<string>> _frameUrlCache = new();
         
         // Callback for when styles need to be recomputed
         public event Action<Element> OnStateChanged;
@@ -683,36 +689,65 @@ namespace FenBrowser.FenEngine.Rendering
             // browsing context can reach a URL without the network stack persisting history.
             // Treat actively loaded iframe targets as visited so :visited/:link reflect the
             // current browsing session state.
-            var documentRoot = element.OwnerDocument?.DocumentElement;
-            if (documentRoot != null)
+            var frameUrls = GetFrameUrls(element.OwnerDocument);
+            return frameUrls.Count > 0 && frameUrls.Contains(normalized);
+        }
+
+        /// <summary>
+        /// Normalized src URLs of the document's iframes.
+        /// </summary>
+        /// <remarks>
+        /// Collected in one tree walk per document instead of one per <c>:link</c> /
+        /// <c>:visited</c> test. Selector matching asks this for every anchor against
+        /// every candidate rule, so rescanning here is O(anchors x rules x nodes):
+        /// on a large article that is billions of node visits and the cascade never
+        /// finishes.
+        /// </remarks>
+        private HashSet<string> GetFrameUrls(Document document)
+        {
+            if (document == null)
+                return EmptyFrameUrls;
+
+            return _frameUrlCache.GetValue(document, BuildFrameUrls);
+        }
+
+        private static readonly HashSet<string> EmptyFrameUrls = new(StringComparer.OrdinalIgnoreCase);
+
+        private static HashSet<string> BuildFrameUrls(Document document)
+        {
+            var urls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var documentRoot = document?.DocumentElement;
+            if (documentRoot == null)
+                return urls;
+
+            foreach (var frame in documentRoot.Descendants().OfType<Element>())
             {
-                foreach (var frame in documentRoot.Descendants().OfType<Element>())
-                {
-                    if (!string.Equals(frame.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
+                if (!string.Equals(frame.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase))
+                    continue;
 
-                    var frameSrc = frame.GetAttribute("src");
-                    if (string.IsNullOrWhiteSpace(frameSrc))
-                    {
-                        continue;
-                    }
+                var frameSrc = frame.GetAttribute("src");
+                if (string.IsNullOrWhiteSpace(frameSrc))
+                    continue;
 
-                    var frameResolved = ResolveElementHref(frame, frameSrc);
-                    if (frameResolved == null)
-                    {
-                        continue;
-                    }
+                var frameResolved = ResolveElementHref(frame, frameSrc);
+                if (frameResolved == null)
+                    continue;
 
-                    if (string.Equals(NormalizeVisitedUrl(frameResolved), normalized, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return true;
-                    }
-                }
+                var frameNormalized = NormalizeVisitedUrl(frameResolved);
+                if (!string.IsNullOrEmpty(frameNormalized))
+                    urls.Add(frameNormalized);
             }
 
-            return false;
+            return urls;
+        }
+
+        /// <summary>
+        /// Drop the cached per-document iframe URLs. Called at the start of a cascade
+        /// pass so a frame added or renavigated since the last pass is picked up.
+        /// </summary>
+        public void InvalidateFrameUrlCache()
+        {
+            _frameUrlCache.Clear();
         }
 
         private static Uri ResolveElementHref(Element element, string href)
