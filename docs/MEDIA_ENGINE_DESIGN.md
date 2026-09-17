@@ -294,7 +294,7 @@ Every phase follows the Commit & Push discipline: small, verified, human-style c
 
 | Phase | Status | Notes |
 |---|---|---|
-| M0 | DONE (2026-09-17, branch `feat/media-engine`) | `FenBrowser.Media` core: `MediaTime`, `MediaTimeRanges`, tracks and codecs, `MediaLimits`, `IMediaLogSink`, the spec-exact `MediaSniffer`, pooled `EncodedPacket` / `VideoFrame` / `AudioBlock` on a private zeroing pool, the pipeline contracts, `DemuxerRegistry`, `DecoderRegistry` with kill switch and quarantine, `DecoderSelector`, `AudioMasterClock`, `MonotonicMediaClock`. `LogCategory.Media`, ADR-0001 to ADR-0006, `scripts/media/gen_fixtures.py` with 16 fixtures, `fenplay probe`/`limits`, and a blocking CI job. The `IMediaLogSink` to `FenLogger` adapter moves to M1, where FenEngine first references the media library. |
+| M0 | DONE (2026-09-17, branch `feat/media-engine`) | `FenBrowser.Media` core: `MediaTime`, `MediaTimeRanges`, tracks and codecs, `MediaLimits`, `IMediaLogSink`, the spec-exact `MediaSniffer`, pooled `EncodedPacket` / `VideoFrame` / `AudioBlock` on a private zeroing pool, the pipeline contracts, `DemuxerRegistry`, `DecoderRegistry` with kill switch and quarantine, `DecoderSelector`, `AudioMasterClock`, `MonotonicMediaClock`. `LogCategory.Media`, ADR-0001 to ADR-0006, `scripts/media/gen_fixtures.py` with 16 fixtures, `fenplay probe`/`limits`, `FenBrowser.Media.Fuzz` (sniffer, demuxer selection, time ranges, audio clock; 10,000+ iterations per parser, mutation-checked), `EngineLogMediaSink` routing media events into the engine log, and a blocking CI job for tests and fuzzing. |
 | M1 | NEXT | |
 
 ---
