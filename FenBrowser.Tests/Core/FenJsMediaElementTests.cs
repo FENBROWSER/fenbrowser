@@ -402,19 +402,22 @@ public sealed class FenJsMediaElementTests
         }
     }
 
-    [Fact]
-    public async Task AWavResourcePlaysThroughTheElement()
+    [Theory]
+    [InlineData("sine_pcm16.wav", "audio/wav", "1.000")]
+    [InlineData("sine_mp3_id3.mp3", "audio/mpeg", "1.045")]
+    [InlineData("sine_opus.ogg", "audio/ogg", "1.000")]
+    public async Task AnAudioResourcePlaysThroughTheElement(string file, string contentType, string duration)
     {
         var previousFetcher = MediaFetchResource.FetchDetailedAsync;
         var previousMode = MediaAutoplayPolicy.Default.Mode;
         MediaAutoplayPolicy.Default.Mode = AutoplayPolicyMode.Allowed;
-        var wav = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", "sine_pcm16.wav"));
+        var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", file));
         MediaFetchResource.FetchDetailedAsync = (request, _) => Task.FromResult(new BinaryFetchResult
         {
-            Body = wav,
+            Body = bytes,
             StatusCode = 200,
             FinalUri = new Uri(request.Url),
-            ContentType = "audio/wav",
+            ContentType = contentType,
         });
         try
         {
@@ -427,17 +430,18 @@ public sealed class FenJsMediaElementTests
                 });
                 var updates = 0;
                 a.addEventListener('timeupdate', function () { updates++; });
-                a.src = 'sine.wav';
+                a.src = 'resource';
                 a.play().then(function () { globalThis.__events.push('play-resolved:' + a.readyState + ':' + a.duration.toFixed(3)); },
                               function (e) { globalThis.__events.push('play-rejected:' + e.name); });
                 """);
 
-            var events = await WaitForAsync(engine, "globalThis.__events.indexOf('ended:1.00:true') >= 0 || globalThis.__events.some(function (e) { return e.indexOf('error') === 0 || e.indexOf('play-rejected') === 0; }) ? globalThis.__events.join(',') : ''");
+            var events = await WaitForAsync(engine, "globalThis.__events.some(function (e) { return e.indexOf('ended:') === 0 || e.indexOf('error') === 0 || e.indexOf('play-rejected') === 0; }) ? globalThis.__events.join(',') : ''");
             // play() queued its event before the load algorithm's stable state queued
             // loadstart; then the readiness cascade (§4.8.11.7): canplay, playing and the
             // resolved promise at HAVE_FUTURE_DATA, canplaythrough at HAVE_ENOUGH_DATA.
+            var ended = "ended:" + duration.Substring(0, 4) + ":true";
             Assert.Equal(
-                "play,loadstart,durationchange,loadedmetadata,loadeddata,canplay,playing,play-resolved:4:1.000,canplaythrough,ended:1.00:true",
+                $"play,loadstart,durationchange,loadedmetadata,loadeddata,canplay,playing,play-resolved:4:{duration},canplaythrough,{ended}",
                 events);
             Assert.True(int.Parse(engine.Evaluate("String(updates)")?.ToString() ?? "0") >= 2, "timeupdate should have fired during playback");
             Assert.Equal("false|1|4|0", engine.Evaluate("[a.seeking, a.buffered.length, a.readyState, a.buffered.start(0)].join('|')")?.ToString());

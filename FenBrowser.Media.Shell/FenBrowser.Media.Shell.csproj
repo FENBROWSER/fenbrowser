@@ -14,5 +14,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Media\FenBrowser.Media.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Codecs.Ffmpeg\FenBrowser.Media.Codecs.Ffmpeg.csproj" />
   </ItemGroup>
 </Project>

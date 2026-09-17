@@ -4,6 +4,12 @@
     "net10.0": {
       "fenbrowser.media": {
         "type": "Project"
+      },
+      "fenbrowser.media.codecs.ffmpeg": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )"
+        }
       }
     }
   }
