@@ -1978,6 +1978,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     ["descendantCount"] = domRoot.Descendants().Count()
                 });
             WireInlineEventHandlers(domRoot);
+            EnsureChildNavigableWindows(domRoot);
             await ExecutePageScriptsWithFenJsAsync(domRoot, baseUri).ConfigureAwait(false);
             // Images the parser created never went through the mutation
             // observer. Their requests start here, after the page's scripts
@@ -7182,6 +7183,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         _interpreter.RegisterGlobalValue("self", globalThisValue);
         _interpreter.RegisterGlobalValue("top", globalThisValue);
         _interpreter.RegisterGlobalValue("parent", globalThisValue);
+        // HTML 7.2.2.4 dom-frames: the frames getter returns the window itself.
+        _interpreter.RegisterGlobalValue("frames", globalThisValue);
         _interpreter.RegisterGlobalValue("name", JsValue.FromString(string.Empty));
         _interpreter.RegisterGlobalValue(
             "getSelection",
@@ -17512,6 +17515,37 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private static bool IsIFrameElement(Element element)
     {
         return string.Equals(element?.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// HTML 4.8.5: an iframe in a document has a content navigable from the moment it
+    /// is inserted, so its WindowProxy is reachable as window[n] and frames[n] (7.2.2
+    /// indexed access) before its document has loaded, and the same object stays once
+    /// it has. The page's scripts see every iframe the parser created, in tree order.
+    /// </summary>
+    private void EnsureChildNavigableWindows(Node domRoot)
+    {
+        if (domRoot == null || _fenJsGlobalThis.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        foreach (var node in domRoot.Descendants())
+        {
+            if (node is Element element && IsIFrameElement(element) && element.IsConnected)
+            {
+                try
+                {
+                    _ = GetOrCreateIFrameContentWindow(element);
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Warn(
+                        $"[FenJsBridge] Could not create the window for an iframe before scripts: {ex.GetType().Name}: {ex.Message}",
+                        LogCategory.JavaScript);
+                }
+            }
+        }
     }
 
     internal static bool IsCanvasElement(Element element)
