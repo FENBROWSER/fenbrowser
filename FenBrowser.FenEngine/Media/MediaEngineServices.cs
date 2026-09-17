@@ -1,5 +1,6 @@
 using System;
 using FenBrowser.Media;
+using FenBrowser.Media.Audio;
 using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Pipeline;
 using FenBrowser.Media.Types;
@@ -30,6 +31,16 @@ namespace FenBrowser.FenEngine.Media
         public static IMediaLogSink Log => EngineLogMediaSink.Instance;
 
         public static MediaAutoplayPolicy Autoplay => MediaAutoplayPolicy.Default;
+
+        /// <summary>
+        /// The audio device backend players open their streams on. The null output is the
+        /// ADR-0003 fallback until a platform backend registers itself; tests swap it.
+        /// </summary>
+        public static IAudioOutputFactory AudioOutputs { get; set; } = NullAudioOutputFactory.Realtime;
+
+        /// <summary>Everything a <see cref="MediaPlayer"/> needs, built from the registries above.</summary>
+        public static MediaPlayerServices PlayerServices =>
+            new(Demuxers, Decoders, AudioOutputs, TimeProvider.System);
 
         private static Registries CreateRegistries()
         {
