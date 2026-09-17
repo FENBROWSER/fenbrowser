@@ -27,8 +27,14 @@ public sealed class EncodedPacket : IDisposable
 
     public int TrackId { get; }
 
-    /// <summary>Presentation timestamp.</summary>
+    /// <summary>
+    /// Presentation timestamp, or <see cref="MediaTime.NegativeInfinity"/> when the container
+    /// does not stamp this packet and it simply follows the previous one (Ogg Vorbis packets
+    /// after the first on a page); decoders then continue their output sample count.
+    /// </summary>
     public MediaTime Pts { get; }
+
+    public bool HasPts => Pts != MediaTime.NegativeInfinity;
 
     /// <summary>Decode timestamp. Equal to <see cref="Pts"/> for codecs without reordering.</summary>
     public MediaTime Dts { get; }
