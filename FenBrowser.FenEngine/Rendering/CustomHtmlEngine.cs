@@ -1814,11 +1814,18 @@ public void Dispose()
              try
              {
                  EngineLogCompat.Debug("[RenderAsync] Starting CSS load...", LogCategory.Rendering);
-                 // A whole-document pass clears the tree's style flags once it has
-                 // styled it, but only when nothing dirtied the tree while it ran:
-                 // a mark made during the pass names a node styled against an older
-                 // tree, and the next incremental pass has to see it.
-                 var styleSequenceAtStart = Node.StyleMutationSequence;
+                 // A whole-document pass styles every node, so clear the tree's style
+                 // flags before it runs, the same way the incremental pass does. A mark
+                 // made while the pass runs then re-flags only the node it names, and
+                 // the next incremental pass restyles just that.
+                 //
+                 // Clearing afterwards, and only when nothing had mutated meanwhile,
+                 // kept every parse-time flag whenever anything at all changed during
+                 // a multi-second cascade - including <html>'s. The next incremental
+                 // pass then restyled the whole document and published a new style
+                 // snapshot, which the renderer must treat as a full relayout: on
+                 // en.wikipedia.org that was an extra ~8s layout pass per load.
+                 ClearStyleDirtyFlags(dom);
                  var resolvedViewportWidth = viewportWidth ?? _activeViewportWidth;
                  var resolvedViewportHeight = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
                  var cssTask = CssLoader.ComputeWithResultAsync(
@@ -1868,15 +1875,12 @@ public void Dispose()
                         if (kvp.Key != null) kvp.Key.SetComputedStyle(kvp.Value);
                 }
 
-                // Style flags belong to the style pass. The layout engine used to
-                // clear them after laying out, which also cleared an iframe host
-                // while the frame document inside stayed marked - the page root then
-                // read as clean and CSSOM reads in the frame stopped flushing. The
-                // renderer is told to relayout through the layout/paint flags instead.
-                if (Node.StyleMutationSequence == styleSequenceAtStart)
-                {
-                    ClearStyleDirtyFlags(dom);
-                }
+                // Style flags belong to the style pass (cleared above, before it ran).
+                // The layout engine used to clear them after laying out, which also
+                // cleared an iframe host while the frame document inside stayed
+                // marked - the page root then read as clean and CSSOM reads in the
+                // frame stopped flushing. The renderer is told to relayout through the
+                // layout/paint flags instead.
                 dom.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
 
                 // Sync _activeDom to the real parsed DOM (dom parameter) so that when
@@ -1894,12 +1898,15 @@ public void Dispose()
              }
              catch (TimeoutException)
              {
+                 // The flags were cleared for a pass that never delivered styles.
+                 dom?.MarkDirty(InvalidationKind.Style);
                  EngineLogCompat.Warn("[RenderAsync] CSS loading timed out after 30s", LogCategory.Rendering);
                  FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(true, 0);
                  throw;
              }
              catch (Exception cssEx)
              {
+                 dom?.MarkDirty(InvalidationKind.Style);
                  EngineLogCompat.Error($"[RenderAsync] CSS error: {cssEx.Message}", LogCategory.Rendering);
                  // Ensure we have at least an empty styles dictionary so the renderer
                  // doesn't treat the page as completely unstyled (which collapses iframes etc.)
