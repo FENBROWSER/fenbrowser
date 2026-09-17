@@ -287,6 +287,7 @@
           "FenBrowser.Core": "[1.0.0, )",
           "FenBrowser.Js": "[1.0.0, )",
           "FenBrowser.Media": "[1.0.0, )",
+          "FenBrowser.Media.Codecs.Ffmpeg": "[1.0.0, )",
           "HarfBuzzSharp": "[14.2.0, )",
           "SkiaSharp": "[4.148.0, )",
           "SkiaSharp.HarfBuzz": "[4.148.0, )",
@@ -323,6 +324,12 @@
       },
       "fenbrowser.media": {
         "type": "Project"
+      },
+      "fenbrowser.media.codecs.ffmpeg": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )"
+        }
       },
       "fenbrowser.tooling": {
         "type": "Project",
