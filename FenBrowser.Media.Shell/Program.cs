@@ -8,5 +8,8 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
-var fenplay = new Fenplay(Console.Out, Console.Error, new DemuxerRegistry());
+var demuxers = new DemuxerRegistry();
+var decoders = new DecoderRegistry();
+FenBrowser.Media.MediaFormats.RegisterBuiltIn(demuxers, decoders);
+var fenplay = new Fenplay(Console.Out, Console.Error, demuxers, decoders);
 return await fenplay.RunAsync(args, cts.Token);
