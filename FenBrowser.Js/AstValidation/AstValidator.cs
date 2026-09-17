@@ -209,20 +209,26 @@ public sealed class AstValidator
             }
 
             // Check for super/arguments/new.target in field initializers.
-            if (member.Function is FunctionExpressionNode func)
+            if (isField)
             {
-                if (WalkBlock(func.Body.Statements, inFieldInit: isField))
+                // A field's Function node is its initializer *expression*, not a
+                // function scope. ECMA-262 15.7.1: arguments/super/new.target are
+                // Syntax Errors inside a FieldDefinition Initializer, but a nested
+                // non-arrow function introduces its own scope where they are legal
+                // again (`f = function () { return arguments }` is valid). Walking
+                // the expression resets the context at those boundaries; walking a
+                // function initializer's *body* directly would not.
+                if (member.Function is not null && WalkExpression(member.Function, inFieldInit: true))
+                    return true;
+            }
+            else if (member.Function is FunctionExpressionNode func)
+            {
+                if (WalkBlock(func.Body.Statements, inFieldInit: false))
                     return true;
             }
             else if (member.Function is ArrowFunctionExpressionNode arrow)
             {
-                if (WalkArrowBody(arrow, inFieldInit: isField))
-                    return true;
-            }
-            else if (isField)
-            {
-                // Direct expression initializer (e.g. x = super(), x = arguments)
-                if (WalkExpression(member.Function, inFieldInit: true))
+                if (WalkArrowBody(arrow, inFieldInit: false))
                     return true;
             }
         }
