@@ -27,6 +27,12 @@ public sealed record MediaLimits
     public MediaTime MaxQueuedAudio { get; init; } = MediaTime.FromSeconds(2);
     public int MaxAudioChannels { get; init; } = 32;
     public int MaxAudioSampleRate { get; init; } = 384_000;
+
+    /// <summary>
+    /// Largest single decoded audio block in sample frames (2^20, about 21 s at 48 kHz).
+    /// With <see cref="MaxAudioChannels"/> this also bounds the sample buffer.
+    /// </summary>
+    public int MaxAudioBlockFrames { get; init; } = 1 << 20;
     public long MseVideoBufferQuotaBytes { get; init; } = 150L * 1024 * 1024;
     public long MseAudioBufferQuotaBytes { get; init; } = 12L * 1024 * 1024;
     public int MaxPlayersPerProcess { get; init; } = 64;
