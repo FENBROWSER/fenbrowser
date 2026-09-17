@@ -5101,7 +5101,27 @@ namespace FenBrowser.FenEngine.Rendering
         private PaintNodeBase BuildVideoPlaceholder(Element elem, Layout.BoxModel box, CssComputed style)
         {
             if (box == null) return null;
-            
+
+            // HTML 4.8.9: while the show-poster flag is set the element represents its
+            // poster frame, fitted into the content box by object-fit (the UA default
+            // for video is "contain", as in Chromium's html.css). With no poster yet
+            // the box shows the placeholder below.
+            if (FenBrowser.FenEngine.Media.MediaPresentation.Get(elem).ShowPoster)
+            {
+                var poster = Layout.ReplacedElementSizing.TryGetPosterBitmap(elem);
+                if (poster != null)
+                {
+                    return new ImagePaintNode
+                    {
+                        Bounds = box.ContentBox,
+                        SourceNode = elem,
+                        Bitmap = poster,
+                        ObjectFit = string.IsNullOrWhiteSpace(style?.ObjectFit) ? "contain" : style.ObjectFit,
+                        ObjectPosition = style?.ObjectPosition ?? "50% 50%"
+                    };
+                }
+            }
+
             return new CustomPaintNode
             {
                 Bounds = box.ContentBox,

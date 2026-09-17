@@ -552,6 +552,9 @@ public sealed partial class FenJsBrowserScriptEngine
 
         public void InvalidateRendering(bool sizeChanged)
         {
+            MediaPresentation.Update(
+                _element,
+                new MediaPresentationState(Controller.ShowPoster, Controller.VideoWidth, Controller.VideoHeight));
             InvalidatePaintForElement(_element);
         }
 
