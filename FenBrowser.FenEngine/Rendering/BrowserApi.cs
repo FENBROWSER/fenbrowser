@@ -1098,6 +1098,7 @@ namespace FenBrowser.FenEngine.Rendering
             ImageLoader.FetchDetailedAsync = _imageLoaderContext.FetchDetailedAsync;
             ImageLoader.RequestRepaint = _imageLoaderContext.RequestRepaint;
             ImageLoader.RequestRelayout = _imageLoaderContext.RequestRelayout;
+            FenBrowser.FenEngine.Media.MediaFetchResource.FetchDetailedAsync = FetchMediaResourceAsync;
             FontRegistry.FetchDetailedAsync = _fontLoaderContext.FetchDetailedAsync;
             FontRegistry.FetchDetailedForDocumentAsync = _fontLoaderContext.FetchDetailedForDocumentAsync;
 
@@ -5835,6 +5836,86 @@ pre {{
                         Method = "GET"
                     },
                     BrowserNetworkCapabilities.ImageAcceptHeader)
+                .ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// HTML 4.8.11.5 "resource fetch algorithm": a media request has destination
+        /// "audio" or "video", mode "no-cors" unless the crossorigin attribute asks for
+        /// CORS (then "anonymous" sends same-origin credentials and "use-credentials"
+        /// sends them always), and is checked against the frame's media-src.
+        /// </summary>
+        private async Task<BinaryFetchResult> FetchMediaResourceAsync(
+            FenBrowser.Media.Element.MediaFetchRequest request,
+            Document ownerDocument)
+        {
+            if (request == null || !Uri.TryCreate(request.Url, UriKind.Absolute, out var resourceUri))
+            {
+                return new BinaryFetchResult
+                {
+                    FailureReason = BinaryFetchFailureReason.InvalidRequest,
+                    FailureDetail = "Media URL is not an absolute URL"
+                };
+            }
+
+            var destination = request.IsVideo ? "video" : "audio";
+            var mode = request.CrossOrigin == null ? "no-cors" : "cors";
+            var credentials = request.CrossOrigin == null
+                ? "include"
+                : string.Equals(request.CrossOrigin, "use-credentials", StringComparison.OrdinalIgnoreCase)
+                    ? "include"
+                    : "same-origin";
+
+            if (ownerDocument == null ||
+                !_frameResourceSecurity.TryGetValue(ownerDocument, out var frameContext))
+            {
+                return await _resources.FetchBytesDetailedAsync(
+                        new FetchContext
+                        {
+                            RequestUri = MapRuntimeUri(resourceUri),
+                            InitiatorUri = _current,
+                            FrameDocumentUri = _current,
+                            TopLevelDocumentUri = _current,
+                            Destination = destination,
+                            Mode = mode,
+                            CredentialsMode = credentials,
+                            ReferrerPolicy = CurrentReferrerPolicy,
+                            ContentSecurityPolicy = CurrentPolicy,
+                            Method = "GET"
+                        },
+                        accept: null)
+                    .ConfigureAwait(false);
+            }
+
+            if (frameContext.Policy != null &&
+                !frameContext.Policy.IsAllowed("media-src", resourceUri, frameContext.DocumentUri))
+            {
+                return new BinaryFetchResult
+                {
+                    FinalUri = resourceUri,
+                    FailureReason = BinaryFetchFailureReason.CspBlocked,
+                    FailureDetail = "Blocked by media-src",
+                    CspAllowed = false
+                };
+            }
+
+            return await _resources.FetchBytesDetailedAsync(
+                    new FetchContext
+                    {
+                        RequestUri = MapRuntimeUri(resourceUri),
+                        InitiatorUri = frameContext.DocumentUri,
+                        FrameDocumentUri = frameContext.DocumentUri,
+                        TopLevelDocumentUri = _current ?? frameContext.DocumentUri,
+                        Destination = destination,
+                        Mode = mode,
+                        CredentialsMode = credentials,
+                        ReferrerPolicy = frameContext.ReferrerPolicy,
+                        ContentSecurityPolicy = frameContext.Policy,
+                        IsTopLevelNavigation = false,
+                        IsUserInitiated = false,
+                        Method = "GET"
+                    },
+                    accept: null)
                 .ConfigureAwait(false);
         }
 

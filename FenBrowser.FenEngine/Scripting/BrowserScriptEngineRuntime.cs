@@ -1989,6 +1989,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             // source children starts resource selection once scripts have run.
             TrackMediaElementsInSubtree(domRoot);
             ApplyScriptingEnabledSanitizer(domRoot);
+            // The media elements start selecting on the JS worker; let those tasks
+            // run before deciding whether anything delays the load event.
+            await FlushMediaTasksAsync().ConfigureAwait(false);
             DispatchStartupLifecycleEvents();
         }
         finally
@@ -3792,6 +3795,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             string code;
             Uri moduleUri = item.ModuleUri;
             bool isModule = item.IsModule;
+            if (string.Equals(batchLabel, "blocking", StringComparison.OrdinalIgnoreCase))
+            {
+                // The parser would have inserted, and started, every media
+                // element before this script by the time the script ran.
+                TrackMediaElementsBefore(item.ScriptElement);
+            }
+
             if (!string.Equals(batchLabel, "async", StringComparison.OrdinalIgnoreCase))
             {
                 var blockedFields = CreateScriptRecordFields(item.ScriptRecord);
@@ -6148,6 +6158,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             // Media bindings hold promise and error objects from the old heap.
             _mediaElements.Clear();
+            _mediaElementCursor = null;
+            _mediaElementCursorRoot = null;
+            _loadEventDelayCount = 0;
+            _loadEventDeferred = false;
             _stickyUserActivation = false;
             _missingHostPropertyReads = new ConditionalWeakTable<object, HashSet<string>>();
             _elementEventListeners = new ConditionalWeakTable<object, List<BrowserEventListener>>();
@@ -17263,6 +17277,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             "DOMContentLoaded",
             ToHostOrNull(document, HostObjectKind.DomDocument));
 
+        // HTML "the end" step 7: the load event waits until nothing in the
+        // document is delaying it (a media element fetching its resource).
+        if (TryDeferDocumentLoadCompletion())
+        {
+            return;
+        }
+
+        CompleteDocumentLoad(document);
+    }
+
+    /// <summary>Readiness "complete", then the load event (HTML "the end" steps 7-9).</summary>
+    private void CompleteDocumentLoad(Document document)
+    {
         SetDocumentReadyState("complete");
         FireDocumentReadyStateChange(document);
         InvokeBodyOnloadAttribute(document);

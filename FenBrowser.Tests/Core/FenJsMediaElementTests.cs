@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using FenBrowser.Core;
+using FenBrowser.Core.Network;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Media;
 using FenBrowser.FenEngine.Scripting;
@@ -310,6 +311,95 @@ public sealed class FenJsMediaElementTests
             """)?.ToString();
 
         Assert.Equal("0|3|true|0|HierarchyRequestError|HierarchyRequestError|NotFoundError|function", result);
+    }
+
+    [Fact]
+    public async Task SelectionPointerWaitsOnTheNetworkWhileScriptsAddSources()
+    {
+        // The WPT "pointer updates" shape: the parser inserted three sources before the
+        // script ran and the second one's fetch is still in flight, so the pointer sits
+        // after it. Sources the script inserts before the pointer are never tried.
+        var previous = MediaFetchResource.FetchDetailedAsync;
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fetched = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        MediaFetchResource.FetchDetailedAsync = async (request, _) =>
+        {
+            fetched.TrySetResult(request.Url);
+            await release.Task;
+            return new BinaryFetchResult { FailureReason = BinaryFetchFailureReason.HttpError, StatusCode = 404, FinalUri = new Uri(request.Url) };
+        };
+        try
+        {
+            var engine = await CreateEngineAsync("""
+                <html><body>
+                <script>var a = 0, b = 0, c = 0, x1 = 0, x2 = 0, x3 = 0, x4 = 0;</script>
+                <video><source onerror=a++><source onerror=b++ src='delayed.webm'><source onerror=c++></video>
+                <script>
+                  var video = document.querySelector('video');
+                  globalThis.__stateBeforeInsert = video.networkState + ':' + a;
+                  var source1 = document.createElement('source'); source1.onerror = function () { x1++; };
+                  var source2 = document.createElement('source'); source2.onerror = function () { x2++; };
+                  var source3 = document.createElement('source'); source3.onerror = function () { x3++; };
+                  var source4 = document.createElement('source'); source4.onerror = function () { x4++; };
+                  video.insertBefore(source1, video.querySelector('[onerror="a++"]'));
+                  video.insertBefore(source2, video.querySelector('[onerror="b++"]'));
+                  video.insertBefore(source3, video.querySelector('[onerror="c++"]'));
+                  video.appendChild(source4);
+                </script>
+                </body></html>
+                """);
+
+            Assert.Equal("https://example.test/delayed.webm", await fetched.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            // The fetch of the second source is in flight (NETWORK_LOADING); the first
+            // source's error is a queued task and has not fired inside the script yet.
+            Assert.Equal("2:0", engine.Evaluate("globalThis.__stateBeforeInsert")?.ToString());
+
+            release.SetResult(true);
+            var counts = await WaitForAsync(engine, "x4 === 1 ? [a, b, c, x1, x2, x3, x4].join(',') : ''");
+            Assert.Equal("1,1,1,0,0,1,1", counts);
+        }
+        finally
+        {
+            MediaFetchResource.FetchDetailedAsync = previous;
+        }
+    }
+
+    [Fact]
+    public async Task TheLoadEventWaitsForAMediaFetch()
+    {
+        var previous = MediaFetchResource.FetchDetailedAsync;
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        MediaFetchResource.FetchDetailedAsync = async (request, _) =>
+        {
+            await release.Task;
+            return new BinaryFetchResult { FailureReason = BinaryFetchFailureReason.HttpError, StatusCode = 404, FinalUri = new Uri(request.Url) };
+        };
+        try
+        {
+            var engine = await CreateEngineAsync("""
+                <html><body>
+                <video src="slow.webm" onerror="globalThis.__order.push('error')"></video>
+                <script>
+                  globalThis.__order = [];
+                  document.addEventListener('DOMContentLoaded', function () { globalThis.__order.push('DOMContentLoaded:' + document.readyState); });
+                  window.addEventListener('load', function () { globalThis.__order.push('load:' + document.readyState); });
+                </script>
+                </body></html>
+                """);
+
+            // §4.8.11.5: the fetch delays the load event, so after startup only
+            // DOMContentLoaded has fired and the document is still interactive.
+            Assert.Equal("DOMContentLoaded:interactive", engine.Evaluate("globalThis.__order.join(',')")?.ToString());
+            Assert.Equal("interactive", engine.Evaluate("document.readyState")?.ToString());
+
+            release.SetResult(true);
+            var order = await WaitForAsync(engine, "globalThis.__order.length === 3 ? globalThis.__order.join(',') : ''");
+            Assert.Equal("DOMContentLoaded:interactive,error,load:complete", order);
+        }
+        finally
+        {
+            MediaFetchResource.FetchDetailedAsync = previous;
+        }
     }
 
     private static async Task<string> WaitForAsync(FenJsBrowserScriptEngine engine, string expression)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
@@ -35,7 +36,98 @@ public sealed partial class FenJsBrowserScriptEngine
     // never cleared. The autoplay policy is the only reader.
     private bool _stickyUserActivation;
 
+    // HTML "delaying the load event": how many media elements of this document are
+    // fetching, and whether the document reached the end of its startup with the
+    // load event still owed. Startup runs on the binding thread and the delays end
+    // on the JS worker, so the two share a gate.
+    private readonly object _loadEventGate = new();
+    private int _loadEventDelayCount;
+    private bool _loadEventDeferred;
+
     private FenJsBrowserScriptEngine MediaObserverOwner => _parentRealmOwner?.MediaObserverOwner ?? this;
+
+    /// <summary>
+    /// Called at the point the load event would fire: true when something is delaying it,
+    /// in which case <see cref="AdjustLoadEventDelay"/> fires it once the last delay ends.
+    /// </summary>
+    private bool TryDeferDocumentLoadCompletion()
+    {
+        lock (_loadEventGate)
+        {
+            if (_loadEventDelayCount <= 0)
+            {
+                return false;
+            }
+
+            _loadEventDeferred = true;
+        }
+
+        LogEventLoop(
+            "LoadDeferred",
+            LogSeverity.Debug,
+            "[FenJsBridge] load event delayed by media fetches",
+            new Dictionary<string, object> { ["delaying"] = _loadEventDelayCount });
+        return true;
+    }
+
+    /// <summary>
+    /// Completes once every media task queued so far has run: the queue is FIFO and the
+    /// worker is the only thing that runs them, so an empty work item after them is
+    /// enough. Never throws; a realm that is going away simply has nothing to flush.
+    /// </summary>
+    private async Task FlushMediaTasksAsync()
+    {
+        if (_realmAbandoned || _onFenJsLargeStackThread)
+        {
+            return;
+        }
+
+        try
+        {
+            await RunOnScriptThreadAsync(static () => Task.CompletedTask).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            EngineLogCompat.Warn(
+                $"[FenJsBridge] Media task flush failed: {ex.GetType().Name}: {ex.Message}",
+                LogCategory.JavaScript);
+        }
+    }
+
+    private void AdjustLoadEventDelay(int delta)
+    {
+        lock (_loadEventGate)
+        {
+            _loadEventDelayCount = Math.Max(0, _loadEventDelayCount + delta);
+            if (_loadEventDelayCount > 0 || !_loadEventDeferred)
+            {
+                return;
+            }
+
+            _loadEventDeferred = false;
+        }
+
+        var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
+        if (document == null)
+        {
+            return;
+        }
+
+        // The last delay ends inside a media element task; the load event is its own task.
+        QueueMediaTask(document, () =>
+        {
+            lock (_loadEventGate)
+            {
+                if (_loadEventDelayCount > 0)
+                {
+                    _loadEventDeferred = true;
+                    return;
+                }
+            }
+
+            CompleteDocumentLoad(document);
+        });
+    }
 
     internal static bool IsMediaElement(Element element) =>
         (IsVideoElement(element) || IsAudioElement(element)) &&
@@ -211,6 +303,68 @@ public sealed partial class FenJsBrowserScriptEngine
             {
                 RunOnMediaThread(element, static _ => { });
             }
+        }
+    }
+
+    // A document-order cursor over the page, advanced script by script while the
+    // page's blocking scripts run, so each script sees the media elements that
+    // precede it already selecting a resource - the parser had inserted those
+    // before the script was reached, and the script after them may only add
+    // candidates behind the selection pointer. Reset when a document binds.
+    private IEnumerator<Node> _mediaElementCursor;
+    private Node _mediaElementCursorRoot;
+
+    /// <summary>Binds every media element that precedes <paramref name="script"/> in tree order.</summary>
+    private void TrackMediaElementsBefore(Element script)
+    {
+        if (script == null || _realmAbandoned)
+        {
+            return;
+        }
+
+        var root = _currentDomRoot;
+        if (root == null)
+        {
+            return;
+        }
+
+        if (!ReferenceEquals(_mediaElementCursorRoot, root))
+        {
+            _mediaElementCursorRoot = root;
+            _mediaElementCursor = root.Descendants().GetEnumerator();
+        }
+
+        var cursor = _mediaElementCursor;
+        if (cursor == null)
+        {
+            return;
+        }
+
+        try
+        {
+            while (cursor.MoveNext())
+            {
+                var node = cursor.Current;
+                if (ReferenceEquals(node, script))
+                {
+                    return;
+                }
+
+                if (node is Element element && IsMediaElement(element))
+                {
+                    RunOnMediaThread(element, static _ => { });
+                }
+            }
+
+            // The script is not under the root (or was moved); the walk is spent.
+            _mediaElementCursor = null;
+        }
+        catch (Exception ex)
+        {
+            _mediaElementCursor = null;
+            EngineLogCompat.Warn(
+                $"[FenJsBridge] Media element walk before script failed: {ex.GetType().Name}: {ex.Message}",
+                LogCategory.JavaScript);
         }
     }
 
@@ -544,11 +698,8 @@ public sealed partial class FenJsBrowserScriptEngine
             _ = _realm.DispatchEventFull(target, type, eventValue, dispatchState);
         }
 
-        public void SetDelayingLoadEvent(bool delaying)
-        {
-            // The document load event is not yet delayed by media fetches; the flag is
-            // recorded by the controller and read by tests, nothing more happens here.
-        }
+        /// <summary>HTML §4.8.11.5: a media element fetching its resource delays the document's load event.</summary>
+        public void SetDelayingLoadEvent(bool delaying) => _realm.AdjustLoadEventDelay(delaying ? 1 : -1);
 
         public void InvalidateRendering(bool sizeChanged)
         {
@@ -599,10 +750,15 @@ public sealed partial class FenJsBrowserScriptEngine
 
         public JsValue PromiseValue(object promise) => promise is MediaPromise pending ? pending.Promise : JsValue.Undefined;
 
-        // -- the pipeline (M2) --
+        // -- the pipeline --
 
-        /// <summary>No demuxer or decoder is wired in yet, so no resource can be started.</summary>
-        public IMediaResource StartResource(MediaFetchRequest request, IMediaResourceClient client) => null;
+        /// <summary>
+        /// The resource fetch algorithm: a real network fetch on the browser's stack, reported
+        /// back as a media element task. Until a demuxer exists (M2) a fetched body is
+        /// unsupported, but the element waits on the network like the spec says.
+        /// </summary>
+        public IMediaResource StartResource(MediaFetchRequest request, IMediaResourceClient client) =>
+            MediaFetchResource.Start(request, client, _element.OwnerDocument, QueueTask);
 
         // -- the error object --
 
