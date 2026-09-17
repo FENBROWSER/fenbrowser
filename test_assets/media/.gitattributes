@@ -1,0 +1,10 @@
+# Media fixtures are hashed in manifest.json; never let git touch their bytes.
+*.mp3 binary
+*.ogg binary
+*.flac binary
+*.wav binary
+*.m4a binary
+*.webm binary
+*.mkv binary
+*.mp4 binary
+manifest.json text eol=lf
