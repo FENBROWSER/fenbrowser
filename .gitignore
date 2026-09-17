@@ -128,3 +128,6 @@ multi_page_profile*.log
 
 # Python bytecode from scripts/ helpers importing each other
 scripts/__pycache__/
+
+# wptrunner writes its manifest next to the metadata it is given
+tools/wptrunner-fenbrowser/metadata/MANIFEST.json
