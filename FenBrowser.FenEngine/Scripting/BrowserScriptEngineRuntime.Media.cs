@@ -626,11 +626,8 @@ public sealed partial class FenJsBrowserScriptEngine
                 {
                     ["code"] = JsValue.FromInt32((int)error.Code),
                     ["message"] = JsValue.FromString(error.Message ?? string.Empty),
-                    ["MEDIA_ERR_ABORTED"] = JsValue.FromInt32(1),
-                    ["MEDIA_ERR_NETWORK"] = JsValue.FromInt32(2),
-                    ["MEDIA_ERR_DECODE"] = JsValue.FromInt32(3),
-                    ["MEDIA_ERR_SRC_NOT_SUPPORTED"] = JsValue.FromInt32(4),
                 });
+                _realm.SetInterfacePrototype(_errorObject, "MediaError");
                 return _errorObject;
             }
         }
@@ -671,15 +668,15 @@ public sealed partial class FenJsBrowserScriptEngine
     }
 
     /// <summary>A fresh <c>TimeRanges</c> (§4.8.11.13) snapshot of <paramref name="ranges"/>.</summary>
-    private JsValue CreateTimeRangesValue(MediaTimeRanges ranges)
+    private JsValue CreateTimeRangesValue(MediaTimeRanges source)
     {
-        var count = ranges.Count;
+        var count = source.Count;
         var starts = new double[count];
         var ends = new double[count];
         for (var i = 0; i < count; i++)
         {
-            starts[i] = ranges.Start(i).TotalSeconds;
-            ends[i] = ranges.End(i).TotalSeconds;
+            starts[i] = source.Start(i).TotalSeconds;
+            ends[i] = source.End(i).TotalSeconds;
         }
 
         JsValue At(double[] values, IReadOnlyList<JsValue> args)
@@ -693,12 +690,56 @@ public sealed partial class FenJsBrowserScriptEngine
             return JsValue.FromNumber(values[(int)index]);
         }
 
-        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        var ranges = _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
             ["length"] = JsValue.FromInt32(count),
             ["start"] = _interpreter.AllocateNativeFunction("start", (_, args) => At(starts, args), length: 1),
             ["end"] = _interpreter.AllocateNativeFunction("end", (_, args) => At(ends, args), length: 1),
         });
+        SetInterfacePrototype(ranges, "TimeRanges");
+        return ranges;
+    }
+
+    /// <summary>Makes a host-built object an instance of a realm interface (MediaError, TimeRanges).</summary>
+    private void SetInterfacePrototype(JsValue instance, string interfaceName)
+    {
+        var ctor = ReadGlobalValueOrUndefined(interfaceName);
+        if (ctor.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var prototype = ReadJsProperty(ctor, "prototype");
+        if (prototype.Tag == JsValueTag.Object && instance.Tag == JsValueTag.Object)
+        {
+            _interpreter.Heap.GetObject(instance.AsObjectHandle()).SetPrototype(prototype.AsObjectHandle());
+        }
+    }
+
+    /// <summary>
+    /// HTML "reflect" for a URL attribute: "" when absent, the attribute value when it does
+    /// not parse, otherwise the serialized URL. A whitespace-only value parses to the
+    /// document's own URL, which is what currentSrc will report too.
+    /// </summary>
+    private static string ReflectUrlAttribute(Element element, string name)
+    {
+        var raw = element.GetAttribute(name);
+        if (raw == null)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var document = element.OwnerDocument;
+            var baseRaw = document?.BaseURI ?? document?.DocumentURI ?? document?.URL;
+            var baseUrl = string.IsNullOrWhiteSpace(baseRaw) ? null : WhatwgUrl.Parse(baseRaw);
+            return WhatwgUrl.Parse(raw, baseUrl)?.Href ?? raw;
+        }
+        catch
+        {
+            return raw;
+        }
     }
 
     private static double CoerceToHostNumber(JsValue value) => value.Tag switch
@@ -757,7 +798,7 @@ public sealed partial class FenJsBrowserScriptEngine
 
             // Reflected content attributes need no controller.
             case "src":
-                value = JsValue.FromString(ResolveElementUrlProperty(element, "src"));
+                value = JsValue.FromString(ReflectUrlAttribute(element, "src"));
                 return true;
             case "crossOrigin":
                 // Nullable enumerated reflection: null when absent, "anonymous" for
@@ -778,7 +819,7 @@ public sealed partial class FenJsBrowserScriptEngine
             case "defaultMuted": value = JsValue.FromBoolean(element.HasAttribute("muted")); return true;
 
             case "poster" when IsVideoElement(element):
-                value = JsValue.FromString(ResolveElementUrlProperty(element, "poster"));
+                value = JsValue.FromString(ReflectUrlAttribute(element, "poster"));
                 return true;
             case "playsInline" when IsVideoElement(element):
                 value = JsValue.FromBoolean(element.HasAttribute("playsinline"));

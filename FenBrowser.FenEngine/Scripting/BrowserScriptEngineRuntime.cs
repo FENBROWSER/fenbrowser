@@ -11825,6 +11825,42 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             }
                         }
                     }
+                    // WebIDL constants live on the interface object and its
+                    // prototype: HTMLMediaElement's network and ready states
+                    // (HTML 4.8.11.4, 4.8.11.7) and MediaError's codes
+                    // (4.8.11.1). TimeRanges (4.8.11.13) has no constants but
+                    // has to exist for instanceof and feature detection.
+                    function _defineConstants(ctor, constants) {
+                        for (var key in constants) {
+                            var descriptor = { value: constants[key], writable: false, enumerable: true, configurable: false };
+                            Object.defineProperty(ctor, key, descriptor);
+                            Object.defineProperty(ctor.prototype, key, descriptor);
+                        }
+                    }
+                    function _defineInterface(name, base) {
+                        if (typeof globalThis[name] === 'function') return globalThis[name];
+                        function Interface() { throw new TypeError("Illegal constructor"); }
+                        Interface.prototype = Object.create(base || Object.prototype);
+                        Object.defineProperty(Interface.prototype, 'constructor', {
+                            value: Interface, writable: true, configurable: true
+                        });
+                        Object.defineProperty(Interface.prototype, Symbol.toStringTag, {
+                            value: name, configurable: true
+                        });
+                        Object.defineProperty(Interface, 'name', { value: name, configurable: true });
+                        globalThis[name] = Interface;
+                        return Interface;
+                    }
+                    if (typeof globalThis.HTMLMediaElement === 'function') {
+                        _defineConstants(globalThis.HTMLMediaElement, {
+                            NETWORK_EMPTY: 0, NETWORK_IDLE: 1, NETWORK_LOADING: 2, NETWORK_NO_SOURCE: 3,
+                            HAVE_NOTHING: 0, HAVE_METADATA: 1, HAVE_CURRENT_DATA: 2, HAVE_FUTURE_DATA: 3, HAVE_ENOUGH_DATA: 4
+                        });
+                    }
+                    _defineConstants(_defineInterface('MediaError'), {
+                        MEDIA_ERR_ABORTED: 1, MEDIA_ERR_NETWORK: 2, MEDIA_ERR_DECODE: 3, MEDIA_ERR_SRC_NOT_SUPPORTED: 4
+                    });
+                    _defineInterface('TimeRanges');
                     // HTML: the document of an HTML page is an HTMLDocument.
                     if (typeof globalThis.Document === 'function' && typeof globalThis.HTMLDocument !== 'function') {
                         function HTMLDocument() { throw new TypeError("Illegal constructor"); }
@@ -27061,6 +27097,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case "defaultSelected" when IsOptionElement(element):
                     value = JsValue.FromBoolean(element.HasAttribute("selected"));
+                    return true;
+                case "src" when IsSourceElement(element):
+                    // HTML 4.8.2 dom-source-src reflects as a URL: a whitespace-only
+                    // value is the document URL, as a media element's currentSrc reports.
+                    value = JsValue.FromString(ReflectUrlAttribute(element, "src"));
                     return true;
                 case "src":
                     value = JsValue.FromString(ResolveElementUrlProperty(element, "src"));

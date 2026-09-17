@@ -212,6 +212,51 @@ public sealed class FenJsMediaElementTests
         Assert.Equal("0|0:movie.webm:null|false|3", state);
     }
 
+    [Fact]
+    public async Task ErrorsAndRangesAreInstancesOfTheirInterfaces()
+    {
+        var engine = await CreateEngineAsync("<html><body></body></html>");
+
+        engine.Evaluate("""
+            globalThis.__result = '';
+            var v = document.createElement('video');
+            v.onerror = function () {
+                globalThis.__result = [
+                    v.error instanceof MediaError,
+                    v.error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED,
+                    v.error.MEDIA_ERR_DECODE,
+                    Object.prototype.toString.call(v.error),
+                    v.buffered instanceof TimeRanges,
+                    HTMLMediaElement.NETWORK_NO_SOURCE,
+                    HTMLMediaElement.prototype.HAVE_ENOUGH_DATA,
+                    (function () { try { new MediaError(); return 'constructed'; } catch (e) { return e.name; } })()
+                ].join('|');
+            };
+            v.src = 'movie.webm';
+            """);
+
+        var result = await WaitForAsync(engine, "globalThis.__result");
+        Assert.Equal("true|true|3|[object MediaError]|true|3|4|TypeError", result);
+    }
+
+    [Fact]
+    public async Task SrcReflectsAsAUrl()
+    {
+        var engine = await CreateEngineAsync("<html><body></body></html>");
+
+        var result = engine.Evaluate("""
+            var v = document.createElement('video');
+            var out = [v.src];
+            v.src = ' ';   out.push(v.src, v.currentSrc === '' ? 'pending' : 'set');
+            v.src = 'movie.webm'; out.push(v.src);
+            v.src = 'http://[bad'; out.push(v.src);
+            v.currentTime = Number.MAX_VALUE; out.push(v.currentTime === Number.MAX_VALUE);
+            out.join('|')
+            """)?.ToString();
+
+        Assert.Equal("|https://example.test/|pending|https://example.test/movie.webm|http://[bad|true", result);
+    }
+
     private static async Task<string> WaitForAsync(FenJsBrowserScriptEngine engine, string expression)
     {
         var stopwatch = Stopwatch.StartNew();
