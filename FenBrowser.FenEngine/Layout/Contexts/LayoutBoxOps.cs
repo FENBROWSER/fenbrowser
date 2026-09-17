@@ -107,37 +107,93 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
             }
         }
 
-        public static void ShiftSubtree(LayoutBox box, float dx, float dy)
+        [ThreadStatic] private static long s_shiftSubtreeRoots;
+        [ThreadStatic] private static long s_shiftSubtreeNodes;
+
+        /// <summary>
+        /// ShiftSubtree root calls and total boxes moved since <see cref="ResetShiftCounters"/>.
+        /// Nodes far above the box count means subtrees are being re-shifted.
+        /// </summary>
+        internal static (long Roots, long Nodes) ShiftCounters => (s_shiftSubtreeRoots, s_shiftSubtreeNodes);
+
+        internal static void ResetShiftCounters()
         {
-            ShiftSubtree(box, dx, dy, new HashSet<LayoutBox>());
+            s_shiftSubtreeRoots = 0;
+            s_shiftSubtreeNodes = 0;
         }
 
-        private static void ShiftSubtree(LayoutBox box, float dx, float dy, HashSet<LayoutBox> visited)
+        /// <summary>
+        /// Subtree depth past which ShiftSubtree starts tracking visited boxes. A box
+        /// tree is a tree, so the guard only matters for a malformed one; no real
+        /// document nests this deep, and FormattingContext caps layout at 120.
+        /// </summary>
+        private const int ShiftCycleGuardDepth = 256;
+
+        public static void ShiftSubtree(LayoutBox box, float dx, float dy)
+        {
+            s_shiftSubtreeRoots++;
+            ShiftSubtree(box, dx, dy, depth: 0, visited: null);
+        }
+
+        private static void ShiftSubtree(LayoutBox box, float dx, float dy, int depth, HashSet<LayoutBox> visited)
         {
             if (box?.Geometry == null)
             {
                 return;
             }
 
-            if (!visited.Add(box))
+            // Allocating a visited set per shift, and hashing every box into it, cost
+            // more than the shift itself: a single layout pass of a large article ran
+            // ~986,000 shifts over ~9.5M boxes. Only start paying for the cycle guard
+            // at a depth a well-formed box tree cannot reach.
+            if (visited == null && depth >= ShiftCycleGuardDepth)
+            {
+                visited = new HashSet<LayoutBox>();
+            }
+
+            if (visited != null && !visited.Add(box))
             {
                 return;
             }
 
+            s_shiftSubtreeNodes++;
             ShiftBoxModel(box.Geometry, dx, dy);
 
             var children = box.Children;
             for (var index = 0; index < children.Count; index++)
             {
                 var child = children[index];
-                var childPosition = LayoutStyleResolver.GetEffectivePosition(child?.ComputedStyle);
-                if (string.Equals(childPosition, "fixed", StringComparison.OrdinalIgnoreCase))
+                if (IsFixedPosition(child?.ComputedStyle))
                 {
                     continue;
                 }
 
-                ShiftSubtree(child, dx, dy, visited);
+                ShiftSubtree(child, dx, dy, depth + 1, visited);
             }
+        }
+
+        /// <summary>
+        /// Whether a box is <c>position: fixed</c>, without the string allocation
+        /// GetEffectivePosition pays to normalise every other keyword — this runs once
+        /// per box per shift.
+        /// </summary>
+        private static bool IsFixedPosition(CssComputed style)
+        {
+            if (style == null)
+            {
+                return false;
+            }
+
+            var position = style.Position;
+            if (string.IsNullOrWhiteSpace(position) &&
+                (style.Map == null ||
+                 !style.Map.TryGetValue("position", out position) ||
+                 string.IsNullOrWhiteSpace(position)))
+            {
+                return false;
+            }
+
+            return position.AsSpan().Trim().Equals("fixed", StringComparison.OrdinalIgnoreCase);
         }
 
         public static void ShiftDescendants(LayoutBox box, float dx, float dy)
@@ -147,16 +203,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                 return;
             }
 
-            var visited = new HashSet<LayoutBox> { box };
             foreach (var child in box.Children)
             {
-                var childPosition = LayoutStyleResolver.GetEffectivePosition(child?.ComputedStyle);
-                if (string.Equals(childPosition, "fixed", StringComparison.OrdinalIgnoreCase))
+                if (IsFixedPosition(child?.ComputedStyle))
                 {
                     continue;
                 }
 
-                ShiftSubtree(child, dx, dy, visited);
+                // depth 1: the caller's box stands in for the root of the walk, so a
+                // child subtree picks up the cycle guard at the same depth it would
+                // through ShiftSubtree.
+                s_shiftSubtreeRoots++;
+                ShiftSubtree(child, dx, dy, depth: 1, visited: null);
             }
         }
 

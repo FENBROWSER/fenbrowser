@@ -164,6 +164,7 @@ namespace FenBrowser.FenEngine.Layout
                     DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] Resolved Context: {context?.GetType().Name}\n");
                 FenBrowser.FenEngine.Layout.Contexts.FormattingContext.ResetPassCounters();
                 TextLayoutComputer.ResetCacheCounters();
+                FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ResetShiftCounters();
                 try
                 {
                     context.Layout(rootBox, initialState);
@@ -176,9 +177,12 @@ namespace FenBrowser.FenEngine.Layout
                         FenBrowser.FenEngine.Layout.Contexts.FormattingContext.PassCounters;
                     var (textHits, textMisses, textEvictions, textEntries) =
                         TextLayoutComputer.CacheCounters;
+                    var (shiftRoots, shiftNodes) =
+                        FenBrowser.FenEngine.Layout.Contexts.LayoutBoxOps.ShiftCounters;
                     FenBrowser.Core.EngineLogCompat.Debug(
                         $"[PERF-LAYOUT] Formatting-context pass: calls={layoutCalls} cacheHits={layoutCacheHits} " +
-                        $"textHits={textHits} textMisses={textMisses} textEvictions={textEvictions} textEntries={textEntries}",
+                        $"textHits={textHits} textMisses={textMisses} textEvictions={textEvictions} textEntries={textEntries} " +
+                        $"shiftRoots={shiftRoots} shiftNodes={shiftNodes}",
                         FenBrowser.Core.Logging.LogCategory.Layout);
                 }
                 if (LayoutDebugLogEnabled)
