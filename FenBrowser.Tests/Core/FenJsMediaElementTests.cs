@@ -165,11 +165,11 @@ public sealed class FenJsMediaElementTests
             v.crossOrigin = 'nonsense'; out.push(v.crossOrigin);
             v.crossOrigin = null; out.push(String(v.crossOrigin));
             v.width = 320; out.push(v.width + ':' + v.getAttribute('width'));
-            out.push(v.canPlayType('video/webm; codecs="vp9"') + ':' + v.canPlayType('text/html'));
+            out.push(v.canPlayType('video/webm; codecs="vp9"') + ':' + v.canPlayType('text/html') + ':' + v.canPlayType('audio/wav'));
             out.join('|')
             """)?.ToString();
 
-        Assert.Equal("IndexSizeError|NotSupportedError|0.5|2|true|true|false|auto|use-credentials|anonymous|null|320:320|:", results);
+        Assert.Equal("IndexSizeError|NotSupportedError|0.5|2|true|true|false|auto|use-credentials|anonymous|null|320:320|::maybe", results);
     }
 
     [Fact]

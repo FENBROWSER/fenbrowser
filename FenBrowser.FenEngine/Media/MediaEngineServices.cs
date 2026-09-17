@@ -1,4 +1,5 @@
 using System;
+using FenBrowser.Media;
 using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Pipeline;
 using FenBrowser.Media.Types;
@@ -34,6 +35,7 @@ namespace FenBrowser.FenEngine.Media
         {
             var demuxers = new DemuxerRegistry();
             var decoders = new DecoderRegistry();
+            MediaFormats.RegisterBuiltIn(demuxers, decoders);
             ApplyCodecKillSwitch(decoders);
             return new Registries(demuxers, decoders, new MediaTypeSupport(demuxers, decoders));
         }

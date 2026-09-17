@@ -42,13 +42,19 @@ internal static class MediaFuzzCorpus
     public static string Hex(ReadOnlySpan<byte> bytes) => Convert.ToHexString(bytes);
 
     /// <summary>Returns a new input derived from <paramref name="seed"/> by 1–8 random mutations.</summary>
-    public static byte[] Mutate(byte[] seed, Random random)
+    public static byte[] Mutate(byte[] seed, Random random) => Mutate(seed, random, HeaderLength);
+
+    /// <summary>
+    /// As <see cref="Mutate(byte[], Random)"/>, keeping up to <paramref name="maxLength"/>
+    /// bytes: the demuxer targets mutate whole small files, not just headers.
+    /// </summary>
+    public static byte[] Mutate(byte[] seed, Random random, int maxLength)
     {
         var data = new List<byte>(seed);
         int rounds = random.Next(1, 9);
         for (int r = 0; r < rounds; r++)
         {
-            switch (random.Next(8))
+            switch (random.Next(9))
             {
                 case 0 when data.Count > 0: // flip one bit
                     {
@@ -99,6 +105,23 @@ internal static class MediaFuzzCorpus
                         break;
                     }
 
+                case 8 when data.Count >= 4: // corrupt a little-endian size field (RIFF, MP4 rarely)
+                    {
+                        int at = random.Next(data.Count - 3);
+                        uint value = random.Next(4) switch
+                        {
+                            0 => 0,
+                            1 => uint.MaxValue,
+                            2 => (uint)random.Next(64),
+                            _ => (uint)random.Next(),
+                        };
+                        data[at] = (byte)value;
+                        data[at + 1] = (byte)(value >> 8);
+                        data[at + 2] = (byte)(value >> 16);
+                        data[at + 3] = (byte)(value >> 24);
+                        break;
+                    }
+
                 case 6 when data.Count > 1: // delete a run
                     {
                         int at = random.Next(data.Count);
@@ -119,8 +142,8 @@ internal static class MediaFuzzCorpus
             }
         }
 
-        if (data.Count > HeaderLength)
-            data.RemoveRange(HeaderLength, data.Count - HeaderLength);
+        if (data.Count > maxLength)
+            data.RemoveRange(maxLength, data.Count - maxLength);
         return [.. data];
     }
 
@@ -148,6 +171,14 @@ internal static class MediaFuzzCorpus
         }
 
         return seeds;
+    }
+
+    /// <summary>A whole generated fixture, for the demuxer targets that mutate entire files.</summary>
+    public static byte[] ReadFixture(string name)
+    {
+        string? dir = FindFixtureDirectory()
+            ?? throw new DirectoryNotFoundException("test_assets/media was not found; the fuzz corpus needs the generated fixtures.");
+        return File.ReadAllBytes(Path.Combine(dir, name));
     }
 
     private static string? FindFixtureDirectory()
