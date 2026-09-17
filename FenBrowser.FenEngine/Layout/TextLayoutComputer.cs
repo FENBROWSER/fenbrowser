@@ -23,6 +23,10 @@ namespace FenBrowser.FenEngine.Layout
         private static readonly ConcurrentDictionary<TextLayoutCacheKey, (LayoutMetrics Metrics, List<ComputedTextLine> Lines)>
             s_textLayoutCache = new();
         private static readonly object s_cacheMutationLock = new();
+
+        // Insertion order of the cache keys, so a full cache evicts in O(1). Only ever
+        // touched under s_cacheMutationLock, alongside every insert and the clear below.
+        private static readonly Queue<TextLayoutCacheKey> s_cacheInsertionOrder = new();
         private static long s_fontGeneration;
 
         private readonly record struct TextLayoutCacheKey(
@@ -49,7 +53,11 @@ namespace FenBrowser.FenEngine.Layout
         private static void OnFontLoaded(string _)
         {
             Interlocked.Increment(ref s_fontGeneration);
-            s_textLayoutCache.Clear();
+            lock (s_cacheMutationLock)
+            {
+                s_textLayoutCache.Clear();
+                s_cacheInsertionOrder.Clear();
+            }
         }
 
         public static (LayoutMetrics Metrics, List<ComputedTextLine> Lines) ComputeTextLayout(
@@ -295,28 +303,26 @@ namespace FenBrowser.FenEngine.Layout
 
             lock (s_cacheMutationLock)
             {
-                if (!s_textLayoutCache.ContainsKey(key))
+                var isNewKey = !s_textLayoutCache.ContainsKey(key);
+                if (isNewKey)
                 {
-                    while (s_textLayoutCache.Count >= MaxTextLayoutCacheSize)
+                    // Evict oldest-first. This used to pick a victim by walking
+                    // s_textLayoutCache.Keys, which on a ConcurrentDictionary materialises
+                    // a snapshot List of every key — so once the cache was full each insert
+                    // copied MaxTextLayoutCacheSize keys to drop one. A text-heavy document
+                    // spends the whole layout pass in here.
+                    while (s_textLayoutCache.Count >= MaxTextLayoutCacheSize &&
+                           s_cacheInsertionOrder.Count > 0)
                     {
-                        var removed = false;
-                        foreach (var existingKey in s_textLayoutCache.Keys)
-                        {
-                            if (s_textLayoutCache.TryRemove(existingKey, out _))
-                            {
-                                removed = true;
-                                break;
-                            }
-                        }
-
-                        if (!removed)
-                        {
-                            break;
-                        }
+                        s_textLayoutCache.TryRemove(s_cacheInsertionOrder.Dequeue(), out _);
                     }
                 }
 
                 s_textLayoutCache[key] = (metrics, cachedLines);
+                if (isNewKey)
+                {
+                    s_cacheInsertionOrder.Enqueue(key);
+                }
             }
         }
 
