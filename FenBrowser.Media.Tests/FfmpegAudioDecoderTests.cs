@@ -88,6 +88,12 @@ public class FfmpegAudioDecoderTests
 
             // About a second: encoders pad the last frame, MP3 adds decoder delay.
             Assert.InRange(samples.Count / (double)sampleRate, 0.95, 1.15);
+            if (file == "sine_opus.ogg")
+            {
+                // libavcodec drops the 312-sample pre-skip; what remains starts at zero.
+                Assert.Equal(MediaTime.Zero, output.Blocks[0].Timestamp);
+                Assert.Equal(48648, samples.Count);
+            }
             Assert.True(output.Blocks[0].Timestamp >= MediaTime.FromMicroseconds(-100), $"first block at {output.Blocks[0].Timestamp}");
 
             // The middle half-second is steady state: check amplitude and frequency there.

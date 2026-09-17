@@ -162,6 +162,12 @@
       "fenbrowser.media": {
         "type": "Project"
       },
+      "fenbrowser.media.audio": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )"
+        }
+      },
       "fenbrowser.media.codecs.ffmpeg": {
         "type": "Project",
         "dependencies": {

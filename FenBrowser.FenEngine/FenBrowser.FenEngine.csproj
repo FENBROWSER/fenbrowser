@@ -7,6 +7,7 @@
     <ProjectReference Include="..\FenBrowser.Js\FenBrowser.Js.csproj" />
     <ProjectReference Include="..\FenBrowser.Media\FenBrowser.Media.csproj" />
     <ProjectReference Include="..\FenBrowser.Media.Codecs.Ffmpeg\FenBrowser.Media.Codecs.Ffmpeg.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Audio\FenBrowser.Media.Audio.csproj" />
     <EmbeddedResource Include="Assets\ua.css" LogicalName="FenBrowser.FenEngine.Assets.ua.css" />
   </ItemGroup>
 

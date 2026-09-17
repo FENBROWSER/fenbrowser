@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using FenBrowser.Media.Audio;
 using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Element;
 using FenBrowser.Media.Pipeline;
@@ -37,7 +38,8 @@ public sealed class Fenplay
         usage:
           fenplay probe <file> [--json] [--log]   sniff a file and choose a demuxer
           fenplay play <file> [--null-sink] [--rate R] [--seek S] [--log]
-                                                  play a file to its end and print metrics
+                                                  play a file on the default device (or the
+                                                  null sink) to its end and print metrics
           fenplay limits                          print the default media limits
           fenplay help                            show this text
 
@@ -130,7 +132,7 @@ public sealed class Fenplay
     private async Task<int> PlayAsync(List<string> args, CancellationToken cancellationToken)
     {
         bool log = args.Remove("--log");
-        args.Remove("--null-sink");
+        bool nullSink = args.Remove("--null-sink");
         double rate = 1.0;
         double? seek = null;
         for (int i = 0; i < args.Count - 1; i++)
@@ -168,7 +170,8 @@ public sealed class Fenplay
         IMediaLogSink sink = log ? new TextMediaLogSink(_err) : NullMediaLogSink.Instance;
         var context = new MediaPipelineContext(PlayerId.Next(), MediaLimits.Default, sink);
         var client = new PlayClient();
-        var services = new MediaPlayerServices(_demuxers, _decoders, Audio.NullAudioOutputFactory.Realtime, TimeProvider.System);
+        IAudioOutputFactory outputs = nullSink ? Audio.NullAudioOutputFactory.Realtime : Audio.Windows.PlatformAudioOutputFactory.Instance;
+        var services = new MediaPlayerServices(_demuxers, _decoders, outputs, TimeProvider.System);
         var player = new MediaPlayer(new MemoryByteSource(bytes), null, client, action => action(), services, context);
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         player.Start();
@@ -207,6 +210,7 @@ public sealed class Fenplay
         await _out.WriteLineAsync($"ended at:   {client.Position.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} s").ConfigureAwait(false);
         await _out.WriteLineAsync($"wall clock: {stopwatch.Elapsed.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} s at rate {rate.ToString(CultureInfo.InvariantCulture)}").ConfigureAwait(false);
         await _out.WriteLineAsync($"timeupdate: {client.PositionReports.ToString(CultureInfo.InvariantCulture)} position reports").ConfigureAwait(false);
+        await _out.WriteLineAsync($"output:     {(nullSink ? "null sink" : "default device")}{(Audio.Windows.PlatformAudioOutputFactory.Instance.LastFailure is { } failure ? " (fell back to the null sink: " + failure + ")" : string.Empty)}").ConfigureAwait(false);
         return ExitOk;
     }
 

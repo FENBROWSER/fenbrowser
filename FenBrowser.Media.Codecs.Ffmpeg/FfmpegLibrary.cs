@@ -22,6 +22,8 @@ public static class FfmpegLibrary
     /// <summary>The libavutil major that ships with that libavcodec.</summary>
     public const int RequiredAvutilMajor = 61;
 
+    private const int AvLogQuiet = -8;
+
     internal const string AvcodecName = "avcodec";
     internal const string AvutilName = "avutil";
 
@@ -63,6 +65,9 @@ public static class FfmpegLibrary
                 }
                 else
                 {
+                    // libavcodec's own text log goes to stderr; every failure the adapter
+                    // cares about surfaces as a return code and is logged as a media event.
+                    Native.av_log_set_level(AvLogQuiet);
                     s_failure = string.Empty;
                     s_versions = $"libavcodec {FormatVersion(avcodec)}, libavutil {FormatVersion(avutil)}";
                     s_loaded = true;
@@ -241,5 +246,8 @@ public static class FfmpegLibrary
 
         [DllImport(AvutilName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int av_strerror(int errnum, IntPtr buffer, nuint size);
+
+        [DllImport(AvutilName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void av_log_set_level(int level);
     }
 }

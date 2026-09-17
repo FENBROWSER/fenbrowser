@@ -136,8 +136,8 @@ public sealed class FfmpegAudioDecoder : IMediaDecoder<AudioBlock>
     private int _sampleRate;
     private long _nextSample;      // running output position at the codec rate
     private bool _positioned;
-    private int _preSkip;          // Opus: samples to drop after a configure or reset
-    private int _toSkip;
+    private int _preSkip;          // Opus: samples libavcodec drops at the stream start
+    private bool _atStreamStart;
 
     public FfmpegAudioDecoder(string decoderName, MediaPipelineContext context)
     {
@@ -205,7 +205,7 @@ public sealed class FfmpegAudioDecoder : IMediaDecoder<AudioBlock>
         _preSkip = config.Codec == MediaCodec.Opus && config.Extradata.Length >= 12
             ? BinaryPrimitives.ReadUInt16LittleEndian(config.Extradata.Span[10..])
             : 0;
-        _toSkip = _preSkip;
+        _atStreamStart = true;
         _config = config;
         _positioned = false;
         _nextSample = 0;
@@ -244,21 +244,29 @@ public sealed class FfmpegAudioDecoder : IMediaDecoder<AudioBlock>
         EnsureConfigured();
 
         // A stamped packet that disagrees with the running count re-anchors the output
-        // (a seek); an unstamped one, or one that agrees, continues it.
+        // (a seek); an unstamped one, or one that agrees, continues it. At the very start
+        // of an Opus stream libavcodec drops the pre-skip samples itself, so the first
+        // output begins that much after the first packet's stamp.
         if (packet.HasPts)
         {
             long stamped = packet.Pts.ToTimescale(_sampleRate);
+            if (_atStreamStart)
+                stamped += _preSkip;
             if (!_positioned || Math.Abs(stamped - _nextSample) > _sampleRate / 10)
                 _nextSample = stamped;
             _positioned = true;
         }
+
+        _atStreamStart = false;
 
         Check(Native.av_new_packet(_packet, packet.Length), "av_new_packet");
         try
         {
             IntPtr data = Marshal.ReadIntPtr(_packet, PacketData);
             Marshal.Copy(packet.Span.ToArray(), 0, data, packet.Length);
-            Marshal.WriteInt64(_packet, PacketPts, packet.HasPts ? packet.Pts.Microseconds : long.MinValue);
+            // No time base is set on the context, so timestamps stay AV_NOPTS_VALUE; the
+            // adapter keeps time itself.
+            Marshal.WriteInt64(_packet, PacketPts, long.MinValue);
             int sent = Native.avcodec_send_packet(_context_, _packet);
             if (sent < 0 && sent != ErrorAgain)
             {
@@ -294,9 +302,6 @@ public sealed class FfmpegAudioDecoder : IMediaDecoder<AudioBlock>
         if (_context_ != IntPtr.Zero)
             Native.avcodec_flush_buffers(_context_);
         _positioned = false;
-        // After a seek Opus needs its pre-roll; libavcodec discards it for us when the
-        // stream restarts, but the pre-skip applies again only at the true start.
-        _toSkip = 0;
         return ValueTask.CompletedTask;
     }
 
@@ -328,19 +333,14 @@ public sealed class FfmpegAudioDecoder : IMediaDecoder<AudioBlock>
         if (samples <= 0)
             return;
 
-        int skip = Math.Min(_toSkip, samples);
-        _toSkip -= skip;
-        int keep = samples - skip;
         long start = _nextSample;
         _nextSample += samples;
-        if (keep == 0)
-            return;
 
-        var block = AudioBlock.Allocate(_context.Limits, _sampleRate, _channels, keep, MediaTime.FromTimescale(start + skip, _sampleRate));
+        var block = AudioBlock.Allocate(_context.Limits, _sampleRate, _channels, samples, MediaTime.FromTimescale(start, _sampleRate));
         try
         {
             IntPtr extended = Marshal.ReadIntPtr(_frame, FrameExtendedData);
-            Convert(extended, format, samples, skip, keep, block.Samples);
+            Convert(extended, format, samples, 0, samples, block.Samples);
         }
         catch
         {

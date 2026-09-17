@@ -33,10 +33,10 @@ namespace FenBrowser.FenEngine.Media
         public static MediaAutoplayPolicy Autoplay => MediaAutoplayPolicy.Default;
 
         /// <summary>
-        /// The audio device backend players open their streams on. The null output is the
-        /// ADR-0003 fallback until a platform backend registers itself; tests swap it.
+        /// The audio device backend players open their streams on: WASAPI on Windows, the
+        /// null output elsewhere or when no device can be opened (ADR-0003); tests swap it.
         /// </summary>
-        public static IAudioOutputFactory AudioOutputs { get; set; } = NullAudioOutputFactory.Realtime;
+        public static IAudioOutputFactory AudioOutputs { get; set; } = FenBrowser.Media.Audio.Windows.PlatformAudioOutputFactory.Instance;
 
         /// <summary>Everything a <see cref="MediaPlayer"/> needs, built from the registries above.</summary>
         public static MediaPlayerServices PlayerServices =>
