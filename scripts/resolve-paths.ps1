@@ -7,6 +7,7 @@
 #       1. explicit env var (TEST262_ROOT / WPT_ROOT)
 #       2. sibling directory next to the repo
 #       3. directory inside the repo
+#       4. the D:\ checkouts (D:\test262, D:\wpt) used on the main dev box
 #   - Scripts should pass an explicit value when they need one; this helper
 #     only supplies defaults so no machine-specific path survives in scripts.
 
@@ -38,6 +39,10 @@ function Resolve-Test262Root {
         return $local
     }
 
+    if (Test-Path 'D:\test262') {
+        return 'D:\test262'
+    }
+
     throw "test262 checkout not found. Set TEST262_ROOT or place it as a sibling of the repo."
 }
 
@@ -59,6 +64,10 @@ function Resolve-WptRoot {
     $local = Join-Path $repo 'wpt'
     if (Test-Path $local) {
         return $local
+    }
+
+    if (Test-Path 'D:\wpt') {
+        return 'D:\wpt'
     }
 
     throw "WPT checkout not found. Set WPT_ROOT or place it as a sibling of the repo."
