@@ -34,6 +34,19 @@ public class MediaElementSeekAndAttributeTests
     }
 
     [Fact]
+    public void CurrentTime_BeforeMetadata_ReadsBackExactly()
+    {
+        // The default playback start position is the double script set; it only becomes
+        // a (saturating) media time once there is a resource to seek in.
+        var (_, element, _, _) = Create();
+
+        element.SetCurrentTime(double.MaxValue);
+
+        Assert.Equal(double.MaxValue, element.CurrentTime);
+        Assert.False(element.Seeking);
+    }
+
+    [Fact]
     public void CurrentTime_Setter_SeeksAndCompletes()
     {
         var (host, element, _) = Loaded(MediaReadyState.HaveEnoughData);

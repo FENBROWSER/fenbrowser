@@ -51,7 +51,9 @@ public sealed class HtmlMediaElementController
     // Playback state.
     private MediaTime _currentPosition;
     private MediaTime _officialPosition;
-    private MediaTime _defaultPlaybackStartPosition;
+    // Kept as the double script set, so currentTime reads it back exactly (Number.MAX_VALUE
+    // stays Number.MAX_VALUE) until media data arrives and it becomes a seek target.
+    private double _defaultPlaybackStartPosition;
     private MediaTime _earliestPossiblePosition;
     private MediaTime? _duration;
     private bool _loadedDataFiredSinceLoad;
@@ -129,8 +131,8 @@ public sealed class HtmlMediaElementController
     /// otherwise the official playback position.
     /// </summary>
     public double CurrentTime =>
-        _defaultPlaybackStartPosition != MediaTime.Zero
-            ? _defaultPlaybackStartPosition.TotalSeconds
+        _defaultPlaybackStartPosition != 0.0
+            ? _defaultPlaybackStartPosition
             : _officialPosition.TotalSeconds;
 
     /// <summary><c>duration</c>: NaN without media data, Infinity when unbounded.</summary>
@@ -304,13 +306,13 @@ public sealed class HtmlMediaElementController
     /// <summary><c>currentTime</c> setter.</summary>
     public void SetCurrentTime(double seconds)
     {
-        var time = MediaTime.FromSeconds(seconds);
         if (ReadyState == MediaReadyState.HaveNothing)
         {
-            _defaultPlaybackStartPosition = time;
+            _defaultPlaybackStartPosition = seconds;
             return;
         }
 
+        var time = MediaTime.FromSeconds(seconds);
         _officialPosition = time;
         Seek(time, approximateForSpeed: false);
     }
@@ -808,9 +810,9 @@ public sealed class HtmlMediaElementController
 
         // Default playback start position: seek there, then reset it.
         var start = _defaultPlaybackStartPosition;
-        _defaultPlaybackStartPosition = MediaTime.Zero;
-        if (start > MediaTime.Zero)
-            Seek(start, approximateForSpeed: false);
+        _defaultPlaybackStartPosition = 0.0;
+        if (start > 0.0)
+            Seek(MediaTime.FromSeconds(start), approximateForSpeed: false);
 
         PushPlaybackState();
     }
