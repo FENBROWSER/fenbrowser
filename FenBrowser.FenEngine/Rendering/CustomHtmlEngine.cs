@@ -2221,8 +2221,13 @@ private void FlushPendingLayoutForScript(Element element)
                 return;
             }
 
+            // Name the roots: a recascade rooted at <html> or <body> costs a full
+            // relayout of the page, one rooted at a leaf costs almost nothing, and the
+            // count alone does not say which.
             EngineLogCompat.Info(
-                $"[CustomHtmlEngine] Incremental recascade: Processing {dirtyRoots.Count} dirty subtree(s)...",
+                $"[CustomHtmlEngine] Incremental recascade: Processing {dirtyRoots.Count} dirty subtree(s): " +
+                string.Join(", ", dirtyRoots.Take(5).Select(r =>
+                    string.IsNullOrEmpty(r.Id) ? r.TagName : $"{r.TagName}#{r.Id}")),
                 LogCategory.CSS);
 
             foreach (var root in dirtyRoots)
