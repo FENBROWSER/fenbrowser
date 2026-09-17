@@ -285,6 +285,33 @@ public sealed class FenJsMediaElementTests
         }
     }
 
+    [Fact]
+    public async Task MovingASourceIntoAVideoStartsSelection()
+    {
+        var engine = await CreateEngineAsync("<html><body><div id=holder><source src=a.webm></div><video id=v></video></body></html>");
+
+        var result = engine.Evaluate("""
+            var v = document.getElementById('v');
+            var holder = document.getElementById('holder');
+            var source = holder.firstChild;
+            var out = [];
+            // Not a video child: nothing starts.
+            holder.moveBefore(source, undefined);
+            out.push(v.networkState);
+            // Into the video: the source is a candidate (§4.8.11.5), so selection starts.
+            v.moveBefore(source, null);
+            out.push(v.networkState, source.parentNode === v, holder.childNodes.length);
+            // Validity: a foreign tree, an ancestor, a missing reference child.
+            out.push((function () { try { v.moveBefore(document.createElement('source'), null); return 'no-throw'; } catch (e) { return e.name; } })());
+            out.push((function () { try { v.moveBefore(document.body, null); return 'no-throw'; } catch (e) { return e.name; } })());
+            out.push((function () { try { v.moveBefore(source, holder); return 'no-throw'; } catch (e) { return e.name; } })());
+            out.push(typeof Node.prototype.moveBefore);
+            out.join('|')
+            """)?.ToString();
+
+        Assert.Equal("0|3|true|0|HierarchyRequestError|HierarchyRequestError|NotFoundError|function", result);
+    }
+
     private static async Task<string> WaitForAsync(FenJsBrowserScriptEngine engine, string expression)
     {
         var stopwatch = Stopwatch.StartNew();

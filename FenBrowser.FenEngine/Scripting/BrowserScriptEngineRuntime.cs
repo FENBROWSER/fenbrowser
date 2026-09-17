@@ -10848,6 +10848,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     'cloneNode',
                     'appendChild',
                     'insertBefore',
+                    'moveBefore',
                     'replaceChild',
                     'removeChild',
                     'append',
@@ -22804,6 +22805,22 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         QueueFrameLoadsForTree(first);
                         return inserted;
                     }
+                    case "moveBefore":
+                    {
+                        // DOM dom-node-movebefore; Node? child takes null or undefined.
+                        Node reference = null;
+                        if (args.Count > 1 && args[1].Tag != JsValueTag.Null && args[1].Tag != JsValueTag.Undefined)
+                        {
+                            reference = ResolveHostObjectOrNull<Node>(args[1]);
+                            if (reference == null)
+                            {
+                                ThrowDomException("TypeError", "Failed to execute 'moveBefore' on 'Node': parameter 2 is not of type 'Node'.");
+                            }
+                        }
+
+                        container.MoveBefore(first, reference);
+                        return JsValue.Undefined;
+                    }
                     default:
                     {
                         var child = args.Count > 1 ? ResolveHostObjectOrNull<Node>(args[1]) : null;
@@ -26690,6 +26707,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case "appendChild":
                 case "insertBefore":
+                case "moveBefore":
                 case "replaceChild":
                 case "removeChild":
                     if (node is ContainerNode container)
@@ -28093,6 +28111,36 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
                             _owner.UpgradeInsertedCustomElements(child, moved);
                             return _owner.ToHostNodeOrNull(inserted);
+                        },
+                        length: 2);
+                    return true;
+                case "moveBefore":
+                    // DOM dom-node-movebefore: a state-preserving move within one tree.
+                    // Node? child takes null or undefined; anything else that is not a
+                    // node is a TypeError, as for insertBefore.
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "moveBefore",
+                        (_, args) =>
+                        {
+                            var node = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (node == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Failed to execute 'moveBefore' on 'Node': parameter 1 is not of type 'Node'.");
+                            }
+
+                            Node referenceChild = null;
+                            if (args.Count > 1 && args[1].Tag != JsValueTag.Null && args[1].Tag != JsValueTag.Undefined)
+                            {
+                                referenceChild = _owner.ResolveHostObjectOrNull<Node>(args[1]);
+                                if (referenceChild == null)
+                                {
+                                    _owner.ThrowDomException("TypeError", "Failed to execute 'moveBefore' on 'Node': parameter 2 is not of type 'Node'.");
+                                }
+                            }
+
+                            element.MoveBefore(node, referenceChild);
+                            return JsValue.Undefined;
                         },
                         length: 2);
                     return true;
