@@ -278,6 +278,12 @@ jobs:
       - name: Run media engine tests
         run: dotnet test FenBrowser.Media.Tests/FenBrowser.Media.Tests.csproj -c Release --no-build --logger trx --results-directory TestResults/media --verbosity minimal
 
+      - name: Build media fuzz suite
+        run: dotnet build FenBrowser.Media.Fuzz/FenBrowser.Media.Fuzz.csproj -c Release --nologo
+
+      - name: Run media fuzz suite
+        run: dotnet test FenBrowser.Media.Fuzz/FenBrowser.Media.Fuzz.csproj -c Release --no-build --logger "trx;LogFileName=media-fuzz.trx" --results-directory TestResults/media --verbosity minimal
+
       - name: Upload media test results
         if: always()
         uses: actions/upload-artifact@v4
