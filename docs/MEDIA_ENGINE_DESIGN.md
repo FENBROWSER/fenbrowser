@@ -186,7 +186,7 @@ Definition of Done). Specs to cite:
 **Conformance gate.** The WPT directories are `html/semantics/embedded-content/media-elements`,
 `media-source`, `webvtt`, `webcodecs`, `media-capabilities`, `mediasession`, `video-rvfc`,
 `autoplay-policy-detection`, `encrypted-media` (Clear Key) and `webaudio`. Each phase names the
-directories it must pass. Note: the local WPT checkout at `C:\Users\udayk\Videos\wpt` was not
+directories it must pass. Note: the local WPT checkout at `D:\wpt` was not
 present on 2026-09-17, so baseline counts are still to be taken.
 
 ---

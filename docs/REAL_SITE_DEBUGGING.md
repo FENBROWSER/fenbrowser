@@ -75,7 +75,7 @@ Evidence:
 
 Choose the durable regression surface in this order:
 
-1. Existing selected WPT from `C:/Users/udayk/Videos/wpt` when it directly covers the behavior.
+1. Existing selected WPT from `D:/wpt` when it directly covers the behavior.
 2. A minimized HTML/CSS/JS fixture under an included test project fixture directory.
 3. A focused C# unit/integration test that drives the active production path.
 4. A visual screenshot comparison when pixels are the failure.

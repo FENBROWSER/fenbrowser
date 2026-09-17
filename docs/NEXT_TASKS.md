@@ -169,7 +169,7 @@ Priority: 2
 Risk Level: Low
 Dependencies: Local WPT checkout and category runner/results exist
 Files likely involved: `FenBrowser.Tooling/WptToolRunner.cs`, active DOM token-list bindings, `Results/wpt/selected/`, `docs/TEST_BASELINE.md`
-Specs/references: Local `C:\Users\udayk\Videos\wpt`; DOM, HTML, Fetch, Web IDL, CSSOM, UI Events
+Specs/references: Local `D:\wpt`; DOM, HTML, Fetch, Web IDL, CSSOM, UI Events
 Current behavior: The four-file lifecycle gate (DOM token-list stringifier/value, checkbox click activation, `document-readyState.html`) passes cleanly in repeated runs at local WPT `88152b84`. The fetch/CORS slice was added and exactly classified at FenBrowser `eb74bec0`: `Results/wpt/selected/20260822_fetch_cors_gate_run1/` and `-run2/` produce byte-identical failure sets of 16 records across three root-cause buckets (`no-cors` opaque filtering absent; cross-origin requests without CORS headers not rejected; `Response.type` never set) plus a wholesale dedicated-worker scope timeout classified as a capability gap. Same-origin fetch subtests pass. See `docs/TEST_BASELINE.md` for the classification table.
 Expected behavior: A small repeatable category set covers lifecycle, event loop, DOM/events, fetch/CORS, CSSOM/geometry, and forms with per-test terminal results.
 Reproduction: Run the existing local category runner for the selected categories only.
@@ -301,7 +301,7 @@ Files likely involved: `FenBrowser.WebIdlGen`, `FenBrowser.FenEngine/Bindings`, 
 Specs/references: Web IDL and the specifications linked by each selected interface
 Current behavior: `FenBrowser.Tooling webidl-inventory` deterministically maps all 60 checked-in definition records and 421 members to bounded manual source evidence, generated output policy, active tests, selected WPT correlations, lifetime complexity, and migration risk. It reports 268 members with manual evidence, 319 with active-test correlations, 74 with selected-WPT correlations, zero generated outputs present or compiled, and names `EventInit` as a conversion-only future candidate.
 Expected behavior: A generated audit report maps each IDL member to manual implementation, missing implementation, excluded source, test coverage, and lifetime complexity without activating generated bindings.
-Reproduction: Run `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- webidl-inventory --output-dir Results/webidl/manual-binding-inventory --wpt-root C:/Users/udayk/Videos/wpt --selected-wpt dom/lists/DOMTokenList-stringifier.html,dom/lists/DOMTokenList-value.html,html/semantics/forms/the-input-element/checkbox-click-events.html`.
+Reproduction: Run `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- webidl-inventory --output-dir Results/webidl/manual-binding-inventory --wpt-root D:/wpt --selected-wpt dom/lists/DOMTokenList-stringifier.html,dom/lists/DOMTokenList-value.html,html/semantics/forms/the-input-element/checkbox-click-events.html`.
 Root cause hypothesis: Generator and runtime integration evolved independently, hiding duplicate, missing, and incompatible surfaces.
 Implementation plan: Keep the inventory read-only and generated bindings excluded. Review the `EventInit` evidence against the active dictionary-conversion call path only after the memory/lifetime decision boundary is addressed.
 Tests required: Inventory parser/extractor fixtures and deterministic output.
@@ -350,7 +350,7 @@ Priority: 2
 Risk Level: Low
 Dependencies: None; missing-API tracking and host-object plumbing are INTEGRATED
 Files likely involved: FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs (global installation), FenBrowser.FenEngine/WebAPIs performance surface, WebIdlMemberCatalog/HostApiSurfaceCatalog, included binding tests
-Specs/references: Performance Timeline Level 2; User Timing; local WPT checkout C:\Users\udayk\Videos\wpt (performance-timeline/)
+Specs/references: Performance Timeline Level 2; User Timing; local WPT checkout D:\wpt (performance-timeline/)
 Current behavior: new PerformanceObserver(cb) throws ReferenceError: PerformanceObserver is not defined. MediaWiki's experiment bootstrap (suggestionMode.js -> getRawHeader) constructs it inside a Promise executor, producing 4 unhandled promise rejections per Wikipedia load (after-bundle logs/real-site/en.wikipedia.org/20260821T191613Z/exceptions.json); the missing-API tracker already classifies it as a standard API.
 Expected behavior: Constructor requires a callable callback (TypeError otherwise). Instances expose observe(options), disconnect(), takeRecords(); observe validates entryTypes/type per spec (throw TypeError on empty/invalid rather than silently no-op) and may deliver an empty buffer until mark/paint entry sources exist. Registration updates the missing-API catalog so Wikipedia observations stop being reported as missing.
 Reproduction: Load the Wikipedia after-bundle reproduction command; or evaluate typeof PerformanceObserver and new PerformanceObserver(()=>{}) in the Tooling harness.

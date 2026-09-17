@@ -157,7 +157,7 @@ dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --r
 Run upstream WPT through the external WebDriver harness and write a deterministic result bundle.
 
 Defaults:
-- WPT root: `C:\Users\udayk\Videos\wpt`
+- WPT root: `D:\wpt`
 - Host binary: first existing `FenBrowser.Host\bin\Release\net10.0\FenBrowser.Host.exe`, then Debug.
 - WebDriver launcher: `scripts\wpt-webdriver-launcher.cmd`
 - Output: timestamped `Results\wpt_*`
@@ -166,7 +166,7 @@ Prerequisite:
 - Install the FenBrowser WPT product plugin into the Python environment used by the upstream WPT checkout:
 
 ```powershell
-C:\Users\udayk\Videos\wpt\_venv3\Scripts\python.exe -m pip install -e C:\Users\udayk\Videos\fenbrowser-test\tools\wptrunner-fenbrowser
+D:\wpt\_venv3\Scripts\python.exe -m pip install -e C:\Users\udayk\Videos\fenbrowser-test\tools\wptrunner-fenbrowser
 ```
 
 The plugin uses WPT's documented `wptrunner.products` entry point. It does not patch WPT core.
@@ -177,7 +177,7 @@ Main options:
 - `--webdriver-binary <path>`: launcher that starts `FenBrowser.Tooling webdriver`.
 - `--processes <N>`: WPT worker process count.
 - `--timeout-seconds <N>`: watchdog for the whole WPT run.
-- `--venv <path>`: WPT virtualenv path; defaults to `C:\Users\udayk\Videos\wpt\_venv3` when present.
+- `--venv <path>`: WPT virtualenv path; defaults to `D:\wpt\_venv3` when present.
 - `--skip-venv-setup`: use the specified virtualenv as-is.
 - `--manifest-update`: allow upstream WPT to refresh its manifest before discovery. By default the wrapper passes `--no-manifest-update` for deterministic repeat runs.
 - `--output-dir <path>`: result bundle directory.

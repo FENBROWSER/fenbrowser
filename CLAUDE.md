@@ -22,7 +22,7 @@ Much of this file and the `docs/` Volumes describe the original architecture. Th
 - **JS resume protocol**: all FenJS revamp work resumes from `.fenjs-progress.md` at the repo root — never restart from step 1.
 - **Test repos are local — NEVER search the internet for them:**
   - test262 root: `C:\Users\udayk\Videos\test262`
-  - WPT root: `C:\Users\udayk\Videos\wpt`
+  - WPT root: `D:\wpt`
   - These are full git checkouts. All test counts, file searches, and conformance data come from these local paths — never from GitHub, web search, or any remote source.
 
 ## Documentation Index (Read Before Modifying Subsystems)

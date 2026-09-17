@@ -989,14 +989,14 @@ namespace FenBrowser.Tooling
             var repoRoot = Directory.GetCurrentDirectory();
             var options = new WptOptions
             {
-                WptRoot = @"C:\Users\udayk\Videos\wpt",
+                WptRoot = @"D:\wpt",
                 BrowserBinary = FindFirstExisting(
                     Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Release", "net10.0", "FenBrowser.Host.exe"),
                     Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Debug", "net10.0", "FenBrowser.Host.exe")),
                 WebDriverBinary = Path.Combine(repoRoot, "scripts", "wpt-webdriver-launcher.cmd"),
                 OutputDir = Path.Combine(repoRoot, "Results", $"wpt_{DateTime.UtcNow:yyyyMMdd_HHmmss}"),
-                ManifestPath = File.Exists(Path.Combine(@"C:\Users\udayk\Videos\wpt", "MANIFEST.json"))
-                    ? Path.Combine(@"C:\Users\udayk\Videos\wpt", "MANIFEST.json")
+                ManifestPath = File.Exists(Path.Combine(@"D:\wpt", "MANIFEST.json"))
+                    ? Path.Combine(@"D:\wpt", "MANIFEST.json")
                     : null,
                 MetadataPath = Directory.Exists(Path.Combine(repoRoot, "tools", "wptrunner-fenbrowser", "metadata"))
                     ? Path.Combine(repoRoot, "tools", "wptrunner-fenbrowser", "metadata")
@@ -1011,7 +1011,7 @@ namespace FenBrowser.Tooling
                 ThisChunk = 1,
                 ChunkType = "id_hash",
                 UpdateManifest = false,
-                VenvPath = FindFirstExisting(Path.Combine(@"C:\Users\udayk\Videos\wpt", "_venv3")),
+                VenvPath = FindFirstExisting(Path.Combine(@"D:\wpt", "_venv3")),
                 SkipVenvSetup = false,
                 Tests = new List<string> { "dom/" }
             };
