@@ -12,12 +12,30 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         [ThreadStatic] private static int _layoutDepth;
         private const int MaxLayoutDepth = 120;
 
+        [ThreadStatic] private static long _layoutCalls;
+        [ThreadStatic] private static long _layoutCacheHits;
+
+        /// <summary>
+        /// Layout calls and constraint-cache hits since <see cref="ResetPassCounters"/>.
+        /// A pass should cost roughly one call per box; a large multiple of the box
+        /// count means a context is re-laying out subtrees under changing constraints.
+        /// </summary>
+        internal static (long Calls, long CacheHits) PassCounters => (_layoutCalls, _layoutCacheHits);
+
+        internal static void ResetPassCounters()
+        {
+            _layoutCalls = 0;
+            _layoutCacheHits = 0;
+        }
+
         public void Layout(LayoutBox box, LayoutState state)
         {
             state.Deadline?.Check();
+            _layoutCalls++;
 
             if (box.Store.TryGetCachedLayout(box.StoreId, state) || box.Store.TryRestoreCachedLayout(box.StoreId, state))
             {
+                _layoutCacheHits++;
                 // Fast-path: constraints exactly match previous pass.
                 // Children retain their relative offsets, and the parent will safely position the root.
                 return;

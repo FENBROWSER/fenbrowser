@@ -162,7 +162,21 @@ namespace FenBrowser.FenEngine.Layout
                 var context = FenBrowser.FenEngine.Layout.Contexts.FormattingContext.Resolve(rootBox);
                 if (LayoutDebugLogEnabled)
                     DiagnosticPaths.AppendRootText("layout_engine_debug.txt", $"[LayoutEngine] Resolved Context: {context?.GetType().Name}\n");
-                context.Layout(rootBox, initialState);
+                FenBrowser.FenEngine.Layout.Contexts.FormattingContext.ResetPassCounters();
+                try
+                {
+                    context.Layout(rootBox, initialState);
+                }
+                finally
+                {
+                    // Reported on the deadline path too — a pass that blows its budget is
+                    // exactly the one whose call count needs explaining.
+                    var (layoutCalls, layoutCacheHits) =
+                        FenBrowser.FenEngine.Layout.Contexts.FormattingContext.PassCounters;
+                    FenBrowser.Core.EngineLogCompat.Debug(
+                        $"[PERF-LAYOUT] Formatting-context pass: calls={layoutCalls} cacheHits={layoutCacheHits}",
+                        FenBrowser.Core.Logging.LogCategory.Layout);
+                }
                 if (LayoutDebugLogEnabled)
                     DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Layout Pass Complete\n");
             }
