@@ -17,6 +17,17 @@
     <Authors>FenBrowser</Authors>
     <Deterministic>true</Deterministic>
     <DebugType>portable</DebugType>
+    <!--
+      Server GC for every FenBrowser.Host process (the browser and its brokered
+      children are all this executable, and children get a scrubbed environment,
+      so this has to live in runtimeconfig rather than DOTNET_gcServer).
+      Workstation GC collects on the allocating thread, which on a large page is
+      the layout thread: an ETW trace of en.wikipedia.org/wiki/United_States had
+      ~30% of that thread in the GC. In the brokered browser this cut the
+      renderer's layout pass from 8.9s to 7.1s on average, for ~15% more peak
+      memory (DATAS keeps idle children near their old size).
+    -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
