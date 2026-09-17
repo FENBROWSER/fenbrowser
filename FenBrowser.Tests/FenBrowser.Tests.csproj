@@ -79,6 +79,9 @@
     <Compile Include="Rendering\RemUnitRootBasisTests.cs" />
     <!-- Pseudo-element rule indexing; every key-segment shape must still match. -->
     <Compile Include="Rendering\PseudoElementRuleIndexTests.cs" />
+    <!-- Page loads must not restyle the whole document (a forced full relayout)
+         when nothing about the document as a whole changed. -->
+    <Compile Include="Rendering\RedundantRelayoutTests.cs" />
     <!-- Phase 1 animation-scoping regression (BrowserIntegration is in Host,
          which is otherwise excluded). -->
     <Compile Include="Host\Phase1AnimationScopingTests.cs" />

@@ -2402,7 +2402,17 @@ private void FlushPendingLayoutForScript(Element element)
         /// Re-cascades a single dirty subtree: recomputes ComputedStyle for each element
         /// using its inline styles and inherited parent style. Clears StyleDirty flags.
         /// </summary>
-        private static bool NeedsPostScriptStyleRefresh(
+        /// <summary>
+        /// Whether the post-script pass has to restyle the whole document.
+        /// </summary>
+        /// <remarks>
+        /// Only when the root itself was restyled, or an element never got a style.
+        /// A dirty descendant is a subtree the incremental pass restyles on its own
+        /// (the caller schedules it); restyling the document for it publishes a new
+        /// style snapshot, and a new snapshot is a full relayout - an ~8s pass on
+        /// en.wikipedia.org, paid on every load.
+        /// </remarks>
+        internal static bool NeedsPostScriptStyleRefresh(
             Node root,
             IReadOnlyDictionary<Node, CssComputed> computedStyles)
         {
@@ -2411,7 +2421,7 @@ private void FlushPendingLayoutForScript(Element element)
                 return false;
             }
 
-            if (root.StyleDirty || root.ChildStyleDirty)
+            if (root.StyleDirty)
             {
                 return true;
             }
@@ -2421,14 +2431,17 @@ private void FlushPendingLayoutForScript(Element element)
                 return true;
             }
 
-            return HasNodeMissingComputedStyle(root, computedStyles);
+            return HasElementMissingComputedStyle(root, computedStyles);
         }
 
-        private static bool HasNodeMissingComputedStyle(
+        // Elements only: the cascade never stores an entry for a text or comment node
+        // (they take their parent's style), so asking for one made this true on every
+        // page that has any text.
+        private static bool HasElementMissingComputedStyle(
             Node node,
             IReadOnlyDictionary<Node, CssComputed> computedStyles)
         {
-            if (node == null)
+            if (node is not Element)
             {
                 return false;
             }
@@ -2446,7 +2459,7 @@ private void FlushPendingLayoutForScript(Element element)
 
             for (int i = 0; i < children.Length; i++)
             {
-                if (HasNodeMissingComputedStyle(children[i], computedStyles))
+                if (HasElementMissingComputedStyle(children[i], computedStyles))
                 {
                     return true;
                 }
@@ -3107,6 +3120,13 @@ private void FlushPendingLayoutForScript(Element element)
                                 {
                                     return;
                                 }
+                            }
+                            else if (capturedDom?.ChildStyleDirty == true)
+                            {
+                                // Part of the tree was restyled while scripts ran. Queue the
+                                // incremental pass for it; it is held until the post-script
+                                // snapshot is published and released by the resume below.
+                                ScheduleRecascade();
                             }
 
                             if (!IsCurrentRenderGeneration(renderGeneration))
