@@ -66,6 +66,7 @@ public sealed class MediaPlayer : IMediaResource
     private bool _preservesPitch = true;
     private MediaReadyState _readyState = MediaReadyState.HaveNothing;
     private MediaTime? _pendingSeek;
+    private MediaTime? _trimBefore;
     private int _seekSequence;
     private long _lastPositionTick;
     private bool _failed;
@@ -278,7 +279,7 @@ public sealed class MediaPlayer : IMediaResource
         var renderer = _renderer!;
         var demuxer = _demuxer!;
         var decoder = _decoder!;
-        var output = new RendererOutput(renderer);
+        var output = new RendererOutput(renderer, this);
 
         try
         {
@@ -393,6 +394,7 @@ public sealed class MediaPlayer : IMediaResource
 
         _context.Log.Emit(_context.Player, MediaEventKind.SeekStart, MediaLogLevel.Debug, $"Seek to {target}.", ("target", target.ToString()));
         renderer.Flush(target);
+        _trimBefore = target;
         _endOfStream = false;
         _endReported = false;
         await _decoder!.ResetAsync(cancellation).ConfigureAwait(false);
@@ -501,8 +503,43 @@ public sealed class MediaPlayer : IMediaResource
         }
     }
 
-    private sealed class RendererOutput(AudioRenderer renderer) : IDecodeOutput<AudioBlock>
+    /// <summary>
+    /// Hands decoded blocks to the renderer, first dropping what lies before the seek
+    /// target: containers resume at a frame or page boundary before the target, and an
+    /// accurate seek (§4.8.11.9) must not play that part.
+    /// </summary>
+    private sealed class RendererOutput(AudioRenderer renderer, MediaPlayer owner) : IDecodeOutput<AudioBlock>
     {
-        public void Emit(AudioBlock item) => renderer.Enqueue(item);
+        public void Emit(AudioBlock item)
+        {
+            var trimBefore = owner._trimBefore;
+            if (trimBefore is null || item.Timestamp >= trimBefore.Value)
+            {
+                owner._trimBefore = null;
+                renderer.Enqueue(item);
+                return;
+            }
+
+            if (item.EndTime <= trimBefore.Value)
+            {
+                item.Dispose();
+                return;
+            }
+
+            long skipFrames = (trimBefore.Value - item.Timestamp).ToTimescale(item.SampleRate);
+            skipFrames = Math.Clamp(skipFrames, 0, item.FrameCount);
+            int keep = item.FrameCount - (int)skipFrames;
+            if (keep <= 0)
+            {
+                item.Dispose();
+                return;
+            }
+
+            var trimmed = AudioBlock.Allocate(owner._context.Limits, item.SampleRate, item.Channels, keep, trimBefore.Value);
+            item.Samples[(int)(skipFrames * item.Channels)..].CopyTo(trimmed.Samples);
+            item.Dispose();
+            owner._trimBefore = null;
+            renderer.Enqueue(trimmed);
+        }
     }
 }

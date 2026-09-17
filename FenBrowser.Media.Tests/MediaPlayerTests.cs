@@ -144,6 +144,42 @@ public class MediaPlayerTests
         }
     }
 
+    [Theory]
+    [InlineData("sine_mp3_noid3.mp3")]
+    [InlineData("sine_opus.ogg")]
+    [InlineData("sine_flac.flac")]
+    public async Task Seek_IsAccurateAcrossCodecs(string file)
+    {
+        var client = new RecordingClient();
+        var (demuxers, decoders) = Registries();
+        Assert.True(Codecs.Ffmpeg.FfmpegDecoders.TryRegister(decoders, Diagnostics.NullMediaLogSink.Instance));
+        var outputs = new CapturingOutputFactory();
+        var services = new MediaPlayerServices(demuxers, decoders, outputs, TimeProvider.System);
+        var player = new MediaPlayer(new MemoryByteSource(MediaFixtures.Read(file)), null, client, action => action(), services, MediaPipelineContext.ForTests());
+        player.Start();
+        try
+        {
+            await client.WaitForAsync(() => client.ReadyState == MediaReadyState.HaveEnoughData);
+            player.Seek(MediaTime.FromSeconds(0.6), approximateForSpeed: false);
+            await client.WaitForAsync(() => client.SeekLanded is not null);
+            await client.WaitForAsync(() => client.ReadyState >= MediaReadyState.HaveFutureData);
+            Assert.Equal(MediaTime.FromSeconds(0.6), client.SeekLanded);
+            Assert.Equal(0.6, player.Clock!.CurrentTime.TotalSeconds, 3);
+
+            // Play 100 ms on the device: the first audio started at the target, not at the
+            // frame or page boundary before it, so the clock reads 0.7 s.
+            player.UpdatePlayback(potentiallyPlaying: true, playbackRate: 1.0, preservesPitch: true, effectiveVolume: 1.0);
+            var output = outputs.Last!;
+            await client.WaitForAsync(() => output.IsRunning);
+            output.Pump(output.Format.SampleRate / 10);
+            Assert.Equal(0.7, player.Clock.CurrentTime.TotalSeconds, 2);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
     [Fact]
     public async Task NotMedia_FailsAsUnsupported()
     {
@@ -206,6 +242,13 @@ public class MediaPlayerTests
         Assert.Equal(10, renderer2.Render(small, 2));
         Assert.All(small, s => Assert.Equal(0f, s));
         _ = output;
+    }
+
+    private sealed class CapturingOutputFactory : IAudioOutputFactory
+    {
+        public NullAudioOutput? Last { get; private set; }
+
+        public IAudioOutput Create() => Last = new NullAudioOutput(realtime: false);
     }
 
     private sealed class FixedPosition(int sampleRate, long played) : Clock.IAudioPlaybackPosition
