@@ -786,6 +786,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             TraceJsRoots(tracer, entry.Value.Values);
         }
 
+        TraceMediaJsRoots(tracer);
+
         foreach (var (promise, diagnostic) in _pendingPromiseRejectionDiagnostics)
         {
             TraceJsRoot(tracer, promise);
@@ -1953,6 +1955,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         EnsureImageLoadObserver();
         EnsureLinkLoadObserver();
         EnsureObjectLoadObserver();
+        EnsureMediaElementObserver();
 
         if (resetSession && _parentRealmOwner != null && _embeddingFrameElement != null)
         {
@@ -1982,6 +1985,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             // loads asynchronously during parsing would be seen.
             TrackImagesInSubtree(domRoot);
             TrackObjectsInSubtree(domRoot);
+            // Likewise media elements: a parser-created video with a src or
+            // source children starts resource selection once scripts have run.
+            TrackMediaElementsInSubtree(domRoot);
             ApplyScriptingEnabledSanitizer(domRoot);
             DispatchStartupLifecycleEvents();
         }
@@ -4976,6 +4982,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         UnsubscribeImageLoadObserver();
         UnsubscribeLinkLoadObserver();
         UnsubscribeObjectLoadObserver();
+        UnsubscribeMediaElementObserver();
 
         foreach (var childRealm in DetachFrameRealms())
         {
@@ -6139,6 +6146,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _fenJsPinScopes.Clear();
             _hostCallableCache = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
+            // Media bindings hold promise and error objects from the old heap.
+            _mediaElements.Clear();
+            _stickyUserActivation = false;
             _missingHostPropertyReads = new ConditionalWeakTable<object, HashSet<string>>();
             _elementEventListeners = new ConditionalWeakTable<object, List<BrowserEventListener>>();
             _iframeWindowEventListeners = new ConditionalWeakTable<Element, List<BrowserEventListener>>();
@@ -10966,6 +10976,32 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             length: 0);
         _interpreter.RegisterGlobalValue("__fenNativeImageCtor", imageConstructor);
 
+        JsValue CreateAudio(IReadOnlyList<JsValue> args)
+        {
+            // HTML 4.8.10 dom-audio: new Audio(src) is an audio element with
+            // preload="auto" and, when given, a src attribute - which starts
+            // the load algorithm like any other src.
+            var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument
+                ?? _parentRealmOwner?._currentDomRoot as Document ?? _parentRealmOwner?._currentDomRoot?.OwnerDocument
+                ?? new Document();
+
+            var audio = document.CreateElement("audio");
+            audio.SetAttribute("preload", "auto");
+            if (args.Count > 0 && args[0].Tag != JsValueTag.Undefined)
+            {
+                audio.SetAttribute("src", CoerceToHostString(args[0]) ?? string.Empty);
+            }
+
+            return ToHostNodeOrNull(audio);
+        }
+
+        var audioConstructor = _interpreter.AllocateNativeConstructor(
+            "Audio",
+            (_, args) => CreateAudio(args),
+            CreateAudio,
+            length: 0);
+        _interpreter.RegisterGlobalValue("__fenNativeAudioCtor", audioConstructor);
+
         EvaluateWithFenJsRaw(
             """
             (function () {
@@ -10993,6 +11029,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     configurable: true
                 });
                 delete globalThis.__fenNativeImageCtor;
+
+                var nativeAudio = globalThis.__fenNativeAudioCtor;
+                if (globalThis.HTMLAudioElement && globalThis.HTMLAudioElement.prototype) {
+                    nativeAudio.prototype = globalThis.HTMLAudioElement.prototype;
+                }
+                Object.defineProperty(globalThis, 'Audio', {
+                    value: nativeAudio,
+                    writable: true,
+                    configurable: true
+                });
+                delete globalThis.__fenNativeAudioCtor;
             })();
             """);
     }
@@ -11765,6 +11812,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             });
                             globalThis[name] = HTMLEl;
                         })(_htmlEls[_i]);
+                    }
+                    // HTML 4.8.9 / 4.8.10: HTMLVideoElement and HTMLAudioElement
+                    // inherit from HTMLMediaElement, which is where play(),
+                    // currentTime and the rest are published.
+                    if (typeof globalThis.HTMLMediaElement === 'function') {
+                        var _mediaSubclasses = ['HTMLVideoElement', 'HTMLAudioElement'];
+                        for (var _m = 0; _m < _mediaSubclasses.length; _m++) {
+                            var _sub = globalThis[_mediaSubclasses[_m]];
+                            if (typeof _sub === 'function' && _sub.prototype) {
+                                Object.setPrototypeOf(_sub.prototype, globalThis.HTMLMediaElement.prototype);
+                            }
+                        }
                     }
                     // HTML: the document of an HTML page is an HTMLDocument.
                     if (typeof globalThis.Document === 'function' && typeof globalThis.HTMLDocument !== 'function') {
@@ -21603,6 +21662,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (grantsTransientActivation)
         {
             _transientUserActivationDepth++;
+            _stickyUserActivation = true;
         }
 
         try
@@ -25208,6 +25268,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     RecordAssignedHostApi(document, "Document", property);
                     _owner.SetStoredHostProperty(document, property, value);
                     return true;
+                case Element element when IsMediaElement(element) && _owner.TrySetMediaElementProperty(element, property, value):
+                    return true;
                 case Element element when string.Equals(property, "className", StringComparison.Ordinal):
                     element.ClassName = CoerceToHostString(value);
                     return true;
@@ -26906,6 +26968,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         private bool TryGetElementProperty(Element element, string property, out JsValue value)
         {
+            if (IsMediaElement(element) && _owner.TryGetMediaElementProperty(element, property, out value))
+            {
+                return true;
+            }
+
             switch (property)
             {
                 case "id":
