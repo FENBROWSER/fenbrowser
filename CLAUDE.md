@@ -21,7 +21,7 @@ Much of this file and the `docs/` Volumes describe the original architecture. Th
 - **New projects**: `FenBrowser.Js` (engine), `FenBrowser.Js.Tests` (xUnit), `FenBrowser.Js.Test262` (conformance runner), `FenBrowser.Js.Shell` (REPL/CLI), `FenBrowser.Js.Compare` (differential vs. a reference engine), `FenBrowser.Js.Fuzz` (fuzzing), `FenBrowser.Core.Tests`, `FenBrowser.Tooling`.
 - **JS resume protocol**: all FenJS revamp work resumes from `.fenjs-progress.md` at the repo root — never restart from step 1.
 - **Test repos are local — NEVER search the internet for them:**
-  - test262 root: `C:\Users\udayk\Videos\test262`
+  - test262 root: `D:\test262`
   - WPT root: `D:\wpt`
   - These are full git checkouts. All test counts, file searches, and conformance data come from these local paths — never from GitHub, web search, or any remote source.
 
@@ -156,7 +156,7 @@ Test262 runs through the **`FenBrowser.Js.Test262`** runner. The runner takes a 
 # Build once
 dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release
 EXE=./FenBrowser.Js.Test262/bin/Release/net10.0/FenBrowser.Js.Test262.exe
-ROOT="C:/Users/udayk/Videos/test262"
+ROOT="D:/test262"
 
 # Run a category / subtree (runtime semantics). --test262 takes a path under $ROOT.
 $EXE --runtime-subset --root "$ROOT" --test262 "$ROOT/test/built-ins/Array" \

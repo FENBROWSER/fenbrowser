@@ -2530,11 +2530,11 @@ _End of Volume VI_
   - Added execution hardening: serialized engine execution guard to prevent concurrent runtime initialization races in current in-proc mode.
 - Focused verification:
   - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug -v minimal` (pass)
-  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --max 20 --workers 4 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_smoke20.json`
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root D:\test262 --max 20 --workers 4 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_smoke20.json`
     - Result: `32 pass / 8 fail / 0 skip` across `40` scenarios.
-  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --max 100 --workers 20 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_100.json`
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root D:\test262 --max 100 --workers 20 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_100.json`
     - Result: `112 pass / 88 fail / 0 skip` across `200` scenarios.
-  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --max 200 --workers 20 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_200.json`
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root D:\test262 --max 200 --workers 20 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_200.json`
     - Result: `296 pass / 104 fail / 0 skip` across `400` scenarios.
 
 ## 6.75 Tooling Test262 Multi-Process Sharding (2026-04-25)
@@ -2550,7 +2550,7 @@ _End of Volume VI_
     - `--shard-index`
     - `--shard-count`
 - Focused verification:
-  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --max 1000 --workers 20 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_1000.json`
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root D:\test262 --max 1000 --workers 20 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_1000.json`
   - Result: `391 pass / 163 fail / 713 skip` across `1267` scenarios (run completed without runner crash).
 
 ## 6.76 HTML Element Interface Coverage Regression Slice (2026-04-29)

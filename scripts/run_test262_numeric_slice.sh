@@ -10,7 +10,7 @@
 set -u
 
 LABEL="${1:-run}"
-ROOT="C:/Users/udayk/Videos/test262"
+ROOT="${TEST262_ROOT:-D:/test262}"
 EXE="./FenBrowser.Js.Test262/bin/Release/net10.0/FenBrowser.Js.Test262.exe"
 OUT="Results/test262/numeric-slice/$LABEL"
 mkdir -p "$OUT"

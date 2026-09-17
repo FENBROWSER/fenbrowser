@@ -149,7 +149,7 @@ Main options:
 - `--event-log <jsonl_path>`: append-only per-scenario event log path. Defaults to the output path with `.events.jsonl`.
 
 ```powershell
-dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --workers 20 --max 1000 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_1000.json
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root D:\test262 --workers 20 --max 1000 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_fenrunner_1000.json
 ```
 
 ### `wpt`
@@ -263,5 +263,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_stage_recovery_baseline.p
 
 ```powershell
 dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug
-dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root C:\Users\udayk\Videos\test262 --max 100 --workers 10 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_quick.json
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- test262 --root D:\test262 --max 100 --workers 10 --output C:\Users\udayk\Videos\fenbrowser-test\Results\test262_quick.json
 ```

@@ -28,7 +28,7 @@ The differing script discovery/execution populations are a diagnostic-semantics 
 
 A real-site exception enters this tracker only after source attribution proves the failing behavior is ECMAScript semantics. Missing host properties, wrong WebIDL conversion, DOM state, script ordering, task timing, network policy, and layout failures remain in their owning trackers.
 
-Every Test262 run uses the local `C:\Users\udayk\Videos\test262` checkout, a 2-second per-test timeout, and a 30-second stall watchdog. Full-suite reruns are not the normal work loop.
+Every Test262 run uses the local `D:\test262` checkout, a 2-second per-test timeout, and a 30-second stall watchdog. Full-suite reruns are not the normal work loop.
 
 ## Next work
 
