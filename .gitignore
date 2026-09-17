@@ -59,6 +59,7 @@ bld/
 !scripts/test262_report.py
 !scripts/temporal_triage.py
 !scripts/media/gen_fixtures.py
+!scripts/media/wpt_failures.py
 !scripts/acid3_probe.py
 !scripts/wpt_run_summary.py
 !scripts/temporal_msg.py

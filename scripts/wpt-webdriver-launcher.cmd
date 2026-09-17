@@ -27,6 +27,10 @@ if not exist "%TOOLING_EXE%" (
   echo [wpt-webdriver-launcher] FenBrowser.Tooling.exe not found. Build FenBrowser.Tooling first or set FEN_WPT_TOOLING_EXE. 1>&2
   exit /b 3
 )
+rem WPT expects media to play without a user gesture (Chromium runs it with
+rem --autoplay-policy=no-user-gesture-required), so the media autoplay policy
+rem is "allowed" for the bed unless the caller pinned one.
+if not defined FEN_MEDIA_AUTOPLAY set "FEN_MEDIA_AUTOPLAY=allowed"
 "%TOOLING_EXE%" webdriver --headless --port "%PORT%"
 set "TOOLING_EXIT=%ERRORLEVEL%"
 echo [wpt-webdriver-launcher] Tooling exited code %TOOLING_EXIT% on port %PORT% 1>&2
