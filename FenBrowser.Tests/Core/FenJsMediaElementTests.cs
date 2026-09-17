@@ -14,6 +14,7 @@ namespace FenBrowser.Tests.Core;
 /// runtime. No demuxer is registered, so every source is unsupported and the observable
 /// behaviour is the state machine's: states, events, promises and reflected attributes.
 /// </summary>
+[Collection("Media Engine State")]
 public sealed class FenJsMediaElementTests
 {
     [Fact]

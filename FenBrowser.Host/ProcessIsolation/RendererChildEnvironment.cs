@@ -64,6 +64,11 @@ internal static class RendererChildEnvironment
         "FEN_LOG_RESPONSE_BODY_URLS",
         "FEN_DUMP_FRAMES_ON_CLICK",
         "FEN_COMPAT_INTERVENTIONS",
+        // Media elements live in the renderer: the autoplay policy, the codec kill
+        // switch and the media-process opt-out act there or nowhere.
+        "FEN_MEDIA_AUTOPLAY",
+        "FEN_MEDIA_DISABLE_CODECS",
+        "FEN_MEDIA_PROCESS",
         // Automation posture has to match the host's or the page sees a
         // different browser in the frame that actually renders it.
         "FEN_AUTOMATION_MODE",

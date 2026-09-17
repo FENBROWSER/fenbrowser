@@ -36,7 +36,14 @@ public enum OsSandboxProfileKind
     /// Utility process: maximally restricted, task-specific.
     /// Used for PDF rendering, spell-check, codec workers, etc.
     /// </summary>
-    UtilityProcess
+    UtilityProcess,
+
+    /// <summary>
+    /// Media process: container parsing and codec decoding for media elements.
+    /// No network, no file write, no child processes, no window access; bytes
+    /// arrive only through shared memory the renderer hands it.
+    /// </summary>
+    MediaProcess
 }
 
 /// <summary>
@@ -97,6 +104,15 @@ public sealed class OsSandboxProfile
         kind: OsSandboxProfileKind.UtilityProcess,
         maxMemoryBytes: 256L * 1024 * 1024,
         maxCpuPercent: 25,
+        denyDesktopAccess: true,
+        denyWindowEnumeration: true,
+        capabilities: OsSandboxCapabilities.None);
+
+    /// <summary>Default profile for the media process (design MEDIA_ENGINE_DESIGN §2.2).</summary>
+    public static OsSandboxProfile MediaProcess { get; } = new OsSandboxProfile(
+        kind: OsSandboxProfileKind.MediaProcess,
+        maxMemoryBytes: 512L * 1024 * 1024,
+        maxCpuPercent: 50,
         denyDesktopAccess: true,
         denyWindowEnumeration: true,
         capabilities: OsSandboxCapabilities.None);
@@ -162,6 +178,7 @@ public sealed class OsSandboxProfile
         OsSandboxProfileKind.NetworkProcess => OsSandboxCapabilities.NetworkProcess,
         OsSandboxProfileKind.GpuProcess => OsSandboxCapabilities.GpuProcess,
         OsSandboxProfileKind.UtilityProcess => OsSandboxCapabilities.None,
+        OsSandboxProfileKind.MediaProcess => OsSandboxCapabilities.None,
         _ => OsSandboxCapabilities.None
     };
 }
