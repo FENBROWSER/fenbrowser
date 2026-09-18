@@ -13468,7 +13468,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                     ? (function () { try { return JSON.parse(self.responseText); } catch (e) { return null; } })()
                                     : self.responseText;
                             if (self.onreadystatechange) self.onreadystatechange();
-                            self._dispatch(self.status >= 200 && self.status < 400 ? 'load' : 'error');
+                            // XHR §4.6.6: any HTTP response is a load, whatever its status; only a
+                            // network error (status 0) is an error event.
+                            self._dispatch(self.status !== 0 ? 'load' : 'error');
                             self._dispatch('loadend');
                         });
                         return;
@@ -13484,7 +13486,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         self.responseText = result && result.responseText ? String(result.responseText) : '';
                         self.response = self.responseText;
                         if (self.onreadystatechange) self.onreadystatechange();
-                        self._dispatch(self.status >= 200 && self.status < 400 ? 'load' : 'error');
+                        self._dispatch(self.status !== 0 ? 'load' : 'error');
                         self._dispatch('loadend');
                         return;
                     }
