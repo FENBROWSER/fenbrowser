@@ -394,6 +394,20 @@ public sealed class FenJsTextTrackTests
             result);
     }
 
+    [Fact]
+    public async Task InlineMediaEventHandlerAttributesRun()
+    {
+        var engine = await CreateEngineAsync("""
+            <html><body>
+            <video id=v onplay="globalThis.__inline.push('play:' + (this === document.getElementById('v')))" oncuechange="globalThis.__inline.push('cuechange')"></video>
+            <script>globalThis.__inline = [];</script>
+            </body></html>
+            """);
+
+        engine.Evaluate("document.getElementById('v').dispatchEvent(new Event('play')); document.getElementById('v').dispatchEvent(new Event('cuechange'));");
+        Assert.Equal("play:true,cuechange", engine.Evaluate("globalThis.__inline.join(',')")?.ToString());
+    }
+
     private static string JsString(string value) =>
         "'" + value.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\n", "\\n") + "'";
 

@@ -21539,7 +21539,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         "focus", "blur", "focusin", "focusout",
         "scroll", "wheel",
         "load", "error", "abort",
-        "touchstart", "touchend", "touchmove", "touchcancel"
+        "touchstart", "touchend", "touchmove", "touchcancel",
+        // HTML §4.8.11.17 media events and §4.8.12 cuechange, all GlobalEventHandlers.
+        "loadstart", "progress", "suspend", "emptied", "stalled", "loadedmetadata", "loadeddata",
+        "canplay", "canplaythrough", "playing", "waiting", "seeking", "seeked", "ended",
+        "durationchange", "timeupdate", "play", "pause", "ratechange", "resize", "volumechange",
+        "cuechange"
     };
 
     private static readonly HashSet<string> InlineEventHandlerAttributeNames =
