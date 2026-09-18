@@ -352,6 +352,48 @@ public sealed class FenJsTextTrackTests
         }
     }
 
+    [Fact]
+    public async Task MediaSessionAndMediaMetadataFollowTheStandard()
+    {
+        var engine = await CreateEngineAsync("<html><body></body></html>");
+
+        var result = engine.Evaluate("""
+            var out = [];
+            var s = navigator.mediaSession;
+            out.push(typeof MediaSession, typeof MediaMetadata, s instanceof MediaSession, s === navigator.mediaSession, s.playbackState, String(s.metadata));
+            s.playbackState = 'playing'; s.playbackState = 'bogus';
+            out.push(s.playbackState);
+            var m = new MediaMetadata({ title: 't', artist: 'a', album: 'b', artwork: [{ src: '../x.png', sizes: '1x1', type: 'image/png', junk: 1 }], junk: 2,
+                chapterInfo: [{ title: 'c1', startTime: 3, artwork: [] }] });
+            s.metadata = m;
+            out.push(s.metadata === m, m.title, m.artwork.length, m.artwork[0].src, m.artwork[0].sizes, 'junk' in m.artwork[0], Object.isFrozen(m.artwork), Object.isFrozen(m.artwork[0]), m.junk, m.chapterInfo.length, m.chapterInfo[0].startTime, Object.isFrozen(m.chapterInfo));
+            try { m.artwork.push({ src: 'y' }); out.push('no-throw'); } catch (e) { out.push(e.name); }
+            m.chapterInfo = [{ title: 'z' }];
+            out.push(m.chapterInfo[0].title);
+            try { new MediaMetadata('x'); out.push('no-throw'); } catch (e) { out.push(e.name); }
+            out.push(new MediaMetadata().title === '');
+            s.metadata = null;
+            out.push(String(s.metadata));
+            s.setActionHandler('play', function (d) { out.push('play:' + d.action + ':' + d.seekTime); });
+            try { s.setActionHandler('bogus', null); out.push('no-throw'); } catch (e) { out.push(e.name); }
+            s.setPositionState({ duration: 10, position: 2, playbackRate: 1.5 });
+            s.setPositionState(null);
+            s.setPositionState({ duration: 0 });
+            try { s.setPositionState({ duration: -1 }); out.push('no-throw'); } catch (e) { out.push(e.name); }
+            try { s.setPositionState({ duration: 5, position: 6 }); out.push('no-throw'); } catch (e) { out.push(e.name); }
+            try { s.setPositionState({ duration: 5, playbackRate: 0 }); out.push('no-throw'); } catch (e) { out.push(e.name); }
+            s.setMicrophoneActive(true); s.setCameraActive(false);
+            out.push(__fenMediaSessionAction('play', { seekTime: 4 }), __fenMediaSessionAction('pause', {}));
+            out.join('|')
+            """)?.ToString();
+
+        Assert.Equal(
+            "function|function|true|true|none|null|playing|" +
+            "true|t|1|https://example.test/x.png|1x1|false|true|true||1|3|true|TypeError|c1|TypeError|true|null|" +
+            "TypeError|TypeError|TypeError|TypeError|play:play:4|true|false",
+            result);
+    }
+
     private static string JsString(string value) =>
         "'" + value.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\n", "\\n") + "'";
 
