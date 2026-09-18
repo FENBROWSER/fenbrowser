@@ -34,11 +34,26 @@ public sealed partial class FenJsBrowserScriptEngine
                 if (length !== undefined) Object.defineProperty(fn, 'length', { value: length, configurable: true });
                 Object.defineProperty(proto, name, { value: fn, writable: true, enumerable: true, configurable: true });
             }
+            // HTML 8.1.8.1: an event handler IDL attribute is a listener for its event, so
+            // dispatchEvent() from script reaches it too. The first assignment installs one
+            // listener that calls whatever the attribute holds at dispatch time.
             function handlerAttribute(proto, name) {
                 var key = '_fenHandler_' + name;
+                var type = name.slice(2);
                 accessor(proto, name,
                     function () { return this[key] || null; },
-                    function (v) { this[key] = (typeof v === 'function' || (v !== null && typeof v === 'object')) ? v : null; });
+                    function (v) {
+                        this[key] = (typeof v === 'function' || (v !== null && typeof v === 'object')) ? v : null;
+                        if (!this[key + '_installed'] && typeof this.addEventListener === 'function') {
+                            this[key + '_installed'] = true;
+                            var target = this;
+                            this.addEventListener(type, function (ev) {
+                                var h = target[key];
+                                if (typeof h === 'function') h.call(target, ev);
+                                else if (h && typeof h.handleEvent === 'function') h.handleEvent(ev);
+                            });
+                        }
+                    });
             }
             function constants(ctor, table) {
                 Object.keys(table).forEach(function (key) {
@@ -58,12 +73,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 var previousEvent = g.event;
                 if (!isNode(target)) { try { g.event = ev; } catch (e) {} }
                 try { target.dispatchEvent(ev); } catch (e) {}
-                if (!isNode(target)) {
-                    var handler = target['on' + type];
-                    if (typeof handler === 'function') { try { handler.call(target, ev); } catch (e) {} }
-                    else if (handler && typeof handler.handleEvent === 'function') { try { handler.handleEvent(ev); } catch (e) {} }
-                    try { g.event = previousEvent; } catch (e) {}
-                }
+                if (!isNode(target)) { try { g.event = previousEvent; } catch (e) {} }
             }
             function queueTask(element, fn) {
                 if (typeof g.__fenQueueMediaTask === 'function' && element) g.__fenQueueMediaTask(element, fn);
@@ -294,18 +304,39 @@ public sealed partial class FenJsBrowserScriptEngine
 
             function TextTrackCueList() { throw new TypeError('Illegal constructor'); }
             defineInterface('TextTrackCueList', TextTrackCueList, Object);
+            // WebIDL indexed getters without setters: script cannot create or overwrite an
+            // index (a TypeError in strict code); only the model's own sync may.
+            var syncingIndexed = false;
+            function isIndexKey(key) { return typeof key !== 'symbol' && /^(0|[1-9][0-9]*)$/.test(String(key)); }
+            var indexedListHandler = {
+                set: function (target, key, value, receiver) {
+                    if (isIndexKey(key) && !syncingIndexed) return false;
+                    return Reflect.set(target, key, value, target);
+                },
+                defineProperty: function (target, key, descriptor) {
+                    if (isIndexKey(key) && !syncingIndexed) return false;
+                    return Reflect.defineProperty(target, key, descriptor);
+                },
+                deleteProperty: function (target, key) {
+                    if (isIndexKey(key) && !syncingIndexed) return false;
+                    return Reflect.deleteProperty(target, key);
+                }
+            };
             function makeCueList() {
                 var list = Object.create(TextTrackCueList.prototype);
                 list._cues = [];
                 list._indexed = 0;
-                return list;
+                return typeof g.Proxy === 'function' ? new g.Proxy(list, indexedListHandler) : list;
             }
             function syncIndexed(list, items) {
                 var n = items.length;
-                for (var i = 0; i < n; i++) {
-                    Object.defineProperty(list, i, { value: items[i], writable: false, enumerable: true, configurable: true });
-                }
-                for (var j = n; j < list._indexed; j++) delete list[j];
+                syncingIndexed = true;
+                try {
+                    for (var i = 0; i < n; i++) {
+                        Object.defineProperty(list, String(i), { value: items[i], writable: false, enumerable: true, configurable: true });
+                    }
+                    for (var j = n; j < list._indexed; j++) delete list[String(j)];
+                } finally { syncingIndexed = false; }
                 list._indexed = n;
             }
             accessor(TextTrackCueList.prototype, 'length', function () { return this._cues.length; });
@@ -802,19 +833,14 @@ public sealed partial class FenJsBrowserScriptEngine
                 try { return g.__fenMediaState(media); } catch (e) { return null; }
             }
 
-            // Cues or modes changed: the active set is recomputed once the element has left
-            // its poster (before the first play there is no playback position to march).
+            // Cues or modes changed: the active set is recomputed at once when the element
+            // has left its poster (script sees activeCues change right after addCue during
+            // playback); before the first play there is no playback position to march.
             function cueTimelineChanged(media) {
                 if (!media) return;
-                var model = modelFor(media);
-                if (model._marchQueued) return;
-                model._marchQueued = true;
-                queueTask(media, function () {
-                    model._marchQueued = false;
-                    var s = mediaState(media);
-                    if (!s || s.showPoster) return;
-                    timeMarchesOn(media, false, true);
-                });
+                var s = mediaState(media);
+                if (!s || s.showPoster) return;
+                timeMarchesOn(media, false, true);
             }
 
             function timeMarchesOn(media, monotonic, fromTimelineChange) {

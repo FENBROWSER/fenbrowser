@@ -408,6 +408,36 @@ public sealed class FenJsTextTrackTests
         Assert.Equal("play:true,cuechange", engine.Evaluate("globalThis.__inline.join(',')")?.ToString());
     }
 
+    [Fact]
+    public async Task HandlerAttributesAreListenersAndCueListsRejectIndexedWrites()
+    {
+        var engine = await CreateEngineAsync("<html><body><video id=v></video></body></html>");
+
+        var result = engine.Evaluate("""
+            var out = [];
+            var v = document.getElementById('v');
+            var t = v.addTextTrack('subtitles');
+            var ran = 0;
+            t.oncuechange = function (e) { ran++; out.push(this === t, e.type); };
+            t.dispatchEvent(new Event('cuechange'));
+            t.oncuechange = null;
+            t.dispatchEvent(new Event('cuechange'));
+            out.push(ran);
+            var cues = t.cues;
+            cues[0] = 'foo';
+            out.push(cues[0]);
+            var c = new VTTCue(0, 1, 'x');
+            t.addCue(c);
+            cues[0] = 'foo';
+            out.push(cues[0] === c, cues.length);
+            try { (function () { 'use strict'; cues[1] = 'bar'; })(); out.push('no-throw'); } catch (e) { out.push(e.name); }
+            out.push(cues[1]);
+            out.join('|')
+            """)?.ToString();
+
+        Assert.Equal("true|cuechange|1||true|1|TypeError|", result);
+    }
+
     private static string JsString(string value) =>
         "'" + value.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\n", "\\n") + "'";
 

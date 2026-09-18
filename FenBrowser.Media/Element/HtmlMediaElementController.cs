@@ -1198,6 +1198,10 @@ public sealed class HtmlMediaElementController
             return;
         ShowPoster = value;
         _host.InvalidateRendering(sizeChanged: false);
+        // Leaving the poster is when cues at the current position first become active
+        // (§4.8.12.8 runs against the position the element is about to play from).
+        if (!value)
+            _host.PlaybackPositionChanged(monotonic: false);
     }
 
     private void SetDelayingLoadEvent(bool delaying)
