@@ -190,6 +190,10 @@ namespace FenBrowser.Host.ProcessIsolation.Media
 
         private void OnChildLost(TargetProcessSession session, string reason)
         {
+            // Disposing the host closes its Process, whose exit callback is what runs this
+            // method while holding the Process's own lock: never dispose under _gate, or a
+            // concurrent Dispose() and this callback wait on each other's lock.
+            TargetChildProcessHost lost;
             lock (_gate)
             {
                 if (_host?.Session != session)
@@ -198,10 +202,11 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 }
 
                 EngineLogBridge.Warn($"[MediaProcess] Media child lost ({reason}); failing its players.", LogCategory.ProcessIsolation);
-                _host.Dispose();
+                lost = _host;
                 _host = null;
             }
 
+            lost.Dispose();
             foreach (var pair in _pending)
             {
                 if (_pending.TryRemove(pair.Key, out var tcs))
@@ -213,6 +218,7 @@ namespace FenBrowser.Host.ProcessIsolation.Media
 
         public void Dispose()
         {
+            TargetChildProcessHost host;
             lock (_gate)
             {
                 if (_disposed)
@@ -221,10 +227,11 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 }
 
                 _disposed = true;
-                _host?.Dispose();
+                host = _host;
                 _host = null;
             }
 
+            host?.Dispose();
             foreach (var pair in _pending)
             {
                 if (_pending.TryRemove(pair.Key, out var tcs))
