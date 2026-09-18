@@ -524,6 +524,7 @@ public sealed partial class FenJsBrowserScriptEngine
         private IMediaResource _resource;
         private VideoPresenter _presenter;
         private readonly List<(int Handle, JsValue Callback)> _videoFrameCallbacks = new();
+        private HashSet<int> _videoFrameCallbacksRunning;
         private int _nextVideoFrameHandle;
         private int _videoFrameTaskQueued;
         private long _lastRunFrameSequence;
@@ -774,6 +775,13 @@ public sealed partial class FenJsBrowserScriptEngine
 
             var handle = (long)Math.Truncate(number);
             _videoFrameCallbacks.RemoveAll(entry => entry.Handle == handle);
+            // A callback may cancel another one registered for the same frame (video-rvfc:
+            // "cancel callbacks from callbacks"); the batch being run honours that too.
+            if (handle >= int.MinValue && handle <= int.MaxValue)
+            {
+                _videoFrameCallbacksRunning?.Add((int)handle);
+            }
+
             return JsValue.Undefined;
         }
 
@@ -824,27 +832,46 @@ public sealed partial class FenJsBrowserScriptEngine
                 : 0.0;
             var pending = _videoFrameCallbacks.ToArray();
             _videoFrameCallbacks.Clear();
-            foreach (var (_, callback) in pending)
+            var cancelled = new HashSet<int>();
+            _videoFrameCallbacksRunning = cancelled;
+            try
             {
-                var metadata = _realm._interpreter.AllocateObject(new Dictionary<string, JsValue>
+                foreach (var (handle, callback) in pending)
                 {
-                    ["presentationTime"] = JsValue.FromNumber(now),
-                    ["expectedDisplayTime"] = JsValue.FromNumber(now + 16.0),
-                    ["width"] = JsValue.FromInt32(width),
-                    ["height"] = JsValue.FromInt32(height),
-                    ["mediaTime"] = JsValue.FromNumber(mediaTime),
-                    ["presentedFrames"] = JsValue.FromNumber(sequence),
-                    ["processingDuration"] = JsValue.FromNumber(0),
-                });
-                try
-                {
-                    _ = _realm._interpreter.InvokeFunction(callback, new[] { JsValue.FromNumber(now), metadata }, JsValue.Undefined);
+                    if (cancelled.Contains(handle))
+                    {
+                        continue;
+                    }
+
+                    RunVideoFrameCallback(callback, now, width, height, mediaTime, sequence);
                 }
-                catch (JsThrownException ex)
-                {
-                    _ = _realm.RecordDiagnosticCallbackFailure(callback, JsValue.Undefined, new[] { JsValue.FromNumber(now), metadata }, "video-frame-callback", null, ex);
-                    EngineLogCompat.Warn($"[FenJsBridge] requestVideoFrameCallback callback failed: {ex.Description ?? ex.Message}", LogCategory.JavaScript);
-                }
+            }
+            finally
+            {
+                _videoFrameCallbacksRunning = null;
+            }
+        }
+
+        private void RunVideoFrameCallback(JsValue callback, double now, int width, int height, double mediaTime, long sequence)
+        {
+            var metadata = _realm._interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["presentationTime"] = JsValue.FromNumber(now),
+                ["expectedDisplayTime"] = JsValue.FromNumber(now + 16.0),
+                ["width"] = JsValue.FromInt32(width),
+                ["height"] = JsValue.FromInt32(height),
+                ["mediaTime"] = JsValue.FromNumber(mediaTime),
+                ["presentedFrames"] = JsValue.FromNumber(sequence),
+                ["processingDuration"] = JsValue.FromNumber(0),
+            });
+            try
+            {
+                _ = _realm._interpreter.InvokeFunction(callback, new[] { JsValue.FromNumber(now), metadata }, JsValue.Undefined);
+            }
+            catch (JsThrownException ex)
+            {
+                _ = _realm.RecordDiagnosticCallbackFailure(callback, JsValue.Undefined, new[] { JsValue.FromNumber(now), metadata }, "video-frame-callback", null, ex);
+                EngineLogCompat.Warn($"[FenJsBridge] requestVideoFrameCallback callback failed: {ex.Description ?? ex.Message}", LogCategory.JavaScript);
             }
         }
 
