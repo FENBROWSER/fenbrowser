@@ -121,13 +121,47 @@ public class WebVttCueTextTests
     }
 
     [Fact]
-    public void Entities_DecodeOnlyWithASemicolon()
+    public void Entities_FollowTheHtmlCharacterReferenceRules()
     {
-        Assert.Equal("a&b <c>   ‘", WebVttCueText.Parse("a&amp;b &lt;c&gt; &nbsp; &lsquo;").PlainText());
-        Assert.Equal("&amp b", WebVttCueText.Parse("&amp b").PlainText());
-        Assert.Equal("&notanentity;", WebVttCueText.Parse("&notanentity;").PlainText());
-        Assert.Equal("A €", WebVttCueText.Parse("&#65; &#x20AC;").PlainText());
+        Assert.Equal("a&b <c>   ©", WebVttCueText.Parse("a&amp;b &lt;c&gt; &nbsp; &copy;").PlainText());
+        // Legacy names need no semicolon, and the longest name wins: "&not" + "it;".
+        Assert.Equal("& b", WebVttCueText.Parse("&amp b").PlainText());
+        Assert.Equal("¬it;", WebVttCueText.Parse("&notit;").PlainText());
+        Assert.Equal("¬anentity;", WebVttCueText.Parse("&notanentity;").PlainText());
+        Assert.Equal("A €  ", WebVttCueText.Parse("&#65; &#x20AC; &#32;").PlainText());
         Assert.Equal("&", WebVttCueText.Parse("&").PlainText());
+        Assert.Equal("&&", WebVttCueText.Parse("&&").PlainText());
+        Assert.Equal("&1;", WebVttCueText.Parse("&1;").PlainText());
+        Assert.Equal("&;", WebVttCueText.Parse("&;").PlainText());
+        Assert.Equal("&#", WebVttCueText.Parse("&#").PlainText());
+        Assert.Equal("� €", WebVttCueText.Parse("&#0; &#x80;").PlainText());
+        Assert.Equal("&", WebVttCueText.Parse("&<c>").PlainText());
+    }
+
+    [Fact]
+    public void Entities_UseTheSuppliedTable()
+    {
+        var table = new FakeReferences();
+        Assert.Equal("∲", WebVttCueText.Parse("&ClockwiseContourIntegral;", "", table).PlainText());
+        Assert.Equal("&ClockwiseContourIntegral;", WebVttCueText.Parse("&ClockwiseContourIntegral;").PlainText());
+    }
+
+    private sealed class FakeReferences : IHtmlNamedCharacterReferences
+    {
+        public bool TryMatchLongest(string input, int position, out string replacement, out int length)
+        {
+            const string name = "ClockwiseContourIntegral;";
+            if (string.CompareOrdinal(input, position, name, 0, name.Length) == 0)
+            {
+                replacement = "∲";
+                length = name.Length;
+                return true;
+            }
+
+            replacement = "";
+            length = 0;
+            return false;
+        }
     }
 
     [Fact]

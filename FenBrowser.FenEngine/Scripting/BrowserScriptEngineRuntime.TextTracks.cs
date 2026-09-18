@@ -9,6 +9,8 @@ using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network.Handlers;
+using FenBrowser.Core.Parsing;
+using FenBrowser.FenEngine.Media;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Media.Text;
@@ -73,6 +75,15 @@ public sealed partial class FenJsBrowserScriptEngine
         {
             EngineLogCompat.Warn($"[FenJsBridge] text track prelude failed: {ex.Message}", LogCategory.JavaScript);
         }
+    }
+
+    /// <summary>The full HTML named character reference table, for the cue text parser.</summary>
+    private sealed class HtmlCharacterReferenceTable : IHtmlNamedCharacterReferences
+    {
+        public static HtmlCharacterReferenceTable Instance { get; } = new();
+
+        public bool TryMatchLongest(string input, int position, out string replacement, out int length) =>
+            HtmlNamedCharacterReferences.TryMatchLongest(input, position, out replacement, out length);
     }
 
     // -- native helpers the prelude calls ------------------------------------------------
@@ -184,7 +195,7 @@ public sealed partial class FenJsBrowserScriptEngine
     {
         var text = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
         var language = args.Count > 1 && args[1].Tag == JsValueTag.String ? CoerceToHostString(args[1]) : string.Empty;
-        var root = WebVttCueText.Parse(text ?? string.Empty, language ?? string.Empty);
+        var root = WebVttCueText.Parse(text ?? string.Empty, language ?? string.Empty, HtmlCharacterReferenceTable.Instance);
 
         using var stream = new System.IO.MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))

@@ -132,3 +132,4 @@ scripts/__pycache__/
 
 # wptrunner writes its manifest next to the metadata it is given
 tools/wptrunner-fenbrowser/metadata/MANIFEST.json
+!scripts/gen_html_entities.py
