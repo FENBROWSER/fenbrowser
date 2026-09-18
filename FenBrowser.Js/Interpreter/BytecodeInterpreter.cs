@@ -17243,7 +17243,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ArrayPrototypePush(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLengthDouble(obj);
 
@@ -17313,7 +17313,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypePop(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         if (length == 0)
@@ -17334,7 +17334,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeShift(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         if (length == 0)
@@ -17367,7 +17367,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // shifting existing elements up by args.Count; returns the new length.
     private JsValue ArrayPrototypeUnshift(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         var insert = args.Count;
@@ -17408,7 +17408,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // for i < len/2; preserves holes (a missing source slot deletes the target).
     private JsValue ArrayPrototypeToSpliced(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var lengthD = GetArrayLengthDouble(obj);
         var length = (int)Math.Min(lengthD, int.MaxValue);
         var start = NormaliseSliceIndex(args, 0, 0, length);
@@ -17452,7 +17452,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ArrayPrototypeWith(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         ThrowIfArrayLengthExceedsLimit(GetArrayLengthDouble(obj));
         var length = GetArrayLength(obj);
         var rawIndex = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
@@ -17482,7 +17482,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ArrayPrototypeToSorted(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         ThrowIfArrayLengthExceedsLimit(GetArrayLengthDouble(obj));
         var length = GetArrayLength(obj);
         var comparator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? args[0] : (JsValue?)null;
@@ -17536,7 +17536,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeToReversed(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         ThrowIfArrayLengthExceedsLimit(GetArrayLengthDouble(obj));
         var length = GetArrayLength(obj);
@@ -17554,7 +17554,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeReverse(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         var middle = length / 2;
@@ -17593,7 +17593,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // start/end wrap from length; out-of-range values clamp into [0, length].
     private JsValue ArrayPrototypeFill(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var ownerHandle = receiver.AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
@@ -17700,7 +17700,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // backward pass to avoid clobbering data not yet copied.
     private JsValue ArrayPrototypeCopyWithin(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var ownerHandle = receiver.AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
@@ -17747,7 +17747,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // length; out-of-range returns undefined.
     private JsValue ArrayPrototypeAt(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         var raw = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
         var idx = raw < 0 ? length + raw : raw;
@@ -17764,7 +17764,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // as undefined-valued slots per spec.
     private JsValue ArrayPrototypeFindLast(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLengthDouble(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -17786,7 +17786,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 23.1.3.13 findLastIndex.
     private JsValue ArrayPrototypeFindLastIndex(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLengthDouble(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -17812,7 +17812,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // were inserted or extra elements removed.
     private JsValue ArrayPrototypeSplice(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var lengthD = GetArrayLengthDouble(obj);
         var length = (int)Math.Min(lengthD, int.MaxValue);
@@ -17910,7 +17910,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // already stable). Sorts in place and returns the receiver.
     private JsValue ArrayPrototypeSort(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         var comparator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? args[0] : (JsValue?)null;
@@ -18052,7 +18052,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // (default length-1, negative wraps from length). Returns -1 when not found.
     private JsValue ArrayPrototypeLastIndexOf(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         if (length == 0)
         {
@@ -18088,7 +18088,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // up to the given depth; non-Array elements are kept as-is. Holes are skipped.
     private JsValue ArrayPrototypeFlat(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var depth = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
             ? Math.Max(0, (int)ToNumber(args[0]))
             : 1;
@@ -18136,7 +18136,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // array allocation that the spec also avoids.
     private JsValue ArrayPrototypeFlatMap(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -18172,7 +18172,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // satisfied).
     private JsValue ArrayPrototypeEvery(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -18199,7 +18199,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // one present element. Short-circuits on first truthy.
     private JsValue ArrayPrototypeSome(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -18227,7 +18227,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // spec treats them as undefined-valued slots that the callback can match).
     private JsValue ArrayPrototypeFind(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -18250,7 +18250,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // holes for the same reason find does.
     private JsValue ArrayPrototypeFindIndex(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -18276,7 +18276,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // reduceRight. Callback receives (accumulator, value, index, receiver).
     private JsValue ArrayPrototypeReduce(JsValue thisValue, IReadOnlyList<JsValue> args, bool reverse)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -18389,7 +18389,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ArrayPrototypeForEach(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToObjectValue(thisValue);   // walks a host array-like itself, keeping it as the callback's receiver
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         RequireCallable(callback, "Array.prototype.forEach");
@@ -18473,7 +18473,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ArrayPrototypeMap(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var lengthD = GetArrayLengthDouble(obj);
         var length = (int)Math.Min(lengthD, int.MaxValue);
@@ -18517,7 +18517,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ArrayPrototypeFilter(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -18547,7 +18547,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // missing arguments degrade to "0, length"; negative arguments wrap.
     private JsValue ArrayPrototypeSlice(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var lengthDouble = GetArrayLengthDouble(obj);
         var length = GetArrayLength(obj);
 
@@ -18578,7 +18578,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // ECMA-262 23.1.3.2 steps 1-2: ToObject(this) then ArraySpeciesCreate.
         // The creation order is observable (constructor side effects happen
         // before any @@isConcatSpreadable lookup).
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var resultValue = ArraySpeciesCreate(receiver, Array.Empty<JsValue>());
         if (resultValue.Tag != JsValueTag.Object)
         {
@@ -18866,7 +18866,7 @@ fallbackArraySpecies:
     // and options as arguments per the Intl spec.
     private JsValue ArrayPrototypeToLocaleString(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         var separator = ",";
         var sb = new System.Text.StringBuilder();
@@ -18904,7 +18904,7 @@ fallbackArraySpecies:
     // the shared ToString conversion.
     private JsValue ArrayPrototypeJoin(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         var separator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
             ? ToStringValue(args[0])
@@ -18914,7 +18914,7 @@ fallbackArraySpecies:
 
     private string JoinArrayElements(JsValue thisValue, string separator)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         return JoinArrayElements(thisValue, obj, length, separator);
     }
@@ -18966,7 +18966,7 @@ fallbackArraySpecies:
     // negative wraps from length). Returns -1 when not found.
     private JsValue ArrayPrototypeIndexOf(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         if (length == 0)
         {
@@ -18997,7 +18997,7 @@ fallbackArraySpecies:
     // ECMA-262 23.1.3.14 includes - SameValueZero (NaN matches NaN; +0 matches -0).
     private JsValue ArrayPrototypeIncludes(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLengthDouble(obj);
         if (length <= 0)
@@ -24971,6 +24971,33 @@ fallbackArraySpecies:
     private JsObject ToObject(JsValue value)
     {
         return _heap.GetObject(ToObjectValue(value).AsObjectHandle());
+    }
+
+    /// <summary>
+    /// The receiver of a generic Array.prototype method. A host object (a NodeList, a
+    /// NamedNodeMap, an HTMLCollection) lives behind the host bridge, not in the JS heap,
+    /// so the array algorithms cannot walk it; they get a snapshot of its array-like view
+    /// instead - length and every index read through the host - which is what
+    /// <c>Array.prototype.map.call(element.attributes, ...)</c> and friends need (ECMA-262
+    /// 23.1.3 "The Array.prototype methods are intentionally generic").
+    /// </summary>
+    private JsValue ToArrayReceiver(JsValue thisValue)
+    {
+        var receiver = ToObjectValue(thisValue);
+        if (receiver.Tag != JsValueTag.HostObject)
+        {
+            return receiver;
+        }
+
+        var length = GetHostArrayLikeLength(receiver);
+        var items = new List<JsValue>(length);
+        for (var i = 0; i < length; i++)
+        {
+            items.Add(GetReceiverProperty(receiver, JsIndexKeys.For(i)));
+        }
+
+        var arr = CreateArrayFromElements(items);
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
     }
 
     private JsValue ToObjectValue(JsValue value)
