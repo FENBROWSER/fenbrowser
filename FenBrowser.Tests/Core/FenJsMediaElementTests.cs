@@ -519,6 +519,62 @@ public sealed class FenJsMediaElementTests
         }
     }
 
+    [Fact]
+    public async Task RequestVideoFrameCallbackRunsOncePerPresentedFrame()
+    {
+        var previousFetcher = MediaFetchResource.FetchDetailedAsync;
+        var previousMode = MediaAutoplayPolicy.Default.Mode;
+        MediaAutoplayPolicy.Default.Mode = AutoplayPolicyMode.Allowed;
+        var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", "pattern_vp9.webm"));
+        MediaFetchResource.FetchDetailedAsync = (request, _) => Task.FromResult(new BinaryFetchResult
+        {
+            Body = bytes,
+            StatusCode = 200,
+            FinalUri = new Uri(request.Url),
+            ContentType = "video/webm",
+        });
+        try
+        {
+            var engine = await CreateEngineAsync("<html><body><video id='v'></video></body></html>");
+            engine.Evaluate("""
+                var v = document.getElementById('v');
+                globalThis.__calls = [];
+                globalThis.__cancelledRan = false;
+                globalThis.__typeErrors = 0;
+                [function () { v.requestVideoFrameCallback(); }, function () { v.requestVideoFrameCallback(0); }, function () { v.cancelVideoFrameCallback(); }]
+                    .forEach(function (f) { try { f(); } catch (e) { if (e instanceof TypeError) globalThis.__typeErrors++; } });
+                v.cancelVideoFrameCallback(NaN); v.cancelVideoFrameCallback('foo'); v.cancelVideoFrameCallback(12345);
+                var cancelled = v.requestVideoFrameCallback(function () { globalThis.__cancelledRan = true; });
+                v.cancelVideoFrameCallback(cancelled);
+                function again(now, metadata) {
+                    globalThis.__calls.push([now, metadata.mediaTime, metadata.presentedFrames, metadata.width, metadata.height, typeof metadata.presentationTime, typeof metadata.expectedDisplayTime]);
+                    if (globalThis.__calls.length < 4) v.requestVideoFrameCallback(again);
+                }
+                globalThis.__firstHandle = v.requestVideoFrameCallback(again);
+                v.src = 'resource';
+                v.play();
+                """);
+
+            await WaitForAsync(engine, "globalThis.__calls.length >= 4 ? 'done' : ''");
+            Assert.Equal("3", engine.Evaluate("String(globalThis.__typeErrors)")?.ToString());
+            Assert.Equal("false", engine.Evaluate("String(globalThis.__cancelledRan)")?.ToString());
+            Assert.Equal("true", engine.Evaluate("String(globalThis.__firstHandle > 0 && globalThis.__firstHandle === 2)")?.ToString());
+            // Each run is a newer picture: presentedFrames and mediaTime rise, sizes are the video's.
+            Assert.Equal("true", engine.Evaluate("""
+                String(globalThis.__calls.every(function (c, i) {
+                    return c[3] === 64 && c[4] === 48 && c[5] === 'number' && c[6] === 'number' && c[0] > 0
+                        && (i === 0 || (c[1] > globalThis.__calls[i - 1][1] && c[2] > globalThis.__calls[i - 1][2]));
+                }))
+                """)?.ToString());
+            Assert.Equal("true", engine.Evaluate("String(HTMLVideoElement.prototype.hasOwnProperty('requestVideoFrameCallback') && HTMLVideoElement.prototype.hasOwnProperty('cancelVideoFrameCallback'))")?.ToString());
+        }
+        finally
+        {
+            MediaFetchResource.FetchDetailedAsync = previousFetcher;
+            MediaAutoplayPolicy.Default.Mode = previousMode;
+        }
+    }
+
     private static string FindTestAssets()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)

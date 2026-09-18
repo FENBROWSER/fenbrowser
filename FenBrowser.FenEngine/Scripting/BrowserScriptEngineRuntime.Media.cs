@@ -9,6 +9,7 @@ using FenBrowser.Core.Network;
 using FenBrowser.FenEngine.Media;
 using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Heap;
+using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Media;
 using FenBrowser.Media.Element;
@@ -522,6 +523,10 @@ public sealed partial class FenJsBrowserScriptEngine
         private MediaElementError _errorObjectFor;
         private IMediaResource _resource;
         private VideoPresenter _presenter;
+        private readonly List<(int Handle, JsValue Callback)> _videoFrameCallbacks = new();
+        private int _nextVideoFrameHandle;
+        private int _videoFrameTaskQueued;
+        private long _lastRunFrameSequence;
 
         public MediaElementBinding(FenJsBrowserScriptEngine realm, Element element)
         {
@@ -726,6 +731,121 @@ public sealed partial class FenJsBrowserScriptEngine
 
             _element.MarkDirty(FenBrowser.Core.Dom.V2.InvalidationKind.Paint);
             _realm.RequestRender?.Invoke();
+
+            // video-rvfc "update the rendering": run the callbacks once per composited
+            // frame, on the element's thread. Frames that arrive before the task runs are
+            // coalesced into one run with the latest picture's metadata.
+            if (_videoFrameCallbacks.Count > 0 && Interlocked.CompareExchange(ref _videoFrameTaskQueued, 1, 0) == 0)
+            {
+                QueueTask(RunVideoFrameCallbacks);
+            }
+        }
+
+        /// <summary>
+        /// video-rvfc §requestVideoFrameCallback: registers a one-shot callback for the next
+        /// frame presented to the compositor and returns its handle.
+        /// </summary>
+        public JsValue RequestVideoFrameCallback(IReadOnlyList<JsValue> args)
+        {
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!_realm._interpreter.CanCallValue(callback))
+            {
+                _realm.ThrowDomException("TypeError", "Failed to execute 'requestVideoFrameCallback' on 'HTMLVideoElement': parameter 1 is not of type 'Function'.");
+            }
+
+            var handle = ++_nextVideoFrameHandle;
+            _videoFrameCallbacks.Add((handle, callback));
+            return JsValue.FromInt32(handle);
+        }
+
+        /// <summary>video-rvfc §cancelVideoFrameCallback: an unknown handle is a no-op; a missing argument is a TypeError.</summary>
+        public JsValue CancelVideoFrameCallback(IReadOnlyList<JsValue> args)
+        {
+            if (args.Count == 0)
+            {
+                _realm.ThrowDomException("TypeError", "Failed to execute 'cancelVideoFrameCallback' on 'HTMLVideoElement': 1 argument required, but only 0 present.");
+            }
+
+            var number = CoerceToHostNumber(args[0]);
+            if (!double.IsFinite(number))
+            {
+                return JsValue.Undefined;
+            }
+
+            var handle = (long)Math.Truncate(number);
+            _videoFrameCallbacks.RemoveAll(entry => entry.Handle == handle);
+            return JsValue.Undefined;
+        }
+
+        /// <summary>
+        /// Runs the pending callbacks with VideoFrameCallbackMetadata for the latest picture.
+        /// Callbacks registered while running wait for the next frame.
+        /// </summary>
+        private void RunVideoFrameCallbacks()
+        {
+            Volatile.Write(ref _videoFrameTaskQueued, 0);
+            if (_realm._realmAbandoned || _realm._interpreter == null || _videoFrameCallbacks.Count == 0)
+            {
+                return;
+            }
+
+            var presenter = _presenter;
+            var picture = presenter?.Acquire();
+            if (picture == null)
+            {
+                return;
+            }
+
+            double mediaTime;
+            int width;
+            int height;
+            long sequence;
+            try
+            {
+                mediaTime = picture.Timestamp.TotalSeconds;
+                width = picture.Width;
+                height = picture.Height;
+                sequence = picture.Sequence;
+            }
+            finally
+            {
+                picture.Release();
+            }
+
+            if (sequence == _lastRunFrameSequence)
+            {
+                return; // the same picture as last time: no new frame was presented
+            }
+
+            _lastRunFrameSequence = sequence;
+            var nowFunction = _realm._interpreter.ReadGlobalValueOrUndefined("__fenPerformanceNow");
+            var now = _realm._interpreter.CanCallValue(nowFunction)
+                ? CoerceToHostNumber(_realm._interpreter.InvokeFunction(nowFunction, Array.Empty<JsValue>(), JsValue.Undefined))
+                : 0.0;
+            var pending = _videoFrameCallbacks.ToArray();
+            _videoFrameCallbacks.Clear();
+            foreach (var (_, callback) in pending)
+            {
+                var metadata = _realm._interpreter.AllocateObject(new Dictionary<string, JsValue>
+                {
+                    ["presentationTime"] = JsValue.FromNumber(now),
+                    ["expectedDisplayTime"] = JsValue.FromNumber(now + 16.0),
+                    ["width"] = JsValue.FromInt32(width),
+                    ["height"] = JsValue.FromInt32(height),
+                    ["mediaTime"] = JsValue.FromNumber(mediaTime),
+                    ["presentedFrames"] = JsValue.FromNumber(sequence),
+                    ["processingDuration"] = JsValue.FromNumber(0),
+                });
+                try
+                {
+                    _ = _realm._interpreter.InvokeFunction(callback, new[] { JsValue.FromNumber(now), metadata }, JsValue.Undefined);
+                }
+                catch (JsThrownException ex)
+                {
+                    _ = _realm.RecordDiagnosticCallbackFailure(callback, JsValue.Undefined, new[] { JsValue.FromNumber(now), metadata }, "video-frame-callback", null, ex);
+                    EngineLogCompat.Warn($"[FenJsBridge] requestVideoFrameCallback callback failed: {ex.Description ?? ex.Message}", LogCategory.JavaScript);
+                }
+            }
         }
 
         /// <summary>Media Playback Quality §4: <c>getVideoPlaybackQuality()</c> from the resource's counters.</summary>
@@ -854,6 +974,11 @@ public sealed partial class FenJsBrowserScriptEngine
                 TraceJsRoot(tracer, pending.Promise);
                 TraceJsRoot(tracer, pending.Resolve);
                 TraceJsRoot(tracer, pending.Reject);
+            }
+
+            foreach (var (_, callback) in _videoFrameCallbacks)
+            {
+                TraceJsRoot(tracer, callback);
             }
 
             if (_errorObject.Tag == JsValueTag.Object)
@@ -1159,6 +1284,14 @@ public sealed partial class FenJsBrowserScriptEngine
             case "getVideoPlaybackQuality" when IsVideoElement(element):
                 binding = GetOrCreateMediaBinding(element);
                 value = GetOrCreateHostCallable(element, "getVideoPlaybackQuality", (_, _) => binding.CreateVideoPlaybackQualityValue());
+                return true;
+            case "requestVideoFrameCallback" when IsVideoElement(element):
+                binding = GetOrCreateMediaBinding(element);
+                value = GetOrCreateHostCallable(element, "requestVideoFrameCallback", (_, args) => binding.RequestVideoFrameCallback(args), length: 1);
+                return true;
+            case "cancelVideoFrameCallback" when IsVideoElement(element):
+                binding = GetOrCreateMediaBinding(element);
+                value = GetOrCreateHostCallable(element, "cancelVideoFrameCallback", (_, args) => binding.CancelVideoFrameCallback(args), length: 1);
                 return true;
 
             case "load":
