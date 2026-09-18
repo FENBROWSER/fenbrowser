@@ -40,7 +40,7 @@ public class MediaFoundationDecoderTests
             return;
         var decoders = Registry();
         Assert.Equal(DecoderSupport.Supported, decoders.GetSupport(new CodecConfig(MediaTrackKind.Audio, MediaCodec.Aac, "mp4a.40.2", SampleRate: 48000, Channels: 2)));
-        Assert.Equal(DecoderSupport.Maybe, decoders.GetSupport(new CodecConfig(MediaTrackKind.Video, MediaCodec.H264, "avc1.64000A", Width: 64, Height: 48)));
+        Assert.Equal(DecoderSupport.Supported, decoders.GetSupport(new CodecConfig(MediaTrackKind.Video, MediaCodec.H264, "avc1.64000A", Width: 64, Height: 48)));
     }
 
     [Theory]

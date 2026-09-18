@@ -98,10 +98,9 @@ public sealed class MfVideoDecoderFactory(MediaCodec codec, Guid clsid, string n
     public DecoderSupport Supports(CodecConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
-        if (config.Kind != MediaTrackKind.Video || config.Codec != codec)
-            return DecoderSupport.Unsupported;
-        // The OS decoder decides at configure time which profiles and levels it takes.
-        return DecoderSupport.Maybe;
+        // Every profile and level the web uses is within the OS decoder's reach; a bare
+        // "avc1" with no profile is already "maybe" through the codecs string parser.
+        return config.Kind == MediaTrackKind.Video && config.Codec == codec ? DecoderSupport.Supported : DecoderSupport.Unsupported;
     }
 
     public IMediaDecoder<VideoFrame> Create(MediaPipelineContext context) => new MfVideoDecoder(codec, clsid, Name, context);
