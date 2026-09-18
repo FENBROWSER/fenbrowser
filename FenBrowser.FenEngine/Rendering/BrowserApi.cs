@@ -840,7 +840,13 @@ namespace FenBrowser.FenEngine.Rendering
                     TopLevelDocumentUri = _current ?? frameDocumentUri,
                     Destination = Header("Sec-Fetch-Dest") ?? "empty",
                     Mode = Header("Sec-Fetch-Mode") ?? "cors",
-                    CredentialsMode = "same-origin",
+                    // A request may carry its own credentials mode (a track element's
+                    // crossorigin state, or "omit" after a foreign redirect hop).
+                    CredentialsMode = req.Options.TryGetValue(
+                        new HttpRequestOptionsKey<string>(FenBrowser.Core.Network.Handlers.CorsHandler.CredentialsModeOptionKey),
+                        out var requestCredentials) && !string.IsNullOrWhiteSpace(requestCredentials)
+                        ? requestCredentials
+                        : "same-origin",
                     ReferrerPolicy = CurrentReferrerPolicy,
                     ContentSecurityPolicy = CurrentPolicy,
                     Method = req.Method.Method

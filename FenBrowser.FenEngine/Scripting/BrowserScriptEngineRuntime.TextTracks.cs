@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -339,6 +340,13 @@ public sealed partial class FenJsBrowserScriptEngine
         // One hop of the fetch. The fetch pipeline behind FetchHandler attaches cookies per
         // the credentials mode, sends Origin, and in "cors" mode rejects a response that
         // fails the CORS check; it does not follow redirects, so this does.
+        // Fetch §4.4 (HTTP-redirect fetch) step 13: a redirect from one foreign origin to
+        // another makes the request's origin opaque, so later Origin headers say "null".
+        bool taintedOrigin = false;
+        // Fetch §4.6 (HTTP-network-or-cache fetch): "same-origin" credentials go only while
+        // the response tainting is still basic, i.e. until the first foreign hop.
+        bool crossedOrigins = false;
+
         HttpRequestMessage Build(Uri uri)
         {
             var request = new HttpRequestMessage(HttpMethod.Get, uri);
@@ -348,12 +356,14 @@ public sealed partial class FenJsBrowserScriptEngine
             if (documentOrigin != null)
             {
                 request.Headers.Referrer = documentOrigin;
-                if (corsMode && !CorsHandler.IsSameOrigin(uri, documentOrigin))
+                if (corsMode && (taintedOrigin || !CorsHandler.IsSameOrigin(uri, documentOrigin)))
                 {
-                    var origin = CorsHandler.SerializeOrigin(new UriBuilder(
-                        documentOrigin.Scheme,
-                        documentOrigin.Host,
-                        documentOrigin.IsDefaultPort ? -1 : documentOrigin.Port).Uri);
+                    var origin = taintedOrigin
+                        ? "null"
+                        : CorsHandler.SerializeOrigin(new UriBuilder(
+                            documentOrigin.Scheme,
+                            documentOrigin.Host,
+                            documentOrigin.IsDefaultPort ? -1 : documentOrigin.Port).Uri);
                     if (!string.IsNullOrWhiteSpace(origin))
                     {
                         request.Headers.TryAddWithoutValidation("Origin", origin);
@@ -361,7 +371,8 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
             }
 
-            request.Options.Set(new HttpRequestOptionsKey<string>(CorsHandler.CredentialsModeOptionKey), credentials);
+            var hopCredentials = credentials == "same-origin" && crossedOrigins ? "omit" : credentials;
+            request.Options.Set(new HttpRequestOptionsKey<string>(CorsHandler.CredentialsModeOptionKey), hopCredentials);
             return request;
         }
 
@@ -382,14 +393,57 @@ public sealed partial class FenJsBrowserScriptEngine
                         return;
                     }
 
+                    if (!sameOrigin)
+                    {
+                        crossedOrigins = true;
+                    }
+
                     using var request = Build(uri);
                     using var response = await handler(request).ConfigureAwait(false);
                     var status = (int)response.StatusCode;
                     if (status is >= 300 and <= 399 && response.Headers.Location != null)
                     {
                         var location = response.Headers.Location;
-                        uri = location.IsAbsoluteUri ? location : new Uri(uri, location);
+                        var next = location.IsAbsoluteUri ? location : new Uri(uri, location);
+                        // Leaving a foreign origin for another origin taints the request.
+                        if (!sameOrigin && !CorsHandler.IsSameOrigin(next, uri))
+                        {
+                            taintedOrigin = true;
+                        }
+
+                        if (documentOrigin != null && !CorsHandler.IsSameOrigin(next, documentOrigin))
+                        {
+                            crossedOrigins = true;
+                        }
+
+                        uri = next;
                         continue;
+                    }
+
+                    // The pipeline behind the handler may have followed redirects itself; the
+                    // response's request URI is where the bytes really came from, and the
+                    // origin checks are about that URL.
+                    var finalUri = response.RequestMessage?.RequestUri ?? uri;
+                    if (!CorsHandler.IsSameOrigin(finalUri, uri))
+                    {
+                        bool finalForeign = documentOrigin != null && !CorsHandler.IsSameOrigin(finalUri, documentOrigin);
+                        if (!sameOrigin)
+                        {
+                            taintedOrigin = true;
+                        }
+
+                        if (finalForeign)
+                        {
+                            crossedOrigins = true;
+                        }
+
+                        uri = finalUri;
+                        sameOrigin = !finalForeign;
+                        if (!sameOrigin && !corsMode)
+                        {
+                            Deliver(false, string.Empty);
+                            return;
+                        }
                     }
 
                     if (status < 200 || status > 299)
@@ -398,7 +452,10 @@ public sealed partial class FenJsBrowserScriptEngine
                         return;
                     }
 
-                    if (!sameOrigin && !CorsHandler.IsCorsAllowed(response, uri, documentOrigin))
+                    bool corsAllowed = PassesCorsCheck(response, documentOrigin, taintedOrigin, credentials == "include");
+                    // Response tainting is "cors" once any hop was foreign: the final response
+                    // must pass the CORS check even when it came back to the document's origin.
+                    if ((!sameOrigin || crossedOrigins) && !corsAllowed)
                     {
                         EngineLogCompat.Debug($"[FenJsBridge] track '{uri}' failed the CORS check", LogCategory.JavaScript);
                         Deliver(false, string.Empty);
@@ -422,6 +479,47 @@ public sealed partial class FenJsBrowserScriptEngine
         });
 
         return JsValue.Undefined;
+    }
+
+    /// <summary>
+    /// Fetch §3.2.3 "CORS check" for a track response: one Access-Control-Allow-Origin that
+    /// is "*" (never with credentials) or the request's serialized origin - "null" for a
+    /// redirect-tainted origin, and the document origin is accepted alongside it, as the
+    /// shipping engines do - plus Access-Control-Allow-Credentials: true with credentials.
+    /// </summary>
+    private static bool PassesCorsCheck(HttpResponseMessage response, Uri documentOrigin, bool taintedOrigin, bool includeCredentials)
+    {
+        if (!response.Headers.TryGetValues("Access-Control-Allow-Origin", out var values))
+        {
+            return false;
+        }
+
+        var allowed = values.ToList();
+        if (allowed.Count != 1)
+        {
+            return false;
+        }
+
+        var allowedOrigin = allowed[0].Trim();
+        if (allowedOrigin == "*")
+        {
+            return !includeCredentials;
+        }
+
+        var serialized = documentOrigin == null ? null : CorsHandler.SerializeOrigin(new UriBuilder(documentOrigin.Scheme, documentOrigin.Host, documentOrigin.IsDefaultPort ? -1 : documentOrigin.Port).Uri);
+        bool originMatches = allowedOrigin == serialized || (taintedOrigin && allowedOrigin == "null");
+        if (!originMatches)
+        {
+            return false;
+        }
+
+        if (!includeCredentials)
+        {
+            return true;
+        }
+
+        return response.Headers.TryGetValues("Access-Control-Allow-Credentials", out var credentialsValues) &&
+               credentialsValues.Count() == 1 && credentialsValues.First().Trim() == "true";
     }
 
     /// <summary>RFC 2397: <c>data:[mediatype][;base64],data</c>, percent-decoded unless base64.</summary>
