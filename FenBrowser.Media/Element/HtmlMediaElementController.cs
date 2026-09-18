@@ -67,6 +67,7 @@ public sealed class HtmlMediaElementController
     private MediaTime? _playedStart;
     private MediaTimeRanges _played = MediaTimeRanges.Empty;
     private bool _pendingSeek;
+    private bool _seekableReported;
 
     public HtmlMediaElementController(
         IMediaElementHost host,
@@ -446,6 +447,7 @@ public sealed class HtmlMediaElementController
 
             Buffered = MediaTimeRanges.Empty;
             Seekable = MediaTimeRanges.Empty;
+            _seekableReported = false;
             _played = MediaTimeRanges.Empty;
             _playedStart = null;
             if (VideoWidth != 0 || VideoHeight != 0)
@@ -1116,8 +1118,12 @@ public sealed class HtmlMediaElementController
         if (target < _earliestPossiblePosition)
             target = _earliestPossiblePosition;
 
-        // 8. Snap into the seekable ranges; with none, the seek ends here.
-        if (!Seekable.Contains(target))
+        // 8. Snap into the seekable ranges; with none, the seek ends here. Right after
+        // metadata the resource may not have reported its ranges yet although the whole
+        // timeline is known; a finite duration then stands in for [earliest, duration], so
+        // a default playback start position set before metadata is honoured.
+        bool seekableUnknown = !_seekableReported && _duration is { } known && !known.IsInfinite;
+        if (!seekableUnknown && !Seekable.Contains(target))
         {
             if (Seekable.Nearest(target) is not { } nearest)
             {
@@ -1309,7 +1315,11 @@ public sealed class HtmlMediaElementController
         public void SeekableChanged(MediaTimeRanges seekable)
         {
             ArgumentNullException.ThrowIfNull(seekable);
-            Enqueue(() => owner.Seekable = seekable);
+            Enqueue(() =>
+            {
+                owner.Seekable = seekable;
+                owner._seekableReported = true;
+            });
         }
 
         public void Progress() => Enqueue(() =>

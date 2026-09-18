@@ -34,6 +34,24 @@ public class MediaElementSeekAndAttributeTests
     }
 
     [Fact]
+    public void CurrentTime_BeforeMetadata_SeeksEvenWhenSeekableArrivesLater()
+    {
+        // A resource that reports its metadata before its seekable ranges: the default
+        // playback start position still becomes a seek (the finite duration bounds it).
+        var (host, element, _, _) = Create(h => h.SrcAttribute = "a.webm");
+        element.Load();
+        host.Run();
+        element.SetCurrentTime(4);
+
+        host.Resource!.Client.MetadataAvailable(new MediaResourceMetadata(MediaTime.FromSeconds(10), 320, 240, []));
+        host.Run();
+
+        Assert.Equal(MediaTime.FromSeconds(4), host.Resource.Seeks.Single().Target);
+        Assert.True(element.Seeking);
+        Assert.Equal(4, element.CurrentTime);
+    }
+
+    [Fact]
     public void CurrentTime_BeforeMetadata_ReadsBackExactly()
     {
         // The default playback start position is the double script set; it only becomes
