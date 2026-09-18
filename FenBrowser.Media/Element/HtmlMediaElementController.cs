@@ -185,12 +185,14 @@ public sealed class HtmlMediaElementController
     private bool IsBlocked => ReadyState <= MediaReadyState.HaveCurrentData;
 
     // Negative rates are rejected by the setter, so the direction is always forwards.
-    private bool HasEndedPlayback =>
+    private bool HasEndedPlayback => IsAtTheEnd && !_host.HasLoopAttribute;
+
+    /// <summary>The current playback position is the end of a media resource with a known duration.</summary>
+    private bool IsAtTheEnd =>
         ReadyState >= MediaReadyState.HaveMetadata
         && _duration is { } duration
         && !duration.IsInfinite
-        && _currentPosition >= duration
-        && !_host.HasLoopAttribute;
+        && _currentPosition >= duration;
 
     private bool IsEligibleForAutoplay =>
         _canAutoplay && Paused && _host.HasAutoplayAttribute && _host.DocumentAllowsAutoplay;
@@ -900,8 +902,10 @@ public sealed class HtmlMediaElementController
         if (NetworkState == MediaNetworkState.Empty)
             InvokeResourceSelection();
 
-        // 2. Ended and forwards: restart from the earliest possible position.
-        if (HasEndedPlayback)
+        // 2. Ended and forwards: restart from the earliest possible position. A loop
+        // attribute set after the end makes "ended" false, but play() still restarts,
+        // as the shipping engines do (whatwg/html#4487, WPT loop-from-ended.tentative).
+        if (HasEndedPlayback || IsAtTheEnd)
             Seek(_earliestPossiblePosition, approximateForSpeed: false);
 
         // 3.
@@ -993,6 +997,11 @@ public sealed class HtmlMediaElementController
 
     private void OnPositionChanged(MediaTime position, bool monotonic)
     {
+        // While a seek is in flight the resource may still report the clock it is
+        // leaving; the position is the seek target until SeekCompleted says otherwise.
+        if (_pendingSeek && monotonic)
+            return;
+
         if (!monotonic)
             EndPlayedRange();
         _currentPosition = position;

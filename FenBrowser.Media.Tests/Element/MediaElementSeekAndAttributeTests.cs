@@ -114,6 +114,26 @@ public class MediaElementSeekAndAttributeTests
         Assert.Equal(MediaTime.FromSeconds(expected), host.Resource!.Seeks.Single().Target);
     }
 
+    /// <summary>WPT offsets/currentTime-move-within-document: a position report from the clock being left does not undo the seek.</summary>
+    [Fact]
+    public void PositionReportsDuringAPendingSeekAreIgnored()
+    {
+        var (host, element, _) = Loaded(MediaReadyState.HaveEnoughData);
+
+        element.SetCurrentTime(10);
+        host.Resource!.Client.PositionChanged(MediaTime.FromSeconds(0.4), monotonic: true);
+        host.Run();
+
+        Assert.Equal(10, element.CurrentTime);
+        Assert.True(element.Seeking);
+
+        host.Resource.Client.SeekCompleted(MediaTime.FromSeconds(10));
+        host.Run();
+        host.Resource.Client.PositionChanged(MediaTime.FromSeconds(10.2), monotonic: true);
+        host.Run();
+        Assert.Equal(10.2, element.CurrentTime);
+    }
+
     [Fact]
     public void Seek_SnapsIntoSeekableRanges()
     {

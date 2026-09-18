@@ -359,6 +359,30 @@ public class MediaElementPlaybackTests
         Assert.Equal(["timeupdate", "seeked"], host.TakeEvents());
     }
 
+    /// <summary>WPT playing-the-media-resource/loop-from-ended.tentative (whatwg/html#4487).</summary>
+    [Fact]
+    public void Play_AfterEndedWithLoopSetSince_RestartsFromTheBeginning()
+    {
+        var (host, element, _) = Loaded(MediaReadyState.HaveEnoughData);
+        host.Resource!.Client.PositionChanged(MediaTime.FromSeconds(10), monotonic: false);
+        host.Resource.Client.ReachedEnd();
+        host.Run();
+        Assert.True(element.Ended);
+        Assert.True(element.Paused);
+        host.TakeEvents();
+
+        host.HasLoopAttribute = true;
+        Assert.False(element.Ended);
+        Assert.True(element.Paused);
+
+        element.Play();
+        host.Run();
+
+        Assert.False(element.Paused);
+        Assert.Equal(MediaTime.Zero, host.Resource.Seeks.Single().Target);
+        Assert.Contains("seeking", host.TakeEvents());
+    }
+
     [Fact]
     public void Play_AfterEnded_RestartsFromTheBeginning()
     {
