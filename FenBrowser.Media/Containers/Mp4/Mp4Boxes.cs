@@ -31,6 +31,7 @@ public static class BoxType
     public static readonly uint Co64 = Of("co64");
     public static readonly uint Mvex = Of("mvex");
     public static readonly uint Trex = Of("trex");
+    public static readonly uint Mehd = Of("mehd");
     public static readonly uint Moof = Of("moof");
     public static readonly uint Mfhd = Of("mfhd");
     public static readonly uint Traf = Of("traf");

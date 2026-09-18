@@ -458,6 +458,8 @@ public sealed class FenJsMediaElementTests
     [InlineData("pattern_vp9.webm", "video/webm", 0)]
     [InlineData("pattern_vp8_vorbis.webm", "video/webm", 1)]
     [InlineData("pattern_av1.webm", "video/webm", 0)]
+    [InlineData("pattern_h264_aac.mp4", "video/mp4", 1)]
+    [InlineData("pattern_h264_fragmented.mp4", "video/mp4", 0)]
     public async Task AVideoResourcePlaysThroughTheElement(string file, string contentType, int audioTracks)
     {
         var previousFetcher = MediaFetchResource.FetchDetailedAsync;

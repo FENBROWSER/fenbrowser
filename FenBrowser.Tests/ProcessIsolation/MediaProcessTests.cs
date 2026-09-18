@@ -82,21 +82,24 @@ public sealed class MediaProcessTests
         await remote.DisposeAsync();
     }
 
-    [Fact]
-    public async Task TheMediaProcessDecodesTheSamePicturesAsThisProcess()
+    [Theory]
+    [InlineData("pattern_vp8_vorbis.webm", "video/webm", MediaCodec.Vp8)]
+    [InlineData("pattern_h264_aac.mp4", "video/mp4", MediaCodec.H264)]
+    public async Task TheMediaProcessDecodesTheSamePicturesAsThisProcess(string file, string mime, MediaCodec videoCodec)
     {
-        var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", "pattern_vp8_vorbis.webm"));
+        var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", file));
         using var client = new MediaProcessClient();
 
         var local = new LocalMediaDecodeSourceFactory(MediaEngineServices.Demuxers, MediaEngineServices.Decoders)
-            .Create(new MemoryByteSource(bytes), "video/webm", MediaPipelineContext.ForTests());
-        var remote = client.Create(new MemoryByteSource(bytes), "video/webm", MediaPipelineContext.ForTests());
+            .Create(new MemoryByteSource(bytes), mime, MediaPipelineContext.ForTests());
+        var remote = client.Create(new MemoryByteSource(bytes), mime, MediaPipelineContext.ForTests());
 
         var expected = await local.OpenAsync(CancellationToken.None);
         var actual = await remote.OpenAsync(CancellationToken.None);
         Assert.NotNull(actual.VideoTrack);
         Assert.NotNull(actual.AudioTrack);
         Assert.Equal(expected.VideoTrack!.Config.Codec, actual.VideoTrack.Config.Codec);
+        Assert.Equal(videoCodec, actual.VideoTrack.Config.Codec);
         Assert.Equal(64, actual.VideoTrack.Config.Width);
         Assert.Equal(48, actual.VideoTrack.Config.Height);
 

@@ -57,6 +57,7 @@ public sealed class Mp4Demuxer : IDemuxer
     private readonly Dictionary<uint, Track> _tracksById = [];
     private long _movieTimescale = 1000;
     private long _movieDurationTicks;
+    private long _fragmentDurationTicks;
     private bool _fragmented;
     private bool _open;
     private MediaTrackInfo[] _trackInfos = [];
@@ -169,24 +170,28 @@ public sealed class Mp4Demuxer : IDemuxer
         ? $"{config.Width}x{config.Height}"
         : $"{config.SampleRate} Hz {config.Channels} ch";
 
+    /// <summary>The mvhd duration (what the other engines report), else mehd's, else the last sample's end.</summary>
     private MediaTime Duration()
     {
-        if (_movieDurationTicks > 0 && !_fragmented)
+        if (_movieDurationTicks > 0)
             return MediaTime.FromTimescale(_movieDurationTicks, _movieTimescale);
+        if (_fragmentDurationTicks > 0)
+            return MediaTime.FromTimescale(_fragmentDurationTicks, _movieTimescale);
 
-        // A fragmented file's mvhd duration is usually 0: the last sample's end tells.
+        // Neither header says: the decode timeline's extent, as ffmpeg reports it (a
+        // composition offset on the first picture does not lengthen the movie).
         MediaTime longest = MediaTime.Zero;
         foreach (var track in _tracks)
         {
             if (track.Samples.Count == 0)
                 continue;
             var last = track.Samples[^1];
-            var end = track.Time(Track.Clamp((Int128)last.Dts + last.CtsOffset + last.Duration));
+            var end = track.Time(Track.Clamp((Int128)last.Dts + last.Duration));
             if (end > longest)
                 longest = end;
         }
 
-        return longest > MediaTime.Zero ? longest : _movieDurationTicks > 0 ? MediaTime.FromTimescale(_movieDurationTicks, _movieTimescale) : MediaTime.PositiveInfinity;
+        return longest > MediaTime.Zero ? longest : MediaTime.PositiveInfinity;
     }
 
     private static MediaTime TrackDuration(Track track, MediaTime movieDuration) =>
@@ -243,6 +248,14 @@ public sealed class Mp4Demuxer : IDemuxer
     {
         foreach (var (box, body) in Box.Children(data, dataPosition))
         {
+            if (box.Type == BoxType.Mehd)
+            {
+                // §8.8.2 MovieExtendsHeaderBox: the whole movie's duration including fragments.
+                var (version, _) = Box.FullBox(body.Span);
+                _fragmentDurationTicks = version == 1 ? Track.Clamp((Int128)Box.U64(body.Span, 4)) : Box.U32(body.Span, 4);
+                continue;
+            }
+
             if (box.Type != BoxType.Trex)
                 continue;
             var span = body.Span;

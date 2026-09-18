@@ -73,7 +73,7 @@ public class Mp4DemuxerTests
         var info = await demuxer.InitializeAsync(CancellationToken.None);
         var track = Assert.Single(info.Tracks);
         Assert.Equal(MediaCodec.H264, track.Config.Codec);
-        Assert.InRange(info.Duration.TotalSeconds, 1.0, 1.21);
+        Assert.Equal(1.0, info.Duration.TotalSeconds, 3);   // mvhd, as ffprobe reports
 
         var packets = await ReadAll(demuxer);
         Assert.Equal(10, packets.Count);
