@@ -1092,9 +1092,12 @@ public sealed class HtmlMediaElementController
         // 10. seeking
         QueueEvent("seeking");
 
-        // 11. Move the current playback position.
+        // 11. Move the current playback position. The official position follows at once
+        // (the ⌛ steps run before the script continues), so currentTime reads the clamped
+        // target right after the setter, as WPT seeking/seek-to-max-value expects.
         EndPlayedRange();
         _currentPosition = target;
+        _officialPosition = target;
         StartPlayedRange();
         Log(MediaEventKind.SeekStart, MediaLogLevel.Debug, $"seek to {target}", ("target", target.ToString()));
 

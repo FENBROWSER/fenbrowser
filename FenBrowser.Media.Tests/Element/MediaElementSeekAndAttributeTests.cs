@@ -98,6 +98,22 @@ public class MediaElementSeekAndAttributeTests
         Assert.Equal(MediaTime.FromSeconds(expected), host.Resource!.Seeks.Single().Target);
     }
 
+    /// <summary>WPT seeking/seek-to-negative-time and seek-to-max-value: currentTime reads the clamped target right after the setter.</summary>
+    [Theory]
+    [InlineData(-1.0, 0.0)]
+    [InlineData(double.MaxValue, 10.0)]
+    [InlineData(4.25, 4.25)]
+    public void CurrentTime_Setter_ReadsBackTheClampedTargetAtOnce(double requested, double expected)
+    {
+        var (host, element, _) = Loaded(MediaReadyState.HaveEnoughData);
+
+        element.SetCurrentTime(requested);
+
+        Assert.True(element.Seeking);
+        Assert.Equal(expected, element.CurrentTime);
+        Assert.Equal(MediaTime.FromSeconds(expected), host.Resource!.Seeks.Single().Target);
+    }
+
     [Fact]
     public void Seek_SnapsIntoSeekableRanges()
     {
