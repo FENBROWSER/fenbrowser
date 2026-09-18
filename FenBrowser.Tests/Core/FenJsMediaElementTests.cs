@@ -170,7 +170,7 @@ public sealed class FenJsMediaElementTests
             out.join('|')
             """)?.ToString();
 
-        Assert.Equal("IndexSizeError|NotSupportedError|0.5|2|true|true|false|auto|use-credentials|anonymous|null|320:320|::maybe", results);
+        Assert.Equal("IndexSizeError|NotSupportedError|0.5|2|true|true|false|auto|use-credentials|anonymous|null|320:320|probably::maybe", results);
     }
 
     [Fact]
@@ -446,6 +446,71 @@ public sealed class FenJsMediaElementTests
                 events);
             Assert.True(int.Parse(engine.Evaluate("String(updates)")?.ToString() ?? "0") >= 2, "timeupdate should have fired during playback");
             Assert.Equal("false|1|4|0", engine.Evaluate("[a.seeking, a.buffered.length, a.readyState, a.buffered.start(0)].join('|')")?.ToString());
+        }
+        finally
+        {
+            MediaFetchResource.FetchDetailedAsync = previousFetcher;
+            MediaAutoplayPolicy.Default.Mode = previousMode;
+        }
+    }
+
+    [Theory]
+    [InlineData("pattern_vp9.webm", "video/webm", 0)]
+    [InlineData("pattern_vp8_vorbis.webm", "video/webm", 1)]
+    [InlineData("pattern_av1.webm", "video/webm", 0)]
+    public async Task AVideoResourcePlaysThroughTheElement(string file, string contentType, int audioTracks)
+    {
+        var previousFetcher = MediaFetchResource.FetchDetailedAsync;
+        var previousMode = MediaAutoplayPolicy.Default.Mode;
+        MediaAutoplayPolicy.Default.Mode = AutoplayPolicyMode.Allowed;
+        var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", file));
+        MediaFetchResource.FetchDetailedAsync = (request, _) => Task.FromResult(new BinaryFetchResult
+        {
+            Body = bytes,
+            StatusCode = 200,
+            FinalUri = new Uri(request.Url),
+            ContentType = contentType,
+        });
+        try
+        {
+            var baseUri = new Uri("https://example.test/");
+            var document = new HtmlParser("<html><body><video id='v'></video></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost()) { Sandbox = SandboxPolicy.AllowAll };
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            engine.Evaluate("""
+                globalThis.__events = [];
+                var v = document.getElementById('v');
+                ['loadedmetadata', 'resize', 'loadeddata', 'canplay', 'playing', 'ended', 'error'].forEach(function (t) {
+                    v.addEventListener(t, function () { globalThis.__events.push(t + (t === 'resize' ? ':' + v.videoWidth + 'x' + v.videoHeight : '')); });
+                });
+                v.src = 'resource';
+                v.play().then(function () { globalThis.__events.push('play-resolved'); }, function (e) { globalThis.__events.push('play-rejected:' + e.name); });
+                """);
+
+            var events = await WaitForAsync(engine, "globalThis.__events.some(function (e) { return e === 'ended' || e === 'error' || e.indexOf('play-rejected') === 0; }) ? globalThis.__events.join(',') : ''");
+            // §4.8.11.5 "once enough of the media data has been fetched": the video size and
+            // its resize come before readyState reaches HAVE_METADATA.
+            Assert.Equal("resize:64x48,loadedmetadata,loadeddata,canplay,playing,play-resolved,ended", events);
+            Assert.Equal("64|48|1.00", engine.Evaluate("[v.videoWidth, v.videoHeight, v.duration.toFixed(2)].join('|')")?.ToString());
+
+            // Media Playback Quality: every decoded picture is counted, few are dropped.
+            var quality = engine.Evaluate("(function () { var q = v.getVideoPlaybackQuality(); return [q.totalVideoFrames, q.droppedVideoFrames <= 3, q.corruptedVideoFrames, typeof q.creationTime].join('|'); })()")?.ToString();
+            Assert.Equal("10|true|0|number", quality);
+            Assert.Equal("true", engine.Evaluate("String(HTMLVideoElement.prototype.hasOwnProperty('getVideoPlaybackQuality'))")?.ToString());
+
+            // The element's presentation carries a picture for paint, no poster.
+            var element = Assert.IsType<FenBrowser.Core.Dom.V2.Element>(document.GetElementById("v"));
+            var state = FenBrowser.FenEngine.Media.MediaPresentation.Get(element);
+            Assert.False(state.ShowPoster);
+            Assert.Equal(64, state.VideoWidth);
+            Assert.NotNull(state.Presenter);
+            Assert.True(state.Presenter.Sequence >= 5, $"only {state.Presenter.Sequence} pictures reached the presenter");
+            var picture = state.Presenter.Acquire();
+            Assert.NotNull(picture);
+            Assert.Equal(64, picture.Width);
+            Assert.Equal(48, picture.Height);
+            picture.Release();
+            _ = audioTracks;
         }
         finally
         {

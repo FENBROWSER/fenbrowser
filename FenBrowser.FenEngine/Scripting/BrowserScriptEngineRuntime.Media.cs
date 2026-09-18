@@ -12,6 +12,7 @@ using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Media;
 using FenBrowser.Media.Element;
+using FenBrowser.Media.Video;
 
 namespace FenBrowser.FenEngine.Scripting;
 
@@ -519,6 +520,8 @@ public sealed partial class FenJsBrowserScriptEngine
         private readonly List<MediaPromise> _pendingPromises = new();
         private JsValue _errorObject = JsValue.Undefined;
         private MediaElementError _errorObjectFor;
+        private IMediaResource _resource;
+        private VideoPresenter _presenter;
 
         public MediaElementBinding(FenJsBrowserScriptEngine realm, Element element)
         {
@@ -705,8 +708,41 @@ public sealed partial class FenJsBrowserScriptEngine
         {
             MediaPresentation.Update(
                 _element,
-                new MediaPresentationState(Controller.ShowPoster, Controller.VideoWidth, Controller.VideoHeight));
+                new MediaPresentationState(Controller.ShowPoster, Controller.VideoWidth, Controller.VideoHeight, _presenter));
             InvalidatePaintForElement(_element);
+        }
+
+        /// <summary>
+        /// A new picture is ready (media task thread). Nothing about the element's style or
+        /// box changed, so this is a paint-only invalidation of the element plus a frame
+        /// request (design §2.5: compositor-only, never a restyle or relayout).
+        /// </summary>
+        private void OnFrameAvailable()
+        {
+            if (_realm._realmAbandoned)
+            {
+                return;
+            }
+
+            _element.MarkDirty(FenBrowser.Core.Dom.V2.InvalidationKind.Paint);
+            _realm.RequestRender?.Invoke();
+        }
+
+        /// <summary>Media Playback Quality §4: <c>getVideoPlaybackQuality()</c> from the resource's counters.</summary>
+        public JsValue CreateVideoPlaybackQualityValue()
+        {
+            var quality = _resource?.GetVideoPlaybackQuality() ?? default;
+            var nowFunction = _realm._interpreter.ReadGlobalValueOrUndefined("__fenPerformanceNow");
+            var now = _realm._interpreter.CanCallValue(nowFunction)
+                ? CoerceToHostNumber(_realm._interpreter.InvokeFunction(nowFunction, Array.Empty<JsValue>(), JsValue.Undefined))
+                : 0.0;
+            return _realm._interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["creationTime"] = JsValue.FromNumber(now),
+                ["totalVideoFrames"] = JsValue.FromNumber(quality.TotalVideoFrames),
+                ["droppedVideoFrames"] = JsValue.FromNumber(quality.DroppedVideoFrames),
+                ["corruptedVideoFrames"] = JsValue.FromNumber(0),
+            });
         }
 
         // -- promises --
@@ -757,8 +793,28 @@ public sealed partial class FenJsBrowserScriptEngine
         /// back as a media element task. Until a demuxer exists (M2) a fetched body is
         /// unsupported, but the element waits on the network like the spec says.
         /// </summary>
-        public IMediaResource StartResource(MediaFetchRequest request, IMediaResourceClient client) =>
-            MediaFetchResource.Start(request, client, _element.OwnerDocument, QueueTask);
+        public IMediaResource StartResource(MediaFetchRequest request, IMediaResourceClient client)
+        {
+            if (_presenter != null)
+            {
+                _presenter.FrameAvailable -= OnFrameAvailable;
+                _presenter.Clear();
+                _presenter = null;
+            }
+
+            var resource = MediaFetchResource.Start(request, client, _element.OwnerDocument, QueueTask);
+            _resource = resource;
+            if (resource?.Presenter is { } presenter)
+            {
+                _presenter = presenter;
+                presenter.FrameAvailable += OnFrameAvailable;
+                MediaPresentation.Update(
+                    _element,
+                    new MediaPresentationState(Controller.ShowPoster, Controller.VideoWidth, Controller.VideoHeight, presenter));
+            }
+
+            return resource;
+        }
 
         // -- the error object --
 
@@ -1099,6 +1155,10 @@ public sealed partial class FenJsBrowserScriptEngine
                 return true;
             case "videoHeight" when IsVideoElement(element):
                 value = JsValue.FromInt32(GetOrCreateMediaBinding(element).Controller.VideoHeight);
+                return true;
+            case "getVideoPlaybackQuality" when IsVideoElement(element):
+                binding = GetOrCreateMediaBinding(element);
+                value = GetOrCreateHostCallable(element, "getVideoPlaybackQuality", (_, _) => binding.CreateVideoPlaybackQualityValue());
                 return true;
 
             case "load":

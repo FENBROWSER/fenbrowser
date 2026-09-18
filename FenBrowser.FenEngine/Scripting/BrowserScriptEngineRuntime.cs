@@ -11539,7 +11539,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         'preservesPitch', 'played', 'seekable', 'defaultMuted'],
                         ['play', 'pause', 'load', 'canPlayType', 'fastSeek']],
                     HTMLVideoElement: [['width', 'height', 'videoWidth', 'videoHeight',
-                        'poster', 'playsInline'], []],
+                        'poster', 'playsInline'], ['getVideoPlaybackQuality']],
                     HTMLAudioElement: [[], []],
                     HTMLTableElement: [['rows', 'tBodies', 'tHead', 'tFoot', 'caption'],
                         ['insertRow', 'deleteRow', 'createTHead', 'createTBody',

@@ -353,6 +353,10 @@ namespace FenBrowser.FenEngine.Rendering
                     && a.BackgroundOrigin == b.BackgroundOrigin
                     && a.BackgroundAttachmentFixed == b.BackgroundAttachmentFixed
                     && a.FixedViewportOrigin == b.FixedViewportOrigin,
+                (VideoPaintNode a, VideoPaintNode b) => ReferenceEquals(a.Presenter, b.Presenter)
+                    && a.Sequence == b.Sequence
+                    && string.Equals(a.ObjectFit, b.ObjectFit, StringComparison.Ordinal)
+                    && string.Equals(a.ObjectPosition, b.ObjectPosition, StringComparison.Ordinal),
                 (BoxShadowPaintNode a, BoxShadowPaintNode b) => a.Blur.Equals(b.Blur)
                     && a.Spread.Equals(b.Spread)
                     && a.Offset == b.Offset

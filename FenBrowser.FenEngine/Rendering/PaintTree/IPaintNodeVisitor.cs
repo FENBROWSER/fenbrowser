@@ -10,6 +10,7 @@ namespace FenBrowser.FenEngine.Rendering
         void Visit(BorderPaintNode node);
         void Visit(TextPaintNode node);
         void Visit(ImagePaintNode node);
+        void Visit(VideoPaintNode node);
         void Visit(StackingContextPaintNode node);
         void Visit(OpacityGroupPaintNode node);
         void Visit(ClipPaintNode node);

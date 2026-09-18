@@ -5104,9 +5104,12 @@ namespace FenBrowser.FenEngine.Rendering
 
             // HTML 4.8.9: while the show-poster flag is set the element represents its
             // poster frame, fitted into the content box by object-fit (the UA default
-            // for video is "contain", as in Chromium's html.css). With no poster yet
-            // the box shows the placeholder below.
-            if (FenBrowser.FenEngine.Media.MediaPresentation.Get(elem).ShowPoster)
+            // for video is "contain", as in Chromium's html.css). Without a poster the
+            // element represents the frame of video for the current position when one
+            // has been decoded (the first frame stands in for a missing poster), and
+            // only then the placeholder below.
+            var presentation = FenBrowser.FenEngine.Media.MediaPresentation.Get(elem);
+            if (presentation.ShowPoster)
             {
                 var poster = Layout.ReplacedElementSizing.TryGetPosterBitmap(elem);
                 if (poster != null)
@@ -5120,6 +5123,19 @@ namespace FenBrowser.FenEngine.Rendering
                         ObjectPosition = style?.ObjectPosition ?? "50% 50%"
                     };
                 }
+            }
+
+            if (presentation.Presenter is { } presenter && presenter.Sequence > 0)
+            {
+                return new VideoPaintNode
+                {
+                    Bounds = box.ContentBox,
+                    SourceNode = elem,
+                    Presenter = presenter,
+                    Sequence = presenter.Sequence,
+                    ObjectFit = string.IsNullOrWhiteSpace(style?.ObjectFit) ? "contain" : style.ObjectFit,
+                    ObjectPosition = style?.ObjectPosition ?? "50% 50%"
+                };
             }
 
             return new CustomPaintNode
