@@ -433,6 +433,7 @@ public sealed class HtmlMediaElementController
             _currentPosition = MediaTime.Zero;
             _officialPosition = MediaTime.Zero;
             _earliestPossiblePosition = MediaTime.Zero;
+            _host.TextTracksReset();
 
             // 7.10
             if (officialChanged)
@@ -793,6 +794,7 @@ public sealed class HtmlMediaElementController
         _earliestPossiblePosition = metadata.EarliestPossiblePosition;
         _currentPosition = _earliestPossiblePosition;
         _officialPosition = _earliestPossiblePosition;
+        _host.PlaybackPositionChanged(monotonic: false);
 
         // Duration, then a queued durationchange.
         _duration = metadata.Duration;
@@ -1008,6 +1010,7 @@ public sealed class HtmlMediaElementController
         _officialPosition = position;
         if (!monotonic)
             StartPlayedRange();
+        _host.PlaybackPositionChanged(monotonic);
 
         // Time marches on: timeupdate during normal playback at most every 250 ms.
         if (monotonic)
@@ -1025,6 +1028,7 @@ public sealed class HtmlMediaElementController
     {
         if (_duration is { } duration && !duration.IsInfinite)
             _currentPosition = MediaTime.Max(_currentPosition, duration);
+        _host.PlaybackPositionChanged(monotonic: true);
 
         // 1. Loop: seek to the earliest possible position.
         if (_host.HasLoopAttribute)
@@ -1108,6 +1112,7 @@ public sealed class HtmlMediaElementController
         _currentPosition = target;
         _officialPosition = target;
         StartPlayedRange();
+        _host.PlaybackPositionChanged(monotonic: false);
         Log(MediaEventKind.SeekStart, MediaLogLevel.Debug, $"seek to {target}", ("target", target.ToString()));
 
         // 12. Wait for the data: the resource answers with SeekCompleted.
@@ -1133,6 +1138,7 @@ public sealed class HtmlMediaElementController
             Seeking = false;
             _currentPosition = position;
             _officialPosition = position;
+            _host.PlaybackPositionChanged(monotonic: false);
             QueueEvent("timeupdate");
             QueueEvent("seeked");
             Log(MediaEventKind.SeekEnd, MediaLogLevel.Debug, $"seeked to {position}");

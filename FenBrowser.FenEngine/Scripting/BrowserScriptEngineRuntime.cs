@@ -7512,6 +7512,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsMutationObserver();
         InstallFenJsBrowserUiApis(baseUri);
         InstallFenJsRemainingWebApis();
+        InstallFenJsTextTracks();
         InstallFenJsDocumentAll();
         // Last: this only publishes members nothing else has claimed, so it has to
         // see the finished surface.
@@ -11536,8 +11537,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         'paused', 'ended', 'muted', 'volume', 'playbackRate', 'autoplay',
                         'loop', 'controls', 'preload', 'readyState', 'networkState',
                         'buffered', 'seeking', 'crossOrigin', 'error', 'defaultPlaybackRate',
-                        'preservesPitch', 'played', 'seekable', 'defaultMuted'],
-                        ['play', 'pause', 'load', 'canPlayType', 'fastSeek']],
+                        'preservesPitch', 'played', 'seekable', 'defaultMuted', 'textTracks',
+                        'audioTracks', 'videoTracks'],
+                        ['play', 'pause', 'load', 'canPlayType', 'fastSeek', 'addTextTrack']],
                     HTMLVideoElement: [['width', 'height', 'videoWidth', 'videoHeight',
                         'poster', 'playsInline'], ['getVideoPlaybackQuality', 'requestVideoFrameCallback', 'cancelVideoFrameCallback']],
                     HTMLAudioElement: [[], []],
@@ -11570,7 +11572,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         'contentDocument', 'contentWindow'], []],
                     HTMLEmbedElement: [['src', 'type', 'width', 'height'], []],
                     HTMLSourceElement: [['src', 'srcset', 'sizes', 'type', 'media'], []],
-                    HTMLTrackElement: [['src', 'srclang', 'label', 'kind', 'default'], []],
+                    HTMLTrackElement: [['src', 'srclang', 'label', 'kind', 'default', 'track', 'readyState'], []],
                     HTMLAreaElement: [['alt', 'coords', 'shape', 'target', 'href',
                         'rel', 'relList'], []],
                     HTMLMapElement: [['name', 'areas'], []],
@@ -25424,6 +25426,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case Element element when IsMediaElement(element) && _owner.TrySetMediaElementProperty(element, property, value):
                     return true;
+                case Element element when IsTrackElement(element) && _owner.TrySetTrackElementProperty(element, property, value):
+                    return true;
                 case Element element when string.Equals(property, "className", StringComparison.Ordinal):
                     element.ClassName = CoerceToHostString(value);
                     return true;
@@ -27124,6 +27128,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         private bool TryGetElementProperty(Element element, string property, out JsValue value)
         {
             if (IsMediaElement(element) && _owner.TryGetMediaElementProperty(element, property, out value))
+            {
+                return true;
+            }
+
+            if (IsTrackElement(element) && _owner.TryGetTrackElementProperty(element, property, out value))
             {
                 return true;
             }

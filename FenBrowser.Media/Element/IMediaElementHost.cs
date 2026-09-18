@@ -71,6 +71,23 @@ public interface IMediaElementHost
     /// <summary>The show-poster flag or the video's natural size changed; repaint or relayout.</summary>
     void InvalidateRendering(bool sizeChanged);
 
+    /// <summary>
+    /// HTML §4.8.12.8 "time marches on": the current playback position moved, by normal
+    /// playback when <paramref name="monotonic"/>, otherwise by a seek or a new resource.
+    /// The host runs the text track cue activation steps.
+    /// </summary>
+    void PlaybackPositionChanged(bool monotonic)
+    {
+    }
+
+    /// <summary>
+    /// The load algorithm reset the element (§4.8.11.5 step 7): every text track cue's
+    /// active flag is cleared and no cue events fire for the abandoned resource.
+    /// </summary>
+    void TextTracksReset()
+    {
+    }
+
     object CreatePromise();
 
     void ResolvePromise(object promise);

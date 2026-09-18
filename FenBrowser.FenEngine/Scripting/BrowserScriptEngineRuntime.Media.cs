@@ -200,6 +200,17 @@ public sealed partial class FenJsBrowserScriptEngine
         {
             if (string.Equals(type, "attributes", StringComparison.Ordinal))
             {
+                if (target is Element trackElement &&
+                    IsTrackElement(trackElement) &&
+                    IsTrackElementAttribute(attributeName) &&
+                    string.IsNullOrEmpty(attributeNamespace) &&
+                    OwnsDocumentForImageEvents(trackElement.OwnerDocument))
+                {
+                    var name = attributeName;
+                    RunOnTextTrackThread(trackElement, () => OnTrackElementAttributeChanged(trackElement, name));
+                    return;
+                }
+
                 if (target is Element element &&
                     IsMediaElement(element) &&
                     string.Equals(attributeName, "src", StringComparison.OrdinalIgnoreCase) &&
@@ -238,6 +249,11 @@ public sealed partial class FenJsBrowserScriptEngine
                         // §4.8.11.2: a source inserted into a media element wakes a
                         // resource selection waiting for one, or starts it.
                         RunOnMediaThread(parent, binding => binding.Controller.OnChildInserted(added));
+                        if (added is Element addedElement && IsTrackElement(addedElement))
+                        {
+                            // §4.8.12.11: a track element's parent became a media element.
+                            RunOnMediaThread(parent, _ => OnTrackElementInserted(parent, addedElement));
+                        }
                     }
 
                     TrackMediaElementsInSubtree(added);
@@ -261,6 +277,10 @@ public sealed partial class FenJsBrowserScriptEngine
                         // beginning of the child list; a later candidate is retried,
                         // never skipped.
                         RunOnMediaThread(parent, binding => binding.Controller.OnChildRemoved(removed, previousSibling: null));
+                        if (removed is Element removedElement && IsTrackElement(removedElement))
+                        {
+                            RunOnMediaThread(parent, _ => OnTrackElementRemoved(parent, removedElement));
+                        }
                     }
 
                     ForEachBoundMediaElement(removed, element =>
@@ -546,6 +566,7 @@ public sealed partial class FenJsBrowserScriptEngine
         /// </summary>
         public void Start()
         {
+            _realm.NotifyExistingTrackElements(_element);
             if (SrcAttribute != null)
             {
                 Controller.OnSrcAttributeSet();
@@ -561,6 +582,11 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
             }
         }
+
+        /// <summary>HTML §4.8.12.8: the playback position moved, so the text track cues may change state.</summary>
+        public void PlaybackPositionChanged(bool monotonic) => _realm.OnTextTrackPlaybackPositionChanged(_element, monotonic);
+
+        public void TextTracksReset() => _realm.OnTextTracksReset(_element);
 
         // -- attributes and tree --
 
@@ -1249,6 +1275,12 @@ public sealed partial class FenJsBrowserScriptEngine
             case "height" when IsVideoElement(element):
                 value = JsValue.FromInt32(ReflectUnsignedLong(element, "height"));
                 return true;
+
+            case "textTracks":
+            case "audioTracks":
+            case "videoTracks":
+            case "addTextTrack":
+                return TryGetMediaElementTextTrackProperty(element, property, out value);
 
             // Everything else is state, so it needs the controller.
             case "error":
