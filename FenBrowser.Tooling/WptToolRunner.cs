@@ -190,8 +190,7 @@ namespace FenBrowser.Tooling
                 "--log-wptreport",
                 reportPath,
                 "--log-mach",
-                machLogPath,
-                "fenbrowser"
+                machLogPath
             });
 
             if (options.TestTypes.Count > 0)
@@ -245,6 +244,10 @@ namespace FenBrowser.Tooling
                 arguments.Add(options.ChunkType);
             }
 
+            // The product positional must come after every option: argparse binds
+            // `product [test_list ...]` as one positional group, so an option between
+            // them leaves the test list unrecognized.
+            arguments.Add("fenbrowser");
             arguments.AddRange(options.Tests);
 
             // Invoke the WPT venv's interpreter directly. The bare "python" on PATH
