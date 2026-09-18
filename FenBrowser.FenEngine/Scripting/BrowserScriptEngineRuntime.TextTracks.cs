@@ -228,9 +228,21 @@ public sealed partial class FenJsBrowserScriptEngine
                 VttNodeKind.Timestamp => "timestamp",
                 _ => "root",
             });
-            if (node.Kind == VttNodeKind.Text || node.Kind == VttNodeKind.Timestamp)
+            if (node.Kind == VttNodeKind.Text)
             {
                 writer.WriteString("text", node.Text);
+                writer.WriteEndObject();
+                return;
+            }
+
+            if (node.Kind == VttNodeKind.Timestamp)
+            {
+                // WebVTT §7.2: the processing instruction's data is the serialized timestamp.
+                var total = node.Timestamp.TotalSeconds;
+                var whole = (long)Math.Floor(total);
+                var millis = (int)Math.Round((total - whole) * 1000);
+                if (millis == 1000) { whole++; millis = 0; }
+                writer.WriteString("text", string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:00}:{1:00}:{2:00}.{3:000}", whole / 3600, (whole % 3600) / 60, whole % 60, millis));
                 writer.WriteEndObject();
                 return;
             }

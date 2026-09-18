@@ -82,7 +82,8 @@ public sealed partial class FenJsBrowserScriptEngine
                 var n = Number(v);
                 if (!isFinite(n)) return 0;
                 n = Math.trunc(n) % 4294967296;
-                return n < 0 ? n + 4294967296 : n;
+                if (n < 0) n += 4294967296;
+                return n || 0; // no negative zero
             }
             function inEnum(v, values) { return values.indexOf(v) >= 0; }
 
@@ -167,7 +168,10 @@ public sealed partial class FenJsBrowserScriptEngine
             defineInterface('VTTCue', VTTCue, TextTrackCue);
             accessor(VTTCue.prototype, 'region',
                 function () { return this._region; },
-                function (v) { this._region = (v instanceof g.VTTRegion) ? v : null; });
+                function (v) {
+                    if (v !== null && !(v instanceof g.VTTRegion)) throw new TypeError("Failed to set the 'region' property on 'VTTCue': The provided value is not of type 'VTTRegion'.");
+                    this._region = v;
+                });
             accessor(VTTCue.prototype, 'vertical',
                 function () { return this._vertical; },
                 function (v) { v = toDomString(v); if (inEnum(v, DIRECTIONS)) this._vertical = v; });
@@ -476,7 +480,7 @@ public sealed partial class FenJsBrowserScriptEngine
             }, 1);
             method(TextTrackList.prototype, 'getTrackById', function (id) {
                 id = toDomString(id);
-                for (var i = 0; i < this._tracks.length; i++) if (this._tracks[i]._id === id) return this._tracks[i];
+                for (var i = 0; i < this._tracks.length; i++) if (this._tracks[i].id === id) return this._tracks[i];
                 return null;
             }, 1);
             handlerAttribute(TextTrackList.prototype, 'onchange');
@@ -639,12 +643,15 @@ public sealed partial class FenJsBrowserScriptEngine
                 else if (name === 'srclang') state.track._language = trackElement.getAttribute('srclang') || '';
                 else if (name === 'default') { var media = parentMedia(trackElement); if (media) scheduleTrackSelection(modelFor(media)); }
                 else if (name === 'src') {
-                    // §4.8.12.11.3: the cues are emptied and the processing model reruns.
+                    // §4.8.12.11.3: the cues are emptied and the processing model reruns. A
+                    // fetch that was in flight is abandoned, which is a failure of that load.
+                    var wasLoading = state.readyState === 1;
                     state.generation++;
                     state.track._clearCues();
                     state.readyState = 0;
                     state.loadedUrl = null;
                     var m = parentMedia(trackElement);
+                    if (wasLoading) queueTask(m || trackElement, function () { if (state.readyState === 0 || state.readyState === 1) fire(trackElement, 'error'); });
                     if (m) startTrackElementLoad(trackElement);
                 }
             }
@@ -821,8 +828,10 @@ public sealed partial class FenJsBrowserScriptEngine
                         if (cue._startTime <= now && cue._endTime > now) current.push(cue);
                         else {
                             other.push(cue);
-                            // 4. Missed: wholly between the last position and this one during normal playback.
-                            if (lastTime !== undefined && monotonic && cue._startTime >= lastTime && cue._endTime <= now) missed.push(cue);
+                            // 4. Missed: wholly between the last position and this one during normal
+                            // playback. A cue that ends before it starts occupies just its start
+                            // instant, so it is missed once, when playback passes that instant.
+                            if (lastTime !== undefined && monotonic && cue._startTime >= lastTime && Math.max(cue._startTime, cue._endTime) <= now) missed.push(cue);
                         }
                     }
                 }
