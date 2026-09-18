@@ -70,7 +70,7 @@ This volume details the infrastructure used to extend the browser and verify its
   WebDriver specification tests separate from normal web tests. The shard
   planner additionally separates worker-generated testharness variants from
   the normal profile.
-- `scripts/run-wpt-shards.ps1` first asks upstream wptrunner to discover the
+- (historical — sharding is now `FenBrowser.Tooling wpt --plan-shards/--total-chunks`, driven day to day by `scripts/wpt/run.py`) `scripts/run-wpt-shards.ps1` first asked upstream wptrunner to discover the
   selected tests, then writes independent include files and starts one
   resumable runner process per shard. Each shard owns its result directory;
   rerunning the same command reuses the saved plan and skips shards with a

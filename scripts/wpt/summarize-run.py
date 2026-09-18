@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Summarise one wpt tool run directory: per-file harness status, subtest pass/fail counts,
-and the first failing subtest messages. Usage: python scripts/wpt_run_summary.py [Results/wpt_<ts>] [--max N]"""
+and the first failing subtest messages.
+
+    python scripts/wpt/summarize-run.py Results/wpt/categories/dom_lists [--max=N]
+    python scripts/wpt/summarize-run.py            # newest run under Results/wpt*
+"""
 import json, sys, glob, os
 
 def main():
@@ -9,7 +13,8 @@ def main():
     for a in sys.argv[1:]:
         if a.startswith("--max="):
             max_msgs = int(a.split("=", 1)[1])
-    d = args[0] if args else sorted(glob.glob("Results/wpt_*"), key=os.path.getmtime)[-1]
+    runs = glob.glob("Results/wpt/categories/*") + glob.glob("Results/wpt_*")
+    d = args[0] if args else sorted(runs, key=os.path.getmtime)[-1]
     res = {}
     for line in open(os.path.join(d, "wpt.raw.json"), encoding="utf-8"):
         j = json.loads(line)

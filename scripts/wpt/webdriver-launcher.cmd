@@ -19,7 +19,7 @@ if not defined PORT (
   echo [wpt-webdriver-launcher] Missing --port argument 1>&2
   exit /b 2
 )
-set "REPO_ROOT=%SCRIPT_DIR%.."
+set "REPO_ROOT=%SCRIPT_DIR%..\.."
 set "TOOLING_EXE=%REPO_ROOT%\FenBrowser.Tooling\bin\Release\net10.0\FenBrowser.Tooling.exe"
 if defined FEN_WPT_TOOLING_EXE set "TOOLING_EXE=%FEN_WPT_TOOLING_EXE%"
 if not exist "%TOOLING_EXE%" set "TOOLING_EXE=%REPO_ROOT%\FenBrowser.Tooling\bin\Debug\net10.0\FenBrowser.Tooling.exe"

@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 🎯 test262 Status (always visible — run `python scripts/test262_dashboard.py` to refresh)
+## 🎯 test262 Status (always visible — run `python scripts/test262/run.py status` to refresh)
 
-Target: **100% pass rate**. Refresh batched store: `FRESH=1 bash scripts/run_full_batched.sh`
+Target: **100% pass rate**. Refresh batched store: `python scripts/test262/run.py full --fresh`
 
 ```
 test262: 49936/53483 = 93.37% (3547 fail)
@@ -17,7 +17,7 @@ Much of this file and the `docs/` Volumes describe the original architecture. Th
 
 - **Target framework is `net10.0`** (not net8.0) across all projects.
 - **`FenBrowser.Js` is the sole JavaScript engine.** The legacy engine (`FenBrowser.FenEngine/Core/Bytecode/`, `FenRuntime`, `VirtualMachine`, `JavaScriptEngine`, `FenValue`, DOM wrappers, WebAPIs, Workers, JIT) was removed 2026-06-24. All JS execution goes through `FenBrowser.Js` (Lexer → Parser → Ast → BytecodeCompiler → BytecodeVerifier → BytecodeInterpreter). No fallback.
-- **`FenBrowser.WPT` and `FenBrowser.Test262` projects no longer exist.** Test262 now runs through **`FenBrowser.Js.Test262`** with a completely different CLI (see Test262 section). There is no in-tree WPT runner at present.
+- **`FenBrowser.WPT` and `FenBrowser.Test262` projects no longer exist.** Test262 runs through **`FenBrowser.Js.Test262`** (driver: `scripts/test262/run.py`); WPT runs through upstream wptrunner via **`FenBrowser.Tooling wpt`** (driver: `scripts/wpt/run.py`).
 - **New projects**: `FenBrowser.Js` (engine), `FenBrowser.Js.Tests` (xUnit), `FenBrowser.Js.Test262` (conformance runner), `FenBrowser.Js.Shell` (REPL/CLI), `FenBrowser.Js.Compare` (differential vs. a reference engine), `FenBrowser.Js.Fuzz` (fuzzing), `FenBrowser.Core.Tests`, `FenBrowser.Tooling`.
 - **JS resume protocol**: all FenJS revamp work resumes from `.fenjs-progress.md` at the repo root — never restart from step 1.
 - **Test repos are local — NEVER search the internet for them:**
@@ -105,7 +105,7 @@ Hard rules:
 
 The repository root must stay clean. **Never create scripts or one-off helpers at root.**
 
-- **All scripts** (`.sh`, `.ps1`, `.py`, `.bat`, `.cmd`) live under **`scripts/`** — including throwaway one-offs. Invoke them from repo root by path, e.g. `bash scripts/run_full_batched.sh`, and write script-internal paths relative to repo root (cwd), not the script's own location.
+- **All scripts** (`.sh`, `.ps1`, `.py`, `.bat`, `.cmd`) live under **`scripts/`** — including throwaway one-offs. Invoke them from repo root by path, e.g. `python scripts/test262/run.py full`, and write script-internal paths relative to repo root (cwd), not the script's own location.
 - **Runtime artifacts** → `logs/`. **Generated reports/result bundles** → `Results/`. **Maintained docs** → `docs/`. Never write any of these to root or into `docs/`.
 - The root holds only: solution/project files, top-level docs (`README`, `AGENTS.md`, `CLAUDE.md`), config/dotfiles, and the standing project directories. If a task tempts you to drop a file at root, put it in the right folder instead.
 
@@ -144,7 +144,7 @@ dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj
 dotnet test FenBrowser.Core.Tests/FenBrowser.Core.Tests.csproj
 ```
 
-> The old `FenBrowser.WPT` runner no longer exists in the tree. There is currently no in-tree WPT runner.
+> WPT runs through upstream `wptrunner` driving FenBrowser over WebDriver (`FenBrowser.Tooling wpt`); see the WPT section below.
 
 ## Test262 Conformance Testing Protocol
 
@@ -173,42 +173,61 @@ $EXE --parser-subset --root "$ROOT" --test262 "$ROOT/test/language" --timeout-ms
 # Other flags: --features a,b,c | --supported-features a,b,c | --expectations <path> | --engine <name>
 ```
 
-There are exactly **two canonical runner scripts** (both with a stall-kill watchdog so one wedged test can't hang the run). Use these, don't add more:
-
-- **Full ~53k-test suite** → `scripts/run_full_batched.sh` (bash) or `scripts/run_full_batched.ps1` (PowerShell twin) — one OS process per directory batch so RAM is released between batches; aggregates into `Results/test262/batched/_batched_total.json`. **Resumable by default**: batches with a valid result JSON are skipped, so an interrupted run continues; pass `FRESH=1` (bash) / `-Fresh` (ps1) to wipe prior results and rerun all. Tune the watchdog with `STALL_TIMEOUT_SEC` / `-StallTimeoutSec` (default 30).
-- **Category-wise** → `scripts/run-test262-category-resume.ps1` — resumable per-category sweep; splits oversized dirs into buckets; `-StallTimeoutSec` (default 35) kills a wedged bucket; `-Fresh` to ignore prior results.
+All scripted runs go through **one driver, `scripts/test262/run.py`** (Python, works from bash or PowerShell). It always passes `--timeout-ms 2000`, runs one OS process per directory batch so RAM is released between batches, and kills a batch whose log stops growing for 30s (`--stall N`, a test wedged in native code). Don't add more runner scripts.
 
 ```bash
-bash scripts/run_full_batched.sh                              # full suite (bash)
-pwsh scripts/run_full_batched.ps1                             # full suite (PowerShell)
-pwsh scripts/run-test262-category-resume.ps1                  # all categories, resumable
-# Single process over the whole tree (heavier on RAM, no watchdog):
-$EXE --runtime-subset --root "$ROOT" --test262 "$ROOT/test" --max 1000000 --timeout-ms 2000 \
-     --out Results/test262/full.json
+python scripts/test262/run.py full                       # whole suite into Results/test262/batched (resumable: cached batches skipped)
+python scripts/test262/run.py full --fresh --split-on-stall   # rebuild the store; a stall-killed batch is rerun per subdirectory
+python scripts/test262/run.py category built-ins/Object  # rerun one category into the store, regenerate docs/test262_results.md
+python scripts/test262/run.py file D:/test262/test/built-ins/Object/keys/order.js   # one file, prints failure details
+python scripts/test262/run.py slice numeric --label before   # named directory slice for a before/after
+python scripts/test262/run.py status                     # per-category summary of the store
+python scripts/test262/triage.py built-ins/Temporal --by 1   # cluster failures[].details by message / subdir
+bash   scripts/test262/interp2-ab.sh language/expressions/call   # v1 vs v2 interpreter loop on one slice
 ```
+
+`--runner-args ...` forwards anything else to the runner (e.g. `--engine X`); `--out DIR` sends results somewhere other than the store (for comparisons).
 
 Result JSON fields: `passed`, `total`, and `failures[].details` (the real thrown message — *not* `tests[].message`).
 
 ### Real-results tracking — follow the file, don't re-run the suite (MANDATORY)
-`docs/test262_results.md` is the **committed source of truth** for per-category pass rates (generated by `scripts/test262_report.py` from the local batched store). **To check status, read that file — do NOT re-run the full suite.** The full ~53k run is expensive and only needed occasionally (e.g. before a milestone) or to rebuild the local store from scratch.
+`docs/test262_results.md` is the **committed source of truth** for per-category pass rates (generated by `scripts/test262/report.py` from the local batched store). **To check status, read that file — do NOT re-run the full suite.** The full ~53k run is expensive and only needed occasionally (e.g. before a milestone) or to rebuild the local store from scratch.
 
 The work loop — one category at a time:
 1. Open `docs/test262_results.md`; pick a category (ranked by failures = biggest wins first).
 2. Investigate failures in the local `Results/test262/batched/b_<tag>.json` (`failures[].details` has the real thrown message), find the **shared root cause**, fix it in the engine.
-3. **Re-run ONLY that category** — `bash scripts/rerun-test262-category.sh <category>` (e.g. `built-ins/Object`). It overwrites that category's `b_<tag>.json`, then regenerates `docs/test262_results.md`.
+3. **Re-run ONLY that category** — `python scripts/test262/run.py category <category>` (e.g. `built-ins/Object`). It overwrites that category's `b_<tag>.json`, then regenerates `docs/test262_results.md`.
 4. **Commit the updated `docs/test262_results.md`** with the fix so the real numbers move with the code.
 
 ### Execution & Results Policy (MANDATORY)
 - **Category by category** — drive one category at a time, not the whole suite blindly.
 - **Target: 100% pass rate** — push every category to zero failures. No gate — work each category until it's clean.
 - **Results layout** under `Results/test262/`:
-  - `Results/test262/full/` — full-suite run results.
-  - `Results/test262/categories/` — per-category run results.
+  - `Results/test262/batched/` — the store (`b_<tag>.json` per batch/category) that `docs/test262_results.md` is generated from.
+  - `Results/test262/slices/<name>/<label>/` — before/after slices; `Results/test262/single.json` — last single-file run.
 - **Clear stale results; keep only one day of history** — purge result files older than 24h before/after runs so the folders hold only the latest day. (`Results/` is gitignored — local housekeeping, never committed.)
 
 ### Memory safety
-- Check RAM before large runs; prefer `run_full_batched.sh` (process-per-batch) over a single whole-tree process.
+- Check RAM before large runs; prefer `scripts/test262/run.py` (process-per-batch) over a single whole-tree process.
 - If a run crashes, retry once before moving on. Stale `Results/` files are gitignored local housekeeping.
+
+## WPT Conformance Testing
+
+WPT is upstream `wptrunner` (from the local checkout `D:\wpt`) driving FenBrowser through its W3C WebDriver server; `FenBrowser.Tooling wpt` wraps that with a stall watchdog and writes a result bundle per run. The scripted front-end is **`scripts/wpt/run.py`** — one Tooling process per category, resumable, results in `Results/wpt/categories/<tag>/` (`wpt.summary.json`, `wpt.raw.json`, `wpt.failures.json`), `docs/wpt_results.md` regenerated afterwards.
+
+One-off setup: build `FenBrowser.Host` and `FenBrowser.Tooling` (Release) and install the product plugin into the WPT venv: `D:\wpt\_venv3\Scripts\python.exe -m pip install -e tools/wptrunner-fenbrowser`.
+
+```bash
+python scripts/wpt/run.py category dom/lists dom/ranges   # one or more categories
+python scripts/wpt/run.py sweep                           # every top-level WPT dir (resumable; --fresh to redo)
+python scripts/wpt/run.py sweep --categories dom,html,url --processes 2
+python scripts/wpt/run.py list                            # test-file counts per top-level dir
+python scripts/wpt/run.py status                          # summarise the category store
+python scripts/wpt/summarize-run.py Results/wpt/categories/dom_lists   # per-file harness status + first failing subtests
+python scripts/wpt/report.py                              # regenerate docs/wpt_results.md
+```
+
+Keep `--processes` at 4 or below — the engine wedges under higher parallelism. `--tooling-args ...` forwards anything else to `FenBrowser.Tooling wpt` (`--suite webdriver`, `--total-chunks`, `--include-file`, ...). Launchers: `scripts/wpt/webdriver-launcher.cmd` (FenBrowser) and `scripts/wpt/chrome-launcher.cmd` (reference Chrome).
 
 ## Architecture Overview
 

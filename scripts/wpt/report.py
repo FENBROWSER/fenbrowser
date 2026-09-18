@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
 Generate a WPT results summary from per-category result bundles.
-Reads Results/wpt/categories/*/wpt.summary.json and writes a Markdown report.
-Usage: python scripts/wpt_report.py [--results-dir Results/wpt/categories]
+Reads Results/wpt/categories/*/wpt.summary.json (written by scripts/wpt/run.py)
+and writes docs/wpt_results.md.
+Usage: python scripts/wpt/report.py [--results-dir Results/wpt/categories]
 """
 import json, os, sys, glob
-from datetime import datetime
+from datetime import datetime, timezone
 
 RESULTS_DIR = sys.argv[2] if len(sys.argv) > 2 and sys.argv[1] == "--results-dir" else "Results/wpt/categories"
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 abs_dir = os.path.join(REPO_ROOT, RESULTS_DIR) if not os.path.isabs(RESULTS_DIR) else RESULTS_DIR
 
 if not os.path.isdir(abs_dir):
     print(f"Results directory not found: {abs_dir}")
-    print("Run a WPT sweep first: pwsh scripts/run-wpt-category-sweep.ps1")
+    print("Run a WPT sweep first: python scripts/wpt/run.py sweep")
     sys.exit(1)
 
 categories = []
@@ -34,7 +35,7 @@ for cat_dir in sorted(os.listdir(abs_dir)):
     except Exception:
         continue
 
-    # cat_dir like "wpt_dom" or "wpt_dom_lists"
+    # cat_dir is the category tag, e.g. "dom" or "dom_lists"
     cat_name = cat_dir.removeprefix("wpt_").replace("_", "/")
 
     tests = data.get("Tests", [])
@@ -84,7 +85,7 @@ for cat_dir in sorted(os.listdir(abs_dir)):
 
 # Write report
 report_path = os.path.join(REPO_ROOT, "docs", "wpt_results.md")
-now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 with open(report_path, "w", encoding="utf-8") as f:
     f.write(f"# WPT Results ({now})\n\n")

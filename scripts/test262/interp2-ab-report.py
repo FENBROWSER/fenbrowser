@@ -21,7 +21,7 @@ def load(path):
 
 def main():
     if len(sys.argv) < 3:
-        print("usage: interp2_ab_report.py <v1.json> <v2.json> [label]", file=sys.stderr)
+        print("usage: interp2-ab-report.py <v1.json> <v2.json> [label]", file=sys.stderr)
         return 2
 
     label = sys.argv[3] if len(sys.argv) > 3 else ""

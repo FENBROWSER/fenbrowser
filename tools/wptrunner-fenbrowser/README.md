@@ -22,7 +22,7 @@ python D:\wpt\wpt run `
   --venv D:\wpt\_venv3 `
   --skip-venv-setup `
   --binary C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.Host\bin\Debug\net10.0\FenBrowser.Host.exe `
-  --webdriver-binary C:\Users\udayk\Videos\fenbrowser-test\scripts\wpt-webdriver-launcher.cmd `
+  --webdriver-binary C:\Users\udayk\Videos\fenbrowser-test\scripts\wpt\webdriver-launcher.cmd `
   fenbrowser /acid/acid2/reftest.html
 ```
 

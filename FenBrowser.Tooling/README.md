@@ -159,7 +159,7 @@ Run upstream WPT through the external WebDriver harness and write a deterministi
 Defaults:
 - WPT root: `D:\wpt`
 - Host binary: first existing `FenBrowser.Host\bin\Release\net10.0\FenBrowser.Host.exe`, then Debug.
-- WebDriver launcher: `scripts\wpt-webdriver-launcher.cmd`
+- WebDriver launcher: `scripts\wpt\webdriver-launcher.cmd`
 - Output: timestamped `Results\wpt_*`
 
 Prerequisite:

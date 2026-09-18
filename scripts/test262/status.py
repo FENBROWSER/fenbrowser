@@ -1,19 +1,20 @@
 #!/usr/bin/env python
-"""test262 dashboard — compact per-category status. Reads batched store."""
+"""test262 status — compact per-category summary of the batched store.
+
+    python scripts/test262/status.py      (or: python scripts/test262/run.py status)
+"""
 import json, glob, os, sys
+
+os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 BATCHED = "Results/test262/batched"
 
-# Stall-killed partial data — no longer needed; the chunked runner + memory
-# fixes (GC after every test, interpreter ref released post-timeout) now
-# produce complete batched JSONs for every category.
-STALL_DATA = {}
 
 def main():
     cats = []
     for f in sorted(glob.glob(f"{BATCHED}/b_*.json")):
         try:
-            with open(f) as fp:
+            with open(f, encoding="utf-8-sig") as fp:
                 d = json.load(fp)
             t = d.get("total", 0)
             if t == 0:
@@ -24,16 +25,14 @@ def main():
         except Exception:
             pass
 
-    # Add stall-killed estimates
-    for tag, (p, t) in STALL_DATA.items():
-        label = tag.replace("/", "_")
-        cats.append((label, p, t))
-
     cats.sort(key=lambda x: x[2] - x[1], reverse=True)  # by failures descending
 
     total_p = sum(c[1] for c in cats)
     total_t = sum(c[2] for c in cats)
     total_f = total_t - total_p
+    if total_t == 0:
+        print(f"no results in {BATCHED}; run: python scripts/test262/run.py full")
+        return
 
     # Compact header
     print(f"test262: {total_p}/{total_t} = {total_p/total_t*100:.2f}%  ({total_f} fail)")

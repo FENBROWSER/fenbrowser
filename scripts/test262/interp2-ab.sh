@@ -7,8 +7,8 @@
 # takes seconds, so it runs per feature, per commit - the 53k suite stays for
 # milestones.
 #
-#   bash scripts/interp2_ab.sh language/expressions/call
-#   bash scripts/interp2_ab.sh built-ins/Function 4000
+#   bash scripts/test262/interp2-ab.sh language/expressions/call
+#   bash scripts/test262/interp2-ab.sh built-ins/Function 4000
 #
 # Exit status is 0 when the new loop passes at least as many tests as the old
 # one and fails nothing the old one passed.
@@ -17,7 +17,7 @@ set -u
 SLICE="${1:-}"
 MAX="${2:-100000}"
 if [ -z "$SLICE" ]; then
-    echo "usage: bash scripts/interp2_ab.sh <path under test262/test> [max]" >&2
+    echo "usage: bash scripts/test262/interp2-ab.sh <path under test262/test> [max]" >&2
     exit 2
 fi
 
@@ -52,4 +52,4 @@ run() {
 run v1 "$OUT/${TAG}_v1.json"
 run v2 "$OUT/${TAG}_v2.json"
 
-python scripts/interp2_ab_report.py "$OUT/${TAG}_v1.json" "$OUT/${TAG}_v2.json" "$SLICE"
+python scripts/test262/interp2-ab-report.py "$OUT/${TAG}_v1.json" "$OUT/${TAG}_v2.json" "$SLICE"

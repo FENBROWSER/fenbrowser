@@ -14,10 +14,10 @@ because one fix moves hundreds of tests across many categories.
 - One category at a time, drive to **≥95%**, then move on.
 - Find the **shared root cause** in `failures[].details`, fix it once in the engine
   (or runner), don't patch tests one by one.
-- Re-run only that category: `bash scripts/rerun-test262-category.sh <category>`, which
+- Re-run only that category: `python scripts/test262/run.py category <category>`, which
   refreshes `b_<tag>.json` and regenerates `docs/test262_results.md`. Commit the moved
   numbers with the fix.
-- **RAM-safe runs**: large/flat dirs must go through `scripts/run-dir-chunked.sh`
+- **RAM-safe runs**: large/flat dirs must go through `scripts/test262/run.py (per-batch processes)`
   (process-per-chunk). Never run a 1000+ file dir as one process — it leaks to 25 GB+
   (see [test262-runner-ram-leak]; the underlying `RunWithPerTestTimeout` thread-abandon
   bug is Tier 4 below).
@@ -104,7 +104,7 @@ harness noise is gone.
 - **Action:** destructuring patterns in class-method parameters / static blocks. Fix in the
   parser + bytecode compiler (`FenBrowser.Js/Parser`, `FenBrowser.Js/Bytecode`). The two
   dirs mirror each other, so one fix doubles.
-- **Verify:** `scripts/run-dir-chunked.sh language/expressions/class/dstr language/statements/class/dstr`.
+- **Verify:** `scripts/test262/run.py (per-batch processes) language/expressions/class/dstr language/statements/class/dstr`.
 
 ### 2.2 RegExp Unicode property escapes `\p{…}` — ~394 tests
 - **Evidence:** `SyntaxError: Invalid pattern … Unknown property`.

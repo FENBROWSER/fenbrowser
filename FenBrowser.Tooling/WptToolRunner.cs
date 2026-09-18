@@ -993,7 +993,7 @@ namespace FenBrowser.Tooling
                 BrowserBinary = FindFirstExisting(
                     Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Release", "net10.0", "FenBrowser.Host.exe"),
                     Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Debug", "net10.0", "FenBrowser.Host.exe")),
-                WebDriverBinary = Path.Combine(repoRoot, "scripts", "wpt-webdriver-launcher.cmd"),
+                WebDriverBinary = Path.Combine(repoRoot, "scripts", "wpt", "webdriver-launcher.cmd"),
                 OutputDir = Path.Combine(repoRoot, "Results", $"wpt_{DateTime.UtcNow:yyyyMMdd_HHmmss}"),
                 ManifestPath = File.Exists(Path.Combine(@"D:\wpt", "MANIFEST.json"))
                     ? Path.Combine(@"D:\wpt", "MANIFEST.json")

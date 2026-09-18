@@ -284,8 +284,8 @@ FEN_JS_INTERPRETER=v2   # select the new loop
 FEN_JS_INTERP2_LOG=1    # print coverage and the ranked bailout table
 
 # One test262 slice on both loops, diffed by test name (not by count).
-bash scripts/interp2_ab.sh language/expressions/call
-bash scripts/interp2_ab.sh language            # the whole language corpus
+bash scripts/test262/interp2-ab.sh language/expressions/call
+bash scripts/test262/interp2-ab.sh language            # the whole language corpus
 ```
 
 The A/B script exits non-zero when the new loop fails anything the old one
