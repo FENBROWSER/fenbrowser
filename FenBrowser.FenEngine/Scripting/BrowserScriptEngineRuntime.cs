@@ -28629,9 +28629,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var title = args.Count > 0 && args[0].Tag != JsValueTag.Null
                                 ? CoerceToHostString(args[0])
                                 : null;
-                            return _owner.ToHostOrNull(
-                                Document.CreateHtmlDocument(title),
-                                HostObjectKind.DomDocument);
+                            var created = Document.CreateHtmlDocument(title);
+                            // The new document's URL is about:blank and it has no browsing
+                            // context, so its fallback base URL is the creator's base URL
+                            // (HTML "fallback base URL"): a relative media src in it resolves
+                            // as it would in the associated document.
+                            var creator = implementation.OwnerDocument;
+                            var creatorBase = creator?.BaseURI ?? creator?.URL;
+                            if (!string.IsNullOrWhiteSpace(creatorBase) && creatorBase != "about:blank")
+                            {
+                                created.BaseURI = creatorBase;
+                            }
+
+                            return _owner.ToHostOrNull(created, HostObjectKind.DomDocument);
                         },
                         length: 1);
                     return true;
