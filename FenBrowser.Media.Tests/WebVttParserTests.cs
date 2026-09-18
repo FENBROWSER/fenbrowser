@@ -300,7 +300,7 @@ public class WebVttParserTests
         var fred = file.Regions[0];
         Assert.Equal("fred", fred.Id);
         Assert.Equal(40, fred.Width);
-        Assert.Equal(3, fred.Lines);
+        Assert.Equal(3UL, fred.Lines);
         Assert.Equal((0, 100), (fred.RegionAnchorX, fred.RegionAnchorY));
         Assert.Equal((10, 90), (fred.ViewportAnchorX, fred.ViewportAnchorY));
         Assert.Equal("up", fred.Scroll);
@@ -320,13 +320,34 @@ public class WebVttParserTests
     [Fact]
     public void Regions_LinesAndAnchorsRejectBadValues()
     {
-        var file = Parse("WEBVTT\n\nREGION\nid:r\nlines:-1\nlines:1.5\nwidth:101%\nregionanchor:0%\nregionanchor:0%,101%\nviewportanchor:a,b\nscroll:down\n\n00:00:00.000 --> 00:00:01.000\ntext");
-        var region = Assert.Single(file.Regions);
-        Assert.Equal(3, region.Lines);
+        var file = Parse("WEBVTT\n\nREGION\nid:big\nlines:4294967295\n\nREGION\nid:r\nlines:-1\nlines:1.5\nwidth:101%\nregionanchor:0%\nregionanchor:0%,101%\nviewportanchor:a,b\nscroll:down\n\n00:00:00.000 --> 00:00:01.000\ntext");
+        Assert.Equal(2, file.Regions.Count);
+        Assert.Equal(uint.MaxValue, file.Regions[0].Lines);
+        var region = file.Regions[1];
+        Assert.Equal(3UL, region.Lines);
         Assert.Equal(100, region.Width);
         Assert.Equal((0, 100), (region.RegionAnchorX, region.RegionAnchorY));
         Assert.Equal((0, 100), (region.ViewportAnchorX, region.ViewportAnchorY));
         Assert.Equal("", region.Scroll);
+    }
+
+    [Fact]
+    public void Regions_SurviveALineThatOnlyLooksLikeTimings()
+    {
+        var file = Parse("WEBVTT\n\nREGION\nid:foo lines:1\n\n-->\nREGION\nid:foo\nlines:2\n-->\n\nREGION\nid:bill\nlines:2\n\nREGION\nREGION\nid:jill\nlines:3\n\nREGION\n--->\nid:jill lines:4\n\nREGION\nid:jack--> lines:5\n\nREGION\nid:jack lines:4\n\n00:00:00.000 --> 00:00:01.000 region:foo\ntext\n\n00:00:00.000 --> 00:00:01.000 region:bill\ntext\n\n00:00:00.000 --> 00:00:01.000 region:jill\ntext\n\n00:00:00.000 --> 00:00:01.000 region:jack\ntext");
+        Assert.Equal(["foo:1", "bill:2", "jill:3", "jack:4"], file.Regions.Select(r => r.Id + ":" + r.Lines));
+        Assert.Equal(["foo", "bill", "jill", "jack"], file.Cues.Select(c => c.Region?.Id));
+    }
+
+    [Fact]
+    public void Regions_SettingsSplitOnAnyAsciiWhitespace()
+    {
+        var file = Parse("WEBVTT\n\nREGION\nid:r\nlines:5\f\f\fregionanchor:40%,20%    viewportanchor:30%,80% \f\tscroll:up\n\n00:00:00.000 --> 00:00:01.000 region:r\ntext");
+        var region = Assert.Single(file.Regions);
+        Assert.Equal(5UL, region.Lines);
+        Assert.Equal((40, 20), (region.RegionAnchorX, region.RegionAnchorY));
+        Assert.Equal((30, 80), (region.ViewportAnchorX, region.ViewportAnchorY));
+        Assert.Equal("up", region.Scroll);
     }
 
     [Fact]

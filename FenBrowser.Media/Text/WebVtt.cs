@@ -10,7 +10,7 @@ public sealed class VttRegion
     /// <summary>Percentage of the video width.</summary>
     public double Width { get; set; } = 100;
 
-    public int Lines { get; set; } = 3;
+    public ulong Lines { get; set; } = 3;
 
     public double RegionAnchorX { get; set; }
 
@@ -187,7 +187,10 @@ public static class WebVttParser
                     if (!TryParseTimingsAndSettings(line, file.Regions, cue))
                         cue = null;
                     buffer.Clear();
-                    seenCue = true;
+                    // A line that only looks like timings ("-->" alone) is not a cue, so it
+                    // does not end the header's REGION and STYLE blocks (WPT regions-edge-case).
+                    if (cue is not null)
+                        seenCue = true;
                 }
                 else
                 {
@@ -514,7 +517,7 @@ public static class WebVttParser
     /// <summary>§6.3 "collect WebVTT region settings".</summary>
     private static void ParseRegionSettings(string input, VttRegion region)
     {
-        foreach (string setting in input.Split([' ', '\t', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        foreach (string setting in input.Split([' ', '\t', '\n', '\f', '\r'], StringSplitOptions.RemoveEmptyEntries))
         {
             int colon = setting.IndexOf(':');
             if (colon <= 0 || colon == setting.Length - 1)
@@ -532,8 +535,9 @@ public static class WebVttParser
                         region.Width = width;
                     break;
                 case "lines":
-                    if (value.All(char.IsAsciiDigit) && int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int lines))
-                        region.Lines = lines;
+                    // §6.3: digits only, held as an unsigned long (WebVTT §5.1 VTTRegion.lines).
+                    if (value.Length > 0 && value.All(char.IsAsciiDigit) && ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out ulong lines))
+                        region.Lines = lines > uint.MaxValue ? uint.MaxValue : lines;
                     break;
                 case "regionanchor":
                     if (TryParseAnchor(value, out double rx, out double ry))

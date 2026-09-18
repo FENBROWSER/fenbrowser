@@ -48,7 +48,7 @@ public sealed class WebVttFuzz
             foreach (var region in file.Regions)
             {
                 Assert.InRange(region.Width, 0, 100);
-                Assert.True(region.Lines >= 0);
+                Assert.True(region.Lines <= uint.MaxValue);
             }
         }
     }
