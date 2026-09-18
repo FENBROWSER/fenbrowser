@@ -5,6 +5,7 @@ using FenBrowser.Core.Network;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Media;
 using FenBrowser.FenEngine.Scripting;
+using FenBrowser.Host.ProcessIsolation.Fuzz;
 using FenBrowser.Host.ProcessIsolation.Media;
 using FenBrowser.Media;
 using FenBrowser.Media.Pipeline;
@@ -192,6 +193,32 @@ public sealed class MediaProcessTests
         writer.Write(data);
         writer.Flush();
         return stream.ToArray();
+    }
+
+    /// <summary>
+    /// DEFINITION_OF_DONE: a new IPC message type gets 10,000 mutated iterations through the
+    /// fuzz harness. The media child must answer every mutated open, read, seek and close with
+    /// a protocol error and keep no session, because no mutated open can name a real region.
+    /// </summary>
+    [Fact]
+    public void TheMediaIpcSurvivesTenThousandMutatedEnvelopes()
+    {
+        var endpoint = new MediaIpcFuzzEndpoint();
+        var mutator = new StructuredMutator(seed: 20260918);
+        var seeds = IpcFuzzHarness.MediaIpcSeeds().ToArray();
+        var failures = new List<string>();
+
+        for (var i = 0; i < 10_000; i++)
+        {
+            var mutated = mutator.MutateJson(seeds[i % seeds.Length]);
+            if (!endpoint.Fuzz(mutated))
+            {
+                failures.Add(Convert.ToBase64String(mutated));
+                if (failures.Count >= 5) break;
+            }
+        }
+
+        Assert.True(failures.Count == 0, "media IPC fuzz failures: " + string.Join(" | ", failures));
     }
 
     private static string FindTestAssets()

@@ -5,7 +5,9 @@ using System.Text.Json;
 using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Host.ProcessIsolation.Media;
 using FenBrowser.Host.ProcessIsolation.Network;
+using FenBrowser.Host.ProcessIsolation.Targets;
 
 namespace FenBrowser.Host.ProcessIsolation.Fuzz
 {
@@ -358,6 +360,54 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
     }
 
     /// <summary>
+    /// Fuzzes the media process IPC (MEDIA_ENGINE_DESIGN §2.2): the target envelope
+    /// validation, then the media child's own dispatch, which must answer every
+    /// malformed open, read, seek or close with a protocol error and never throw.
+    /// Regions named by a mutated payload never exist, so no memory is ever mapped.
+    /// </summary>
+    public sealed class MediaIpcFuzzEndpoint : IFuzzEndpoint
+    {
+        private readonly MediaChildService _service = new(
+            FenBrowser.FenEngine.Media.MediaEngineServices.Demuxers,
+            FenBrowser.FenEngine.Media.MediaEngineServices.Decoders,
+            FenBrowser.Media.Diagnostics.NullMediaLogSink.Instance);
+
+        public string Name => "MediaIpc";
+
+        public bool Fuzz(ReadOnlySpan<byte> input)
+        {
+            try
+            {
+                var line = Encoding.UTF8.GetString(input);
+                if (!TargetIpc.TryDeserialize(line, out var envelope)) return true;
+                if (!TargetIpc.TryValidateInboundEnvelope(envelope, out var type, out _)) return true;
+
+                var responses = 0;
+                var handled = _service.HandleAsync(envelope, type, _ => responses++, CancellationToken.None).GetAwaiter().GetResult();
+                if (handled && type != TargetIpcMessageType.MediaClose && responses != 1)
+                {
+                    EngineLogBridge.Warn($"[Fuzz:MediaIpc] {type} answered {responses} times.", LogCategory.General);
+                    return false;
+                }
+
+                // A mutated open can never reach a real region, so no session may survive.
+                if (_service.SessionCount != 0)
+                {
+                    EngineLogBridge.Warn($"[Fuzz:MediaIpc] {type} left {_service.SessionCount} sessions behind.", LogCategory.General);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex) when (!(ex is OutOfMemoryException || ex is StackOverflowException))
+            {
+                EngineLogBridge.Warn($"[Fuzz:MediaIpc] Caught: {ex.GetType().Name}: {ex.Message}", LogCategory.General);
+                return false;
+            }
+        }
+    }
+
+    /// <summary>
     /// Fuzzes the shared-memory frame protocol (display list ring buffer).
     /// Validates that the consumer never reads out-of-bounds regardless of header values.
     /// </summary>
@@ -438,11 +488,16 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
             Register(new RendererIpcFuzzEndpoint());
             Register(new NetworkIpcFuzzEndpoint());
             Register(new SharedMemoryFrameFuzzEndpoint());
+            Register(new MediaIpcFuzzEndpoint());
 
             // Seed corpus: valid messages that serve as mutation bases
             AddSeed(Encoding.UTF8.GetBytes("{\"type\":\"hello\",\"tabId\":1,\"correlationId\":\"abc\",\"token\":\"tok\",\"payload\":\"\",\"timestampUnixMs\":0}"));
             AddSeed(Encoding.UTF8.GetBytes("{\"type\":\"frameReady\",\"tabId\":1,\"correlationId\":\"c\",\"payload\":\"{\\\"url\\\":\\\"https://example.com\\\"}\",\"timestampUnixMs\":1}"));
             AddSeed(Encoding.UTF8.GetBytes("{\"type\":\"fetchRequest\",\"requestId\":\"r1\",\"capabilityToken\":\"tok\",\"payload\":\"{\\\"url\\\":\\\"https://a.com\\\",\\\"method\\\":\\\"GET\\\"}\",\"timestampUnixMs\":0}"));
+            foreach (var seed in MediaIpcSeeds())
+            {
+                AddSeed(Encoding.UTF8.GetBytes(seed));
+            }
 
             // Shared memory header seed (valid)
             var shmSeed = new byte[128];
@@ -453,6 +508,34 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
             BitConverter.TryWriteBytes(new Span<byte>(shmSeed, 16, 4), 64u);    // payload offset
             BitConverter.TryWriteBytes(new Span<byte>(shmSeed, 20, 4), 64u);    // payload length
             AddSeed(shmSeed);
+        }
+
+        /// <summary>Valid media envelopes, as the renderer sends them, for the mutator to start from.</summary>
+        public static IEnumerable<string> MediaIpcSeeds()
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var requestId = Guid.NewGuid().ToString("N");
+            var sessionId = Guid.NewGuid().ToString("N");
+            string Envelope(TargetIpcMessageType type, object payload) => TargetIpc.Serialize(new TargetIpcEnvelope
+            {
+                Type = type.ToString(),
+                RequestId = requestId,
+                Payload = TargetIpc.SerializePayload(payload),
+                TimestampUnixMs = now
+            });
+
+            yield return Envelope(TargetIpcMessageType.MediaOpen, new MediaOpenPayload
+            {
+                SessionId = sessionId,
+                InputRegion = "fen_media_1_" + sessionId + "_in",
+                InputLength = 5361,
+                OutputRegion = "fen_media_1_" + sessionId + "_out",
+                OutputCapacity = MediaIpcLimits.DefaultOutputCapacity,
+                DeclaredMime = "audio/ogg"
+            });
+            yield return Envelope(TargetIpcMessageType.MediaRead, new MediaReadPayload { SessionId = sessionId });
+            yield return Envelope(TargetIpcMessageType.MediaSeek, new MediaSeekPayload { SessionId = sessionId, TargetUs = 500_000 });
+            yield return Envelope(TargetIpcMessageType.MediaClose, new MediaClosePayload { SessionId = sessionId });
         }
 
         public void Register(IFuzzEndpoint endpoint)
