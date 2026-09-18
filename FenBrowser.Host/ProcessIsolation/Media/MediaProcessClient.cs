@@ -17,12 +17,12 @@ namespace FenBrowser.Host.ProcessIsolation.Media
 {
     /// <summary>
     /// The renderer's handle on the media process (MEDIA_ENGINE_DESIGN §2.2, ADR-0004):
-    /// launches it on first use, answers <see cref="IAudioDecodeSourceFactory"/> with
+    /// launches it on first use, answers <see cref="IMediaDecodeSourceFactory"/> with
     /// sources that demux and decode over there, and turns the child's exit into
     /// <see cref="MediaProcessLostException"/> on every open request so only the players
     /// on it fail. The next open launches a fresh child.
     /// </summary>
-    public sealed class MediaProcessClient : IAudioDecodeSourceFactory, IDisposable
+    public sealed class MediaProcessClient : IMediaDecodeSourceFactory, IDisposable
     {
         private static readonly TimeSpan OpenTimeout = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
@@ -48,11 +48,11 @@ namespace FenBrowser.Host.ProcessIsolation.Media
         /// <summary>How many times a child has been started; grows by one per relaunch.</summary>
         public int Generation => Volatile.Read(ref _generation);
 
-        public IAudioDecodeSource Create(IByteSource source, string declaredMime, MediaPipelineContext context)
+        public IMediaDecodeSource Create(IByteSource source, string declaredMime, MediaPipelineContext context)
         {
             ArgumentNullException.ThrowIfNull(source);
             ArgumentNullException.ThrowIfNull(context);
-            return new RemoteAudioDecodeSource(this, source, declaredMime, context);
+            return new RemoteMediaDecodeSource(this, source, declaredMime, context);
         }
 
         /// <summary>Sends a request and waits for its response, or throws <see cref="MediaProcessLostException"/>.</summary>
@@ -236,9 +236,11 @@ namespace FenBrowser.Host.ProcessIsolation.Media
 
         /// <summary>
         /// One session in the media process. The resource is copied into an input region once;
-        /// each read brings one block back through the output region.
+        /// each read brings one block back through the output region, or one picture through
+        /// the video region, which is created once the track's size is known and grown when a
+        /// picture turns out larger.
         /// </summary>
-        private sealed class RemoteAudioDecodeSource : IAudioDecodeSource
+        private sealed class RemoteMediaDecodeSource : IMediaDecodeSource
         {
             private readonly MediaProcessClient _client;
             private readonly IByteSource _source;
@@ -247,11 +249,13 @@ namespace FenBrowser.Host.ProcessIsolation.Media
             private readonly string _sessionId = Guid.NewGuid().ToString("N");
             private MediaSharedMemory _input;
             private MediaSharedMemory _output;
+            private MediaSharedMemory _video;
+            private int _videoRegions;
             private int _generation;
             private bool _open;
             private bool _disposed;
 
-            public RemoteAudioDecodeSource(MediaProcessClient client, IByteSource source, string declaredMime, MediaPipelineContext context)
+            public RemoteMediaDecodeSource(MediaProcessClient client, IByteSource source, string declaredMime, MediaPipelineContext context)
             {
                 _client = client;
                 _source = source;
@@ -259,7 +263,7 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 _context = context;
             }
 
-            public async ValueTask<AudioSourceInfo> OpenAsync(CancellationToken cancellationToken)
+            public async ValueTask<MediaSourceInfo> OpenAsync(CancellationToken cancellationToken)
             {
                 if (_open)
                 {
@@ -300,10 +304,16 @@ namespace FenBrowser.Host.ProcessIsolation.Media
 
                 var tracks = new List<MediaTrackInfo>(response.Tracks.Length);
                 MediaTrackInfo audio = null;
+                MediaTrackInfo video = null;
                 foreach (var t in response.Tracks)
                 {
                     var kind = Enum.IsDefined(typeof(MediaTrackKind), t.Kind) ? (MediaTrackKind)t.Kind : MediaTrackKind.Audio;
                     var codec = Enum.IsDefined(typeof(MediaCodec), t.Codec) ? (MediaCodec)t.Codec : MediaCodec.Unknown;
+                    if (kind == MediaTrackKind.Video)
+                    {
+                        _context.Limits.CheckVideoDimensions(t.Width, t.Height);
+                    }
+
                     var config = new CodecConfig(kind, codec, t.CodecString, t.Width, t.Height, t.SampleRate, t.Channels);
                     var track = new MediaTrackInfo(t.Id, config, MediaTime.FromMicroseconds(t.DurationUs), t.Language ?? string.Empty, t.Label ?? string.Empty, t.IsDefault);
                     tracks.Add(track);
@@ -311,35 +321,96 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                     {
                         audio = track;
                     }
+                    else if (t.Id == response.VideoTrackId && kind == MediaTrackKind.Video)
+                    {
+                        video = track;
+                    }
                 }
 
-                if (audio == null)
+                if (audio == null && video == null)
                 {
-                    throw new MediaProcessLostException("The media process named an audio track it did not list.");
+                    throw new MediaProcessLostException("The media process named no track it listed.");
+                }
+
+                if (video != null)
+                {
+                    // Size the picture region for the track now; a larger picture grows it later.
+                    EnsureVideoRegion(VideoFrame.LayoutSize(VideoPixelFormat.I420, video.Config.Width, video.Config.Height));
                 }
 
                 _open = true;
-                return new AudioSourceInfo(tracks, audio, MediaTime.FromMicroseconds(response.DurationUs), response.IsSeekable);
+                return new MediaSourceInfo(tracks, audio, video, MediaTime.FromMicroseconds(response.DurationUs), response.IsSeekable);
             }
 
-            public async ValueTask<AudioBlock> ReadAsync(CancellationToken cancellationToken)
+            private void EnsureVideoRegion(int requiredBytes)
+            {
+                if (requiredBytes <= 0)
+                {
+                    throw new MediaProcessLostException("The media process asked for an empty picture region.");
+                }
+
+                if (requiredBytes > MediaIpcLimits.MaxVideoCapacity)
+                {
+                    throw new MediaLimitExceededException("MaxVideoCapacity", requiredBytes, MediaIpcLimits.MaxVideoCapacity);
+                }
+
+                if (_video != null && _video.SizeBytes >= requiredBytes)
+                {
+                    return;
+                }
+
+                int granularity = MediaIpcLimits.VideoCapacityGranularity;
+                int capacity = (int)Math.Min(MediaIpcLimits.MaxVideoCapacity, ((long)requiredBytes + granularity - 1) / granularity * granularity);
+                capacity = Math.Max(capacity, MediaIpcLimits.MinOutputCapacity);
+                var region = MediaSharedMemory.Create($"fen_media_{Environment.ProcessId}_{_sessionId}_v{++_videoRegions}", capacity);
+                _video?.Dispose();
+                _video = region;
+            }
+
+            public async ValueTask<DecodedMedia?> ReadAsync(CancellationToken cancellationToken)
             {
                 ThrowIfNotOpen();
-                var response = await _client.RequestAsync<MediaReadResponsePayload>(
-                    TargetIpcMessageType.MediaRead,
-                    new MediaReadPayload { SessionId = _sessionId },
-                    RequestTimeout,
-                    cancellationToken).ConfigureAwait(false);
-                if (!response.Success)
+                for (int attempt = 0; attempt < 3; attempt++)
                 {
-                    throw Failure(response.ErrorKind, response.ErrorMessage);
+                    var response = await _client.RequestAsync<MediaReadResponsePayload>(
+                        TargetIpcMessageType.MediaRead,
+                        new MediaReadPayload { SessionId = _sessionId, VideoRegion = _video?.Name, VideoCapacity = _video?.SizeBytes ?? 0 },
+                        RequestTimeout,
+                        cancellationToken).ConfigureAwait(false);
+                    if (!response.Success)
+                    {
+                        throw Failure(response.ErrorKind, response.ErrorMessage);
+                    }
+
+                    if (response.EndOfStream)
+                    {
+                        return null;
+                    }
+
+                    if (response.Kind == 0)
+                    {
+                        return new DecodedMedia(ReadAudio(response));
+                    }
+
+                    if (response.Kind != 1)
+                    {
+                        throw new MediaProcessLostException("The media process answered a read with an unknown kind.");
+                    }
+
+                    if (response.RegionTooSmall)
+                    {
+                        EnsureVideoRegion(response.RequiredBytes);
+                        continue;
+                    }
+
+                    return new DecodedMedia(ReadVideo(response));
                 }
 
-                if (response.EndOfStream)
-                {
-                    return null;
-                }
+                throw new MediaProcessLostException("The media process kept asking for a larger picture region.");
+            }
 
+            private AudioBlock ReadAudio(MediaReadResponsePayload response)
+            {
                 // Never trust the child's shape: the region is the bound, the limits the rest.
                 if (response.FrameCount <= 0 || response.Channels <= 0 || response.SampleRate <= 0 ||
                     (long)response.FrameCount * response.Channels * sizeof(float) > _output.SizeBytes)
@@ -350,6 +421,39 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 var block = AudioBlock.Allocate(_context.Limits, response.SampleRate, response.Channels, response.FrameCount, MediaTime.FromMicroseconds(response.TimestampUs));
                 _output.Read(0, MemoryMarshal.AsBytes(block.Samples));
                 return block;
+            }
+
+            private VideoFrame ReadVideo(MediaReadResponsePayload response)
+            {
+                if (_video == null)
+                {
+                    throw new MediaProcessLostException("The media process sent a picture before a region existed.");
+                }
+
+                if (!Enum.IsDefined(typeof(VideoPixelFormat), response.PixelFormat) || response.DurationUs < 0)
+                {
+                    throw new MediaProcessLostException("The media process described a picture in an unknown format.");
+                }
+
+                var format = (VideoPixelFormat)response.PixelFormat;
+                _context.Limits.CheckVideoDimensions(response.Width, response.Height);
+                var frame = VideoFrame.Allocate(_context.Limits, format, response.Width, response.Height,
+                    MediaTime.FromMicroseconds(response.TimestampUs), MediaTime.FromMicroseconds(response.DurationUs));
+                if (frame.TotalBytes > _video.SizeBytes)
+                {
+                    frame.Dispose();
+                    throw new MediaProcessLostException("The media process described a picture that does not fit its region.");
+                }
+
+                int offset = 0;
+                for (int plane = 0; plane < frame.PlaneCount; plane++)
+                {
+                    var bytes = frame.GetPlane(plane);
+                    _video.Read(offset, bytes);
+                    offset += bytes.Length;
+                }
+
+                return frame;
             }
 
             public async ValueTask SeekAsync(MediaTime target, CancellationToken cancellationToken)
@@ -380,6 +484,7 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 }
 
                 _output?.Dispose();
+                _video?.Dispose();
                 _input?.Dispose();
                 await _source.DisposeAsync().ConfigureAwait(false);
             }

@@ -42,7 +42,7 @@ namespace FenBrowser.FenEngine.Media
         /// Where players demux and decode: null means in this process; the renderer child
         /// installs the media-process transport here (design §2.2, ADR-0004).
         /// </summary>
-        public static IAudioDecodeSourceFactory DecodeSources { get; set; }
+        public static IMediaDecodeSourceFactory DecodeSources { get; set; }
 
         /// <summary>Everything a <see cref="MediaPlayer"/> needs, built from the registries above.</summary>
         public static MediaPlayerServices PlayerServices =>

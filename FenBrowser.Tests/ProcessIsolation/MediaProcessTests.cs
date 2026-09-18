@@ -8,6 +8,7 @@ using FenBrowser.FenEngine.Scripting;
 using FenBrowser.Host.ProcessIsolation.Fuzz;
 using FenBrowser.Host.ProcessIsolation.Media;
 using FenBrowser.Media;
+using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Pipeline;
 using Xunit;
 
@@ -27,7 +28,7 @@ public sealed class MediaProcessTests
         var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", "sine_opus.ogg"));
         using var client = new MediaProcessClient();
 
-        var local = new LocalAudioDecodeSourceFactory(MediaEngineServices.Demuxers, MediaEngineServices.Decoders)
+        var local = new LocalMediaDecodeSourceFactory(MediaEngineServices.Demuxers, MediaEngineServices.Decoders)
             .Create(new MemoryByteSource(bytes), "audio/ogg", MediaPipelineContext.ForTests());
         var remote = client.Create(new MemoryByteSource(bytes), "audio/ogg", MediaPipelineContext.ForTests());
 
@@ -36,9 +37,10 @@ public sealed class MediaProcessTests
         Assert.Equal(1, client.Generation);
         Assert.Equal(expected.Duration, actual.Duration);
         Assert.Equal(expected.IsSeekable, actual.IsSeekable);
-        Assert.Equal(expected.AudioTrack.Config.Codec, actual.AudioTrack.Config.Codec);
+        Assert.Equal(expected.AudioTrack!.Config.Codec, actual.AudioTrack!.Config.Codec);
         Assert.Equal(expected.AudioTrack.Config.SampleRate, actual.AudioTrack.Config.SampleRate);
         Assert.Equal(expected.Tracks.Count, actual.Tracks.Count);
+        Assert.Null(actual.VideoTrack);
 
         long frames = 0;
         while (true)
@@ -52,13 +54,15 @@ public sealed class MediaProcessTests
                 break;
             }
 
-            Assert.Equal(a.Timestamp, b.Timestamp);
-            Assert.Equal(a.FrameCount, b.FrameCount);
-            Assert.Equal(a.Channels, b.Channels);
-            Assert.True(a.Samples.SequenceEqual(b.Samples), $"samples differ at {a.Timestamp}");
-            frames += a.FrameCount;
-            a.Dispose();
-            b.Dispose();
+            var blockA = a.Value.Audio!;
+            var blockB = b.Value.Audio!;
+            Assert.Equal(blockA.Timestamp, blockB.Timestamp);
+            Assert.Equal(blockA.FrameCount, blockB.FrameCount);
+            Assert.Equal(blockA.Channels, blockB.Channels);
+            Assert.True(blockA.Samples.SequenceEqual(blockB.Samples), $"samples differ at {blockA.Timestamp}");
+            frames += blockA.FrameCount;
+            a.Value.Dispose();
+            b.Value.Dispose();
         }
 
         Assert.InRange(frames, 47_000, 49_000);
@@ -70,10 +74,72 @@ public sealed class MediaProcessTests
         var afterRemote = await remote.ReadAsync(CancellationToken.None);
         Assert.NotNull(afterLocal);
         Assert.NotNull(afterRemote);
-        Assert.Equal(afterLocal.Timestamp, afterRemote.Timestamp);
-        afterLocal.Dispose();
-        afterRemote.Dispose();
+        Assert.Equal(afterLocal.Value.Timestamp, afterRemote.Value.Timestamp);
+        afterLocal.Value.Dispose();
+        afterRemote.Value.Dispose();
 
+        await local.DisposeAsync();
+        await remote.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task TheMediaProcessDecodesTheSamePicturesAsThisProcess()
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", "pattern_vp8_vorbis.webm"));
+        using var client = new MediaProcessClient();
+
+        var local = new LocalMediaDecodeSourceFactory(MediaEngineServices.Demuxers, MediaEngineServices.Decoders)
+            .Create(new MemoryByteSource(bytes), "video/webm", MediaPipelineContext.ForTests());
+        var remote = client.Create(new MemoryByteSource(bytes), "video/webm", MediaPipelineContext.ForTests());
+
+        var expected = await local.OpenAsync(CancellationToken.None);
+        var actual = await remote.OpenAsync(CancellationToken.None);
+        Assert.NotNull(actual.VideoTrack);
+        Assert.NotNull(actual.AudioTrack);
+        Assert.Equal(expected.VideoTrack!.Config.Codec, actual.VideoTrack.Config.Codec);
+        Assert.Equal(64, actual.VideoTrack.Config.Width);
+        Assert.Equal(48, actual.VideoTrack.Config.Height);
+
+        int pictures = 0;
+        int blocks = 0;
+        while (true)
+        {
+            var a = await local.ReadAsync(CancellationToken.None);
+            var b = await remote.ReadAsync(CancellationToken.None);
+            if (a is null || b is null)
+            {
+                Assert.Null(a);
+                Assert.Null(b);
+                break;
+            }
+
+            Assert.Equal(a.Value.Timestamp, b.Value.Timestamp);
+            if (a.Value.Video is { } frameA)
+            {
+                var frameB = Assert.IsType<VideoFrame>(b.Value.Video);
+                Assert.Equal(frameA.Format, frameB.Format);
+                Assert.Equal(frameA.Width, frameB.Width);
+                Assert.Equal(frameA.Height, frameB.Height);
+                Assert.Equal(frameA.Duration, frameB.Duration);
+                for (int plane = 0; plane < frameA.PlaneCount; plane++)
+                {
+                    Assert.True(frameA.GetPlane(plane).SequenceEqual(frameB.GetPlane(plane)), $"plane {plane} differs at {frameA.Timestamp}");
+                }
+
+                pictures++;
+            }
+            else
+            {
+                Assert.NotNull(b.Value.Audio);
+                blocks++;
+            }
+
+            a.Value.Dispose();
+            b.Value.Dispose();
+        }
+
+        Assert.Equal(10, pictures);
+        Assert.True(blocks > 40, $"only {blocks} audio blocks");
         await local.DisposeAsync();
         await remote.DisposeAsync();
     }
@@ -90,7 +156,7 @@ public sealed class MediaProcessTests
         var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", "sine_pcm16.wav"));
         var next = client.Create(new MemoryByteSource(bytes), "audio/wav", MediaPipelineContext.ForTests());
         var info = await next.OpenAsync(CancellationToken.None);
-        Assert.Equal(MediaCodec.Pcm, info.AudioTrack.Config.Codec);
+        Assert.Equal(MediaCodec.Pcm, info.AudioTrack!.Config.Codec);
         Assert.Equal(1, client.Generation);
         await next.DisposeAsync();
     }

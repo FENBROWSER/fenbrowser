@@ -99,7 +99,20 @@ public interface IMediaResource : IDisposable
 
     /// <summary>The resource may start loading beyond metadata (preload=none/metadata and play()).</summary>
     void RequestFullLoad();
+
+    /// <summary>The latest picture for the compositor, or null for a resource without video.</summary>
+    Video.VideoPresenter? Presenter => null;
+
+    /// <summary>The counts behind <c>getVideoPlaybackQuality()</c>, or null for a resource without video.</summary>
+    VideoPlaybackQuality? GetVideoPlaybackQuality() => null;
 }
+
+/// <summary>
+/// Media Playback Quality: <c>totalVideoFrames</c> (every picture the decoder produced
+/// for the current resource) and <c>droppedVideoFrames</c> (those the compositor never
+/// showed because the clock had passed them).
+/// </summary>
+public readonly record struct VideoPlaybackQuality(long TotalVideoFrames, long DroppedVideoFrames);
 
 /// <summary>
 /// How a resource reports progress. Every call must arrive on the element's thread; calls

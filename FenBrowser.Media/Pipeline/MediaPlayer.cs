@@ -5,6 +5,7 @@ using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Clock;
 using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Element;
+using FenBrowser.Media.Video;
 
 namespace FenBrowser.Media.Pipeline;
 
@@ -24,25 +25,30 @@ public sealed record MediaPlayerServices(
     /// <summary>How often the element hears the playback position while playing.</summary>
     public TimeSpan PositionInterval { get; init; } = TimeSpan.FromMilliseconds(40);
 
+    /// <summary>How often the video renderer picks the picture for the clock while playing.</summary>
+    public TimeSpan FrameInterval { get; init; } = TimeSpan.FromMilliseconds(8);
+
     /// <summary>
     /// Where demuxing and decoding run: null means in this process from the registries;
     /// the browser sets the media-process transport here (ADR-0004).
     /// </summary>
-    public IAudioDecodeSourceFactory? DecodeSources { get; init; }
+    public IMediaDecodeSourceFactory? DecodeSources { get; init; }
 }
 
 /// <summary>
-/// One player: the media session of design §2.2 running the §2.3 pipeline for an audio
-/// resource. It owns the decode source (demuxer and decoder, here or in the media
-/// process), the audio renderer and the output stream, drives them from a single media
-/// task, and reports to the element through <see cref="IMediaResourceClient"/> on the
-/// element's thread.
+/// One player: the media session of design §2.2 running the §2.3 pipeline for a resource
+/// with audio, video or both. It owns the decode source (demuxer and decoders, here or in
+/// the media process), the audio renderer and output stream, the video renderer and the
+/// presenter, drives them from a single media task, and reports to the element through
+/// <see cref="IMediaResourceClient"/> on the element's thread.
 /// </summary>
 /// <remarks>
 /// Every public member is safe to call from the element thread: they post commands to the
 /// media task. The media task is the only thing that touches the decode source. The
 /// audio device pulls from the renderer on its own thread and the master clock reads the
-/// device position, so <c>currentTime</c> is what is audible, not what was decoded.
+/// device position, so <c>currentTime</c> is what is audible, not what was decoded; a
+/// resource without audio runs on a monotonic clock (§2.4). Pictures are chosen for the
+/// clock on the media task and handed to the compositor through <see cref="Presenter"/>.
 /// </remarks>
 public sealed class MediaPlayer : IMediaResource
 {
@@ -59,10 +65,15 @@ public sealed class MediaPlayer : IMediaResource
     private Task? _task;
 
     // Media-task state.
-    private IAudioDecodeSource? _decodeSource;
+    private IMediaDecodeSource? _decodeSource;
     private IAudioOutput? _output;
     private AudioRenderer? _renderer;
-    private AudioMasterClock? _clock;
+    private IMediaClock? _clock;
+    private MonotonicMediaClock? _monotonic;
+    private VideoRenderer? _video;
+    private VideoFrame? _heldVideo;
+    private MediaTime? _videoTrimBefore;
+    private bool _presentFirstFrame;
     private MediaTime _duration = MediaTime.PositiveInfinity;
     private bool _endOfStream;
     private bool _endReported;
@@ -88,7 +99,8 @@ public sealed class MediaPlayer : IMediaResource
         IMediaResourceClient client,
         Action<Action> postToClient,
         MediaPlayerServices services,
-        MediaPipelineContext context)
+        MediaPipelineContext context,
+        VideoPresenter? presenter = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(client);
@@ -101,12 +113,24 @@ public sealed class MediaPlayer : IMediaResource
         _post = postToClient;
         _services = services;
         _context = context;
+        Presenter = presenter ?? new VideoPresenter();
     }
 
     public PlayerId Player => _context.Player;
 
-    /// <summary>The device position clock, once the pipeline is up (tests read it).</summary>
+    /// <summary>The playback clock, once the pipeline is up (tests read it).</summary>
     public IMediaClock? Clock => _clock;
+
+    /// <summary>The latest picture for the compositor; empty for audio-only resources.</summary>
+    public VideoPresenter Presenter { get; }
+
+    VideoPresenter? IMediaResource.Presenter => Presenter;
+
+    public VideoPlaybackQuality? GetVideoPlaybackQuality()
+    {
+        var video = _video;
+        return video is null ? null : new VideoPlaybackQuality(video.DecodedFrames, video.DroppedFrames);
+    }
 
     /// <summary>Starts the media task. Returns at once; the client hears the outcome.</summary>
     public void Start()
@@ -125,6 +149,7 @@ public sealed class MediaPlayer : IMediaResource
             _potentiallyPlaying = potentiallyPlaying;
             _preservesPitch = preservesPitch;
             _rate = playbackRate > 0 ? playbackRate : 1.0;
+            _monotonic?.SetPlaybackRate(_rate);
             if (_renderer is not null)
             {
                 bool stretch = _preservesPitch && Math.Abs(_rate - 1.0) > 1e-9;
@@ -218,13 +243,16 @@ public sealed class MediaPlayer : IMediaResource
 
                 await FillAheadAsync(cancellation).ConfigureAwait(false);
                 UpdateOutputState();
+                PresentVideo();
                 ReportReadiness();
                 ReportPosition();
 
                 if (_failed)
                     return;
 
-                var wait = _outputRunning ? _services.PositionInterval : TimeSpan.FromMilliseconds(250);
+                var wait = !_outputRunning ? TimeSpan.FromMilliseconds(250)
+                    : _video is not null ? _services.FrameInterval
+                    : _services.PositionInterval;
                 await _wake.WaitAsync(wait, cancellation).ConfigureAwait(false);
             }
         }
@@ -243,10 +271,10 @@ public sealed class MediaPlayer : IMediaResource
 
     private async ValueTask<bool> LoadAsync(CancellationToken cancellation)
     {
-        var factory = _services.DecodeSources ?? new LocalAudioDecodeSourceFactory(_services.Demuxers, _services.Decoders);
+        var factory = _services.DecodeSources ?? new LocalMediaDecodeSourceFactory(_services.Demuxers, _services.Decoders);
         _decodeSource = factory.Create(_source, _declaredMime, _context);
 
-        AudioSourceInfo info;
+        MediaSourceInfo info;
         try
         {
             info = await _decodeSource.OpenAsync(cancellation).ConfigureAwait(false);
@@ -266,21 +294,40 @@ public sealed class MediaPlayer : IMediaResource
             return false;
         }
 
-        var track = info.AudioTrack;
+        if (info.AudioTrack is { } audioTrack)
+        {
+            // The device decides the format the renderer produces; the clock follows the device.
+            _output = _services.AudioOutputs.Create();
+            var format = await _output.OpenAsync(new AudioStreamFormat(audioTrack.Config.SampleRate, audioTrack.Config.Channels), _relay, cancellation).ConfigureAwait(false);
+            var audioClock = new AudioMasterClock(_output.Position);
+            _clock = audioClock;
+            _renderer = new AudioRenderer(format, audioClock);
+            _relay.Target = _renderer;
+        }
+        else
+        {
+            // No audio to follow: wall-clock time drives the pictures (design §2.4).
+            _monotonic = new MonotonicMediaClock(_services.TimeProvider);
+            _monotonic.SetPlaybackRate(_rate);
+            _clock = _monotonic;
+        }
 
-        // The device decides the format the renderer produces; the clock follows the device.
-        _output = _services.AudioOutputs.Create();
-        var format = await _output.OpenAsync(new AudioStreamFormat(track.Config.SampleRate, track.Config.Channels), _relay, cancellation).ConfigureAwait(false);
-        _clock = new AudioMasterClock(_output.Position);
-        _renderer = new AudioRenderer(format, _clock);
-        _relay.Target = _renderer;
+        int videoWidth = 0;
+        int videoHeight = 0;
+        if (info.VideoTrack is { } videoTrack)
+        {
+            _video = new VideoRenderer(_context.Limits.MaxQueuedVideoFrames);
+            _presentFirstFrame = true;
+            videoWidth = videoTrack.Config.Width;
+            videoHeight = videoTrack.Config.Height;
+        }
 
         _duration = info.Duration;
         var tracks = info.Tracks;
         var duration = _duration;
         Report(() =>
         {
-            _client.MetadataAvailable(new MediaResourceMetadata(duration, 0, 0, tracks));
+            _client.MetadataAvailable(new MediaResourceMetadata(duration, videoWidth, videoHeight, tracks));
             var whole = duration.IsInfinite ? MediaTimeRanges.Empty : MediaTimeRanges.Single(MediaTime.Zero, duration);
             if (info.IsSeekable)
                 _client.SeekableChanged(whole);
@@ -293,24 +340,40 @@ public sealed class MediaPlayer : IMediaResource
 
     private async ValueTask FillAheadAsync(CancellationToken cancellation)
     {
-        var renderer = _renderer!;
         var source = _decodeSource!;
-        var output = new RendererOutput(renderer, this);
+        var output = _renderer is null ? null : new RendererOutput(_renderer, this);
 
         try
         {
-            while (!_endOfStream && renderer.QueuedDuration < _services.DecodeAhead)
+            if (_heldVideo is not null && _video is { IsFull: false })
             {
-                var block = await source.ReadAsync(cancellation).ConfigureAwait(false);
-                if (block is null)
+                _video.Enqueue(_heldVideo);
+                _heldVideo = null;
+            }
+
+            while (!_endOfStream && NeedsMoreDecoded())
+            {
+                var item = await source.ReadAsync(cancellation).ConfigureAwait(false);
+                if (item is not { } decoded)
                 {
-                    output.FlushStretcher();
-                    renderer.MarkEndOfStream();
+                    output?.FlushStretcher();
+                    _renderer?.MarkEndOfStream();
+                    _video?.MarkEndOfStream();
                     _endOfStream = true;
                     break;
                 }
 
-                output.Emit(block);
+                if (decoded.Audio is { } block)
+                {
+                    if (output is null)
+                        block.Dispose();
+                    else
+                        output.Emit(block);
+                }
+                else if (decoded.Video is { } frame)
+                {
+                    AcceptVideo(frame);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -324,37 +387,124 @@ public sealed class MediaPlayer : IMediaResource
         }
     }
 
+    /// <summary>
+    /// Keep decoding while the audio renderer wants more, or the video queue has room, but
+    /// never while a picture is waiting for a slot, and never past twice the audio look-ahead
+    /// (a video-heavy interleave must not pile up audio without bound).
+    /// </summary>
+    private bool NeedsMoreDecoded()
+    {
+        if (_heldVideo is not null)
+            return false;
+        bool audioWants = _renderer is not null && _renderer.QueuedDuration < _services.DecodeAhead;
+        bool videoWants = _video is { IsFull: false };
+        bool audioTooFar = _renderer is not null && _renderer.QueuedDuration >= _services.DecodeAhead + _services.DecodeAhead;
+        return (audioWants || videoWants) && !audioTooFar;
+    }
+
+    /// <summary>
+    /// Queues a decoded picture, first dropping what an accurate seek (§4.8.11.9) must not
+    /// show: pictures that end at or before the target. The picture that contains the
+    /// target is kept, so the element shows the right frame the moment the seek lands.
+    /// </summary>
+    private void AcceptVideo(VideoFrame frame)
+    {
+        var video = _video;
+        if (video is null)
+        {
+            frame.Dispose();
+            return;
+        }
+
+        if (_videoTrimBefore is { } trim)
+        {
+            var end = frame.Timestamp + frame.Duration;
+            if (end <= trim && frame.Duration > MediaTime.Zero)
+            {
+                frame.Dispose();
+                return;
+            }
+
+            _videoTrimBefore = null;
+        }
+
+        if (video.IsFull)
+            _heldVideo = frame;
+        else
+            video.Enqueue(frame);
+    }
+
+    /// <summary>
+    /// Picks the picture for the clock (§2.4) and publishes it. While paused the first
+    /// queued picture stands in for the current position: after a seek, or as the first
+    /// frame when there is no poster (§4.8.9).
+    /// </summary>
+    private void PresentVideo()
+    {
+        var video = _video;
+        if (video is null || _failed)
+            return;
+
+        VideoFrame? frame;
+        bool changed;
+        if (_outputRunning)
+        {
+            changed = video.Select(_clock!.CurrentTime, out frame);
+        }
+        else if (_presentFirstFrame)
+        {
+            changed = video.SelectFirst(out frame);
+        }
+        else
+        {
+            return;
+        }
+
+        if (!changed || frame is null)
+            return;
+
+        _presentFirstFrame = false;
+        Presenter.Publish(frame, _context.Limits);
+    }
+
     private void UpdateOutputState()
     {
-        var output = _output!;
-        bool wantRunning = _potentiallyPlaying && !_failed && !(_endOfStream && _renderer!.IsDrained);
+        bool wantRunning = _potentiallyPlaying && !_failed && !IsPlayedOut();
         if (wantRunning && !_outputRunning)
         {
-            output.Start();
+            _output?.Start();
+            _monotonic?.Start();
             _outputRunning = true;
         }
         else if (!wantRunning && _outputRunning)
         {
-            output.Stop();
+            _output?.Stop();
+            _monotonic?.Pause();
             _outputRunning = false;
         }
     }
 
+    /// <summary>Everything decoded has been played: the audio drained, or without audio the last picture's time has passed.</summary>
+    private bool IsPlayedOut()
+    {
+        if (!_endOfStream)
+            return false;
+        if (_renderer is not null)
+            return _renderer.IsDrained;
+        return _video is null || _video.IsDrained(_clock!.CurrentTime);
+    }
+
     private void ReportReadiness()
     {
-        var renderer = _renderer!;
-        var queued = renderer.QueuedDuration;
-        MediaReadyState state;
-        if (_endOfStream)
-            state = MediaReadyState.HaveEnoughData;
-        else if (queued >= _services.DecodeAhead)
-            state = MediaReadyState.HaveEnoughData;
-        else if (queued >= _services.FutureDataThreshold)
-            state = MediaReadyState.HaveFutureData;
-        else if (queued > MediaTime.Zero || renderer.BlocksConsumed > 0)
-            state = MediaReadyState.HaveCurrentData;
-        else
-            state = MediaReadyState.HaveMetadata;
+        MediaReadyState state = MediaReadyState.HaveEnoughData;
+        if (_renderer is { } renderer)
+            state = AudioReadiness(renderer);
+        if (_video is { } video)
+        {
+            var videoState = VideoReadiness(video);
+            if (videoState < state)
+                state = videoState;
+        }
 
         // Once data has been seen the state never falls back below current data except
         // through a seek, which resets it explicitly; a momentary dip is not a stall.
@@ -367,11 +517,34 @@ public sealed class MediaPlayer : IMediaResource
         Report(() => _client.ReadyStateChanged(state));
     }
 
+    private MediaReadyState AudioReadiness(AudioRenderer renderer)
+    {
+        var queued = renderer.QueuedDuration;
+        if (_endOfStream || queued >= _services.DecodeAhead)
+            return MediaReadyState.HaveEnoughData;
+        if (queued >= _services.FutureDataThreshold)
+            return MediaReadyState.HaveFutureData;
+        if (queued > MediaTime.Zero || renderer.BlocksConsumed > 0)
+            return MediaReadyState.HaveCurrentData;
+        return MediaReadyState.HaveMetadata;
+    }
+
+    /// <summary>§4.8.11.7 for pictures: the current one is current data; a full queue (or the end) is enough.</summary>
+    private MediaReadyState VideoReadiness(VideoRenderer video)
+    {
+        if (_endOfStream || video.IsFull || _heldVideo is not null)
+            return MediaReadyState.HaveEnoughData;
+        if (video.QueuedCount >= 2)
+            return MediaReadyState.HaveFutureData;
+        if (video.QueuedCount > 0 || video.Current is not null)
+            return MediaReadyState.HaveCurrentData;
+        return MediaReadyState.HaveMetadata;
+    }
+
     private void ReportPosition()
     {
         var clock = _clock!;
-        var renderer = _renderer!;
-        if (_endOfStream && renderer.IsDrained && !_endReported && (_outputRunning || _potentiallyPlaying))
+        if (IsPlayedOut() && !_endReported && (_outputRunning || _potentiallyPlaying))
         {
             _endReported = true;
             var end = _duration.IsInfinite ? clock.CurrentTime : _duration;
@@ -392,6 +565,8 @@ public sealed class MediaPlayer : IMediaResource
             return;
         _lastPositionTick = now;
         var position = clock.CurrentTime;
+        if (!_duration.IsInfinite && position > _duration)
+            position = _duration;
         Report(() => _client.PositionChanged(position, monotonic: true));
     }
 
@@ -402,16 +577,25 @@ public sealed class MediaPlayer : IMediaResource
     /// </summary>
     private async ValueTask SeekCoreAsync(MediaTime target, CancellationToken cancellation, bool report)
     {
-        var renderer = _renderer!;
         if (!_duration.IsInfinite && target > _duration)
             target = _duration;
         if (target < MediaTime.Zero)
             target = MediaTime.Zero;
 
         _context.Log.Emit(_context.Player, MediaEventKind.SeekStart, MediaLogLevel.Debug, $"Seek to {target}.", ("target", target.ToString()));
-        renderer.Flush(target);
+        _renderer?.Flush(target);
         _stretcher?.Flush();
+        _monotonic?.SetTime(target);
         _trimBefore = target;
+        if (_video is not null)
+        {
+            _video.Flush();
+            _heldVideo?.Dispose();
+            _heldVideo = null;
+            _videoTrimBefore = target;
+            _presentFirstFrame = true;
+        }
+
         _endOfStream = false;
         _endReported = false;
         try
@@ -432,7 +616,10 @@ public sealed class MediaPlayer : IMediaResource
         }
 
         await FillAheadAsync(cancellation).ConfigureAwait(false);
-        if (_failed || !report)
+        if (_failed)
+            return;
+        PresentVideo();
+        if (!report)
             return;
 
         var landed = target;
@@ -497,6 +684,9 @@ public sealed class MediaPlayer : IMediaResource
             }
 
             _renderer?.Dispose();
+            _heldVideo?.Dispose();
+            _video?.Dispose();
+            Presenter.Clear();
             if (_decodeSource is not null)
                 await _decodeSource.DisposeAsync().ConfigureAwait(false);
             else

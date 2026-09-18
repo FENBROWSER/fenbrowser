@@ -12,11 +12,12 @@ using FenBrowser.Media.Pipeline;
 namespace FenBrowser.Host.ProcessIsolation.Media
 {
     /// <summary>
-    /// The media process's side of the media IPC: one <see cref="LocalAudioDecodeSource"/>
+    /// The media process's side of the media IPC: one <see cref="LocalMediaDecodeSource"/>
     /// per session, reading the resource from the input region the renderer filled and
-    /// writing each decoded block into the output region before answering. Every field of
-    /// every payload is checked against <see cref="MediaIpcLimits"/> before it is used; a
-    /// bad message gets a protocol error, never an exception out of the loop.
+    /// writing each decoded block into the output region, or each picture into the video
+    /// region, before answering. Every field of every payload is checked against
+    /// <see cref="MediaIpcLimits"/> before it is used; a bad message gets a protocol error,
+    /// never an exception out of the loop.
     /// </summary>
     internal sealed class MediaChildService : IDisposable
     {
@@ -105,7 +106,7 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 }
 
                 var context = new MediaPipelineContext(PlayerId.Next(), MediaLimits.Default, _log);
-                var source = new LocalAudioDecodeSource(new SharedMemoryByteSource(input, payload.InputLength), payload.DeclaredMime, _demuxers, _decoders, context);
+                var source = new LocalMediaDecodeSource(new SharedMemoryByteSource(input, payload.InputLength), payload.DeclaredMime, _demuxers, _decoders, context);
                 session = new Session(source, input, output, context);
             }
             catch (Exception ex)
@@ -144,7 +145,8 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                     DurationUs = info.Duration.Microseconds,
                     IsSeekable = info.IsSeekable,
                     Tracks = tracks,
-                    AudioTrackId = info.AudioTrack.Id
+                    AudioTrackId = info.AudioTrack?.Id ?? -1,
+                    VideoTrackId = info.VideoTrack?.Id ?? -1
                 });
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -162,46 +164,113 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 return Response(envelope, TargetIpcMessageType.MediaReadResponse, Error<MediaReadResponsePayload>(MediaErrorKinds.Protocol, "unknown_session"));
             }
 
+            if (payload.VideoRegion != null)
+            {
+                if (!IsValidRegionName(payload.VideoRegion) ||
+                    string.Equals(payload.VideoRegion, session.Input.Name, StringComparison.Ordinal) ||
+                    string.Equals(payload.VideoRegion, session.Output.Name, StringComparison.Ordinal) ||
+                    payload.VideoCapacity < MediaIpcLimits.MinOutputCapacity || payload.VideoCapacity > MediaIpcLimits.MaxVideoCapacity)
+                {
+                    return Response(envelope, TargetIpcMessageType.MediaReadResponse, Error<MediaReadResponsePayload>(MediaErrorKinds.Protocol, "invalid_video_region"));
+                }
+
+                if (session.Video == null || !string.Equals(session.Video.Name, payload.VideoRegion, StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        var video = MediaSharedMemory.Open(payload.VideoRegion, payload.VideoCapacity);
+                        session.Video?.Dispose();
+                        session.Video = video;
+                    }
+                    catch (Exception ex)
+                    {
+                        return Response(envelope, TargetIpcMessageType.MediaReadResponse, Error<MediaReadResponsePayload>(MediaErrorKinds.Protocol, $"region_unavailable: {ex.Message}"));
+                    }
+                }
+            }
+
             try
             {
-                var block = session.Carry;
+                var carried = session.Carry;
                 session.Carry = null;
-                block ??= await session.Source.ReadAsync(cancellationToken).ConfigureAwait(false);
-                if (block == null)
+                var item = carried ?? await session.Source.ReadAsync(cancellationToken).ConfigureAwait(false);
+                if (item is not { } decoded)
                 {
                     return Response(envelope, TargetIpcMessageType.MediaReadResponse, new MediaReadResponsePayload { Success = true, EndOfStream = true });
                 }
 
-                // The region carries one block; a block longer than the region goes over in pieces.
-                int bytesPerFrame = block.Channels * sizeof(float);
-                int maxFrames = session.Output.SizeBytes / bytesPerFrame;
-                int frames = block.FrameCount;
-                if (frames > maxFrames)
-                {
-                    frames = maxFrames;
-                    var rest = AudioBlock.Allocate(session.Context.Limits, block.SampleRate, block.Channels, block.FrameCount - frames,
-                        block.Timestamp + MediaTime.FromTimescale(frames, block.SampleRate));
-                    block.Samples[(frames * block.Channels)..].CopyTo(rest.Samples);
-                    session.Carry = rest;
-                }
-
-                var samples = block.Samples[..(frames * block.Channels)];
-                session.Output.Write(0, MemoryMarshal.AsBytes(samples));
-                var response = new MediaReadResponsePayload
-                {
-                    Success = true,
-                    SampleRate = block.SampleRate,
-                    Channels = block.Channels,
-                    FrameCount = frames,
-                    TimestampUs = block.Timestamp.Microseconds
-                };
-                block.Dispose();
-                return Response(envelope, TargetIpcMessageType.MediaReadResponse, response);
+                return Response(envelope, TargetIpcMessageType.MediaReadResponse,
+                    decoded.Audio != null ? WriteAudio(session, decoded.Audio) : WriteVideo(session, decoded.Video));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 return Response(envelope, TargetIpcMessageType.MediaReadResponse, Error<MediaReadResponsePayload>(KindOf(ex), ex.Message));
             }
+        }
+
+        /// <summary>The region carries one block; a block longer than the region goes over in pieces.</summary>
+        private static MediaReadResponsePayload WriteAudio(Session session, AudioBlock block)
+        {
+            int bytesPerFrame = block.Channels * sizeof(float);
+            int maxFrames = session.Output.SizeBytes / bytesPerFrame;
+            int frames = block.FrameCount;
+            if (frames > maxFrames)
+            {
+                frames = maxFrames;
+                var rest = AudioBlock.Allocate(session.Context.Limits, block.SampleRate, block.Channels, block.FrameCount - frames,
+                    block.Timestamp + MediaTime.FromTimescale(frames, block.SampleRate));
+                block.Samples[(frames * block.Channels)..].CopyTo(rest.Samples);
+                session.Carry = new DecodedMedia(rest);
+            }
+
+            var samples = block.Samples[..(frames * block.Channels)];
+            session.Output.Write(0, MemoryMarshal.AsBytes(samples));
+            var response = new MediaReadResponsePayload
+            {
+                Success = true,
+                Kind = 0,
+                SampleRate = block.SampleRate,
+                Channels = block.Channels,
+                FrameCount = frames,
+                TimestampUs = block.Timestamp.Microseconds
+            };
+            block.Dispose();
+            return response;
+        }
+
+        /// <summary>
+        /// The picture goes into the video region, planes end to end in its own layout. Without
+        /// a region large enough the picture waits in the session and the renderer is told the size.
+        /// </summary>
+        private static MediaReadResponsePayload WriteVideo(Session session, VideoFrame frame)
+        {
+            int required = frame.TotalBytes;
+            if (session.Video == null || session.Video.SizeBytes < required)
+            {
+                session.Carry = new DecodedMedia(frame);
+                return new MediaReadResponsePayload { Success = true, Kind = 1, RegionTooSmall = true, RequiredBytes = required };
+            }
+
+            int offset = 0;
+            for (int plane = 0; plane < frame.PlaneCount; plane++)
+            {
+                var bytes = frame.GetPlane(plane);
+                session.Video.Write(offset, bytes);
+                offset += bytes.Length;
+            }
+
+            var response = new MediaReadResponsePayload
+            {
+                Success = true,
+                Kind = 1,
+                Width = frame.Width,
+                Height = frame.Height,
+                PixelFormat = (int)frame.Format,
+                TimestampUs = frame.Timestamp.Microseconds,
+                DurationUs = frame.Duration.Microseconds
+            };
+            frame.Dispose();
+            return response;
         }
 
         private async Task<TargetIpcEnvelope> SeekAsync(TargetIpcEnvelope envelope, CancellationToken cancellationToken)
@@ -317,7 +386,7 @@ namespace FenBrowser.Host.ProcessIsolation.Media
 
         private sealed class Session : IAsyncDisposable
         {
-            public Session(LocalAudioDecodeSource source, MediaSharedMemory input, MediaSharedMemory output, MediaPipelineContext context)
+            public Session(LocalMediaDecodeSource source, MediaSharedMemory input, MediaSharedMemory output, MediaPipelineContext context)
             {
                 Source = source;
                 Input = input;
@@ -325,11 +394,12 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 Context = context;
             }
 
-            public LocalAudioDecodeSource Source { get; }
+            public LocalMediaDecodeSource Source { get; }
             public MediaSharedMemory Input { get; }
             public MediaSharedMemory Output { get; }
+            public MediaSharedMemory Video { get; set; }
             public MediaPipelineContext Context { get; }
-            public AudioBlock Carry { get; set; }
+            public DecodedMedia? Carry { get; set; }
 
             public async ValueTask DisposeAsync()
             {
@@ -337,6 +407,7 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 Carry = null;
                 await Source.DisposeAsync().ConfigureAwait(false);
                 Output.Dispose();
+                Video?.Dispose();
                 // The source's byte source disposed the input mapping.
             }
         }

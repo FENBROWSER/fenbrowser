@@ -45,6 +45,13 @@ namespace FenBrowser.Host.ProcessIsolation.Media
         public const int MinOutputCapacity = 4096;
         public const int MaxOutputCapacity = 16 * 1024 * 1024;
         public const int DefaultOutputCapacity = 2 * 1024 * 1024;
+
+        /// <summary>
+        /// The picture region: one read moves one decoded picture, planes end to end in the
+        /// <see cref="FenBrowser.Media.Buffers.VideoFrame"/> layout. 8K 4:2:0 needs about 50 MB.
+        /// </summary>
+        public const int MaxVideoCapacity = 64 * 1024 * 1024;
+        public const int VideoCapacityGranularity = 64 * 1024;
     }
 
     public sealed class MediaOpenPayload
@@ -81,24 +88,50 @@ namespace FenBrowser.Host.ProcessIsolation.Media
         public long DurationUs { get; set; }
         public bool IsSeekable { get; set; }
         public MediaTrackData[] Tracks { get; set; }
-        public int AudioTrackId { get; set; }
+
+        /// <summary>The decoded audio track, or -1 when the resource has none the child can decode.</summary>
+        public int AudioTrackId { get; set; } = -1;
+
+        /// <summary>The decoded video track, or -1 when there is none.</summary>
+        public int VideoTrackId { get; set; } = -1;
     }
 
     public sealed class MediaReadPayload
     {
         public string SessionId { get; set; }
+
+        /// <summary>
+        /// The region pictures go into, created by the renderer once it knows the track's
+        /// size (and again, larger, when a picture does not fit). Null for audio-only sessions.
+        /// </summary>
+        public string VideoRegion { get; set; }
+        public int VideoCapacity { get; set; }
     }
 
+    /// <summary>What one read brought back: <see cref="Kind"/> 0 is a block of audio, 1 a picture.</summary>
     public sealed class MediaReadResponsePayload
     {
         public bool Success { get; set; }
         public string ErrorKind { get; set; }
         public string ErrorMessage { get; set; }
         public bool EndOfStream { get; set; }
+        public int Kind { get; set; }
+        public long TimestampUs { get; set; }
+
+        // Audio.
         public int SampleRate { get; set; }
         public int Channels { get; set; }
         public int FrameCount { get; set; }
-        public long TimestampUs { get; set; }
+
+        // Video: the picture is in the video region in the VideoFrame layout for these values.
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public int PixelFormat { get; set; }
+        public long DurationUs { get; set; }
+
+        /// <summary>The picture is held in the child: the renderer must attach a region of at least <see cref="RequiredBytes"/> and read again.</summary>
+        public bool RegionTooSmall { get; set; }
+        public int RequiredBytes { get; set; }
     }
 
     public sealed class MediaSeekPayload

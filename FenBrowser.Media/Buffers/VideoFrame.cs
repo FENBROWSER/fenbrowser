@@ -36,6 +36,10 @@ public sealed class VideoFrame : IDisposable
         Alignment = alignment;
         Timestamp = timestamp;
         Duration = duration;
+        int total = 0;
+        foreach (var plane in planes)
+            total += plane.Stride * plane.Height;
+        TotalBytes = total;
     }
 
     public VideoPixelFormat Format { get; }
@@ -61,9 +65,32 @@ public sealed class VideoFrame : IDisposable
         int alignment = 16)
     {
         ArgumentNullException.ThrowIfNull(limits);
+        limits.CheckVideoDimensions(width, height);
+        var planes = Layout(format, width, height, alignment, out int totalBytes);
+        byte[] buffer = MediaBufferPool.Bytes.Rent(totalBytes);
+        return new VideoFrame(buffer, planes, format, width, height, alignment, timestamp, duration);
+    }
+
+    /// <summary>
+    /// The bytes a frame of this shape occupies with its planes laid end to end: what a
+    /// region carrying one such frame between processes must hold. The layout is a pure
+    /// function of the arguments, so two processes computing it agree.
+    /// </summary>
+    public static int LayoutSize(VideoPixelFormat format, int width, int height, int alignment = 16)
+    {
+        _ = Layout(format, width, height, alignment, out int totalBytes);
+        return totalBytes;
+    }
+
+    /// <summary>The bytes of every plane, laid end to end as the layout describes.</summary>
+    public int TotalBytes { get; private set; }
+
+    private static PlaneLayout[] Layout(VideoPixelFormat format, int width, int height, int alignment, out int totalBytes)
+    {
         if (alignment is < 1 or > 64 || !BitOperations.IsPow2(alignment))
             throw new ArgumentOutOfRangeException(nameof(alignment), alignment, "Alignment must be a power of two from 1 to 64.");
-        limits.CheckVideoDimensions(width, height);
+        if (width <= 0 || height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(width), $"{width}x{height}", "Dimensions must be positive.");
 
         int chromaWidth = (width + 1) / 2;
         int chromaHeight = (height + 1) / 2;
@@ -85,8 +112,8 @@ public sealed class VideoFrame : IDisposable
             offset += stride * h;
         }
 
-        byte[] buffer = MediaBufferPool.Bytes.Rent(checked((int)offset));
-        return new VideoFrame(buffer, planes, format, width, height, alignment, timestamp, duration);
+        totalBytes = checked((int)offset);
+        return planes;
     }
 
     /// <summary>The bytes of plane <paramref name="index"/>: <see cref="GetPlaneHeight"/> rows of <see cref="GetStride"/> bytes.</summary>

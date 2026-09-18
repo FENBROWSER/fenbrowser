@@ -534,6 +534,12 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
                 DeclaredMime = "audio/ogg"
             });
             yield return Envelope(TargetIpcMessageType.MediaRead, new MediaReadPayload { SessionId = sessionId });
+            yield return Envelope(TargetIpcMessageType.MediaRead, new MediaReadPayload
+            {
+                SessionId = sessionId,
+                VideoRegion = "fen_media_1_" + sessionId + "_v1",
+                VideoCapacity = 4718592
+            });
             yield return Envelope(TargetIpcMessageType.MediaSeek, new MediaSeekPayload { SessionId = sessionId, TargetUs = 500_000 });
             yield return Envelope(TargetIpcMessageType.MediaClose, new MediaClosePayload { SessionId = sessionId });
         }
