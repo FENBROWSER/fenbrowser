@@ -504,6 +504,13 @@ public sealed class MediaPlayer : IMediaResource
             var videoState = VideoReadiness(video);
             if (videoState < state)
                 state = videoState;
+
+            // With the picture queue full nothing more can be decoded until playback
+            // consumes it, and the whole resource is already here: by §4.8.11.7 that is
+            // HAVE_ENOUGH_DATA, whatever the audio look-ahead has reached. Otherwise a
+            // paused element with autoplay would wait for audio that cannot arrive.
+            if ((video.IsFull || _heldVideo is not null) && state >= MediaReadyState.HaveCurrentData)
+                state = MediaReadyState.HaveEnoughData;
         }
 
         // Once data has been seen the state never falls back below current data except
