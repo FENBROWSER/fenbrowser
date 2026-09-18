@@ -121,7 +121,7 @@ namespace FenBrowser.FenEngine.Layout
         public static bool IsReplacedElementTag(string tagUpper)
         {
             if (string.IsNullOrEmpty(tagUpper)) return false;
-            return tagUpper is "IMG" or "SVG" or "CANVAS" or "VIDEO" or "IFRAME" or "EMBED" or "OBJECT";
+            return tagUpper is "IMG" or "SVG" or "CANVAS" or "VIDEO" or "AUDIO" or "IFRAME" or "EMBED" or "OBJECT";
         }
 
         public static SKSize GetFallbackSize(string tagUpper)
@@ -132,6 +132,8 @@ namespace FenBrowser.FenEngine.Layout
                 "SVG" => new SKSize(300f, 150f),
                 "CANVAS" => new SKSize(300f, 150f),
                 "VIDEO" => new SKSize(300f, 150f),
+                // HTML rendering §15.4.3: an audio element with controls is 300x54 in the shipping engines.
+                "AUDIO" => new SKSize(300f, 54f),
                 "IFRAME" => new SKSize(300f, 150f),
                 "EMBED" => new SKSize(300f, 150f),
                 "OBJECT" => new SKSize(300f, 150f),

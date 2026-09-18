@@ -48,6 +48,21 @@ namespace FenBrowser.FenEngine.Media
         public static MediaPlayerServices PlayerServices =>
             new(Demuxers, Decoders, AudioOutputs, TimeProvider.System) { DecodeSources = DecodeSources };
 
+        /// <summary>
+        /// Installs the engine's hooks that other subsystems reach media through: the
+        /// accessibility tree's view of the user agent controls. Idempotent.
+        /// </summary>
+        public static void InstallHooks()
+        {
+            FenBrowser.Core.Accessibility.AccessibilityTreeBuilder.MediaControlsProvider = element =>
+            {
+                var controls = MediaPresentation.Get(element).Controls;
+                return controls == null
+                    ? null
+                    : new FenBrowser.Core.Accessibility.MediaControlsAccessibility(controls.Paused || controls.Ended, controls.Muted || controls.Volume <= 0, controls.CurrentTime, controls.Duration);
+            };
+        }
+
         private static Registries CreateRegistries()
         {
             var demuxers = new DemuxerRegistry();

@@ -670,6 +670,23 @@ public sealed partial class FenJsBrowserScriptEngine
         }
     }
 
+    /// <summary>
+    /// HTML §4.8.13: the user activated one of the element's controls. Runs on the JS
+    /// worker of the element's realm; a play counts as user activation.
+    /// </summary>
+    public void ActivateMediaControl(Element element, MediaControlAction action, double seekFraction)
+    {
+        if (element == null || !IsMediaElement(element))
+        {
+            return;
+        }
+
+        RunOnMediaThread(element, binding => binding.ActivateControl(action, seekFraction));
+    }
+
+    /// <summary>The controls state layout and accessibility read, without creating a controller.</summary>
+    public static MediaControlsState ReadMediaControlsState(Element element) => MediaPresentation.Get(element).Controls;
+
     // -- element properties --------------------------------------------------------------
 
     internal bool TryGetTrackElementProperty(Element element, string property, out JsValue value)

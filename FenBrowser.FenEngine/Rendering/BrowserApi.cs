@@ -3856,6 +3856,9 @@ pre {{
                 _lastClickTarget = inputEvent.Target;
                 _lastClickDefaultAllowed = true;
                 _suppressNextDomClickDispatchInHandleElementClick = false;
+                _lastClickPageX = (float)inputEvent.PageX;
+                _lastClickPageY = (float)inputEvent.PageY;
+                _lastClickPagePointValid = true;
             }
 
             if (inputEvent.Target != null && IsScriptDomInputEvent(type))
@@ -4012,6 +4015,9 @@ pre {{
                 _lastClickTarget = inputEvent.Target;
                 _lastClickDefaultAllowed = true;
                 _suppressNextDomClickDispatchInHandleElementClick = false;
+                _lastClickPageX = (float)inputEvent.PageX;
+                _lastClickPageY = (float)inputEvent.PageY;
+                _lastClickPagePointValid = true;
             }
 
             if (inputEvent.Target != null && IsScriptDomInputEvent(type))
@@ -9748,6 +9754,104 @@ pre {{
             }
         }
 
+        // Where the last physical click landed, in page coordinates, for controls that
+        // decide what to do from the point rather than the element (media controls).
+        private float _lastClickPageX;
+        private float _lastClickPageY;
+        private bool _lastClickPagePointValid;
+
+        /// <summary>
+        /// HTML §4.8.13: a click on a media element with controls activates the control
+        /// under the point (play/pause, seek, mute). Returns true when a control took it.
+        /// </summary>
+        private bool TryActivateMediaControls(Element element, string tag)
+        {
+            if (tag != "video" && tag != "audio")
+            {
+                return false;
+            }
+
+            var pointValid = _lastClickPagePointValid;
+            _lastClickPagePointValid = false;
+            if (!pointValid || !FenBrowser.FenEngine.Media.MediaControls.ShowsControls(element))
+            {
+                return false;
+            }
+
+            // The element's box: the layout snapshot when there is one, else the visual
+            // rect the script side keeps (both are page space, like the click point).
+            SkiaSharp.SKRect box;
+            var layout = _engine?.LastLayout;
+            if (layout != null && layout.TryGetElementRect(element, out var geo))
+            {
+                box = geo.ToSKRect();
+            }
+            else if (FenBrowser.FenEngine.Scripting.JavaScriptEngine.TryGetVisualRect(element, out var vx, out var vy, out var vw, out var vh))
+            {
+                box = SkiaSharp.SKRect.Create((float)vx, (float)vy, (float)vw, (float)vh);
+            }
+            else
+            {
+                return false;
+            }
+
+            var geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(box, tag == "video");
+            var action = FenBrowser.FenEngine.Media.MediaControls.HitTest(geometry, _lastClickPageX, _lastClickPageY, out var fraction);
+            if (action == FenBrowser.FenEngine.Media.MediaControlAction.None)
+            {
+                return false;
+            }
+
+            SetFocusedElementState(element);
+            _engine.ActivateMediaControl(element, action, fraction);
+            TryInvokeRepaintReady(_engine.GetActiveDom());
+            return true;
+        }
+
+        /// <summary>Keyboard operation of focused media controls: space/k play, arrows seek, m mute.</summary>
+        private bool TryHandleMediaControlKey(Element element, string tag, string key)
+        {
+            if ((tag != "video" && tag != "audio") || !FenBrowser.FenEngine.Media.MediaControls.ShowsControls(element))
+            {
+                return false;
+            }
+
+            var state = FenBrowser.FenEngine.Scripting.FenJsBrowserScriptEngine.ReadMediaControlsState(element);
+            FenBrowser.FenEngine.Media.MediaControlAction action;
+            double fraction = 0;
+            switch (key)
+            {
+                case " ":
+                case "Space":
+                case "Enter":
+                case "k":
+                case "K":
+                    action = FenBrowser.FenEngine.Media.MediaControlAction.TogglePlay;
+                    break;
+                case "m":
+                case "M":
+                    action = FenBrowser.FenEngine.Media.MediaControlAction.ToggleMute;
+                    break;
+                case "ArrowLeft":
+                case "ArrowRight":
+                    if (state == null || !(state.Duration > 0) || double.IsInfinity(state.Duration))
+                    {
+                        return true;
+                    }
+
+                    var target = state.CurrentTime + (key == "ArrowLeft" ? -5.0 : 5.0);
+                    fraction = Math.Clamp(target / state.Duration, 0, 1);
+                    action = FenBrowser.FenEngine.Media.MediaControlAction.Seek;
+                    break;
+                default:
+                    return false;
+            }
+
+            _engine.ActivateMediaControl(element, action, fraction);
+            TryInvokeRepaintReady(_engine.GetActiveDom());
+            return true;
+        }
+
         private bool TryGetElementClickClientPoint(Element element, out int clientX, out int clientY)
         {
             clientX = 0;
@@ -10063,6 +10167,11 @@ pre {{
             // legacy "promote to descendant editable" behavior so focus/typing
             // remains stable when the user clicks a decorative wrapper.
             if (TryToggleCustomPopupActivation(element, allowDefaultActivation))
+            {
+                return;
+            }
+
+            if (allowDefaultActivation && TryActivateMediaControls(element, tag))
             {
                 return;
             }
@@ -11807,6 +11916,11 @@ pre {{
                 }
 
                 bool isContentEditable = string.Equals(_focusedElement.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                if (TryHandleMediaControlKey(_focusedElement, tag, key))
+                {
+                    return;
+                }
+
                 if (tag == "button")
                 {
                     if (IsButtonActivationKey(key) && !IsDisabledControl(_focusedElement))

@@ -553,6 +553,7 @@ public sealed partial class FenJsBrowserScriptEngine
         {
             _realm = realm;
             _element = element;
+            MediaEngineServices.InstallHooks();
             Controller = new HtmlMediaElementController(this, MediaEngineServices.TypeSupport, MediaEngineServices.Log);
         }
 
@@ -727,6 +728,11 @@ public sealed partial class FenJsBrowserScriptEngine
                 return;
             }
 
+            if (ReferenceEquals(target, _element) && ChangesControls(type) && MediaControls.ShowsControls(_element))
+            {
+                InvalidateRendering(sizeChanged: false);
+            }
+
             var eventValue = _realm.CreateBrowserDomEventValue(
                 target,
                 type,
@@ -742,8 +748,58 @@ public sealed partial class FenJsBrowserScriptEngine
         {
             MediaPresentation.Update(
                 _element,
-                new MediaPresentationState(Controller.ShowPoster, Controller.VideoWidth, Controller.VideoHeight, _presenter));
+                new MediaPresentationState(Controller.ShowPoster, Controller.VideoWidth, Controller.VideoHeight, _presenter, ControlsState()));
             InvalidatePaintForElement(_element);
+        }
+
+        /// <summary>HTML §4.8.13: what the user agent controls show, when the element has them.</summary>
+        private MediaControlsState ControlsState()
+        {
+            if (!MediaControls.ShowsControls(_element))
+            {
+                return null;
+            }
+
+            var buffered = Controller.Buffered;
+            double bufferedEnd = buffered.Count > 0 ? buffered.End(buffered.Count - 1).TotalSeconds : 0;
+            return new MediaControlsState(Controller.Paused, Controller.Ended, Controller.CurrentTime, Controller.Duration, Controller.Muted, Controller.Volume, bufferedEnd);
+        }
+
+        // The events after which the controls look different (§4.8.11.17 event summary).
+        private static bool ChangesControls(string type) => type switch
+        {
+            "play" or "pause" or "playing" or "timeupdate" or "volumechange" or "durationchange" or "ended" or "seeked" or "loadedmetadata" or "progress" or "emptied" => true,
+            _ => false,
+        };
+
+        /// <summary>A control was activated by the user (a click on the bar or a key while focused).</summary>
+        public void ActivateControl(MediaControlAction action, double seekFraction)
+        {
+            switch (action)
+            {
+                case MediaControlAction.TogglePlay:
+                    if (Controller.Paused || Controller.Ended)
+                    {
+                        _realm._stickyUserActivation = true;
+                        _ = Controller.Play();
+                    }
+                    else
+                    {
+                        Controller.Pause();
+                    }
+                    break;
+                case MediaControlAction.Seek:
+                    if (Controller.Duration > 0 && !double.IsInfinity(Controller.Duration))
+                    {
+                        Controller.SetCurrentTime(seekFraction * Controller.Duration);
+                    }
+                    break;
+                case MediaControlAction.ToggleMute:
+                    Controller.SetMuted(!Controller.Muted);
+                    break;
+            }
+
+            InvalidateRendering(sizeChanged: false);
         }
 
         /// <summary>

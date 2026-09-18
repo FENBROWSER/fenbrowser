@@ -9,7 +9,8 @@ namespace FenBrowser.FenEngine.Media
     /// poster frame is shown, the intrinsic size of the video, if any, and where the
     /// current picture can be acquired from (null for audio or before a resource plays).
     /// </summary>
-    public sealed record MediaPresentationState(bool ShowPoster, int VideoWidth, int VideoHeight, VideoPresenter Presenter = null)
+    /// <param name="Controls">What the user agent controls show, or null when the element has no <c>controls</c> attribute.</param>
+    public sealed record MediaPresentationState(bool ShowPoster, int VideoWidth, int VideoHeight, VideoPresenter Presenter = null, MediaControlsState Controls = null)
     {
         /// <summary>An element no controller has touched: it shows its poster and has no video.</summary>
         public static readonly MediaPresentationState Initial = new(true, 0, 0);
