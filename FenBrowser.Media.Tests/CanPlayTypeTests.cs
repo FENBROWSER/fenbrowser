@@ -130,6 +130,24 @@ public class CanPlayTypeTests
         Assert.Equal(expected, Build().KnowsItCannotRender(type));
     }
 
+    /// <summary>
+    /// WPT mime-types/canPlayType.html: a container that is supported must have at least one
+    /// supported codec, and the WAVE family answers "probably" for format tags 1 and 3.
+    /// </summary>
+    [Theory]
+    [InlineData("audio/wav", "maybe")]
+    [InlineData("audio/wav; codecs=\"1\"", "probably")]
+    [InlineData("audio/wav; codecs=\"3\"", "probably")]
+    [InlineData("audio/wav; codecs=\"bogus\"", "")]
+    public void BuiltInPcm_AnswersWaveProbes(string type, string expected)
+    {
+        var demuxers = new DemuxerRegistry();
+        var decoders = new DecoderRegistry();
+        MediaFormats.RegisterBuiltIn(demuxers, decoders);
+        var support = new MediaTypeSupport(demuxers, decoders);
+        Assert.Equal(expected, MediaTypeSupport.ToDomString(support.CanPlayType(type)));
+    }
+
     [Fact]
     public void KillSwitch_TurnsAnswersOff()
     {

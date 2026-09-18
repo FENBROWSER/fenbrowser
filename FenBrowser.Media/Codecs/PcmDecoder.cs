@@ -21,7 +21,14 @@ public sealed class PcmDecoderFactory : IDecoderFactory<AudioBlock>
     public DecoderSupport Supports(CodecConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
-        return config.Kind == MediaTrackKind.Audio && config.Codec == MediaCodec.Pcm && config.PcmFormat != PcmSampleFormat.None
+        if (config.Kind != MediaTrackKind.Audio || config.Codec != MediaCodec.Pcm)
+            return DecoderSupport.Unsupported;
+
+        // A canPlayType probe carries only the codecs value (WAVE format tag 1 or 3, RFC
+        // 2361), never a sample format: the demuxer fills that in for a real track and
+        // refuses any tag or width it cannot name, so the probe can answer for the family.
+        bool isProbe = config.SampleRate == 0 && config.PcmFormat == PcmSampleFormat.None;
+        return isProbe || config.PcmFormat != PcmSampleFormat.None
             ? DecoderSupport.Supported
             : DecoderSupport.Unsupported;
     }
