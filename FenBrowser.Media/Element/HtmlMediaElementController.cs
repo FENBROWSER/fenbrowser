@@ -416,6 +416,7 @@ public sealed class HtmlMediaElementController
             // 7.5
             if (ReadyState != MediaReadyState.HaveNothing)
                 SetReadyStateSilently(MediaReadyState.HaveNothing);
+            _resourceReadyState = MediaReadyState.HaveNothing;
 
             // 7.6
             if (!Paused)
@@ -794,7 +795,8 @@ public sealed class HtmlMediaElementController
         _earliestPossiblePosition = metadata.EarliestPossiblePosition;
         _currentPosition = _earliestPossiblePosition;
         _officialPosition = _earliestPossiblePosition;
-        _host.PlaybackPositionChanged(monotonic: false);
+        if (_defaultPlaybackStartPosition <= 0.0)
+            _host.PlaybackPositionChanged(monotonic: false); // otherwise the seek below reports the real position
 
         // Duration, then a queued durationchange.
         _duration = metadata.Duration;
@@ -822,6 +824,30 @@ public sealed class HtmlMediaElementController
     }
 
     // ---- Ready states (§4.8.11.7) --------------------------------------------------------
+
+    // The readiness the resource last reported; re-applied once pending text tracks load.
+    private MediaReadyState _resourceReadyState;
+
+    /// <summary>
+    /// The resource's readiness, clamped to HAVE_CURRENT_DATA while the element is blocked on
+    /// pending text tracks (§4.8.12.11.3), so canplay waits for a default track to load.
+    /// </summary>
+    private void SetResourceReadyState(MediaReadyState state)
+    {
+        _resourceReadyState = state;
+        if (state > MediaReadyState.HaveCurrentData && _host.HasPendingTextTracks)
+            state = MediaReadyState.HaveCurrentData;
+        SetReadyState(state);
+    }
+
+    /// <summary>The host's pending text tracks list changed; the held-back readiness may apply now.</summary>
+    public void PendingTextTracksChanged()
+    {
+        if (ReadyState == MediaReadyState.HaveNothing || _resource is null)
+            return;
+        if (_resourceReadyState > ReadyState && !_host.HasPendingTextTracks)
+            SetReadyState(_resourceReadyState);
+    }
 
     private void SetReadyStateSilently(MediaReadyState state)
     {
@@ -1241,7 +1267,7 @@ public sealed class HtmlMediaElementController
         {
             // Nothing above HAVE_METADATA before the metadata step has run.
             if (owner.ReadyState != MediaReadyState.HaveNothing && state >= MediaReadyState.HaveMetadata)
-                owner.SetReadyState(state);
+                owner.SetResourceReadyState(state);
         });
 
         public void DurationChanged(MediaTime duration) => Enqueue(() =>

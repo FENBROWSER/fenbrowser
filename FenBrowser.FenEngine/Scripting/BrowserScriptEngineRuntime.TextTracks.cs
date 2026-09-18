@@ -66,6 +66,12 @@ public sealed partial class FenJsBrowserScriptEngine
         _interpreter.RegisterGlobalValue(
             "__fenQueueMediaTask",
             _interpreter.AllocateNativeFunction("__fenQueueMediaTask", (_, args) => QueueMediaTaskFromScript(args), length: 2));
+        _interpreter.RegisterGlobalValue(
+            "__fenPendingTextTracksChanged",
+            _interpreter.AllocateNativeFunction("__fenPendingTextTracksChanged", (_, args) => OnPendingTextTracksChanged(args), length: 1));
+        _interpreter.RegisterGlobalValue(
+            "__fenTextTracksRenderingChanged",
+            _interpreter.AllocateNativeFunction("__fenTextTracksRenderingChanged", (_, args) => UpdateTextTrackCueOverlay(args), length: 1));
 
         try
         {
@@ -307,14 +313,6 @@ public sealed partial class FenJsBrowserScriptEngine
             return JsValue.Undefined;
         }
 
-        var sameOrigin = _currentBaseUri != null && CorsHandler.IsSameOrigin(requestUri, _currentBaseUri);
-        if (!sameOrigin && crossOrigin == null)
-        {
-            EngineLogCompat.Debug($"[FenJsBridge] track '{requestUri}' is cross-origin without crossorigin: not loaded", LogCategory.JavaScript);
-            Deliver(false, string.Empty);
-            return JsValue.Undefined;
-        }
-
         var handler = FetchHandler;
         if (handler == null)
         {
@@ -322,22 +320,28 @@ public sealed partial class FenJsBrowserScriptEngine
             return JsValue.Undefined;
         }
 
-        HttpRequestMessage request;
-        try
+        var documentOrigin = _currentBaseUri;
+        bool corsMode = crossOrigin != null;
+        string credentials = string.Equals(crossOrigin, "use-credentials", StringComparison.OrdinalIgnoreCase) ? "include" : "same-origin";
+
+        // One hop of the fetch. The fetch pipeline behind FetchHandler attaches cookies per
+        // the credentials mode, sends Origin, and in "cors" mode rejects a response that
+        // fails the CORS check; it does not follow redirects, so this does.
+        HttpRequestMessage Build(Uri uri)
         {
-            request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+            var request = new HttpRequestMessage(HttpMethod.Get, uri);
             request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "track");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", corsMode ? "cors" : "no-cors");
             request.Headers.TryAddWithoutValidation("Accept", "text/vtt, */*;q=0.8");
-            if (_currentBaseUri != null)
+            if (documentOrigin != null)
             {
-                request.Headers.Referrer = _currentBaseUri;
-                if (!sameOrigin)
+                request.Headers.Referrer = documentOrigin;
+                if (corsMode && !CorsHandler.IsSameOrigin(uri, documentOrigin))
                 {
                     var origin = CorsHandler.SerializeOrigin(new UriBuilder(
-                        _currentBaseUri.Scheme,
-                        _currentBaseUri.Host,
-                        _currentBaseUri.IsDefaultPort ? -1 : _currentBaseUri.Port).Uri);
+                        documentOrigin.Scheme,
+                        documentOrigin.Host,
+                        documentOrigin.IsDefaultPort ? -1 : documentOrigin.Port).Uri);
                     if (!string.IsNullOrWhiteSpace(origin))
                     {
                         request.Headers.TryAddWithoutValidation("Origin", origin);
@@ -345,52 +349,63 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
             }
 
-            request.Options.Set(
-                new HttpRequestOptionsKey<string>(CorsHandler.CredentialsModeOptionKey),
-                string.Equals(crossOrigin, "use-credentials", StringComparison.OrdinalIgnoreCase) ? "include" : "same-origin");
-        }
-        catch (Exception ex)
-        {
-            EngineLogCompat.Warn($"[FenJsBridge] track fetch could not build request for '{requestUri}': {ex.Message}", LogCategory.JavaScript);
-            Deliver(false, string.Empty);
-            return JsValue.Undefined;
+            request.Options.Set(new HttpRequestOptionsKey<string>(CorsHandler.CredentialsModeOptionKey), credentials);
+            return request;
         }
 
-        var documentOrigin = _currentBaseUri;
         _ = Task.Run(async () =>
         {
-            HttpResponseMessage response = null;
+            var uri = requestUri;
             try
             {
-                response = await handler(request).ConfigureAwait(false);
-                var status = (int)response.StatusCode;
-                if (status < 200 || status > 299)
+                for (var hop = 0; hop < 20; hop++)
                 {
-                    Deliver(false, string.Empty);
+                    // HTML §4.8.12.11.3: in "No CORS" mode a cross-origin track (at any hop)
+                    // would be an opaque response, which the track fails on.
+                    bool sameOrigin = documentOrigin != null && CorsHandler.IsSameOrigin(uri, documentOrigin);
+                    if (!sameOrigin && !corsMode)
+                    {
+                        EngineLogCompat.Debug($"[FenJsBridge] track '{uri}' is cross-origin without crossorigin: not loaded", LogCategory.JavaScript);
+                        Deliver(false, string.Empty);
+                        return;
+                    }
+
+                    using var request = Build(uri);
+                    using var response = await handler(request).ConfigureAwait(false);
+                    var status = (int)response.StatusCode;
+                    if (status is >= 300 and <= 399 && response.Headers.Location != null)
+                    {
+                        var location = response.Headers.Location;
+                        uri = location.IsAbsoluteUri ? location : new Uri(uri, location);
+                        continue;
+                    }
+
+                    if (status < 200 || status > 299)
+                    {
+                        Deliver(false, string.Empty);
+                        return;
+                    }
+
+                    if (!sameOrigin && !CorsHandler.IsCorsAllowed(response, uri, documentOrigin))
+                    {
+                        EngineLogCompat.Debug($"[FenJsBridge] track '{uri}' failed the CORS check", LogCategory.JavaScript);
+                        Deliver(false, string.Empty);
+                        return;
+                    }
+
+                    var bytes = response.Content != null
+                        ? await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
+                        : Array.Empty<byte>();
+                    Deliver(true, Encoding.UTF8.GetString(bytes));
                     return;
                 }
 
-                if (!sameOrigin && !CorsHandler.IsCorsAllowed(response, requestUri, documentOrigin))
-                {
-                    EngineLogCompat.Debug($"[FenJsBridge] track '{requestUri}' failed the CORS check", LogCategory.JavaScript);
-                    Deliver(false, string.Empty);
-                    return;
-                }
-
-                var bytes = response.Content != null
-                    ? await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
-                    : Array.Empty<byte>();
-                Deliver(true, Encoding.UTF8.GetString(bytes));
+                Deliver(false, string.Empty); // too many redirects
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Warn($"[FenJsBridge] track fetch failed for '{requestUri}': {ex.Message}", LogCategory.JavaScript);
+                EngineLogCompat.Warn($"[FenJsBridge] track fetch failed for '{uri}': {ex.Message}", LogCategory.JavaScript);
                 Deliver(false, string.Empty);
-            }
-            finally
-            {
-                response?.Dispose();
-                request.Dispose();
             }
         });
 
@@ -424,6 +439,61 @@ public sealed partial class FenJsBrowserScriptEngine
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// The set of showing cues changed: the prelude's <c>__fenTextTracksShowing</c> lists
+    /// them, and the paint side gets the plain text and placement of each (WebVTT §7).
+    /// </summary>
+    private JsValue UpdateTextTrackCueOverlay(IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0 || ResolveHostObjectOrNull(args[0]) is not Element element || !IsMediaElement(element))
+        {
+            return JsValue.Undefined;
+        }
+
+        var json = CallTextTrackHook("__fenTextTracksShowing", args[0]);
+        var cues = new List<TextTrackCueDisplay>();
+        if (json.Tag == JsValueTag.String)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(CoerceToHostString(json));
+                foreach (var cue in document.RootElement.EnumerateArray())
+                {
+                    string text = cue.TryGetProperty("text", out var t) ? t.GetString() ?? string.Empty : string.Empty;
+                    string plain = WebVttCueText.Parse(text, string.Empty, HtmlCharacterReferenceTable.Instance).PlainText();
+                    cues.Add(new TextTrackCueDisplay(
+                        plain,
+                        ReadString(cue, "vertical", string.Empty),
+                        !cue.TryGetProperty("snapToLines", out var snap) || snap.ValueKind != JsonValueKind.False,
+                        ReadNumber(cue, "line"),
+                        ReadString(cue, "lineAlign", "start"),
+                        ReadNumber(cue, "position"),
+                        ReadString(cue, "positionAlign", "auto"),
+                        ReadNumber(cue, "size") ?? 100,
+                        ReadString(cue, "align", "center")));
+                }
+            }
+            catch (JsonException ex)
+            {
+                EngineLogCompat.Warn($"[FenJsBridge] showing cues could not be read: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
+        TextTrackCueOverlay.Update(element, cues);
+        if (TryGetMediaBinding(element, out var binding))
+        {
+            binding.InvalidateRendering(sizeChanged: false);
+        }
+
+        return JsValue.Undefined;
+
+        static string ReadString(JsonElement cue, string name, string fallback) =>
+            cue.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? fallback : fallback;
+
+        static double? ReadNumber(JsonElement cue, string name) =>
+            cue.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetDouble() : null;
     }
 
     /// <summary>What "time marches on" needs from the media element, read off its controller.</summary>
@@ -511,6 +581,28 @@ public sealed partial class FenJsBrowserScriptEngine
         }
 
         _ = CallTextTrackHook("__fenTextTracksTimeMarchesOn", ToHostNodeOrNull(element), JsValue.FromBoolean(monotonic));
+    }
+
+    private bool HasPendingTextTracks(Element element)
+    {
+        if (!_textTrackModelTouched.TryGetValue(element, out _))
+        {
+            return false;
+        }
+
+        var pending = CallTextTrackHook("__fenTextTracksPending", ToHostNodeOrNull(element));
+        return pending.Tag == JsValueTag.Boolean && pending.AsBoolean();
+    }
+
+    /// <summary>A track element's track finished (or failed) loading: the element may be unblocked.</summary>
+    private JsValue OnPendingTextTracksChanged(IReadOnlyList<JsValue> args)
+    {
+        if (args.Count > 0 && ResolveHostObjectOrNull(args[0]) is Element element && IsMediaElement(element) && TryGetMediaBinding(element, out var binding))
+        {
+            binding.Controller.PendingTextTracksChanged();
+        }
+
+        return JsValue.Undefined;
     }
 
     private void OnTextTracksReset(Element element)

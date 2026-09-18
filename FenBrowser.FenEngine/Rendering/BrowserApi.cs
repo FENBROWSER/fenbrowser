@@ -6152,7 +6152,13 @@ pre {{
                         TopLevelDocumentUri = topLevelUri,
                         Destination = Header("Sec-Fetch-Dest") ?? "empty",
                         Mode = Header("Sec-Fetch-Mode") ?? "cors",
-                        CredentialsMode = "same-origin",
+                        // A request may carry its own credentials mode (a track element
+                        // with crossorigin=use-credentials); the default is same-origin.
+                        CredentialsMode = request.Options.TryGetValue(
+                            new HttpRequestOptionsKey<string>(FenBrowser.Core.Network.Handlers.CorsHandler.CredentialsModeOptionKey),
+                            out var credentialsMode) && !string.IsNullOrWhiteSpace(credentialsMode)
+                            ? credentialsMode
+                            : "same-origin",
                         ReferrerPolicy = referrerPolicy,
                         ContentSecurityPolicy = framePolicy,
                         IsTopLevelNavigation = false,

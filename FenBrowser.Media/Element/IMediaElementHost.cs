@@ -88,6 +88,14 @@ public interface IMediaElementHost
     {
     }
 
+    /// <summary>
+    /// HTML §4.8.12.11.3 "blocked on pending text tracks": true while a track element's
+    /// enabled text track is still loading. The ready state does not advance past
+    /// HAVE_CURRENT_DATA meanwhile; the host calls
+    /// <see cref="HtmlMediaElementController.PendingTextTracksChanged"/> when this changes.
+    /// </summary>
+    bool HasPendingTextTracks => false;
+
     object CreatePromise();
 
     void ResolvePromise(object promise);

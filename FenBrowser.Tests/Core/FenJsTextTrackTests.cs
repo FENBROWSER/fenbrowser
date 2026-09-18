@@ -205,7 +205,31 @@ public sealed class FenJsTextTrackTests
             """);
 
         var events = await WaitForAsync(engine, "globalThis.__events.length >= 3 ? globalThis.__events.join(',') : ''");
-        Assert.Equal("load:2,reset:1:0,load:1", events);
+        // The reload starts at a stable state, so right after the src change the element is back at NONE.
+        Assert.Equal("load:2,reset:0:0,load:1", events);
+    }
+
+    [Fact]
+    public async Task SettingSrcAfterTheModeStillLoads()
+    {
+        var engine = await CreateEngineAsync("<html><body></body></html>");
+
+        // The mode change queues the load at a stable state; the src change that follows
+        // must not cancel it (it only invalidates fetches already in flight).
+        engine.Evaluate($$"""
+            globalThis.__events = [];
+            var video = document.createElement('video');
+            var track = document.createElement('track');
+            video.appendChild(track);
+            document.body.appendChild(video);
+            track.track.mode = 'showing';
+            track.src = 'data:text/vtt,' + encodeURIComponent({{JsString(Vtt)}});
+            track.onload = track.onerror = function (e) { globalThis.__events.push(e.type + ':' + track.readyState + ':' + track.track.cues.length); };
+            globalThis.__sync = String(track.readyState);
+            """);
+
+        Assert.Equal("0", engine.Evaluate("globalThis.__sync")?.ToString());
+        Assert.Equal("load:2:2", await WaitForAsync(engine, "globalThis.__events.join(',')"));
     }
 
     [Fact]

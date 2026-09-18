@@ -55,11 +55,14 @@ public sealed partial class FenJsBrowserScriptEngine
             function fire(target, type, init) {
                 if (!target) return;
                 var ev = init && ('track' in init) ? new g.TrackEvent(type, init) : new g.Event(type, init || {});
+                var previousEvent = g.event;
+                if (!isNode(target)) { try { g.event = ev; } catch (e) {} }
                 try { target.dispatchEvent(ev); } catch (e) {}
                 if (!isNode(target)) {
                     var handler = target['on' + type];
                     if (typeof handler === 'function') { try { handler.call(target, ev); } catch (e) {} }
                     else if (handler && typeof handler.handleEvent === 'function') { try { handler.handleEvent(ev); } catch (e) {} }
+                    try { g.event = previousEvent; } catch (e) {}
                 }
             }
             function queueTask(element, fn) {
@@ -127,7 +130,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 function () { return this._endTime; },
                 function (v) {
                     var n = toUnrestrictedDouble(v);
-                    if (n !== n) throw new TypeError('The provided double value is non-finite.');
+                    if (n !== n || n === -Infinity) throw new TypeError('The provided double value is non-finite.');
                     this._endTime = n;
                     if (this._track) this._track._cueTimingChanged(this);
                 });
@@ -143,7 +146,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 g.EventTarget.call(this);
                 this._startTime = toDouble(startTime, 'startTime');
                 var end = toUnrestrictedDouble(endTime);
-                if (end !== end) throw new TypeError("Failed to construct 'VTTCue': The provided double value is non-finite.");
+                if (end !== end || end === -Infinity) throw new TypeError("Failed to construct 'VTTCue': The provided double value is non-finite.");
                 this._endTime = end;
                 this._text = toDomString(text);
                 this._id = '';
@@ -350,7 +353,7 @@ public sealed partial class FenJsBrowserScriptEngine
             accessor(TextTrack.prototype, 'kind', function () { return this._kind; });
             accessor(TextTrack.prototype, 'label', function () { return this._label; });
             accessor(TextTrack.prototype, 'language', function () { return this._language; });
-            accessor(TextTrack.prototype, 'id', function () { return this._id; });
+            accessor(TextTrack.prototype, 'id', function () { return this._trackElement ? (this._trackElement.getAttribute('id') || '') : this._id; });
             accessor(TextTrack.prototype, 'inBandMetadataTrackDispatchType', function () { return ''; });
             accessor(TextTrack.prototype, 'mode',
                 function () { return this._mode; },
@@ -431,6 +434,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 for (var i = 0; i < cues.length; i++) if (cues[i]._active) active.push(cues[i]);
                 this._activeList._cues = active;
                 syncIndexed(this._activeList, active);
+                if (this._mode === 'showing' && this._media) renderingChanged(this._media);
             };
 
             function setTrackMode(track, mode, fromScript) {
@@ -443,6 +447,7 @@ public sealed partial class FenJsBrowserScriptEngine
                     var cues = track._cueList._cues;
                     for (var i = 0; i < cues.length; i++) cues[i]._active = false;
                     track._syncActive();
+                    pendingChanged(media);
                 }
                 if (fromScript) track._modeSetByScript = true;
                 if (media) {
@@ -457,6 +462,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
                 if (was === 'disabled' && track._trackElement) startTrackElementLoad(track._trackElement);
                 if (mode !== 'disabled') cueTimelineChanged(media);
+                if (media && (was === 'showing' || mode === 'showing')) renderingChanged(media);
             }
 
             // ---- TextTrackList (HTML §4.8.12.4) --------------------------------------------
@@ -668,6 +674,7 @@ public sealed partial class FenJsBrowserScriptEngine
                         var o = groups.other[j];
                         if (o._trackElement.hasAttribute('default') && o._mode === 'disabled') setTrackMode(o, 'hidden', false);
                     }
+                    pendingChanged(model.element);
                 });
             }
             function pickDefault(candidates) {
@@ -687,22 +694,37 @@ public sealed partial class FenJsBrowserScriptEngine
                 var media = parentMedia(trackElement);
                 if (!media || state.track._media !== media) return;
                 if (state.track._mode === 'disabled') return;
-                if (state.readyState !== 0) return;
-                var src = trackElement.getAttribute('src');
-                var url = null;
-                if (src !== null && src !== '') {
-                    try { url = new g.URL(src, g.document.baseURI).href; } catch (e) { url = null; }
-                }
-                state.readyState = 1; // LOADING
-                var generation = ++state.generation;
-                var crossOrigin = media.getAttribute('crossorigin');
-                if (crossOrigin !== null) crossOrigin = crossOrigin.toLowerCase() === 'use-credentials' ? 'use-credentials' : 'anonymous';
-                if (url === null) {
-                    queueTask(media, function () { finishTrackLoad(state, generation, false, ''); });
-                    return;
-                }
-                g.__fenTrackFetch(url, crossOrigin, function (ok, text) {
-                    finishTrackLoad(state, generation, ok, text);
+                if (state.readyState !== 0 || state.loadPending) return;
+                // §4.8.12.11.3 steps 1-3: await a stable state, then, if the track is still
+                // enabled and attached, start the fetch and move to LOADING.
+                state.loadPending = true;
+                queueTask(media, function () {
+                    state.loadPending = false;
+                    if (state.readyState !== 0) return;
+                    var m = parentMedia(trackElement);
+                    if (!m || state.track._media !== m || state.track._mode === 'disabled') return;
+                    var src = trackElement.getAttribute('src');
+                    var url = null;
+                    if (src !== null && src !== '') {
+                        try { url = new g.URL(src, g.document.baseURI).href; } catch (e) { url = null; }
+                    }
+                    state.readyState = 1; // LOADING
+                    var loadGeneration = ++state.generation;
+                    var crossOrigin = m.getAttribute('crossorigin');
+                    if (crossOrigin !== null) crossOrigin = crossOrigin.toLowerCase() === 'use-credentials' ? 'use-credentials' : 'anonymous';
+                    if (url === null) {
+                        queueTask(m, function () { finishTrackLoad(state, loadGeneration, false, ''); });
+                        return;
+                    }
+                    if (/^blob:/i.test(url)) {
+                        // Fetch "blob" scheme: the entry's bytes, or a network error.
+                        var blobText = typeof g.__fenReadBlobUrlText === 'function' ? g.__fenReadBlobUrlText(url) : null;
+                        queueTask(m, function () { finishTrackLoad(state, loadGeneration, blobText !== null, blobText || ''); });
+                        return;
+                    }
+                    g.__fenTrackFetch(url, crossOrigin, function (ok, text) {
+                        finishTrackLoad(state, loadGeneration, ok, text);
+                    });
                 });
             }
             function finishTrackLoad(state, generation, ok, text) {
@@ -713,6 +735,7 @@ public sealed partial class FenJsBrowserScriptEngine
                     state.readyState = 3; // ERROR
                     state.track._readiness = 'failed to load';
                     fire(state.element, 'error');
+                    pendingChanged(state.track._media);
                     return;
                 }
                 var track = state.track;
@@ -746,6 +769,10 @@ public sealed partial class FenJsBrowserScriptEngine
                 track._readiness = 'loaded';
                 fire(state.element, 'load');
                 cueTimelineChanged(track._media);
+                pendingChanged(track._media);
+            }
+            function pendingChanged(media) {
+                if (media && typeof g.__fenPendingTextTracksChanged === 'function') g.__fenPendingTextTracksChanged(media);
             }
 
             // ---- time marches on (HTML §4.8.12.8) ----------------------------------------------
@@ -773,6 +800,9 @@ public sealed partial class FenJsBrowserScriptEngine
                 var model = modelFor(media);
                 var s = mediaState(media);
                 if (!s) return;
+                // Before playback has ever started (the show poster flag is set) no cue is
+                // active and nothing fires, as the shipping engines do.
+                if (s.showPoster) { model.lastTime = undefined; return; }
                 var now = s.currentTime;
                 var lastTime = monotonic ? model.lastTime : undefined;
                 if (fromTimelineChange) lastTime = model.lastTime;
@@ -818,17 +848,19 @@ public sealed partial class FenJsBrowserScriptEngine
                 // 8–13. Affected tracks and the event list, sorted by time then cue order.
                 var events = [];
                 function noteTrack(track) { if (affected.indexOf(track) < 0) affected.push(track); }
+                // An exit is associated with the later of the cue's end and start times, so a
+                // negative-duration cue still exits after it enters.
                 for (i = 0; i < missed.length; i++) {
                     cue = missed[i];
                     noteTrack(cue._track);
                     events.push({ time: cue._startTime, cue: cue, type: 'enter' });
-                    events.push({ time: cue._endTime, cue: cue, type: 'exit' });
+                    events.push({ time: Math.max(cue._startTime, cue._endTime), cue: cue, type: 'exit' });
                 }
                 for (i = 0; i < other.length; i++) {
                     cue = other[i];
                     if (cue._active && missed.indexOf(cue) < 0) {
                         noteTrack(cue._track);
-                        events.push({ time: cue._endTime, cue: cue, type: 'exit' });
+                        events.push({ time: Math.max(cue._startTime, cue._endTime), cue: cue, type: 'exit' });
                     }
                 }
                 for (i = 0; i < current.length; i++) {
@@ -887,6 +919,27 @@ public sealed partial class FenJsBrowserScriptEngine
             g.__fenTrackElementRemoved = function (media, trackElement) { trackElementRemoved(media, trackElement); };
             g.__fenTrackElementAttributeChanged = function (trackElement, name) { trackElementAttributeChanged(trackElement, name); };
             g.__fenTextTracksTimeMarchesOn = function (media, monotonic) { timeMarchesOn(media, !!monotonic, false); };
+            // §4.8.12.11.3: a track element's enabled track that is still loading blocks the
+            // media element's readiness past HAVE_CURRENT_DATA.
+            g.__fenTextTracksPending = function (media) {
+                var model = media[MODEL_KEY];
+                if (!model) return false;
+                var tracks = model.list._tracks;
+                for (var t = 0; t < tracks.length; t++) {
+                    var track = tracks[t];
+                    if (!track._trackElement) continue;
+                    var state = trackStateFor(track._trackElement, false);
+                    if (!state) continue;
+                    // A default track that automatic selection has not promoted yet counts
+                    // too: it is about to load.
+                    if (track._mode === 'disabled') {
+                        if (model._selectionQueued && state.readyState === 0 && track._trackElement.hasAttribute('default')) return true;
+                        continue;
+                    }
+                    if (state.readyState === 1 || state.loadPending) return true;
+                }
+                return false;
+            };
             g.__fenTextTracksReset = function (media) {
                 var model = media[MODEL_KEY];
                 if (!model) return;

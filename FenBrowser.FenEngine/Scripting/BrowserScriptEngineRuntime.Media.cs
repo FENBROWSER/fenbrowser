@@ -588,6 +588,8 @@ public sealed partial class FenJsBrowserScriptEngine
 
         public void TextTracksReset() => _realm.OnTextTracksReset(_element);
 
+        public bool HasPendingTextTracks => _realm.HasPendingTextTracks(_element);
+
         // -- attributes and tree --
 
         public bool IsVideo => IsVideoElement(_element);

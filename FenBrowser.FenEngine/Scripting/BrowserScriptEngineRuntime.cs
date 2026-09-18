@@ -12571,6 +12571,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 URL.revokeObjectURL = function (url) {
                     blobUrlStore.delete(String(url == null ? '' : url));
                 };
+                // The text of a blob: URL's entry for engine-side loaders that read from
+                // this realm's blob URL store (a track element's src); null when unknown.
+                globalThis.__fenReadBlobUrlText = function (url) {
+                    var entry = resolveBlobUrl(url);
+                    if (!entry || !entry._parts) return null;
+                    return __fenTextDecode(blobBytes(entry), false);
+                };
 
                 var _trustedPolicies = Object.create(null);
                 var _trustedPolicyNames = [];
