@@ -3110,7 +3110,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         break;
                     }
                     var key = ToPropertyKey(keyValueDel);
-                    var deletedKey = obj.DeleteProperty(key);
+                    // A proxy runs its deleteProperty trap for a computed string key too
+                    // (delete proxy[i]); DeleteProperty on the ProxyObject itself is a dispatch error.
+                    var deletedKey = obj is ProxyObject computedDeleteProxy
+                        ? ProxyDelete(computedDeleteProxy, JsValue.FromString(key))
+                        : obj.DeleteProperty(key);
                     if (!deletedKey && function.IsStrictMode)
                     {
                         ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{key}'."));
@@ -24207,7 +24211,9 @@ fallbackArraySpecies:
         }
         var obj = ResolveObject(receiver);
         var key = ToPropertyKey(frame.Registers[keyReg]);
-        var deleted = obj.DeleteProperty(key);
+        var deleted = obj is ProxyObject computedDeleteProxy
+            ? ProxyDelete(computedDeleteProxy, JsValue.FromString(key))
+            : obj.DeleteProperty(key);
         if (!deleted && frame.Function.IsStrictMode)
         {
             ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{key}'."));
@@ -25673,7 +25679,9 @@ fallbackArraySpecies:
         }
 
         var propertyKey = ToPropertyKey(key);
-        var deletedKey = obj.DeleteProperty(propertyKey);
+        var deletedKey = obj is ProxyObject computedDeleteProxy
+            ? ProxyDelete(computedDeleteProxy, JsValue.FromString(propertyKey))
+            : obj.DeleteProperty(propertyKey);
         if (!deletedKey && strict)
         {
             throw new JsThrownException(CreateTypeError($"Cannot delete property '{propertyKey}'."));
