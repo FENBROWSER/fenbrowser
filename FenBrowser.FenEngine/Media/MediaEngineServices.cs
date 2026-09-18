@@ -55,6 +55,8 @@ namespace FenBrowser.FenEngine.Media
             MediaFormats.RegisterBuiltIn(demuxers, decoders);
             // libavcodec (ADR-0001) registers what it can; without it the managed PCM path remains.
             FenBrowser.Media.Codecs.Ffmpeg.FfmpegDecoders.TryRegister(decoders, Log);
+            // The OS decoders for the patent-encumbered codecs (ADR-0002).
+            FenBrowser.Media.Codecs.MediaFoundation.MediaFoundationDecoders.TryRegister(decoders, Log);
             ApplyCodecKillSwitch(decoders);
             return new Registries(demuxers, decoders, new MediaTypeSupport(demuxers, decoders));
         }

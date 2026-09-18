@@ -5,6 +5,7 @@ Every file is encoded from ffmpeg's synthetic sources (sine tones, test patterns
 so the fixtures carry no third-party content. Run from the repo root:
 
     python scripts/media/gen_fixtures.py            # regenerate everything
+    python scripts/media/gen_fixtures.py --references   # regenerate only the decoded references
     python scripts/media/gen_fixtures.py --check    # verify files match the manifest
 
 The manifest (test_assets/media/manifest.json) records, per file, the facts ffprobe
@@ -75,6 +76,15 @@ FIXTURES: list[tuple[str, list[str], str | None, str]] = [
 ]
 
 
+# Decoded references: ffmpeg's own decode of a fixture, for decoders that are not bit-exact
+# with libavcodec (the OS H.264 decoder differs by rounding; tests compare by PSNR).
+# name, source fixture, ffmpeg output arguments, note.
+REFERENCES: list[tuple[str, str, list[str], str]] = [
+    ("pattern_h264_ref.nv12", "pattern_h264_aac.mp4", ["-map", "0:v:0", "-f", "rawvideo", "-pix_fmt", "nv12"],
+     "ffmpeg's decode of the H.264 track, 10 NV12 pictures of 64x48"),
+]
+
+
 def run(cmd: list[str]) -> str:
     result = subprocess.run(cmd, check=True, capture_output=True, text=True)
     return result.stdout
@@ -138,7 +148,25 @@ def generate() -> int:
         "generator": "scripts/media/gen_fixtures.py",
         "ffmpeg": ffmpeg_version(),
         "fixtures": entries,
+        "references": references(),
     }
+    MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return 0
+
+
+def references() -> list[dict]:
+    entries = []
+    for name, source, args, note in REFERENCES:
+        path = OUT_DIR / name
+        run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(OUT_DIR / source), *args, str(path)])
+        entries.append({"file": name, "source": source, "bytes": path.stat().st_size, "sha256": sha256(path), "note": note})
+        print(f"{name:32} {path.stat().st_size:7} bytes  from {source}")
+    return entries
+
+
+def regenerate_references() -> int:
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest["references"] = references()
     MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
     return 0
 
@@ -146,7 +174,7 @@ def generate() -> int:
 def check() -> int:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     bad = 0
-    for entry in manifest["fixtures"]:
+    for entry in manifest["fixtures"] + manifest.get("references", []):
         path = OUT_DIR / entry["file"]
         if not path.exists():
             print(f"missing: {entry['file']}")
@@ -161,8 +189,13 @@ def check() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="verify files against the manifest instead of regenerating")
+    parser.add_argument("--references", action="store_true", help="regenerate only the decoded references")
     args = parser.parse_args()
-    return check() if args.check else generate()
+    if args.check:
+        return check()
+    if args.references:
+        return regenerate_references()
+    return generate()
 
 
 if __name__ == "__main__":

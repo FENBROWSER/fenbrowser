@@ -28,7 +28,7 @@ public class MediaFixtureSniffTests
     [Fact]
     public void Manifest_CoversEveryFixtureFile()
     {
-        var listed = MediaFixtures.All.Select(f => f.File).ToHashSet(StringComparer.Ordinal);
+        var listed = MediaFixtures.All.Select(f => f.File).Concat(MediaFixtures.References.Select(r => r.File)).ToHashSet(StringComparer.Ordinal);
         var onDisk = Directory.EnumerateFiles(MediaFixtures.Directory)
             .Select(Path.GetFileName)
             .Where(n => n is not "manifest.json" and not ".gitattributes")

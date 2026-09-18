@@ -341,5 +341,14 @@
         }
       ]
     }
+  ],
+  "references": [
+    {
+      "file": "pattern_h264_ref.nv12",
+      "source": "pattern_h264_aac.mp4",
+      "bytes": 46080,
+      "sha256": "4210aa56c0204703110bb7e8732e0f54bda6f63638ea62074c389fadf6194769",
+      "note": "ffmpeg's decode of the H.264 track, 10 NV12 pictures of 64x48"
+    }
   ]
 }

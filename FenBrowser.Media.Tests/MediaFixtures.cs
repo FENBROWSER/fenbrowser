@@ -16,6 +16,8 @@ public static class MediaFixtures
 
     public static IReadOnlyList<Fixture> All => s_loaded.Value.Manifest.Fixtures;
 
+    public static IReadOnlyList<Reference> References => s_loaded.Value.Manifest.References ?? [];
+
     public static Fixture Get(string file) => All.Single(f => f.File == file);
 
     public static byte[] Read(string file) => File.ReadAllBytes(Path.Combine(Directory, file));
@@ -49,7 +51,16 @@ public static class MediaFixtures
     public static string Sha256(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
 
     public sealed record Manifest(
-        [property: JsonPropertyName("fixtures")] List<Fixture> Fixtures);
+        [property: JsonPropertyName("fixtures")] List<Fixture> Fixtures,
+        [property: JsonPropertyName("references")] List<Reference>? References);
+
+    /// <summary>ffmpeg's decode of a fixture, for decoders that are not bit-exact with libavcodec.</summary>
+    public sealed record Reference(
+        [property: JsonPropertyName("file")] string File,
+        [property: JsonPropertyName("source")] string Source,
+        [property: JsonPropertyName("bytes")] long Bytes,
+        [property: JsonPropertyName("sha256")] string Sha256,
+        [property: JsonPropertyName("note")] string Note);
 
     public sealed record Fixture(
         [property: JsonPropertyName("file")] string File,
