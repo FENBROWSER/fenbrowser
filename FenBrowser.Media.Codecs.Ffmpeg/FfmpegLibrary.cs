@@ -249,5 +249,8 @@ public static class FfmpegLibrary
 
         [DllImport(AvutilName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void av_log_set_level(int level);
+
+        [DllImport(AvutilName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr av_get_pix_fmt_name(int pixelFormat);
     }
 }

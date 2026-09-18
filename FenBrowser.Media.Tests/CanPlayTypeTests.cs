@@ -65,7 +65,7 @@ public class CanPlayTypeTests
     [InlineData("video/webm; codecs=\"vp09.00.10.08, opus\"", "probably")]
     [InlineData("video/webm; codecs=\"av01.0.04M.08\"", "probably")]
     [InlineData("VIDEO/WEBM; CODECS=VP8", "probably")]
-    [InlineData("video/webm; codecs=vp9", "maybe")]                       // legacy spelling has no profile
+    [InlineData("video/webm; codecs=vp9", "probably")]                    // legacy spelling: every profile decodes
     [InlineData("video/webm; codecs=\"vp09.02.10.12\"", "")]              // decoder refuses this profile
     [InlineData("video/webm; codecs=\"avc1.42E01E\"", "")]                // WebM cannot carry H.264
     [InlineData("video/webm; codecs=\"vp8, theora\"", "")]                // one unknown codec rules it out

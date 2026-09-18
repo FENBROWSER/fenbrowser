@@ -46,9 +46,10 @@ public sealed record CodecString(string Raw, MediaCodec Codec, MediaTrackKind Ki
             case "vp8" when parts.Length == 1 || (parts.Length == 2 && parts[1] == "0"):
                 return new(raw, MediaCodec.Vp8, MediaTrackKind.Video, IsAmbiguous: false);
 
-            // Legacy VP9 spellings carry no profile.
+            // Legacy VP9 spellings carry no profile; the decoder handles every profile, so
+            // the answer is "probably", as WPT canPlayType.html and the other engines expect.
             case "vp9" when parts.Length == 1 || (parts.Length == 2 && parts[1] == "0"):
-                return new(raw, MediaCodec.Vp9, MediaTrackKind.Video, IsAmbiguous: true);
+                return new(raw, MediaCodec.Vp9, MediaTrackKind.Video, IsAmbiguous: false);
 
             // VP9 codec ISO media file format binding, "Codecs Parameter String".
             case "vp09" when IsValidVp09(parts):

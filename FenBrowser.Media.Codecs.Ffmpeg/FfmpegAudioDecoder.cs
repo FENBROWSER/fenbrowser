@@ -9,8 +9,8 @@ using static FenBrowser.Media.Codecs.Ffmpeg.FfmpegLibrary;
 namespace FenBrowser.Media.Codecs.Ffmpeg;
 
 /// <summary>
-/// Registers one libavcodec-backed audio decoder per codec the build supports
-/// (Opus, Vorbis, FLAC, MP3), when the library loads.
+/// Registers one libavcodec-backed decoder per codec the build supports (Opus, Vorbis,
+/// FLAC, MP3; VP8, VP9, AV1), when the library loads.
 /// </summary>
 public static class FfmpegDecoders
 {
@@ -21,6 +21,18 @@ public static class FfmpegDecoders
         (MediaCodec.Vorbis, "vorbis"),
         (MediaCodec.Flac, "flac"),
         (MediaCodec.Mp3, "mp3float"),
+    ];
+
+    /// <summary>
+    /// Video codecs with the decoder names tried in order: libavcodec's own VP8/VP9, and
+    /// for AV1 dav1d, then libaom (the native "av1" decoder needs hardware acceleration).
+    /// H.264, AAC and HEVC are deliberately absent (ADR-0002).
+    /// </summary>
+    private static readonly (MediaCodec Codec, string[] DecoderNames)[] s_video =
+    [
+        (MediaCodec.Vp8, ["vp8", "libvpx"]),
+        (MediaCodec.Vp9, ["vp9", "libvpx-vp9"]),
+        (MediaCodec.Av1, ["libdav1d", "libaom-av1"]),
     ];
 
     /// <summary>
@@ -55,10 +67,27 @@ public static class FfmpegDecoders
             registered++;
         }
 
+        int video = 0;
+        foreach (var (codec, names) in s_video)
+        {
+            string? found = names.FirstOrDefault(n => Native.avcodec_find_decoder_by_name(n) != IntPtr.Zero);
+            if (found is null)
+            {
+                log.Emit(PlayerId.None, MediaEventKind.DecoderAttempt, MediaLogLevel.Warn,
+                    $"libavcodec has none of '{string.Join("', '", names)}' in this build.",
+                    ("decoder", "libavcodec-" + names[0]), ("result", "missing"));
+                continue;
+            }
+
+            decoders.Register(new FfmpegVideoDecoderFactory(codec, found));
+            video++;
+        }
+
         log.Emit(PlayerId.None, MediaEventKind.DecoderChosen, MediaLogLevel.Info,
-            $"libavcodec ready: {registered} audio decoders ({FfmpegLibrary.Location}).",
-            ("decoder", "libavcodec"), ("count", registered.ToString(CultureInfo.InvariantCulture)));
-        return registered > 0;
+            $"libavcodec ready: {registered} audio and {video} video decoders ({FfmpegLibrary.Location}).",
+            ("decoder", "libavcodec"), ("audio", registered.ToString(CultureInfo.InvariantCulture)),
+            ("video", video.ToString(CultureInfo.InvariantCulture)));
+        return registered + video > 0;
     }
 }
 

@@ -174,6 +174,7 @@ public class FfmpegAudioDecoderTests
         Assert.Equal(Types.CanPlayTypeResult.Probably, support.CanPlayType("audio/mpeg"));
         Assert.Equal(Types.CanPlayTypeResult.Maybe, support.CanPlayType("audio/ogg"));
         Assert.Equal(Types.CanPlayTypeResult.No, support.CanPlayType("audio/aac; codecs=mp4a.40.2"));
-        Assert.Equal(Types.CanPlayTypeResult.No, support.CanPlayType("video/webm; codecs=vp9"));
+        Assert.Equal(Types.CanPlayTypeResult.Probably, support.CanPlayType("video/webm; codecs=vp9"));
+        Assert.Equal(Types.CanPlayTypeResult.No, support.CanPlayType("video/webm; codecs=\"avc1.42E01E\""));
     }
 }
