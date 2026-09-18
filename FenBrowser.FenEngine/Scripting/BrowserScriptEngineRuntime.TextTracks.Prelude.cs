@@ -650,8 +650,19 @@ public sealed partial class FenJsBrowserScriptEngine
                     state.track._clearCues();
                     state.readyState = 0;
                     state.loadedUrl = null;
+                    state.reloadRequested = true;
                     var m = parentMedia(trackElement);
-                    if (wasLoading) queueTask(m || trackElement, function () { if (state.readyState === 0 || state.readyState === 1) fire(trackElement, 'error'); });
+                    if (wasLoading) {
+                        // The abandoned load fails (readyState ERROR, error event); the reload
+                        // queued after it starts from that state.
+                        queueTask(m || trackElement, function () {
+                            if (state.readyState !== 0) return;
+                            state.readyState = 3;
+                            state.track._readiness = 'failed to load';
+                            fire(trackElement, 'error');
+                            pendingChanged(state.track._media);
+                        });
+                    }
                     if (m) startTrackElementLoad(trackElement);
                 }
             }
@@ -701,13 +712,16 @@ public sealed partial class FenJsBrowserScriptEngine
                 var media = parentMedia(trackElement);
                 if (!media || state.track._media !== media) return;
                 if (state.track._mode === 'disabled') return;
-                if (state.readyState !== 0 || state.loadPending) return;
+                if (state.loadPending) return;
+                if (state.readyState !== 0 && !(state.readyState === 3 && state.reloadRequested)) return;
                 // §4.8.12.11.3 steps 1-3: await a stable state, then, if the track is still
                 // enabled and attached, start the fetch and move to LOADING.
                 state.loadPending = true;
                 queueTask(media, function () {
                     state.loadPending = false;
-                    if (state.readyState !== 0) return;
+                    var reload = state.reloadRequested;
+                    state.reloadRequested = false;
+                    if (state.readyState !== 0 && !(state.readyState === 3 && reload)) return;
                     var m = parentMedia(trackElement);
                     if (!m || state.track._media !== m || state.track._mode === 'disabled') return;
                     var src = trackElement.getAttribute('src');
