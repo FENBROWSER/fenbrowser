@@ -82,23 +82,23 @@ public class PixelConverterTests
         presenter.FrameAvailable += () => notified++;
         Assert.Null(presenter.Acquire());
 
-        using (var frame = Solid(VideoPixelFormat.I420, 81, 90, 240))
-            presenter.Publish(frame, MediaLimits.Default);
+        presenter.Publish(Solid(VideoPixelFormat.I420, 81, 90, 240));
         Assert.Equal(1, notified);
         Assert.Equal(1, presenter.Sequence);
 
         var picture = presenter.Acquire();
         Assert.NotNull(picture);
         Assert.Equal(4, picture.Width);
-        Assert.Equal(16, picture.Stride);
-        Assert.InRange(picture.Pixels[2], 253, 255);
+        var bgra = new byte[16 * 4];
+        picture.WriteBgra(bgra, 16);
+        Assert.InRange(bgra[2], 253, 255);
 
-        using (var frame = Solid(VideoPixelFormat.I420, 16, 128, 128))
-            presenter.Publish(frame, MediaLimits.Default);
+        presenter.Publish(Solid(VideoPixelFormat.I420, 16, 128, 128));
         // The painter's reference keeps the first picture alive after it was replaced.
-        Assert.InRange(picture.Pixels[2], 253, 255);
+        picture.WriteBgra(bgra, 16);
+        Assert.InRange(bgra[2], 253, 255);
         picture.Release();
-        Assert.Throws<ObjectDisposedException>(() => picture.Pixels.Length);
+        Assert.Throws<ObjectDisposedException>(() => picture.WriteBgra(bgra, 16));
 
         var second = presenter.Acquire()!;
         Assert.Equal(2, second.Sequence);

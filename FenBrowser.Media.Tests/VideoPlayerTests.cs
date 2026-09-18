@@ -84,7 +84,9 @@ public class VideoPlayerTests
             Assert.Equal(64, first.Width);
             Assert.Equal(48, first.Height);
             Assert.Equal(MediaTime.Zero, first.Timestamp);
-            Assert.Equal(64 * 4 * 48, first.Pixels.Length);
+            var bgra = new byte[64 * 4 * 48];
+            first.WriteBgra(bgra, 64 * 4);
+            Assert.Contains(bgra, b => b != 0);
             first.Release();
             Assert.Equal(1, Volatile.Read(ref notified));
 

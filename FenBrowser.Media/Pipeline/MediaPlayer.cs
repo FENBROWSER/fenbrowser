@@ -26,7 +26,7 @@ public sealed record MediaPlayerServices(
     public TimeSpan PositionInterval { get; init; } = TimeSpan.FromMilliseconds(40);
 
     /// <summary>How often the video renderer picks the picture for the clock while playing.</summary>
-    public TimeSpan FrameInterval { get; init; } = TimeSpan.FromMilliseconds(8);
+    public TimeSpan FrameInterval { get; init; } = TimeSpan.FromMilliseconds(4);
 
     /// <summary>
     /// Where demuxing and decoding run: null means in this process from the registries;
@@ -446,25 +446,27 @@ public sealed class MediaPlayer : IMediaResource
             return;
 
         VideoFrame? frame;
-        bool changed;
         if (_outputRunning)
         {
-            changed = video.Select(_clock!.CurrentTime, out frame);
+            // §2.4: the picture for the time the next tick will show, not for now, so a
+            // picture due between two ticks is presented early rather than skipped late.
+            var horizon = MediaTime.FromMicroseconds((long)(_services.FrameInterval.TotalMilliseconds * 1000 * _rate));
+            frame = video.Select(_clock!.CurrentTime + horizon);
         }
         else if (_presentFirstFrame)
         {
-            changed = video.SelectFirst(out frame);
+            frame = video.SelectFirst();
         }
         else
         {
             return;
         }
 
-        if (!changed || frame is null)
+        if (frame is null)
             return;
 
         _presentFirstFrame = false;
-        Presenter.Publish(frame, _context.Limits);
+        Presenter.Publish(frame);
     }
 
     private void UpdateOutputState()
@@ -474,12 +476,16 @@ public sealed class MediaPlayer : IMediaResource
         {
             _output?.Start();
             _monotonic?.Start();
+            if (_video is not null)
+                PresentationTimer.Acquire();
             _outputRunning = true;
         }
         else if (!wantRunning && _outputRunning)
         {
             _output?.Stop();
             _monotonic?.Pause();
+            if (_video is not null)
+                PresentationTimer.Release();
             _outputRunning = false;
         }
     }
@@ -543,7 +549,7 @@ public sealed class MediaPlayer : IMediaResource
             return MediaReadyState.HaveEnoughData;
         if (video.QueuedCount >= 2)
             return MediaReadyState.HaveFutureData;
-        if (video.QueuedCount > 0 || video.Current is not null)
+        if (video.QueuedCount > 0 || video.HasCurrent)
             return MediaReadyState.HaveCurrentData;
         return MediaReadyState.HaveMetadata;
     }
@@ -690,6 +696,9 @@ public sealed class MediaPlayer : IMediaResource
                 await _output.DisposeAsync().ConfigureAwait(false);
             }
 
+            if (_outputRunning && _video is not null)
+                PresentationTimer.Release();
+            _outputRunning = false;
             _renderer?.Dispose();
             _heldVideo?.Dispose();
             _video?.Dispose();

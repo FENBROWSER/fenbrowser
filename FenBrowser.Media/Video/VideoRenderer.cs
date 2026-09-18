@@ -9,15 +9,15 @@ namespace FenBrowser.Media.Video;
 /// without ever being shown are dropped and counted for <c>getVideoPlaybackQuality()</c>.
 /// </summary>
 /// <remarks>
-/// Only the media task calls in; the counters are readable from any thread. The frame
-/// returned by <see cref="Select"/> stays owned by the renderer until the next selection
-/// replaces it, so a caller must copy or convert it before returning to the task loop.
+/// Only the media task calls in; the counters are readable from any thread. A picture
+/// returned by <see cref="Select"/> or <see cref="SelectFirst"/> belongs to the caller,
+/// who hands it to the presenter; the renderer keeps only its timing.
 /// </remarks>
 public sealed class VideoRenderer : IDisposable
 {
     private readonly Queue<VideoFrame> _queue = new();
     private readonly int _capacity;
-    private VideoFrame? _current;
+    private (MediaTime Timestamp, MediaTime End)? _current;
     private bool _endOfStream;
     private long _presented;
     private long _dropped;
@@ -35,8 +35,8 @@ public sealed class VideoRenderer : IDisposable
 
     public bool IsFull => _queue.Count >= _capacity;
 
-    /// <summary>The picture the clock last selected, until another replaces it.</summary>
-    public VideoFrame? Current => _current;
+    /// <summary>Whether a picture has been selected since the last flush.</summary>
+    public bool HasCurrent => _current is not null;
 
     /// <summary>Pictures handed to the compositor (<c>totalVideoFrames - droppedVideoFrames</c>).</summary>
     public long PresentedFrames => Interlocked.Read(ref _presented);
@@ -55,8 +55,9 @@ public sealed class VideoRenderer : IDisposable
             VideoFrame? last = null;
             foreach (var frame in _queue)
                 last = frame;
-            last ??= _current;
-            return last is null ? null : last.Timestamp + last.Duration;
+            if (last is not null)
+                return last.Timestamp + last.Duration;
+            return _current?.End;
         }
     }
 
@@ -71,7 +72,7 @@ public sealed class VideoRenderer : IDisposable
 
     /// <summary>No more pictures are queued or coming, and the clock is past the last one.</summary>
     public bool IsDrained(MediaTime now) =>
-        _endOfStream && _queue.Count == 0 && (_current is null || now >= _current.Timestamp + _current.Duration);
+        _endOfStream && _queue.Count == 0 && (_current is null || now >= _current.Value.End);
 
     public void Enqueue(VideoFrame frame)
     {
@@ -86,11 +87,11 @@ public sealed class VideoRenderer : IDisposable
 
     /// <summary>
     /// The picture to show at <paramref name="now"/>: the last queued one whose start is at
-    /// or before <paramref name="now"/>. Returns true when that differs from the current
-    /// picture. Pictures skipped over on the way are dropped; the current one stays when
-    /// nothing newer is due yet, or when the queue is empty.
+    /// or before <paramref name="now"/>, or null when nothing newer than the current picture
+    /// is due yet. Pictures skipped over on the way are dropped. The returned picture is
+    /// the caller's to present and release.
     /// </summary>
-    public bool Select(MediaTime now, out VideoFrame? frame)
+    public VideoFrame? Select(MediaTime now)
     {
         VideoFrame? chosen = null;
         while (_queue.Count > 0 && _queue.Peek().Timestamp <= now)
@@ -105,43 +106,33 @@ public sealed class VideoRenderer : IDisposable
         }
 
         if (chosen is null)
-        {
-            frame = _current;
-            return false;
-        }
+            return null;
 
-        _current?.Dispose();
-        _current = chosen;
+        _current = (chosen.Timestamp, chosen.Timestamp + chosen.Duration);
         Interlocked.Increment(ref _presented);
-        frame = chosen;
-        return true;
+        return chosen;
     }
 
     /// <summary>
-    /// Shows the first queued picture regardless of the clock (a paused element after a
-    /// seek, or the first frame standing in for a missing poster).
+    /// The first queued picture regardless of the clock (a paused element after a seek, or
+    /// the first frame standing in for a missing poster), or null when none is queued.
     /// </summary>
-    public bool SelectFirst(out VideoFrame? frame)
+    public VideoFrame? SelectFirst()
     {
         if (_queue.Count == 0)
-        {
-            frame = _current;
-            return false;
-        }
+            return null;
 
-        _current?.Dispose();
-        _current = _queue.Dequeue();
+        var chosen = _queue.Dequeue();
+        _current = (chosen.Timestamp, chosen.Timestamp + chosen.Duration);
         Interlocked.Increment(ref _presented);
-        frame = _current;
-        return true;
+        return chosen;
     }
 
-    /// <summary>Drops every queued picture and the current one (a seek).</summary>
+    /// <summary>Drops every queued picture and forgets the current one (a seek).</summary>
     public void Flush()
     {
         while (_queue.TryDequeue(out var frame))
             frame.Dispose();
-        _current?.Dispose();
         _current = null;
         _endOfStream = false;
     }

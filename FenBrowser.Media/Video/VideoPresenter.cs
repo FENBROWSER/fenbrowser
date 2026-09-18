@@ -3,31 +3,28 @@ using FenBrowser.Media.Buffers;
 namespace FenBrowser.Media.Video;
 
 /// <summary>
-/// One picture ready to composite: packed 8-bit B, G, R, A rows in a pooled buffer. The
-/// presenter and every painter using it share it by reference count; the buffer goes
-/// back to the pool when the last holder releases it.
+/// One picture ready to composite, still in the decoder's planes. The presenter and every
+/// painter using it share it by reference count; the frame goes back to the pool when the
+/// last holder releases it. A painter converts it to BGRA with <see cref="WriteBgra"/>
+/// once per new picture, on its own thread, so the media task only ever swaps pointers.
 /// </summary>
 public sealed class PresentedPicture
 {
-    private byte[]? _buffer;
+    private VideoFrame? _frame;
     private int _references = 1;
 
-    internal PresentedPicture(byte[] buffer, int width, int height, int stride, long sequence, MediaTime timestamp)
+    internal PresentedPicture(VideoFrame frame, long sequence)
     {
-        _buffer = buffer;
-        Width = width;
-        Height = height;
-        Stride = stride;
+        _frame = frame;
+        Width = frame.Width;
+        Height = frame.Height;
         Sequence = sequence;
-        Timestamp = timestamp;
+        Timestamp = frame.Timestamp;
     }
 
     public int Width { get; }
 
     public int Height { get; }
-
-    /// <summary>Bytes per row; at least <c>Width * 4</c>.</summary>
-    public int Stride { get; }
 
     /// <summary>Increases with every picture the presenter publishes, so a painter can tell a new one from the last it drew.</summary>
     public long Sequence { get; }
@@ -35,15 +32,16 @@ public sealed class PresentedPicture
     /// <summary>The media time this picture represents.</summary>
     public MediaTime Timestamp { get; }
 
-    /// <summary>The pixel rows. Valid only between <see cref="AddRef"/> (or acquisition) and <see cref="Release"/>.</summary>
-    public ReadOnlySpan<byte> Pixels
+    /// <summary>
+    /// Writes the picture as BGRA rows of <paramref name="stride"/> bytes (at least
+    /// <c>Width * 4</c>) into <paramref name="destination"/>. Valid only between
+    /// acquisition (or <see cref="AddRef"/>) and <see cref="Release"/>.
+    /// </summary>
+    public void WriteBgra(Span<byte> destination, int stride)
     {
-        get
-        {
-            var buffer = _buffer;
-            ObjectDisposedException.ThrowIf(buffer is null, this);
-            return buffer.AsSpan(0, Stride * Height);
-        }
+        var frame = _frame;
+        ObjectDisposedException.ThrowIf(frame is null, this);
+        PixelConverter.ToBgra(frame, destination, stride);
     }
 
     public void AddRef()
@@ -58,11 +56,7 @@ public sealed class PresentedPicture
         if (remaining < 0)
             throw new InvalidOperationException("The picture was released more often than acquired.");
         if (remaining == 0)
-        {
-            var buffer = Interlocked.Exchange(ref _buffer, null);
-            if (buffer is not null)
-                MediaBufferPool.Return(buffer);
-        }
+            Interlocked.Exchange(ref _frame, null)?.Dispose();
     }
 }
 
@@ -84,18 +78,12 @@ public sealed class VideoPresenter
     /// <summary>The sequence number of the latest picture, or 0 before the first.</summary>
     public long Sequence => Interlocked.Read(ref _sequence);
 
-    /// <summary>Converts <paramref name="frame"/> to BGRA and makes it the latest picture.</summary>
-    public void Publish(VideoFrame frame, MediaLimits limits)
+    /// <summary>Makes <paramref name="frame"/> the latest picture, taking ownership of it.</summary>
+    public void Publish(VideoFrame frame)
     {
         ArgumentNullException.ThrowIfNull(frame);
-        ArgumentNullException.ThrowIfNull(limits);
-        limits.CheckVideoDimensions(frame.Width, frame.Height);
-
-        int stride = frame.Width * 4;
-        byte[] buffer = MediaBufferPool.Bytes.Rent(checked(stride * frame.Height));
-        PixelConverter.ToBgra(frame, buffer.AsSpan(0, stride * frame.Height), stride);
         long sequence = Interlocked.Increment(ref _sequence);
-        var picture = new PresentedPicture(buffer, frame.Width, frame.Height, stride, sequence, frame.Timestamp);
+        var picture = new PresentedPicture(frame, sequence);
 
         PresentedPicture? previous;
         lock (_gate)

@@ -987,8 +987,23 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (cache.Image == null || cache.Sequence != picture.Sequence)
                 {
-                    var info = new SKImageInfo(picture.Width, picture.Height, SKColorType.Bgra8888, SKAlphaType.Opaque);
-                    var image = SKImage.FromPixelCopy(info, picture.Pixels, picture.Stride);
+                    // Colour conversion happens here, once per new picture, on the paint
+                    // thread: the media task only swapped a pointer.
+                    int stride = picture.Width * 4;
+                    int length = checked(stride * picture.Height);
+                    var pixels = System.Buffers.ArrayPool<byte>.Shared.Rent(length);
+                    SKImage image;
+                    try
+                    {
+                        picture.WriteBgra(pixels.AsSpan(0, length), stride);
+                        var info = new SKImageInfo(picture.Width, picture.Height, SKColorType.Bgra8888, SKAlphaType.Opaque);
+                        image = SKImage.FromPixelCopy(info, pixels.AsSpan(0, length), stride);
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(pixels);
+                    }
+
                     if (image == null)
                     {
                         backend.DrawRect(node.Bounds, SKColors.Black);
