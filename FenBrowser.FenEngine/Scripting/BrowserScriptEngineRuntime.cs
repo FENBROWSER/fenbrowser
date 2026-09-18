@@ -18276,7 +18276,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var document = Document.CreateHtmlDocument();
         var url = ResolveElementUrlProperty(iframe, "src");
         document.URL = string.IsNullOrWhiteSpace(url) ? "about:blank" : url;
-        document.BaseURI = document.URL;
+        // HTML "fallback base URL": an about:blank document resolves relative URLs
+        // against its creator's base URL, which is what document.write'd markup expects.
+        var creatorBase = iframe.OwnerDocument?.BaseURI ?? iframe.OwnerDocument?.URL;
+        document.BaseURI = document.URL == "about:blank" && !string.IsNullOrWhiteSpace(creatorBase) && creatorBase != "about:blank"
+            ? creatorBase
+            : document.URL;
 
         if (document.ParentNode == null)
         {
@@ -22690,7 +22695,22 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private void OpenDocumentForWrite(Document document)
     {
-        if (document?.Body is not ContainerNode body)
+        if (document == null)
+        {
+            return;
+        }
+
+        // HTML §8.4.1 "document open steps", step 13: the document's URL becomes the
+        // entry document's URL, so markup written into an about:blank frame resolves
+        // relative URLs the way it does in the page that wrote it.
+        var entryUrl = _currentBaseUri?.AbsoluteUri;
+        if (!string.IsNullOrWhiteSpace(entryUrl) && document.URL == "about:blank")
+        {
+            document.URL = entryUrl;
+            document.BaseURI = entryUrl;
+        }
+
+        if (document.Body is not ContainerNode body)
         {
             return;
         }
