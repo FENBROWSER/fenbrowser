@@ -19,6 +19,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Media\FenBrowser.Media.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Gpu\FenBrowser.Media.Gpu.csproj" />
     <ProjectReference Include="..\FenBrowser.Media.Codecs.Ffmpeg\FenBrowser.Media.Codecs.Ffmpeg.csproj" />
     <ProjectReference Include="..\FenBrowser.Media.Codecs.MediaFoundation\FenBrowser.Media.Codecs.MediaFoundation.csproj" />
     <ProjectReference Include="..\FenBrowser.Media.Shell\FenBrowser.Media.Shell.csproj" />
