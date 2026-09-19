@@ -47,6 +47,45 @@ public sealed class FenJsMediaSourceTests
             result);
     }
 
+    /// <summary>
+    /// MSE §11 ManagedMediaSource: a MediaSource that says when it wants data. streaming
+    /// (with startstreaming) once attached and open with nothing buffered ahead; the 1 s
+    /// fixture leaves it wanting more; endOfStream closes the request (endstreaming).
+    /// </summary>
+    [Fact]
+    public async Task ManagedMediaSource_SaysWhenItWantsData()
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", "pattern_vp9.webm"));
+        var engine = await CreateEngineAsync("<html><body><video id=v></video></body></html>");
+        engine.Evaluate($$"""
+            globalThis.__events = [];
+            var v = document.getElementById('v');
+            var ms = new ManagedMediaSource();
+            globalThis.__events.push('type:' + (ms instanceof MediaSource) + ':' + (ms instanceof ManagedMediaSource) + ':' + ms.streaming + ':' + Object.prototype.toString.call(ms) + ':' + ManagedMediaSource.canConstructInDedicatedWorker);
+            var bytes = Uint8Array.from(atob('{{Convert.ToBase64String(bytes)}}'), function (c) { return c.charCodeAt(0); });
+            ms.addEventListener('startstreaming', function () { globalThis.__events.push('startstreaming:' + ms.streaming); });
+            ms.addEventListener('endstreaming', function () { globalThis.__events.push('endstreaming:' + ms.streaming); });
+            ms.addEventListener('sourceopen', function () {
+                var sb = ms.addSourceBuffer('video/webm; codecs="vp9"');
+                sb.addEventListener('updateend', function () {
+                    globalThis.__events.push('appended:' + ms.streaming);
+                    ms.endOfStream();
+                });
+                sb.appendBuffer(bytes);
+            });
+            ms.addEventListener('sourceended', function () { globalThis.__events.push('sourceended:' + ms.streaming); });
+            v.src = URL.createObjectURL(ms);
+            """);
+
+        var events = await WaitForAsync(engine, "globalThis.__events.some(function (e) { return e.indexOf('sourceended') === 0; }) ? globalThis.__events.join(',') : ''");
+        var actual = events.Split(',').ToList();
+        Assert.Equal("type:true:true:false:[object ManagedMediaSource]:false", actual[0]);
+        Assert.Contains("startstreaming:true", actual);
+        Assert.Contains("appended:true", actual);
+        Assert.Contains("endstreaming:false", actual);
+        Assert.True(actual.IndexOf("startstreaming:true") < actual.IndexOf("endstreaming:false"), events);
+    }
+
     [Fact]
     public async Task AttachAppendEndOfStreamAndPlay()
     {

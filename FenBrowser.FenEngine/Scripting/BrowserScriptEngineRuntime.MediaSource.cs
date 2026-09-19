@@ -762,6 +762,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 // model moved.
                 try { var moved = g.__fenMseSbTimestampOffset(source._id, sb._bid); if (Math.abs(moved - sb._timestampOffset) > 0.000001) sb._timestampOffset = moved; } catch (e) {}
                 sb._updating = false;
+                updateStreaming(source);
                 queueFire(source, sb, 'update');
                 queueFire(source, sb, 'updateend');
             }
@@ -834,6 +835,7 @@ public sealed partial class FenJsBrowserScriptEngine
                     try { g.__fenMseSbRemove(source._id, sb._bid, start, end); } catch (e) {}
                     sb._removing = false;
                     sb._updating = false;
+                    updateStreaming(source);
                     queueFire(source, sb, 'update');
                     queueFire(source, sb, 'updateend');
                 });
@@ -987,6 +989,7 @@ public sealed partial class FenJsBrowserScriptEngine
             function endOfStream(source, error, fromAppendError) {
                 if (source._readyState() !== 'open') return;
                 try { g.__fenMseEndOfStream(source._id, error || ''); } catch (e) { return; }
+                updateStreaming(source);
                 queueTask(source, function () { fire(source, 'sourceended'); });
             }
             method(MediaSource.prototype, 'setLiveSeekableRange', function (start, end) {
@@ -1009,6 +1012,50 @@ public sealed partial class FenJsBrowserScriptEngine
             });
             Object.defineProperty(MediaSource, 'canConstructInDedicatedWorker', { value: false, configurable: true });
 
+            // ---- ManagedMediaSource (MSE §11) ------------------------------------------------
+            // A MediaSource whose user agent says when it wants data: streaming is true (with
+            // startstreaming) while less than STREAMING_AHEAD seconds are buffered past the
+            // playback position, and false (with endstreaming) once that much is there, so a
+            // player fetches only what playback needs. Evaluated on attach, after every
+            // change to the buffers and as the position moves.
+            var STREAMING_AHEAD = 10;
+            function ManagedMediaSource() {
+                if (!(this instanceof ManagedMediaSource)) throw new TypeError("Failed to construct 'ManagedMediaSource': Please use the 'new' operator.");
+                MediaSource.call(this);
+                this._managed = true;
+                this._streaming = false;
+            }
+            defineInterface('ManagedMediaSource', ManagedMediaSource, MediaSource);
+            ['onstartstreaming', 'onendstreaming'].forEach(function (n) { handlerAttribute(ManagedMediaSource.prototype, n); });
+            accessor(ManagedMediaSource.prototype, 'streaming', function () { return this._streaming; });
+            Object.defineProperty(ManagedMediaSource, 'canConstructInDedicatedWorker', { value: false, configurable: true });
+            function updateStreaming(source) {
+                if (!source._managed) return;
+                var wants;
+                if (source._readyState() !== 'open') wants = false;
+                else {
+                    var element = source._element;
+                    var position = element ? Number(element.currentTime) || 0 : 0;
+                    var ahead = 0;
+                    var buffers = source._activeSourceBuffers._buffers.length ? source._activeSourceBuffers._buffers : source._sourceBuffers._buffers;
+                    var first = true;
+                    for (var i = 0; i < buffers.length; i++) {
+                        var ranges = buffers[i].buffered;
+                        var own = 0;
+                        for (var r = 0; r < ranges.length; r++) {
+                            if (ranges.start(r) <= position + 0.1 && ranges.end(r) > position) { own = ranges.end(r) - position; break; }
+                        }
+                        ahead = first ? own : Math.min(ahead, own);
+                        first = false;
+                    }
+                    wants = first || ahead < STREAMING_AHEAD;
+                }
+                if (wants === source._streaming) return;
+                source._streaming = wants;
+                queueTask(source, function () { fire(source, wants ? 'startstreaming' : 'endstreaming'); });
+            }
+            g.__fenMseUpdateStreaming = function (id) { var source = sources.get(id); if (source) updateStreaming(source); };
+
             // The media element's side: sourceopen when the attach steps ran, sourceclose
             // when the element let go (§2.4.2, §2.4.3).
             g.__fenMseDispatch = function (id, type, element) {
@@ -1017,6 +1064,11 @@ public sealed partial class FenJsBrowserScriptEngine
                 if (type === 'sourceopen') {
                     source._element = element || null;
                     fire(source, 'sourceopen');
+                    if (source._managed && element) {
+                        // The element's position drives the streaming flag.
+                        try { element.addEventListener('timeupdate', function () { updateStreaming(source); }); } catch (e) {}
+                        updateStreaming(source);
+                    }
                     return;
                 }
                 if (type === 'sourceclose') {
@@ -1031,6 +1083,7 @@ public sealed partial class FenJsBrowserScriptEngine
                     }
                     queueTask(source, function () { fire(source, 'sourceclose'); });
                     source._element = null;
+                    if (source._managed && source._streaming) { source._streaming = false; queueTask(source, function () { fire(source, 'endstreaming'); }); }
                 }
             };
             // The blob URL store entry for a media element's src, when it is a MediaSource.
