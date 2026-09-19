@@ -138,6 +138,9 @@ public sealed class MseDecodeSource : IMediaDecodeSource
                 {
                     packet = EncodedPacket.Rent(_context.Limits, cursor.Track.Kind, cursor.Track.TrackId, frame.Bytes, frame.Pts, frame.Dts, frame.Duration, frame.IsKeyframe);
                     frame.Packet.Span.CopyTo(packet.Memory.Span);
+                    // The cursor moves under the gate too: it reads the frame list for its
+                    // successor, which an append on the element's thread may be changing.
+                    cursor.Advance(frame);
                 }
             }
 
@@ -226,7 +229,6 @@ public sealed class MseDecodeSource : IMediaDecodeSource
                 cursor.ConfigVersion = frame.ConfigVersion;
             }
 
-            cursor.Advance(frame);
             using (packet)
             {
                 if (cursor.Decoder is { } audioDecoder2)

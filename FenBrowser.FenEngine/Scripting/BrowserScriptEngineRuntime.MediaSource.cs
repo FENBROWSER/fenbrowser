@@ -126,26 +126,41 @@ public sealed partial class FenJsBrowserScriptEngine
             var buffer = MseBuffer(entry, args, 1);
             long bytes = (long)Math.Max(0, ToDouble(args, 2));
             var currentTime = ToMediaTime(args, 3);
-            return JsValue.FromBoolean(buffer.EvictToFit(bytes, currentTime));
+            lock (entry.Model.Gate)
+            {
+                return JsValue.FromBoolean(buffer.EvictToFit(bytes, currentTime));
+            }
         }));
         Native("__fenMseSbAppend", 3, args => Mse(() =>
         {
             var entry = MseEntry(args);
             var buffer = MseBuffer(entry, args, 1);
             var bytes = args.Count > 2 ? ExtractBytesFromArrayLike(args[2]) : Array.Empty<byte>();
-            bool hadTracks = buffer.HasTracks;
-            var outcome = buffer.Append(bytes);
-            entry.Model.NotifyChanged();
-            if (outcome == AppendOutcome.Ok && entry.Element != null)
+            // The track buffers change under the model gate: the media task reads them
+            // under it (the decode source's cursor, its frame copies).
+            bool hadTracks;
+            AppendOutcome outcome;
+            bool parsing;
+            JsValue tracks;
+            lock (entry.Model.Gate)
             {
-                ApplyAppendToElement(entry, buffer, first: !hadTracks && buffer.HasTracks);
+                hadTracks = buffer.HasTracks;
+                outcome = buffer.Append(bytes);
+                parsing = buffer.ParsingMediaSegment;
+                tracks = DescribeTracks(buffer);
+                entry.Model.NotifyChanged();
+                if (outcome == AppendOutcome.Ok && entry.Element != null)
+                {
+                    ApplyAppendToElement(entry, buffer, first: !hadTracks && buffer.HasTracks);
+                }
             }
+
             var result = new Dictionary<string, JsValue>
             {
                 ["status"] = JsValue.FromString(outcome == AppendOutcome.Ok ? "ok" : "error"),
                 ["initialization"] = JsValue.FromBoolean(!hadTracks && buffer.HasTracks),
-                ["parsing"] = JsValue.FromBoolean(buffer.ParsingMediaSegment),
-                ["tracks"] = DescribeTracks(buffer),
+                ["parsing"] = JsValue.FromBoolean(parsing),
+                ["tracks"] = tracks,
             };
             return _interpreter.AllocateObject(result);
         }));
@@ -165,24 +180,48 @@ public sealed partial class FenJsBrowserScriptEngine
         {
             var entry = MseEntry(args);
             var buffer = MseBuffer(entry, args, 1);
-            buffer.SetMode(CoerceToHostString(args[2]) == "sequence" ? AppendMode.Sequence : AppendMode.Segments);
+            lock (entry.Model.Gate)
+            {
+                buffer.SetMode(CoerceToHostString(args[2]) == "sequence" ? AppendMode.Sequence : AppendMode.Segments);
+            }
         }));
-        Native("__fenMseSbSetTimestampOffset", 3, args => Mse(() => MseBuffer(MseEntry(args), args, 1).SetTimestampOffset(ToMediaTime(args, 2))));
+        Native("__fenMseSbSetTimestampOffset", 3, args => Mse(() =>
+        {
+            var entry = MseEntry(args);
+            lock (entry.Model.Gate)
+            {
+                MseBuffer(entry, args, 1).SetTimestampOffset(ToMediaTime(args, 2));
+            }
+        }));
         Native("__fenMseSbTimestampOffset", 2, args => Mse(() => JsValue.FromNumber(MseBuffer(MseEntry(args), args, 1).TimestampOffset.TotalSeconds)));
         Native("__fenMseSbSetAppendWindow", 4, args => Mse(() =>
         {
-            var buffer = MseBuffer(MseEntry(args), args, 1);
-            buffer.AppendWindowStart = ToMediaTime(args, 2);
-            buffer.AppendWindowEnd = ToMediaTime(args, 3);
+            var entry = MseEntry(args);
+            var buffer = MseBuffer(entry, args, 1);
+            lock (entry.Model.Gate)
+            {
+                buffer.AppendWindowStart = ToMediaTime(args, 2);
+                buffer.AppendWindowEnd = ToMediaTime(args, 3);
+            }
         }));
         Native("__fenMseSbRemove", 4, args => Mse(() =>
         {
             var entry = MseEntry(args);
             var buffer = MseBuffer(entry, args, 1);
-            buffer.Remove(ToMediaTime(args, 2), ToMediaTime(args, 3));
-            entry.Model.NotifyChanged();
+            lock (entry.Model.Gate)
+            {
+                buffer.Remove(ToMediaTime(args, 2), ToMediaTime(args, 3));
+                entry.Model.NotifyChanged();
+            }
         }));
-        Native("__fenMseSbResetParser", 2, args => Mse(() => MseBuffer(MseEntry(args), args, 1).ResetParserState()));
+        Native("__fenMseSbResetParser", 2, args => Mse(() =>
+        {
+            var entry = MseEntry(args);
+            lock (entry.Model.Gate)
+            {
+                MseBuffer(entry, args, 1).ResetParserState();
+            }
+        }));
         Native("__fenMseSbChangeType", 3, args => Mse(() =>
         {
             var entry = MseEntry(args);
@@ -190,7 +229,10 @@ public sealed partial class FenJsBrowserScriptEngine
             var type = CoerceToHostString(args[2]) ?? string.Empty;
             var parser = entry.Model.CreateParser(type)
                 ?? throw new MseInvalidOperationException("NotSupportedError", $"'{type}' is not a supported byte stream format.");
-            buffer.ChangeType(type, parser, generateTimestamps: MpegAudioSegmentParser.GeneratesTimestamps(type));
+            lock (entry.Model.Gate)
+            {
+                buffer.ChangeType(type, parser, generateTimestamps: MpegAudioSegmentParser.GeneratesTimestamps(type));
+            }
         }));
         Native("__fenMseSbBytes", 2, args => Mse(() => JsValue.FromNumber(MseBuffer(MseEntry(args), args, 1).Bytes)));
 
