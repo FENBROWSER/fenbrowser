@@ -292,6 +292,8 @@ public sealed partial class FenJsBrowserScriptEngine
             {
                 ["id"] = JsValue.FromString(track.TrackId.ToString(CultureInfo.InvariantCulture)),
                 ["kind"] = JsValue.FromString(track.Kind == MediaTrackKind.Audio ? "audio" : "video"),
+                ["language"] = JsValue.FromString(track.Info?.Language ?? ""),
+                ["label"] = JsValue.FromString(track.Info?.Label ?? ""),
             }));
         }
 
@@ -336,7 +338,11 @@ public sealed partial class FenJsBrowserScriptEngine
             {
                 entry.Resource = null;
                 entry.Element = null;
-                QueueMediaTask(element.OwnerDocument, () => _ = CallTextTrackHook("__fenMseDispatch", JsValue.FromInt32(id), JsValue.FromString("sourceclose"), JsValue.Null));
+                // §2.4.3 detaching runs now, on the element's thread inside the load
+                // algorithm: the SourceBuffers go and their removetrack tasks are queued
+                // ahead of whatever the load algorithm queues next (an error for an empty
+                // src); sourceclose itself is queued.
+                _ = CallTextTrackHook("__fenMseDispatch", JsValue.FromInt32(id), JsValue.FromString("sourceclose"), JsValue.Null);
             }
         });
         entry.Resource = mse;
@@ -625,12 +631,15 @@ public sealed partial class FenJsBrowserScriptEngine
                     var d = tracks[i];
                     var track = null;
                     if (element && typeof g.__fenMediaAddInbandTrack === 'function') {
-                        track = g.__fenMediaAddInbandTrack(element, d.kind, d.id, sb);
+                        track = g.__fenMediaAddInbandTrack(element, d.kind, d.id, sb, d.language || '', d.label || '');
                     }
                     if (track) {
+                        // Steps 5.2.7 / 5.3.7: the SourceBuffer's own list gets the track and
+                        // its addtrack too.
                         var list = d.kind === 'audio' ? sb._audioTracks : sb._videoTracks;
                         list._tracks.push(track);
                         if (typeof g.__fenSyncTrackList === 'function') g.__fenSyncTrackList(list);
+                        (function (l, t) { queueTask(source, function () { if (typeof g.__fenFireTrackListEvent === 'function') g.__fenFireTrackListEvent(l, 'addtrack', t); }); })(list, track);
                     }
                 }
                 if (source._activeSourceBuffers._buffers.indexOf(sb) < 0) {
@@ -789,6 +798,9 @@ public sealed partial class FenJsBrowserScriptEngine
                 sb._removed = true;
                 try { g.__fenMseRemoveSourceBuffer(source._id, sb._bid); } catch (e) {}
             }
+            // §2.4.4 removeSourceBuffer steps 3-8: every track goes from the element's list
+            // (with change when it was the enabled/selected one) and from the SourceBuffer's
+            // own list, each with removetrack, and its sourceBuffer attribute is cleared.
             function removeTracks(source, sb) {
                 var element = source._element;
                 [sb._audioTracks, sb._videoTracks].forEach(function (list) {
@@ -796,7 +808,10 @@ public sealed partial class FenJsBrowserScriptEngine
                     list._tracks = [];
                     if (typeof g.__fenSyncTrackList === 'function') g.__fenSyncTrackList(list);
                     for (var i = 0; i < tracks.length; i++) {
-                        if (element && typeof g.__fenMediaRemoveInbandTrack === 'function') g.__fenMediaRemoveInbandTrack(element, tracks[i]);
+                        var track = tracks[i];
+                        if (element && typeof g.__fenMediaRemoveInbandTrack === 'function') g.__fenMediaRemoveInbandTrack(element, track);
+                        track._sourceBuffer = null;
+                        (function (l, t) { queueTask(source, function () { if (typeof g.__fenFireTrackListEvent === 'function') g.__fenFireTrackListEvent(l, 'removetrack', t); }); })(list, track);
                     }
                 });
             }
@@ -854,8 +869,8 @@ public sealed partial class FenJsBrowserScriptEngine
                         listRemove(source._sourceBuffers, source, sb);
                         sb._removed = true;
                     }
+                    queueTask(source, function () { fire(source, 'sourceclose'); });
                     source._element = null;
-                    fire(source, 'sourceclose');
                 }
             };
             // The blob URL store entry for a media element's src, when it is a MediaSource.

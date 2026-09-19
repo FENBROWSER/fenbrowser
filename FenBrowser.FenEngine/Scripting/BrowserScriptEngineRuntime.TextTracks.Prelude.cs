@@ -1010,12 +1010,12 @@ public sealed partial class FenJsBrowserScriptEngine
             // MSE §3.5.8: a SourceBuffer's initialization segment adds tracks to the element's
             // lists (the first audio track enabled, the first video track selected), and
             // removing the SourceBuffer takes them away again, with the track list events.
-            g.__fenMediaAddInbandTrack = function (media, kind, id, sourceBuffer) {
+            g.__fenMediaAddInbandTrack = function (media, kind, id, sourceBuffer, language, label) {
                 var model = modelFor(media);
                 var isAudio = kind === 'audio';
                 var list = isAudio ? model.audio : model.video;
                 var track = Object.create((isAudio ? AudioTrack : VideoTrack).prototype);
-                track._id = String(id); track._kind = 'main'; track._label = ''; track._language = '';
+                track._id = String(id); track._kind = 'main'; track._label = label ? String(label) : ''; track._language = language ? String(language) : '';
                 track._list = list;
                 track._sourceBuffer = sourceBuffer || null;
                 if (isAudio) track._enabled = list._tracks.length === 0;
@@ -1033,8 +1033,17 @@ public sealed partial class FenJsBrowserScriptEngine
                 if (at < 0) return;
                 list._tracks.splice(at, 1);
                 syncIndexed(list, list._tracks);
+                // MSE §2.4.4 steps 4-5: taking away the enabled audio track or the selected
+                // video track changes the element's list; change follows the removal.
+                var wasCurrent = list === model.audio ? track._enabled : track._selected;
+                if (wasCurrent) {
+                    if (list === model.audio) track._enabled = false; else track._selected = false;
+                }
                 queueTask(media, function () { fire(list, 'removetrack', { track: track }); });
+                if (wasCurrent) queueTask(media, function () { fire(list, 'change'); });
             };
+            // A SourceBuffer's own track lists fire the same events as the element's.
+            g.__fenFireTrackListEvent = function (list, type, track) { fire(list, type, type === 'change' ? undefined : { track: track }); };
             g.__fenSyncTrackList = function (list) { syncIndexed(list, list._tracks); };
             g.__fenMediaInbandTracks = function (media, json) {
                 var model = modelFor(media);

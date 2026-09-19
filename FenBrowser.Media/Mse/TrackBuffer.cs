@@ -54,6 +54,9 @@ public sealed class TrackBuffer
 
     private readonly Dictionary<int, CodecConfig> _configs = [];
 
+    /// <summary>The track as the latest initialization segment described it (language, label).</summary>
+    public MediaTrackInfo? Info { get; set; }
+
     /// <summary>The codec configuration in force for new frames.</summary>
     public CodecConfig? Config { get; private set; }
 
