@@ -160,6 +160,22 @@ public sealed class HtmlMediaElementController
             Seek(duration, approximateForSpeed: false);
     }
 
+    /// <summary>
+    /// MSE §3.1 buffered and §2.4.5 seekable are computed from the MediaSource as script
+    /// reads them; a change script made (duration, endOfStream, an append or removal)
+    /// reaches the attributes at once rather than when the player's report lands.
+    /// </summary>
+    public void ApplyMediaSourceRanges(MediaTimeRanges buffered, MediaTimeRanges seekable)
+    {
+        ArgumentNullException.ThrowIfNull(buffered);
+        ArgumentNullException.ThrowIfNull(seekable);
+        // Even before metadata: a live seekable range set on an empty MediaSource is what
+        // seekable returns (mediasource-liveseekable).
+        Buffered = buffered;
+        Seekable = seekable;
+        _seekableReported = true;
+    }
+
     /// <summary><c>ended</c>: playback has ended and the direction is forwards.</summary>
     public bool Ended => HasEndedPlayback;
 

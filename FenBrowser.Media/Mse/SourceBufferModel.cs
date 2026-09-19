@@ -54,6 +54,9 @@ public sealed class SourceBufferModel
     /// <summary>Why the last append failed, for diagnostics.</summary>
     public string? LastParseError => Parser.LastError;
 
+    /// <summary>§3.5.1: a media segment is partly appended (mode and timestampOffset are locked).</summary>
+    public bool ParsingMediaSegment => Parser.ParsingMediaSegment;
+
     public AppendMode Mode { get; private set; }
 
     public MediaTime TimestampOffset => _timestampOffset;

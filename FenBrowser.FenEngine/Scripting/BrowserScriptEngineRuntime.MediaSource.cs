@@ -136,6 +136,7 @@ public sealed partial class FenJsBrowserScriptEngine
             {
                 ["status"] = JsValue.FromString(outcome == AppendOutcome.Ok ? "ok" : "error"),
                 ["initialization"] = JsValue.FromBoolean(!hadTracks && buffer.HasTracks),
+                ["parsing"] = JsValue.FromBoolean(buffer.ParsingMediaSegment),
                 ["tracks"] = DescribeTracks(buffer),
             };
             return _interpreter.AllocateObject(result);
@@ -332,10 +333,12 @@ public sealed partial class FenJsBrowserScriptEngine
         }
 
         var presenter = new FenBrowser.Media.Video.VideoPresenter();
+        Action rangesChanged = null;
         var mse = new MseResource(entry.Model, client, postToElementThread, entry.Context, presenter, onDetached: () =>
         {
             if (entry.Resource != null)
             {
+                entry.Model.Changed -= rangesChanged;
                 entry.Resource = null;
                 entry.Element = null;
                 // §2.4.3 detaching runs now, on the element's thread inside the load
@@ -347,6 +350,16 @@ public sealed partial class FenJsBrowserScriptEngine
         });
         entry.Resource = mse;
         entry.Element = element;
+        // Script-made changes (under the gate, on this thread) reach the element's
+        // buffered and seekable attributes before the player's report lands as a task.
+        rangesChanged = () =>
+        {
+            if (entry.Element is { } current && ReferenceEquals(current, element) && entry.Resource == mse)
+            {
+                GetOrCreateMediaBinding(current).Controller.ApplyMediaSourceRanges(entry.Model.Buffered, entry.Model.Seekable);
+            }
+        };
+        entry.Model.Changed += rangesChanged;
         mse.Start();
         QueueMediaTask(element.OwnerDocument, () => _ = CallTextTrackHook("__fenMseDispatch", JsValue.FromInt32(id), JsValue.FromString("sourceopen"), ToHostNodeOrNull(element)));
         resource = mse;
@@ -531,7 +544,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 function () { return this._mode; },
                 function (v) {
                     v = toDomString(v);
-                    if (v !== 'segments' && v !== 'sequence') throw new TypeError("'" + v + "' is not a valid AppendMode.");
+                    if (v !== 'segments' && v !== 'sequence') return; // WebIDL: an enum attribute ignores a value outside the enum
                     sbCheckAttached(this);
                     sbCheckNotUpdating(this);
                     if (this._generateTimestamps && v === 'segments') throw new TypeError('This SourceBuffer generates timestamps; its mode cannot be segments.');
@@ -560,6 +573,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 function () { return this._timestampOffset; },
                 function (v) {
                     v = toDouble(v, 'timestampOffset');
+                    if (!isFinite(v)) throw new TypeError('timestampOffset must be finite.'); // WebIDL double
                     sbCheckAttached(this);
                     sbCheckNotUpdating(this);
                     if (this._source._readyState() === 'closed') throw domException('The MediaSource is closed.', 'InvalidStateError');
@@ -636,6 +650,7 @@ public sealed partial class FenJsBrowserScriptEngine
                     endOfStream(source, 'decode', true);
                     return;
                 }
+                sb._appendState = result.parsing ? 'parsing' : 'waiting';
                 sb._updating = false;
                 queueFire(source, sb, 'update');
                 queueFire(source, sb, 'updateend');

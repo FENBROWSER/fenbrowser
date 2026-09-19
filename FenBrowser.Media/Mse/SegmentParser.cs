@@ -103,6 +103,16 @@ public abstract class SegmentParser
     public int PendingBytes => _pending.Count;
 
     /// <summary>
+    /// §3.5.1 append state PARSING_MEDIA_SEGMENT: bytes of a media segment arrived without
+    /// its end, so mode and timestampOffset cannot change until it completes or the parser
+    /// is reset.
+    /// </summary>
+    public bool ParsingMediaSegment => _pending.Count > 0 && PendingIsMediaSegment(_pending);
+
+    /// <summary>Whether the pending bytes begin a media segment rather than an initialization segment.</summary>
+    protected abstract bool PendingIsMediaSegment(List<byte> pending);
+
+    /// <summary>
     /// Parses as many complete units as <paramref name="data"/> holds, reporting how many bytes
     /// they took. Throws <see cref="MediaFormatException"/> for bytes that break the format.
     /// </summary>
@@ -167,6 +177,16 @@ public sealed class Mp4SegmentParser : SegmentParser
     public Mp4SegmentParser(MediaPipelineContext context)
         : base(context)
     {
+    }
+
+    protected override bool PendingIsMediaSegment(List<byte> pending)
+    {
+        // A box header names the segment: ftyp/moov start an initialization segment,
+        // anything else (styp, sidx, moof, mdat) belongs to a media segment. Too few bytes
+        // to tell: after the initialization segment a media segment is what comes.
+        if (pending.Count >= 8 && Box.TryReadHeader(pending.ToArray().AsSpan(0, 8), 0, long.MaxValue, out var box))
+            return box.Type != BoxType.Ftyp && box.Type != BoxType.Moov;
+        return InitializationSegment is not null;
     }
 
     protected override SegmentParseStatus Parse(byte[] data, out int consumed, Action<DemuxerInfo> onInitializationSegment, Action<EncodedPacket> onPacket)
@@ -254,6 +274,17 @@ public sealed class WebmSegmentParser : SegmentParser
     }
 
     public override bool FrameDurationsAreReliable => false;
+
+    protected override bool PendingIsMediaSegment(List<byte> pending)
+    {
+        // A Cluster starts a media segment; the EBML header or a Segment starts an
+        // initialization segment. A header too short to read: after the initialization
+        // segment a media segment is what comes.
+        var head = pending.Count > Ebml.MaxHeaderLength ? pending.GetRange(0, Ebml.MaxHeaderLength).ToArray() : pending.ToArray();
+        if (Ebml.TryReadElement(head, 0, out var element))
+            return element.Id == EbmlId.Cluster;
+        return InitializationSegment is not null;
+    }
 
     protected override SegmentParseStatus Parse(byte[] data, out int consumed, Action<DemuxerInfo> onInitializationSegment, Action<EncodedPacket> onPacket)
     {

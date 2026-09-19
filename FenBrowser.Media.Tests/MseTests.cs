@@ -69,6 +69,37 @@ public class MseTests
         Assert.Equal(0, buffer.Bytes == 0 ? 1 : 0);
     }
 
+    /// <summary>§3.5.1 append state: a media segment appended in part locks mode and timestampOffset (mediasource-sourcebuffer-mode).</summary>
+    [Theory]
+    [InlineData("pattern_h264_fragmented.mp4", "video/mp4")]
+    [InlineData("pattern_vp9.webm", "video/webm")]
+    public void PartialMediaSegment_IsParsing_UntilItCompletesOrTheParserResets(string file, string type)
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer(type, generateTimestamps: false);
+        var bytes = MediaFixtures.Read(file);
+        Assert.False(buffer.ParsingMediaSegment);
+
+        // Half the initialization segment: parsing, but not a media segment.
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(bytes.AsSpan(0, 40)));
+        Assert.False(buffer.ParsingMediaSegment);
+
+        // Up to the middle of the file: the initialization segment is complete and a media
+        // segment is open.
+        int half = bytes.Length / 2;
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(bytes.AsSpan(40, half - 40)));
+        Assert.True(buffer.HasTracks);
+        Assert.True(buffer.ParsingMediaSegment);
+
+        buffer.ResetParserState();
+        Assert.False(buffer.ParsingMediaSegment);
+
+        // The rest, appended after the reset, resyncs at the next segment boundary or ends
+        // clean: either way nothing is left open at the end.
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(bytes.AsSpan(0)));
+        Assert.False(buffer.ParsingMediaSegment);
+    }
+
     [Fact]
     public void WebM_AppendedWhole_BuffersEveryCluster()
     {
