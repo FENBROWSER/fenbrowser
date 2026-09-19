@@ -22,6 +22,8 @@ public sealed class MseFuzz
         ("video/webm", MediaFuzzCorpus.ReadFixture("pattern_vp9.webm")),
         ("video/webm", MediaFuzzCorpus.ReadFixture("pattern_vp9.mkv")),
         ("video/mp4", MediaFuzzCorpus.ReadFixture("pattern_h264_aac.mp4")),
+        ("audio/mpeg", MediaFuzzCorpus.ReadFixture("sine_mp3_id3.mp3")),
+        ("audio/aac", MediaFuzzCorpus.ReadFixture("sine_aac.aac")),
     ]);
 
     [Theory]
@@ -73,7 +75,7 @@ public sealed class MseFuzz
     {
         var model = new MediaSourceModel(MediaPipelineContext.ForTests());
         model.Attach();
-        var buffer = model.AddSourceBuffer(type, generateTimestamps: false);
+        var buffer = model.AddSourceBuffer(type, generateTimestamps: MpegAudioSegmentParser.GeneratesTimestamps(type));
         foreach (var piece in Split(bytes, chunks, random))
             buffer.Append(piece);
         return string.Join("|", buffer.TrackBuffers.OrderBy(t => t.TrackId).Select(t => $"{t.TrackId}:{t.Kind}:{t.Frames.Count}:{t.Bytes}:{string.Join(",", Enumerable.Range(0, t.Buffered.Count).Select(r => $"{t.Buffered.Start(r).Microseconds}-{t.Buffered.End(r).Microseconds}"))}"));
@@ -84,7 +86,7 @@ public sealed class MseFuzz
         var context = MediaPipelineContext.ForTests();
         var model = new MediaSourceModel(context);
         model.Attach();
-        var buffer = model.AddSourceBuffer(type, generateTimestamps: false);
+        var buffer = model.AddSourceBuffer(type, generateTimestamps: MpegAudioSegmentParser.GeneratesTimestamps(type));
         if (random.Next(4) == 0)
             buffer.SetTimestampOffset(MediaTime.FromSeconds(random.NextDouble() * 4 - 1));
         if (random.Next(4) == 0)
