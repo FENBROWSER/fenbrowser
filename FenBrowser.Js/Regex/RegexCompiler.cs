@@ -542,7 +542,9 @@ public static class RegexCompiler
             return term switch
             {
                 AssertionNode => true,
-                QuantifierNode quantifier => quantifier.Min == 0 || IsAlwaysZeroWidthAtom(quantifier.Body),
+                // A quantifier that may repeat zero times can be zero-width; it is always
+                // zero-width only when it never repeats or its body never consumes.
+                QuantifierNode quantifier => quantifier.Max == 0 || IsAlwaysZeroWidthAtom(quantifier.Body),
                 GroupNode group => IsAlwaysZeroWidthDisjunction(group.Body),
                 ModifierGroupNode group => IsAlwaysZeroWidthDisjunction(group.Body),
                 _ => false
