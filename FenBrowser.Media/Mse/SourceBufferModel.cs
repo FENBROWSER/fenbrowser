@@ -314,9 +314,7 @@ public sealed class SourceBufferModel
         _configVersion++;
         foreach (var track in tracks)
         {
-            var buffer = _trackBuffers[track.Id];
-            buffer.Config = track.Config;
-            buffer.ConfigVersion = _configVersion;
+            _trackBuffers[track.Id].SetConfig(_configVersion, track.Config);
         }
 
         _owner.OnInitializationSegment(this, info, first: !_firstInitializationSegmentReceived);

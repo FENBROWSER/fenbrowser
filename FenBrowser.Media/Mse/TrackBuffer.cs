@@ -52,10 +52,23 @@ public sealed class TrackBuffer
 
     public MediaTrackKind Kind { get; }
 
-    /// <summary>The codec configuration in force for new frames.</summary>
-    public CodecConfig? Config { get; set; }
+    private readonly Dictionary<int, CodecConfig> _configs = [];
 
-    public int ConfigVersion { get; set; }
+    /// <summary>The codec configuration in force for new frames.</summary>
+    public CodecConfig? Config { get; private set; }
+
+    public int ConfigVersion { get; private set; }
+
+    /// <summary>A new initialization segment: frames appended from now on decode with <paramref name="config"/>.</summary>
+    public void SetConfig(int version, CodecConfig config)
+    {
+        Config = config;
+        ConfigVersion = version;
+        _configs[version] = config;
+    }
+
+    /// <summary>The configuration a frame of that <see cref="CodedFrame.ConfigVersion"/> decodes with.</summary>
+    public CodecConfig? ConfigFor(int version) => _configs.GetValueOrDefault(version);
 
     public MediaTime? LastDecodeTimestamp { get; set; }
 
@@ -67,6 +80,9 @@ public sealed class TrackBuffer
 
     public IReadOnlyList<CodedFrame> Frames => _frames;
 
+    /// <summary>Counts removals: a reader that saw one value knows the frames it was following may be gone.</summary>
+    public int Generation { get; private set; }
+
     public long Bytes { get; private set; }
 
     public MediaTimeRanges Buffered { get; private set; } = MediaTimeRanges.Empty;
@@ -74,11 +90,17 @@ public sealed class TrackBuffer
     /// <summary>The frame with the largest end time, or null when empty.</summary>
     public MediaTime? HighestBufferedEnd => _frames.Count == 0 ? null : _frames.Max(f => f.End);
 
-    /// <summary>Adds a frame in decode order (after every frame with a decode time at or before its own).</summary>
+    /// <summary>
+    /// Adds a frame in decode order: after every frame with a decode time at or before its
+    /// own, and after every frame it is presented after. The second rule keeps a new coded
+    /// frame group behind the one before it when its first decode timestamps dip below
+    /// that group's last (H.264 with B-frames appended after WebM, say): overlap removal
+    /// went by presentation time, so what is left in front is presented in front.
+    /// </summary>
     public void Add(CodedFrame frame)
     {
         int at = _frames.Count;
-        while (at > 0 && _frames[at - 1].Dts > frame.Dts)
+        while (at > 0 && _frames[at - 1].Dts > frame.Dts && _frames[at - 1].Pts > frame.Pts)
             at--;
         _frames.Insert(at, frame);
         Bytes += frame.Bytes;
@@ -156,6 +178,7 @@ public sealed class TrackBuffer
         foreach (var frame in _frames)
             frame.Packet.Dispose();
         _frames.Clear();
+        Generation++;
         Bytes = 0;
         Buffered = MediaTimeRanges.Empty;
         LastDecodeTimestamp = null;
@@ -163,6 +186,9 @@ public sealed class TrackBuffer
         HighestEndTimestamp = null;
         NeedRandomAccessPoint = true;
     }
+
+    /// <summary>Index of <paramref name="frame"/> in decode order, or -1 once it was removed.</summary>
+    public int IndexOf(CodedFrame frame) => _frames.IndexOf(frame);
 
     /// <summary>Index of the first frame after <paramref name="dts"/> in decode order, or the count when there is none.</summary>
     public int IndexAfter(MediaTime dts)
@@ -241,6 +267,7 @@ public sealed class TrackBuffer
         }
 
         _frames.RemoveAll(removed.Contains);
+        Generation++;
         RecomputeBuffered();
     }
 

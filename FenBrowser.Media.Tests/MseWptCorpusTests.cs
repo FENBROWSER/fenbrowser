@@ -69,3 +69,171 @@ public class MseWptCorpusTests
         Assert.Equal(audio, buffer.TrackBuffers.SingleOrDefault(t => t.Kind == MediaTrackKind.Audio) is { } a ? Describe(a) : null);
     }
 }
+
+public class MseWptConfigChangeTests
+{
+    private static string? WptRoot()
+    {
+        var root = Environment.GetEnvironmentVariable("FEN_WPT_ROOT") ?? @"D:\wpt";
+        return Directory.Exists(Path.Combine(root, "media-source")) ? root : null;
+    }
+
+    /// <summary>mediasource-config-change-webm-v-framesize: A at 0, B at 0.5, A at 1, B at 1.5, remove past 2, duration 2, endOfStream, play.</summary>
+    [Fact]
+    public async Task FrameSizeChanges_DecodeEveryFrame()
+    {
+        var root = WptRoot();
+        if (root is null)
+            return;
+        var a = File.ReadAllBytes(Path.Combine(root, "media-source", "webm", "test-v-128k-320x240-24fps-8kfr.webm"));
+        var b = File.ReadAllBytes(Path.Combine(root, "media-source", "webm", "test-v-128k-640x480-30fps-10kfr.webm"));
+        var decoders = new DecoderRegistry();
+        Assert.True(FenBrowser.Media.Codecs.Ffmpeg.FfmpegDecoders.TryRegister(decoders, Diagnostics.NullMediaLogSink.Instance));
+        var context = MediaPipelineContext.ForTests();
+        var model = new MediaSourceModel(context);
+        model.Attach();
+        var buffer = model.AddSourceBuffer("video/webm;codecs=\"vp8\"", generateTimestamps: false);
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(a));
+        buffer.SetTimestampOffset(MediaTime.FromSeconds(0.5));
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(b));
+        buffer.SetTimestampOffset(MediaTime.FromSeconds(1));
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(a));
+        buffer.SetTimestampOffset(MediaTime.FromSeconds(1.5));
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(b));
+        buffer.Remove(MediaTime.FromSeconds(2), MediaTime.PositiveInfinity);
+        model.SetDuration(MediaTime.FromSeconds(2));
+        model.EndOfStream(EndOfStreamError.None);
+
+        await using var source = new MseDecodeSource(model, decoders, context);
+        await source.OpenAsync(CancellationToken.None);
+        int pictures = 0;
+        var sizes = new List<int>();
+        while (await source.ReadAsync(CancellationToken.None) is { } item)
+        {
+            using (item)
+            {
+                if (item.Video is { } picture && (sizes.Count == 0 || sizes[^1] != picture.Width))
+                    sizes.Add(picture.Width);
+                pictures++;
+            }
+        }
+
+        Assert.Equal([320, 640, 320, 640], sizes);
+        Assert.True(pictures > 50, $"pictures: {pictures}");
+    }
+}
+
+public class MseWptOverlapUnderCursorTests
+{
+    private static string? WptRoot()
+    {
+        var root = Environment.GetEnvironmentVariable("FEN_WPT_ROOT") ?? @"D:\wpt";
+        return Directory.Exists(Path.Combine(root, "media-source")) ? root : null;
+    }
+
+    /// <summary>
+    /// The player is already decoding A when B is appended at 0.5 s over it (what the
+    /// config-change tests do while paused): the frames under the cursor are replaced, so
+    /// decoding restarts from B's random access point and continues without a gap or an
+    /// undecodable frame.
+    /// </summary>
+    [Fact]
+    public async Task OverlappingAppend_UnderTheCursor_RestartsFromTheNewGroup()
+    {
+        var root = WptRoot();
+        if (root is null)
+            return;
+        var a = File.ReadAllBytes(Path.Combine(root, "media-source", "webm", "test-v-128k-320x240-24fps-8kfr.webm"));
+        var b = File.ReadAllBytes(Path.Combine(root, "media-source", "webm", "test-v-128k-640x480-30fps-10kfr.webm"));
+        var decoders = new DecoderRegistry();
+        Assert.True(FenBrowser.Media.Codecs.Ffmpeg.FfmpegDecoders.TryRegister(decoders, Diagnostics.NullMediaLogSink.Instance));
+        var context = MediaPipelineContext.ForTests();
+        var model = new MediaSourceModel(context);
+        model.Attach();
+        var buffer = model.AddSourceBuffer("video/webm;codecs=\"vp8\"", generateTimestamps: false);
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(a));
+
+        await using var source = new MseDecodeSource(model, decoders, context);
+        await source.OpenAsync(CancellationToken.None);
+        var stamps = new List<(double Time, int Width)>();
+        while (stamps.Count < 18 && await source.ReadAsync(CancellationToken.None) is { } item)
+        {
+            using (item)
+                stamps.Add((item.Timestamp.TotalSeconds, item.Video!.Width));
+        }
+
+        Assert.True(stamps[^1].Time > 0.6, $"decoded up to {stamps[^1].Time}");
+        lock (model.Gate)
+        {
+            buffer.SetTimestampOffset(MediaTime.FromSeconds(0.5));
+            Assert.Equal(AppendOutcome.Ok, buffer.Append(b));
+            model.EndOfStream(EndOfStreamError.None);
+        }
+
+        while (await source.ReadAsync(CancellationToken.None) is { } item)
+        {
+            using (item)
+                stamps.Add((item.Timestamp.TotalSeconds, item.Video!.Width));
+        }
+
+        for (int i = 1; i < stamps.Count; i++)
+        {
+            Assert.True(stamps[i].Time > stamps[i - 1].Time, $"picture {i} at {stamps[i].Time} after {stamps[i - 1].Time}");
+            Assert.True(stamps[i].Time - stamps[i - 1].Time < 0.05, $"gap before picture {i}: {stamps[i - 1].Time} -> {stamps[i].Time}");
+        }
+
+        Assert.Equal(640, stamps[^1].Width);
+        Assert.True(stamps[^1].Time > 2.4, $"ends at {stamps[^1].Time}");
+    }
+}
+
+public class MseWptChangeTypeTests
+{
+    private static string? WptRoot()
+    {
+        var root = Environment.GetEnvironmentVariable("FEN_WPT_ROOT") ?? @"D:\wpt";
+        return Directory.Exists(Path.Combine(root, "media-source")) ? root : null;
+    }
+
+    /// <summary>mediasource-changetype-play: VP8 in WebM, then changeType() to H.264 in MP4 appended after it; the video track gets a new decoder.</summary>
+    [Fact]
+    public async Task ChangeType_AcrossCodecs_SwitchesTheDecoder()
+    {
+        var root = WptRoot();
+        if (root is null)
+            return;
+        var webm = File.ReadAllBytes(Path.Combine(root, "media-source", "webm", "test-v-128k-320x240-24fps-8kfr.webm"));
+        var mp4 = File.ReadAllBytes(Path.Combine(root, "media-source", "mp4", "test-v-128k-320x240-24fps-8kfr.mp4"));
+        var decoders = new DecoderRegistry();
+        Assert.True(FenBrowser.Media.Codecs.Ffmpeg.FfmpegDecoders.TryRegister(decoders, Diagnostics.NullMediaLogSink.Instance));
+        if (!FenBrowser.Media.Codecs.MediaFoundation.MediaFoundationDecoders.TryRegister(decoders, Diagnostics.NullMediaLogSink.Instance))
+            return;
+        var context = MediaPipelineContext.ForTests();
+        var model = new MediaSourceModel(context);
+        model.Attach();
+        var buffer = model.AddSourceBuffer("video/webm;codecs=\"vp8\"", generateTimestamps: false);
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(webm));
+        var end = buffer.Buffered.End(0);
+        buffer.ChangeType("video/mp4;codecs=\"avc1.4D4001\"", model.CreateParser("video/mp4;codecs=\"avc1.4D4001\"")!, generateTimestamps: false);
+        buffer.SetTimestampOffset(end);
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(mp4));
+        model.EndOfStream(EndOfStreamError.None);
+
+        await using var source = new MseDecodeSource(model, decoders, context);
+        await source.OpenAsync(CancellationToken.None);
+        int pictures = 0;
+        MediaTime last = MediaTime.NegativeInfinity;
+        while (await source.ReadAsync(CancellationToken.None) is { } item)
+        {
+            using (item)
+            {
+                Assert.True(item.Timestamp > last, $"{item.Timestamp} after {last}");
+                last = item.Timestamp;
+                pictures++;
+            }
+        }
+
+        Assert.True(last.TotalSeconds > end.TotalSeconds + 1, $"ended at {last}");
+        Assert.True(pictures > 80, $"pictures: {pictures}");
+    }
+}
