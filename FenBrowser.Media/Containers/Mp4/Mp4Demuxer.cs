@@ -212,6 +212,9 @@ public sealed class Mp4Demuxer : IDemuxer
 
     private void ParseMoov(ReadOnlyMemory<byte> data, long dataPosition)
     {
+        // mvex names tracks by id, and a muxer may write it before the trak boxes (the
+        // MSE test streams do), so it is read once every track is known.
+        (ReadOnlyMemory<byte> Body, long DataStart)? mvex = null;
         foreach (var (box, body) in Box.Children(data, dataPosition))
         {
             if (box.Type == BoxType.Mvhd)
@@ -219,8 +222,11 @@ public sealed class Mp4Demuxer : IDemuxer
             else if (box.Type == BoxType.Trak)
                 ParseTrak(body, box.DataStart);
             else if (box.Type == BoxType.Mvex)
-                ParseMvex(body, box.DataStart);
+                mvex = (body, box.DataStart);
         }
+
+        if (mvex is { } extends)
+            ParseMvex(extends.Body, extends.DataStart);
     }
 
     /// <summary>§8.2.2 MovieHeaderBox: timescale and duration (version 1 is 64-bit).</summary>
@@ -979,14 +985,14 @@ public sealed class Mp4Demuxer : IDemuxer
             var span = body.Span;
             var (version, flags) = Box.FullBox(span);
             int perSample = ((flags & 0x100) != 0 ? 4 : 0) + ((flags & 0x200) != 0 ? 4 : 0) + ((flags & 0x400) != 0 ? 4 : 0) + ((flags & 0x800) != 0 ? 4 : 0);
-            int count = Box.Count(span, 4, Math.Max(perSample, 1), _context.Limits.MaxSampleTableEntries, "trun");
+            // A run whose samples all take the tfhd defaults (flags without any per-sample
+            // field) holds no entry bytes at all, however many samples it declares.
+            int count = Box.Count(span, 4, perSample, _context.Limits.MaxSampleTableEntries, "trun");
             int at = 8;
             long offset = baseDataOffset;
             if ((flags & 0x1) != 0) { offset = Track.Clamp((Int128)offset + Box.S32(span, at)); at += 4; }
             uint firstFlags = defaultFlags;
             if ((flags & 0x4) != 0) { firstFlags = Box.U32(span, at); at += 4; }
-            if (perSample == 0 && count > 0 && (long)count * 0 > span.Length - at)
-                throw new MediaFormatException("The trun box is truncated.");
             if ((long)count * perSample > span.Length - at)
                 throw new MediaFormatException("The trun box declares more samples than it holds.");
             if (track.Samples.Count + count > _context.Limits.MaxSampleTableEntries)
