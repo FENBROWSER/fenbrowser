@@ -69,6 +69,7 @@ public sealed class HtmlMediaElementController
     private MediaTimeRanges _played = MediaTimeRanges.Empty;
     private bool _pendingSeek;
     private MediaTime _pendingSeekTarget;
+    private MediaReadyState? _readyStateAfterSeek;
     private bool _seekableReported;
 
     public HtmlMediaElementController(
@@ -1285,7 +1286,19 @@ public sealed class HtmlMediaElementController
             QueueEvent("timeupdate");
             QueueEvent("seeked");
             Log(MediaEventKind.SeekEnd, MediaLogLevel.Debug, $"seeked to {position}");
+            if (_readyStateAfterSeek is { } readiness)
+            {
+                _readyStateAfterSeek = null;
+                SetResourceReadyState(readiness);
+            }
+
             PushPlaybackState();
+            // A seek that lands on the end while playing reaches the end of the media
+            // resource (§4.8.11.8 "when the current playback position reaches the end"):
+            // the resource cannot report it, since an element at the end is not
+            // potentially playing, so the ended steps run from here.
+            if (!Paused && HasEndedPlayback)
+                OnReachedEnd();
         });
     }
 
@@ -1390,8 +1403,18 @@ public sealed class HtmlMediaElementController
         public void ReadyStateChanged(MediaReadyState state) => Enqueue(() =>
         {
             // Nothing above HAVE_METADATA before the metadata step has run.
-            if (owner.ReadyState != MediaReadyState.HaveNothing && state >= MediaReadyState.HaveMetadata)
-                owner.SetResourceReadyState(state);
+            if (owner.ReadyState == MediaReadyState.HaveNothing || state < MediaReadyState.HaveMetadata)
+                return;
+            // While a seek is open the readiness of the new position applies as the seek
+            // completes (§4.8.11.9 steps 12-16): readyState reads it in the seeked
+            // handler, and canplay/playing follow seeked.
+            if (owner._pendingSeek && state > MediaReadyState.HaveMetadata)
+            {
+                owner._readyStateAfterSeek = state;
+                return;
+            }
+
+            owner.SetResourceReadyState(state);
         });
 
         public void DurationChanged(MediaTime duration) => Enqueue(() =>

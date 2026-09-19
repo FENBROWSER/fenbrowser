@@ -119,8 +119,15 @@ public class MediaElementRandomizedTests
                 host.Resource!.LoadMetadata(random.Next(4) == 0 ? double.PositiveInfinity : 10);
                 return "metadata";
             case 12 when client is not null:
-                client.ReadyStateChanged((MediaReadyState)random.Next(5));
+            {
+                // A resource reports the readiness of a new position with the seek's
+                // completion, so a seek in flight completes first, as the player does.
+                var state = (MediaReadyState)random.Next(5);
+                if (state >= MediaReadyState.HaveFutureData && element.Seeking && host.Resource!.Seeks.Count > 0)
+                    client.SeekCompleted(host.Resource.Seeks[^1].Target);
+                client.ReadyStateChanged(state);
                 return "readyState";
+            }
             case 13 when client is not null:
                 client.Failed((MediaResourceFailure)random.Next(4), "random failure");
                 return "failed";

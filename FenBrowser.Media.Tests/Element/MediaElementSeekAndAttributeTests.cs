@@ -243,6 +243,24 @@ public class MediaElementSeekAndAttributeTests
         Assert.True(fetchHost.Delaying);
     }
 
+    /// <summary>A seek to the duration while playing reaches the end: pause and ended follow seeked (mediasource-seek-beyond-duration).</summary>
+    [Fact]
+    public void Seek_ToTheEndWhilePlaying_EndsPlayback()
+    {
+        var (host, element, _) = Loaded(MediaReadyState.HaveEnoughData);
+        element.Play();
+        host.Run();
+        host.TakeEvents();
+
+        element.SetCurrentTime(10);
+        host.Resource!.Client.SeekCompleted(MediaTime.FromSeconds(10));
+        host.Run();
+
+        Assert.Equal(["seeking", "timeupdate", "seeked", "timeupdate", "pause", "ended"], host.TakeEvents());
+        Assert.True(element.Paused);
+        Assert.True(element.Ended);
+    }
+
     [Fact]
     public void Seek_IsLogged()
     {

@@ -335,7 +335,11 @@ public sealed class MediaPlayer : IMediaResource
                 await FillAheadAsync(cancellation).ConfigureAwait(false);
                 LogFill("idle");
                 if (_seekAwaitingData is { } awaited && (_endOfStream || HasDecodedData()))
+                {
+                    ReportReadiness();
                     CompleteSeek(awaited);
+                }
+
                 UpdateOutputState();
                 PresentVideo();
                 ReportReadiness();
@@ -828,6 +832,12 @@ public sealed class MediaPlayer : IMediaResource
             return;
         }
 
+        // HTML §4.8.11.9 step 12 waits for the data, so the readiness the decoded data
+        // justifies is reported ahead of the completion; the element applies it as the
+        // seek completes, so a script asking readyState in its seeked handler sees at
+        // least HAVE_CURRENT_DATA while playing still follows seeked
+        // (mediasource-buffered-seek, mediasource-seek-during-pending-seek).
+        ReportReadiness();
         CompleteSeek(target);
     }
 
