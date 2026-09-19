@@ -680,7 +680,9 @@ public sealed partial class FenJsBrowserScriptEngine
                 var bytes = bufferBytes(data);
                 var currentTime = source._element ? Number(source._element.currentTime) || 0 : 0;
                 if (!g.__fenMseSbEvictToFit(source._id, sb._bid, bytes.byteLength, currentTime)) {
-                    throw domException('The SourceBuffer is full, and cannot free space to append additional buffers.', 'QuotaExceededError');
+                    throw typeof g.QuotaExceededError === 'function'
+                        ? new g.QuotaExceededError('The SourceBuffer is full, and cannot free space to append additional buffers.')
+                        : domException('The SourceBuffer is full, and cannot free space to append additional buffers.', 'QuotaExceededError');
                 }
                 // §3.2 appendBuffer steps 2-5.
                 sb._updating = true;

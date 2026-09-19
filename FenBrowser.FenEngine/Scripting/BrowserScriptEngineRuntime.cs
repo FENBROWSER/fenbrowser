@@ -14172,6 +14172,32 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     }
                 })();
 
+                // WebIDL "QuotaExceededError": a DOMException subclass whose name is fixed and
+                // that carries the optional quota and requested amounts (null when unknown).
+                globalThis.QuotaExceededError = function QuotaExceededError(message, options) {
+                    DOMException.call(this, message, 'QuotaExceededError');
+                    var quota = null, requested = null;
+                    if (options !== undefined && options !== null) {
+                        if (typeof options !== 'object') throw new TypeError("The 'options' argument is not an object.");
+                        if (options.quota !== undefined) {
+                            quota = Number(options.quota);
+                            if (!(quota >= 0) || !isFinite(quota)) throw new RangeError('quota must be a non-negative finite number.');
+                        }
+                        if (options.requested !== undefined) {
+                            requested = Number(options.requested);
+                            if (!(requested >= 0) || !isFinite(requested)) throw new RangeError('requested must be a non-negative finite number.');
+                        }
+                        if (quota !== null && requested !== null && requested < quota) throw new RangeError('requested must not be less than quota.');
+                    }
+                    Object.defineProperty(this, '_quota', { value: quota, writable: true, configurable: true });
+                    Object.defineProperty(this, '_requested', { value: requested, writable: true, configurable: true });
+                };
+                QuotaExceededError.prototype = Object.create(DOMException.prototype);
+                QuotaExceededError.prototype.constructor = QuotaExceededError;
+                Object.defineProperty(QuotaExceededError.prototype, 'quota', { get: function () { return this._quota === undefined ? null : this._quota; }, configurable: true, enumerable: true });
+                Object.defineProperty(QuotaExceededError.prototype, 'requested', { get: function () { return this._requested === undefined ? null : this._requested; }, configurable: true, enumerable: true });
+                Object.defineProperty(QuotaExceededError.prototype, Symbol.toStringTag, { value: 'QuotaExceededError', configurable: true });
+
                 // Minimal queued ReadableStream/reader implementation for site
                 // bootstrap code that constructs streams or checks the global.
                 function ReadableStreamDefaultController(stream) {
