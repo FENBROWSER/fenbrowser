@@ -119,6 +119,9 @@ public sealed class AudioRenderer : IAudioRenderCallback
 
     public void MarkEndOfStream() => Volatile.Write(ref _endOfStream, true);
 
+    /// <summary>More audio is coming after all (a MediaSource reopened by an append).</summary>
+    public void ClearEndOfStream() => Volatile.Write(ref _endOfStream, false);
+
     /// <summary>
     /// Media thread: drops everything queued and tells the clock time now reads
     /// <paramref name="time"/> until new audio plays. The device thread notices the

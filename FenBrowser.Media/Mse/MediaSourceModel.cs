@@ -172,6 +172,20 @@ public sealed class MediaSourceModel
         }
     }
 
+    /// <summary>§3.5.4 "prepare append" step 3: an append while ended puts the source back in the open state; true when it did.</summary>
+    public bool Reopen()
+    {
+        lock (Gate)
+        {
+            if (ReadyState != MediaSourceReadyState.Ended)
+                return false;
+            ReadyState = MediaSourceReadyState.Open;
+            EndOfStreamError = EndOfStreamError.None;
+            Changed?.Invoke();
+            return true;
+        }
+    }
+
     public void SetLiveSeekableRange(MediaTime start, MediaTime end)
     {
         lock (Gate)

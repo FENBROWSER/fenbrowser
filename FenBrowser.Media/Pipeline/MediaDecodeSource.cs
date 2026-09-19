@@ -59,8 +59,15 @@ public interface IMediaDecodeSource : IAsyncDisposable
 {
     ValueTask<MediaSourceInfo> OpenAsync(CancellationToken cancellationToken);
 
-    /// <summary>The next decoded item in stream order, or null at the end of the stream.</summary>
+    /// <summary>The next decoded item in stream order, or null at the end of the stream - or, when <see cref="WaitingForData"/> is then true, because nothing is available yet.</summary>
     ValueTask<DecodedMedia?> ReadAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// True after a null read that meant "not buffered yet" rather than the end: a
+    /// MediaSource whose script has not appended this far. The player stalls until the
+    /// source wakes it instead of ending playback.
+    /// </summary>
+    bool WaitingForData => false;
 
     /// <summary>
     /// Repositions at or before <paramref name="target"/>; the next read starts at the

@@ -85,6 +85,9 @@ public sealed class VideoRenderer : IDisposable
 
     public void MarkEndOfStream() => _endOfStream = true;
 
+    /// <summary>More pictures are coming after all (a MediaSource reopened by an append).</summary>
+    public void ClearEndOfStream() => _endOfStream = false;
+
     /// <summary>
     /// The picture to show at <paramref name="now"/>: the last queued one whose start is at
     /// or before <paramref name="now"/>, or null when nothing newer than the current picture

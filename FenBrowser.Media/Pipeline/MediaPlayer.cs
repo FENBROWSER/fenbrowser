@@ -5,6 +5,7 @@ using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Clock;
 using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Element;
+using FenBrowser.Media.Mse;
 using FenBrowser.Media.Video;
 
 namespace FenBrowser.Media.Pipeline;
@@ -52,7 +53,8 @@ public sealed record MediaPlayerServices(
 /// </remarks>
 public sealed class MediaPlayer : IMediaResource
 {
-    private readonly IByteSource _source;
+    private readonly IByteSource? _source;
+    private readonly MediaSourceModel? _mediaSource;
     private readonly string? _declaredMime;
     private readonly IMediaResourceClient _client;
     private readonly Action<Action> _post;
@@ -77,6 +79,9 @@ public sealed class MediaPlayer : IMediaResource
     private MediaTime _duration = MediaTime.PositiveInfinity;
     private bool _endOfStream;
     private bool _endReported;
+    private bool _reopenRequested;
+    private MediaTime? _reportedDuration;
+    private bool _fetchedReported;
     private bool _potentiallyPlaying;
     private bool _outputRunning;
     private bool _preservesPitch = true;
@@ -114,6 +119,74 @@ public sealed class MediaPlayer : IMediaResource
         _services = services;
         _context = context;
         Presenter = presenter ?? new VideoPresenter();
+    }
+
+    /// <summary>
+    /// A player over a MediaSource (MSE §2.4.2 "attaching to a media element"): the
+    /// frames come from the source buffers instead of a byte source, buffered and seekable
+    /// follow the MediaSource, and a read that finds nothing appended yet stalls the
+    /// pipeline until the next append wakes it.
+    /// </summary>
+    public MediaPlayer(
+        MediaSourceModel mediaSource,
+        IMediaResourceClient client,
+        Action<Action> postToClient,
+        MediaPlayerServices services,
+        MediaPipelineContext context,
+        VideoPresenter? presenter = null)
+    {
+        ArgumentNullException.ThrowIfNull(mediaSource);
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(postToClient);
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(context);
+        _mediaSource = mediaSource;
+        _client = client;
+        _post = postToClient;
+        _services = services;
+        _context = context;
+        Presenter = presenter ?? new VideoPresenter();
+        mediaSource.Changed += OnMediaSourceChanged;
+    }
+
+    /// <summary>
+    /// The MediaSource changed (under its gate, on the page thread): the element hears the
+    /// new buffered, seekable and duration, and the media task wakes up to read on - or to
+    /// take back an end of stream that an append reopened (§3.5.4 "prepare append" step 3).
+    /// </summary>
+    private void OnMediaSourceChanged()
+    {
+        var model = _mediaSource!;
+        var buffered = model.Buffered;
+        var seekable = model.Seekable;
+        var duration = model.Duration;
+        var state = model.ReadyState;
+        if (_readyState == MediaReadyState.HaveNothing)
+            return; // the metadata report carries the first values
+        Report(() =>
+        {
+            _client.BufferedChanged(buffered);
+            _client.SeekableChanged(seekable);
+            if (duration is { } value && value != _reportedDuration)
+            {
+                _reportedDuration = value;
+                _client.DurationChanged(value);
+            }
+
+            bool ended = state == MediaSourceReadyState.Ended;
+            if (ended && !_fetchedReported)
+                _client.FetchedEntirely();
+            else if (!ended)
+                _client.Progress();
+            _fetchedReported = ended;
+        });
+        Post(() =>
+        {
+            if (state == MediaSourceReadyState.Open && _endOfStream)
+                _reopenRequested = true;
+            if (duration is { } value)
+                _duration = value;
+        });
     }
 
     public PlayerId Player => _context.Player;
@@ -193,6 +266,8 @@ public sealed class MediaPlayer : IMediaResource
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
         _lifetime.Cancel();
+        if (_mediaSource is { } mediaSource)
+            mediaSource.Changed -= OnMediaSourceChanged;
         _wake.Release();
         // The primitives outlive the media task; release them once it has ended.
         var task = _task;
@@ -210,8 +285,17 @@ public sealed class MediaPlayer : IMediaResource
 
     private void Post(Action command)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
         _commands.Enqueue(command);
-        _wake.Release();
+        try
+        {
+            _wake.Release();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Disposed between the check and the release: the media task is gone anyway.
+        }
     }
 
     // ---- The media task -----------------------------------------------------------------------
@@ -271,8 +355,15 @@ public sealed class MediaPlayer : IMediaResource
 
     private async ValueTask<bool> LoadAsync(CancellationToken cancellation)
     {
-        var factory = _services.DecodeSources ?? new LocalMediaDecodeSourceFactory(_services.Demuxers, _services.Decoders);
-        _decodeSource = factory.Create(_source, _declaredMime, _context);
+        if (_mediaSource is { } mediaSource)
+        {
+            _decodeSource = new MseDecodeSource(mediaSource, _services.Decoders, _context);
+        }
+        else
+        {
+            var factory = _services.DecodeSources ?? new LocalMediaDecodeSourceFactory(_services.Demuxers, _services.Decoders);
+            _decodeSource = factory.Create(_source!, _declaredMime, _context);
+        }
 
         MediaSourceInfo info;
         try
@@ -325,15 +416,42 @@ public sealed class MediaPlayer : IMediaResource
         _duration = info.Duration;
         var tracks = info.Tracks;
         var duration = _duration;
-        Report(() =>
+        if (_mediaSource is { } model)
         {
-            _client.MetadataAvailable(new MediaResourceMetadata(duration, videoWidth, videoHeight, tracks));
-            var whole = duration.IsInfinite ? MediaTimeRanges.Empty : MediaTimeRanges.Single(MediaTime.Zero, duration);
-            if (info.IsSeekable)
-                _client.SeekableChanged(whole);
-            _client.BufferedChanged(whole);
-            _client.FetchedEntirely();
-        });
+            MediaTimeRanges buffered;
+            MediaTimeRanges seekable;
+            bool ended;
+            lock (model.Gate)
+            {
+                buffered = model.Buffered;
+                seekable = model.Seekable;
+                ended = model.ReadyState == MediaSourceReadyState.Ended;
+            }
+
+            _reportedDuration = duration;
+            Report(() =>
+            {
+                _client.MetadataAvailable(new MediaResourceMetadata(duration, videoWidth, videoHeight, tracks));
+                _client.SeekableChanged(seekable);
+                _client.BufferedChanged(buffered);
+                if (ended && !_fetchedReported)
+                    _client.FetchedEntirely();
+                _fetchedReported = ended;
+            });
+        }
+        else
+        {
+            Report(() =>
+            {
+                _client.MetadataAvailable(new MediaResourceMetadata(duration, videoWidth, videoHeight, tracks));
+                var whole = duration.IsInfinite ? MediaTimeRanges.Empty : MediaTimeRanges.Single(MediaTime.Zero, duration);
+                if (info.IsSeekable)
+                    _client.SeekableChanged(whole);
+                _client.BufferedChanged(whole);
+                _client.FetchedEntirely();
+            });
+        }
+
         _readyState = MediaReadyState.HaveMetadata;
         return true;
     }
@@ -345,6 +463,16 @@ public sealed class MediaPlayer : IMediaResource
 
         try
         {
+            if (_reopenRequested)
+            {
+                // An append after endOfStream: the stream goes on from where it ended.
+                _reopenRequested = false;
+                _endOfStream = false;
+                _endReported = false;
+                _renderer?.ClearEndOfStream();
+                _video?.ClearEndOfStream();
+            }
+
             if (_heldVideo is not null && _video is { IsFull: false })
             {
                 _video.Enqueue(_heldVideo);
@@ -356,6 +484,9 @@ public sealed class MediaPlayer : IMediaResource
                 var item = await source.ReadAsync(cancellation).ConfigureAwait(false);
                 if (item is not { } decoded)
                 {
+                    if (source.WaitingForData)
+                        break; // not the end: script has not appended this far yet
+
                     output?.FlushStretcher();
                     _renderer?.MarkEndOfStream();
                     _video?.MarkEndOfStream();
@@ -705,7 +836,7 @@ public sealed class MediaPlayer : IMediaResource
             Presenter.Clear();
             if (_decodeSource is not null)
                 await _decodeSource.DisposeAsync().ConfigureAwait(false);
-            else
+            else if (_source is not null)
                 await _source.DisposeAsync().ConfigureAwait(false);
         }
         catch (Exception ex)

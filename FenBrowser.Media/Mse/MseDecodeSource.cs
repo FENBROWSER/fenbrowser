@@ -155,6 +155,17 @@ public sealed class MseDecodeSource : IMediaDecodeSource
                 return _decoded.Count > 0 ? _decoded.Dequeue() : null;
             }
 
+            // The decoder was drained at an end of stream that script then reopened with
+            // another append: it restarts from the next random access point.
+            if (cursor.Drained)
+            {
+                if (cursor.Decoder is { } drainedAudio)
+                    await drainedAudio.ResetAsync(cancellationToken).ConfigureAwait(false);
+                if (cursor.VideoDecoder is { } drainedVideo)
+                    await drainedVideo.ResetAsync(cancellationToken).ConfigureAwait(false);
+                cursor.Drained = false;
+            }
+
             // A new initialization segment changed the codec configuration: drain the old
             // decoder's pictures, then configure for the new one (MSE §3.5.8 step 3.3).
             if (frame.ConfigVersion != cursor.ConfigVersion)
@@ -184,7 +195,6 @@ public sealed class MseDecodeSource : IMediaDecodeSource
             var packet = EncodedPacket.Rent(_context.Limits, cursor.Track.Kind, cursor.Track.TrackId, frame.Bytes, frame.Pts, frame.Dts, frame.Duration, frame.IsKeyframe);
             frame.Packet.Span.CopyTo(packet.Memory.Span);
             cursor.Advance(frame);
-            cursor.Drained = false;
             using (packet)
             {
                 if (cursor.Decoder is { } audioDecoder2)
@@ -306,9 +316,9 @@ public sealed class MseDecodeSource : IMediaDecodeSource
             if (index >= frames.Count)
                 return null;
             var frame = frames[index];
-            // After a removal the next frame may not be decodable on its own: start at the
-            // next random access point instead.
-            if (LastDts is { } previous && !frame.IsKeyframe && frame.Dts - previous > frame.Duration + frame.Duration + MediaTime.FromSeconds(0.1))
+            // After a removal, or a drain, the next frame may not be decodable on its own:
+            // start at the next random access point instead.
+            if (!frame.IsKeyframe && (Drained || (LastDts is { } previous && frame.Dts - previous > frame.Duration + frame.Duration + MediaTime.FromSeconds(0.1))))
             {
                 while (index < frames.Count && !frames[index].IsKeyframe)
                     index++;
