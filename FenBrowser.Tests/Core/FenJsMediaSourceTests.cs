@@ -61,7 +61,7 @@ public sealed class FenJsMediaSourceTests
             globalThis.__events = [];
             var v = document.getElementById('v');
             var ms = new ManagedMediaSource();
-            globalThis.__events.push('type:' + (ms instanceof MediaSource) + ':' + (ms instanceof ManagedMediaSource) + ':' + ms.streaming + ':' + Object.prototype.toString.call(ms) + ':' + ManagedMediaSource.canConstructInDedicatedWorker);
+            globalThis.__events.push('type:' + (ms instanceof MediaSource) + ':' + (ms instanceof ManagedMediaSource) + ':' + ms.streaming + ':' + Object.prototype.toString.call(ms) + ':' + ManagedMediaSource.canConstructInDedicatedWorker + ':' + (typeof ManagedMediaSource.isTypeSupported));
             var bytes = Uint8Array.from(atob('{{Convert.ToBase64String(bytes)}}'), function (c) { return c.charCodeAt(0); });
             ms.addEventListener('startstreaming', function () { globalThis.__events.push('startstreaming:' + ms.streaming); });
             ms.addEventListener('endstreaming', function () { globalThis.__events.push('endstreaming:' + ms.streaming); });
@@ -79,7 +79,7 @@ public sealed class FenJsMediaSourceTests
 
         var events = await WaitForAsync(engine, "globalThis.__events.some(function (e) { return e.indexOf('sourceended') === 0; }) ? globalThis.__events.join(',') : ''");
         var actual = events.Split(',').ToList();
-        Assert.Equal("type:true:true:false:[object ManagedMediaSource]:false", actual[0]);
+        Assert.Equal("type:true:true:false:[object ManagedMediaSource]:false:function", actual[0]);
         Assert.Contains("startstreaming:true", actual);
         Assert.Contains("appended:true", actual);
         Assert.Contains("endstreaming:false", actual);

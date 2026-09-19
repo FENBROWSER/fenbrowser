@@ -1026,6 +1026,9 @@ public sealed partial class FenJsBrowserScriptEngine
                 this._streaming = false;
             }
             defineInterface('ManagedMediaSource', ManagedMediaSource, MediaSource);
+            // WebIDL: an interface object inherits its parent's, so the static
+            // isTypeSupported answers on ManagedMediaSource too (hls.js prefers it).
+            Object.setPrototypeOf(ManagedMediaSource, MediaSource);
             ['onstartstreaming', 'onendstreaming'].forEach(function (n) { handlerAttribute(ManagedMediaSource.prototype, n); });
             accessor(ManagedMediaSource.prototype, 'streaming', function () { return this._streaming; });
             Object.defineProperty(ManagedMediaSource, 'canConstructInDedicatedWorker', { value: false, configurable: true });
