@@ -208,4 +208,21 @@ public class MediaClockTests
         device.FramesPlayed = 700;
         Assert.Equal(Ms(42_100), clock.CurrentTime);
     }
+
+    /// <summary>A block the device thread was copying when the seek reset the clock is audio from before the seek: it must not move time back.</summary>
+    [Fact]
+    public void AudioMaster_SegmentRenderedBeforeAReset_IsIgnored()
+    {
+        var device = new FakeAudioPosition(1000);
+        var clock = new AudioMasterClock(device);
+        long epoch = clock.ResetCount;
+        clock.Reset(Ms(1000));
+        clock.AppendSegment(0, 1000, Ms(46), 1.0, epoch);
+        device.FramesPlayed = 500;
+        Assert.Equal(Ms(1000), clock.CurrentTime);
+
+        clock.AppendSegment(1000, 1000, Ms(1000), 1.0, clock.ResetCount);
+        device.FramesPlayed = 1100;
+        Assert.Equal(Ms(1100), clock.CurrentTime);
+    }
 }

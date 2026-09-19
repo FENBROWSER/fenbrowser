@@ -166,6 +166,11 @@ public sealed class MediaSourceModel
                 exactSeconds = null;
             }
 
+            // §2.4.6 step 1: the same duration again is not a change.
+            var seconds = exactSeconds ?? (duration.IsInfinite ? double.PositiveInfinity : duration.TotalSeconds);
+            if (Duration == duration && DurationSeconds.Equals(seconds))
+                return;
+
             Duration = duration;
             ExactDurationSeconds = exactSeconds;
             Changed?.Invoke();

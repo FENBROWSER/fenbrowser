@@ -226,6 +226,14 @@ public class MseTests
         Assert.Equal(1.2, model.Duration!.Value.TotalSeconds, 3);
         model.SetDuration(MediaTime.FromSeconds(10));
         Assert.Equal(10, model.Duration!.Value.TotalSeconds, 3);
+
+        // §2.4.6 step 1: the same value again (as script reads it) is not a change, so the
+        // element hears no second durationchange (mediasource-duration.html).
+        int changes = 0;
+        model.Changed += () => changes++;
+        model.SetDuration(MediaTime.FromSeconds(10), 10.0);
+        model.SetDuration(MediaTime.FromSeconds(model.DurationSeconds), model.DurationSeconds);
+        Assert.Equal(0, changes);
     }
 
     [Fact]

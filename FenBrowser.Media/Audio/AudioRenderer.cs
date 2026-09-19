@@ -159,6 +159,8 @@ public sealed class AudioRenderer : IAudioRenderCallback
             DropCurrent();
         }
 
+        long clockEpoch = _clock.ResetCount;
+
         while (written < frames)
         {
             if (_current is null)
@@ -191,7 +193,7 @@ public sealed class AudioRenderer : IAudioRenderCallback
 
             int run = written - runStart;
             if (run > 0)
-                _clock.AppendSegment(_outputFrames + runStart, run, mediaStart, rate);
+                _clock.AppendSegment(_outputFrames + runStart, run, mediaStart, rate, clockEpoch);
 
             if (_position >= blockFrames)
             {

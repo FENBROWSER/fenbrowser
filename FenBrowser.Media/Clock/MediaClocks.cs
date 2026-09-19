@@ -204,7 +204,16 @@ public sealed class AudioMasterClock : IMediaClock
     /// <paramref name="outputStartFrame"/> carry media from <paramref name="mediaStart"/>
     /// at <paramref name="rate"/> (0 for inserted silence that does not advance time).
     /// </summary>
-    public void AppendSegment(long outputStartFrame, long frameCount, MediaTime mediaStart, double rate)
+    public void AppendSegment(long outputStartFrame, long frameCount, MediaTime mediaStart, double rate) =>
+        AppendSegment(outputStartFrame, frameCount, mediaStart, rate, ResetCount);
+
+    /// <summary>
+    /// As above, for a segment the device thread rendered after reading
+    /// <paramref name="resetCount"/>: a <see cref="Reset"/> in between (a seek while the
+    /// block was being copied) makes it audio from before the seek, which must not put
+    /// the clock back to where it came from.
+    /// </summary>
+    public void AppendSegment(long outputStartFrame, long frameCount, MediaTime mediaStart, double rate, long resetCount)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(outputStartFrame);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(frameCount);
@@ -213,11 +222,18 @@ public sealed class AudioMasterClock : IMediaClock
 
         lock (_gate)
         {
+            if (resetCount != _resetCount)
+                return;
             if (_segments.Count > 0 && outputStartFrame < _segments[^1].OutputEnd)
                 throw new InvalidOperationException("Audio segments must not overlap or go backwards in the output stream.");
             _segments.Add(new Segment(outputStartFrame, frameCount, mediaStart, rate));
         }
     }
+
+    /// <summary>How many times the clock was reset; a segment rendered against an older count is stale.</summary>
+    public long ResetCount => Volatile.Read(ref _resetCount);
+
+    private long _resetCount;
 
     /// <summary>Forgets every segment (flush or seek); time reads <paramref name="time"/> until new audio is written.</summary>
     public void Reset(MediaTime time)
@@ -226,6 +242,7 @@ public sealed class AudioMasterClock : IMediaClock
         {
             _segments.Clear();
             _idleTime = time;
+            _resetCount++;
         }
     }
 

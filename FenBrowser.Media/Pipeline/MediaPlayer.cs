@@ -76,6 +76,7 @@ public sealed class MediaPlayer : IMediaResource
     private VideoFrame? _heldVideo;
     private MediaTime? _videoTrimBefore;
     private bool _presentFirstFrame;
+    private bool _wholeResourceAvailable;
     private int _presentedWidth;
     private int _presentedHeight;
     private MediaTime _duration = MediaTime.PositiveInfinity;
@@ -189,6 +190,7 @@ public sealed class MediaPlayer : IMediaResource
         {
             if (state == MediaSourceReadyState.Open && _endOfStream)
                 _reopenRequested = true;
+            _wholeResourceAvailable = state == MediaSourceReadyState.Ended;
             if (duration is { } value)
                 _duration = value;
         });
@@ -439,6 +441,7 @@ public sealed class MediaPlayer : IMediaResource
             }
 
             _reportedDuration = duration;
+            _wholeResourceAvailable = ended;
             Report(() =>
             {
                 _client.MetadataAvailable(new MediaResourceMetadata(duration, videoWidth, videoHeight, tracks));
@@ -690,6 +693,11 @@ public sealed class MediaPlayer : IMediaResource
             if ((video.IsFull || _heldVideo is not null) && state >= MediaReadyState.HaveCurrentData)
                 state = MediaReadyState.HaveEnoughData;
         }
+
+        // HTML §4.8.11.7: with the whole resource in hand (an ended MediaSource) nothing
+        // can stall playback, so future data is enough data.
+        if (_wholeResourceAvailable && state == MediaReadyState.HaveFutureData)
+            state = MediaReadyState.HaveEnoughData;
 
         // Once data has been seen the state never falls back below current data except
         // through a seek, which resets it explicitly; a momentary dip is not a stall.

@@ -248,6 +248,34 @@ public class MsePlayerTests
         }
     }
 
+    /// <summary>mediasource-endofstream: a paused element told the stream ended has all the data, so canplaythrough follows.</summary>
+    [Fact]
+    public async Task EndOfStream_OnAPausedElement_MeansEnoughData()
+    {
+        var root = Environment.GetEnvironmentVariable("FEN_WPT_ROOT") ?? @"D:\wpt";
+        var file = Path.Combine(root, "media-source", "mp4", "test.mp4");
+        if (!File.Exists(file) || !OperatingSystem.IsWindows())
+            return;
+        var client = new RecordingClient();
+        var (player, model) = Create(client);
+        player.Start();
+        try
+        {
+            var buffer = model.AddSourceBuffer("video/mp4; codecs=\"mp4a.40.2,avc1.4d400d\"", generateTimestamps: false);
+            lock (model.Gate)
+                Assert.Equal(AppendOutcome.Ok, buffer.Append(File.ReadAllBytes(file)));
+            model.NotifyChanged();
+            await client.WaitForAsync(() => client.ReadyState >= MediaReadyState.HaveFutureData, timeoutMs: 6000);
+            model.EndOfStream(EndOfStreamError.None);
+            await client.WaitForAsync(() => client.ReadyState == MediaReadyState.HaveEnoughData, timeoutMs: 4000);
+            Assert.Null(client.Failure);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
     [Fact]
     public async Task DetachBeforeTheFirstSegment_FailsAsUnsupported()
     {
