@@ -11030,6 +11030,45 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             length: 0);
         _interpreter.RegisterGlobalValue("__fenNativeAudioCtor", audioConstructor);
 
+        JsValue CreateOption(IReadOnlyList<JsValue> args)
+        {
+            // HTML 4.10.10 dom-option: new Option(text, value, defaultSelected, selected)
+            // is an option element with a text node child, a value attribute when one is
+            // given, a selected attribute for defaultSelected, and selectedness set.
+            var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument
+                ?? _parentRealmOwner?._currentDomRoot as Document ?? _parentRealmOwner?._currentDomRoot?.OwnerDocument
+                ?? new Document();
+
+            var option = document.CreateElement("option");
+            if (args.Count > 0 && args[0].Tag != JsValueTag.Undefined)
+            {
+                var text = CoerceToHostString(args[0]) ?? string.Empty;
+                if (text.Length > 0)
+                {
+                    option.AppendChild(document.CreateTextNode(text));
+                }
+            }
+
+            if (args.Count > 1 && args[1].Tag != JsValueTag.Undefined)
+            {
+                option.SetAttribute("value", CoerceToHostString(args[1]) ?? string.Empty);
+            }
+
+            if (args.Count > 2 && args[2].Tag switch { JsValueTag.Boolean => args[2].AsBoolean(), JsValueTag.Undefined or JsValueTag.Null => false, _ => true })
+            {
+                option.SetAttribute("selected", string.Empty);
+            }
+
+            return ToHostNodeOrNull(option);
+        }
+
+        var optionConstructor = _interpreter.AllocateNativeConstructor(
+            "Option",
+            (_, args) => CreateOption(args),
+            CreateOption,
+            length: 0);
+        _interpreter.RegisterGlobalValue("__fenNativeOptionCtor", optionConstructor);
+
         EvaluateWithFenJsRaw(
             """
             (function () {
@@ -11068,6 +11107,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     configurable: true
                 });
                 delete globalThis.__fenNativeAudioCtor;
+
+                var nativeOption = globalThis.__fenNativeOptionCtor;
+                if (globalThis.HTMLOptionElement && globalThis.HTMLOptionElement.prototype) {
+                    nativeOption.prototype = globalThis.HTMLOptionElement.prototype;
+                }
+                Object.defineProperty(globalThis, 'Option', {
+                    value: nativeOption,
+                    writable: true,
+                    configurable: true
+                });
+                delete globalThis.__fenNativeOptionCtor;
             })();
             """);
     }
