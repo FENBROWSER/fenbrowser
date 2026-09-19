@@ -94,6 +94,9 @@ public sealed class MediaPlayer : IMediaResource
     private MediaReadyState _readyState = MediaReadyState.HaveNothing;
     private MediaTime? _pendingSeek;
     private MediaTime? _pendingResync;
+
+    /// <summary>A seek whose target the MediaSource has no data for yet: it completes when data arrives or the source ends.</summary>
+    private MediaTime? _seekAwaitingData;
     private MediaTime? _trimBefore;
     private int _seekSequence;
     private long _lastPositionTick;
@@ -329,6 +332,8 @@ public sealed class MediaPlayer : IMediaResource
 
                 await FillAheadAsync(cancellation).ConfigureAwait(false);
                 LogFill("idle");
+                if (_seekAwaitingData is { } awaited && (_endOfStream || HasDecodedData()))
+                    CompleteSeek(awaited);
                 UpdateOutputState();
                 PresentVideo();
                 ReportReadiness();
@@ -763,6 +768,8 @@ public sealed class MediaPlayer : IMediaResource
             target = MediaTime.Zero;
 
         _context.Log.Emit(_context.Player, MediaEventKind.SeekStart, MediaLogLevel.Debug, $"Seek to {target}.", ("target", target.ToString()));
+        _blocksDeliveredSinceSeek = 0;
+        _picturesPresentedAtSeek = _video?.PresentedFrames ?? 0;
         _renderer?.Flush(target);
         _stretcher?.Flush();
         _monotonic?.SetTime(target);
@@ -795,6 +802,7 @@ public sealed class MediaPlayer : IMediaResource
             Report(() => _client.ReadyStateChanged(MediaReadyState.HaveMetadata));
         }
 
+        _seekAwaitingData = null;
         await FillAheadAsync(cancellation).ConfigureAwait(false);
         if (_failed)
             return;
@@ -802,7 +810,41 @@ public sealed class MediaPlayer : IMediaResource
         if (!report)
             return;
 
-        var landed = target;
+        // HTML §4.8.11.9 step 12: the seek waits until the data for the new position is
+        // there. A MediaSource may not have it yet (a seek past what script appended):
+        // the seek stays open until an append brings it or endOfStream() settles it.
+        if (!_endOfStream && _decodeSource is MseDecodeSource { WaitingForData: true } && !HasDecodedData())
+        {
+            _seekAwaitingData = target;
+            _context.Log.Emit(_context.Player, MediaEventKind.Stall, MediaLogLevel.Debug, $"Seek to {target} waits for data.", ("target", target.ToString()));
+            return;
+        }
+
+        CompleteSeek(target);
+    }
+
+    /// <summary>Anything decoded for the position since the last seek, queued or already shown (media thread counts, so the device thread's late drop of a flushed block cannot fake it).</summary>
+    private bool HasDecodedData() =>
+        _blocksDeliveredSinceSeek > 0
+        || (_video is { } video && (video.QueuedCount > 0 || video.PresentedFrames > _picturesPresentedAtSeek));
+
+    private long _blocksDeliveredSinceSeek;
+    private long _picturesPresentedAtSeek;
+
+    private void CompleteSeek(MediaTime target)
+    {
+        _seekAwaitingData = null;
+        // A seek that ended up past everything on an ended MediaSource lands at the end:
+        // the duration endOfStream() just set, which may not have reached this task yet.
+        var limit = _duration;
+        if (_mediaSource is { } model)
+        {
+            lock (model.Gate)
+                limit = model.Duration ?? limit;
+            _duration = limit;
+        }
+
+        var landed = !limit.IsInfinite && target > limit ? limit : target;
         _context.Log.Emit(_context.Player, MediaEventKind.SeekEnd, MediaLogLevel.Debug, $"Seek landed at {landed}.", ("position", landed.ToString()));
         Report(() =>
         {
@@ -946,6 +988,7 @@ public sealed class MediaPlayer : IMediaResource
         /// <summary>Straight to the renderer, or through the time stretcher when pitch is preserved at a rate other than 1.</summary>
         private void Deliver(AudioBlock block)
         {
+            owner._blocksDeliveredSinceSeek++;
             if (!renderer.PitchPreserved)
             {
                 renderer.Enqueue(block);

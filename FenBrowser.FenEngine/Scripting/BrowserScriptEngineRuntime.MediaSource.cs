@@ -89,6 +89,10 @@ public sealed partial class FenJsBrowserScriptEngine
                 _ => EndOfStreamError.None,
             };
             entry.Model.EndOfStream(kind);
+            // §2.4.7 step 3: the duration change runs now, so the element's duration and
+            // a playback position beyond it move before script goes on.
+            if (entry.Element != null && entry.Model.Duration is { } duration)
+                GetOrCreateMediaBinding(entry.Element).Controller.ApplyDurationChange(duration, entry.Model.ExactDurationSeconds);
             entry.Resource?.ReportEndOfStreamError(kind);
         }));
         Native("__fenMseSetLiveSeekableRange", 3, args => Mse(() => MseEntry(args).Model.SetLiveSeekableRange(ToMediaTime(args, 1), ToMediaTime(args, 2))));

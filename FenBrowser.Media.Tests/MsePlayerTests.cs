@@ -56,7 +56,7 @@ public class MsePlayerTests
         }
     }
 
-    private static (MediaPlayer Player, MediaSourceModel Model) Create(RecordingClient client)
+    private static (MediaPlayer Player, MediaSourceModel Model) Create(RecordingClient client, IMediaLogSink? log = null)
     {
         var demuxers = new DemuxerRegistry();
         var decoders = new DecoderRegistry();
@@ -64,7 +64,7 @@ public class MsePlayerTests
         Assert.True(FfmpegDecoders.TryRegister(decoders, NullMediaLogSink.Instance), "libavcodec must be available on the development machine");
         FenBrowser.Media.Codecs.MediaFoundation.MediaFoundationDecoders.TryRegister(decoders, NullMediaLogSink.Instance);
         var services = new MediaPlayerServices(demuxers, decoders, NullAudioOutputFactory.Realtime, TimeProvider.System);
-        var context = MediaPipelineContext.ForTests();
+        var context = MediaPipelineContext.ForTests(log);
         var model = new MediaSourceModel(context);
         model.Attach();
         return (new MediaPlayer(model, client, action => action(), services, context), model);
@@ -195,6 +195,51 @@ public class MsePlayerTests
                 Assert.Equal(AppendOutcome.Ok, buffer.Append(File.ReadAllBytes(file)));
             model.NotifyChanged();
             await client.WaitForAsync(() => client.ReadyState >= MediaReadyState.HaveFutureData, timeoutMs: 6000);
+            Assert.Null(client.Failure);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// mediasource-seek-beyond-duration: a seek to the duration lands past the buffered
+    /// data, so it waits (HTML §4.8.11.9 step 12) until endOfStream(), which lowers the
+    /// duration to the buffered end, moves the position there and ends playback.
+    /// </summary>
+    [Fact]
+    public async Task SeekPastTheBufferedData_WaitsForEndOfStream_ThenEnds()
+    {
+        var root = Environment.GetEnvironmentVariable("FEN_WPT_ROOT") ?? @"D:\wpt";
+        var file = Path.Combine(root, "media-source", "mp4", "test.mp4");
+        if (!File.Exists(file) || !OperatingSystem.IsWindows())
+            return;
+        var client = new RecordingClient();
+        var (player, model) = Create(client);
+        player.Start();
+        try
+        {
+            var buffer = model.AddSourceBuffer("video/mp4; codecs=\"mp4a.40.2,avc1.4d400d\"", generateTimestamps: false);
+            lock (model.Gate)
+                Assert.Equal(AppendOutcome.Ok, buffer.Append(File.ReadAllBytes(file)));
+            model.NotifyChanged();
+            await client.WaitForAsync(() => client.ReadyState >= MediaReadyState.HaveFutureData, timeoutMs: 6000);
+            player.UpdatePlayback(potentiallyPlaying: true, playbackRate: 1.0, preservesPitch: true, effectiveVolume: 1.0);
+            await client.WaitForAsync(() => client.Position >= MediaTime.FromSeconds(0.3), timeoutMs: 4000);
+
+            // The init segment says 6.549 s; the frames end at 6.548117 s (audio).
+            Assert.Equal(6.549, client.Metadata!.Duration.TotalSeconds, 3);
+            player.Seek(MediaTime.FromSeconds(6.549), approximateForSpeed: false);
+            await Task.Delay(500);
+            Assert.DoesNotContain("seeked", client.Events);
+            Assert.Equal(0, client.EndedCount);
+
+            model.EndOfStream(EndOfStreamError.None);
+            await client.WaitForAsync(() => client.Events.Contains("seeked"), timeoutMs: 4000);
+            await client.WaitForAsync(() => client.EndedCount == 1, timeoutMs: 4000);
+            Assert.Equal(6.548117, client.Duration!.Value.TotalSeconds, 5);
+            Assert.Equal(6.548117, client.Position.TotalSeconds, 3);
             Assert.Null(client.Failure);
         }
         finally
