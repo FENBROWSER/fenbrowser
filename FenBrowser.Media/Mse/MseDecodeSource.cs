@@ -54,7 +54,10 @@ public sealed class MseDecodeSource : IMediaDecodeSource
             {
                 foreach (var track in buffer.TrackBuffers)
                 {
-                    var info = new MediaTrackInfo(track.TrackId, track.Config!, MediaTime.Zero);
+                    // The configuration playback starts with: the first buffered frame's
+                    // when segments under a later initialization segment are in already.
+                    var config = (track.Frames.Count > 0 ? track.ConfigFor(track.Frames[0].ConfigVersion) : null) ?? track.Config!;
+                    var info = new MediaTrackInfo(track.TrackId, config, MediaTime.Zero);
                     tracks.Add(info);
                     if (track.Kind == MediaTrackKind.Audio && audio is null)
                     {
@@ -85,7 +88,7 @@ public sealed class MseDecodeSource : IMediaDecodeSource
             }
             else
             {
-                _audio.ConfigVersion = _audio.Track.ConfigVersion;
+                _audio.ConfigVersion = _audio.Track.Frames.Count > 0 ? _audio.Track.Frames[0].ConfigVersion : _audio.Track.ConfigVersion;
                 _audio.Codec = audio.Config.Codec;
             }
         }
@@ -100,7 +103,7 @@ public sealed class MseDecodeSource : IMediaDecodeSource
             }
             else
             {
-                _video.ConfigVersion = _video.Track.ConfigVersion;
+                _video.ConfigVersion = _video.Track.Frames.Count > 0 ? _video.Track.Frames[0].ConfigVersion : _video.Track.ConfigVersion;
                 _video.Codec = video.Config.Codec;
             }
         }

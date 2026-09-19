@@ -76,6 +76,8 @@ public sealed class MediaPlayer : IMediaResource
     private VideoFrame? _heldVideo;
     private MediaTime? _videoTrimBefore;
     private bool _presentFirstFrame;
+    private int _presentedWidth;
+    private int _presentedHeight;
     private MediaTime _duration = MediaTime.PositiveInfinity;
     private bool _endOfStream;
     private bool _endReported;
@@ -411,6 +413,8 @@ public sealed class MediaPlayer : IMediaResource
             _presentFirstFrame = true;
             videoWidth = videoTrack.Config.Width;
             videoHeight = videoTrack.Config.Height;
+            _presentedWidth = videoWidth;
+            _presentedHeight = videoHeight;
         }
 
         _duration = info.Duration;
@@ -598,6 +602,17 @@ public sealed class MediaPlayer : IMediaResource
 
         _presentFirstFrame = false;
         Presenter.Publish(frame);
+
+        // HTML §4.8.12.5: the intrinsic size follows the picture shown, and a change to it
+        // (a MediaSource config change, say) fires resize on the element.
+        if (frame.Width != _presentedWidth || frame.Height != _presentedHeight)
+        {
+            _presentedWidth = frame.Width;
+            _presentedHeight = frame.Height;
+            int width = frame.Width;
+            int height = frame.Height;
+            Report(() => _client.VideoSizeChanged(width, height));
+        }
     }
 
     private void UpdateOutputState()

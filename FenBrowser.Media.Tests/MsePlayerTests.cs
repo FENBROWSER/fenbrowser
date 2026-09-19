@@ -32,7 +32,7 @@ public class MsePlayerTests
         public void MetadataAvailable(MediaResourceMetadata metadata) { Metadata = metadata; Events.Enqueue("metadata"); }
         public void ReadyStateChanged(MediaReadyState state) { ReadyState = state; Events.Enqueue("ready:" + (int)state); }
         public void DurationChanged(MediaTime duration) { Duration = duration; Events.Enqueue("duration"); }
-        public void VideoSizeChanged(int width, int height) => Events.Enqueue("size");
+        public void VideoSizeChanged(int width, int height) => Events.Enqueue($"size:{width}x{height}");
         public void PositionChanged(MediaTime position, bool monotonic) { Position = position; }
         public void ReachedEnd() { EndedCount++; Events.Enqueue("ended"); }
         public void SeekCompleted(MediaTime position) => Events.Enqueue("seeked");
@@ -121,6 +121,49 @@ public class MsePlayerTests
             model.EndOfStream(EndOfStreamError.None);
             await client.WaitForAsync(() => client.EndedCount == 2, timeoutMs: 4000);
             Assert.Equal(3.0, client.Position.TotalSeconds, 1);
+            Assert.Null(client.Failure);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
+    /// <summary>mediasource-config-change-*-framesize: every picture size change fires resize (HTML §4.8.12.5).</summary>
+    [Fact]
+    public async Task PictureSizeChanges_ReportTheNewSize()
+    {
+        var root = Environment.GetEnvironmentVariable("FEN_WPT_ROOT") ?? @"D:\wpt";
+        if (!Directory.Exists(Path.Combine(root, "media-source")))
+            return;
+        var a = File.ReadAllBytes(Path.Combine(root, "media-source", "webm", "test-v-128k-320x240-24fps-8kfr.webm"));
+        var b = File.ReadAllBytes(Path.Combine(root, "media-source", "webm", "test-v-128k-640x480-30fps-10kfr.webm"));
+        var client = new RecordingClient();
+        var (player, model) = Create(client);
+        player.Start();
+        try
+        {
+            var buffer = model.AddSourceBuffer("video/webm;codecs=\"vp8\"", generateTimestamps: false);
+            lock (model.Gate)
+            {
+                Assert.Equal(AppendOutcome.Ok, buffer.Append(a));
+                buffer.SetTimestampOffset(MediaTime.FromSeconds(0.5));
+                Assert.Equal(AppendOutcome.Ok, buffer.Append(b));
+                buffer.SetTimestampOffset(MediaTime.FromSeconds(1));
+                Assert.Equal(AppendOutcome.Ok, buffer.Append(a));
+                buffer.SetTimestampOffset(MediaTime.FromSeconds(1.5));
+                Assert.Equal(AppendOutcome.Ok, buffer.Append(b));
+                buffer.Remove(MediaTime.FromSeconds(2), MediaTime.PositiveInfinity);
+                model.SetDuration(MediaTime.FromSeconds(2));
+                model.EndOfStream(EndOfStreamError.None);
+            }
+
+            model.NotifyChanged();
+            await client.WaitForAsync(() => client.Metadata is not null);
+            Assert.Equal(320, client.Metadata!.VideoWidth);
+            player.UpdatePlayback(potentiallyPlaying: true, playbackRate: 1.0, preservesPitch: true, effectiveVolume: 1.0);
+            await client.WaitForAsync(() => client.EndedCount == 1, timeoutMs: 6000);
+            Assert.Equal(["size:640x480", "size:320x240", "size:640x480"], client.Events.Where(e => e.StartsWith("size:", StringComparison.Ordinal)));
             Assert.Null(client.Failure);
         }
         finally
