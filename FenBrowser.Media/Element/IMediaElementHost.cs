@@ -128,6 +128,13 @@ public interface IMediaResource : IDisposable
     /// <summary>The latest picture for the compositor, or null for a resource without video.</summary>
     Video.VideoPresenter? Presenter => null;
 
+    /// <summary>
+    /// True for a media provider object (a MediaSource): MSE §2.4.2 "attaching to a
+    /// media element" stops delaying the document's load event as soon as the source is
+    /// attached, since script, not a fetch, supplies the data.
+    /// </summary>
+    bool IsProviderObject => false;
+
     /// <summary>The counts behind <c>getVideoPlaybackQuality()</c>, or null for a resource without video.</summary>
     VideoPlaybackQuality? GetVideoPlaybackQuality() => null;
 }

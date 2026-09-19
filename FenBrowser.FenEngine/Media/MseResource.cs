@@ -59,6 +59,8 @@ namespace FenBrowser.FenEngine.Media
 
         public VideoPresenter Presenter => _player.Presenter;
 
+        public bool IsProviderObject => true;
+
         public VideoPlaybackQuality? GetVideoPlaybackQuality() => _player.GetVideoPlaybackQuality();
 
         /// <summary>

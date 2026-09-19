@@ -206,6 +206,44 @@ public class MediaElementSeekAndAttributeTests
     }
 
     [Fact]
+    public void Seek_AnswerForAnEphemeralSeek_IsIgnored()
+    {
+        var (host, element, _) = Loaded(MediaReadyState.HaveEnoughData);
+
+        // 1, then 3, then 1 again: the resource may have started the seek to 3 before the
+        // last request reached it; its answer for 3 is not the seek script is waiting on.
+        element.SetCurrentTime(1);
+        element.SetCurrentTime(3);
+        element.SetCurrentTime(1);
+        host.Resource!.Client.SeekCompleted(MediaTime.FromSeconds(3));
+        host.Resource.Client.PositionChanged(MediaTime.FromSeconds(3), monotonic: false);
+        host.Run();
+        Assert.Equal(["seeking", "seeking", "seeking"], host.TakeEvents());
+        Assert.True(element.Seeking);
+        Assert.Equal(1, element.CurrentTime);
+
+        host.Resource.Client.SeekCompleted(MediaTime.FromSeconds(1));
+        host.Run();
+        Assert.Equal(["timeupdate", "seeked"], host.TakeEvents());
+        Assert.False(element.Seeking);
+    }
+
+    /// <summary>MSE §2.4.2: attaching a MediaSource stops delaying the load event before any data; a fetch keeps delaying it until loadeddata.</summary>
+    [Fact]
+    public void MediaSourceAttachment_StopsDelayingTheLoadEvent_AtOnce()
+    {
+        var (host, element, _, _) = Create(h => { h.SrcAttribute = "blob:https://a/1"; h.NextResourceIsProviderObject = true; });
+        element.Load();
+        host.Run();
+        Assert.False(host.Delaying);
+
+        var (fetchHost, fetchElement, _, _) = Create(h => h.SrcAttribute = "a.webm");
+        fetchElement.Load();
+        fetchHost.Run();
+        Assert.True(fetchHost.Delaying);
+    }
+
+    [Fact]
     public void Seek_IsLogged()
     {
         var (host, element, log, _) = Create(h => h.SrcAttribute = "a.webm");

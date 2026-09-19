@@ -68,6 +68,7 @@ public sealed class HtmlMediaElementController
     private MediaTime? _playedStart;
     private MediaTimeRanges _played = MediaTimeRanges.Empty;
     private bool _pendingSeek;
+    private MediaTime _pendingSeekTarget;
     private bool _seekableReported;
 
     public HtmlMediaElementController(
@@ -148,7 +149,9 @@ public sealed class HtmlMediaElementController
     /// </summary>
     public void ApplyDurationChange(MediaTime duration, double? exactSeconds)
     {
-        if (_duration == duration && _exactDuration == exactSeconds)
+        // Step 1: the same duration again, as script reads it, changes nothing.
+        var seconds = exactSeconds ?? (duration.IsInfinite ? double.PositiveInfinity : duration.TotalSeconds);
+        if (_duration == duration && Duration.Equals(seconds))
             return;
         _duration = duration;
         _exactDuration = exactSeconds;
@@ -749,6 +752,15 @@ public sealed class HtmlMediaElementController
         PushPlaybackState();
         if (!Paused || _host.HasAutoplayAttribute)
             _resource.RequestFullLoad();
+        // MSE §2.4.2: attaching a MediaSource stops delaying the load event at once (the
+        // media-source/mediasource-attach-stops-delaying-load-event test); a fetched
+        // resource keeps delaying it until loadeddata.
+        if (resource.IsProviderObject)
+            QueueTask(() =>
+            {
+                if (generation == _selectionGeneration)
+                    SetDelayingLoadEvent(false);
+            });
     }
 
     private void StopResource()
@@ -1048,8 +1060,9 @@ public sealed class HtmlMediaElementController
     private void OnPositionChanged(MediaTime position, bool monotonic)
     {
         // While a seek is in flight the resource may still report the clock it is
-        // leaving; the position is the seek target until SeekCompleted says otherwise.
-        if (_pendingSeek && monotonic)
+        // leaving, or where a seek this one aborted landed; the position is the seek
+        // target until SeekCompleted says otherwise.
+        if (_pendingSeek && (monotonic || Math.Abs(position.Microseconds - _pendingSeekTarget.Microseconds) > 1000))
             return;
 
         if (!monotonic)
@@ -1171,6 +1184,7 @@ public sealed class HtmlMediaElementController
         if (_resource is not null)
         {
             _pendingSeek = true;
+            _pendingSeekTarget = target;
             _resource.Seek(target, approximateForSpeed);
         }
         else
@@ -1327,7 +1341,12 @@ public sealed class HtmlMediaElementController
 
         public void SeekCompleted(MediaTime position) => Enqueue(() =>
         {
-            if (owner._pendingSeek)
+            // Step 4: a newer seek aborted the one this answers, so only the answer for
+            // the latest target counts (an ephemeral seek between two others must not
+            // fire seeked, mediasource-redundant-seek.html). The resource lands where
+            // it was sent, to the millisecond, unless the end of stream shortened the
+            // resource, in which case the element has already sought there as well.
+            if (owner._pendingSeek && Math.Abs(position.Microseconds - owner._pendingSeekTarget.Microseconds) <= 1000)
                 owner.CompleteSeek(position);
         });
 

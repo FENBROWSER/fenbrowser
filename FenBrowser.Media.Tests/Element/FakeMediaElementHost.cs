@@ -31,6 +31,9 @@ internal sealed class FakeResource : IMediaResource
     public IMediaResourceClient Client { get; }
     public bool Disposed { get; private set; }
     public bool FullLoadRequested { get; private set; }
+
+    /// <summary>Set by a test that stands this resource in for a MediaSource.</summary>
+    public bool IsProviderObject { get; set; }
     public List<(MediaTime Target, bool Approximate)> Seeks { get; } = [];
     public (bool Playing, double Rate, bool PreservesPitch, double Volume) LastPlayback { get; private set; }
 
@@ -73,6 +76,9 @@ internal sealed class FakeMediaElementHost : IMediaElementHost
     public bool IsAllowedToPlay { get; set; } = true;
     public bool DocumentAllowsAutoplay { get; set; } = true;
     public bool Delaying { get; private set; }
+
+    /// <summary>The next resource started stands in for a MediaSource (blob: src).</summary>
+    public bool NextResourceIsProviderObject { get; set; }
     public int RenderInvalidations { get; private set; }
     public bool ReturnNoResource { get; set; }
     public Func<string, bool> MediaMatches { get; set; } = _ => true;
@@ -139,7 +145,7 @@ internal sealed class FakeMediaElementHost : IMediaElementHost
         Log.Add("[fetch " + request.Url + "]");
         if (ReturnNoResource)
             return null;
-        var resource = new FakeResource(request, client);
+        var resource = new FakeResource(request, client) { IsProviderObject = NextResourceIsProviderObject };
         Resources.Add(resource);
         return resource;
     }
