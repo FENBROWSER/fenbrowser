@@ -33,6 +33,25 @@ public sealed class MatroskaDemuxerFactory : IDemuxerFactory
         header.Length >= 4 && header[..4].SequenceEqual((ReadOnlySpan<byte>)[0x1A, 0x45, 0xDF, 0xA3]) ? 100 : 0;
 
     public IDemuxer Create(IByteSource source, MediaPipelineContext context) => new MatroskaDemuxer(source, context);
+
+    /// <summary>
+    /// The MSE byte stream's demuxer: a Block naming a track the Tracks element never
+    /// declared is a format error (WebM byte stream format §4: the append error algorithm
+    /// runs when a media segment's tracks are not identified), where a file player would
+    /// skip it.
+    /// </summary>
+    public static readonly IDemuxerFactory StrictTracks = new StrictFactory();
+
+    private sealed class StrictFactory : IDemuxerFactory
+    {
+        public string Name => Instance.Name;
+
+        public IReadOnlyList<string> MimeTypes => Instance.MimeTypes;
+
+        public int Probe(ReadOnlySpan<byte> header) => Instance.Probe(header);
+
+        public IDemuxer Create(IByteSource source, MediaPipelineContext context) => new MatroskaDemuxer(source, context) { RejectUndeclaredTracks = true };
+    }
 }
 
 public sealed class MatroskaDemuxer : IDemuxer
@@ -79,6 +98,19 @@ public sealed class MatroskaDemuxer : IDemuxer
         ArgumentNullException.ThrowIfNull(context);
         _source = source;
         _context = context;
+    }
+
+    /// <summary>Every TrackNumber the Tracks element declared, played or not.</summary>
+    private readonly HashSet<ulong> _declaredTracks = [];
+
+    /// <summary>A Block for a track number the Tracks element never declared is a format error rather than skipped.</summary>
+    public bool RejectUndeclaredTracks { get; init; }
+
+    private bool BlockTrackKnown(ulong trackNumber)
+    {
+        if (RejectUndeclaredTracks && !_declaredTracks.Contains(trackNumber))
+            throw new MediaFormatException($"A Block names track {trackNumber}, which the Tracks element did not declare.");
+        return _tracks.ContainsKey(trackNumber);
     }
 
     private sealed class TrackState
@@ -277,6 +309,7 @@ public sealed class MatroskaDemuxer : IDemuxer
             var track = ParseTrackEntry(body);
             if (track is null)
                 continue;
+            _declaredTracks.Add(track.Number);
             if (_tracks.ContainsKey(track.Number))
                 throw new MediaFormatException($"Track number {track.Number} appears twice.");
             track.Id = _nextTrackId++;
@@ -666,7 +699,7 @@ public sealed class MatroskaDemuxer : IDemuxer
             throw new MediaFormatException("A Block is truncated.");
         if (!TryParseBlockHead(_scratch.AsSpan(0, headLength), out var head))
             throw new MediaFormatException("A Block has a malformed head.");
-        if (!_tracks.TryGetValue(head.TrackNumber, out var track))
+        if (!BlockTrackKnown(head.TrackNumber) || !_tracks.TryGetValue(head.TrackNumber, out var track))
             return; // a track we do not play
 
         if (head.Lacing == 0)
@@ -714,7 +747,7 @@ public sealed class MatroskaDemuxer : IDemuxer
     {
         if (!TryParseBlockHead(block, out var head))
             throw new MediaFormatException("A Block has a malformed head.");
-        if (!_tracks.TryGetValue(head.TrackNumber, out var track))
+        if (!BlockTrackKnown(head.TrackNumber) || !_tracks.TryGetValue(head.TrackNumber, out var track))
             return;
         bool keyframe = isSimpleBlock ? head.IsKeyframe : !hasReference;
         var body = block[head.Length..];

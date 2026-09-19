@@ -1,3 +1,4 @@
+using FenBrowser.Media.Containers.Matroska;
 using FenBrowser.Media.Codecs.Ffmpeg;
 using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Mse;
@@ -130,6 +131,38 @@ public class MseTests
         Assert.Equal(MediaTime.Zero, buffer.Buffered.Start(0));
         Assert.Equal(buffer.Buffered.End(0), buffer.TimestampOffset);
         Assert.True(buffer.Buffered.End(0).TotalSeconds > 0.5, buffer.Buffered.ToString());
+    }
+
+    /// <summary>WebM byte stream format §4: a Block for a track the initialization segment never declared is an append error (media-source/invalid-third-block).</summary>
+    [Fact]
+    public void WebM_BlockForAnUndeclaredTrack_IsAnAppendError()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/webm", generateTimestamps: false);
+        var bytes = MediaFixtures.Read("pattern_vp9.webm").ToArray();
+        // Walk to the first Cluster's first SimpleBlock and make its track number VINT
+        // (a single octet with the high bit set) track 0, which no TrackEntry declares.
+        int at = 0;
+        int block = -1;
+        while (block < 0 && Ebml.TryReadElement(bytes.AsSpan(at), at, out var element))
+        {
+            if (element.Id == EbmlId.Segment || element.Id == EbmlId.Cluster)
+            {
+                at = (int)element.DataStart;
+                continue;
+            }
+
+            if (element.Id == EbmlId.SimpleBlock)
+                block = (int)element.DataStart;
+            else
+                at = (int)element.End!.Value;
+        }
+
+        Assert.True(block > 0, "no SimpleBlock found");
+        bytes[block] = 0x80;
+
+        Assert.Equal(AppendOutcome.DecodeError, buffer.Append(bytes));
+        Assert.Contains("did not declare", buffer.LastParseError);
     }
 
     [Fact]

@@ -346,7 +346,7 @@ public sealed class WebmSegmentParser : SegmentParser
 
                 if (clusterEnd is not { } clusterEndValue || clusterEndValue > data.Length)
                     break;
-                ReadMediaSegment(MatroskaDemuxerFactory.Instance, data.AsSpan(position, clusterEndValue - position), onPacket);
+                ReadMediaSegment(MatroskaDemuxerFactory.StrictTracks, data.AsSpan(position, clusterEndValue - position), onPacket);
                 position = clusterEndValue;
                 consumed = position;
                 continue;
