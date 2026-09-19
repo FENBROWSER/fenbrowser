@@ -473,6 +473,32 @@ public sealed partial class FenJsBrowserScriptEngine
                 syncIndexed(list);
                 queueTask(source, function () { fire(list, 'addsourcebuffer'); });
             }
+            // §3.1 activeSourceBuffers keeps the order of sourceBuffers, whichever buffer
+            // became active first.
+            function activeAdd(source, buffer) {
+                var list = source._activeSourceBuffers;
+                if (list._buffers.indexOf(buffer) >= 0) return;
+                var order = source._sourceBuffers._buffers;
+                var at = 0;
+                while (at < list._buffers.length && order.indexOf(list._buffers[at]) < order.indexOf(buffer)) at++;
+                list._buffers.splice(at, 0, buffer);
+                syncIndexed(list);
+                queueTask(source, function () { fire(list, 'addsourcebuffer'); });
+            }
+            function isActive(sb) {
+                var a = sb._audioTracks._tracks, v = sb._videoTracks._tracks;
+                for (var i = 0; i < a.length; i++) if (a[i]._enabled) return true;
+                for (var j = 0; j < v.length; j++) if (v[j]._selected) return true;
+                return false;
+            }
+            // §3.5.8 "changes to selected/enabled track state": the SourceBuffer joins or
+            // leaves activeSourceBuffers with its tracks.
+            g.__fenMseTrackStateChanged = function (sb) {
+                if (!sb || sb._removed || !sb._source) return;
+                var source = sb._source;
+                if (isActive(sb)) activeAdd(source, sb);
+                else listRemove(source._activeSourceBuffers, source, sb);
+            };
             function listRemove(list, source, buffer) {
                 var at = list._buffers.indexOf(buffer);
                 if (at < 0) return false;
@@ -642,9 +668,7 @@ public sealed partial class FenJsBrowserScriptEngine
                         (function (l, t) { queueTask(source, function () { if (typeof g.__fenFireTrackListEvent === 'function') g.__fenFireTrackListEvent(l, 'addtrack', t); }); })(list, track);
                     }
                 }
-                if (source._activeSourceBuffers._buffers.indexOf(sb) < 0) {
-                    listAdd(source._activeSourceBuffers, source, sb);
-                }
+                if (isActive(sb)) activeAdd(source, sb);
             }
 
             method(SourceBuffer.prototype, 'abort', function () {

@@ -456,6 +456,43 @@ public class MediaElementLoadTests
         Assert.Equal("corrupt frame", element.Error.Message);
     }
 
+    /// <summary>MSE §2.4.7: endOfStream("decode") runs the element's decode error steps but the MediaSource stays attached (mediasource-errors: readyState "ended", not "closed").</summary>
+    [Fact]
+    public void DecodeErrorOnAMediaSource_KeepsItAttached_AndStopsPlaying()
+    {
+        var (host, element, _) = Loaded(MediaReadyState.HaveEnoughData, h => h.NextResourceIsProviderObject = true);
+        element.Play();
+        host.Run();
+        Assert.True(host.Resource!.LastPlayback.Playing);
+
+        host.Resource.Client.Failed(MediaResourceFailure.Decode, "MediaSource.endOfStream(\"decode\").");
+        host.Run();
+
+        Assert.Equal(MediaErrorCode.Decode, element.Error!.Code);
+        Assert.False(host.Resource.Disposed);
+        Assert.False(host.Resource.LastPlayback.Playing);
+        Assert.False(element.IsPotentiallyPlaying);
+    }
+
+    /// <summary>A resource that failed before metadata is stopped; its metadata report, already on its way, must not then raise readyState (mediasource-errors: loadedmetadata after MEDIA_ERR_SRC_NOT_SUPPORTED).</summary>
+    [Fact]
+    public void FailureBeforeMetadata_DropsTheResourcesLaterReports()
+    {
+        var (host, element, _, _) = Create(h => h.SrcAttribute = "a.webm");
+        element.Load();
+        host.Run();
+        host.TakeEvents();
+        var resource = host.Resource!;
+
+        resource.Client.Failed(MediaResourceFailure.Decode, "garbage");
+        resource.Client.MetadataAvailable(new MediaResourceMetadata(MediaTime.FromSeconds(5), 0, 0, []));
+        host.Run();
+
+        Assert.Equal(MediaErrorCode.SrcNotSupported, element.Error!.Code);
+        Assert.Equal(MediaReadyState.HaveNothing, element.ReadyState);
+        Assert.DoesNotContain("loadedmetadata", host.TakeEvents());
+    }
+
     [Fact]
     public void UserAbortBeforeMetadata_EmptiesTheElement()
     {

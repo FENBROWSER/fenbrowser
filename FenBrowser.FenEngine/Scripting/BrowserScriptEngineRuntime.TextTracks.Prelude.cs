@@ -534,17 +534,47 @@ public sealed partial class FenJsBrowserScriptEngine
             // MSE §9: the SourceBuffer that created the track, or null.
             accessor(AudioTrack.prototype, 'sourceBuffer', function () { return this._sourceBuffer || null; });
             accessor(VideoTrack.prototype, 'sourceBuffer', function () { return this._sourceBuffer || null; });
+            // HTML §4.8.12.10.1: a change to enabled/selected queues change on the list the
+            // track is in (the element's, and the SourceBuffer's when MSE created it), and
+            // MSE §3.5.8 "changes to selected/enabled track state" moves the SourceBuffer in
+            // or out of activeSourceBuffers.
+            function trackStateChanged(track) {
+                var list = track._list;
+                var media = list && list._media;
+                var sb = track._sourceBuffer;
+                var own = sb ? (track instanceof AudioTrack ? sb._audioTracks : sb._videoTracks) : null;
+                var notify = function () {
+                    if (list) fire(list, 'change');
+                    if (own) fire(own, 'change');
+                };
+                if (media) queueTask(media, notify); else g.setTimeout(notify, 0);
+                if (sb && typeof g.__fenMseTrackStateChanged === 'function') g.__fenMseTrackStateChanged(sb);
+            }
             accessor(AudioTrack.prototype, 'enabled',
                 function () { return this._enabled; },
-                function (v) { this._enabled = !!v; });
+                function (v) {
+                    v = !!v;
+                    if (this._enabled === v) return;
+                    this._enabled = v;
+                    trackStateChanged(this);
+                });
             accessor(VideoTrack.prototype, 'selected',
                 function () { return this._selected; },
                 function (v) {
                     v = !!v;
+                    if (this._selected === v) return;
                     if (v && this._list) {
                         var tracks = this._list._tracks;
-                        for (var i = 0; i < tracks.length; i++) tracks[i]._selected = tracks[i] === this;
-                    } else this._selected = v;
+                        for (var i = 0; i < tracks.length; i++) {
+                            var other = tracks[i];
+                            if (other !== this && other._selected) {
+                                other._selected = false;
+                                if (other._sourceBuffer && other._sourceBuffer !== this._sourceBuffer && typeof g.__fenMseTrackStateChanged === 'function') g.__fenMseTrackStateChanged(other._sourceBuffer);
+                            }
+                        }
+                    }
+                    this._selected = v;
+                    trackStateChanged(this);
                 });
 
             function defineMediaTrackList(name) {
@@ -586,9 +616,11 @@ public sealed partial class FenJsBrowserScriptEngine
                 g.EventTarget.call(audio);
                 audio._tracks = [];
                 audio._indexed = 0;
+                audio._media = media;
                 var video = Object.create(VideoTrackList.prototype);
                 g.EventTarget.call(video);
                 video._tracks = [];
+                video._media = media;
                 video._indexed = 0;
                 model = {
                     element: media,

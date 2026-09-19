@@ -202,7 +202,8 @@ public sealed class HtmlMediaElementController
     public double EffectiveVolume => Muted ? 0.0 : _volume;
 
     /// <summary>§4.8.11.8 "potentially playing".</summary>
-    public bool IsPotentiallyPlaying => !Paused && !HasEndedPlayback && !IsBlocked;
+    /// <summary>§4.8.11.8: not paused, not ended, playback not stopped by an error, not blocked.</summary>
+    public bool IsPotentiallyPlaying => !Paused && !HasEndedPlayback && Error is null && !IsBlocked;
 
     private bool IsBlocked => ReadyState <= MediaReadyState.HaveCurrentData;
 
@@ -748,6 +749,7 @@ public sealed class HtmlMediaElementController
             return;
         }
 
+        client.Resource = resource;
         _resource = resource;
         PushPlaybackState();
         if (!Paused || _host.HasAutoplayAttribute)
@@ -789,8 +791,12 @@ public sealed class HtmlMediaElementController
 
     private void OnFatalErrorAfterUsable(MediaErrorCode code, string reason)
     {
-        // Network or decode error after metadata: cancel, set the error, idle, stop delaying, fire error.
-        StopResource();
+        // Network or decode error after metadata: cancel the fetch, set the error, idle,
+        // stop delaying, fire error. A MediaSource stays attached (MSE §2.4.7 step 3.2-3.3
+        // only run the element's error steps; the MediaSource reads "ended" afterwards),
+        // so there is no fetch to cancel there: the error stops playback by itself.
+        if (_resource is not { IsProviderObject: true })
+            StopResource();
         Error = new MediaElementError(code, reason);
         SetNetworkState(MediaNetworkState.Idle);
         SetDelayingLoadEvent(false);
@@ -798,6 +804,7 @@ public sealed class HtmlMediaElementController
             ("code", code == MediaErrorCode.Network ? "MEDIA_ERR_NETWORK" : "MEDIA_ERR_DECODE"));
         _host.FireEvent("error");
         AbortResourceSelection();
+        PushPlaybackState();
     }
 
     private void OnAbortedByUser(string reason)
@@ -1276,7 +1283,10 @@ public sealed class HtmlMediaElementController
     /// <summary>Routes pipeline reports into the element, dropping reports from abandoned loads.</summary>
     private sealed class ResourceClient(HtmlMediaElementController owner, int generation) : IMediaResourceClient
     {
-        private bool IsCurrent => generation == owner._selectionGeneration;
+        /// <summary>The resource this client was started for; reports outlive a stopped one and must not land.</summary>
+        public IMediaResource? Resource { get; set; }
+
+        private bool IsCurrent => generation == owner._selectionGeneration && (Resource is null || ReferenceEquals(owner._resource, Resource));
 
         public void Failed(MediaResourceFailure failure, string message)
         {
