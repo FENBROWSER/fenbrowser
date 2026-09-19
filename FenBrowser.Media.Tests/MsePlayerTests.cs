@@ -62,6 +62,7 @@ public class MsePlayerTests
         var decoders = new DecoderRegistry();
         MediaFormats.RegisterBuiltIn(demuxers, decoders);
         Assert.True(FfmpegDecoders.TryRegister(decoders, NullMediaLogSink.Instance), "libavcodec must be available on the development machine");
+        FenBrowser.Media.Codecs.MediaFoundation.MediaFoundationDecoders.TryRegister(decoders, NullMediaLogSink.Instance);
         var services = new MediaPlayerServices(demuxers, decoders, NullAudioOutputFactory.Realtime, TimeProvider.System);
         var context = MediaPipelineContext.ForTests();
         var model = new MediaSourceModel(context);
@@ -164,6 +165,36 @@ public class MsePlayerTests
             player.UpdatePlayback(potentiallyPlaying: true, playbackRate: 1.0, preservesPitch: true, effectiveVolume: 1.0);
             await client.WaitForAsync(() => client.EndedCount == 1, timeoutMs: 6000);
             Assert.Equal(["size:640x480", "size:320x240", "size:640x480"], client.Events.Where(e => e.StartsWith("size:", StringComparison.Ordinal)));
+            Assert.Null(client.Failure);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A paused element over the WPT test.mp4 (AAC + H.264 through the OS decoder, whose
+    /// pipeline holds many frames) must still reach HAVE_ENOUGH_DATA: the look-ahead
+    /// cannot stop at the audio limit while no picture has come out.
+    /// </summary>
+    [Fact]
+    public async Task PausedElement_ReachesEnoughData_WithADeepVideoDecoder()
+    {
+        var root = Environment.GetEnvironmentVariable("FEN_WPT_ROOT") ?? @"D:\wpt";
+        var file = Path.Combine(root, "media-source", "mp4", "test.mp4");
+        if (!File.Exists(file) || !OperatingSystem.IsWindows())
+            return;
+        var client = new RecordingClient();
+        var (player, model) = Create(client);
+        player.Start();
+        try
+        {
+            var buffer = model.AddSourceBuffer("video/mp4; codecs=\"mp4a.40.2,avc1.4d400d\"", generateTimestamps: false);
+            lock (model.Gate)
+                Assert.Equal(AppendOutcome.Ok, buffer.Append(File.ReadAllBytes(file)));
+            model.NotifyChanged();
+            await client.WaitForAsync(() => client.ReadyState >= MediaReadyState.HaveFutureData, timeoutMs: 6000);
             Assert.Null(client.Failure);
         }
         finally

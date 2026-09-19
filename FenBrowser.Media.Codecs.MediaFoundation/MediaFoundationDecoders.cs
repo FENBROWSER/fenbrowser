@@ -409,7 +409,11 @@ public sealed class MfVideoDecoder : IMediaDecoder<VideoFrame>
         Release();
         (_parameterSets, _lengthSize) = _codec == MediaCodec.Hevc ? ParseHvcC(config.Extradata.Span) : ParseAvcC(config.Extradata.Span);
 
-        var transform = MfTransform.Create(_clsid, lowLatency: false);
+        // Without MF_LOW_LATENCY the OS decoder holds a full decoded picture buffer (16
+        // frames at small sizes) before the first picture comes out: a paused element
+        // would fill its audio look-ahead and still have no picture to show, and a seek
+        // would wait a second for its frame.
+        var transform = MfTransform.Create(_clsid, lowLatency: true);
         try
         {
             MfTransform.Check(MFCreateMediaType(out var input), "MFCreateMediaType");

@@ -328,6 +328,7 @@ public sealed class MediaPlayer : IMediaResource
                 }
 
                 await FillAheadAsync(cancellation).ConfigureAwait(false);
+                LogFill("idle");
                 UpdateOutputState();
                 PresentVideo();
                 ReportReadiness();
@@ -485,6 +486,7 @@ public sealed class MediaPlayer : IMediaResource
 
             while (!_endOfStream && NeedsMoreDecoded())
             {
+                LogFill("read");
                 var item = await source.ReadAsync(cancellation).ConfigureAwait(false);
                 if (item is not { } decoded)
                 {
@@ -527,6 +529,19 @@ public sealed class MediaPlayer : IMediaResource
     /// never while a picture is waiting for a slot, and never past twice the audio look-ahead
     /// (a video-heavy interleave must not pile up audio without bound).
     /// </summary>
+    private string? _lastFill;
+
+    private void LogFill(string why)
+    {
+        if (!_context.Log.IsEnabled(MediaLogLevel.Debug))
+            return;
+        var state = $"{why} audioQueued={_renderer?.QueuedDuration.ToString() ?? "-"} consumed={_renderer?.BlocksConsumed ?? 0} video={_video?.QueuedCount ?? -1} full={_video?.IsFull ?? false} held={_heldVideo is not null} eos={_endOfStream} waiting={_decodeSource is MseDecodeSource m && m.WaitingForData}";
+        if (state == _lastFill)
+            return;
+        _lastFill = state;
+        _context.Log.Emit(_context.Player, MediaEventKind.Buffering, MediaLogLevel.Debug, state);
+    }
+
     private bool NeedsMoreDecoded()
     {
         if (_heldVideo is not null)
@@ -534,6 +549,12 @@ public sealed class MediaPlayer : IMediaResource
         bool audioWants = _renderer is not null && _renderer.QueuedDuration < _services.DecodeAhead;
         bool videoWants = _video is { IsFull: false };
         bool audioTooFar = _renderer is not null && _renderer.QueuedDuration >= _services.DecodeAhead + _services.DecodeAhead;
+        // A video decoder with a deep pipeline (the OS H.264 decoder holds several
+        // frames) may have shown nothing yet when the audio look-ahead is full: keep
+        // feeding it until the first picture is out, or the element never gets past
+        // HAVE_CURRENT_DATA while paused.
+        if (audioTooFar && _video is { QueuedCount: 0, HasCurrent: false, IsFull: false })
+            audioTooFar = false;
         return (audioWants || videoWants) && !audioTooFar;
     }
 

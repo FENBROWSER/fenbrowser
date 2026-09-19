@@ -1,3 +1,4 @@
+using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Pipeline;
 
@@ -147,6 +148,7 @@ public sealed class MseDecodeSource : IMediaDecodeSource
                 if (!ended && AnyTrackStarved())
                 {
                     WaitingForData = true;
+                    LogStarved();
                     return null;
                 }
 
@@ -290,6 +292,24 @@ public sealed class MseDecodeSource : IMediaDecodeSource
 
         return best;
     }
+
+    /// <summary>Says once per starvation which track ran out and where, so a stall can be read off the media log.</summary>
+    private void LogStarved()
+    {
+        string state;
+        lock (_model.Gate)
+        {
+            state = string.Join("; ", new[] { _audio, _video }.Where(c => c is not null).Select(c =>
+                $"{c!.Track.Kind} frames={c.Track.Frames.Count} buffered={c.Track.Buffered} last={c.LastDts?.ToString() ?? "-"} seek={c.SeekTarget?.ToString() ?? "-"} next={(c.Peek() is { } f ? f.Dts.ToString() : "none")}"));
+        }
+
+        if (state == _lastStarvedState)
+            return;
+        _lastStarvedState = state;
+        _context.Log.Emit(_context.Player, MediaEventKind.Stall, MediaLogLevel.Debug, "MediaSource starved: " + state, ("state", state));
+    }
+
+    private string? _lastStarvedState;
 
     private bool AnyTrackStarved()
     {
