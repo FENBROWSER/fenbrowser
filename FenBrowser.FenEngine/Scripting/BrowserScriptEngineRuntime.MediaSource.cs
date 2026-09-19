@@ -132,6 +132,10 @@ public sealed partial class FenJsBrowserScriptEngine
             bool hadTracks = buffer.HasTracks;
             var outcome = buffer.Append(bytes);
             entry.Model.NotifyChanged();
+            if (outcome == AppendOutcome.Ok && entry.Element != null)
+            {
+                ApplyAppendToElement(entry, buffer, first: !hadTracks && buffer.HasTracks);
+            }
             var result = new Dictionary<string, JsValue>
             {
                 ["status"] = JsValue.FromString(outcome == AppendOutcome.Ok ? "ok" : "error"),
@@ -282,6 +286,52 @@ public sealed partial class FenJsBrowserScriptEngine
         }
 
         return MediaTime.FromSeconds(seconds);
+    }
+
+    /// <summary>
+    /// What an append changes on the element before its update events (MSE §3.5.8 steps 6-8,
+    /// §3.5.11 steps 22-24): metadata from the first initialization segment, then the
+    /// readiness the buffered ranges now justify.
+    /// </summary>
+    private void ApplyAppendToElement(MediaSourceEntry entry, SourceBufferModel buffer, bool first)
+    {
+        var controller = GetOrCreateMediaBinding(entry.Element).Controller;
+        MediaTimeRanges buffered;
+        bool ended;
+        MediaTime duration;
+        List<MediaTrackInfo> tracks = new();
+        int width = 0, height = 0;
+        lock (entry.Model.Gate)
+        {
+            buffered = entry.Model.Buffered;
+            ended = entry.Model.ReadyState == MediaSourceReadyState.Ended;
+            duration = entry.Model.Duration ?? MediaTime.PositiveInfinity;
+            if (first && entry.Model.SourceBuffers.All(b => b.HasTracks))
+            {
+                foreach (var source in entry.Model.SourceBuffers)
+                {
+                    foreach (var track in source.TrackBuffers)
+                    {
+                        if (track.Info is { } info)
+                        {
+                            tracks.Add(info);
+                            if (info.Kind == MediaTrackKind.Video && width == 0)
+                            {
+                                width = info.Config.Width;
+                                height = info.Config.Height;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (tracks.Count > 0)
+        {
+            controller.ApplyMediaSourceMetadata(new MediaResourceMetadata(duration, width, height, tracks));
+        }
+
+        controller.ApplyMediaSourceReadiness(buffered, ended);
     }
 
     private JsValue DescribeTracks(SourceBufferModel buffer)
@@ -450,8 +500,15 @@ public sealed partial class FenJsBrowserScriptEngine
                     (v instanceof ArrayBuffer || (typeof ArrayBuffer.isView === 'function' && ArrayBuffer.isView(v)));
             }
             function bufferBytes(v) {
-                if (v instanceof ArrayBuffer) return new Uint8Array(v.slice(0));
-                return new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
+                // A detached buffer (transferred away) has no bytes: the append is empty
+                // (WebIDL BufferSource of a detached buffer reads as length 0).
+                try {
+                    if (v instanceof ArrayBuffer) return v.byteLength === 0 ? new Uint8Array(0) : new Uint8Array(v.slice(0));
+                    if (v.byteLength === 0) return new Uint8Array(0);
+                    return new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
+                } catch (e) {
+                    return new Uint8Array(0);
+                }
             }
 
             var sources = new Map();

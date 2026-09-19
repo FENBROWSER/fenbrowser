@@ -176,6 +176,60 @@ public sealed class HtmlMediaElementController
         _seekableReported = true;
     }
 
+    /// <summary>
+    /// MSE §3.5.8 steps 6-8: the first initialization segment establishes the timeline and
+    /// takes the element to HAVE_METADATA inside the append, so loadedmetadata is queued
+    /// before the append's own update and updateend. The player's later report of the
+    /// same metadata is then ignored.
+    /// </summary>
+    public void ApplyMediaSourceMetadata(MediaResourceMetadata metadata)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        if (ReadyState != MediaReadyState.HaveNothing || _resource is not { IsProviderObject: true })
+            return;
+        OnMetadata(metadata);
+    }
+
+    /// <summary>
+    /// MSE §3.5.11 steps 22-24 (via HTML §4.8.11.7): after coded frames were processed, a
+    /// buffered range covering the current position takes the element from HAVE_METADATA
+    /// to HAVE_CURRENT_DATA, and with data ahead of the position to HAVE_FUTURE_DATA
+    /// (HAVE_ENOUGH_DATA once the source has ended), inside the append and ahead of its
+    /// update and updateend. The player's decode-driven readiness only ever adds to this.
+    /// </summary>
+    public void ApplyMediaSourceReadiness(MediaTimeRanges buffered, bool ended)
+    {
+        ArgumentNullException.ThrowIfNull(buffered);
+        if (ReadyState == MediaReadyState.HaveNothing || _resource is not { IsProviderObject: true } || _pendingSeek)
+            return;
+        var position = _currentPosition;
+        int index = buffered.IndexOf(position);
+        if (index < 0)
+        {
+            // A range that starts just after the position counts as covering it: playback
+            // from 0 starts at the first frame, which a container may place a few frames
+            // in (test.mp4's video starts at 0.095 s); the other engines allow the same
+            // fudge when seeking to the start.
+            for (int i = 0; i < buffered.Count; i++)
+            {
+                if (buffered.Start(i) >= position && buffered.Start(i) - position <= MediaTime.FromSeconds(0.1))
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            if (index < 0)
+                return;
+        }
+
+        var state = MediaReadyState.HaveCurrentData;
+        if (buffered.End(index) > position || ended)
+            state = ended ? MediaReadyState.HaveEnoughData : MediaReadyState.HaveFutureData;
+        if (state > ReadyState)
+            SetResourceReadyState(state);
+    }
+
     /// <summary><c>ended</c>: playback has ended and the direction is forwards.</summary>
     public bool Ended => HasEndedPlayback;
 

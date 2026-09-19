@@ -20902,6 +20902,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             overload = args.Count > 1 ? "targetOrigin" : "bare";
         }
 
+        DetachTransferredArrayBuffers(transfer);
+
         // A delivery probe can only report the transfer list it was handed, so a
         // dropped port and a call that never carried one read the same downstream.
         // Naming the overload here separates "the page sent no port" from "we
@@ -20914,6 +20916,48 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             $"transferTag={transfer.Tag} " +
             $"transferCount={(transfer.Tag == JsValueTag.Object ? ReadArrayLikeLength(transfer) : -1)}" +
             $"{Environment.NewLine}");
+    }
+
+    /// <summary>
+    /// HTML "StructuredSerializeWithTransfer" step 5 for ArrayBuffers in the transfer
+    /// list: an already detached (or shared) buffer is a DataCloneError; the others are
+    /// detached so the sender cannot read them after the call (mediasource-append-buffer
+    /// appends a neutered buffer to see an empty append). The receiver's copy is what the
+    /// message data carries; a buffer transferred but not referenced from the data is just
+    /// gone, as it would be elsewhere.
+    /// </summary>
+    private void DetachTransferredArrayBuffers(JsValue transfer)
+    {
+        if (transfer.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var length = ReadArrayLikeLength(transfer);
+        var buffers = new List<FenBrowser.Js.Objects.ArrayBufferObject>();
+        for (var index = 0; index < length; index++)
+        {
+            var item = ReadJsProperty(transfer, index.ToString(CultureInfo.InvariantCulture));
+            if (item.Tag != JsValueTag.Object)
+            {
+                continue;
+            }
+
+            if (_interpreter.Heap.GetObject(item.AsObjectHandle()) is FenBrowser.Js.Objects.ArrayBufferObject buffer)
+            {
+                if (buffer.IsDetached || buffer.IsSharedArrayBuffer || buffers.Contains(buffer))
+                {
+                    ThrowDomException("DataCloneError", "An ArrayBuffer is detached and could not be cloned.");
+                }
+
+                buffers.Add(buffer);
+            }
+        }
+
+        foreach (var buffer in buffers)
+        {
+            buffer.Detach();
+        }
     }
 
     private string NormalizeSelfPostMessageOrigin(string targetOrigin) =>
