@@ -88,10 +88,14 @@ public sealed class TrackBuffer
 
     public long Bytes { get; private set; }
 
-    public MediaTimeRanges Buffered { get; private set; } = MediaTimeRanges.Empty;
+    private MediaTimeRanges? _buffered = MediaTimeRanges.Empty;
+    private MediaTime? _highestEnd;
+
+    /// <summary>The buffered ranges, recomputed after the frames changed; an append of many frames pays once.</summary>
+    public MediaTimeRanges Buffered => _buffered ??= ComputeBuffered();
 
     /// <summary>The frame with the largest end time, or null when empty.</summary>
-    public MediaTime? HighestBufferedEnd => _frames.Count == 0 ? null : _frames.Max(f => f.End);
+    public MediaTime? HighestBufferedEnd => _frames.Count == 0 ? null : _highestEnd;
 
     /// <summary>
     /// Adds a frame in decode order: after every frame with a decode time at or before its
@@ -107,7 +111,9 @@ public sealed class TrackBuffer
             at--;
         _frames.Insert(at, frame);
         Bytes += frame.Bytes;
-        RecomputeBuffered();
+        if (_highestEnd is null || frame.End > _highestEnd)
+            _highestEnd = frame.End;
+        _buffered = null;
     }
 
     /// <summary>
@@ -118,6 +124,10 @@ public sealed class TrackBuffer
     public void RemoveOverlapping(MediaTime start, MediaTime end)
     {
         if (_frames.Count == 0 || end <= start)
+            return;
+        // Frames appended past everything buffered, the usual case, overlap nothing: no
+        // scan of the whole buffer per frame.
+        if (_highestEnd is { } highest && start >= highest)
             return;
         var removed = new HashSet<CodedFrame>();
         for (int i = 0; i < _frames.Count; i++)
@@ -183,7 +193,8 @@ public sealed class TrackBuffer
         _frames.Clear();
         Generation++;
         Bytes = 0;
-        Buffered = MediaTimeRanges.Empty;
+        _buffered = MediaTimeRanges.Empty;
+        _highestEnd = null;
         LastDecodeTimestamp = null;
         LastFrameDuration = null;
         HighestEndTimestamp = null;
@@ -271,10 +282,16 @@ public sealed class TrackBuffer
 
         _frames.RemoveAll(removed.Contains);
         Generation++;
-        RecomputeBuffered();
+        _buffered = null;
+        _highestEnd = null;
+        foreach (var frame in _frames)
+        {
+            if (_highestEnd is null || frame.End > _highestEnd)
+                _highestEnd = frame.End;
+        }
     }
 
-    private void RecomputeBuffered()
+    private MediaTimeRanges ComputeBuffered()
     {
         // Frames in presentation order, coalesced. A gap no longer than the longest frame
         // in the track is one playback rides over (a dropped frame, timestamp jitter), so
@@ -305,6 +322,6 @@ public sealed class TrackBuffer
             }
         }
 
-        Buffered = MediaTimeRanges.From(ranges);
+        return MediaTimeRanges.From(ranges);
     }
 }
