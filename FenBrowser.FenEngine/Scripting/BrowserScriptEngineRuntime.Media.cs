@@ -1033,7 +1033,12 @@ public sealed partial class FenJsBrowserScriptEngine
                 _presenter = null;
             }
 
-            var resource = MediaFetchResource.Start(request, client, _element.OwnerDocument, QueueTask);
+            IMediaResource resource;
+            if (!_realm.TryStartMediaSourceResource(_element, request, client, QueueTask, out resource))
+            {
+                resource = MediaFetchResource.Start(request, client, _element.OwnerDocument, QueueTask);
+            }
+
             _resource = resource;
             if (resource?.Presenter is { } presenter)
             {

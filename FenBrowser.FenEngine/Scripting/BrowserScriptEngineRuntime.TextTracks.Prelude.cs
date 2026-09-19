@@ -531,6 +531,9 @@ public sealed partial class FenJsBrowserScriptEngine
                 accessor(AudioTrack.prototype, name, function () { return this['_' + name]; });
                 accessor(VideoTrack.prototype, name, function () { return this['_' + name]; });
             });
+            // MSE §9: the SourceBuffer that created the track, or null.
+            accessor(AudioTrack.prototype, 'sourceBuffer', function () { return this._sourceBuffer || null; });
+            accessor(VideoTrack.prototype, 'sourceBuffer', function () { return this._sourceBuffer || null; });
             accessor(AudioTrack.prototype, 'enabled',
                 function () { return this._enabled; },
                 function (v) { this._enabled = !!v; });
@@ -1004,6 +1007,35 @@ public sealed partial class FenJsBrowserScriptEngine
                 model.video._tracks = []; syncIndexed(model.video, model.video._tracks);
                 renderingChanged(media);
             };
+            // MSE §3.5.8: a SourceBuffer's initialization segment adds tracks to the element's
+            // lists (the first audio track enabled, the first video track selected), and
+            // removing the SourceBuffer takes them away again, with the track list events.
+            g.__fenMediaAddInbandTrack = function (media, kind, id, sourceBuffer) {
+                var model = modelFor(media);
+                var isAudio = kind === 'audio';
+                var list = isAudio ? model.audio : model.video;
+                var track = Object.create((isAudio ? AudioTrack : VideoTrack).prototype);
+                track._id = String(id); track._kind = 'main'; track._label = ''; track._language = '';
+                track._list = list;
+                track._sourceBuffer = sourceBuffer || null;
+                if (isAudio) track._enabled = list._tracks.length === 0;
+                else track._selected = list._tracks.length === 0;
+                list._tracks.push(track);
+                syncIndexed(list, list._tracks);
+                queueTask(media, function () { fire(list, 'addtrack', { track: track }); });
+                return track;
+            };
+            g.__fenMediaRemoveInbandTrack = function (media, track) {
+                var model = modelFor(media);
+                var list = track._list;
+                if (!list) return;
+                var at = list._tracks.indexOf(track);
+                if (at < 0) return;
+                list._tracks.splice(at, 1);
+                syncIndexed(list, list._tracks);
+                queueTask(media, function () { fire(list, 'removetrack', { track: track }); });
+            };
+            g.__fenSyncTrackList = function (list) { syncIndexed(list, list._tracks); };
             g.__fenMediaInbandTracks = function (media, json) {
                 var model = modelFor(media);
                 var tracks;

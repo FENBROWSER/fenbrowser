@@ -7513,6 +7513,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsBrowserUiApis(baseUri);
         InstallFenJsRemainingWebApis();
         InstallFenJsTextTracks();
+        InstallFenJsMediaSource();
         InstallFenJsMediaSession();
         InstallFenJsDocumentAll();
         // Last: this only publishes members nothing else has claimed, so it has to
@@ -12574,6 +12575,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 };
                 // The text of a blob: URL's entry for engine-side loaders that read from
                 // this realm's blob URL store (a track element's src); null when unknown.
+                // The entry itself, for engine-side loaders that need the object (a media
+                // element whose src is a blob URL for a MediaSource).
+                globalThis.__fenResolveBlobUrlEntry = resolveBlobUrl;
                 globalThis.__fenReadBlobUrlText = function (url) {
                     var entry = resolveBlobUrl(url);
                     if (!entry || !entry._parts) return null;

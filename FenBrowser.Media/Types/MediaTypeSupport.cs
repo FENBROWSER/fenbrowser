@@ -118,6 +118,25 @@ public sealed class MediaTypeSupport
     }
 
     /// <summary>
+    /// <c>MediaSource.isTypeSupported(type)</c> (MSE §2.2): the byte stream formats this
+    /// engine implements are ISO BMFF and WebM, a codecs parameter is required, and every
+    /// codec named must be one the container carries and a decoder handles outright.
+    /// </summary>
+    public bool IsMediaSourceTypeSupported(string type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        var mime = MimeType.Parse(type);
+        if (mime is null)
+            return false;
+        if (mime.Essence is not ("audio/webm" or "video/webm" or "audio/mp4" or "video/mp4"))
+            return false;
+        string? codecsParameter = mime.GetParameter("codecs");
+        if (codecsParameter is null || CodecString.SplitList(codecsParameter).Count == 0)
+            return false;
+        return CanPlayType(type) == CanPlayTypeResult.Probably;
+    }
+
+    /// <summary>
     /// True when a <c>source</c> element's <c>type</c> attribute rules the candidate out
     /// (resource selection, "process candidate"). An empty attribute says nothing about
     /// the resource and, as in Chromium and Gecko, does not rule it out; neither does a
