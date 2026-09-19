@@ -22,7 +22,7 @@ namespace FenBrowser.Host.ProcessIsolation.Media
     /// <see cref="MediaProcessLostException"/> on every open request so only the players
     /// on it fail. The next open launches a fresh child.
     /// </summary>
-    public sealed class MediaProcessClient : IMediaDecodeSourceFactory, IDisposable
+    public sealed partial class MediaProcessClient : IMediaDecodeSourceFactory, IDisposable
     {
         private static readonly TimeSpan OpenTimeout = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);

@@ -542,6 +542,32 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
             });
             yield return Envelope(TargetIpcMessageType.MediaSeek, new MediaSeekPayload { SessionId = sessionId, TargetUs = 500_000 });
             yield return Envelope(TargetIpcMessageType.MediaClose, new MediaClosePayload { SessionId = sessionId });
+            yield return Envelope(TargetIpcMessageType.MediaDecoderOpen, new MediaDecoderOpenPayload
+            {
+                SessionId = sessionId,
+                InputRegion = "fen_media_1_" + sessionId + "_pkt",
+                InputCapacity = MediaIpcLimits.MaxPacketRegionCapacity,
+                OutputRegion = "fen_media_1_" + sessionId + "_out",
+                OutputCapacity = MediaIpcLimits.DefaultOutputCapacity,
+                Kind = 1,
+                Codec = 2,
+                CodecString = "vp09.00.10.08",
+                Width = 64,
+                Height = 64,
+                ExtradataBase64 = "AAECAw=="
+            });
+            yield return Envelope(TargetIpcMessageType.MediaDecoderPush, new MediaDecoderPushPayload
+            {
+                SessionId = sessionId,
+                Length = 1024,
+                HasPts = true,
+                PtsUs = 100_000,
+                DtsUs = 100_000,
+                DurationUs = 33_333,
+                IsKeyframe = true
+            });
+            yield return Envelope(TargetIpcMessageType.MediaDecoderPush, new MediaDecoderPushPayload { SessionId = sessionId, Drain = true });
+            yield return Envelope(TargetIpcMessageType.MediaDecoderPush, new MediaDecoderPushPayload { SessionId = sessionId, Reset = true });
         }
 
         public void Register(IFuzzEndpoint endpoint)

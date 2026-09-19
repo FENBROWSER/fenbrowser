@@ -41,6 +41,10 @@ namespace FenBrowser.Host.ProcessIsolation.Media
         /// <summary>Resource bytes live in one shared region, so a resource is at most one region.</summary>
         public const long MaxInputLength = int.MaxValue;
 
+        /// <summary>A decoder session's input region holds one coded frame (design §4: a packet is at most 16 MB).</summary>
+        public const int MaxPacketRegionCapacity = 16 * 1024 * 1024;
+        public const int MaxExtradataChars = 64 * 1024;
+
         /// <summary>The PCM region: one read moves at most this many bytes; a longer block is split.</summary>
         public const int MinOutputCapacity = 4096;
         public const int MaxOutputCapacity = 16 * 1024 * 1024;
@@ -145,6 +149,60 @@ namespace FenBrowser.Host.ProcessIsolation.Media
         public bool Success { get; set; }
         public string ErrorKind { get; set; }
         public string ErrorMessage { get; set; }
+    }
+
+    /// <summary>
+    /// A decoder session (MSE, design §2.2): the renderer keeps the SourceBuffers and hands
+    /// coded frames over one at a time; the child holds the decoder. The input region
+    /// carries one packet; decoded audio and pictures come back through the read path in
+    /// the output and video regions, as for a resource session.
+    /// </summary>
+    public sealed class MediaDecoderOpenPayload
+    {
+        public string SessionId { get; set; }
+        public string InputRegion { get; set; }
+        public int InputCapacity { get; set; }
+        public string OutputRegion { get; set; }
+        public int OutputCapacity { get; set; }
+        public int Kind { get; set; }
+        public int Codec { get; set; }
+        public string CodecString { get; set; }
+        public int SampleRate { get; set; }
+        public int Channels { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public string ExtradataBase64 { get; set; }
+    }
+
+    public sealed class MediaDecoderOpenResponsePayload
+    {
+        public bool Success { get; set; }
+        public string ErrorKind { get; set; }
+        public string ErrorMessage { get; set; }
+        public string DecoderName { get; set; }
+    }
+
+    /// <summary>One coded frame in the session's input region, or a drain (<see cref="Drain"/>) or a flush (<see cref="Reset"/>) with no bytes.</summary>
+    public sealed class MediaDecoderPushPayload
+    {
+        public string SessionId { get; set; }
+        public int Length { get; set; }
+        public bool HasPts { get; set; }
+        public long PtsUs { get; set; }
+        public long DtsUs { get; set; }
+        public long DurationUs { get; set; }
+        public bool IsKeyframe { get; set; }
+        public bool Drain { get; set; }
+        public bool Reset { get; set; }
+    }
+
+    /// <summary>How many decoded items now wait to be read from the session.</summary>
+    public sealed class MediaDecoderPushResponsePayload
+    {
+        public bool Success { get; set; }
+        public string ErrorKind { get; set; }
+        public string ErrorMessage { get; set; }
+        public int Outputs { get; set; }
     }
 
     public sealed class MediaClosePayload

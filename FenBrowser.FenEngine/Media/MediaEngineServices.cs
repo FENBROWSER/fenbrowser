@@ -44,9 +44,16 @@ namespace FenBrowser.FenEngine.Media
         /// </summary>
         public static IMediaDecodeSourceFactory DecodeSources { get; set; }
 
+        /// <summary>
+        /// The decoders a MediaSource's coded frames go to: null means the registry above,
+        /// in this process; the renderer child installs the media process's decoders here
+        /// (design §2.2, ADR-0004: the renderer holds no codec code).
+        /// </summary>
+        public static DecoderRegistry RemoteDecoders { get; set; }
+
         /// <summary>Everything a <see cref="MediaPlayer"/> needs, built from the registries above.</summary>
         public static MediaPlayerServices PlayerServices =>
-            new(Demuxers, Decoders, AudioOutputs, TimeProvider.System) { DecodeSources = DecodeSources };
+            new(Demuxers, RemoteDecoders ?? Decoders, AudioOutputs, TimeProvider.System) { DecodeSources = DecodeSources };
 
         /// <summary>
         /// Installs the engine's hooks that other subsystems reach media through: the

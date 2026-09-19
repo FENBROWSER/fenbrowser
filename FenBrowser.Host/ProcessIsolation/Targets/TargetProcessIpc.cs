@@ -49,7 +49,11 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         MediaReadResponse,
         MediaSeek,
         MediaSeekResponse,
-        MediaClose
+        MediaClose,
+        MediaDecoderOpen,
+        MediaDecoderOpenResponse,
+        MediaDecoderPush,
+        MediaDecoderPushResponse
     }
 
     public sealed class TargetIpcEnvelope
@@ -355,7 +359,9 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                    messageType == TargetIpcMessageType.SvgDecodeResponse ||
                    messageType == TargetIpcMessageType.MediaOpenResponse ||
                    messageType == TargetIpcMessageType.MediaReadResponse ||
-                   messageType == TargetIpcMessageType.MediaSeekResponse;
+                   messageType == TargetIpcMessageType.MediaSeekResponse ||
+                   messageType == TargetIpcMessageType.MediaDecoderOpenResponse ||
+                   messageType == TargetIpcMessageType.MediaDecoderPushResponse;
         }
     }
 
@@ -599,6 +605,8 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 case TargetIpcMessageType.MediaOpenResponse:
                 case TargetIpcMessageType.MediaReadResponse:
                 case TargetIpcMessageType.MediaSeekResponse:
+                case TargetIpcMessageType.MediaDecoderOpenResponse:
+                case TargetIpcMessageType.MediaDecoderPushResponse:
                     DispatchResponse(envelope);
                     break;
             }

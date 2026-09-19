@@ -55,6 +55,12 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 case TargetIpcMessageType.MediaClose:
                     await CloseAsync(envelope).ConfigureAwait(false);
                     return true;
+                case TargetIpcMessageType.MediaDecoderOpen:
+                    send(await DecoderOpenAsync(envelope, cancellationToken).ConfigureAwait(false));
+                    return true;
+                case TargetIpcMessageType.MediaDecoderPush:
+                    send(await DecoderPushAsync(envelope, cancellationToken).ConfigureAwait(false));
+                    return true;
                 default:
                     return false;
             }
@@ -153,6 +159,142 @@ namespace FenBrowser.Host.ProcessIsolation.Media
             {
                 await session.DisposeAsync().ConfigureAwait(false);
                 return Response(envelope, TargetIpcMessageType.MediaOpenResponse, Error<MediaOpenResponsePayload>(KindOf(ex), ex.Message));
+            }
+        }
+
+        /// <summary>
+        /// Opens a decoder session (MSE): the renderer keeps the SourceBuffers and pushes coded
+        /// frames; the child selects and holds the decoder for the configuration.
+        /// </summary>
+        private async Task<TargetIpcEnvelope> DecoderOpenAsync(TargetIpcEnvelope envelope, CancellationToken cancellationToken)
+        {
+            var payload = TargetIpc.DeserializePayload<MediaDecoderOpenPayload>(envelope);
+            if (payload == null ||
+                !TryValidateSessionId(payload.SessionId) ||
+                !IsValidRegionName(payload.InputRegion) ||
+                !IsValidRegionName(payload.OutputRegion) ||
+                string.Equals(payload.InputRegion, payload.OutputRegion, StringComparison.Ordinal) ||
+                payload.InputCapacity < MediaIpcLimits.MinOutputCapacity || payload.InputCapacity > MediaIpcLimits.MaxPacketRegionCapacity ||
+                payload.OutputCapacity < MediaIpcLimits.MinOutputCapacity || payload.OutputCapacity > MediaIpcLimits.MaxOutputCapacity ||
+                !Enum.IsDefined(typeof(MediaTrackKind), payload.Kind) || (MediaTrackKind)payload.Kind == MediaTrackKind.Text ||
+                !Enum.IsDefined(typeof(MediaCodec), payload.Codec) ||
+                payload.CodecString?.Length > MediaIpcLimits.MaxDeclaredMimeChars ||
+                payload.ExtradataBase64?.Length > MediaIpcLimits.MaxExtradataChars ||
+                payload.SampleRate < 0 || payload.Channels < 0 || payload.Width < 0 || payload.Height < 0)
+            {
+                return Response(envelope, TargetIpcMessageType.MediaDecoderOpenResponse, Error<MediaDecoderOpenResponsePayload>(MediaErrorKinds.Protocol, "invalid_decoder_open_payload"));
+            }
+
+            if (_sessions.ContainsKey(payload.SessionId))
+            {
+                return Response(envelope, TargetIpcMessageType.MediaDecoderOpenResponse, Error<MediaDecoderOpenResponsePayload>(MediaErrorKinds.Protocol, "duplicate_session"));
+            }
+
+            if (_sessions.Count >= MediaIpcLimits.MaxSessionsPerProcess)
+            {
+                return Response(envelope, TargetIpcMessageType.MediaDecoderOpenResponse, Error<MediaDecoderOpenResponsePayload>(MediaErrorKinds.Limit, "too_many_sessions"));
+            }
+
+            byte[] extradata;
+            try
+            {
+                extradata = string.IsNullOrEmpty(payload.ExtradataBase64) ? Array.Empty<byte>() : Convert.FromBase64String(payload.ExtradataBase64);
+            }
+            catch (FormatException)
+            {
+                return Response(envelope, TargetIpcMessageType.MediaDecoderOpenResponse, Error<MediaDecoderOpenResponsePayload>(MediaErrorKinds.Protocol, "invalid_extradata"));
+            }
+
+            var kind = (MediaTrackKind)payload.Kind;
+            var context = new MediaPipelineContext(PlayerId.Next(), MediaLimits.Default, _log);
+            CodecConfig config;
+            try
+            {
+                if (kind == MediaTrackKind.Video)
+                {
+                    context.Limits.CheckVideoDimensions(payload.Width, payload.Height);
+                }
+
+                config = new CodecConfig(kind, (MediaCodec)payload.Codec, payload.CodecString, payload.Width, payload.Height, payload.SampleRate, payload.Channels, Extradata: extradata);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return Response(envelope, TargetIpcMessageType.MediaDecoderOpenResponse, Error<MediaDecoderOpenResponsePayload>(KindOf(ex), ex.Message));
+            }
+
+            MediaSharedMemory input;
+            MediaSharedMemory output;
+            try
+            {
+                input = MediaSharedMemory.Open(payload.InputRegion, payload.InputCapacity);
+                try
+                {
+                    output = MediaSharedMemory.Open(payload.OutputRegion, payload.OutputCapacity);
+                }
+                catch
+                {
+                    input.Dispose();
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                return Response(envelope, TargetIpcMessageType.MediaDecoderOpenResponse, Error<MediaDecoderOpenResponsePayload>(MediaErrorKinds.Protocol, $"region_unavailable: {ex.Message}"));
+            }
+
+            var source = new DecoderSessionSource(_decoders, config, context, input);
+            var session = new Session(source, input, output, context);
+            try
+            {
+                var name = await source.OpenDecoderAsync(cancellationToken).ConfigureAwait(false);
+                _sessions[payload.SessionId] = session;
+                return Response(envelope, TargetIpcMessageType.MediaDecoderOpenResponse, new MediaDecoderOpenResponsePayload { Success = true, DecoderName = name });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                await session.DisposeAsync().ConfigureAwait(false);
+                return Response(envelope, TargetIpcMessageType.MediaDecoderOpenResponse, Error<MediaDecoderOpenResponsePayload>(KindOf(ex), ex.Message));
+            }
+        }
+
+        /// <summary>One coded frame from the input region into the decoder (or a drain or a reset); the outputs wait for reads.</summary>
+        private async Task<TargetIpcEnvelope> DecoderPushAsync(TargetIpcEnvelope envelope, CancellationToken cancellationToken)
+        {
+            var payload = TargetIpc.DeserializePayload<MediaDecoderPushPayload>(envelope);
+            if (payload == null || !TryValidateSessionId(payload.SessionId) || !_sessions.TryGetValue(payload.SessionId, out var session) || session.Source is not DecoderSessionSource decoder)
+            {
+                return Response(envelope, TargetIpcMessageType.MediaDecoderPushResponse, Error<MediaDecoderPushResponsePayload>(MediaErrorKinds.Protocol, "unknown_session"));
+            }
+
+            if (payload.Length < 0 || payload.Length > session.Input.SizeBytes || payload.DurationUs < 0 ||
+                (payload.Drain && payload.Reset) || ((payload.Drain || payload.Reset) && payload.Length != 0))
+            {
+                return Response(envelope, TargetIpcMessageType.MediaDecoderPushResponse, Error<MediaDecoderPushResponsePayload>(MediaErrorKinds.Protocol, "invalid_push_payload"));
+            }
+
+            try
+            {
+                session.Carry?.Dispose();
+                session.Carry = null;
+                int outputs;
+                if (payload.Reset)
+                {
+                    outputs = await decoder.ResetAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else if (payload.Drain)
+                {
+                    outputs = await decoder.DrainAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    outputs = await decoder.DecodeAsync(payload, cancellationToken).ConfigureAwait(false);
+                }
+
+                return Response(envelope, TargetIpcMessageType.MediaDecoderPushResponse, new MediaDecoderPushResponsePayload { Success = true, Outputs = outputs });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return Response(envelope, TargetIpcMessageType.MediaDecoderPushResponse, Error<MediaDecoderPushResponsePayload>(KindOf(ex), ex.Message));
             }
         }
 
@@ -386,7 +528,7 @@ namespace FenBrowser.Host.ProcessIsolation.Media
 
         private sealed class Session : IAsyncDisposable
         {
-            public Session(LocalMediaDecodeSource source, MediaSharedMemory input, MediaSharedMemory output, MediaPipelineContext context)
+            public Session(IMediaDecodeSource source, MediaSharedMemory input, MediaSharedMemory output, MediaPipelineContext context)
             {
                 Source = source;
                 Input = input;
@@ -394,7 +536,7 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 Context = context;
             }
 
-            public LocalMediaDecodeSource Source { get; }
+            public IMediaDecodeSource Source { get; }
             public MediaSharedMemory Input { get; }
             public MediaSharedMemory Output { get; }
             public MediaSharedMemory Video { get; set; }
@@ -409,6 +551,113 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 Output.Dispose();
                 Video?.Dispose();
                 // The source's byte source disposed the input mapping.
+            }
+        }
+
+        /// <summary>
+        /// A decoder session behind the read path: the renderer pushes coded frames, the
+        /// decoder's outputs queue up, and each read takes the next one (a null read means
+        /// the queue is empty, not the end of a stream). The input region is the packet.
+        /// </summary>
+        private sealed class DecoderSessionSource : IMediaDecodeSource, IDecodeOutput<AudioBlock>, IDecodeOutput<VideoFrame>
+        {
+            private readonly DecoderRegistry _decoders;
+            private readonly CodecConfig _config;
+            private readonly MediaPipelineContext _context;
+            private readonly MediaSharedMemory _input;
+            private readonly Queue<DecodedMedia> _outputs = new();
+            private IMediaDecoder<AudioBlock> _audio;
+            private IMediaDecoder<VideoFrame> _video;
+
+            public DecoderSessionSource(DecoderRegistry decoders, CodecConfig config, MediaPipelineContext context, MediaSharedMemory input)
+            {
+                _decoders = decoders;
+                _config = config;
+                _context = context;
+                _input = input;
+            }
+
+            public async ValueTask<string> OpenDecoderAsync(CancellationToken cancellationToken)
+            {
+                if (_config.Kind == MediaTrackKind.Audio)
+                {
+                    _audio = await DecoderSelector.SelectAsync(_decoders.GetAudioCandidates(_config), _config, _context, cancellationToken).ConfigureAwait(false)
+                        ?? throw new MediaUnsupportedException($"No decoder for {_config.Codec}.");
+                    return _audio.Name;
+                }
+
+                _video = await DecoderSelector.SelectAsync(_decoders.GetVideoCandidates(_config), _config, _context, cancellationToken).ConfigureAwait(false)
+                    ?? throw new MediaUnsupportedException($"No decoder for {_config.Codec}.");
+                return _video.Name;
+            }
+
+            public async ValueTask<int> DecodeAsync(MediaDecoderPushPayload payload, CancellationToken cancellationToken)
+            {
+                var packet = EncodedPacket.Rent(_context.Limits, _config.Kind, 0, payload.Length,
+                    payload.HasPts ? MediaTime.FromMicroseconds(payload.PtsUs) : MediaTime.FromMicroseconds(payload.DtsUs),
+                    MediaTime.FromMicroseconds(payload.DtsUs), MediaTime.FromMicroseconds(payload.DurationUs), payload.IsKeyframe);
+                try
+                {
+                    _input.Read(0, packet.Memory.Span);
+                    int before = _outputs.Count;
+                    if (_audio != null)
+                        await _audio.DecodeAsync(packet, this, cancellationToken).ConfigureAwait(false);
+                    else
+                        await _video.DecodeAsync(packet, this, cancellationToken).ConfigureAwait(false);
+                    return _outputs.Count - before;
+                }
+                finally
+                {
+                    packet.Dispose();
+                }
+            }
+
+            public async ValueTask<int> DrainAsync(CancellationToken cancellationToken)
+            {
+                int before = _outputs.Count;
+                if (_audio != null)
+                    await _audio.DrainAsync(this, cancellationToken).ConfigureAwait(false);
+                else
+                    await _video.DrainAsync(this, cancellationToken).ConfigureAwait(false);
+                return _outputs.Count - before;
+            }
+
+            public async ValueTask<int> ResetAsync(CancellationToken cancellationToken)
+            {
+                DropOutputs();
+                if (_audio != null)
+                    await _audio.ResetAsync(cancellationToken).ConfigureAwait(false);
+                else
+                    await _video.ResetAsync(cancellationToken).ConfigureAwait(false);
+                return 0;
+            }
+
+            public void Emit(AudioBlock item) => _outputs.Enqueue(new DecodedMedia(item));
+
+            public void Emit(VideoFrame item) => _outputs.Enqueue(new DecodedMedia(item));
+
+            ValueTask<MediaSourceInfo> IMediaDecodeSource.OpenAsync(CancellationToken cancellationToken) =>
+                throw new InvalidOperationException("A decoder session has no resource to open.");
+
+            public ValueTask<DecodedMedia?> ReadAsync(CancellationToken cancellationToken) =>
+                ValueTask.FromResult(_outputs.TryDequeue(out var item) ? item : (DecodedMedia?)null);
+
+            public ValueTask SeekAsync(MediaTime target, CancellationToken cancellationToken) => throw new InvalidOperationException("A decoder session is reset through a push.");
+
+            public async ValueTask DisposeAsync()
+            {
+                DropOutputs();
+                if (_audio != null)
+                    await _audio.DisposeAsync().ConfigureAwait(false);
+                if (_video != null)
+                    await _video.DisposeAsync().ConfigureAwait(false);
+                _input.Dispose();
+            }
+
+            private void DropOutputs()
+            {
+                while (_outputs.TryDequeue(out var item))
+                    item.Dispose();
             }
         }
 

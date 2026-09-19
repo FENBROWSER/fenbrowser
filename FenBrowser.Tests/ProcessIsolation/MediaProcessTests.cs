@@ -9,6 +9,7 @@ using FenBrowser.Host.ProcessIsolation.Fuzz;
 using FenBrowser.Host.ProcessIsolation.Media;
 using FenBrowser.Media;
 using FenBrowser.Media.Buffers;
+using FenBrowser.Media.Mse;
 using FenBrowser.Media.Pipeline;
 using Xunit;
 
@@ -80,6 +81,51 @@ public sealed class MediaProcessTests
 
         await local.DisposeAsync();
         await remote.DisposeAsync();
+    }
+
+    /// <summary>
+    /// MSE keeps the SourceBuffers in the renderer and sends coded frames to the media
+    /// process's decoders (design §2.2): the pictures and blocks that come back match what
+    /// this process's decoders produce from the same frames.
+    /// </summary>
+    [Theory]
+    [InlineData("pattern_vp9.webm", "video/webm")]
+    [InlineData("pattern_h264_fragmented.mp4", "video/mp4")]
+    public async Task TheMediaProcessDecodesMediaSourceFramesLikeThisProcess(string file, string mime)
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", file));
+        using var client = new MediaProcessClient();
+        var remote = client.CreateRemoteDecoders(MediaEngineServices.Decoders);
+
+        async Task<List<(string Kind, MediaTime Time, int Size)>> DecodeAll(DecoderRegistry decoders)
+        {
+            var context = MediaPipelineContext.ForTests();
+            var model = new MediaSourceModel(context);
+            model.Attach();
+            var buffer = model.AddSourceBuffer(mime, generateTimestamps: false);
+            Assert.Equal(AppendOutcome.Ok, buffer.Append(bytes));
+            model.EndOfStream(EndOfStreamError.None);
+            await using var source = new MseDecodeSource(model, decoders, context);
+            var info = await source.OpenAsync(CancellationToken.None);
+            var items = new List<(string, MediaTime, int)>();
+            while (await source.ReadAsync(CancellationToken.None) is { } item)
+            {
+                using (item)
+                {
+                    items.Add(item.Audio is { } block
+                        ? ("audio", block.Timestamp, block.FrameCount)
+                        : ("video", item.Video!.Timestamp, item.Video.Width * 100_000 + item.Video.Height));
+                }
+            }
+
+            return items;
+        }
+
+        var expected = await DecodeAll(MediaEngineServices.Decoders);
+        var actual = await DecodeAll(remote);
+        Assert.Equal(1, client.Generation);
+        Assert.True(expected.Count >= 10, $"expected {expected.Count} items");
+        Assert.Equal(expected, actual);
     }
 
     [Theory]

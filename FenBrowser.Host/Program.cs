@@ -507,6 +507,7 @@ namespace FenBrowser.Host
                 ? new FenBrowser.Host.ProcessIsolation.Media.MediaProcessClient()
                 : null;
             FenBrowser.FenEngine.Media.MediaEngineServices.DecodeSources = mediaProcess;
+            FenBrowser.FenEngine.Media.MediaEngineServices.RemoteDecoders = mediaProcess?.CreateRemoteDecoders(FenBrowser.FenEngine.Media.MediaEngineServices.Decoders);
 
             using var browser = new FenBrowser.FenEngine.Rendering.BrowserHost();
             using var logForwarder = new ChildProcessLogForwarder("renderer", tabId);
