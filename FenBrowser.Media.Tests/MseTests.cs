@@ -1,0 +1,292 @@
+using FenBrowser.Media.Codecs.Ffmpeg;
+using FenBrowser.Media.Diagnostics;
+using FenBrowser.Media.Mse;
+using FenBrowser.Media.Pipeline;
+
+namespace FenBrowser.Media.Tests;
+
+/// <summary>
+/// MSE §2-3 over the byte stream formats: the segment parser loop on whole and chunked
+/// appends, coded frame processing (overlap removal, timestamp offset, append window,
+/// sequence mode), coded frame removal and eviction, duration and end of stream, and the
+/// decode source reading what was buffered.
+/// </summary>
+public class MseTests
+{
+    private static MediaSourceModel Open(MseLimits? limits = null)
+    {
+        var model = new MediaSourceModel(MediaPipelineContext.ForTests(), limits);
+        model.Attach();
+        return model;
+    }
+
+    private static (double Start, double End)[] Ranges(MediaTimeRanges ranges)
+    {
+        var result = new (double, double)[ranges.Count];
+        for (int i = 0; i < ranges.Count; i++)
+            result[i] = (Math.Round(ranges.Start(i).TotalSeconds, 3), Math.Round(ranges.End(i).TotalSeconds, 3));
+        return result;
+    }
+
+    [Fact]
+    public void FragmentedMp4_AppendedWhole_BuffersTheFragment()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/mp4", generateTimestamps: false);
+        var received = 0;
+        model.InitializationSegmentReceived += (_, _) => received++;
+
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(MediaFixtures.Read("pattern_h264_fragmented.mp4")));
+
+        Assert.Equal(1, received);
+        var track = Assert.Single(buffer.TrackBuffers);
+        Assert.Equal(MediaTrackKind.Video, track.Kind);
+        Assert.Equal(MediaCodec.H264, track.Config!.Codec);
+        Assert.Equal(10, track.Frames.Count);
+        Assert.Equal([(0.2, 1.2)], Ranges(buffer.Buffered));
+        Assert.Equal([(0.2, 1.2)], Ranges(model.Buffered));
+        // The mvhd duration is 0 and there is no mehd: the duration is +Infinity (§3.5.8
+        // step 5.2) and appended frames never raise it (§3.5.11 step 20).
+        Assert.True(model.Duration!.Value.IsInfinite);
+        Assert.True(model.FirstInitializationSegment.IsCompletedSuccessfully);
+        // Frames stay in decode order: the first is the sync sample, its dts 0.
+        Assert.True(track.Frames[0].IsKeyframe);
+        Assert.Equal(0, track.Frames[0].Dts.TotalSeconds);
+        Assert.Equal(0.2, track.Frames[0].Pts.TotalSeconds, 3);
+    }
+
+    [Fact]
+    public void FragmentedMp4_AppendedInSmallPieces_BuffersTheSame()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/mp4", generateTimestamps: false);
+        var bytes = MediaFixtures.Read("pattern_h264_fragmented.mp4");
+        for (int at = 0; at < bytes.Length; at += 97)
+            Assert.Equal(AppendOutcome.Ok, buffer.Append(bytes.AsSpan(at, Math.Min(97, bytes.Length - at))));
+
+        Assert.Equal(10, Assert.Single(buffer.TrackBuffers).Frames.Count);
+        Assert.Equal([(0.2, 1.2)], Ranges(buffer.Buffered));
+        Assert.Equal(0, buffer.Bytes == 0 ? 1 : 0);
+    }
+
+    [Fact]
+    public void WebM_AppendedWhole_BuffersEveryCluster()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/webm; codecs=\"vp09.00.10.08\"", generateTimestamps: false);
+
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(MediaFixtures.Read("pattern_vp9.webm")));
+
+        var track = Assert.Single(buffer.TrackBuffers);
+        Assert.Equal(MediaCodec.Vp9, track.Config!.Codec);
+        Assert.Equal(10, track.Frames.Count);
+        Assert.Equal([(0, 1.0)], Ranges(buffer.Buffered));
+    }
+
+    [Fact]
+    public void WebM_AppendedInPieces_BuffersTheSame()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/webm", generateTimestamps: false);
+        var bytes = MediaFixtures.Read("pattern_vp9.webm");
+        for (int at = 0; at < bytes.Length; at += 333)
+            Assert.Equal(AppendOutcome.Ok, buffer.Append(bytes.AsSpan(at, Math.Min(333, bytes.Length - at))));
+
+        Assert.Equal(10, Assert.Single(buffer.TrackBuffers).Frames.Count);
+        Assert.Equal([(0, 1.0)], Ranges(buffer.Buffered));
+    }
+
+    [Fact]
+    public void GarbageIsAnAppendError_AndTheParserResets()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/mp4", generateTimestamps: false);
+        Assert.Equal(AppendOutcome.DecodeError, buffer.Append("this is not an mp4 at all, it is text"u8));
+        Assert.Empty(buffer.TrackBuffers);
+        // The buffer recovers when a proper segment follows.
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(MediaFixtures.Read("pattern_h264_fragmented.mp4")));
+        Assert.Single(buffer.TrackBuffers);
+    }
+
+    [Fact]
+    public void UnsupportedType_IsNotSupported()
+    {
+        var model = Open();
+        var error = Assert.Throws<MseInvalidOperationException>(() => model.AddSourceBuffer("video/ogg", generateTimestamps: false));
+        Assert.Equal("NotSupportedError", error.DomExceptionName);
+        Assert.Null(SegmentParser.Create("text/plain", MediaPipelineContext.ForTests()));
+    }
+
+    [Fact]
+    public void TimestampOffset_ShiftsTheFragment_AndOverlapReplacesFrames()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/mp4", generateTimestamps: false);
+        var bytes = MediaFixtures.Read("pattern_h264_fragmented.mp4");
+        buffer.Append(bytes);
+        buffer.SetTimestampOffset(MediaTime.FromSeconds(0.5));
+        buffer.Append(bytes);
+
+        var track = Assert.Single(buffer.TrackBuffers);
+        // The second fragment lands at 0.7-1.7 and overlaps the first's last five frames,
+        // which are removed (§3.5.11 step 14): the buffered range is continuous.
+        Assert.Equal([(0.2, 1.7)], Ranges(buffer.Buffered));
+        Assert.Equal(15, track.Frames.Count);
+        Assert.True(model.Duration!.Value.IsInfinite); // no mehd: the duration stays open-ended
+    }
+
+    [Fact]
+    public void AppendWindow_DropsFramesOutsideIt()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/mp4", generateTimestamps: false);
+        buffer.AppendWindowStart = MediaTime.FromSeconds(0.5);
+        buffer.AppendWindowEnd = MediaTime.FromSeconds(1.0);
+        buffer.Append(MediaFixtures.Read("pattern_h264_fragmented.mp4"));
+
+        // Every frame before 0.5 is dropped; the single sync sample sits at 0.2, so the
+        // whole fragment waits for a random access point that never comes.
+        Assert.Empty(Assert.Single(buffer.TrackBuffers).Frames);
+    }
+
+    [Fact]
+    public void SequenceMode_PlacesTheFragmentAtTheGroupStart()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/webm", generateTimestamps: false);
+        buffer.SetMode(AppendMode.Sequence);
+        buffer.SetTimestampOffset(MediaTime.FromSeconds(5));
+        buffer.Append(MediaFixtures.Read("pattern_vp9.webm"));
+
+        Assert.Equal([(5.0, 6.0)], Ranges(buffer.Buffered));
+        Assert.Equal(6.0, buffer.TimestampOffset.TotalSeconds, 3);
+    }
+
+    [Fact]
+    public void Remove_TakesTheRangeAndItsDependents()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/webm", generateTimestamps: false);
+        buffer.Append(MediaFixtures.Read("pattern_vp9.webm"));
+        buffer.Remove(MediaTime.FromSeconds(0.5), MediaTime.PositiveInfinity);
+
+        var track = Assert.Single(buffer.TrackBuffers);
+        Assert.True(track.Frames.All(f => f.Pts < MediaTime.FromSeconds(0.5)));
+        Assert.Equal([(0, 0.5)], Ranges(buffer.Buffered));
+        Assert.Equal(1.0, model.Duration!.Value.TotalSeconds, 3); // removal does not shrink the duration
+    }
+
+    [Fact]
+    public void Eviction_FreesRangesBeforeTheCurrentPosition_OrReportsQuotaExceeded()
+    {
+        var bytes = MediaFixtures.Read("pattern_vp9.webm");
+        var model = Open(new MseLimits(VideoBufferQuota: bytes.Length * 2, AudioBufferQuota: 1024));
+        var buffer = model.AddSourceBuffer("video/webm", generateTimestamps: false);
+        buffer.Append(bytes);
+        buffer.SetTimestampOffset(MediaTime.FromSeconds(1));
+        buffer.Append(bytes);
+        long full = buffer.Bytes;
+        Assert.True(full > bytes.Length);
+
+        // Nothing before the current position: the append cannot fit.
+        Assert.False(buffer.EvictToFit(bytes.Length, MediaTime.Zero));
+        // Playing at 5 s: the whole [0, 2] range is behind and goes.
+        Assert.True(buffer.EvictToFit(bytes.Length, MediaTime.FromSeconds(5)));
+        Assert.True(buffer.Bytes < full);
+    }
+
+    [Fact]
+    public void EndOfStream_SetsTheDurationToTheHighestBufferedEnd_AndSeekable()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/mp4", generateTimestamps: false);
+        buffer.Append(MediaFixtures.Read("pattern_h264_fragmented.mp4"));
+        Assert.Equal([(0, 1.2)], Ranges(model.Seekable));
+
+        model.EndOfStream(EndOfStreamError.None);
+        Assert.Equal(MediaSourceReadyState.Ended, model.ReadyState);
+        Assert.Equal(1.2, model.Duration!.Value.TotalSeconds, 3);
+        Assert.Equal([(0, 1.2)], Ranges(model.Seekable));
+        Assert.Throws<MseInvalidOperationException>(() => model.EndOfStream(EndOfStreamError.None));
+    }
+
+    [Fact]
+    public void Duration_CannotDropBelowBufferedFrames()
+    {
+        var model = Open();
+        var buffer = model.AddSourceBuffer("video/mp4", generateTimestamps: false);
+        buffer.Append(MediaFixtures.Read("pattern_h264_fragmented.mp4"));
+        Assert.Throws<MseInvalidOperationException>(() => model.SetDuration(MediaTime.FromSeconds(0.5)));
+        model.SetDuration(MediaTime.FromSeconds(1.15)); // above the highest start, below the highest end: snaps to the end
+        Assert.Equal(1.2, model.Duration!.Value.TotalSeconds, 3);
+        model.SetDuration(MediaTime.FromSeconds(10));
+        Assert.Equal(10, model.Duration!.Value.TotalSeconds, 3);
+    }
+
+    [Fact]
+    public async Task DecodeSource_DecodesWhatIsBuffered_ThenWaitsForMore()
+    {
+        var decoders = new DecoderRegistry();
+        Assert.True(FfmpegDecoders.TryRegister(decoders, NullMediaLogSink.Instance), "libavcodec must be available on the development machine (winget Gyan.FFmpeg.Shared)");
+        var context = MediaPipelineContext.ForTests();
+        var model = new MediaSourceModel(context);
+        model.Attach();
+        var buffer = model.AddSourceBuffer("video/webm", generateTimestamps: false);
+        await using var source = new MseDecodeSource(model, decoders, context);
+
+        var open = source.OpenAsync(CancellationToken.None).AsTask();
+        await Task.Delay(50);
+        Assert.False(open.IsCompleted, "OpenAsync waits for the first initialization segment");
+        buffer.Append(MediaFixtures.Read("pattern_vp9.webm"));
+        var info = await open;
+        Assert.NotNull(info.VideoTrack);
+        Assert.Equal(64, info.VideoTrack!.Config.Width);
+
+        int pictures = 0;
+        MediaTime last = MediaTime.NegativeInfinity;
+        while (await source.ReadAsync(CancellationToken.None) is { } item)
+        {
+            using (item)
+            {
+                Assert.NotNull(item.Video);
+                Assert.True(item.Timestamp > last);
+                last = item.Timestamp;
+                pictures++;
+            }
+        }
+
+        Assert.True(source.WaitingForData, "the source is open, so a null read means starvation, not the end");
+        // A frame-threaded decoder holds pictures back until more input or a drain; the
+        // source must not drain it while the stream is merely starved.
+        Assert.True(pictures >= 1, $"pictures: {pictures}");
+
+        // More data at 1 s arrives: reading resumes; then endOfStream drains the decoder.
+        buffer.SetTimestampOffset(MediaTime.FromSeconds(1));
+        buffer.Append(MediaFixtures.Read("pattern_vp9.webm"));
+        int more = 0;
+        while (await source.ReadAsync(CancellationToken.None) is { } item)
+        {
+            item.Dispose();
+            more++;
+        }
+
+        Assert.True(source.WaitingForData);
+        model.EndOfStream(EndOfStreamError.None);
+        int drained = 0;
+        while (await source.ReadAsync(CancellationToken.None) is { } item)
+        {
+            item.Dispose();
+            drained++;
+        }
+
+        Assert.False(source.WaitingForData);
+        Assert.Equal(20, pictures + more + drained);
+
+        // Seeking back replays from the keyframe at the start of the second fragment.
+        await source.SeekAsync(MediaTime.FromSeconds(1.5), CancellationToken.None);
+        var first = await source.ReadAsync(CancellationToken.None);
+        Assert.NotNull(first);
+        Assert.Equal(1.0, first!.Value.Timestamp.TotalSeconds, 2);
+        first.Value.Dispose();
+    }
+}
