@@ -18,9 +18,9 @@ public class MseWptCorpusTests
     }
 
     [Theory]
-    [InlineData("mp4/test.mp4", "video/mp4; codecs=\"mp4a.40.2,avc1.4d400d\"", 1413, 6.549)]
-    [InlineData("webm/test.webm", "video/webm; codecs=\"vp8, vorbis\"", 4116, 6.552)]
-    public void WholeFile_BuffersAudioAndVideo(string file, string type, int initSize, double duration)
+    [InlineData("mp4/test.mp4", "video/mp4; codecs=\"mp4a.40.2,avc1.4d400d\"", 1413, 6.549, 193)]
+    [InlineData("webm/test.webm", "video/webm; codecs=\"vp8, vorbis\"", 4116, 6.552, 0)]
+    public void WholeFile_BuffersAudioAndVideo(string file, string type, int initSize, double duration, int videoFrames)
     {
         var root = WptRoot();
         if (root is null)
@@ -40,6 +40,11 @@ public class MseWptCorpusTests
         var video = buffer.TrackBuffers.Single(t => t.Kind == MediaTrackKind.Video);
         Assert.True(audio.Frames.Count > 100, $"audio frames: {audio.Frames.Count}");
         Assert.True(video.Frames.Count > 100, $"video frames: {video.Frames.Count}");
+        // test.mp4 pairs every picture with a one-tick frame the next one spans (trun
+        // durations 5999, 1, 5999, 1 at 90 kHz): a frame inside the group's span removes
+        // nothing (§3.5.11 step 14), so every sample of every trun stays.
+        if (videoFrames > 0)
+            Assert.Equal(videoFrames, video.Frames.Count);
         var buffered = buffer.Buffered;
         Assert.Equal(1, buffered.Count);
         Assert.True(buffered.Start(0).TotalSeconds < 0.2, buffered.Start(0).ToString());

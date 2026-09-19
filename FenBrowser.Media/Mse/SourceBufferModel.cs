@@ -402,11 +402,15 @@ public sealed class SourceBufferModel
                 track.NeedRandomAccessPoint = false;
             }
 
-            // 13-15. Overlapping frames (and their dependents) leave the buffer.
-            if (track.HighestEndTimestamp is { } highest && highest <= framePts)
-                track.RemoveOverlapping(highest, frameEnd);
-            else
+            // 14-15. Frames the new one overlaps (and their dependents) leave the buffer:
+            // from the group's highest end when the frame continues the group, from the
+            // frame itself when a new group starts (step 6 unset the highest end). A frame
+            // inside the current group's span (a B-frame decoded after the frame it is
+            // shown before, a 1-tick frame the next one spans) removes nothing.
+            if (track.HighestEndTimestamp is null)
                 track.RemoveOverlapping(framePts, frameEnd);
+            else if (track.HighestEndTimestamp is { } highest && highest <= framePts)
+                track.RemoveOverlapping(highest, frameEnd);
 
             // 16-20. Add the frame and advance the track state.
             var owned = EncodedPacket.Rent(_owner.MediaLimits, track.Kind, packet.TrackId, packet.Length, framePts, frameDts, duration, packet.IsKeyframe);
