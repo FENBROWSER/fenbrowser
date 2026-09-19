@@ -150,10 +150,6 @@ public sealed class SourceBufferModel
         }
 
         FlushHeldPackets();
-        // §3.5.11 step 21, once per media segment rather than per frame: in sequence mode
-        // the next group starts where this one ended.
-        if (Mode == AppendMode.Sequence && !_generateTimestamps)
-            _timestampOffset = _groupEndTimestamp;
         return AppendOutcome.Ok;
     }
 
@@ -309,12 +305,10 @@ public sealed class SourceBufferModel
         }
         else
         {
+            // Track IDs are only unique within the byte stream: two SourceBuffers fed from
+            // two files both carry a track 1.
             foreach (var track in tracks)
-            {
-                if (_owner.TrackIdInUse(track.Id))
-                    throw new MediaFormatException($"Track {track.Id} already belongs to another SourceBuffer.");
                 _trackBuffers[track.Id] = new TrackBuffer(track.Id, track.Kind);
-            }
         }
 
         _configVersion++;

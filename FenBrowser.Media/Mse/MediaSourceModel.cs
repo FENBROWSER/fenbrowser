@@ -147,8 +147,6 @@ public sealed class MediaSourceModel
 
     public SegmentParser? CreateParser(string type) => SegmentParser.Create(type, _context);
 
-    internal bool TrackIdInUse(int trackId) => _sourceBuffers.Any(b => b.TrackBuffers.Any(t => t.TrackId == trackId));
-
     // -- duration (§2.4.6 "duration change") -------------------------------------------------
 
     public void SetDuration(MediaTime duration, double? exactSeconds = null)

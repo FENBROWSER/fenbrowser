@@ -159,6 +159,11 @@ public class MseTests
         buffer.Append(MediaFixtures.Read("pattern_vp9.webm"));
 
         Assert.Equal([(5.0, 6.0)], Ranges(buffer.Buffered));
+        // timestampOffset became group start - first pts and stays there; the next group
+        // moves on only through a discontinuity or a parser reset (§3.5.11 steps 1-3, 6).
+        Assert.Equal(5.0, buffer.TimestampOffset.TotalSeconds, 3);
+        buffer.Append(MediaFixtures.Read("pattern_vp9.webm"));
+        Assert.Equal([(5.0, 7.0)], Ranges(buffer.Buffered));
         Assert.Equal(6.0, buffer.TimestampOffset.TotalSeconds, 3);
     }
 
