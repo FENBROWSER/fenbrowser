@@ -51,6 +51,41 @@ public class MseWptCorpusTests
         Assert.Equal(duration, buffered.End(0).TotalSeconds, 0.15);
     }
 
+    /// <summary>
+    /// mediasource-sequencemode-append-buffer: the second media segment of test.mp4 appended
+    /// first in sequence mode starts the group at 0 from the earliest track (audio at
+    /// 0.882358, ahead of video at 0.896666), so timestampOffset reads -0.882358.
+    /// </summary>
+    [Fact]
+    public void SequenceMode_StartsTheGroupFromTheEarliestTrack()
+    {
+        var root = WptRoot();
+        if (root is null)
+            return;
+        var bytes = File.ReadAllBytes(Path.Combine(root, "media-source", "mp4", "test.mp4"));
+        var model = new MediaSourceModel(MediaPipelineContext.ForTests());
+        model.Attach();
+        var buffer = model.AddSourceBuffer("video/mp4; codecs=\"mp4a.40.2,avc1.4d400d\"", generateTimestamps: false);
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(bytes.AsSpan(0, 1413)));
+        buffer.SetMode(AppendMode.Sequence);
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(bytes.AsSpan(25447, 21757)));
+
+        Assert.Equal(-0.882358, buffer.TimestampOffset.TotalSeconds, 5);
+        var video = buffer.TrackBuffers.Single(t => t.Kind == MediaTrackKind.Video);
+        Assert.Equal(0.896666 - 0.882358, video.Buffered.Start(0).TotalSeconds, 5);
+
+        // Then the first segment: the group continues at the previous end from its earliest
+        // track (audio at 0), so the video, which starts 95 ms later, leaves a gap the
+        // buffered ranges keep apart: { [0.014, 0.814) [0.909, 1.711) } after endOfStream.
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(bytes.AsSpan(1413, 24034)));
+        model.EndOfStream(EndOfStreamError.None);
+        var ranges = buffer.Buffered;
+        Assert.Equal(2, ranges.Count);
+        Assert.Equal(0.814, ranges.End(0).TotalSeconds, 3);
+        Assert.Equal(0.909, ranges.Start(1).TotalSeconds, 3);
+        Assert.Equal(1.711, ranges.End(1).TotalSeconds, 3);
+    }
+
     /// <summary>The per-track ranges mediasource-buffered.html expects, to the millisecond, so the frame duration rules match the other engines.</summary>
     [Theory]
     [InlineData("mp4/test-av-384k-44100Hz-1ch-320x240-30fps-10kfr.mp4", "video/mp4;codecs=\"avc1.4D4001,mp4a.40.2\"", "[0.067,2.067)", "[0.000,2.043)")]

@@ -1052,7 +1052,11 @@ public sealed class Mp4Demuxer : IDemuxer
 
         var sample = chosen.Samples[chosen.Next++];
         var pts = chosen.Time(Track.Clamp((Int128)sample.Dts + sample.CtsOffset));
-        var duration = MediaTime.FromTimescale(sample.Duration, chosen.Timescale);
+        // The duration is the distance to the frame's end converted from ticks, not the
+        // converted tick count: pts + duration then lands on the same microsecond the
+        // container's end tick converts to (10/24 s + 1/24 s must read as 11/24 s to the
+        // microsecond, SourceBuffer-appendWindowEnd-rounding).
+        var duration = chosen.Time(Track.Clamp((Int128)sample.Dts + sample.CtsOffset + sample.Duration)) - pts;
         var packet = EncodedPacket.Rent(_context.Limits, chosen.Kind, chosen.Id, sample.Size, pts, chosen.Time(sample.Dts), duration, chosen.Kind == MediaTrackKind.Audio || sample.IsSync);
         int read = await _source.ReadAtLeastAsync(sample.Offset, packet.Memory, cancellationToken).ConfigureAwait(false);
         if (read < sample.Size)

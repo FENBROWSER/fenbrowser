@@ -276,9 +276,20 @@ public sealed class TrackBuffer
 
     private void RecomputeBuffered()
     {
-        // Frames in presentation order, coalesced; adjacent frames within a small tolerance
-        // (MSE's "buffered ranges" allow gaps that playback rides over) form one range.
-        var tolerance = MediaTime.FromSeconds(0.1);
+        // Frames in presentation order, coalesced. A gap no longer than the longest frame
+        // in the track is one playback rides over (a dropped frame, timestamp jitter), so
+        // the frames either side form one range; a longer gap (a track that starts later
+        // than its neighbour in a sequence-mode group, say) splits the ranges, as the other
+        // engines do.
+        var tolerance = MediaTime.Zero;
+        foreach (var frame in _frames)
+        {
+            if (frame.Duration > tolerance)
+                tolerance = frame.Duration;
+        }
+
+        if (tolerance < MediaTime.FromSeconds(0.001))
+            tolerance = MediaTime.FromSeconds(0.1);
         var ranges = new List<(MediaTime Start, MediaTime End)>();
         foreach (var frame in _frames.OrderBy(f => f.Pts))
         {

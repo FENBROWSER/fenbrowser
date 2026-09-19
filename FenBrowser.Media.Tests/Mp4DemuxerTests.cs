@@ -52,7 +52,8 @@ public class Mp4DemuxerTests
 
         // AAC priming: the first frame starts 1024 samples before zero.
         Assert.Equal(MediaTime.FromTimescale(-1024, 48000), audioPackets[0].Pts);
-        Assert.Equal(MediaTime.FromTimescale(1024, 48000), audioPackets[0].Duration);
+        // The duration is the distance to the frame's end tick, so the first frame ends exactly at zero.
+        Assert.Equal(MediaTime.Zero, audioPackets[0].Pts + audioPackets[0].Duration);
         Assert.Equal(MediaTime.FromTimescale(47 * 1024 - 1024, 48000), audioPackets[^1].Pts);
         Assert.All(audioPackets, p => Assert.True(p.IsKeyframe));
 

@@ -153,7 +153,50 @@ public sealed class SourceBufferModel
         }
 
         FlushHeldPackets();
+        FlushGroupStash();
         return AppendOutcome.Ok;
+    }
+
+    // In sequence mode the first frames of a new coded frame group are held back until the
+    // append is parsed, so the group can start from the earliest presentation timestamp
+    // among the tracks rather than from whichever track's frame the byte stream lists
+    // first (what the other engines do; mediasource-sequencemode-append-buffer expects
+    // -min(first video pts, first audio pts)).
+    private readonly List<EncodedPacket> _groupStash = [];
+
+    private void FlushGroupStash()
+    {
+        if (_groupStash.Count == 0)
+            return;
+        if (_groupStartTimestamp is { } groupStart)
+        {
+            var earliest = MediaTime.PositiveInfinity;
+            foreach (var packet in _groupStash)
+            {
+                var pts = _generateTimestamps ? MediaTime.Zero : (packet.HasPts ? packet.Pts : packet.Dts);
+                if (pts < earliest)
+                    earliest = pts;
+            }
+
+            // §3.5.11 steps 1.1-1.3 for the group.
+            _timestampOffset = groupStart - earliest;
+            _groupEndTimestamp = groupStart;
+            foreach (var t in _trackBuffers.Values)
+                t.NeedRandomAccessPoint = true;
+            _groupStartTimestamp = null;
+        }
+
+        var stashed = _groupStash.ToArray();
+        _groupStash.Clear();
+        foreach (var packet in stashed)
+            ProcessPacket(packet);
+    }
+
+    private void DropGroupStash()
+    {
+        foreach (var packet in _groupStash)
+            packet.Dispose();
+        _groupStash.Clear();
     }
 
     /// <summary>
@@ -256,6 +299,7 @@ public sealed class SourceBufferModel
         foreach (var held in _held.Values)
             held.Dispose();
         _held.Clear();
+        DropGroupStash();
         _lastDistance.Clear();
         foreach (var track in _trackBuffers.Values)
         {
@@ -327,6 +371,17 @@ public sealed class SourceBufferModel
 
     /// <summary>§3.5.11 "coded frame processing" for one frame.</summary>
     private void OnPacket(EncodedPacket packet)
+    {
+        if (Mode == AppendMode.Sequence && _groupStartTimestamp is not null)
+        {
+            _groupStash.Add(packet);
+            return;
+        }
+
+        ProcessPacket(packet);
+    }
+
+    private void ProcessPacket(EncodedPacket packet)
     {
         if (!_trackBuffers.TryGetValue(packet.TrackId, out var track))
         {

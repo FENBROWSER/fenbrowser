@@ -651,6 +651,11 @@ public sealed partial class FenJsBrowserScriptEngine
                     return;
                 }
                 sb._appendState = result.parsing ? 'parsing' : 'waiting';
+                // §3.5.11 steps 1.2 and 21: sequence mode and timestamp-generating byte
+                // streams move timestampOffset as frames are processed.
+                // The model keeps microseconds; the double script assigned stays unless the
+                // model moved.
+                try { var moved = g.__fenMseSbTimestampOffset(source._id, sb._bid); if (Math.abs(moved - sb._timestampOffset) > 0.000001) sb._timestampOffset = moved; } catch (e) {}
                 sb._updating = false;
                 queueFire(source, sb, 'update');
                 queueFire(source, sb, 'updateend');
