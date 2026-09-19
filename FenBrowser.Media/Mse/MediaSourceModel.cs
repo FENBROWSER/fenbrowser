@@ -50,6 +50,8 @@ public sealed class MediaSourceModel
 
     internal MediaLimits MediaLimits => _context.Limits;
 
+    internal MediaPipelineContext Context => _context;
+
     public MediaSourceReadyState ReadyState { get; private set; } = MediaSourceReadyState.Closed;
 
     /// <summary>The duration attribute: null while NaN.</summary>

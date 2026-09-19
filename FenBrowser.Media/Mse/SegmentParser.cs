@@ -74,13 +74,15 @@ public abstract class SegmentParser
         {
             status = Parse(data, out consumed, onInitializationSegment, onPacket);
         }
-        catch (MediaFormatException)
+        catch (MediaFormatException ex)
         {
+            LastError = ex.Message;
             status = SegmentParseStatus.Error;
             consumed = data.Length;
         }
-        catch (MediaLimitExceededException)
+        catch (MediaLimitExceededException ex)
         {
+            LastError = ex.Message;
             status = SegmentParseStatus.Error;
             consumed = data.Length;
         }
@@ -88,6 +90,9 @@ public abstract class SegmentParser
         _pending.RemoveRange(0, Math.Min(consumed, _pending.Count));
         return status;
     }
+
+    /// <summary>Why the last append was an error, for the media log.</summary>
+    public string? LastError { get; private set; }
 
     /// <summary>Drops pending bytes (MSE "reset parser state"); the initialization segment is kept.</summary>
     public virtual void ResetParserState() => _pending.Clear();

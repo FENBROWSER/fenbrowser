@@ -1,4 +1,5 @@
 using FenBrowser.Media.Buffers;
+using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Pipeline;
 
 namespace FenBrowser.Media.Mse;
@@ -49,6 +50,9 @@ public sealed class SourceBufferModel
     }
 
     public string Type { get; private set; }
+
+    /// <summary>Why the last append failed, for diagnostics.</summary>
+    public string? LastParseError => Parser.LastError;
 
     public AppendMode Mode { get; private set; }
 
@@ -140,6 +144,7 @@ public sealed class SourceBufferModel
         var status = Parser.Append(bytes, OnInitializationSegment, OnPacketWithDuration);
         if (status == SegmentParseStatus.Error)
         {
+            _owner.Context.Log.Emit(_owner.Context.Player, MediaEventKind.Error, MediaLogLevel.Warn, $"Append error: {Parser.LastError}", ("type", Type));
             ResetParserState();
             return AppendOutcome.DecodeError;
         }
