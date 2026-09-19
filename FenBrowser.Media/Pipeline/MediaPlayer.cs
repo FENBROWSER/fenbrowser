@@ -167,25 +167,29 @@ public sealed class MediaPlayer : IMediaResource
         var seekable = model.Seekable;
         var duration = model.Duration;
         var state = model.ReadyState;
-        if (_readyState == MediaReadyState.HaveNothing)
-            return; // the metadata report carries the first values
-        Report(() =>
+        // The media task learns the new duration and state whatever the readiness; the
+        // element only hears the values after metadata, whose report carries the first.
+        if (_readyState != MediaReadyState.HaveNothing)
         {
-            _client.BufferedChanged(buffered);
-            _client.SeekableChanged(seekable);
-            if (duration is { } value && value != _reportedDuration)
+            Report(() =>
             {
-                _reportedDuration = value;
-                _client.DurationChanged(value);
-            }
+                _client.BufferedChanged(buffered);
+                _client.SeekableChanged(seekable);
+                if (duration is { } value && value != _reportedDuration)
+                {
+                    _reportedDuration = value;
+                    _client.DurationChanged(value);
+                }
 
-            // No progress events: script supplies the data, there is no fetch to report on
-            // (HTML §4.8.11.5, the media provider object branch).
-            bool ended = state == MediaSourceReadyState.Ended;
-            if (ended && !_fetchedReported)
-                _client.FetchedEntirely();
-            _fetchedReported = ended;
-        });
+                // No progress events: script supplies the data, there is no fetch to report on
+                // (HTML §4.8.11.5, the media provider object branch).
+                bool ended = state == MediaSourceReadyState.Ended;
+                if (ended && !_fetchedReported)
+                    _client.FetchedEntirely();
+                _fetchedReported = ended;
+            });
+        }
+
         Post(() =>
         {
             if (state == MediaSourceReadyState.Open && _endOfStream)
