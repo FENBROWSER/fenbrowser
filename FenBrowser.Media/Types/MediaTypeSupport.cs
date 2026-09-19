@@ -138,9 +138,13 @@ public sealed class MediaTypeSupport
         var mime = MimeType.Parse(type);
         if (mime is null)
             return false;
-        if (mime.Essence is not ("audio/webm" or "video/webm" or "audio/mp4" or "video/mp4"))
+        if (mime.Essence is not ("audio/webm" or "video/webm" or "audio/mp4" or "video/mp4" or "audio/mpeg" or "audio/mp3" or "audio/aac"))
             return false;
         string? codecsParameter = mime.GetParameter("codecs");
+        // The MPEG audio byte stream formats take no codecs parameter (byte stream format
+        // registry: the frames say what they are).
+        if (mime.Essence is "audio/mpeg" or "audio/mp3" or "audio/aac")
+            return codecsParameter is null && CanPlayType(type) != CanPlayTypeResult.No;
         if (codecsParameter is null)
             return (relaxed || mime.Essence is "audio/mp4" or "video/mp4") && CanPlayType(type) != CanPlayTypeResult.No;
         if (CodecString.SplitList(codecsParameter).Count == 0)

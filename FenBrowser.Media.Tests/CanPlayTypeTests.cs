@@ -162,6 +162,18 @@ public class CanPlayTypeTests
         Assert.Equal(CanPlayTypeResult.No, support.CanPlayType("video/webm; codecs=vp8"));
     }
 
+    /// <summary>MSE byte stream registry: the MPEG audio types are supported bare and take no codecs parameter (mediasource-is-type-supported).</summary>
+    [Theory]
+    [InlineData("audio/mpeg", true)]
+    [InlineData("audio/mpeg;codecs=\"mp3\"", false)]
+    [InlineData("audio/mpeg;codecs=\"mp4a.69\"", false)]
+    [InlineData("audio/mp4", true)]
+    [InlineData("audio/webm", false)]
+    public void MediaSourceTypes_MpegAudioTakesNoCodecs(string type, bool supported)
+    {
+        Assert.Equal(supported, Build().IsMediaSourceTypeSupported(type));
+    }
+
     [Theory]
     [InlineData(CanPlayTypeResult.No, "")]
     [InlineData(CanPlayTypeResult.Maybe, "maybe")]

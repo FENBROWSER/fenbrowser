@@ -66,11 +66,15 @@ public sealed partial class FenJsBrowserScriptEngine
         {
             var entry = MseEntry(args);
             var type = args.Count > 1 ? CoerceToHostString(args[1]) ?? string.Empty : string.Empty;
-            var buffer = entry.Model.AddSourceBuffer(type, generateTimestamps: false);
+            var buffer = entry.Model.AddSourceBuffer(type, generateTimestamps: MpegAudioSegmentParser.GeneratesTimestamps(type));
             int id = entry.NextBufferId++;
             entry.Buffers[id] = buffer;
             return JsValue.FromInt32(id);
         }));
+        // MSE byte stream format registry: the MPEG audio streams carry no timestamps, so the
+        // SourceBuffer generates them (§3.1 "generate timestamps flag").
+        Native("__fenMseTypeGeneratesTimestamps", 1, args =>
+            JsValue.FromBoolean(args.Count > 0 && MpegAudioSegmentParser.GeneratesTimestamps(CoerceToHostString(args[0]) ?? string.Empty)));
         Native("__fenMseRemoveSourceBuffer", 2, args => Mse(() =>
         {
             var entry = MseEntry(args);
@@ -186,7 +190,7 @@ public sealed partial class FenJsBrowserScriptEngine
             var type = CoerceToHostString(args[2]) ?? string.Empty;
             var parser = entry.Model.CreateParser(type)
                 ?? throw new MseInvalidOperationException("NotSupportedError", $"'{type}' is not a supported byte stream format.");
-            buffer.ChangeType(type, parser, generateTimestamps: false);
+            buffer.ChangeType(type, parser, generateTimestamps: MpegAudioSegmentParser.GeneratesTimestamps(type));
         }));
         Native("__fenMseSbBytes", 2, args => Mse(() => JsValue.FromNumber(MseBuffer(MseEntry(args), args, 1).Bytes)));
 
@@ -802,6 +806,15 @@ public sealed partial class FenJsBrowserScriptEngine
                 resetParserState(this);
                 g.__fenMseSbChangeType(source._id, this._bid, type);
                 this._type = type;
+                // §3.2 changeType steps 9-10: the generate timestamps flag follows the new
+                // byte stream, and a stream that generates them runs in sequence mode
+                // (one that does not keeps its mode, unless it was sequence only for that).
+                var generates = !!g.__fenMseTypeGeneratesTimestamps(type);
+                if (generates !== this._generateTimestamps) {
+                    this._generateTimestamps = generates;
+                    this._mode = generates ? 'sequence' : 'segments';
+                    try { g.__fenMseSbSetMode(source._id, this._bid, this._mode); } catch (e) {}
+                }
             }, 1);
 
             function newSourceBuffer(source, bid, type) {
@@ -810,8 +823,10 @@ public sealed partial class FenJsBrowserScriptEngine
                 sb._source = source;
                 sb._bid = bid;
                 sb._type = type;
-                sb._mode = 'segments';
-                sb._generateTimestamps = false;
+                // §2.1 addSourceBuffer steps 8-9: a byte stream that generates timestamps
+                // starts in sequence mode.
+                sb._generateTimestamps = !!g.__fenMseTypeGeneratesTimestamps(type);
+                sb._mode = sb._generateTimestamps ? 'sequence' : 'segments';
                 sb._updating = false;
                 sb._removing = false;
                 sb._removed = false;

@@ -55,6 +55,8 @@ public abstract class SegmentParser
         {
             "video/mp4" or "audio/mp4" => new Mp4SegmentParser(context),
             "video/webm" or "audio/webm" => new WebmSegmentParser(context),
+            "audio/mpeg" or "audio/mp3" => new MpegAudioSegmentParser(context, adts: false),
+            "audio/aac" => new MpegAudioSegmentParser(context, adts: true),
             _ => null,
         };
     }
