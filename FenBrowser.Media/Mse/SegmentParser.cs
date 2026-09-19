@@ -39,6 +39,9 @@ public abstract class SegmentParser
 
     public bool HasInitializationSegment => InitializationSegment is not null;
 
+    /// <summary>False when the container's frame durations are nominal rather than timed, so the coded frame processing measures them from the next frame instead.</summary>
+    public virtual bool FrameDurationsAreReliable => true;
+
     /// <summary>The initialization segment's tracks; set again whenever a new one arrives.</summary>
     public DemuxerInfo? Info { get; private set; }
 
@@ -249,6 +252,8 @@ public sealed class WebmSegmentParser : SegmentParser
         : base(context)
     {
     }
+
+    public override bool FrameDurationsAreReliable => false;
 
     protected override SegmentParseStatus Parse(byte[] data, out int consumed, Action<DemuxerInfo> onInitializationSegment, Action<EncodedPacket> onPacket)
     {

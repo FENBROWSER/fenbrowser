@@ -158,14 +158,15 @@ public sealed class SourceBufferModel
     }
 
     /// <summary>
-    /// A container that carries no frame durations (WebM SimpleBlocks without a
-    /// DefaultDuration) still needs one per coded frame (§3.5.11 step 1.3): the frame is
-    /// held until the track's next frame gives it the distance to that frame, and the last
-    /// frame of a media segment takes the duration of the one before it.
+    /// A coded frame needs a duration (§3.5.11 step 1.3). A WebM block carries none - a
+    /// TrackEntry DefaultDuration is nominal, not what the muxer timed - so, as the other
+    /// engines do, a WebM frame is held until the track's next frame gives it the distance
+    /// to that frame, and the last frame of a media segment takes the distance measured
+    /// for the frame before it. ISO BMFF sample durations are explicit and used as they are.
     /// </summary>
     private void OnPacketWithDuration(EncodedPacket packet)
     {
-        if (packet.Duration > MediaTime.Zero)
+        if (packet.Duration > MediaTime.Zero && Parser.FrameDurationsAreReliable)
         {
             FlushHeld(packet.TrackId);
             OnPacket(packet);
@@ -175,11 +176,21 @@ public sealed class SourceBufferModel
         if (_held.Remove(packet.TrackId, out var held))
         {
             var distance = PresentationTime(packet) - PresentationTime(held);
-            OnPacket(distance > MediaTime.Zero ? WithDuration(held, distance) : held);
+            if (distance > MediaTime.Zero)
+            {
+                _lastDistance[packet.TrackId] = distance;
+                OnPacket(WithDuration(held, distance));
+            }
+            else
+            {
+                OnPacket(held);
+            }
         }
 
         _held[packet.TrackId] = packet;
     }
+
+    private readonly Dictionary<int, MediaTime> _lastDistance = [];
 
     private void FlushHeldPackets()
     {
@@ -191,7 +202,9 @@ public sealed class SourceBufferModel
     {
         if (!_held.Remove(trackId, out var held))
             return;
-        var estimate = _trackBuffers.TryGetValue(trackId, out var track) ? track.LastFrameDuration : null;
+        MediaTime? estimate = _lastDistance.TryGetValue(trackId, out var last) ? last
+            : held.Duration > MediaTime.Zero ? held.Duration
+            : _trackBuffers.TryGetValue(trackId, out var track) ? track.LastFrameDuration : null;
         OnPacket(estimate is { } duration && duration > MediaTime.Zero ? WithDuration(held, duration) : held);
     }
 
@@ -244,6 +257,7 @@ public sealed class SourceBufferModel
         foreach (var held in _held.Values)
             held.Dispose();
         _held.Clear();
+        _lastDistance.Clear();
         foreach (var track in _trackBuffers.Values)
         {
             track.LastDecodeTimestamp = null;

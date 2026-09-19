@@ -45,4 +45,27 @@ public class MseWptCorpusTests
         Assert.True(buffered.Start(0).TotalSeconds < 0.2, buffered.Start(0).ToString());
         Assert.Equal(duration, buffered.End(0).TotalSeconds, 0.15);
     }
+
+    /// <summary>The per-track ranges mediasource-buffered.html expects, to the millisecond, so the frame duration rules match the other engines.</summary>
+    [Theory]
+    [InlineData("mp4/test-av-384k-44100Hz-1ch-320x240-30fps-10kfr.mp4", "video/mp4;codecs=\"avc1.4D4001,mp4a.40.2\"", "[0.067,2.067)", "[0.000,2.043)")]
+    [InlineData("webm/test-av-384k-44100Hz-1ch-320x240-30fps-10kfr.webm", "video/webm;codecs=\"vp8,vorbis\"", "[0.003,2.004)", "[0.000,2.023)")]
+    [InlineData("webm/test-v-128k-320x240-30fps-10kfr.webm", "video/webm;codecs=\"vp8\"", "[0.000,2.001)", null)]
+    [InlineData("webm/test-a-128k-44100Hz-1ch.webm", "audio/webm;codecs=\"vorbis\"", null, "[0.000,2.023)")]
+    public void TrackRanges_MatchTheOtherEngines(string file, string type, string? video, string? audio)
+    {
+        var root = WptRoot();
+        if (root is null)
+            return;
+        var model = new MediaSourceModel(MediaPipelineContext.ForTests());
+        model.Attach();
+        var buffer = model.AddSourceBuffer(type, generateTimestamps: false);
+        Assert.Equal(AppendOutcome.Ok, buffer.Append(File.ReadAllBytes(Path.Combine(root, "media-source", file))));
+
+        static string Describe(TrackBuffer track) =>
+            string.Join(" ", Enumerable.Range(0, track.Buffered.Count).Select(i => $"[{track.Buffered.Start(i).TotalSeconds:F3},{track.Buffered.End(i).TotalSeconds:F3})"));
+
+        Assert.Equal(video, buffer.TrackBuffers.SingleOrDefault(t => t.Kind == MediaTrackKind.Video) is { } v ? Describe(v) : null);
+        Assert.Equal(audio, buffer.TrackBuffers.SingleOrDefault(t => t.Kind == MediaTrackKind.Audio) is { } a ? Describe(a) : null);
+    }
 }

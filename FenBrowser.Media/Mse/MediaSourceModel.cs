@@ -57,6 +57,18 @@ public sealed class MediaSourceModel
     /// <summary>The duration attribute: null while NaN.</summary>
     public MediaTime? Duration { get; private set; }
 
+    /// <summary>
+    /// The exact double script assigned to <c>duration</c>, while it is still in force:
+    /// <see cref="MediaTime"/> rounds to microseconds and saturates, but the attribute
+    /// must read back what was set (5e-324, Number.MAX_VALUE). Null once the engine set
+    /// the duration itself.
+    /// </summary>
+    public double? ExactDurationSeconds { get; private set; }
+
+    /// <summary>The duration as script sees it: the exact value assigned, else the media time, NaN while unset.</summary>
+    public double DurationSeconds =>
+        ExactDurationSeconds ?? (Duration is { } value ? (value.IsInfinite ? double.PositiveInfinity : value.TotalSeconds) : double.NaN);
+
     public EndOfStreamError EndOfStreamError { get; private set; }
 
     public IReadOnlyList<SourceBufferModel> SourceBuffers => _sourceBuffers;
@@ -80,6 +92,7 @@ public sealed class MediaSourceModel
                 throw new MseInvalidOperationException("InvalidStateError", "The MediaSource is already attached.");
             ReadyState = MediaSourceReadyState.Open;
             Duration = null;
+            ExactDurationSeconds = null;
             EndOfStreamError = EndOfStreamError.None;
             Changed?.Invoke();
         }
@@ -94,6 +107,7 @@ public sealed class MediaSourceModel
             _sourceBuffers.Clear();
             ReadyState = MediaSourceReadyState.Closed;
             Duration = null;
+            ExactDurationSeconds = null;
             LiveSeekableRange = null;
             if (!_firstInitialization.Task.IsCompleted)
                 _firstInitialization.TrySetResult(false);
@@ -137,7 +151,7 @@ public sealed class MediaSourceModel
 
     // -- duration (§2.4.6 "duration change") -------------------------------------------------
 
-    public void SetDuration(MediaTime duration)
+    public void SetDuration(MediaTime duration, double? exactSeconds = null)
     {
         lock (Gate)
         {
@@ -149,8 +163,13 @@ public sealed class MediaSourceModel
                 throw new MseInvalidOperationException("InvalidStateError", "The duration is below the highest buffered presentation timestamp.");
             var highestEnd = HighestBufferedEnd();
             if (highestEnd is { } end && duration < end)
+            {
                 duration = end; // step 4: the buffered frames beyond the new duration stay, the duration snaps to them
+                exactSeconds = null;
+            }
+
             Duration = duration;
+            ExactDurationSeconds = exactSeconds;
             Changed?.Invoke();
         }
     }
@@ -166,8 +185,12 @@ public sealed class MediaSourceModel
             EndOfStreamError = error;
             if (error == EndOfStreamError.None)
             {
-                var highestEnd = HighestBufferedEnd();
-                Duration = highestEnd ?? Duration ?? MediaTime.Zero;
+                // Step 3.1: the largest track buffer range end across every SourceBuffer,
+                // which is 0 when nothing is buffered, whatever script set before.
+                var ended = HighestBufferedEnd() ?? MediaTime.Zero;
+                if (ended != Duration)
+                    ExactDurationSeconds = null;
+                Duration = ended;
             }
 
             Changed?.Invoke();
@@ -311,7 +334,11 @@ public sealed class MediaSourceModel
         // §3.5.8 step 5-6: the first initialization segment sets a NaN duration from the
         // segment, or to positive infinity when the segment carries none.
         if (Duration is null)
+        {
             Duration = info.Duration.IsInfinite || info.Duration == MediaTime.Zero ? MediaTime.PositiveInfinity : info.Duration;
+            ExactDurationSeconds = null;
+        }
+
         if (first)
             InitializationSegmentReceived?.Invoke(buffer, info);
         if (_sourceBuffers.All(b => b.HasTracks))
@@ -326,7 +353,10 @@ public sealed class MediaSourceModel
     {
         // §3.5.11 step 20: the duration grows to cover the frame.
         if (Duration is { } duration && !duration.IsInfinite && frameEnd > duration)
+        {
             Duration = frameEnd;
+            ExactDurationSeconds = null;
+        }
     }
 
     internal void BufferedChanged() => Changed?.Invoke();
