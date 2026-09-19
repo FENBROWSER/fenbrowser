@@ -56,6 +56,7 @@ public sealed class HtmlMediaElementController
     private double _defaultPlaybackStartPosition;
     private MediaTime _earliestPossiblePosition;
     private MediaTime? _duration;
+    private double? _exactDuration;
     private bool _loadedDataFiredSinceLoad;
     private bool _canAutoplay = true;
     private bool? _mutedState;
@@ -137,7 +138,24 @@ public sealed class HtmlMediaElementController
             : _officialPosition.TotalSeconds;
 
     /// <summary><c>duration</c>: NaN without media data, Infinity when unbounded.</summary>
-    public double Duration => _duration?.TotalSeconds ?? double.NaN;
+    public double Duration => _exactDuration ?? _duration?.TotalSeconds ?? double.NaN;
+
+    /// <summary>
+    /// MSE §2.4.6 "duration change" step 5 (via HTML "update the media element's duration"):
+    /// the duration attribute changes right away and durationchange is queued.
+    /// <paramref name="exactSeconds"/> is the double script assigned, which the attribute
+    /// reads back unrounded.
+    /// </summary>
+    public void ApplyDurationChange(MediaTime duration, double? exactSeconds)
+    {
+        if (_duration == duration && _exactDuration == exactSeconds)
+            return;
+        _duration = duration;
+        _exactDuration = exactSeconds;
+        QueueEvent("durationchange");
+        if (!duration.IsInfinite && _currentPosition > duration)
+            Seek(duration, approximateForSpeed: false);
+    }
 
     /// <summary><c>ended</c>: playback has ended and the direction is forwards.</summary>
     public bool Ended => HasEndedPlayback;
@@ -444,6 +462,7 @@ public sealed class HtmlMediaElementController
             // 7.11 timeline offset is NaN (getStartDate is not exposed yet).
             // 7.12 duration is NaN, without durationchange.
             _duration = null;
+            _exactDuration = null;
 
             Buffered = MediaTimeRanges.Empty;
             Seekable = MediaTimeRanges.Empty;
@@ -802,6 +821,7 @@ public sealed class HtmlMediaElementController
 
         // Duration, then a queued durationchange.
         _duration = metadata.Duration;
+        _exactDuration = null;
         QueueEvent("durationchange");
 
         // Video size, then a queued resize.
@@ -1285,6 +1305,7 @@ public sealed class HtmlMediaElementController
             if (owner.ReadyState == MediaReadyState.HaveNothing || owner._duration == duration)
                 return;
             owner._duration = duration;
+            owner._exactDuration = null;
             owner._host.FireEvent("durationchange");
             if (!duration.IsInfinite && owner._currentPosition > duration)
                 owner.Seek(duration, approximateForSpeed: false);

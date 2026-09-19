@@ -34,6 +34,7 @@ public sealed partial class FenJsBrowserScriptEngine
         public readonly Dictionary<int, SourceBufferModel> Buffers = new();
         public int NextBufferId = 1;
         public MseResource Resource;
+        public Element Element;
     }
 
     private readonly Dictionary<int, MediaSourceEntry> _mediaSources = new();
@@ -48,12 +49,19 @@ public sealed partial class FenJsBrowserScriptEngine
             MediaSourceReadyState.Ended => "ended",
             _ => "closed",
         })));
-        Native("__fenMseDuration", 1, args => Mse(() =>
+        Native("__fenMseDuration", 1, args => Mse(() => JsValue.FromNumber(MseEntry(args).Model.DurationSeconds)));
+        Native("__fenMseSetDuration", 2, args => Mse(() =>
         {
-            var duration = MseEntry(args).Model.Duration;
-            return JsValue.FromNumber(duration is { } value ? (value.IsInfinite ? double.PositiveInfinity : value.TotalSeconds) : double.NaN);
+            var entry = MseEntry(args);
+            double seconds = ToDouble(args, 1);
+            entry.Model.SetDuration(ToMediaTime(args, 1), seconds);
+            // §2.4.6 step 5: the media element's duration follows at once, before the
+            // player's own report of the change lands as a task.
+            if (entry.Element != null && entry.Model.Duration is { } duration)
+            {
+                GetOrCreateMediaBinding(entry.Element).Controller.ApplyDurationChange(duration, entry.Model.ExactDurationSeconds);
+            }
         }));
-        Native("__fenMseSetDuration", 2, args => Mse(() => MseEntry(args).Model.SetDuration(ToMediaTime(args, 1))));
         Native("__fenMseAddSourceBuffer", 2, args => Mse(() =>
         {
             var entry = MseEntry(args);
@@ -85,10 +93,11 @@ public sealed partial class FenJsBrowserScriptEngine
         }));
         Native("__fenMseSetLiveSeekableRange", 3, args => Mse(() => MseEntry(args).Model.SetLiveSeekableRange(ToMediaTime(args, 1), ToMediaTime(args, 2))));
         Native("__fenMseClearLiveSeekableRange", 1, args => Mse(() => MseEntry(args).Model.ClearLiveSeekableRange()));
-        Native("__fenMseIsTypeSupported", 1, args =>
+        Native("__fenMseIsTypeSupported", 2, args =>
         {
             var type = args.Count > 0 && args[0].Tag != JsValueTag.Undefined && args[0].Tag != JsValueTag.Null ? CoerceToHostString(args[0]) : null;
-            return JsValue.FromBoolean(type != null && MediaEngineServices.TypeSupport.IsMediaSourceTypeSupported(type));
+            bool relaxed = args.Count > 1 && args[1].Tag == JsValueTag.Boolean && args[1].AsBoolean();
+            return JsValue.FromBoolean(type != null && MediaEngineServices.TypeSupport.IsMediaSourceTypeSupported(type, relaxed));
         });
         Native("__fenMseReopen", 1, args => Mse(() => JsValue.FromBoolean(MseEntry(args).Model.Reopen())));
         Native("__fenMseRelease", 1, args =>
@@ -291,7 +300,7 @@ public sealed partial class FenJsBrowserScriptEngine
     /// the URL is not such a blob URL; null when it is but the MediaSource is already
     /// attached (§2.4.2 step 1: the fetch fails as if the media data cannot be fetched).
     /// </summary>
-    private bool TryStartMediaSourceResource(Element element, MediaFetchRequest request, IMediaResourceClient client, Action<Action> postToElementThread, out IMediaResource resource)
+    private bool TryStartMediaSourceResource(Element element, MediaFetchRequest request, IMediaResourceClient client, Action<Action> postToElementThread, (string Url, int Id)? pinned, out IMediaResource resource)
     {
         resource = null;
         if (request.Url == null || !request.Url.StartsWith("blob:", StringComparison.OrdinalIgnoreCase))
@@ -299,13 +308,13 @@ public sealed partial class FenJsBrowserScriptEngine
             return false;
         }
 
-        var found = CallTextTrackHook("__fenMseFromBlobUrl", JsValue.FromString(request.Url));
-        if (!IsNumber(found) || !_mediaSources.TryGetValue((int)found.AsNumber(), out var entry))
+        var resolved = pinned is { } p && string.Equals(p.Url, request.Url, StringComparison.Ordinal) ? pinned : ResolveMediaSourceBlobUrl(request.Url);
+        if (resolved is not { } target || !_mediaSources.TryGetValue(target.Id, out var entry))
         {
             return false;
         }
 
-        int id = (int)found.AsNumber();
+        int id = target.Id;
         try
         {
             entry.Model.Attach();
@@ -322,14 +331,33 @@ public sealed partial class FenJsBrowserScriptEngine
             if (entry.Resource != null)
             {
                 entry.Resource = null;
+                entry.Element = null;
                 QueueMediaTask(element.OwnerDocument, () => _ = CallTextTrackHook("__fenMseDispatch", JsValue.FromInt32(id), JsValue.FromString("sourceclose"), JsValue.Null));
             }
         });
         entry.Resource = mse;
+        entry.Element = element;
         mse.Start();
         QueueMediaTask(element.OwnerDocument, () => _ = CallTextTrackHook("__fenMseDispatch", JsValue.FromInt32(id), JsValue.FromString("sourceopen"), ToHostNodeOrNull(element)));
         resource = mse;
         return true;
+    }
+
+    /// <summary>The MediaSource behind a blob URL in this realm's blob URL store, or null (File API §8.3 "resolve a blob URL").</summary>
+    private (string Url, int Id)? ResolveMediaSourceBlobUrl(string url)
+    {
+        if (string.IsNullOrEmpty(url) || !url.StartsWith("blob:", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var found = CallTextTrackHook("__fenMseFromBlobUrl", JsValue.FromString(url));
+        if (!IsNumber(found) || found.AsNumber() < 0)
+        {
+            return null;
+        }
+
+        return (url, (int)found.AsNumber());
     }
 
     private const string MediaSourcePrelude = """
@@ -478,10 +506,20 @@ public sealed partial class FenJsBrowserScriptEngine
                     this._mode = v;
                 });
             accessor(SourceBuffer.prototype, 'updating', function () { return this._updating; });
+            // §3.1 buffered: the same TimeRanges object as long as the ranges are the same.
             accessor(SourceBuffer.prototype, 'buffered', function () {
                 sbCheckAttached(this);
-                return g.__fenMseSbBuffered(this._source._id, this._bid);
+                var ranges = g.__fenMseSbBuffered(this._source._id, this._bid);
+                var cached = this._bufferedCache;
+                if (cached && sameRanges(cached, ranges)) return cached;
+                this._bufferedCache = ranges;
+                return ranges;
             });
+            function sameRanges(a, b) {
+                if (a.length !== b.length) return false;
+                for (var i = 0; i < a.length; i++) if (a.start(i) !== b.start(i) || a.end(i) !== b.end(i)) return false;
+                return true;
+            }
             accessor(SourceBuffer.prototype, 'timestampOffset',
                 function () { return this._timestampOffset; },
                 function (v) {
@@ -644,7 +682,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 if (type === '') throw new TypeError('The type is empty.');
                 sbCheckAttached(this);
                 sbCheckNotUpdating(this);
-                if (!g.__fenMseIsTypeSupported(type)) throw domException("'" + type + "' is not a supported type.", 'NotSupportedError');
+                if (!g.__fenMseIsTypeSupported(type, true)) throw domException("'" + type + "' is not a supported type.", 'NotSupportedError');
                 var source = this._source;
                 if (source._readyState() === 'ended') sourceEnsureOpen(source);
                 resetParserState(this);
@@ -668,6 +706,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 sb._appendWindowStart = 0;
                 sb._appendWindowEnd = Infinity;
                 sb._pendingBytes = null;
+                sb._bufferedCache = null;
                 sb._audioTracks = newTrackList('AudioTrackList');
                 sb._videoTracks = newTrackList('VideoTrackList');
                 sb._textTracks = newTrackList('TextTrackList');
@@ -719,7 +758,7 @@ public sealed partial class FenJsBrowserScriptEngine
             method(MediaSource.prototype, 'addSourceBuffer', function (type) {
                 type = toDomString(type);
                 if (type === '') throw new TypeError('The type is empty.');
-                if (!g.__fenMseIsTypeSupported(type)) throw domException("'" + type + "' is not a supported type.", 'NotSupportedError');
+                if (!g.__fenMseIsTypeSupported(type, true)) throw domException("'" + type + "' is not a supported type.", 'NotSupportedError');
                 if (this._readyState() !== 'open') throw domException('The MediaSource is not open.', 'InvalidStateError');
                 var bid = g.__fenMseAddSourceBuffer(this._id, type);
                 var sb = newSourceBuffer(this, bid, type);

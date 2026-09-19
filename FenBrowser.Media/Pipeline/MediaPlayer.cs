@@ -173,11 +173,11 @@ public sealed class MediaPlayer : IMediaResource
                 _client.DurationChanged(value);
             }
 
+            // No progress events: script supplies the data, there is no fetch to report on
+            // (HTML §4.8.11.5, the media provider object branch).
             bool ended = state == MediaSourceReadyState.Ended;
             if (ended && !_fetchedReported)
                 _client.FetchedEntirely();
-            else if (!ended)
-                _client.Progress();
             _fetchedReported = ended;
         });
         Post(() =>

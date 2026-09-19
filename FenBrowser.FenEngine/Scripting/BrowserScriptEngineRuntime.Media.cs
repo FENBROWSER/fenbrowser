@@ -222,7 +222,16 @@ public sealed partial class FenJsBrowserScriptEngine
                     // algorithm."  Removing the attribute is not a change of that kind.
                     if (element.HasAttribute("src"))
                     {
-                        RunOnMediaThread(element, binding => binding.Controller.OnSrcAttributeSet());
+                        // A blob URL for a MediaSource is resolved now, not when the
+                        // resource selection algorithm gets to it: script may revoke the
+                        // URL right after assigning it and the MediaSource must still open.
+                        var src = element.GetAttribute("src");
+                        var mediaSource = ResolveMediaSourceBlobUrl(src);
+                        RunOnMediaThread(element, binding =>
+                        {
+                            binding.PinnedMediaSource = mediaSource;
+                            binding.Controller.OnSrcAttributeSet();
+                        });
                     }
                 }
 
@@ -542,6 +551,9 @@ public sealed partial class FenJsBrowserScriptEngine
         private JsValue _errorObject = JsValue.Undefined;
         private MediaElementError _errorObjectFor;
         private IMediaResource _resource;
+
+        /// <summary>The MediaSource a just-set blob src resolved to, until the resource selection algorithm consumes it.</summary>
+        internal (string Url, int Id)? PinnedMediaSource;
         private VideoPresenter _presenter;
         private readonly List<(int Handle, JsValue Callback)> _videoFrameCallbacks = new();
         private HashSet<int> _videoFrameCallbacksRunning;
@@ -1034,7 +1046,9 @@ public sealed partial class FenJsBrowserScriptEngine
             }
 
             IMediaResource resource;
-            if (!_realm.TryStartMediaSourceResource(_element, request, client, QueueTask, out resource))
+            var pinned = PinnedMediaSource;
+            PinnedMediaSource = null;
+            if (!_realm.TryStartMediaSourceResource(_element, request, client, QueueTask, pinned, out resource))
             {
                 resource = MediaFetchResource.Start(request, client, _element.OwnerDocument, QueueTask);
             }

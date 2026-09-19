@@ -12566,6 +12566,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return blobUrlStore.has(key) ? blobUrlStore.get(key) : null;
                 }
                 URL.createObjectURL = function (obj) {
+                    // WebIDL: the argument is a (File or Blob or MediaSource) union.
+                    if (obj === null || typeof obj !== 'object' ||
+                        !((typeof Blob === 'function' && obj instanceof Blob) || (typeof MediaSource === 'function' && obj instanceof MediaSource))) {
+                        throw new TypeError("Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.");
+                    }
                     var url = 'blob:' + blobUrlOrigin() + '/' + newBlobUuid();
                     blobUrlStore.set(url, obj);
                     return url;

@@ -119,10 +119,20 @@ public sealed class MediaTypeSupport
 
     /// <summary>
     /// <c>MediaSource.isTypeSupported(type)</c> (MSE §2.2): the byte stream formats this
-    /// engine implements are ISO BMFF and WebM, a codecs parameter is required, and every
-    /// codec named must be one the container carries and a decoder handles outright.
+    /// engine implements are ISO BMFF and WebM. The WebM byte stream format needs a codecs
+    /// parameter (the other engines refuse a bare <c>video/webm</c> too); ISO BMFF does
+    /// not. Every codec named must be one the container carries and a decoder handles
+    /// outright.
     /// </summary>
-    public bool IsMediaSourceTypeSupported(string type)
+    public bool IsMediaSourceTypeSupported(string type) => IsMediaSourceTypeSupported(type, relaxed: false);
+
+    /// <summary>
+    /// The type check of <c>addSourceBuffer</c> and <c>changeType</c> (MSE §2.1 step 2,
+    /// §3.2 step 3) when <paramref name="relaxed"/>: those only ask for a supported byte
+    /// stream format, so a bare <c>audio/webm</c> passes; codecs, when named, must still
+    /// be ones a decoder handles outright.
+    /// </summary>
+    public bool IsMediaSourceTypeSupported(string type, bool relaxed)
     {
         ArgumentNullException.ThrowIfNull(type);
         var mime = MimeType.Parse(type);
@@ -131,7 +141,9 @@ public sealed class MediaTypeSupport
         if (mime.Essence is not ("audio/webm" or "video/webm" or "audio/mp4" or "video/mp4"))
             return false;
         string? codecsParameter = mime.GetParameter("codecs");
-        if (codecsParameter is null || CodecString.SplitList(codecsParameter).Count == 0)
+        if (codecsParameter is null)
+            return (relaxed || mime.Essence is "audio/mp4" or "video/mp4") && CanPlayType(type) != CanPlayTypeResult.No;
+        if (CodecString.SplitList(codecsParameter).Count == 0)
             return false;
         return CanPlayType(type) == CanPlayTypeResult.Probably;
     }
