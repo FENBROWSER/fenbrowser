@@ -17175,22 +17175,26 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var currentTarget = ToHostOrNull(element, HostObjectKind.DomElement);
         _interpreter.SetObjectProperty(eventValue, "currentTarget", currentTarget);
 
-        // Fire registered event listeners
+        // Fire registered event listeners. DOM §2.9 "inner invoke": the list is cloned
+        // before any listener runs, so one added during this dispatch waits for the next
+        // event (a test that registers an "unexpected seeked" guard inside its seeked
+        // handler must not see the same event) and one removed is skipped.
         if (_elementEventListeners.TryGetValue(element, out var allListeners) &&
             allListeners != null && allListeners.Count > 0)
         {
-            for (int i = 0; i < allListeners.Count; i++)
+            var snapshot = allListeners.ToArray();
+            for (int i = 0; i < snapshot.Length; i++)
             {
                 if (ReadImmediatePropagationStopped(eventValue, dispatchState))
                     break;
 
-                var listener = allListeners[i];
+                var listener = snapshot[i];
                 if (!string.Equals(listener.Type, type, StringComparison.Ordinal))
                     continue;
                 if (capture.HasValue && listener.Capture != capture.Value)
                     continue;
-
-                TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
+                if (!allListeners.Contains(listener))
+                    continue;
 
                 if (listener.Once)
                 {
@@ -17198,8 +17202,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         string.Equals(existing.Type, listener.Type, StringComparison.Ordinal) &&
                         existing.Capture == listener.Capture &&
                         existing.Callback.Equals(listener.Callback));
-                    i--; // Adjust index after removal
                 }
+
+                TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
             }
         }
 
