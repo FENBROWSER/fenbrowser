@@ -99,3 +99,16 @@ public readonly struct KeyId : IEquatable<KeyId>
 
     public static bool operator !=(KeyId left, KeyId right) => !left.Equals(right);
 }
+
+/// <summary>
+/// Where the decrypting side of the pipeline gets its keys. The Clear Key CDM implements
+/// it; nothing else in the pipeline knows what a key system is.
+/// </summary>
+public interface IMediaKeySource
+{
+    /// <summary>
+    /// Copies out the key for <paramref name="keyId"/>, if the page has given it to us.
+    /// Called from the decode thread.
+    /// </summary>
+    bool TryGetKey(KeyId keyId, out byte[] key);
+}

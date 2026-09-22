@@ -4,6 +4,7 @@ using FenBrowser.Media.Audio;
 using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Clock;
 using FenBrowser.Media.Diagnostics;
+using FenBrowser.Media.Eme;
 using FenBrowser.Media.Element;
 using FenBrowser.Media.Mse;
 using FenBrowser.Media.Video;
@@ -85,6 +86,9 @@ public sealed class MediaPlayer : IMediaResource
     private bool _reopenRequested;
     private MediaTime? _reportedDuration;
     private bool _fetchedReported;
+    private bool _waitingForKeyReported;
+    private IMediaKeySource? _mediaKeys;
+    private bool _mediaKeysDirty;
     private bool _potentiallyPlaying;
     private bool _outputRunning;
     private bool _videoVisible = true;
@@ -276,6 +280,20 @@ public sealed class MediaPlayer : IMediaResource
         // The byte source already holds the whole resource.
     }
 
+    /// <summary>
+    /// Hands the decode source the page's keys. A key that just arrived may be the one a
+    /// stalled packet was waiting for, so the media task is woken to try it again.
+    /// </summary>
+    public void SetMediaKeys(IMediaKeySource? keys)
+    {
+        Post(() =>
+        {
+            _mediaKeys = keys;
+            _mediaKeysDirty = true;
+            _waitingForKeyReported = false;
+        });
+    }
+
     public void UpdateVideoVisibility(bool visible)
     {
         Post(() =>
@@ -338,6 +356,13 @@ public sealed class MediaPlayer : IMediaResource
             {
                 while (_commands.TryDequeue(out var command))
                     command();
+
+                if (_mediaKeysDirty)
+                {
+                    _mediaKeysDirty = false;
+                    if (_decodeSource is { } keyed)
+                        await keyed.SetMediaKeysAsync(_mediaKeys, cancellation).ConfigureAwait(false);
+                }
 
                 if (_visibilityDirty)
                 {
@@ -494,6 +519,18 @@ public sealed class MediaPlayer : IMediaResource
             });
         }
 
+        // EME §7.1 "Initialization Data Encountered": what the container announced reaches
+        // the element as one encrypted event per entry.
+        if (info.InitializationData.Count > 0)
+        {
+            var announced = info.InitializationData;
+            Report(() =>
+            {
+                foreach (var (initDataType, initData) in announced)
+                    _client.EncryptedInitData(initDataType, initData);
+            });
+        }
+
         _readyState = MediaReadyState.HaveMetadata;
         return true;
     }
@@ -527,6 +564,19 @@ public sealed class MediaPlayer : IMediaResource
                 var item = await source.ReadAsync(cancellation).ConfigureAwait(false);
                 if (item is not { } decoded)
                 {
+                    if (source.WaitingForKey)
+                    {
+                        // Not the end either: the next packet is encrypted with a key the
+                        // page has not given us. The element says so once per stall.
+                        if (!_waitingForKeyReported)
+                        {
+                            _waitingForKeyReported = true;
+                            Report(() => _client.WaitingForKey());
+                        }
+
+                        break;
+                    }
+
                     if (source.WaitingForData)
                         break; // not the end: script has not appended this far yet
 

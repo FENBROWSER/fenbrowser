@@ -13,7 +13,14 @@ public sealed record MediaSourceInfo(
     MediaTrackInfo? AudioTrack,
     MediaTrackInfo? VideoTrack,
     MediaTime Duration,
-    bool IsSeekable);
+    bool IsSeekable)
+{
+    /// <summary>
+    /// Encrypted Media Extensions initialization data the container announced, as
+    /// (initialization data type, bytes) pairs. Each one becomes an <c>encrypted</c> event.
+    /// </summary>
+    public IReadOnlyList<(string InitDataType, byte[] InitData)> InitializationData { get; init; } = [];
+}
 
 /// <summary>One decoded item in stream order: a block of audio or a picture, never both.</summary>
 public readonly struct DecodedMedia : IDisposable
@@ -98,19 +105,6 @@ public interface IMediaDecodeSource : IAsyncDisposable
     /// point. A source with no video track ignores this.
     /// </summary>
     ValueTask SetVideoDecodeEnabledAsync(bool enabled, CancellationToken cancellationToken) => ValueTask.CompletedTask;
-}
-
-/// <summary>
-/// Where the decrypting side of the pipeline gets its keys. The Clear Key CDM implements
-/// it; nothing else in the pipeline knows what a key system is.
-/// </summary>
-public interface IMediaKeySource
-{
-    /// <summary>
-    /// Copies out the key for <paramref name="keyId"/>, if the page has given it to us.
-    /// Called from the decode thread.
-    /// </summary>
-    bool TryGetKey(KeyId keyId, out byte[] key);
 }
 
 public interface IMediaDecodeSourceFactory
@@ -257,7 +251,10 @@ public sealed class LocalMediaDecodeSource : IMediaDecodeSource
 
         _audioTrackId = audio?.Id ?? -1;
         _videoTrackId = video?.Id ?? -1;
-        return new MediaSourceInfo(info.Tracks, audio, video, info.Duration, info.IsSeekable);
+        return new MediaSourceInfo(info.Tracks, audio, video, info.Duration, info.IsSeekable)
+        {
+            InitializationData = info.InitializationData,
+        };
     }
 
     public bool WaitingForKey => _waitingForKey;

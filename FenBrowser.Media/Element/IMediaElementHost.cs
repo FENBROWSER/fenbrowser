@@ -62,6 +62,14 @@ public interface IMediaElementHost
     /// <summary>Fires a simple event at the media element.</summary>
     void FireEvent(string type);
 
+    /// <summary>
+    /// EME §7.1 "Initialization Data Encountered": fires a <c>MediaEncryptedEvent</c> at
+    /// the element so the page can ask its key system for a licence.
+    /// </summary>
+    void FireEncrypted(string initDataType, byte[] initData)
+    {
+    }
+
     /// <summary>Fires a simple event at a child node (a failed <c>source</c> element).</summary>
     void FireEventAt(object node, string type);
 
@@ -135,6 +143,15 @@ public interface IMediaResource : IDisposable
     {
     }
 
+    /// <summary>
+    /// Hands the pipeline the keys the element's <c>MediaKeys</c> holds, or null when it
+    /// has none. Decryption happens next to the decoder, so this is all the element does
+    /// with them.
+    /// </summary>
+    void SetMediaKeys(Eme.IMediaKeySource? keys)
+    {
+    }
+
     /// <summary>The latest picture for the compositor, or null for a resource without video.</summary>
     Video.VideoPresenter? Presenter => null;
 
@@ -195,4 +212,19 @@ public interface IMediaResourceClient
 
     /// <summary>The entire resource is fetched and kept available.</summary>
     void FetchedEntirely();
+
+    /// <summary>
+    /// EME §7.1: the container announced initialization data for a protection system.
+    /// </summary>
+    void EncryptedInitData(string initDataType, byte[] initData)
+    {
+    }
+
+    /// <summary>
+    /// EME §7.2: a packet cannot be decrypted because its key has not arrived. Playback
+    /// stalls here until it does.
+    /// </summary>
+    void WaitingForKey()
+    {
+    }
 }

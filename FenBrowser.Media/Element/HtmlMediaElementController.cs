@@ -826,6 +826,9 @@ public sealed class HtmlMediaElementController
 
         client.Resource = resource;
         _resource = resource;
+        // EME §7.3: a MediaKeys set before the resource existed still applies to it.
+        if (_mediaKeys is not null)
+            resource.SetMediaKeys(_mediaKeys);
         PushPlaybackState();
         if (!Paused || _host.HasAutoplayAttribute)
             _resource.RequestFullLoad();
@@ -1439,6 +1442,34 @@ public sealed class HtmlMediaElementController
     }
 
     /// <summary>Routes pipeline reports into the element, dropping reports from abandoned loads.</summary>
+    /// <summary>
+    /// EME §7.2 "Queue a "waitingforkey" Event": playback cannot continue because a key is
+    /// missing, so the element drops back to HAVE_CURRENT_DATA - which is what makes it
+    /// stop playing and fire <c>waiting</c> - and tells the page which event it was.
+    /// </summary>
+    private void OnWaitingForKey()
+    {
+        if (ReadyState < MediaReadyState.HaveMetadata)
+            return;
+
+        if (ReadyState >= MediaReadyState.HaveFutureData)
+            SetReadyState(MediaReadyState.HaveCurrentData);
+
+        _host.FireEvent("waitingforkey");
+    }
+
+    /// <summary>
+    /// EME §7.3 <c>setMediaKeys()</c>, once the realm has run the algorithm's checks: the
+    /// element's resource is given the keys, or null when it is losing them.
+    /// </summary>
+    public void SetMediaKeys(Eme.IMediaKeySource? keys)
+    {
+        _mediaKeys = keys;
+        _resource?.SetMediaKeys(keys);
+    }
+
+    private Eme.IMediaKeySource? _mediaKeys;
+
     private sealed class ResourceClient(HtmlMediaElementController owner, int generation) : IMediaResourceClient
     {
         /// <summary>The resource this client was started for; reports outlive a stopped one and must not land.</summary>
@@ -1571,6 +1602,11 @@ public sealed class HtmlMediaElementController
             owner.SetNetworkState(MediaNetworkState.Idle);
             owner._host.FireEvent("suspend");
         });
+
+        public void EncryptedInitData(string initDataType, byte[] initData) => Enqueue(() =>
+            owner._host.FireEncrypted(initDataType, initData));
+
+        public void WaitingForKey() => Enqueue(() => owner.OnWaitingForKey());
 
         private void Enqueue(Action action)
         {

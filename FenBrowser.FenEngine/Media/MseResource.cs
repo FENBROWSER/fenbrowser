@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using FenBrowser.Media;
+using FenBrowser.Media.Eme;
 using FenBrowser.Media.Element;
 using FenBrowser.Media.Mse;
 using FenBrowser.Media.Pipeline;
@@ -58,6 +59,8 @@ namespace FenBrowser.FenEngine.Media
         }
 
         public VideoPresenter Presenter => _player.Presenter;
+
+        public void SetMediaKeys(IMediaKeySource keys) => _player.SetMediaKeys(keys);
 
         public bool IsProviderObject => true;
 

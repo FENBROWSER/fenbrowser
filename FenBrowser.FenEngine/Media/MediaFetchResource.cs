@@ -6,6 +6,7 @@ using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network;
 using FenBrowser.Media;
+using FenBrowser.Media.Eme;
 using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Element;
 using FenBrowser.Media.Video;
@@ -39,6 +40,7 @@ namespace FenBrowser.FenEngine.Media
         private readonly Action<Action> _postToElementThread;
         private readonly object _gate = new();
         private MediaPlayer _player;
+        private IMediaKeySource _mediaKeys;
         private readonly VideoPresenter _presenter = new();
         private (bool Playing, double Rate, bool PreservesPitch, double Volume)? _pendingPlayback;
         private (MediaTime Target, bool Approximate)? _pendingSeek;
@@ -147,6 +149,10 @@ namespace FenBrowser.FenEngine.Media
                 }
 
                 _player = player;
+                if (_mediaKeys != null)
+                {
+                    player.SetMediaKeys(_mediaKeys);
+                }
                 playback = _pendingPlayback;
                 seek = _pendingSeek;
                 _pendingPlayback = null;
@@ -241,6 +247,22 @@ namespace FenBrowser.FenEngine.Media
 
         /// <summary>The presenter exists before the fetch finishes, so the element can subscribe once.</summary>
         public VideoPresenter Presenter => _presenter;
+
+        /// <summary>
+        /// The page's keys. They are kept even before the player exists, because a page
+        /// may call setMediaKeys() while the resource is still being fetched.
+        /// </summary>
+        public void SetMediaKeys(IMediaKeySource keys)
+        {
+            MediaPlayer player;
+            lock (_gate)
+            {
+                _mediaKeys = keys;
+                player = _player;
+            }
+
+            player?.SetMediaKeys(keys);
+        }
 
         public VideoPlaybackQuality? GetVideoPlaybackQuality()
         {
