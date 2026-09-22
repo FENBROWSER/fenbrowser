@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using FenBrowser.Media.Audio;
 using FenBrowser.Media.Codecs.Ffmpeg;
 using FenBrowser.Media.Diagnostics;
@@ -43,6 +43,8 @@ public class MsePlayerTests
         public void Resumed() { }
         public void Stalled() { }
         public void FetchedEntirely() { Fetched = true; Events.Enqueue("fetched"); }
+        public int WaitingForKeyCount { get; private set; }
+        public void WaitingForKey() { WaitingForKeyCount++; Events.Enqueue("waitingforkey"); }
 
         public async Task WaitForAsync(Func<bool> condition, int timeoutMs = 5000)
         {
@@ -326,6 +328,40 @@ public class MsePlayerTests
             model.Detach();
             await client.WaitForAsync(() => client.Failure is not null);
             Assert.StartsWith("Unsupported", client.Failure);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// The shape the encrypted-media WPT tests use: a clear audio buffer and an encrypted
+    /// video buffer on one MediaSource, with no MediaKeys set at all. The element has to
+    /// hear waitingforkey - that event is what makes the page create a session.
+    /// </summary>
+    [Fact]
+    public async Task AnEncryptedVideoTrackBesideAClearAudioTrackWaitsForAKey()
+    {
+        var root = Environment.GetEnvironmentVariable("FEN_WPT_ROOT") ?? @"D:\wpt";
+        string audioPath = Path.Combine(root, "encrypted-media", "content", "audio_aac-lc_128k_dashinit.mp4");
+        string videoPath = Path.Combine(root, "encrypted-media", "content", "video_512x288_h264-360k_enc_dashinit.mp4");
+        if (!File.Exists(audioPath) || !File.Exists(videoPath))
+            return;
+
+        var client = new RecordingClient();
+        var (player, model) = Create(client);
+        player.Start();
+        try
+        {
+            var audio = model.AddSourceBuffer("audio/mp4; codecs=\"mp4a.40.2\"", generateTimestamps: false);
+            var video = model.AddSourceBuffer("video/mp4; codecs=\"avc1.4d401e\"", generateTimestamps: false);
+            Assert.Equal(AppendOutcome.Ok, audio.Append(File.ReadAllBytes(audioPath)));
+            Assert.Equal(AppendOutcome.Ok, video.Append(File.ReadAllBytes(videoPath)));
+            model.NotifyChanged();
+
+            await client.WaitForAsync(() => client.WaitingForKeyCount > 0, 10000);
+            Assert.Null(client.Failure);
         }
         finally
         {

@@ -1,6 +1,7 @@
-using FenBrowser.Media.Buffers;
+﻿using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Containers.Mp4;
 using FenBrowser.Media.Eme;
+using FenBrowser.Media.Mse;
 using FenBrowser.Media.Pipeline;
 
 namespace FenBrowser.Media.Tests;
@@ -242,6 +243,37 @@ public class Mp4EncryptionTests
         {
             encrypted.ForEach(p => p.Dispose());
             clear.ForEach(p => p.Dispose());
+        }
+    }
+
+    /// <summary>
+    /// The same file through the MSE byte stream parser, which hands the demuxer the
+    /// initialization segment followed by one media segment at a time: every sample that
+    /// carries its encryption in the progressive read has to carry it here too, or a
+    /// MediaSource plays protected content as noise instead of waiting for a key.
+    /// </summary>
+    [Fact]
+    public void EverySampleAppendedThroughMseCarriesItsEncryption()
+    {
+        string? content = ContentRoot();
+        if (content is null)
+            return;
+
+        var parser = new Mp4SegmentParser(MediaPipelineContext.ForTests());
+        var packets = new List<EncodedPacket>();
+        try
+        {
+            parser.Append(
+                File.ReadAllBytes(Path.Combine(content, "video_512x288_h264-360k_enc_dashinit.mp4")),
+                _ => { },
+                packets.Add);
+
+            Assert.NotEmpty(packets);
+            Assert.All(packets, packet => Assert.NotNull(packet.Encryption));
+        }
+        finally
+        {
+            packets.ForEach(p => p.Dispose());
         }
     }
 }

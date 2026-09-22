@@ -1,4 +1,4 @@
-using FenBrowser.Media.Buffers;
+﻿using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Pipeline;
 
@@ -257,6 +257,7 @@ public sealed class SourceBufferModel
         var kind = _trackBuffers.TryGetValue(packet.TrackId, out var track) ? track.Kind : MediaTrackKind.Video;
         var copy = EncodedPacket.Rent(_owner.MediaLimits, kind, packet.TrackId, packet.Length, PresentationTime(packet), packet.Dts, duration, packet.IsKeyframe);
         packet.Span.CopyTo(copy.Memory.Span);
+        copy.Encryption = packet.Encryption;
         packet.Dispose();
         return copy;
     }
@@ -470,6 +471,10 @@ public sealed class SourceBufferModel
             // 16-20. Add the frame and advance the track state.
             var owned = EncodedPacket.Rent(_owner.MediaLimits, track.Kind, packet.TrackId, packet.Length, framePts, frameDts, duration, packet.IsKeyframe);
             packet.Span.CopyTo(owned.Memory.Span);
+            // The buffered frame keeps its Common Encryption description: without it a
+            // protected frame reads back as clear and decodes to noise instead of making
+            // the element wait for a key (EME §7.2).
+            owned.Encryption = packet.Encryption;
             packet.Dispose();
             track.Add(new CodedFrame(owned, framePts, frameDts, duration, track.ConfigVersion));
             track.LastDecodeTimestamp = frameDts;
