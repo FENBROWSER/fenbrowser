@@ -61,6 +61,9 @@ public enum MediaEventKind
 
     /// <summary>setSinkId moved playback to another audio output endpoint.</summary>
     AudioSinkChanged,
+
+    /// <summary>An element entered or left Picture-in-Picture.</summary>
+    PictureInPicture,
 }
 
 /// <summary>
