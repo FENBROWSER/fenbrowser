@@ -1,7 +1,9 @@
-using System.Text;
+﻿using System.Text;
+using FenBrowser.Media.Audio;
 using FenBrowser.Media.Codecs.Ffmpeg;
 using FenBrowser.Media.Codecs.MediaFoundation;
 using FenBrowser.Media.Diagnostics;
+using FenBrowser.Media.Element;
 using FenBrowser.Media.Eme;
 using FenBrowser.Media.Pipeline;
 
@@ -121,5 +123,101 @@ public class EncryptedPlaybackTests
 
         (await source.ReadAsync(CancellationToken.None))?.Dispose();
         Assert.True(source.WaitingForKey);
+    }
+
+    /// <summary>
+    /// A client that counts what the element would turn into <c>waitingforkey</c> events.
+    /// </summary>
+    private sealed class KeyClient : IMediaResourceClient
+    {
+        private int _waiting;
+
+        public int WaitingForKeyCount => Volatile.Read(ref _waiting);
+        public MediaReadyState ReadyState { get; private set; }
+        public string? Failure { get; private set; }
+
+        public void Failed(MediaResourceFailure failure, string message) => Failure = failure + ": " + message;
+        public void MetadataAvailable(MediaResourceMetadata metadata) { }
+        public void ReadyStateChanged(MediaReadyState state) => ReadyState = state;
+        public void DurationChanged(MediaTime duration) { }
+        public void VideoSizeChanged(int width, int height) { }
+        public void PositionChanged(MediaTime position, bool monotonic) { }
+        public void ReachedEnd() { }
+        public void SeekCompleted(MediaTime position) { }
+        public void BufferedChanged(MediaTimeRanges buffered) { }
+        public void SeekableChanged(MediaTimeRanges seekable) { }
+        public void Progress() { }
+        public void Suspended() { }
+        public void Resumed() { }
+        public void Stalled() { }
+        public void FetchedEntirely() { }
+        public void WaitingForKey() => Interlocked.Increment(ref _waiting);
+
+        public async Task WaitForAsync(Func<bool> condition, int timeoutMs = 10000)
+        {
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (!condition())
+            {
+                if (DateTime.UtcNow > deadline)
+                    throw new TimeoutException("Condition not met. Failure: " + Failure + ", waiting: " + WaitingForKeyCount);
+                await Task.Delay(10);
+            }
+        }
+    }
+
+    /// <summary>
+    /// EME §7.2: the element says it is waiting for a key once per stall, not once per read
+    /// attempt, and the licence that arrives afterwards wakes the player itself - the CDM is
+    /// updated from the page's thread long after the keys were handed to the pipeline, so
+    /// nothing else would tell the media task to try that packet again.
+    /// </summary>
+    [Fact]
+    public async Task TheElementWaitsForAKeyOnceAndThePlayerResumesWhenTheLicenceArrives()
+    {
+        string? path = EncryptedVideo();
+        if (path is null)
+            return;
+
+        var demuxers = new DemuxerRegistry();
+        var decoders = new DecoderRegistry();
+        MediaFormats.RegisterBuiltIn(demuxers, decoders);
+        FfmpegDecoders.TryRegister(decoders, NullMediaLogSink.Instance);
+        MediaFoundationDecoders.TryRegister(decoders, NullMediaLogSink.Instance);
+
+        var client = new KeyClient();
+        var services = new MediaPlayerServices(demuxers, decoders, new NullAudioOutputFactory(realtime: false), TimeProvider.System);
+        var player = new MediaPlayer(
+            new MemoryByteSource(File.ReadAllBytes(path)), "video/mp4", client, action => action(), services,
+            MediaPipelineContext.ForTests());
+
+        // A CDM that has been given no licence at all: every protected packet stalls.
+        var cdm = new ClearKeyCdm();
+        var session = cdm.CreateSession(MediaKeySessionType.Temporary);
+        Assert.NotNull(session);
+        Assert.True(session.GenerateRequest(
+            EmeInitDataType.KeyIds,
+            Encoding.UTF8.GetBytes("{\"kids\":[\"" + KeyIdBase64 + "\"]}")).Succeeded);
+
+        player.SetMediaKeys(cdm);
+        player.Start();
+        try
+        {
+            await client.WaitForAsync(() => client.WaitingForKeyCount > 0);
+
+            // The player keeps trying that packet every tick; the element hears about it once.
+            await Task.Delay(400);
+            Assert.Equal(1, client.WaitingForKeyCount);
+            Assert.True(client.ReadyState < MediaReadyState.HaveCurrentData);
+
+            // The page's update() call comes in on its own thread; the CDM tells the player.
+            Assert.True(session.Update(Encoding.ASCII.GetBytes(License)).Succeeded);
+
+            await client.WaitForAsync(() => client.ReadyState >= MediaReadyState.HaveCurrentData);
+            Assert.Null(client.Failure);
+        }
+        finally
+        {
+            player.Dispose();
+        }
     }
 }

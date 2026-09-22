@@ -111,4 +111,11 @@ public interface IMediaKeySource
     /// Called from the decode thread.
     /// </summary>
     bool TryGetKey(KeyId keyId, out byte[] key);
+
+    /// <summary>
+    /// A key became available. A player stalled on a missing key listens for this: the
+    /// licence that unblocks it usually arrives long after the keys were handed over, so
+    /// nothing else would wake it.
+    /// </summary>
+    event Action? KeysChanged;
 }

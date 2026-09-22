@@ -88,6 +88,7 @@ public sealed class MediaPlayer : IMediaResource
     private bool _fetchedReported;
     private bool _waitingForKeyReported;
     private IMediaKeySource? _mediaKeys;
+    private IMediaKeySource? _subscribedKeys;
     private bool _mediaKeysDirty;
     private bool _potentiallyPlaying;
     private bool _outputRunning;
@@ -286,6 +287,15 @@ public sealed class MediaPlayer : IMediaResource
     /// </summary>
     public void SetMediaKeys(IMediaKeySource? keys)
     {
+        var previous = Interlocked.Exchange(ref _subscribedKeys, keys);
+        if (!ReferenceEquals(previous, keys))
+        {
+            if (previous is not null)
+                previous.KeysChanged -= OnMediaKeysChanged;
+            if (keys is not null)
+                keys.KeysChanged += OnMediaKeysChanged;
+        }
+
         Post(() =>
         {
             _mediaKeys = keys;
@@ -293,6 +303,12 @@ public sealed class MediaPlayer : IMediaResource
             _waitingForKeyReported = false;
         });
     }
+
+    /// <summary>
+    /// A licence arrived. Whatever the decode source was holding back may decode now, so
+    /// the media task is woken to try it again.
+    /// </summary>
+    private void OnMediaKeysChanged() => Post(() => _waitingForKeyReported = false);
 
     public void UpdateVideoVisibility(bool visible)
     {
@@ -312,6 +328,8 @@ public sealed class MediaPlayer : IMediaResource
         _lifetime.Cancel();
         if (_mediaSource is { } mediaSource)
             mediaSource.Changed -= OnMediaSourceChanged;
+        if (Interlocked.Exchange(ref _subscribedKeys, null) is { } keys)
+            keys.KeysChanged -= OnMediaKeysChanged;
         _wake.Release();
         // The primitives outlive the media task; release them once it has ended.
         var task = _task;
