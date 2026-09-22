@@ -14680,7 +14680,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 globalThis.TextEncoder = function TextEncoder() {};
                 TextEncoder.prototype.encode = function (input) {
                     if (input == null) input = '';
-                    return __fenTextEncode(String(input));
+                    // The spec says Uint8Array, and pages check: a plain array fails
+                    // ArrayBuffer.isView and has no byteOffset, so anything treating the
+                    // result as a BufferSource rejects it.
+                    return Uint8Array.from(__fenTextEncode(String(input)));
                 };
                 TextEncoder.prototype.encoding = 'utf-8';
                 TextEncoder.prototype.encodeInto = function (source, destination) {
