@@ -17978,12 +17978,45 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             FenBrowser.Core.EngineLogCompat.Info(
                 $"[FenJsBridge] srcdoc frame loaded root='{parsedRoot.TagName}'",
                 FenBrowser.Core.Logging.LogCategory.JavaScript);
+
+            // HTML: the iframe element gets a load event once its document is there. The
+            // src path already fires one; without this, a page that waits on iframe.onload
+            // before talking to a srcdoc frame waits for ever.
+            DispatchFrameElementLoadEvent(frameElement);
         }
         catch (Exception ex)
         {
             FenBrowser.Core.EngineLogCompat.Warn(
                 $"[FenJsBridge] srcdoc frame load failed: {ex.Message}",
                 FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+    }
+
+    /// <summary>
+    /// Fires <c>load</c> at an iframe element whose document has just been put in place.
+    /// It does not bubble and is not cancelable, as the specification says.
+    /// </summary>
+    private void DispatchFrameElementLoadEvent(Element frameElement)
+    {
+        if (frameElement is null || _realmAbandoned || _interpreter is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var eventValue = CreateBrowserDomEventValue(
+                frameElement,
+                "load",
+                new BrowserDomEventInit { Bubbles = false, Cancelable = false, Composed = false, IsTrusted = true },
+                out var dispatchState);
+            _ = DispatchEventFull(frameElement, "load", eventValue, dispatchState);
+        }
+        catch (Exception ex)
+        {
+            EngineLogCompat.Warn(
+                $"[FenJsBridge] srcdoc frame load event failed: {ex.Message}",
+                LogCategory.JavaScript);
         }
     }
 
