@@ -141,7 +141,7 @@ public sealed class MfAudioDecoder : IMediaDecoder<AudioBlock>
         cancellationToken.ThrowIfCancellationRequested();
         Release();
 
-        var transform = MfTransform.Create(_clsid, lowLatency: false);
+        var transform = MfTransform.Create(_clsid, lowLatency: true);
         try
         {
             // Start from the decoder's own offered input type for the subtype (raw AAC frames,
