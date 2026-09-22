@@ -1655,6 +1655,7 @@ public class BrowserIntegration : IDisposable
             // script hears visibilitychange and the media engine stops decoding video
             // for a page nobody is looking at (MEDIA_ENGINE_DESIGN section 5).
             PushPageVisibility();
+            _browser.RefreshMediaViewportVisibility();
 
             if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
             {

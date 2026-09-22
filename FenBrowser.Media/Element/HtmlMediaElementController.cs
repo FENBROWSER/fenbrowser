@@ -47,6 +47,7 @@ public sealed class HtmlMediaElementController
     private bool _waitingForSource;
     private IMediaResource? _resource;
     private bool _videoVisible = true;
+    private bool _outsideViewport;
     private bool _startedByAutoplay;
     private bool _pausedOffScreen;
     private IReadOnlyList<MediaTrackInfo> _tracks = [];
@@ -964,14 +965,25 @@ public sealed class HtmlMediaElementController
     public bool IsVideoVisible
     {
         get => _videoVisible;
-        set
-        {
-            if (_videoVisible == value)
-                return;
-            _videoVisible = value;
-            _resource?.UpdateVideoVisibility(value);
-            ApplyOffScreenAutoplayPolicy();
-        }
+        set => SetVideoVisibility(value, outsideViewport: !value);
+    }
+
+    /// <summary>
+    /// The background policy's view of the element (design section 5):
+    /// <paramref name="visible"/> is whether anything is showing its pictures, and
+    /// <paramref name="outsideViewport"/> says that is because its box is known to lie
+    /// outside the viewport, rather than because it has no box or the page has no layout
+    /// yet. Only the first pauses a video that started itself, so an element the page is
+    /// still laying out is never paused and un-paused.
+    /// </summary>
+    public void SetVideoVisibility(bool visible, bool outsideViewport)
+    {
+        bool changed = _videoVisible != visible;
+        _videoVisible = visible;
+        _outsideViewport = outsideViewport;
+        if (changed)
+            _resource?.UpdateVideoVisibility(visible);
+        ApplyOffScreenAutoplayPolicy();
     }
 
     /// <summary>
@@ -986,7 +998,7 @@ public sealed class HtmlMediaElementController
         if (!_host.IsVideo)
             return;
 
-        if (!_videoVisible)
+        if (_outsideViewport)
         {
             if (!Paused && _startedByAutoplay && EffectiveVolume <= 0)
             {
@@ -998,7 +1010,7 @@ public sealed class HtmlMediaElementController
             return;
         }
 
-        if (!_pausedOffScreen)
+        if (!_pausedOffScreen || !_videoVisible)
             return;
 
         _pausedOffScreen = false;

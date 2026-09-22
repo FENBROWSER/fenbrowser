@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
@@ -32,6 +32,9 @@ public sealed partial class FenJsBrowserScriptEngine
 {
     // Weak per element: a document's media elements must not outlive it through here.
     private readonly ConditionalWeakTable<Element, MediaElementBinding> _mediaElements = new();
+
+    /// <summary>How many entries <see cref="_mediaElements"/> has, so a page with no media never pays for the viewport check.</summary>
+    private int _mediaElementCount;
     private bool _mediaObserverSubscribed;
 
     // HTML "sticky activation": set once the document has seen a trusted click and
@@ -455,8 +458,10 @@ public sealed partial class FenJsBrowserScriptEngine
 
         binding = new MediaElementBinding(this, element);
         _mediaElements.Add(element, binding);
+        System.Threading.Interlocked.Increment(ref _mediaElementCount);
         EnsureMediaElementObserver();
         binding.Start();
+        binding.SetOnScreen(ReadElementVisibility(element));
         return binding;
     }
 
@@ -555,6 +560,7 @@ public sealed partial class FenJsBrowserScriptEngine
         /// <summary>The MediaSource a just-set blob src resolved to, until the resource selection algorithm consumes it.</summary>
         internal (string Url, int Id)? PinnedMediaSource;
         private VideoPresenter _presenter;
+        private ElementVisibility _visibility = ElementVisibility.OnScreen;
         private readonly List<(int Handle, JsValue Callback)> _videoFrameCallbacks = new();
         private HashSet<int> _videoFrameCallbacksRunning;
         private int _nextVideoFrameHandle;
@@ -595,6 +601,30 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
             }
         }
+
+        /// <summary>
+        /// The element's box came into or went out of the viewport (design section 5's
+        /// background policy). Runs on the realm's JS worker.
+        /// </summary>
+        internal void SetOnScreen(ElementVisibility visibility)
+        {
+            if (_visibility == visibility)
+            {
+                return;
+            }
+
+            _visibility = visibility;
+            ApplyEffectiveVisibility();
+        }
+
+        /// <summary>
+        /// Nothing shows the pictures when the page is hidden or the element's box is not
+        /// on screen. A hidden page is not "outside the viewport": coming back to the tab
+        /// should not have to un-pause every video on it.
+        /// </summary>
+        internal void ApplyEffectiveVisibility() => Controller.SetVideoVisibility(
+            _realm.IsPageVisible && _visibility == ElementVisibility.OnScreen,
+            outsideViewport: _visibility == ElementVisibility.OutsideViewport);
 
         /// <summary>HTML §4.8.12.8: the playback position moved, so the text track cues may change state.</summary>
         public void PlaybackPositionChanged(bool monotonic) => _realm.OnTextTrackPlaybackPositionChanged(_element, monotonic);

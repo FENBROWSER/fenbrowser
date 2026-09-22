@@ -735,6 +735,19 @@ namespace FenBrowser.FenEngine.Rendering
                 realm.SetPageVisible(visible);
             }
         }
+
+        /// <summary>
+        /// A frame tick: a media element whose box has scrolled or been laid out away from
+        /// the viewport stops decoding pictures (MEDIA_ENGINE_DESIGN section 5). Costs a
+        /// volatile read on a page with no media element.
+        /// </summary>
+        public void RefreshMediaViewportVisibility()
+        {
+            if (_engine?.ScriptEngine is FenBrowser.FenEngine.Scripting.FenJsBrowserScriptEngine realm)
+            {
+                realm.ScheduleMediaViewportCheck();
+            }
+        }
         public NavigationLifecycleSnapshot NavigationLifecycleState => _navigationLifecycle.GetSnapshot();
 
         public SKBitmap Favicon { get; private set; }

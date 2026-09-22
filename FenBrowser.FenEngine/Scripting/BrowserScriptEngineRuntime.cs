@@ -6159,6 +6159,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             // Media bindings hold promise and error objects from the old heap.
             _mediaElements.Clear();
+            System.Threading.Volatile.Write(ref _mediaElementCount, 0);
             _mediaElementCursor = null;
             _mediaElementCursorRoot = null;
             _loadEventDelayCount = 0;
@@ -21452,6 +21453,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (dispatchResize)
         {
             QueueOwnedWindowEvent("resize");
+            ScheduleMediaViewportCheck();
         }
     }
 
@@ -21500,6 +21502,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (changed)
         {
             QueueOwnedWindowEvent("scroll");
+            // A media element may have scrolled out of the viewport (design section 5).
+            ScheduleMediaViewportCheck();
         }
     }
 
