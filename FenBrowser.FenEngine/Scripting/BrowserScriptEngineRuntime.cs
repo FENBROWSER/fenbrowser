@@ -27816,7 +27816,21 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         value = _owner.GetOrCreateHostCallable(
                             element,
                             property,
-                            (_, _) => _owner.CreateResolvedPromise(JsValue.Undefined),
+                            (_, _) =>
+                            {
+                                // Fullscreen API "fullscreen element ready check": the
+                                // request needs a transient activation and spends it, so a
+                                // page that has already spent the same one - on
+                                // requestPictureInPicture(), say - is refused.
+                                if (!_owner.ConsumeTransientActivation())
+                                {
+                                    return _owner.CreateRejectedPromise(
+                                        "Failed to execute 'requestFullscreen': API can only be initiated by a user gesture.",
+                                        "TypeError");
+                                }
+
+                                return _owner.CreateResolvedPromise(JsValue.Undefined);
+                            },
                             length: 0);
                         return true;
                     }

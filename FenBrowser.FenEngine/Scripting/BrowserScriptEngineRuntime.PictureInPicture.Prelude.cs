@@ -157,6 +157,16 @@ public sealed partial class FenJsBrowserScriptEngine
             accessor(documentTarget, 'pictureInPictureElement', function () {
                 return retarget(g.__fenPipElement(), this);
             });
+            // Fullscreen is not implemented beyond refusing the request, but a page that
+            // asks whether anything is fullscreen must hear "nothing", not "undefined".
+            if (!('fullscreenElement' in documentTarget)) {
+                accessor(documentTarget, 'fullscreenElement', function () { return null; });
+                accessor(documentTarget, 'fullscreenEnabled', function () { return false; });
+                method(documentTarget, 'exitFullscreen', function () {
+                    return Promise.reject(new g.TypeError('Document not active'));
+                }, 0);
+            }
+
             method(documentTarget, 'exitPictureInPicture', function () {
                 return new Promise(function (resolve, reject) {
                     exitSequence(g.__fenPipExit(), resolve, reject);

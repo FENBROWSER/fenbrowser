@@ -21,8 +21,15 @@ public sealed partial class FenJsBrowserScriptEngine
 {
     private PictureInPictureController _pictureInPicture;
 
-    private PictureInPictureController PictureInPicture =>
-        _pictureInPicture ??= new PictureInPictureController(MediaEngineServices.Log);
+    private PictureInPictureController PictureInPicture
+    {
+        get
+        {
+            _pictureInPicture ??= new PictureInPictureController(MediaEngineServices.Log);
+            _pictureInPicture.Enabled = IsPictureInPictureAllowedHere();
+            return _pictureInPicture;
+        }
+    }
 
     private void InstallFenJsPictureInPicture()
     {
@@ -112,6 +119,24 @@ public sealed partial class FenJsBrowserScriptEngine
             VideoWidth: controller.VideoWidth,
             VideoHeight: controller.VideoHeight);
         return true;
+    }
+
+    /// <summary>
+    /// Whether this document offers Picture-in-Picture. The feature's default allowlist is
+    /// "*", so it is offered unless a policy names it and that policy does not reach this
+    /// origin - a document with a policy that says nothing about Picture-in-Picture still
+    /// has it.
+    /// </summary>
+    private bool IsPictureInPictureAllowedHere()
+    {
+        var policy = DocumentSecurityContext?.PermissionsPolicy ?? PermissionsPolicyProvider?.Invoke();
+        if (policy is null || policy == FenBrowser.Core.Security.PermissionsPolicy.None)
+            return true;
+        if (!policy.Allowlists.ContainsKey(FenBrowser.Core.Security.PolicyControlledFeature.PictureInPicture))
+            return true;
+
+        var origin = TryResolveCurrentOrigin(null);
+        return policy.IsFeatureAllowed(FenBrowser.Core.Security.PolicyControlledFeature.PictureInPicture, origin, origin);
     }
 
     private JsValue PipResult(PictureInPictureRefusal refusal) => PipResult(new PictureInPictureChange(refusal));
