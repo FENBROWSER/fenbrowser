@@ -47,6 +47,14 @@ public sealed partial class FenJsBrowserScriptEngine
                 return JsValue.Null;
             }
 
+            // EME §6: a document with an opaque origin has nowhere to keep a licence and
+            // nothing to tie one to, so it gets no key system access at all. A sandboxed
+            // frame without allow-same-origin is exactly that.
+            if (IsOpaqueOriginRealm)
+            {
+                return JsValue.Null;
+            }
+
             var candidates = ParseKeySystemConfigurations(json);
             if (candidates.Count == 0)
             {
@@ -326,6 +334,16 @@ public sealed partial class FenJsBrowserScriptEngine
                 return false;
         }
     }
+
+    /// <summary>
+    /// Whether this realm's document has an opaque origin: a frame sandboxed without
+    /// allow-same-origin. Such a document is its own origin, unequal to every other,
+    /// which is what makes storage-backed APIs refuse it.
+    /// </summary>
+    private bool IsOpaqueOriginRealm =>
+        _embeddingFrameElement != null &&
+        _embeddingFrameElement.HasAttribute("sandbox") &&
+        (SandboxPolicy.ParseIframeSandboxFlags(_embeddingFrameElement.GetAttribute("sandbox")) & IframeSandboxFlags.SameOrigin) == 0;
 
     private JsValue CallEmeHook(string name, params JsValue[] args)
     {
