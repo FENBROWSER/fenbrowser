@@ -68,6 +68,24 @@ namespace FenBrowser.Tests.Dom
             Assert.NotNull(doc.QuerySelector(".a\\.b"));
         }
 
+        [Fact]
+        public void QuerySelector_MatchesATypeSelectorInAnyNamespace()
+        {
+            // "*|button" is the form wptrunner names an element without an id in, so every
+            // test that asks for a click on one depends on it parsing.
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <p></p>
+    <button id='b'></button>
+</body></html>");
+
+            Assert.Same(doc.QuerySelector("#b"), doc.QuerySelector(":root > *|body:nth-child(2) > *|button:nth-child(2)"));
+            Assert.NotNull(doc.QuerySelector("|button"));
+            Assert.Equal(2, doc.QuerySelectorAll("*|body > *|*").Count());
+            Assert.Throws<DomException>(() => doc.QuerySelector("svg|rect"));
+        }
+
         private static Document Parse(string html)
         {
             var parser = new HtmlParser(html);

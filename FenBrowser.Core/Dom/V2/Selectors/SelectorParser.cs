@@ -246,18 +246,40 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                     continue;
                 }
 
-                // Universal selector
+                // Universal selector, possibly the "any namespace" prefix of a type
+                // selector: "*|button" matches a button in any namespace at all.
                 if (c == '*')
                 {
-                    tokens.Add(new Token(TokenType.UniversalSelector, "*"));
                     i++;
+                    if (TryReadNamespaceSeparator(input, ref i))
+                    {
+                        tokens.Add(ReadQualifiedName(input, ref i));
+                        continue;
+                    }
+
+                    tokens.Add(new Token(TokenType.UniversalSelector, "*"));
                     continue;
                 }
 
-                // Type selector (element name)
+                // A type selector with no namespace at all: "|button".
+                if (c == '|' && TryReadNamespaceSeparator(input, ref i))
+                {
+                    tokens.Add(ReadQualifiedName(input, ref i));
+                    continue;
+                }
+
+                // Type selector (element name), or a namespace prefix before one.
                 if (IsIdentStart(c))
                 {
                     var ident = ReadIdent(input, ref i);
+                    if (TryReadNamespaceSeparator(input, ref i))
+                    {
+                        // A prefix can only be resolved against namespace declarations,
+                        // and a selector string carries none: Selectors 4 makes that a
+                        // parse error rather than something that matches nothing.
+                        throw new DomException("SyntaxError", $"Undeclared namespace prefix '{ident}' in selector");
+                    }
+
                     tokens.Add(new Token(TokenType.TypeSelector, ident));
                     continue;
                 }
@@ -292,6 +314,35 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 break;
             }
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// A '|' that separates a namespace prefix from a local name, rather than the '||'
+        /// column combinator or the "|=" attribute operator. Consumes it when it is one.
+        /// </summary>
+        private static bool TryReadNamespaceSeparator(string input, ref int i)
+        {
+            if (i >= input.Length || input[i] != '|')
+                return false;
+            if (i + 1 < input.Length && (input[i + 1] == '|' || input[i + 1] == '='))
+                return false;
+            i++;
+            return true;
+        }
+
+        /// <summary>The local name after a namespace prefix; '*' means any name.</summary>
+        private static Token ReadQualifiedName(string input, ref int i)
+        {
+            if (i < input.Length && input[i] == '*')
+            {
+                i++;
+                return new Token(TokenType.UniversalSelector, "*");
+            }
+
+            var name = ReadIdent(input, ref i);
+            if (string.IsNullOrEmpty(name))
+                throw new DomException("SyntaxError", "Expected an element name after a namespace separator");
+            return new Token(TokenType.TypeSelector, name);
         }
 
         private static Token ReadAttributeSelector(string input, ref int i)
@@ -697,7 +748,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 "enabled" or "disabled" or "checked" or "indeterminate" or
                 "required" or "optional" or "valid" or "invalid" or
                 "in-range" or "out-of-range" or "read-only" or "read-write" or
-                "default" or "defined" => new StatePseudoClassSelector(name),
+                "default" or "defined" or "picture-in-picture" => new StatePseudoClassSelector(name),
                 _ => throw new DomException("SyntaxError", $"Unknown pseudo-class :{name}")
             };
 
