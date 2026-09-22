@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 
 namespace FenBrowser.Media.Types;
 
@@ -33,6 +33,95 @@ public sealed class MimeType
     public string? GetParameter(string name) => _parameters.TryGetValue(name, out var value) ? value : null;
 
     /// <summary>§4.4 "parse a MIME type". Returns null for failure.</summary>
+    /// <summary>
+    /// MIME Sniffing "valid MIME type string": the whole string matches the
+    /// <c>media-type</c> grammar. Parsing is not enough on its own - it stops at the first
+    /// thing it cannot read, so <c>video/webm;</c> parses but has a trailing semicolon
+    /// with no parameter and is not valid.
+    /// </summary>
+    public static bool IsValidMimeTypeString(string input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        int position = 0;
+
+        // type "/" subtype, both non-empty HTTP tokens.
+        int start = position;
+        while (position < input.Length && input[position] != '/')
+            position++;
+        if (position == start || position >= input.Length || !IsHttpToken(input[start..position]))
+            return false;
+        position++;
+
+        start = position;
+        while (position < input.Length && input[position] != ';')
+            position++;
+        if (position == start || !IsHttpToken(input[start..position]))
+            return false;
+
+        // *( ";" OWS parameter ), each parameter a non-empty token "=" ( token | quoted-string ).
+        while (position < input.Length)
+        {
+            position++; // the ";"
+            while (position < input.Length && IsHttpWhitespace(input[position]))
+                position++;
+
+            start = position;
+            while (position < input.Length && input[position] != '=' && input[position] != ';')
+                position++;
+            if (position == start || position >= input.Length || input[position] != '=' || !IsHttpToken(input[start..position]))
+                return false;
+            position++;
+
+            if (position < input.Length && input[position] == '"')
+            {
+                position++;
+                bool closed = false;
+                while (position < input.Length)
+                {
+                    char c = input[position++];
+                    if (c == '\\' && position < input.Length)
+                    {
+                        position++;
+                        continue;
+                    }
+
+                    if (c == '"')
+                    {
+                        closed = true;
+                        break;
+                    }
+                }
+
+                if (!closed)
+                    return false;
+                if (position < input.Length && input[position] != ';')
+                    return false;
+            }
+            else
+            {
+                start = position;
+                while (position < input.Length && input[position] != ';')
+                    position++;
+                if (position == start || !IsHttpQuotedStringToken(input[start..position]))
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>The characters a bare parameter value may hold (HTTP quoted-string token code points).</summary>
+    private static bool IsHttpQuotedStringToken(string value)
+    {
+        foreach (char c in value)
+        {
+            if (c != '\t' && (c < ' ' || c > '~') && c < '\u0080')
+                return false;
+        }
+
+        return true;
+    }
+
     public static MimeType? Parse(string input)
     {
         ArgumentNullException.ThrowIfNull(input);

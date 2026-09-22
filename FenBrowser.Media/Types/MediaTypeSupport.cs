@@ -1,4 +1,4 @@
-using FenBrowser.Media.Pipeline;
+﻿using FenBrowser.Media.Pipeline;
 
 namespace FenBrowser.Media.Types;
 
@@ -57,7 +57,7 @@ public sealed record MediaContainerType(
 /// given when the codecs are fully specified, or implied by the container (HTML says a
 /// type that allows a <c>codecs</c> parameter should not be "probably" without one).
 /// </remarks>
-public sealed class MediaTypeSupport
+public sealed partial class MediaTypeSupport
 {
     private readonly DemuxerRegistry _demuxers;
     private readonly DecoderRegistry _decoders;

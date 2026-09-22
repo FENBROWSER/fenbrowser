@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Diagnostics;
 
@@ -127,6 +127,22 @@ public sealed class DecoderRegistry
             MediaTrackKind.Audio => BestSupport(_audio, config),
             _ => DecoderSupport.Unsupported,
         };
+    }
+
+    /// <summary>
+    /// Whether one of the decoders that can take this configuration runs on video
+    /// hardware, which is what Media Capabilities calls power efficient.
+    /// </summary>
+    public bool HasHardwareDecoder(CodecConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        var candidates = config.Kind switch
+        {
+            MediaTrackKind.Video => Candidates(_video, config).ConvertAll(static f => f.IsHardwareAccelerated),
+            MediaTrackKind.Audio => Candidates(_audio, config).ConvertAll(static f => f.IsHardwareAccelerated),
+            _ => [],
+        };
+        return candidates.Contains(true);
     }
 
     private void Add<T>(List<IDecoderFactory<T>> list, IDecoderFactory<T> factory)

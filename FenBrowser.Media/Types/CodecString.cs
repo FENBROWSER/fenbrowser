@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 
 namespace FenBrowser.Media.Types;
 
@@ -16,6 +16,16 @@ public sealed record CodecString(string Raw, MediaCodec Codec, MediaTrackKind Ki
     /// Splits a <c>codecs</c> parameter value into its comma-separated entries (RFC 6381 §3.2),
     /// trimming whitespace. Returns an empty list for an empty value.
     /// </summary>
+    /// <summary>
+    /// The colour primaries the codec string names (ITU-T H.273 values), or the binding's
+    /// default of 1 (BT.709) when it leaves them out. Null for codec strings whose binding
+    /// carries no colour description at all.
+    /// </summary>
+    public int? ColourPrimaries { get; init; }
+
+    /// <summary>The transfer characteristics the codec string names, 1 (BT.709) by default.</summary>
+    public int? TransferCharacteristics { get; init; }
+
     public static IReadOnlyList<string> SplitList(string codecsParameter)
     {
         ArgumentNullException.ThrowIfNull(codecsParameter);
@@ -53,11 +63,20 @@ public sealed record CodecString(string Raw, MediaCodec Codec, MediaTrackKind Ki
 
             // VP9 codec ISO media file format binding, "Codecs Parameter String".
             case "vp09" when IsValidVp09(parts):
-                return new(raw, MediaCodec.Vp9, MediaTrackKind.Video, IsAmbiguous: false);
+                // VP9 codecs-parameter binding: the colour fields default to 1 (BT.709).
+                return new(raw, MediaCodec.Vp9, MediaTrackKind.Video, IsAmbiguous: false)
+                {
+                    ColourPrimaries = parts.Length == 9 ? int.Parse(parts[5], CultureInfo.InvariantCulture) : 1,
+                    TransferCharacteristics = parts.Length == 9 ? int.Parse(parts[6], CultureInfo.InvariantCulture) : 1,
+                };
 
             // AV1 Codec ISO Media File Format Binding §5 "Codecs Parameter String".
             case "av01" when IsValidAv01(parts):
-                return new(raw, MediaCodec.Av1, MediaTrackKind.Video, IsAmbiguous: false);
+                return new(raw, MediaCodec.Av1, MediaTrackKind.Video, IsAmbiguous: false)
+                {
+                    ColourPrimaries = parts.Length == 10 ? int.Parse(parts[6], CultureInfo.InvariantCulture) : 1,
+                    TransferCharacteristics = parts.Length == 10 ? int.Parse(parts[7], CultureInfo.InvariantCulture) : 1,
+                };
 
             // RFC 6381 §3.3: avc1/avc3 followed by profile_idc, constraint flags, level_idc in hex.
             case "avc1" or "avc3" when parts.Length == 1:
