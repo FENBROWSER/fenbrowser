@@ -61,12 +61,16 @@ namespace FenBrowser.Tests.Security
         }
 
         [Fact]
-        public void Parse_UnmentionedFeature_FallsBackToDefault()
+        public void Parse_UnmentionedFeature_KeepsItsOwnDefaultAllowlist()
         {
             var policy = PermissionsPolicy.Parse("fullscreen=*");
-            // 'notifications' not mentioned: default allowlist is 'self'-style
-            // (DefaultAllowsAll=false) so it is denied for cross-origin.
-            Assert.False(policy.IsFeatureAllowed(PolicyControlledFeature.Notifications, "https://a.example", "https://a.example"));
+            // 'notifications' is not mentioned, so its own default allowlist applies:
+            // 'self', which the document that sent the header is.
+            Assert.True(policy.IsFeatureAllowed(PolicyControlledFeature.Notifications, "https://a.example", "https://a.example"));
+            Assert.False(policy.IsFeatureAllowed(PolicyControlledFeature.Notifications, "https://evil.example", "https://a.example"));
+
+            // Picture-in-Picture defaults to '*', so an unmentioned one reaches anybody.
+            Assert.True(policy.IsFeatureAllowed(PolicyControlledFeature.PictureInPicture, "https://evil.example", "https://a.example"));
         }
 
         [Fact]

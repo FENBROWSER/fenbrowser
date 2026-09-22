@@ -91,7 +91,7 @@ namespace FenBrowser.Core.Security
                     continue;
 
                 var parts = SplitTopLevel(trimmed, '=');
-                if (parts.Count != 2)
+                if (parts.Count > 2)
                     continue;
 
                 string featureName = parts[0].Trim().ToLowerInvariant();
@@ -100,6 +100,15 @@ namespace FenBrowser.Core.Security
                     continue;
 
                 var allowlist = new FeatureAllowlist();
+
+                // A feature named with nothing after it has an empty allowlist: the header
+                // mentions the feature, and mentioning it with no origins takes it away.
+                if (parts.Count == 1)
+                {
+                    policy.Allowlists[feature] = allowlist;
+                    continue;
+                }
+
                 string allowlistValue = parts[1].Trim();
 
                 if (allowlistValue.Length == 0 || allowlistValue == "()")
@@ -217,7 +226,27 @@ namespace FenBrowser.Core.Security
             if (Allowlists.TryGetValue(feature, out var allowlist))
                 return allowlist.Allows(origin, documentOrigin);
 
-            return DefaultAllowsAll;
+            // A policy that says nothing about a feature leaves that feature's own default
+            // allowlist in force. Falling back to DefaultAllowsAll instead meant one
+            // Permissions-Policy header took away every feature it did not mention, even
+            // from the document that sent it.
+            return DefaultAllowsAll || DefaultAllowlistAllows(feature, origin, documentOrigin);
+        }
+
+        /// <summary>
+        /// The default allowlist each policy-controlled feature carries when no policy
+        /// names it: "*" for the two features whose specifications say so, and "self" for
+        /// the rest, which is what every one of these features defaults to.
+        /// </summary>
+        private static bool DefaultAllowlistAllows(PolicyControlledFeature feature, string origin, string documentOrigin)
+        {
+            if (feature is PolicyControlledFeature.PictureInPicture or PolicyControlledFeature.Gamepad)
+                return true;
+
+            if (string.IsNullOrEmpty(origin) || string.IsNullOrEmpty(documentOrigin))
+                return true; // nothing to compare; an unknown origin is the document's own
+
+            return string.Equals(origin.TrimEnd('/'), documentOrigin.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
         }
 
         public bool IsFeatureAllowedInFrame(
