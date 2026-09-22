@@ -236,6 +236,7 @@ namespace FenBrowser.FenEngine.Rendering
             @"window\s*\.\s*open\s*\((?<args>[^)]*)\)",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
+        private bool _pageVisible = true;
         private readonly ResourceManager _resources;
         private readonly ConditionalWeakTable<Document, FrameResourceSecurityContext> _frameResourceSecurity = new();
         // Per-host speculative prefetcher fed by the HTML PreloadScanner;
@@ -719,6 +720,21 @@ namespace FenBrowser.FenEngine.Rendering
             FenBrowser.Core.Security.PermissionsPolicy.None;
         public Dictionary<Node, CssComputed> ComputedStyles => _engine.LastComputedStyles;
         public CustomHtmlEngine Engine => _engine;
+
+        /// <summary>
+        /// Page Visibility: the embedder's tab or window state changed. The document's
+        /// visibilityState follows, script hears visibilitychange, and the media engine's
+        /// background policy (MEDIA_ENGINE_DESIGN section 5) stops decoding video that
+        /// nobody is looking at. The state is kept and re-applied to the next document.
+        /// </summary>
+        public void SetPageVisible(bool visible)
+        {
+            _pageVisible = visible;
+            if (_engine?.ScriptEngine is FenBrowser.FenEngine.Scripting.FenJsBrowserScriptEngine realm)
+            {
+                realm.SetPageVisible(visible);
+            }
+        }
         public NavigationLifecycleSnapshot NavigationLifecycleState => _navigationLifecycle.GetSnapshot();
 
         public SKBitmap Favicon { get; private set; }
@@ -1573,6 +1589,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (_engine?.ScriptEngine is FenBrowser.FenEngine.Scripting.FenJsBrowserScriptEngine jsEngine)
                 {
                     jsEngine.PermissionsPolicyProvider = () => CurrentPermissionsPolicy;
+                    jsEngine.SetPageVisible(_pageVisible);
                 }
 
                 string htmlToRender = result.Content;
