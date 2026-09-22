@@ -258,6 +258,25 @@
       ]
     },
     {
+      "file": "pattern_vp9_720p.webm",
+      "bytes": 46969,
+      "sha256": "14b1aeb71b5a12e5ae5de95f30d5accc5dbe86caeba5d9e126e40943118e5f30",
+      "sniff": "video/webm",
+      "note": "720p so a hardware decoder will take it (M7)",
+      "container": "matroska,webm",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "video",
+          "codec": "vp9",
+          "timeBase": "1/1000",
+          "width": 1280,
+          "height": 720
+        }
+      ]
+    },
+    {
       "file": "pattern_vp9.mkv",
       "bytes": 2385,
       "sha256": "9e51a4e3690d44d2e5e88725cc2520c72828b5889427a15ef1170d615989aa15",

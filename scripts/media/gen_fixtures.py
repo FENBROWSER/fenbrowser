@@ -34,6 +34,9 @@ SINE = ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1"]
 SINE_44K = ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=1"]
 SINE_22K = ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=22050:duration=1"]
 PATTERN = ["-f", "lavfi", "-i", "testsrc2=size=64x48:rate=10:duration=1"]
+# Hardware decoders have minimum picture sizes (NVDEC will not take the 64x48 pattern),
+# so the hardware path needs one fixture a GPU will actually accept.
+PATTERN_720P = ["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=10:duration=1"]
 VIDEO_ONE_THREAD = ["-threads", "1"]
 
 # name, ffmpeg arguments (inputs + codec options), expected sniff result, notes.
@@ -65,6 +68,8 @@ FIXTURES: list[tuple[str, list[str], str | None, str]] = [
      "video/webm", "EBML DocType webm, two tracks"),
     ("pattern_av1.webm", PATTERN + VIDEO_ONE_THREAD + ["-c:v", "libaom-av1", "-b:v", "50k", "-cpu-used", "8", "-row-mt", "0"],
      "video/webm", "EBML DocType webm"),
+    ("pattern_vp9_720p.webm", PATTERN_720P + VIDEO_ONE_THREAD + ["-c:v", "libvpx-vp9", "-b:v", "300k", "-deadline", "good", "-cpu-used", "8", "-g", "10"],
+     "video/webm", "720p so a hardware decoder will take it (M7)"),
     ("pattern_vp9.mkv", PATTERN + VIDEO_ONE_THREAD + ["-c:v", "libvpx-vp9", "-b:v", "50k", "-deadline", "good", "-cpu-used", "4"],
      None, "EBML DocType matroska is not webm"),
     ("pattern_h264_aac.mp4", PATTERN + SINE + VIDEO_ONE_THREAD + ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "64k", "-shortest"],
