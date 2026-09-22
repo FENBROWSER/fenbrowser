@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Pipeline;
 
@@ -62,6 +62,7 @@ public sealed class PcmDecoder : IMediaDecoder<AudioBlock>
             PcmSampleFormat.S32 => 4,
             PcmSampleFormat.F32 => 4,
             PcmSampleFormat.F64 => 8,
+            PcmSampleFormat.ALaw or PcmSampleFormat.MuLaw => 1,
             _ => throw new MediaDecoderException($"Unsupported PCM format {config.PcmFormat}."),
         };
         _context.Limits.CheckAudioFormat(config.SampleRate, config.Channels);
@@ -130,9 +131,39 @@ public sealed class PcmDecoder : IMediaDecoder<AudioBlock>
                 for (int i = 0; i < output.Length; i++)
                     output[i] = (float)Math.Clamp(BinaryPrimitives.ReadDoubleLittleEndian(input[(i * 8)..]), -1.0, 1.0);
                 break;
+            case PcmSampleFormat.ALaw:
+                for (int i = 0; i < output.Length; i++)
+                    output[i] = ExpandALaw(input[i]) / 32768f;
+                break;
+            case PcmSampleFormat.MuLaw:
+                for (int i = 0; i < output.Length; i++)
+                    output[i] = ExpandMuLaw(input[i]) / 32768f;
+                break;
             default:
                 throw new MediaDecoderException($"Unsupported PCM format {format}.");
         }
+    }
+
+    /// <summary>ITU-T G.711 A-law expansion to a 16-bit sample.</summary>
+    internal static short ExpandALaw(byte value)
+    {
+        int v = value ^ 0x55;
+        int sign = v & 0x80;
+        int exponent = (v & 0x70) >> 4;
+        int mantissa = v & 0x0F;
+        int sample = exponent == 0 ? (mantissa << 4) + 8 : ((mantissa << 4) + 0x108) << (exponent - 1);
+        return (short)(sign != 0 ? -sample : sample);
+    }
+
+    /// <summary>ITU-T G.711 mu-law expansion to a 16-bit sample.</summary>
+    internal static short ExpandMuLaw(byte value)
+    {
+        int v = ~value & 0xFF;
+        int sign = v & 0x80;
+        int exponent = (v & 0x70) >> 4;
+        int mantissa = v & 0x0F;
+        int sample = (((mantissa << 3) + 0x84) << exponent) - 0x84;
+        return (short)(sign != 0 ? -sample : sample);
     }
 
     public ValueTask DrainAsync(IDecodeOutput<AudioBlock> output, CancellationToken cancellationToken) => ValueTask.CompletedTask;

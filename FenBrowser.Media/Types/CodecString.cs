@@ -26,6 +26,12 @@ public sealed record CodecString(string Raw, MediaCodec Codec, MediaTrackKind Ki
     /// <summary>The transfer characteristics the codec string names, 1 (BT.709) by default.</summary>
     public int? TransferCharacteristics { get; init; }
 
+    /// <summary>
+    /// The sample format a WebCodecs linear-PCM or G.711 codec string names; the media
+    /// element's WAVE tags leave it to the container, which carries the bit depth.
+    /// </summary>
+    public PcmSampleFormat PcmFormat { get; init; }
+
     public static IReadOnlyList<string> SplitList(string codecsParameter)
     {
         ArgumentNullException.ThrowIfNull(codecsParameter);
@@ -104,6 +110,22 @@ public sealed record CodecString(string Raw, MediaCodec Codec, MediaTrackKind Ki
             // RFC 2361: WAVE format tag 1 is integer PCM (and 3 is IEEE float).
             case "1" or "3" when parts.Length == 1:
                 return new(raw, MediaCodec.Pcm, MediaTrackKind.Audio, IsAmbiguous: false);
+
+            // WebCodecs codec registry: linear PCM and G.711 name their sample format.
+            case "pcm-u8" when parts.Length == 1:
+                return new(raw, MediaCodec.Pcm, MediaTrackKind.Audio, IsAmbiguous: false) { PcmFormat = PcmSampleFormat.U8 };
+            case "pcm-s16" when parts.Length == 1:
+                return new(raw, MediaCodec.Pcm, MediaTrackKind.Audio, IsAmbiguous: false) { PcmFormat = PcmSampleFormat.S16 };
+            case "pcm-s24" when parts.Length == 1:
+                return new(raw, MediaCodec.Pcm, MediaTrackKind.Audio, IsAmbiguous: false) { PcmFormat = PcmSampleFormat.S24 };
+            case "pcm-s32" when parts.Length == 1:
+                return new(raw, MediaCodec.Pcm, MediaTrackKind.Audio, IsAmbiguous: false) { PcmFormat = PcmSampleFormat.S32 };
+            case "pcm-f32" when parts.Length == 1:
+                return new(raw, MediaCodec.Pcm, MediaTrackKind.Audio, IsAmbiguous: false) { PcmFormat = PcmSampleFormat.F32 };
+            case "alaw" when parts.Length == 1:
+                return new(raw, MediaCodec.Pcm, MediaTrackKind.Audio, IsAmbiguous: false) { PcmFormat = PcmSampleFormat.ALaw };
+            case "ulaw" when parts.Length == 1:
+                return new(raw, MediaCodec.Pcm, MediaTrackKind.Audio, IsAmbiguous: false) { PcmFormat = PcmSampleFormat.MuLaw };
 
             default:
                 return null;

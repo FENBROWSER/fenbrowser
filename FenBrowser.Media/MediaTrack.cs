@@ -1,4 +1,4 @@
-namespace FenBrowser.Media;
+﻿namespace FenBrowser.Media;
 
 public enum MediaTrackKind
 {
@@ -43,6 +43,12 @@ public enum PcmSampleFormat
     S32,
     F32,
     F64,
+
+    /// <summary>G.711 A-law, one byte per sample (WebCodecs <c>alaw</c>).</summary>
+    ALaw,
+
+    /// <summary>G.711 mu-law, one byte per sample (WebCodecs <c>ulaw</c>).</summary>
+    MuLaw,
 }
 
 /// <summary>
