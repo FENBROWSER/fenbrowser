@@ -1,4 +1,4 @@
-using FenBrowser.Media.Element;
+﻿using FenBrowser.Media.Element;
 
 namespace FenBrowser.Media.Tests.Element;
 
@@ -43,6 +43,10 @@ internal sealed class FakeResource : IMediaResource
     public void Seek(MediaTime target, bool approximateForSpeed) => Seeks.Add((target, approximateForSpeed));
 
     public void RequestFullLoad() => FullLoadRequested = true;
+
+    public bool? VideoVisible { get; private set; }
+
+    public void UpdateVideoVisibility(bool visible) => VideoVisible = visible;
 
     public void Dispose() => Disposed = true;
 

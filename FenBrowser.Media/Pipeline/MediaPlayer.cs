@@ -87,6 +87,10 @@ public sealed class MediaPlayer : IMediaResource
     private bool _fetchedReported;
     private bool _potentiallyPlaying;
     private bool _outputRunning;
+    private bool _videoVisible = true;
+    private bool _videoDecodeOff;
+    private bool _visibilityDirty;
+    private bool _timerHeld;
     private bool _preservesPitch = true;
     private double _rate = 1.0;
     private TimeStretcher? _stretcher;
@@ -272,6 +276,17 @@ public sealed class MediaPlayer : IMediaResource
         // The byte source already holds the whole resource.
     }
 
+    public void UpdateVideoVisibility(bool visible)
+    {
+        Post(() =>
+        {
+            if (_videoVisible == visible)
+                return;
+            _videoVisible = visible;
+            _visibilityDirty = true;
+        });
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -324,6 +339,12 @@ public sealed class MediaPlayer : IMediaResource
                 while (_commands.TryDequeue(out var command))
                     command();
 
+                if (_visibilityDirty)
+                {
+                    _visibilityDirty = false;
+                    await ApplyVideoVisibilityAsync(cancellation).ConfigureAwait(false);
+                }
+
                 if (_pendingSeek is { } seekTarget)
                 {
                     _pendingSeek = null;
@@ -353,7 +374,7 @@ public sealed class MediaPlayer : IMediaResource
                     return;
 
                 var wait = !_outputRunning ? TimeSpan.FromMilliseconds(250)
-                    : _video is not null ? _services.FrameInterval
+                    : _video is not null && !_videoDecodeOff ? _services.FrameInterval
                     : _services.PositionInterval;
                 await _wake.WaitAsync(wait, cancellation).ConfigureAwait(false);
             }
@@ -563,13 +584,13 @@ public sealed class MediaPlayer : IMediaResource
         if (_heldVideo is not null)
             return false;
         bool audioWants = _renderer is not null && _renderer.QueuedDuration < _services.DecodeAhead;
-        bool videoWants = _video is { IsFull: false };
+        bool videoWants = !_videoDecodeOff && _video is { IsFull: false };
         bool audioTooFar = _renderer is not null && _renderer.QueuedDuration >= _services.DecodeAhead + _services.DecodeAhead;
         // A video decoder with a deep pipeline (the OS H.264 decoder holds several
         // frames) may have shown nothing yet when the audio look-ahead is full: keep
         // feeding it until the first picture is out, or the element never gets past
         // HAVE_CURRENT_DATA while paused.
-        if (audioTooFar && _video is { QueuedCount: 0, HasCurrent: false, IsFull: false })
+        if (audioTooFar && !_videoDecodeOff && _video is { QueuedCount: 0, HasCurrent: false, IsFull: false })
             audioTooFar = false;
         return (audioWants || videoWants) && !audioTooFar;
     }
@@ -652,6 +673,44 @@ public sealed class MediaPlayer : IMediaResource
         }
     }
 
+    /// <summary>
+    /// The background policy of design §5: while nothing is showing the pictures of a
+    /// resource that also has audio, the video track is not decoded and its pictures are
+    /// released - the audio clock keeps the element playing and time marching on. A
+    /// resource without audio keeps decoding, because its pictures are what ends playback.
+    /// When it comes back into view the pictures are caught up to the clock.
+    /// </summary>
+    private async ValueTask ApplyVideoVisibilityAsync(CancellationToken cancellation)
+    {
+        bool off = !_videoVisible && _video is not null && _renderer is not null;
+        if (off == _videoDecodeOff || _decodeSource is null)
+            return;
+
+        _videoDecodeOff = off;
+        await _decodeSource.SetVideoDecodeEnabledAsync(!off, cancellation).ConfigureAwait(false);
+        if (off)
+        {
+            _heldVideo?.Dispose();
+            _heldVideo = null;
+            _video!.Flush();
+            _videoTrimBefore = null;
+        }
+        else
+        {
+            // A paused element shows the picture at its position again; a playing one
+            // catches up to the clock rather than resuming a group of pictures behind it.
+            if (!_potentiallyPlaying)
+                _presentFirstFrame = true;
+            if (_clock is not null && !_pendingSeek.HasValue)
+                _pendingResync = _clock.CurrentTime;
+        }
+
+        UpdateOutputState();
+        _context.Log.Emit(_context.Player, MediaEventKind.Buffering, MediaLogLevel.Info,
+            off ? "Hidden: video decoding stopped, audio continues." : "Shown: video decoding resumed.",
+            ("video", off ? "background" : "foreground"));
+    }
+
     private void UpdateOutputState()
     {
         bool wantRunning = _potentiallyPlaying && !_failed && !IsPlayedOut();
@@ -659,17 +718,27 @@ public sealed class MediaPlayer : IMediaResource
         {
             _output?.Start();
             _monotonic?.Start();
-            if (_video is not null)
-                PresentationTimer.Acquire();
             _outputRunning = true;
         }
         else if (!wantRunning && _outputRunning)
         {
             _output?.Stop();
             _monotonic?.Pause();
-            if (_video is not null)
-                PresentationTimer.Release();
             _outputRunning = false;
+        }
+
+        // The fine timer period costs power across the whole machine: hold it only while
+        // pictures are actually being selected for the compositor.
+        bool wantTimer = _outputRunning && _video is not null && !_videoDecodeOff;
+        if (wantTimer && !_timerHeld)
+        {
+            PresentationTimer.Acquire();
+            _timerHeld = true;
+        }
+        else if (!wantTimer && _timerHeld)
+        {
+            PresentationTimer.Release();
+            _timerHeld = false;
         }
     }
 
@@ -688,7 +757,9 @@ public sealed class MediaPlayer : IMediaResource
         MediaReadyState state = MediaReadyState.HaveEnoughData;
         if (_renderer is { } renderer)
             state = AudioReadiness(renderer);
-        if (_video is { } video)
+        // While the background policy holds video decoding off there are no pictures to
+        // judge, and the audio alone says how much data the element has.
+        if (_video is { } video && !_videoDecodeOff)
         {
             var videoState = VideoReadiness(video);
             if (videoState < state)
@@ -927,8 +998,9 @@ public sealed class MediaPlayer : IMediaResource
                 await _output.DisposeAsync().ConfigureAwait(false);
             }
 
-            if (_outputRunning && _video is not null)
+            if (_timerHeld)
                 PresentationTimer.Release();
+            _timerHeld = false;
             _outputRunning = false;
             _renderer?.Dispose();
             _heldVideo?.Dispose();

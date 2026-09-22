@@ -74,6 +74,14 @@ public interface IMediaDecodeSource : IAsyncDisposable
     /// container's nearest earlier keyframe and the player discards the rest.
     /// </summary>
     ValueTask SeekAsync(MediaTime target, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Turns video decoding off or on (the background policy of design §5). While it is
+    /// off the source still reads the video track's packets, so audio keeps flowing, but
+    /// discards them instead of decoding; decoding resumes at the next random access
+    /// point. A source with no video track ignores this.
+    /// </summary>
+    ValueTask SetVideoDecodeEnabledAsync(bool enabled, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }
 
 public interface IMediaDecodeSourceFactory
@@ -148,6 +156,8 @@ public sealed class LocalMediaDecodeSource : IMediaDecodeSource
     private int _audioTrackId = -1;
     private int _videoTrackId = -1;
     private bool _endOfStream;
+    private bool _videoDecodeEnabled = true;
+    private bool _awaitingVideoKeyframe;
 
     public LocalMediaDecodeSource(
         IByteSource source,
@@ -236,13 +246,55 @@ public sealed class LocalMediaDecodeSource : IMediaDecodeSource
             using (packet)
             {
                 if (packet.TrackId == _audioTrackId)
+                {
                     await _audioDecoder!.DecodeAsync(packet, _audioOutput, cancellationToken).ConfigureAwait(false);
+                }
                 else if (packet.TrackId == _videoTrackId)
+                {
+                    // Background policy: a discarded picture must not leave the decoder
+                    // holding a reference frame nothing will complete, so decoding starts
+                    // again at a random access point.
+                    if (!_videoDecodeEnabled)
+                        continue;
+                    if (_awaitingVideoKeyframe)
+                    {
+                        if (!packet.IsKeyframe)
+                            continue;
+                        _awaitingVideoKeyframe = false;
+                    }
+
                     await _videoDecoder!.DecodeAsync(packet, _videoOutput, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
 
         return _decoded.Count > 0 ? _decoded.Dequeue() : null;
+    }
+
+    public async ValueTask SetVideoDecodeEnabledAsync(bool enabled, CancellationToken cancellationToken)
+    {
+        if (_videoDecoder is null || enabled == _videoDecodeEnabled)
+            return;
+
+        _videoDecodeEnabled = enabled;
+        if (enabled)
+        {
+            _awaitingVideoKeyframe = true;
+            return;
+        }
+
+        // Drop what the decoder still holds along with the pictures already decoded: none
+        // of them will be shown, and their buffers go back to the pool.
+        await _videoDecoder.ResetAsync(cancellationToken).ConfigureAwait(false);
+        int kept = _decoded.Count;
+        for (int i = 0; i < kept; i++)
+        {
+            var item = _decoded.Dequeue();
+            if (item.Video is not null)
+                item.Dispose();
+            else
+                _decoded.Enqueue(item);
+        }
     }
 
     public async ValueTask SeekAsync(MediaTime target, CancellationToken cancellationToken)

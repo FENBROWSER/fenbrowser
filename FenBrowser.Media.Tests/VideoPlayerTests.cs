@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using FenBrowser.Media.Audio;
 using FenBrowser.Media.Codecs.Ffmpeg;
 using FenBrowser.Media.Diagnostics;
@@ -161,4 +161,91 @@ public class VideoPlayerTests
             player.Dispose();
         }
     }
+    /// <summary>
+    /// The background policy of design section 5: with nothing showing the pictures, a
+    /// resource that also has audio stops decoding video and the audio still runs the
+    /// element to its end.
+    /// </summary>
+    [Fact]
+    public async Task VideoWithAudio_HiddenStopsDecodingPicturesAndPlaysTheAudioOut()
+    {
+        var client = new RecordingClient();
+        var player = Create("pattern_vp8_vorbis.webm", client, NullAudioOutputFactory.Realtime);
+        player.UpdateVideoVisibility(visible: false);
+        player.Start();
+        try
+        {
+            await client.WaitForAsync(() => client.ReadyState >= MediaReadyState.HaveFutureData);
+            player.UpdatePlayback(potentiallyPlaying: true, playbackRate: 1.0, preservesPitch: true, effectiveVolume: 1.0);
+            await client.WaitForAsync(() => client.Position > MediaTime.FromSeconds(0.3), timeoutMs: 4000);
+            long presented = player.Presenter.Sequence;
+            long decoded = player.GetVideoPlaybackQuality()!.Value.TotalVideoFrames;
+
+            await client.WaitForAsync(() => client.Ended, timeoutMs: 5000);
+            Assert.Equal(1.0, client.Position.TotalSeconds, 1);
+            Assert.Equal(presented, player.Presenter.Sequence);
+            Assert.Equal(decoded, player.GetVideoPlaybackQuality()!.Value.TotalVideoFrames);
+            Assert.True(decoded < 10, $"{decoded} of the 10 pictures were decoded while hidden");
+            Assert.Null(client.Failure);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
+    /// <summary>Coming back into view resumes the pictures at the clock, not where they stopped.</summary>
+    [Fact]
+    public async Task VideoWithAudio_ShownAgainCatchesThePicturesUpToTheClock()
+    {
+        var client = new RecordingClient();
+        var player = Create("pattern_vp8_vorbis.webm", client, NullAudioOutputFactory.Realtime);
+        player.UpdateVideoVisibility(visible: false);
+        player.Start();
+        try
+        {
+            await client.WaitForAsync(() => client.ReadyState >= MediaReadyState.HaveFutureData);
+            player.UpdatePlayback(potentiallyPlaying: true, playbackRate: 1.0, preservesPitch: true, effectiveVolume: 1.0);
+            await client.WaitForAsync(() => client.Position > MediaTime.FromSeconds(0.3), timeoutMs: 4000);
+
+            long presented = player.Presenter.Sequence;
+            player.UpdateVideoVisibility(visible: true);
+            await client.WaitForAsync(() => player.Presenter.Sequence > presented, timeoutMs: 4000);
+            var picture = player.Presenter.Acquire()!;
+            var shown = picture.Timestamp;
+            picture.Release();
+            Assert.True(shown >= MediaTime.FromSeconds(0.2), $"the picture shown was {shown}, so decoding restarted at the beginning");
+            Assert.Null(client.Failure);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A resource with no audio keeps decoding while hidden: its pictures are what carry
+    /// the clock to the end of playback.
+    /// </summary>
+    [Fact]
+    public async Task VideoOnly_KeepsDecodingWhileHidden()
+    {
+        var client = new RecordingClient();
+        var player = Create("pattern_vp9.webm", client, NullAudioOutputFactory.Realtime);
+        player.UpdateVideoVisibility(visible: false);
+        player.Start();
+        try
+        {
+            await client.WaitForAsync(() => client.ReadyState == MediaReadyState.HaveEnoughData);
+            player.UpdatePlayback(potentiallyPlaying: true, playbackRate: 1.0, preservesPitch: true, effectiveVolume: 1.0);
+            await client.WaitForAsync(() => client.Ended, timeoutMs: 5000);
+            Assert.Equal(10, player.GetVideoPlaybackQuality()!.Value.TotalVideoFrames);
+            Assert.Null(client.Failure);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
 }
+

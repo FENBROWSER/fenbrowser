@@ -46,6 +46,7 @@ public sealed class HtmlMediaElementController
     private object? _pointerBefore;
     private bool _waitingForSource;
     private IMediaResource? _resource;
+    private bool _videoVisible = true;
     private IReadOnlyList<MediaTrackInfo> _tracks = [];
 
     // Playback state.
@@ -953,6 +954,23 @@ public sealed class HtmlMediaElementController
     }
 
     /// <summary>The host's pending text tracks list changed; the held-back readiness may apply now.</summary>
+    /// <summary>
+    /// The user agent's background policy (design §5), not a spec concept: whether
+    /// anything is showing this element's pictures. The host sets it when the document's
+    /// visibility or the element's box changes.
+    /// </summary>
+    public bool IsVideoVisible
+    {
+        get => _videoVisible;
+        set
+        {
+            if (_videoVisible == value)
+                return;
+            _videoVisible = value;
+            _resource?.UpdateVideoVisibility(value);
+        }
+    }
+
     public void PendingTextTracksChanged()
     {
         if (ReadyState == MediaReadyState.HaveNothing || _resource is null)
@@ -1304,8 +1322,13 @@ public sealed class HtmlMediaElementController
 
     // ---- Helpers ------------------------------------------------------------------------
 
-    private void PushPlaybackState() =>
-        _resource?.UpdatePlayback(IsPotentiallyPlaying, _playbackRate, _preservesPitch, EffectiveVolume);
+    private void PushPlaybackState()
+    {
+        if (_resource is not { } resource)
+            return;
+        resource.UpdatePlayback(IsPotentiallyPlaying, _playbackRate, _preservesPitch, EffectiveVolume);
+        resource.UpdateVideoVisibility(_videoVisible);
+    }
 
     private void SetNetworkState(MediaNetworkState state)
     {

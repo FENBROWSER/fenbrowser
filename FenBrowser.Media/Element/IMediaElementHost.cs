@@ -125,6 +125,16 @@ public interface IMediaResource : IDisposable
     /// <summary>The resource may start loading beyond metadata (preload=none/metadata and play()).</summary>
     void RequestFullLoad();
 
+    /// <summary>
+    /// The user agent's background policy (design §5), not a spec concept: false when
+    /// nothing is showing this element's pictures - a hidden tab, or a box that is not
+    /// rendered. A resource that also has audio stops decoding video and releases the
+    /// pictures it holds until it is shown again.
+    /// </summary>
+    void UpdateVideoVisibility(bool visible)
+    {
+    }
+
     /// <summary>The latest picture for the compositor, or null for a resource without video.</summary>
     Video.VideoPresenter? Presenter => null;
 
