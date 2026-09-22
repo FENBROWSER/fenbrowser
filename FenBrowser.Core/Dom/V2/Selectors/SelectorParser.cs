@@ -483,7 +483,11 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private static bool IsIdentChar(char c)
         {
-            return char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '\\' || c > 127;
+            // A backslash is not part of an identifier: it starts an escape, and the caller
+            // reads it. Counting it here meant the escape branch was never reached, so a
+            // fully escaped selector - the form wptrunner builds, "#\77 \70 \74 ..." -
+            // matched nothing at all.
+            return char.IsLetterOrDigit(c) || c == '_' || c == '-' || c > 127;
         }
 
         private static bool TryReadEscapedCodePoint(string input, ref int i, out string escaped)
