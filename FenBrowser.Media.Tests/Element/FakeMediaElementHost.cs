@@ -44,7 +44,7 @@ internal sealed class FakeResource : IMediaResource
 
     public void RequestFullLoad() => FullLoadRequested = true;
 
-    public bool? VideoVisible { get; private set; }
+    public bool VideoVisible { get; private set; } = true;
 
     public void UpdateVideoVisibility(bool visible) => VideoVisible = visible;
 

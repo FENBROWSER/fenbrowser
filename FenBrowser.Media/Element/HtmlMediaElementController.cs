@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Types;
 
@@ -47,6 +47,8 @@ public sealed class HtmlMediaElementController
     private bool _waitingForSource;
     private IMediaResource? _resource;
     private bool _videoVisible = true;
+    private bool _startedByAutoplay;
+    private bool _pausedOffScreen;
     private IReadOnlyList<MediaTrackInfo> _tracks = [];
 
     // Playback state.
@@ -968,7 +970,40 @@ public sealed class HtmlMediaElementController
                 return;
             _videoVisible = value;
             _resource?.UpdateVideoVisibility(value);
+            ApplyOffScreenAutoplayPolicy();
         }
+    }
+
+    /// <summary>
+    /// The second half of design section 5's background policy: a video that started
+    /// itself and makes no sound is paused once nothing is showing it, and plays again
+    /// when it comes back. Only a video the page never asked to play is touched, so a
+    /// play() from script is never undone; the element's own pause() while it is out of
+    /// sight clears the flag, so it stays paused when it returns.
+    /// </summary>
+    private void ApplyOffScreenAutoplayPolicy()
+    {
+        if (!_host.IsVideo)
+            return;
+
+        if (!_videoVisible)
+        {
+            if (!Paused && _startedByAutoplay && EffectiveVolume <= 0)
+            {
+                Pause();
+                _pausedOffScreen = true;
+                Log(MediaEventKind.Buffering, MediaLogLevel.Info, "A muted autoplaying video went out of sight and was paused.", ("reason", "offscreen"));
+            }
+
+            return;
+        }
+
+        if (!_pausedOffScreen)
+            return;
+
+        _pausedOffScreen = false;
+        _ = Play();
+        _startedByAutoplay = true;
     }
 
     public void PendingTextTracksChanged()
@@ -1041,6 +1076,7 @@ public sealed class HtmlMediaElementController
                 if (IsEligibleForAutoplay && _host.IsAllowedToPlay)
                 {
                     Paused = false;
+                    _startedByAutoplay = true;
                     SetShowPoster(false);
                     QueueEvent("play");
                     NotifyAboutPlaying();
@@ -1089,6 +1125,8 @@ public sealed class HtmlMediaElementController
 
         // 5.
         _canAutoplay = false;
+        _startedByAutoplay = false;
+        _pausedOffScreen = false;
 
         _resource?.RequestFullLoad();
         StartPlayedRange();
@@ -1099,6 +1137,8 @@ public sealed class HtmlMediaElementController
     {
         // 1.
         _canAutoplay = false;
+        _startedByAutoplay = false;
+        _pausedOffScreen = false;
 
         // 2.
         if (!Paused)
