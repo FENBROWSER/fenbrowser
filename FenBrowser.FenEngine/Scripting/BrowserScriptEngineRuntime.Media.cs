@@ -1381,6 +1381,9 @@ public sealed partial class FenJsBrowserScriptEngine
             case "playsInline" when IsVideoElement(element):
                 value = JsValue.FromBoolean(element.HasAttribute("playsinline"));
                 return true;
+            case "disablePictureInPicture" when IsVideoElement(element):
+                value = JsValue.FromBoolean(element.HasAttribute("disablepictureinpicture"));
+                return true;
             case "width" when IsVideoElement(element):
                 value = JsValue.FromInt32(ReflectUnsignedLong(element, "width"));
                 return true;
@@ -1569,6 +1572,12 @@ public sealed partial class FenJsBrowserScriptEngine
                 return true;
             case "playsInline" when IsVideoElement(element):
                 SetBooleanAttribute(element, "playsinline", value);
+                return true;
+            case "disablePictureInPicture" when IsVideoElement(element):
+                SetBooleanAttribute(element, "disablepictureinpicture", value);
+                // §4.3: an author turning it on takes the element out of Picture-in-Picture.
+                if (ToHostBoolean(value))
+                    ExitPictureInPictureFor(element);
                 return true;
             case "width" when IsVideoElement(element):
             case "height" when IsVideoElement(element):

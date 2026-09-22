@@ -342,13 +342,20 @@ public sealed class HtmlMediaElementController
             _pointerBefore = previousSibling;
     }
 
+    /// <summary>
+    /// Whether this element is the one Picture-in-Picture is showing. A video that is being
+    /// shown outside the page is still being watched, so taking it out of the document does
+    /// not pause it.
+    /// </summary>
+    public bool InPictureInPicture { get; set; }
+
     /// <summary>§4.8.11.8: removed from a document; pause at the next stable state unless re-inserted.</summary>
     public void OnRemovedFromDocument(Func<bool> isInDocument)
     {
         ArgumentNullException.ThrowIfNull(isInDocument);
         _host.AwaitStableState(() =>
         {
-            if (isInDocument())
+            if (isInDocument() || InPictureInPicture)
                 return;
             RunInternalPauseSteps();
         });

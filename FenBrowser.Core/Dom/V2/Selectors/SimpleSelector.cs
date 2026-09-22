@@ -449,7 +449,10 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 // Dynamic states delegated to ElementStateManager (wired by FenEngine)
                 "hover" or "active" or "focus" or "focus-visible" or "focus-within" or
                 "target" or "valid" or "invalid" or "in-range" or
-                "out-of-range" or "indeterminate" => StateProvider(element, _name),
+                "out-of-range" or "indeterminate" or
+                // :picture-in-picture matches the element being shown itself, never a
+                // shadow host it is reported through.
+                "picture-in-picture" => StateProvider(element, _name),
                 // :defined — true when element is a known/registered custom element or a built-in element
                 "defined" => !element.TagName.Contains('-') ||
                              StateProvider(element, "defined"),

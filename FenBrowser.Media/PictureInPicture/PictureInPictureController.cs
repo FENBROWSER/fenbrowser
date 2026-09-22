@@ -142,30 +142,55 @@ public sealed class PictureInPictureController
     public PictureInPictureWindowState? Window { get; private set; }
 
     /// <summary>
-    /// §4.1 <c>requestPictureInPicture()</c>. <paramref name="hasTransientActivation"/> is
-    /// the page's activation state at the moment of the call; the caller consumes it when
-    /// this returns a change that used it.
+    /// §4.1 <c>requestPictureInPicture()</c> steps 1-5: everything that has to be decided
+    /// the moment the page calls, before any task runs. <paramref name="activationNeeded"/>
+    /// says whether an activation would be spent, so the caller can consume one.
     /// </summary>
-    public PictureInPictureChange Request(object element, in PictureInPictureCandidate candidate, bool hasTransientActivation)
+    public PictureInPictureRefusal CheckRequest(
+        object element,
+        in PictureInPictureCandidate candidate,
+        bool hasTransientActivation,
+        out bool activationNeeded)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        activationNeeded = false;
+
+        if (!Enabled)
+            return PictureInPictureRefusal.NotSupported;
+
+        // Steps 2-4: an element with nothing to show, or one whose author asked for no
+        // Picture-in-Picture, cannot be put in it.
+        if (!candidate.HasMetadata || !candidate.HasVideoTrack || candidate.DisablePictureInPicture)
+            return PictureInPictureRefusal.InvalidState;
+
+        // Step 5: a request needs an activation to spend, unless this document is already
+        // showing something - swapping between videos is not a new intrusion. The element
+        // being shown is the one at the moment of the call, so two requests made inside one
+        // gesture need two activations, and there is only ever one.
+        if (ReferenceEquals(Element, element) || Element is not null)
+            return PictureInPictureRefusal.None;
+
+        activationNeeded = true;
+        return hasTransientActivation ? PictureInPictureRefusal.None : PictureInPictureRefusal.NotAllowed;
+    }
+
+    /// <summary>
+    /// The rest of §4.1, which the specification runs in a task: the element becomes the
+    /// one being shown. Anything that was being shown must have been taken away first with
+    /// <see cref="Exit"/>, so a page watching <c>pictureInPictureElement</c> from the
+    /// displaced element's handler sees it unset.
+    /// </summary>
+    public PictureInPictureChange Enter(object element, in PictureInPictureCandidate candidate)
     {
         ArgumentNullException.ThrowIfNull(element);
 
         if (!Enabled)
             return new PictureInPictureChange(PictureInPictureRefusal.NotSupported);
-
-        // Steps 2-4: an element with nothing to show, or one whose author asked for no
-        // Picture-in-Picture, cannot be put in it.
         if (!candidate.HasMetadata || !candidate.HasVideoTrack || candidate.DisablePictureInPicture)
             return new PictureInPictureChange(PictureInPictureRefusal.InvalidState);
 
-        // Step 5: a request needs an activation to spend, unless this document already has
-        // something in Picture-in-Picture - swapping between videos is not a new intrusion.
-        bool alreadyShowing = Element is not null;
-        if (!hasTransientActivation && !alreadyShowing)
-            return new PictureInPictureChange(PictureInPictureRefusal.NotAllowed);
-
-        // Step 6: the element is already the one being shown. Nothing changes, and the page
-        // gets the same window object back, with whatever it hung on it.
+        // The element is already the one being shown: nothing changes, and the page gets
+        // the same window object back with whatever it hung on it.
         if (ReferenceEquals(Element, element))
             return new PictureInPictureChange(PictureInPictureRefusal.None, Window);
 
@@ -183,6 +208,18 @@ public sealed class PictureInPictureController
             "An element entered Picture-in-Picture.", [("size", $"{width}x{height}")]);
 
         return new PictureInPictureChange(PictureInPictureRefusal.None, window, element, left, leftWindow);
+    }
+
+    /// <summary>
+    /// Both halves at once: the check and, if it passes, the entry. This is the whole of
+    /// <c>requestPictureInPicture()</c> for a caller that has no task queue of its own.
+    /// </summary>
+    public PictureInPictureChange Request(object element, in PictureInPictureCandidate candidate, bool hasTransientActivation)
+    {
+        var refusal = CheckRequest(element, candidate, hasTransientActivation, out _);
+        return refusal == PictureInPictureRefusal.None
+            ? Enter(element, candidate)
+            : new PictureInPictureChange(refusal);
     }
 
     /// <summary>

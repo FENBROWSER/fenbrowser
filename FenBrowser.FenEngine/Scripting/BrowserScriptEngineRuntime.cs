@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -7519,6 +7520,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsMediaCapabilities();
         InstallFenJsWebCodecs();
         InstallFenJsEme();
+        InstallFenJsPictureInPicture();
         InstallFenJsDocumentAll();
         // Last: this only publishes members nothing else has claimed, so it has to
         // see the finished surface.
@@ -11605,7 +11607,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         ['play', 'pause', 'load', 'canPlayType', 'fastSeek', 'addTextTrack',
                          'setSinkId']],
                     HTMLVideoElement: [['width', 'height', 'videoWidth', 'videoHeight',
-                        'poster', 'playsInline'], ['getVideoPlaybackQuality', 'requestVideoFrameCallback', 'cancelVideoFrameCallback']],
+                        'poster', 'playsInline', 'disablePictureInPicture'],
+                        ['getVideoPlaybackQuality', 'requestVideoFrameCallback', 'cancelVideoFrameCallback',
+                         'requestPictureInPicture']],
                     HTMLAudioElement: [[], []],
                     HTMLTableElement: [['rows', 'tBodies', 'tHead', 'tFoot', 'caption'],
                         ['insertRow', 'deleteRow', 'createTHead', 'createTBody',
@@ -21943,6 +21947,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         {
             _transientUserActivationDepth++;
             _stickyUserActivation = true;
+            // HTML "activation notification": the transient activation outlives the click
+            // handler, so an API called from a promise the click started still has one.
+            _lastTransientActivation = Stopwatch.GetTimestamp();
+            _transientActivationConsumed = false;
         }
 
         try
@@ -21978,6 +21986,33 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     }
 
     private int _transientUserActivationDepth;
+    private long _lastTransientActivation;
+    private bool _transientActivationConsumed;
+
+    /// <summary>How long a click keeps granting transient activation (HTML's default).</summary>
+    private static readonly TimeSpan TransientActivationDuration = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// HTML "transient activation": a recent interaction that has not been spent yet. This
+    /// is what an API that may only run because a person asked for it looks at, and it is
+    /// not the same as sticky activation, which never goes away.
+    /// </summary>
+    internal bool HasTransientActivation =>
+        !_transientActivationConsumed &&
+        (_transientUserActivationDepth > 0 ||
+         (_lastTransientActivation != 0 && Stopwatch.GetElapsedTime(_lastTransientActivation) < TransientActivationDuration));
+
+    /// <summary>
+    /// HTML "consume user activation". False when there was none to spend, so the caller
+    /// can refuse; a second API call in the same gesture then gets nothing.
+    /// </summary>
+    internal bool ConsumeTransientActivation()
+    {
+        if (!HasTransientActivation)
+            return false;
+        _transientActivationConsumed = true;
+        return true;
+    }
 
     private bool TryNormalizePopupUrl(string rawUrl, out string normalizedUrl)
     {
