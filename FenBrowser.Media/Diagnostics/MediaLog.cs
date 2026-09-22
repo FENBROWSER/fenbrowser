@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 
 namespace FenBrowser.Media.Diagnostics;
 
@@ -52,6 +52,12 @@ public enum MediaEventKind
     Error,
     ProcessCrash,
     PlaybackSummary,
+
+    /// <summary>A Clear Key session added or released keys.</summary>
+    EmeKeysChanged,
+
+    /// <summary>A packet could not be decrypted because its key is not available yet.</summary>
+    EmeWaitingForKey,
 }
 
 /// <summary>
