@@ -58,6 +58,9 @@ public enum MediaEventKind
 
     /// <summary>A packet could not be decrypted because its key is not available yet.</summary>
     EmeWaitingForKey,
+
+    /// <summary>setSinkId moved playback to another audio output endpoint.</summary>
+    AudioSinkChanged,
 }
 
 /// <summary>

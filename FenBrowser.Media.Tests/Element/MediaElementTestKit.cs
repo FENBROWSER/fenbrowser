@@ -46,13 +46,14 @@ internal static class MediaElementTestKit
     }
 
     public static (FakeMediaElementHost Host, HtmlMediaElementController Element, RecordingMediaLogSink Log, ManualTime Time) Create(
-        Action<FakeMediaElementHost>? configure = null)
+        Action<FakeMediaElementHost>? configure = null,
+        FenBrowser.Media.Audio.IAudioOutputFactory? audioOutputs = null)
     {
         var host = new FakeMediaElementHost();
         configure?.Invoke(host);
         var log = new RecordingMediaLogSink();
         var time = new ManualTime();
-        var element = new HtmlMediaElementController(host, TypeSupport(), log, time);
+        var element = new HtmlMediaElementController(host, TypeSupport(), log, time, audioOutputs);
         return (host, element, log, time);
     }
 

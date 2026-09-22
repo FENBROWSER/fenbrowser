@@ -90,6 +90,11 @@ public sealed class MediaPlayer : IMediaResource
     private IMediaKeySource? _mediaKeys;
     private IMediaKeySource? _subscribedKeys;
     private bool _mediaKeysDirty;
+    private string _sinkId = string.Empty;
+    private string _requestedSink = string.Empty;
+    private string? _pendingSinkId;
+    private AudioStreamFormat _audioRequested;
+    private double _effectiveVolume = 1.0;
     private bool _potentiallyPlaying;
     private bool _outputRunning;
     private bool _videoVisible = true;
@@ -252,6 +257,7 @@ public sealed class MediaPlayer : IMediaResource
                 _renderer.Rate = _rate;
                 _renderer.Volume = effectiveVolume;
                 _renderer.Muted = effectiveVolume <= 0;
+                _effectiveVolume = effectiveVolume;
                 if (_stretcher is not null)
                     _stretcher.Rate = _rate;
 
@@ -309,6 +315,22 @@ public sealed class MediaPlayer : IMediaResource
     /// the media task is woken to try it again.
     /// </summary>
     private void OnMediaKeysChanged() => Post(() => _waitingForKeyReported = false);
+
+    /// <summary>
+    /// Audio Output Devices API: play through one named output endpoint from now on. The
+    /// element has already checked that the identifier names something - an unknown sink is
+    /// a NotFoundError there, not here - and the empty identifier means the system default.
+    /// </summary>
+    public void SetAudioSink(string deviceId)
+    {
+        // The choice is visible to the open path at once: a sink chosen before the media
+        // task has opened the device must be the one it opens, not a move straight after.
+        Volatile.Write(ref _requestedSink, deviceId ?? string.Empty);
+        Post(() => _pendingSinkId = deviceId ?? string.Empty);
+    }
+
+    /// <summary>The endpoint audio is going to now; empty while it follows the system default.</summary>
+    public string SinkId => Volatile.Read(ref _sinkId);
 
     public void UpdateVideoVisibility(bool visible)
     {
@@ -394,6 +416,9 @@ public sealed class MediaPlayer : IMediaResource
                     if (_decodeSource is { } keyed)
                         await keyed.SetMediaKeysAsync(_mediaKeys, cancellation).ConfigureAwait(false);
                 }
+
+                if (_pendingSinkId is not null)
+                    await ApplyAudioSinkAsync(cancellation).ConfigureAwait(false);
 
                 if (_visibilityDirty)
                 {
@@ -483,8 +508,12 @@ public sealed class MediaPlayer : IMediaResource
         if (info.AudioTrack is { } audioTrack)
         {
             // The device decides the format the renderer produces; the clock follows the device.
-            _output = _services.AudioOutputs.Create();
-            var format = await _output.OpenAsync(new AudioStreamFormat(audioTrack.Config.SampleRate, audioTrack.Config.Channels), _relay, cancellation).ConfigureAwait(false);
+            _audioRequested = new AudioStreamFormat(audioTrack.Config.SampleRate, audioTrack.Config.Channels);
+            // A sink the page chose before there was anything to play applies here.
+            string sink = Volatile.Read(ref _requestedSink);
+            Volatile.Write(ref _sinkId, sink);
+            _output = (sink.Length == 0 ? null : _services.AudioOutputs.Create(sink)) ?? _services.AudioOutputs.Create();
+            var format = await _output.OpenAsync(_audioRequested, _relay, cancellation).ConfigureAwait(false);
             var audioClock = new AudioMasterClock(_output.Position);
             _clock = audioClock;
             _renderer = new AudioRenderer(format, audioClock);
@@ -790,6 +819,79 @@ public sealed class MediaPlayer : IMediaResource
         _context.Log.Emit(_context.Player, MediaEventKind.Buffering, MediaLogLevel.Info,
             off ? "Hidden: video decoding stopped, audio continues." : "Shown: video decoding resumed.",
             ("video", off ? "background" : "foreground"));
+    }
+
+    /// <summary>
+    /// Moves playback to the endpoint the page asked for. The device decides the format and
+    /// owns the clock, so a new output means a new renderer and a new master clock: the
+    /// position is read first and the pipeline resyncs to it, the same path a seek takes,
+    /// so nothing is heard twice and nothing is skipped over.
+    /// </summary>
+    private async ValueTask ApplyAudioSinkAsync(CancellationToken cancellation)
+    {
+        string requested = _pendingSinkId ?? string.Empty;
+        _pendingSinkId = null;
+        if (string.Equals(requested, _sinkId, StringComparison.Ordinal))
+            return;
+
+        // Nothing is playing audio yet: this resource has none, or its output has not been
+        // opened. Remember the choice - opening honours it.
+        if (_output is null || _renderer is null)
+        {
+            Volatile.Write(ref _sinkId, requested);
+            return;
+        }
+
+        var position = _clock?.CurrentTime ?? MediaTime.Zero;
+        bool wasRunning = _outputRunning;
+        _output.Stop();
+        _outputRunning = false;
+
+        var previous = _output;
+        var output = (requested.Length == 0 ? null : _services.AudioOutputs.Create(requested)) ?? _services.AudioOutputs.Create();
+        AudioStreamFormat format;
+        try
+        {
+            format = await output.OpenAsync(_audioRequested, _relay, cancellation).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The endpoint went away between the element's check and here. Keep playing on
+            // the one that still works rather than losing the audio altogether.
+            await output.DisposeAsync().ConfigureAwait(false);
+            _context.Log.Emit(_context.Player, MediaEventKind.AudioSinkChanged, MediaLogLevel.Warn,
+                $"The audio endpoint could not be opened: {ex.Message}", [("sink", requested)]);
+            UpdateOutputState();
+            return;
+        }
+
+        await previous.DisposeAsync().ConfigureAwait(false);
+
+        var clock = new AudioMasterClock(output.Position);
+        var renderer = new AudioRenderer(format, clock)
+        {
+            PitchPreserved = _preservesPitch && Math.Abs(_rate - 1.0) > 1e-9,
+            Rate = _rate,
+            Volume = _effectiveVolume,
+            Muted = _effectiveVolume <= 0,
+        };
+
+        var oldRenderer = _renderer;
+        _output = output;
+        _clock = clock;
+        _renderer = renderer;
+        _relay.Target = renderer;
+        oldRenderer.Dispose();
+        Volatile.Write(ref _sinkId, requested);
+
+        // Whatever the old renderer had queued went with it: decode it again from where the
+        // listener was, and start the new device if the old one was playing.
+        _pendingResync = position;
+        UpdateOutputState();
+
+        _context.Log.Emit(_context.Player, MediaEventKind.AudioSinkChanged, MediaLogLevel.Info,
+            requested.Length == 0 ? "Audio follows the system default output." : "Audio moved to another output endpoint.",
+            ("sink", requested), ("position", position.ToString()), ("playing", wasRunning ? "1" : "0"));
     }
 
     private void UpdateOutputState()

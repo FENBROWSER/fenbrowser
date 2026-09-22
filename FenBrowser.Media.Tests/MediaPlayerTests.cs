@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using FenBrowser.Media.Audio;
 using FenBrowser.Media.Clock;
 using FenBrowser.Media.Element;
@@ -284,5 +284,106 @@ public class MediaPlayerTests
     {
         public int SampleRate => sampleRate;
         public long FramesPlayed => played;
+    }
+
+    /// <summary>
+    /// A backend with two named endpoints, each one a null sink, recording which endpoint
+    /// every stream it hands out was opened on.
+    /// </summary>
+    private sealed class TwoDeviceOutputs : IAudioOutputFactory
+    {
+        public List<string> Opened { get; } = [];
+
+        public IReadOnlyList<AudioOutputDevice> Devices { get; } =
+        [
+            new("speakers", "Speakers", true),
+            new("headphones", "Headphones", false),
+        ];
+
+        public IAudioOutput Create()
+        {
+            Opened.Add(string.Empty);
+            return new NullAudioOutput(realtime: true);
+        }
+
+        public IAudioOutput? Create(string deviceId)
+        {
+            if (deviceId.Length == 0)
+                return Create();
+            if (!Devices.Any(d => d.DeviceId == deviceId))
+                return null;
+            Opened.Add(deviceId);
+            return new NullAudioOutput(realtime: true);
+        }
+    }
+
+    /// <summary>
+    /// setSinkId while the audio is playing: the device owns the clock, so moving to
+    /// another one has to keep the position rather than start the resource again.
+    /// </summary>
+    [Fact]
+    public async Task MovingAudioToAnotherEndpointKeepsThePositionAndKeepsPlaying()
+    {
+        var client = new RecordingClient();
+        var outputs = new TwoDeviceOutputs();
+        var (demuxers, decoders) = Registries();
+        var services = new MediaPlayerServices(demuxers, decoders, outputs, TimeProvider.System);
+        var player = new MediaPlayer(
+            new MemoryByteSource(MediaFixtures.Read("sine_pcm16.wav")), null, client, action => action(), services,
+            MediaPipelineContext.ForTests());
+
+        player.Start();
+        try
+        {
+            await client.WaitForAsync(() => client.ReadyState >= MediaReadyState.HaveCurrentData);
+            player.UpdatePlayback(potentiallyPlaying: true, playbackRate: 1.0, preservesPitch: true, effectiveVolume: 1.0);
+            await client.WaitForAsync(() => client.Position > MediaTime.FromSeconds(0.1));
+            Assert.Equal([string.Empty], outputs.Opened);
+
+            var before = client.Position;
+            player.SetAudioSink("headphones");
+            await client.WaitForAsync(() => player.SinkId == "headphones");
+
+            // A stream was opened on the endpoint the page named, and the clock did not
+            // fall back to the start of the resource when the old device went away.
+            Assert.Equal([string.Empty, "headphones"], outputs.Opened);
+            await client.WaitForAsync(() => client.Position >= before);
+            Assert.Null(client.Failure);
+
+            // Playback goes on from there and still reaches the end of the resource.
+            await client.WaitForAsync(() => client.Ended, timeoutMs: 15000);
+        }
+        finally
+        {
+            player.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A sink chosen before anything was playing is what the first stream opens on, rather
+    /// than the default followed by an immediate move.
+    /// </summary>
+    [Fact]
+    public async Task AnEndpointChosenBeforePlaybackIsTheOneThatOpens()
+    {
+        var client = new RecordingClient();
+        var outputs = new TwoDeviceOutputs();
+        var (demuxers, decoders) = Registries();
+        var services = new MediaPlayerServices(demuxers, decoders, outputs, TimeProvider.System);
+        var player = new MediaPlayer(
+            new MemoryByteSource(MediaFixtures.Read("sine_pcm16.wav")), null, client, action => action(), services,
+            MediaPipelineContext.ForTests());
+
+        player.SetAudioSink("headphones");
+        player.Start();
+        try
+        {
+            await client.WaitForAsync(() => client.ReadyState >= MediaReadyState.HaveCurrentData);
+            Assert.Equal(["headphones"], outputs.Opened);
+        }
+        finally
+        {
+            player.Dispose();
+        }
     }
 }

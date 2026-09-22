@@ -48,6 +48,11 @@ internal sealed class FakeResource : IMediaResource
 
     public void UpdateVideoVisibility(bool visible) => VideoVisible = visible;
 
+    /// <summary>Every sink this resource was told to play through, in order.</summary>
+    public List<string> Sinks { get; } = [];
+
+    public void SetAudioSink(string deviceId) => Sinks.Add(deviceId);
+
     public void Dispose() => Disposed = true;
 
     /// <summary>Metadata for a 10 s, 320×240 resource that can seek anywhere.</summary>

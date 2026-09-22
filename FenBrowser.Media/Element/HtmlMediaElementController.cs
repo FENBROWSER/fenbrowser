@@ -36,6 +36,7 @@ public sealed class HtmlMediaElementController
     private readonly MediaTypeSupport _typeSupport;
     private readonly IMediaLogSink _log;
     private readonly TimeProvider _time;
+    private readonly Audio.IAudioOutputFactory? _audioOutputs;
     private readonly List<ElementTask> _queuedTasks = [];
     private List<object> _pendingPlayPromises = [];
 
@@ -80,7 +81,8 @@ public sealed class HtmlMediaElementController
         IMediaElementHost host,
         MediaTypeSupport typeSupport,
         IMediaLogSink? log = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Audio.IAudioOutputFactory? audioOutputs = null)
     {
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(typeSupport);
@@ -88,6 +90,7 @@ public sealed class HtmlMediaElementController
         _typeSupport = typeSupport;
         _log = log ?? NullMediaLogSink.Instance;
         _time = timeProvider ?? TimeProvider.System;
+        _audioOutputs = audioOutputs;
         Player = PlayerId.Next();
         _log.Emit(Player, MediaEventKind.PlayerCreated, MediaLogLevel.Debug,
             host.IsVideo ? "video element created" : "audio element created");
@@ -829,6 +832,9 @@ public sealed class HtmlMediaElementController
 
         client.Resource = resource;
         _resource = resource;
+        // A sink chosen before this resource existed still applies to it.
+        if (SinkId.Length > 0)
+            resource.SetAudioSink(SinkId);
         // EME §7.3: a MediaKeys set before the resource existed still applies to it.
         if (_mediaKeys is not null)
             resource.SetMediaKeys(_mediaKeys);
@@ -1478,6 +1484,51 @@ public sealed class HtmlMediaElementController
             SetReadyState(MediaReadyState.HaveCurrentData);
 
         _host.FireEvent("waitingforkey");
+    }
+
+    /// <summary>
+    /// Audio Output Devices API: the endpoint this element's audio goes to. Empty means the
+    /// system default, which is where audio goes until a page says otherwise.
+    /// </summary>
+    public string SinkId { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// The sink half of <c>setSinkId()</c>, run where the specification says "in parallel":
+    /// the identifier is checked against the endpoints the platform actually offers, and
+    /// only then does the attribute change and the audio move. The realm turns the answer
+    /// into the promise's fate, so a page never sees <c>sinkId</c> change before its promise
+    /// resolves.
+    /// </summary>
+    public SinkIdOutcome TrySetSinkId(string sinkId)
+    {
+        sinkId ??= string.Empty;
+        if (string.Equals(sinkId, SinkId, StringComparison.Ordinal))
+            return SinkIdOutcome.Unchanged;
+
+        // The empty identifier is always valid: it is the system default, whatever that is
+        // at the moment audio is played.
+        if (sinkId.Length > 0 && !HasOutputEndpoint(sinkId))
+            return SinkIdOutcome.NotFound;
+
+        SinkId = sinkId;
+        _resource?.SetAudioSink(sinkId);
+        _log.Emit(Player, MediaEventKind.AudioSinkChanged, MediaLogLevel.Info,
+            sinkId.Length == 0 ? "The element follows the default audio output." : "The element chose an audio output endpoint.",
+            [("sink", sinkId)]);
+        return SinkIdOutcome.Applied;
+    }
+
+    private bool HasOutputEndpoint(string deviceId)
+    {
+        if (_audioOutputs is null)
+            return false;
+        foreach (var device in _audioOutputs.Devices)
+        {
+            if (string.Equals(device.DeviceId, deviceId, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>

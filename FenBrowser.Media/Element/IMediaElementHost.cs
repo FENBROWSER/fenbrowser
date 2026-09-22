@@ -152,6 +152,15 @@ public interface IMediaResource : IDisposable
     {
     }
 
+    /// <summary>
+    /// Audio Output Devices API: send this resource's audio to one named output endpoint,
+    /// or to the system default for the empty identifier. A resource with no audio, and one
+    /// that cannot choose an endpoint, ignores it.
+    /// </summary>
+    void SetAudioSink(string deviceId)
+    {
+    }
+
     /// <summary>The latest picture for the compositor, or null for a resource without video.</summary>
     Video.VideoPresenter? Presenter => null;
 
@@ -227,4 +236,20 @@ public interface IMediaResourceClient
     void WaitingForKey()
     {
     }
+}
+
+/// <summary>
+/// What became of a <c>setSinkId()</c> call: the page's promise resolves for the first two
+/// and rejects with a <c>NotFoundError</c> for the third.
+/// </summary>
+public enum SinkIdOutcome
+{
+    /// <summary>The element now plays through the endpoint that was named.</summary>
+    Applied,
+
+    /// <summary>It was already playing through that endpoint.</summary>
+    Unchanged,
+
+    /// <summary>No output endpoint has that identifier.</summary>
+    NotFound,
 }
