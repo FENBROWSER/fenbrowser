@@ -43,6 +43,8 @@ public sealed class Fenplay
                                                   null sink) to its end and print metrics
           fenplay bench <file>                    decode every picture as fast as possible and
                                                   report decode and colour-conversion rates
+          fenplay devices                         list the audio output endpoints a page can
+                                                  name with setSinkId
           fenplay limits                          print the default media limits
           fenplay help                            show this text
 
@@ -65,6 +67,8 @@ public sealed class Fenplay
                 return await PlayAsync(args.Skip(1).ToList(), cancellationToken).ConfigureAwait(false);
             case "bench":
                 return await BenchAsync(args.Skip(1).ToList(), cancellationToken).ConfigureAwait(false);
+            case "devices":
+                return await DevicesAsync().ConfigureAwait(false);
             case "limits":
                 await _out.WriteLineAsync(JsonSerializer.Serialize(MediaLimits.Default, s_json)).ConfigureAwait(false);
                 return ExitOk;
@@ -72,6 +76,21 @@ public sealed class Fenplay
                 await _err.WriteLineAsync($"fenplay: unknown command '{args[0]}'. Try 'fenplay help'.").ConfigureAwait(false);
                 return ExitUsage;
         }
+    }
+
+    /// <summary>The output endpoints the platform backend offers, the default one first.</summary>
+    private async Task<int> DevicesAsync()
+    {
+        var devices = Audio.Windows.PlatformAudioOutputFactory.Instance.Devices;
+        if (devices.Count == 0)
+        {
+            await _out.WriteLineAsync("no audio output endpoints").ConfigureAwait(false);
+            return ExitOk;
+        }
+
+        foreach (var device in devices)
+            await _out.WriteLineAsync($"{(device.IsDefault ? "*" : " ")} {device.Label}  [{device.DeviceId}]").ConfigureAwait(false);
+        return ExitOk;
     }
 
     private async Task<int> ProbeAsync(List<string> args, CancellationToken cancellationToken)

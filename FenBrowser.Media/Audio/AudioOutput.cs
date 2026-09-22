@@ -45,8 +45,30 @@ public interface IAudioOutput : IAsyncDisposable
     void Stop();
 }
 
+/// <summary>
+/// One audio output endpoint the system offers. <c>DeviceId</c> is what a page passes to
+/// <c>setSinkId</c>: the platform's own identifier for the endpoint, stable across runs on
+/// the same machine. <c>Label</c> is the name a person would recognise, and is never handed
+/// to a page that has not been given permission to see it.
+/// </summary>
+public readonly record struct AudioOutputDevice(string DeviceId, string Label, bool IsDefault);
+
 /// <summary>Creates an output stream per player; the host supplies the platform backend.</summary>
 public interface IAudioOutputFactory
 {
+    /// <summary>A stream on whatever the system calls the default output right now.</summary>
     IAudioOutput Create();
+
+    /// <summary>
+    /// The output endpoints this backend can open. Empty when the backend has no notion of
+    /// separate devices (the null sink) or cannot ask the system for them.
+    /// </summary>
+    IReadOnlyList<AudioOutputDevice> Devices => [];
+
+    /// <summary>
+    /// A stream on one named endpoint, or null when nothing has that identifier - which is
+    /// what makes <c>setSinkId</c> reject with <c>NotFoundError</c>. The empty identifier
+    /// means the default output and never answers null.
+    /// </summary>
+    IAudioOutput? Create(string deviceId) => string.IsNullOrEmpty(deviceId) ? Create() : null;
 }

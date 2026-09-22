@@ -14,6 +14,7 @@ internal static class WasapiInterop
     public const int FlowRender = 0;         // EDataFlow::eRender
     public const int RoleConsole = 0;        // ERole::eConsole
     public const int ClsctxAll = 0x17;
+    public const int StgmRead = 0;
     public const int ShareModeShared = 0;
     public const int StreamFlagsEventCallback = 0x00040000;
     public const int StreamFlagsAutoConvertPcm = unchecked((int)0x80000000);
@@ -56,7 +57,7 @@ internal static class WasapiInterop
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IMMDeviceEnumerator
     {
-        int EnumAudioEndpoints(int dataFlow, int stateMask, out IntPtr devices);
+        int EnumAudioEndpoints(int dataFlow, int stateMask, out IMMDeviceCollection devices);
         int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice device);
         int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id, out IMMDevice device);
         int RegisterEndpointNotificationCallback(IntPtr client);
@@ -69,10 +70,65 @@ internal static class WasapiInterop
     public interface IMMDevice
     {
         int Activate(ref Guid iid, int clsCtx, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object activated);
-        int OpenPropertyStore(int access, out IntPtr properties);
+        int OpenPropertyStore(int access, out IPropertyStore properties);
         int GetId(out IntPtr id);
         int GetState(out int state);
     }
+
+    [ComImport]
+    [Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMMDeviceCollection
+    {
+        int GetCount(out uint count);
+        int Item(uint index, out IMMDevice device);
+    }
+
+    /// <summary>
+    /// The one property read off an endpoint: its friendly name. A PROPVARIANT comes back,
+    /// which for this key holds a VT_LPWSTR the caller frees.
+    /// </summary>
+    [ComImport]
+    [Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IPropertyStore
+    {
+        int GetCount(out uint count);
+        int GetAt(uint index, out PropertyKey key);
+        int GetValue(ref PropertyKey key, IntPtr value);
+        int SetValue(ref PropertyKey key, IntPtr value);
+        int Commit();
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PropertyKey
+    {
+        public Guid FormatId;
+        public uint PropertyId;
+    }
+
+    /// <summary>PKEY_Device_FriendlyName (functiondiscoverykeys_devpkey.h).</summary>
+    public static readonly PropertyKey PkeyDeviceFriendlyName = new()
+    {
+        FormatId = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"),
+        PropertyId = 14,
+    };
+
+    /// <summary>The head of a PROPVARIANT: the type tag, then the pointer for VT_LPWSTR.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PropVariantHead
+    {
+        public ushort Type;
+        public ushort Reserved1;
+        public ushort Reserved2;
+        public ushort Reserved3;
+        public IntPtr Value;
+    }
+
+    public const ushort VtLpwstr = 31;
+
+    [DllImport("ole32.dll")]
+    public static extern int PropVariantClear(IntPtr variant);
 
     [ComImport]
     [Guid("1CB9AD4C-DBFA-4C32-B178-C2F568A703B2")]

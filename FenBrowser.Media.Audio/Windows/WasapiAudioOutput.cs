@@ -25,6 +25,7 @@ public sealed class WasapiAudioOutput : IAudioOutput, IAudioPlaybackPosition
     private const int FallbackPeriodMs = 10;
 
     private readonly object _gate = new();
+    private readonly string? _deviceId;
     private IAudioClient? _client;
     private IAudioRenderClient? _render;
     private IAudioClock? _clock;
@@ -45,6 +46,17 @@ public sealed class WasapiAudioOutput : IAudioOutput, IAudioPlaybackPosition
     private volatile bool _disposed;
     private volatile bool _fallback;
     private string? _failure;
+
+    /// <summary>Opens the system default output.</summary>
+    public WasapiAudioOutput()
+    {
+    }
+
+    /// <summary>
+    /// Opens one named endpoint. An empty or null identifier means the default output, so
+    /// a sink the page set follows the system default the way it does before it is set.
+    /// </summary>
+    public WasapiAudioOutput(string? deviceId) => _deviceId = string.IsNullOrEmpty(deviceId) ? null : deviceId;
 
     public string Name => "wasapi";
 
@@ -86,7 +98,11 @@ public sealed class WasapiAudioOutput : IAudioOutput, IAudioPlaybackPosition
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
-        Check(enumerator.GetDefaultAudioEndpoint(FlowRender, RoleConsole, out var device), "GetDefaultAudioEndpoint");
+        IMMDevice device;
+        if (_deviceId is { } id)
+            Check(enumerator.GetDevice(id, out device), "IMMDeviceEnumerator.GetDevice");
+        else
+            Check(enumerator.GetDefaultAudioEndpoint(FlowRender, RoleConsole, out device), "GetDefaultAudioEndpoint");
         var iid = IidIAudioClient;
         Check(device.Activate(ref iid, ClsctxAll, IntPtr.Zero, out object activated), "IMMDevice.Activate");
         var client = (IAudioClient)activated;
@@ -336,8 +352,127 @@ public sealed class PlatformAudioOutputFactory : IAudioOutputFactory
     public IAudioOutput Create()
     {
         if (OperatingSystem.IsWindows())
-            return new FallbackOnOpenFailure(this);
+            return new FallbackOnOpenFailure(this, null);
         return new NullAudioOutput();
+    }
+
+    /// <summary>
+    /// Every active render endpoint, the system default first. Asking the system is a COM
+    /// round trip, so the answer is cached briefly: a page may call this once per element
+    /// and the list does not change from one call to the next.
+    /// </summary>
+    public IReadOnlyList<AudioOutputDevice> Devices
+    {
+        get
+        {
+            if (!OperatingSystem.IsWindows())
+                return [];
+            lock (_devicesGate)
+            {
+                var now = Stopwatch.GetTimestamp();
+                if (_devices is { } cached && now - _devicesAt < Stopwatch.Frequency)
+                    return cached;
+                var devices = EnumerateDevices();
+                _devices = devices;
+                _devicesAt = now;
+                return devices;
+            }
+        }
+    }
+
+    public IAudioOutput? Create(string deviceId)
+    {
+        if (string.IsNullOrEmpty(deviceId))
+            return Create();
+        if (!OperatingSystem.IsWindows())
+            return null;
+        // A sink the system does not offer is not something to fall back from: the caller
+        // has to be able to tell a missing device from a device that would not open.
+        foreach (var device in Devices)
+        {
+            if (string.Equals(device.DeviceId, deviceId, StringComparison.Ordinal))
+                return new FallbackOnOpenFailure(this, deviceId);
+        }
+
+        return null;
+    }
+
+    private readonly object _devicesGate = new();
+    private IReadOnlyList<AudioOutputDevice>? _devices;
+    private long _devicesAt;
+
+    [SupportedOSPlatform("windows")]
+    private static IReadOnlyList<AudioOutputDevice> EnumerateDevices()
+    {
+        try
+        {
+            var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+            string? defaultId = null;
+            if (enumerator.GetDefaultAudioEndpoint(FlowRender, RoleConsole, out var defaultDevice) >= 0)
+                defaultId = ReadDeviceId(defaultDevice);
+
+            if (enumerator.EnumAudioEndpoints(FlowRender, DeviceStateActive, out var collection) < 0)
+                return [];
+            if (collection.GetCount(out uint count) < 0)
+                return [];
+
+            var devices = new List<AudioOutputDevice>((int)count);
+            for (uint i = 0; i < count; i++)
+            {
+                if (collection.Item(i, out var device) < 0)
+                    continue;
+                if (ReadDeviceId(device) is not { } id)
+                    continue;
+                bool isDefault = defaultId is not null && string.Equals(id, defaultId, StringComparison.Ordinal);
+                var entry = new AudioOutputDevice(id, ReadFriendlyName(device) ?? id, isDefault);
+                if (isDefault)
+                    devices.Insert(0, entry);
+                else
+                    devices.Add(entry);
+            }
+
+            return devices;
+        }
+        catch (Exception ex) when (ex is COMException or InvalidCastException or PlatformNotSupportedException)
+        {
+            return [];
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string? ReadDeviceId(IMMDevice device)
+    {
+        if (device.GetId(out IntPtr id) < 0 || id == IntPtr.Zero)
+            return null;
+        try
+        {
+            return Marshal.PtrToStringUni(id);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(id);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string? ReadFriendlyName(IMMDevice device)
+    {
+        if (device.OpenPropertyStore(StgmRead, out var store) < 0)
+            return null;
+        IntPtr variant = Marshal.AllocCoTaskMem(Marshal.SizeOf<PropVariantHead>() + 8);
+        try
+        {
+            var key = PkeyDeviceFriendlyName;
+            if (store.GetValue(ref key, variant) < 0)
+                return null;
+            var head = Marshal.PtrToStructure<PropVariantHead>(variant);
+            return head.Type == VtLpwstr && head.Value != IntPtr.Zero ? Marshal.PtrToStringUni(head.Value) : null;
+        }
+        finally
+        {
+            _ = PropVariantClear(variant);
+            Marshal.FreeCoTaskMem(variant);
+        }
     }
 
     /// <summary>
@@ -346,9 +481,9 @@ public sealed class PlatformAudioOutputFactory : IAudioOutputFactory
     /// over so playback and the clock still run (ADR-0003 rollback).
     /// </summary>
     [SupportedOSPlatform("windows")]
-    private sealed class FallbackOnOpenFailure(PlatformAudioOutputFactory owner) : IAudioOutput
+    private sealed class FallbackOnOpenFailure(PlatformAudioOutputFactory owner, string? deviceId) : IAudioOutput
     {
-        private IAudioOutput _inner = new WasapiAudioOutput();
+        private IAudioOutput _inner = new WasapiAudioOutput(deviceId);
 
         public string Name => _inner.Name;
         public IAudioPlaybackPosition Position => _inner.Position;
