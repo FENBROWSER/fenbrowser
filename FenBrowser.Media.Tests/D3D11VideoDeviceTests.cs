@@ -10,7 +10,9 @@ namespace FenBrowser.Media.Tests;
 /// textures come back either converted to BGRA by the video processor or as the NV12 the
 /// decoder wrote. A machine without a GPU (CI) skips; the decoders then register nothing.
 /// </summary>
+/// <remarks>The "gpu" collection serialises every test that flips the process-wide conversion switch.</remarks>
 [SupportedOSPlatform("windows")]
+[Collection("gpu")]
 public class D3D11VideoDeviceTests
 {
     private static D3D11VideoDevice? Device()

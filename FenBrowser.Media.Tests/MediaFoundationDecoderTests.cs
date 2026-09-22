@@ -2,7 +2,9 @@ using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Codecs.MediaFoundation;
 using FenBrowser.Media.Containers.Mp4;
 using FenBrowser.Media.Diagnostics;
+using FenBrowser.Media.Gpu.Windows;
 using FenBrowser.Media.Pipeline;
+using FenBrowser.Media.Video;
 
 namespace FenBrowser.Media.Tests;
 
@@ -12,6 +14,8 @@ namespace FenBrowser.Media.Tests;
 /// compared to ffmpeg's decode by PSNR and structure rather than by digest; AAC is checked
 /// as the 440 Hz sine the fixture encodes.
 /// </summary>
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
+[Collection("gpu")]
 public class MediaFoundationDecoderTests
 {
     private sealed class CollectVideo : IDecodeOutput<VideoFrame>
@@ -43,13 +47,33 @@ public class MediaFoundationDecoderTests
         Assert.Equal(DecoderSupport.Supported, decoders.GetSupport(new CodecConfig(MediaTrackKind.Video, MediaCodec.H264, "avc1.64000A", Width: 64, Height: 48)));
     }
 
+    /// <summary>
+    /// With a GPU the transform decodes there (M7) and the pictures arrive as BGRA from the
+    /// video processor, or as NV12 read back when GPU conversion is off; without one they
+    /// are NV12 from system memory. All three are compared to ffmpeg's decode.
+    /// </summary>
     [Theory]
-    [InlineData("pattern_h264_aac.mp4")]
-    [InlineData("pattern_h264_fragmented.mp4")]
-    public async Task H264_DecodesToNv12WithinRoundingOfTheReference(string fixture)
+    [InlineData("pattern_h264_aac.mp4", true)]
+    [InlineData("pattern_h264_fragmented.mp4", true)]
+    [InlineData("pattern_h264_aac.mp4", false)]
+    public async Task H264_DecodesWithinRoundingOfTheReference(string fixture, bool gpuConversion)
     {
         if (!OperatingSystem.IsWindows())
             return;
+        bool previousConversion = D3D11VideoDevice.GpuConversionEnabled;
+        D3D11VideoDevice.GpuConversionEnabled = gpuConversion;
+        try
+        {
+            await DecodeAndCompare(fixture, gpuConversion && MfGpuDevice.IsAvailable);
+        }
+        finally
+        {
+            D3D11VideoDevice.GpuConversionEnabled = previousConversion;
+        }
+    }
+
+    private static async Task DecodeAndCompare(string fixture, bool expectBgra)
+    {
         var context = MediaPipelineContext.ForTests();
         await using var demuxer = Mp4DemuxerFactory.Instance.Create(new MemoryByteSource(MediaFixtures.Read(fixture)), context);
         var info = await demuxer.InitializeAsync(CancellationToken.None);
@@ -82,13 +106,39 @@ public class MediaFoundationDecoderTests
         for (int i = 0; i < output.Frames.Count; i++)
         {
             var frame = output.Frames[i];
-            Assert.Equal(VideoPixelFormat.Nv12, frame.Format);
+            Assert.Equal(expectBgra ? VideoPixelFormat.Bgra32 : VideoPixelFormat.Nv12, frame.Format);
             Assert.Equal(64, frame.Width);
             Assert.Equal(48, frame.Height);
             Assert.True(frame.Timestamp > previous, "pictures come out in presentation order");
             previous = frame.Timestamp;
 
             int at = i * frameBytes;
+            if (expectBgra)
+            {
+                // The reference converted the CPU way. The GPU interpolates chroma, and on a
+                // 64-pixel-wide pattern of 8-pixel bars every chroma sample sits on an edge,
+                // so only the luma of the two conversions is compared (clipping of the saturated bars still lets some chroma through): it must agree closely,
+                // which a wrong slice, geometry or range would not.
+                using var referenceFrame = VideoFrame.Allocate(MediaLimits.Default, VideoPixelFormat.Nv12, 64, 48, MediaTime.Zero, MediaTime.Zero);
+                reference.AsSpan(at, 64 * 48).CopyTo(referenceFrame.GetPlane(0));
+                for (int y = 0; y < 24; y++)
+                    reference.AsSpan(at + 64 * 48 + y * 64, 64).CopyTo(referenceFrame.GetPlane(1).Slice(y * referenceFrame.GetStride(1), 64));
+                var expected = new byte[64 * 4 * 48];
+                PixelConverter.ToBgra(referenceFrame, expected, 64 * 4);
+                var actual = frame.GetPlane(0);
+                for (int y = 0; y < 48; y++)
+                {
+                    for (int x = 0; x < 64; x++)
+                    {
+                        double d = Luma(actual, y * frame.GetStride(0) + x * 4) - Luma(expected, y * 64 * 4 + x * 4);
+                        squaredError += d * d;
+                        samples++;
+                    }
+                }
+
+                continue;
+            }
+
             for (int plane = 0; plane < frame.PlaneCount; plane++)
             {
                 int rowBytes = frame.GetPlaneWidth(plane) * (plane == 1 ? 2 : 1);
@@ -108,7 +158,7 @@ public class MediaFoundationDecoderTests
         }
 
         double psnr = squaredError == 0 ? double.PositiveInfinity : 10 * Math.Log10(255.0 * 255.0 * samples / squaredError);
-        Assert.True(psnr >= 45, $"PSNR against ffmpeg's decode is {psnr:F1} dB");
+        Assert.True(psnr >= (expectBgra ? 30 : 45), $"PSNR against ffmpeg's decode is {psnr:F1} dB");
 
         // The edit list put the first picture at 0 in the progressive file; the fragmented one starts at 0.2 s.
         Assert.Equal(fixture == "pattern_h264_fragmented.mp4" ? MediaTime.FromSeconds(0.2) : MediaTime.Zero, output.Frames[0].Timestamp);
@@ -116,6 +166,9 @@ public class MediaFoundationDecoderTests
         foreach (var frame in output.Frames)
             frame.Dispose();
     }
+
+    /// <summary>BT.601 luma of a BGRA pixel.</summary>
+    private static double Luma(ReadOnlySpan<byte> bgra, int at) => 0.114 * bgra[at] + 0.587 * bgra[at + 1] + 0.299 * bgra[at + 2];
 
     [Fact]
     public async Task Aac_DecodesTheSine()

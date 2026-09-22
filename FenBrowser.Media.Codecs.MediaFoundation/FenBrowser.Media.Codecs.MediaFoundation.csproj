@@ -14,6 +14,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Media\FenBrowser.Media.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Gpu\FenBrowser.Media.Gpu.csproj" />
   </ItemGroup>
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">

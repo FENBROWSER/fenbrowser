@@ -111,7 +111,8 @@
       "fenbrowser.media.codecs.mediafoundation": {
         "type": "Project",
         "dependencies": {
-          "FenBrowser.Media": "[1.0.0, )"
+          "FenBrowser.Media": "[1.0.0, )",
+          "FenBrowser.Media.Gpu": "[1.0.0, )"
         }
       },
       "fenbrowser.media.gpu": {
@@ -126,7 +127,8 @@
           "FenBrowser.Media": "[1.0.0, )",
           "FenBrowser.Media.Audio": "[1.0.0, )",
           "FenBrowser.Media.Codecs.Ffmpeg": "[1.0.0, )",
-          "FenBrowser.Media.Codecs.MediaFoundation": "[1.0.0, )"
+          "FenBrowser.Media.Codecs.MediaFoundation": "[1.0.0, )",
+          "FenBrowser.Media.Gpu": "[1.0.0, )"
         }
       }
     }

@@ -81,6 +81,53 @@ internal sealed class MfTransform : IDisposable
 
     public IMFTransform Transform => _transform;
 
+    /// <summary>
+    /// Hands the transform the process's Direct3D 11 device so it decodes on the GPU and
+    /// returns DXGI-backed samples. False, with the reason, when the transform is not
+    /// D3D11-aware or refuses the manager; the caller then decodes in software.
+    /// </summary>
+    public bool TrySetD3DManager(IMFDXGIDeviceManager manager, out string reason)
+    {
+        ArgumentNullException.ThrowIfNull(manager);
+        if (_transform.GetAttributes(out var attributes) < 0 || attributes is null)
+        {
+            reason = "the transform has no attributes";
+            return false;
+        }
+
+        try
+        {
+            var key = MfSaD3D11Aware;
+            if (attributes.GetUINT32(ref key, out uint aware) < 0 || aware == 0)
+            {
+                reason = "the transform is not D3D11-aware";
+                return false;
+            }
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(attributes);
+        }
+
+        IntPtr unknown = Marshal.GetIUnknownForObject(manager);
+        try
+        {
+            int hr = _transform.ProcessMessage(MftMessageSetD3DManager, unchecked((UIntPtr)(ulong)(long)unknown));
+            if (hr < 0)
+            {
+                reason = $"MFT_MESSAGE_SET_D3D_MANAGER failed: {Describe(hr)}";
+                return false;
+            }
+        }
+        finally
+        {
+            Marshal.Release(unknown);
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
     public void SetInputType(IMFMediaType type)
     {
         Check(_transform.SetInputType(0, type, 0), "IMFTransform::SetInputType");

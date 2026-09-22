@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Diagnostics;
+using FenBrowser.Media.Gpu.Windows;
 using FenBrowser.Media.Pipeline;
 using static FenBrowser.Media.Codecs.MediaFoundation.MfInterop;
 
@@ -52,9 +53,11 @@ public static class MediaFoundationDecoders
             registered++;
         }
 
+        bool gpu = MfGpuDevice.IsAvailable;
         log.Emit(PlayerId.None, MediaEventKind.DecoderChosen, MediaLogLevel.Info,
-            $"Media Foundation ready: {registered} OS decoders.",
-            ("decoder", "mediafoundation"), ("count", registered.ToString(CultureInfo.InvariantCulture)));
+            gpu ? $"Media Foundation ready: {registered} OS decoders, video on the GPU."
+                : $"Media Foundation ready: {registered} OS decoders, video in software ({MfGpuDevice.Reason}).",
+            ("decoder", "mediafoundation"), ("count", registered.ToString(CultureInfo.InvariantCulture)), ("hardware", gpu ? "true" : "false"));
         return registered > 0;
     }
 
@@ -91,7 +94,8 @@ public sealed class MfVideoDecoderFactory(MediaCodec codec, Guid clsid, string n
 {
     public string Name { get; } = "mf-" + name;
 
-    public bool IsHardwareAccelerated => false;
+    /// <summary>True when the process has a Direct3D 11 device the transform decodes on (M7); it still falls back to software per stream.</summary>
+    public bool IsHardwareAccelerated => MfGpuDevice.IsAvailable;
 
     public int Priority => 5;
 
@@ -390,6 +394,8 @@ public sealed class MfVideoDecoder : IMediaDecoder<VideoFrame>
     private int _displayHeight;
     private int _defaultStride;
     private bool _pendingParameterSets = true;
+    private D3D11VideoDevice? _device;
+    private bool _warnedUnconverted;
 
     public MfVideoDecoder(MediaCodec codec, Guid clsid, string name, MediaPipelineContext context)
     {
@@ -442,6 +448,22 @@ public sealed class MfVideoDecoder : IMediaDecoder<VideoFrame>
 
             _ = transform.NegotiateOutputType([MfVideoFormatNv12]);
             ReadOutputGeometry(transform.OutputType!, config);
+            // The device manager goes in once the types are set (MFT_MESSAGE_SET_D3D_MANAGER);
+            // a transform that declines it decodes in software, as every one did before M7.
+            _device = null;
+            if (MfGpuDevice.TryGet(out var manager, out var device))
+            {
+                if (transform.TrySetD3DManager(manager, out string declined))
+                {
+                    _device = device;
+                }
+                else
+                {
+                    _context.Log.Emit(_context.Player, MediaEventKind.DecoderAttempt, MediaLogLevel.Info,
+                        $"{Name} decodes in software: {declined}", ("decoder", Name), ("result", "software"));
+                }
+            }
+
             transform.StartStreaming();
         }
         catch
@@ -652,6 +674,9 @@ public sealed class MfVideoDecoder : IMediaDecoder<VideoFrame>
             : sample.GetSampleDuration(out long mfDuration) >= 0 && mfDuration > 0 ? FromMfTime(mfDuration)
             : MediaTime.Zero;
 
+        if (_device is { } device && TryEmitFromGpu(sample, device, timestamp, duration, output))
+            return;
+
         MfTransform.Check(sample.ConvertToContiguousBuffer(out var buffer), "IMFSample::ConvertToContiguousBuffer");
         try
         {
@@ -691,6 +716,53 @@ public sealed class MfVideoDecoder : IMediaDecoder<VideoFrame>
             }
 
             output.Emit(frame);
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(buffer);
+        }
+    }
+
+    /// <summary>
+    /// A sample the transform decoded on the GPU carries a DXGI buffer over the texture
+    /// slice holding the picture; the device brings it into a frame. False when the buffer
+    /// is system memory, so the caller reads it the software way.
+    /// </summary>
+    private bool TryEmitFromGpu(IMFSample sample, D3D11VideoDevice device, MediaTime timestamp, MediaTime duration, IDecodeOutput<VideoFrame> output)
+    {
+        if (sample.GetBufferByIndex(0, out var buffer) < 0 || buffer is null)
+            return false;
+        try
+        {
+            if (buffer is not IMFDXGIBuffer dxgi)
+                return false;
+
+            var iid = D3D11Interop.IidID3D11Texture2D;
+            MfTransform.Check(dxgi.GetResource(ref iid, out var texture), "IMFDXGIBuffer::GetResource");
+            try
+            {
+                MfTransform.Check(dxgi.GetSubresourceIndex(out uint index), "IMFDXGIBuffer::GetSubresourceIndex");
+                var frame = device.Download(texture, index, _displayWidth, _displayHeight, _context.Limits, timestamp, duration);
+                if (frame is null)
+                {
+                    if (!_warnedUnconverted)
+                    {
+                        _warnedUnconverted = true;
+                        _context.Log.Emit(_context.Player, MediaEventKind.DecoderAttempt, MediaLogLevel.Warn,
+                            $"{Name} produced 10-bit pictures that only the GPU converter can display, and it is off.",
+                            ("decoder", Name), ("result", "unconverted-format"));
+                    }
+
+                    return true;
+                }
+
+                output.Emit(frame);
+                return true;
+            }
+            finally
+            {
+                D3D11VideoDevice.ReleaseTexture(ref texture);
+            }
         }
         finally
         {

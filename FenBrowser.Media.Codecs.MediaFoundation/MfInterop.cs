@@ -24,6 +24,7 @@ internal static class MfInterop
 
     public const uint MftMessageCommandFlush = 0x00000000;
     public const uint MftMessageCommandDrain = 0x00000001;
+    public const uint MftMessageSetD3DManager = 0x00000002;
     public const uint MftMessageNotifyBeginStreaming = 0x10000000;
     public const uint MftMessageNotifyEndStreaming = 0x10000001;
     public const uint MftMessageNotifyEndOfStream = 0x10000002;
@@ -62,6 +63,7 @@ internal static class MfInterop
     public static readonly Guid MfMtMinimumDisplayAperture = new("D7388766-18FE-48C6-A177-EE894867C8C4");
     public static readonly Guid MfMtInterlaceMode = new("E2724BB8-E676-4806-B4B2-A8D6EFB44CCD");
     public static readonly Guid MfLowLatency = new("9C27891A-ED7A-40E1-88E8-B22727A024EE");
+    public static readonly Guid MfSaD3D11Aware = new("206B4FC8-FCF9-4C51-AFE3-9764369E33A0");
 
     [StructLayout(LayoutKind.Sequential)]
     public struct MftOutputStreamInfo
@@ -98,6 +100,9 @@ internal static class MfInterop
 
     [DllImport("mfplat.dll", ExactSpelling = true)]
     public static extern int MFCreateMediaType(out IMFMediaType type);
+
+    [DllImport("mfplat.dll", ExactSpelling = true)]
+    public static extern int MFCreateDXGIDeviceManager(out uint resetToken, out IMFDXGIDeviceManager manager);
 
     [DllImport("mfplat.dll", ExactSpelling = true)]
     public static extern int MFCreateSample(out IMFSample sample);
@@ -213,6 +218,33 @@ internal static class MfInterop
         [PreserveSig] int GetContiguousLength(out uint length);
         [PreserveSig] int ContiguousCopyTo(IntPtr destination, uint length);
         [PreserveSig] int ContiguousCopyFrom(IntPtr source, uint length);
+    }
+
+    /// <summary>Hands one Direct3D 11 device to transforms that decode on the GPU (MFT_MESSAGE_SET_D3D_MANAGER).</summary>
+    [ComImport]
+    [Guid("EB533D5D-2DB6-40F8-97A9-494692014F07")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMFDXGIDeviceManager
+    {
+        [PreserveSig] int CloseDeviceHandle(IntPtr device);
+        [PreserveSig] int GetVideoService(IntPtr device, ref Guid iid, out IntPtr service);
+        [PreserveSig] int LockDevice(IntPtr device, ref Guid iid, out IntPtr unknown, bool block);
+        [PreserveSig] int OpenDeviceHandle(out IntPtr device);
+        [PreserveSig] int ResetDevice(IntPtr unknown, uint resetToken);
+        [PreserveSig] int TestDevice(IntPtr device);
+        [PreserveSig] int UnlockDevice(IntPtr device, bool saveState);
+    }
+
+    /// <summary>A media buffer backed by a DXGI texture: the picture a GPU decoder produced.</summary>
+    [ComImport]
+    [Guid("E7174CFA-1C9E-48B1-8866-626226BFC258")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IMFDXGIBuffer
+    {
+        [PreserveSig] int GetResource(ref Guid iid, out IntPtr resource);
+        [PreserveSig] int GetSubresourceIndex(out uint index);
+        [PreserveSig] int GetUnknown(ref Guid guid, ref Guid iid, out IntPtr unknown);
+        [PreserveSig] int SetUnknown(ref Guid guid, IntPtr unknown);
     }
 
     [ComImport]

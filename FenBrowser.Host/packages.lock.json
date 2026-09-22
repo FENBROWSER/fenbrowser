@@ -332,6 +332,13 @@
       "fenbrowser.media.codecs.mediafoundation": {
         "type": "Project",
         "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )",
+          "FenBrowser.Media.Gpu": "[1.0.0, )"
+        }
+      },
+      "fenbrowser.media.gpu": {
+        "type": "Project",
+        "dependencies": {
           "FenBrowser.Media": "[1.0.0, )"
         }
       },
