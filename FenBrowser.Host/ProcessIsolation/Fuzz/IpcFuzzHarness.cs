@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
@@ -541,6 +541,8 @@ namespace FenBrowser.Host.ProcessIsolation.Fuzz
                 VideoCapacity = 4718592
             });
             yield return Envelope(TargetIpcMessageType.MediaSeek, new MediaSeekPayload { SessionId = sessionId, TargetUs = 500_000 });
+            yield return Envelope(TargetIpcMessageType.MediaVideoDecode, new MediaVideoDecodePayload { SessionId = sessionId, Enabled = false });
+            yield return Envelope(TargetIpcMessageType.MediaVideoDecode, new MediaVideoDecodePayload { SessionId = sessionId, Enabled = true });
             yield return Envelope(TargetIpcMessageType.MediaClose, new MediaClosePayload { SessionId = sessionId });
             yield return Envelope(TargetIpcMessageType.MediaDecoderOpen, new MediaDecoderOpenPayload
             {

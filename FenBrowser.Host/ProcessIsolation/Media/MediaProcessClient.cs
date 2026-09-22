@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -469,6 +469,20 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 var response = await _client.RequestAsync<MediaSeekResponsePayload>(
                     TargetIpcMessageType.MediaSeek,
                     new MediaSeekPayload { SessionId = _sessionId, TargetUs = target.Microseconds },
+                    RequestTimeout,
+                    cancellationToken).ConfigureAwait(false);
+                if (!response.Success)
+                {
+                    throw Failure(response.ErrorKind, response.ErrorMessage);
+                }
+            }
+
+            public async ValueTask SetVideoDecodeEnabledAsync(bool enabled, CancellationToken cancellationToken)
+            {
+                ThrowIfNotOpen();
+                var response = await _client.RequestAsync<MediaVideoDecodeResponsePayload>(
+                    TargetIpcMessageType.MediaVideoDecode,
+                    new MediaVideoDecodePayload { SessionId = _sessionId, Enabled = enabled },
                     RequestTimeout,
                     cancellationToken).ConfigureAwait(false);
                 if (!response.Success)

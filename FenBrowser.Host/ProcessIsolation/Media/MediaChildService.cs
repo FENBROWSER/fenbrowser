@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -51,6 +51,9 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                     return true;
                 case TargetIpcMessageType.MediaSeek:
                     send(await SeekAsync(envelope, cancellationToken).ConfigureAwait(false));
+                    return true;
+                case TargetIpcMessageType.MediaVideoDecode:
+                    send(await VideoDecodeAsync(envelope, cancellationToken).ConfigureAwait(false));
                     return true;
                 case TargetIpcMessageType.MediaClose:
                     await CloseAsync(envelope).ConfigureAwait(false);
@@ -441,6 +444,35 @@ namespace FenBrowser.Host.ProcessIsolation.Media
             }
         }
 
+        /// <summary>
+        /// Design section 5's background policy: the element is out of sight, so the
+        /// session stops decoding its video track and drops the picture it was carrying.
+        /// </summary>
+        private async Task<TargetIpcEnvelope> VideoDecodeAsync(TargetIpcEnvelope envelope, CancellationToken cancellationToken)
+        {
+            var payload = TargetIpc.DeserializePayload<MediaVideoDecodePayload>(envelope);
+            if (payload == null || !TryValidateSessionId(payload.SessionId) || !_sessions.TryGetValue(payload.SessionId, out var session))
+            {
+                return Response(envelope, TargetIpcMessageType.MediaVideoDecodeResponse, Error<MediaVideoDecodeResponsePayload>(MediaErrorKinds.Protocol, "unknown_session"));
+            }
+
+            try
+            {
+                if (!payload.Enabled && session.Carry is { Video: not null })
+                {
+                    session.Carry.Value.Dispose();
+                    session.Carry = null;
+                }
+
+                await session.Source.SetVideoDecodeEnabledAsync(payload.Enabled, cancellationToken).ConfigureAwait(false);
+                return Response(envelope, TargetIpcMessageType.MediaVideoDecodeResponse, new MediaVideoDecodeResponsePayload { Success = true });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return Response(envelope, TargetIpcMessageType.MediaVideoDecodeResponse, Error<MediaVideoDecodeResponsePayload>(KindOf(ex), ex.Message));
+            }
+        }
+
         private async Task CloseAsync(TargetIpcEnvelope envelope)
         {
             var payload = TargetIpc.DeserializePayload<MediaClosePayload>(envelope);
@@ -513,6 +545,10 @@ namespace FenBrowser.Host.ProcessIsolation.Media
                 case MediaSeekResponsePayload seek:
                     seek.ErrorKind = kind;
                     seek.ErrorMessage = message;
+                    break;
+                case MediaVideoDecodeResponsePayload video:
+                    video.ErrorKind = kind;
+                    video.ErrorMessage = message;
                     break;
             }
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using FenBrowser.Host.ProcessIsolation.Targets;
 
 namespace FenBrowser.Host.ProcessIsolation.Media
@@ -145,6 +145,23 @@ namespace FenBrowser.Host.ProcessIsolation.Media
     }
 
     public sealed class MediaSeekResponsePayload
+    {
+        public bool Success { get; set; }
+        public string ErrorKind { get; set; }
+        public string ErrorMessage { get; set; }
+    }
+
+    /// <summary>
+    /// The background policy of design section 5: the renderer tells the child to stop or
+    /// resume decoding the session's video track while the element is out of sight.
+    /// </summary>
+    public sealed class MediaVideoDecodePayload
+    {
+        public string SessionId { get; set; }
+        public bool Enabled { get; set; }
+    }
+
+    public sealed class MediaVideoDecodeResponsePayload
     {
         public bool Success { get; set; }
         public string ErrorKind { get; set; }

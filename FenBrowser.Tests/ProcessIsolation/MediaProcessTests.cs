@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text;
 using FenBrowser.Core;
 using FenBrowser.Core.Network;
@@ -190,6 +190,55 @@ public sealed class MediaProcessTests
         Assert.Equal(10, pictures);
         Assert.True(blocks > 40, $"only {blocks} audio blocks");
         await local.DisposeAsync();
+        await remote.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Design section 5's background policy reaches the child: with video decoding off the
+    /// session gives back audio only, and turning it on again brings pictures back from
+    /// the next random access point.
+    /// </summary>
+    [Fact]
+    public async Task TheMediaProcessStopsDecodingVideoWhileTheElementIsHidden()
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(FindTestAssets(), "media", "pattern_vp8_vorbis.webm"));
+        using var client = new MediaProcessClient();
+        var remote = client.Create(new MemoryByteSource(bytes), "video/webm", MediaPipelineContext.ForTests());
+        var info = await remote.OpenAsync(CancellationToken.None);
+        Assert.NotNull(info.VideoTrack);
+        Assert.NotNull(info.AudioTrack);
+
+        await remote.SetVideoDecodeEnabledAsync(false, CancellationToken.None);
+        int hiddenPictures = 0;
+        int hiddenBlocks = 0;
+        for (int i = 0; i < 20; i++)
+        {
+            var item = await remote.ReadAsync(CancellationToken.None);
+            if (item is null)
+                break;
+            if (item.Value.Video is not null)
+                hiddenPictures++;
+            else
+                hiddenBlocks++;
+            item.Value.Dispose();
+        }
+
+        Assert.Equal(0, hiddenPictures);
+        Assert.True(hiddenBlocks > 0, "audio kept flowing while the video track was skipped");
+
+        // Decoding starts again at a random access point, which is what the player's
+        // resync seek gives it.
+        await remote.SetVideoDecodeEnabledAsync(true, CancellationToken.None);
+        await remote.SeekAsync(MediaTime.FromSeconds(0.5), CancellationToken.None);
+        int shownPictures = 0;
+        while (await remote.ReadAsync(CancellationToken.None) is { } item)
+        {
+            if (item.Video is not null)
+                shownPictures++;
+            item.Dispose();
+        }
+
+        Assert.True(shownPictures > 0, "pictures came back once the element was shown again");
         await remote.DisposeAsync();
     }
 
