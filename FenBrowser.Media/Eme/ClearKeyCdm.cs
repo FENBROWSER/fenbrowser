@@ -227,8 +227,11 @@ public sealed class ClearKeySession
         if (initData.IsEmpty)
             return EmeResult.TypeError("the initialization data is empty");
 
+        // §6.4.3 step 10.3: data that is not a valid instance of its type is a
+        // TypeError; NotSupportedError is for a type we do not implement at all, which
+        // the caller has already ruled out.
         if (!EmeInitData.TryGetKeyIds(initDataType, initData, out var keyIds))
-            return EmeResult.NotSupported("the initialization data is not a valid instance of its type");
+            return EmeResult.TypeError("the initialization data is not a valid instance of its type");
 
         _callable = false;
         _requested = true;
@@ -250,8 +253,9 @@ public sealed class ClearKeySession
             return EmeResult.InvalidState("the session is closed or has already been used");
         if (string.IsNullOrEmpty(sessionId))
             return EmeResult.TypeError("the session ID is empty");
+        // §6.4.4 step 2: loading a session that is not persistent is a TypeError.
         if (SessionType != MediaKeySessionType.PersistentLicense)
-            return EmeResult.InvalidState("only a persistent session can be loaded");
+            return EmeResult.TypeError("only a persistent session can be loaded");
 
         _callable = false;
         return EmeResult.Ok;
@@ -266,7 +270,7 @@ public sealed class ClearKeySession
         if (IsClosed)
             return EmeResult.InvalidState("the session is closed");
         if (SessionId.Length == 0)
-            return EmeResult.InvalidState("the session has no ID yet");
+            return EmeResult.InvalidState("update() before the session has an ID");
         if (response.IsEmpty)
             return EmeResult.TypeError("the response is empty");
 
@@ -301,7 +305,7 @@ public sealed class ClearKeySession
         if (IsClosed)
             return EmeResult.Ok;
         if (SessionId.Length == 0 && !_requested)
-            return EmeResult.InvalidState("the session has no ID yet");
+            return EmeResult.InvalidState("close() before the session has an ID");
 
         CloseInternal("closed-by-application");
         return EmeResult.Ok;
@@ -316,7 +320,7 @@ public sealed class ClearKeySession
         if (IsClosed)
             return EmeResult.InvalidState("the session is closed");
         if (SessionId.Length == 0)
-            return EmeResult.InvalidState("the session has no ID yet");
+            return EmeResult.InvalidState("remove() before the session has an ID");
 
         var keyIds = _statuses.Keys.ToArray();
         _cdm.ReleaseKeys(this, keyIds);

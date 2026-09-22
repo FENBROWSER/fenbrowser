@@ -42,9 +42,20 @@ namespace FenBrowser.FenEngine.Media
             _postToElementThread = postToElementThread;
             _onDetached = onDetached;
             _player = new MediaPlayer(model, client, postToElementThread, MediaEngineServices.PlayerServices, context, presenter);
+            // EME §7.1: appends run on the element thread, so what an initialization
+            // segment announces reaches the element straight away.
+            _model.InitializationDataAnnounced += OnInitializationDataAnnounced;
         }
 
         public MediaSourceModel Model => _model;
+
+        private void OnInitializationDataAnnounced(string initDataType, byte[] initData)
+        {
+            if (_disposed == 0)
+            {
+                _client.EncryptedInitData(initDataType, initData);
+            }
+        }
 
         public void Start() => _player.Start();
 
@@ -97,6 +108,7 @@ namespace FenBrowser.FenEngine.Media
                 return;
             }
 
+            _model.InitializationDataAnnounced -= OnInitializationDataAnnounced;
             _player.Dispose();
             _model.Detach();
             _onDetached();

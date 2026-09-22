@@ -47,7 +47,13 @@ public sealed partial class FenJsBrowserScriptEngine
                         }
                     });
             }
-            function queueTask(fn) { g.setTimeout(fn, 0); }
+            // The media element event task source, so a session event queued while a
+            // resource is being appended still runs before the playback events that
+            // append causes. A plain timer loses that race.
+            function queueTask(fn) {
+                if (typeof g.__fenQueueMediaTask === 'function') g.__fenQueueMediaTask(null, fn);
+                else g.setTimeout(fn, 0);
+            }
             function bytesOf(v) {
                 if (v === undefined || v === null) return null;
                 try {
@@ -208,6 +214,10 @@ public sealed partial class FenJsBrowserScriptEngine
                 var bytes = bytesOf(initData);
                 if (bytes === null) return Promise.reject(new TypeError("Failed to execute 'generateRequest' on 'MediaKeySession': the initialization data is not a BufferSource."));
                 var type = String(initDataType);
+                // §6.4.3 steps 2-3: an empty type or empty data is a TypeError before the
+                // implementation is asked anything.
+                if (type.length === 0) return Promise.reject(new TypeError("Failed to execute 'generateRequest' on 'MediaKeySession': the initialization data type is empty."));
+                if (bytes.length === 0) return Promise.reject(new TypeError("Failed to execute 'generateRequest' on 'MediaKeySession': the initialization data is empty."));
                 return sessionCall(self, function () { g.__fenEmeGenerateRequest(self._id, type, bytes); });
             }, 2);
 
@@ -340,7 +350,12 @@ public sealed partial class FenJsBrowserScriptEngine
                     var candidates = [];
                     try {
                         for (var i = 0; i < configurations.length; i++) {
-                            var source = configurations[i] || {};
+                            var source = configurations[i];
+                            // WebIDL: each entry is a dictionary, and a value that is not
+                            // an object cannot be converted to one.
+                            if (source === undefined || source === null) source = {};
+                            else if (typeof source !== 'object')
+                                throw new TypeError("Failed to execute 'requestMediaKeySystemAccess' on 'Navigator': a configuration is not a dictionary.");
                             var candidate = {
                                 label: source.label === undefined ? '' : String(source.label),
                                 initDataTypes: source.initDataTypes === undefined || source.initDataTypes === null

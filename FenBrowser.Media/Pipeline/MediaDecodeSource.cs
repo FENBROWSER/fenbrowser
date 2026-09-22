@@ -93,6 +93,13 @@ public interface IMediaDecodeSource : IAsyncDisposable
     ValueTask SetMediaKeysAsync(IMediaKeySource? keys, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
     /// <summary>
+    /// EME §7.1: initialization data the source has learned about since this was last
+    /// called. A file announces its own once, at open; a MediaSource announces whatever
+    /// each appended initialization segment carries.
+    /// </summary>
+    IReadOnlyList<(string InitDataType, byte[] InitData)> TakePendingInitializationData() => [];
+
+    /// <summary>
     /// Repositions at or before <paramref name="target"/>; the next read starts at the
     /// container's nearest earlier keyframe and the player discards the rest.
     /// </summary>

@@ -41,6 +41,12 @@ public sealed class MseDecodeSource : IMediaDecodeSource
     private readonly CencDecryptor _decryptor = new();
     private IMediaKeySource? _keys;
 
+    public IReadOnlyList<(string InitDataType, byte[] InitData)> TakePendingInitializationData()
+    {
+        lock (_model.Gate)
+            return _model.TakePendingInitializationData();
+    }
+
     public ValueTask SetMediaKeysAsync(IMediaKeySource? keys, CancellationToken cancellationToken)
     {
         _keys = keys;

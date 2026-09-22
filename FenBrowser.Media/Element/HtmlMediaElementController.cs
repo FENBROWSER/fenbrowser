@@ -533,6 +533,9 @@ public sealed class HtmlMediaElementController
             _officialPosition = MediaTime.Zero;
             _earliestPossiblePosition = MediaTime.Zero;
             _host.TextTracksReset();
+            // A new resource has its own initialization data; what the old one announced
+            // must not silence an encrypted event for the new one.
+            _encounteredInitData.Clear();
 
             // 7.10
             if (officialChanged)
@@ -1443,6 +1446,25 @@ public sealed class HtmlMediaElementController
 
     /// <summary>Routes pipeline reports into the element, dropping reports from abandoned loads.</summary>
     /// <summary>
+    /// EME §7.1 "Initialization Data Encountered". Data this element has already been
+    /// told about fires nothing: a MediaSource repeats its initialization segment for
+    /// every representation it switches to, and a page must not see the same event again.
+    /// </summary>
+    private void OnEncryptedInitData(string initDataType, byte[] initData)
+    {
+        if (initData is null || initData.Length == 0)
+            return;
+
+        string key = initDataType + ":" + Convert.ToBase64String(initData);
+        if (!_encounteredInitData.Add(key))
+            return;
+
+        _host.FireEncrypted(initDataType, initData);
+    }
+
+    private readonly HashSet<string> _encounteredInitData = [];
+
+    /// <summary>
     /// EME §7.2 "Queue a "waitingforkey" Event": playback cannot continue because a key is
     /// missing, so the element drops back to HAVE_CURRENT_DATA - which is what makes it
     /// stop playing and fire <c>waiting</c> - and tells the page which event it was.
@@ -1604,7 +1626,7 @@ public sealed class HtmlMediaElementController
         });
 
         public void EncryptedInitData(string initDataType, byte[] initData) => Enqueue(() =>
-            owner._host.FireEncrypted(initDataType, initData));
+            owner.OnEncryptedInitData(initDataType, initData));
 
         public void WaitingForKey() => Enqueue(() => owner.OnWaitingForKey());
 

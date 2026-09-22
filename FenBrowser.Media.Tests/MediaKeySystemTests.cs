@@ -248,8 +248,11 @@ public class MediaKeySystemTests
         var session = new ClearKeyCdm().CreateSession(MediaKeySessionType.Temporary);
         Assert.NotNull(session);
 
+        // Empty data, and data that is not a valid instance of its type, are both a
+        // TypeError (EME §6.4.3 steps 3 and 10.3); NotSupportedError is reserved for an
+        // initialization data type this engine does not implement at all.
         Assert.Equal("TypeError", session.GenerateRequest(EmeInitDataType.KeyIds, []).ExceptionName);
-        Assert.Equal("NotSupportedError", session.GenerateRequest(EmeInitDataType.KeyIds, "junk"u8).ExceptionName);
+        Assert.Equal("TypeError", session.GenerateRequest(EmeInitDataType.KeyIds, "junk"u8).ExceptionName);
     }
 
     [Fact]

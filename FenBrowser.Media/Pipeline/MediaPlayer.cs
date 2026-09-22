@@ -357,6 +357,19 @@ public sealed class MediaPlayer : IMediaResource
                 while (_commands.TryDequeue(out var command))
                     command();
 
+                if (_decodeSource is { } announcing)
+                {
+                    var announced = announcing.TakePendingInitializationData();
+                    if (announced.Count > 0)
+                    {
+                        Report(() =>
+                        {
+                            foreach (var (initDataType, initData) in announced)
+                                _client.EncryptedInitData(initDataType, initData);
+                        });
+                    }
+                }
+
                 if (_mediaKeysDirty)
                 {
                     _mediaKeysDirty = false;

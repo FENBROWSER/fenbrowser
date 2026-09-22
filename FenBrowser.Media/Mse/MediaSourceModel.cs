@@ -342,6 +342,16 @@ public sealed class MediaSourceModel
             ExactDurationSeconds = null;
         }
 
+        // EME §7.1: every initialization segment may announce initialization data, not
+        // just the first one - a stream can change its protection system mid-flight.
+        foreach (var announced in info.InitializationData)
+        {
+            _pendingInitializationData.Add(announced);
+            // The element hears about it inside the append, so the encrypted event
+            // reaches the page before any of the appended media can start playing.
+            InitializationDataAnnounced?.Invoke(announced.InitDataType, announced.InitData);
+        }
+
         if (first)
             InitializationSegmentReceived?.Invoke(buffer, info);
         if (_sourceBuffers.All(b => b.HasTracks))
@@ -351,6 +361,29 @@ public sealed class MediaSourceModel
 
     /// <summary>A source buffer received its first initialization segment (the DOM side adds tracks and fires loadedmetadata through the element).</summary>
     public event Action<SourceBufferModel, DemuxerInfo>? InitializationSegmentReceived;
+
+    /// <summary>
+    /// EME §7.1: an appended initialization segment announced initialization data. Raised
+    /// on the thread that appended, which is the element's own.
+    /// </summary>
+    public event Action<string, byte[]>? InitializationDataAnnounced;
+
+    private readonly List<(string InitDataType, byte[] InitData)> _pendingInitializationData = [];
+
+    /// <summary>
+    /// The Encrypted Media Extensions initialization data appended segments have announced
+    /// since this was last called. The caller reads it under <see cref="Gate"/> and turns
+    /// each entry into one <c>encrypted</c> event on the element.
+    /// </summary>
+    public IReadOnlyList<(string InitDataType, byte[] InitData)> TakePendingInitializationData()
+    {
+        if (_pendingInitializationData.Count == 0)
+            return [];
+
+        var taken = _pendingInitializationData.ToArray();
+        _pendingInitializationData.Clear();
+        return taken;
+    }
 
     internal void OnFrameAppended(MediaTime frameEnd)
     {
