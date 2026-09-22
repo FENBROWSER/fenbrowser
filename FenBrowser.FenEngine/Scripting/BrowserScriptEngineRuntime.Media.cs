@@ -754,6 +754,10 @@ public sealed partial class FenJsBrowserScriptEngine
 
         public void FireEvent(string type) => Fire(_element, type);
 
+        /// <summary>EME §7.1: the resource announced initialization data for a protection system.</summary>
+        public void FireEncrypted(string initDataType, byte[] initData) =>
+            _realm.FireMediaEncryptedEvent(_element, initDataType, initData);
+
         public void FireEventAt(object node, string type)
         {
             if (node is Element element)
@@ -1388,6 +1392,10 @@ public sealed partial class FenJsBrowserScriptEngine
             case "videoTracks":
             case "addTextTrack":
                 return TryGetMediaElementTextTrackProperty(element, property, out value);
+
+            case "mediaKeys":
+            case "setMediaKeys":
+                return TryGetMediaElementEmeProperty(element, property, out value);
 
             // Everything else is state, so it needs the controller.
             case "error":
