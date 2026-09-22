@@ -34,6 +34,7 @@ internal static class D3D11Interop
     public static readonly Guid IidID3D10Multithread = new("9B7E4E00-342C-4106-A19F-4F2704F689F0");
     public static readonly Guid IidID3D11VideoDevice = new("10EC4D5B-975A-4689-B9E4-D0AAC30FE333");
     public static readonly Guid IidID3D11VideoContext = new("61F21C45-3C0E-4A74-9CEA-67100D9AD5E4");
+    public static readonly Guid IidID3D11VideoContext1 = new("A7F026DA-A5F8-4487-A564-15E34357651E");
     public static readonly Guid IidID3D11Texture2D = new("6F15AAF2-D208-4E89-9AB4-489535D34F9C");
 
     // ID3D11Device
@@ -67,6 +68,17 @@ internal static class D3D11Interop
     public const int SlotVideoProcessorSetStreamSourceRect = 30;
     public const int SlotVideoProcessorSetStreamDestRect = 31;
     public const int SlotVideoProcessorBlt = 53;
+
+    // ID3D11VideoContext1
+    public const int SlotVideoProcessorSetOutputColorSpace1 = 70;
+    public const int SlotVideoProcessorSetStreamColorSpace1 = 74;
+
+    // DXGI_COLOR_SPACE_TYPE
+    public const int ColorSpaceRgbFullG22NoneP709 = 0;
+    public const int ColorSpaceYcbcrStudioG22LeftP601 = 6;
+    public const int ColorSpaceYcbcrFullG22LeftP601 = 7;
+    public const int ColorSpaceYcbcrStudioG22LeftP709 = 8;
+    public const int ColorSpaceYcbcrFullG22LeftP709 = 9;
 
     [DllImport("d3d11.dll", ExactSpelling = true)]
     public static extern int D3D11CreateDevice(
@@ -211,6 +223,8 @@ internal static class D3D11Interop
     public delegate void VideoProcessorSetOutputColorSpaceFn(IntPtr self, IntPtr processor, ref uint colorSpace);
     public delegate void VideoProcessorSetStreamFrameFormatFn(IntPtr self, IntPtr processor, uint stream, int frameFormat);
     public delegate void VideoProcessorSetStreamColorSpaceFn(IntPtr self, IntPtr processor, uint stream, ref uint colorSpace);
+    public delegate void VideoProcessorSetOutputColorSpace1Fn(IntPtr self, IntPtr processor, int colorSpace);
+    public delegate void VideoProcessorSetStreamColorSpace1Fn(IntPtr self, IntPtr processor, uint stream, int colorSpace);
     public delegate void VideoProcessorSetStreamRectFn(IntPtr self, IntPtr processor, uint stream, int enable, ref Rect rect);
     public delegate int VideoProcessorBltFn(IntPtr self, IntPtr processor, IntPtr outputView, uint outputFrame, uint streamCount, ref VideoProcessorStream streams);
 

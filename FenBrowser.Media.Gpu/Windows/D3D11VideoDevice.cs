@@ -34,6 +34,7 @@ public sealed class D3D11VideoDevice : IDisposable
     private IntPtr _context;
     private IntPtr _videoDevice;
     private IntPtr _videoContext;
+    private IntPtr _videoContext1;
     private Converter? _converter;
     private Staging? _staging;
     private bool _disposed;
@@ -120,7 +121,12 @@ public sealed class D3D11VideoDevice : IDisposable
             if (hr >= 0)
                 _ = Method<SetMultithreadProtectedFn>(multithread, SlotSetMultithreadProtected)(multithread, 1);
 
-            device = new D3D11VideoDevice(d3dDevice, context, videoDevice, videoContext);
+            // The DXGI colour-space form of the video processor calls (Windows 10 and later);
+            // drivers honour it where they ignore the older bitfield.
+            if (QueryInterface(context, IidID3D11VideoContext1, out var videoContext1) < 0)
+                videoContext1 = IntPtr.Zero;
+
+            device = new D3D11VideoDevice(d3dDevice, context, videoDevice, videoContext) { _videoContext1 = videoContext1 };
             d3dDevice = context = videoDevice = videoContext = IntPtr.Zero;
             reason = string.Empty;
             return true;
@@ -240,10 +246,16 @@ public sealed class D3D11VideoDevice : IDisposable
 
             // The CPU converter's rule (design §2.5 note in PixelConverter): BT.601 below
             // 720 lines, BT.709 from there; studio range in, full-range RGB out.
-            uint streamSpace = ColorSpace(bt709: frame.Height >= 720, fullRange: false, rgbLimited: false);
-            uint outputSpace = ColorSpace(bt709: frame.Height >= 720, fullRange: true, rgbLimited: false);
+            bool bt709 = frame.Height >= 720;
+            uint streamSpace = ColorSpace(bt709, fullRange: false, rgbLimited: false);
+            uint outputSpace = ColorSpace(bt709, fullRange: true, rgbLimited: false);
             Method<VideoProcessorSetStreamColorSpaceFn>(_videoContext, SlotVideoProcessorSetStreamColorSpace)(_videoContext, converter.Processor, 0, ref streamSpace);
             Method<VideoProcessorSetOutputColorSpaceFn>(_videoContext, SlotVideoProcessorSetOutputColorSpace)(_videoContext, converter.Processor, ref outputSpace);
+            if (_videoContext1 != IntPtr.Zero)
+            {
+                Method<VideoProcessorSetStreamColorSpace1Fn>(_videoContext1, SlotVideoProcessorSetStreamColorSpace1)(_videoContext1, converter.Processor, 0, bt709 ? ColorSpaceYcbcrStudioG22LeftP709 : ColorSpaceYcbcrStudioG22LeftP601);
+                Method<VideoProcessorSetOutputColorSpace1Fn>(_videoContext1, SlotVideoProcessorSetOutputColorSpace1)(_videoContext1, converter.Processor, ColorSpaceRgbFullG22NoneP709);
+            }
             Method<VideoProcessorSetStreamFrameFormatFn>(_videoContext, SlotVideoProcessorSetStreamFrameFormat)(_videoContext, converter.Processor, 0, VideoFrameFormatProgressive);
             var rect = new Rect { Left = 0, Top = 0, Right = frame.Width, Bottom = frame.Height };
             Method<VideoProcessorSetStreamRectFn>(_videoContext, SlotVideoProcessorSetStreamSourceRect)(_videoContext, converter.Processor, 0, 1, ref rect);
@@ -438,6 +450,7 @@ public sealed class D3D11VideoDevice : IDisposable
             _converter = null;
             _staging?.Dispose();
             _staging = null;
+            Release(ref _videoContext1);
             Release(ref _videoContext);
             Release(ref _videoDevice);
             Release(ref _context);
