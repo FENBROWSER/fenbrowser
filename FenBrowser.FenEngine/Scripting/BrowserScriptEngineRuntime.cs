@@ -7706,9 +7706,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         });
     }
 
+    /// <summary>
+    /// Whether this realm is a secure context. Members that the specification marks
+    /// [SecureContext] - setSinkId and sinkId among them - exist only when it is true.
+    /// </summary>
+    internal bool IsSecureContextRealm { get; private set; }
+
     private void InstallFenJsBrowserUiApis(Uri baseUri)
     {
-        var secureContextLiteral = IsPotentiallyTrustworthyOrigin(baseUri) ? "true" : "false";
+        IsSecureContextRealm = IsPotentiallyTrustworthyOrigin(baseUri);
+        var secureContextLiteral = IsSecureContextRealm ? "true" : "false";
         var crossOriginIsolatedLiteral = IsCrossOriginIsolatedContext(baseUri) ? "true" : "false";
         EvaluateWithFenJsRaw(
             """
@@ -11594,8 +11601,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         'loop', 'controls', 'preload', 'readyState', 'networkState',
                         'buffered', 'seeking', 'crossOrigin', 'error', 'defaultPlaybackRate',
                         'preservesPitch', 'played', 'seekable', 'defaultMuted', 'textTracks',
-                        'audioTracks', 'videoTracks'],
-                        ['play', 'pause', 'load', 'canPlayType', 'fastSeek', 'addTextTrack']],
+                        'audioTracks', 'videoTracks', 'sinkId'],
+                        ['play', 'pause', 'load', 'canPlayType', 'fastSeek', 'addTextTrack',
+                         'setSinkId']],
                     HTMLVideoElement: [['width', 'height', 'videoWidth', 'videoHeight',
                         'poster', 'playsInline'], ['getVideoPlaybackQuality', 'requestVideoFrameCallback', 'cancelVideoFrameCallback']],
                     HTMLAudioElement: [[], []],

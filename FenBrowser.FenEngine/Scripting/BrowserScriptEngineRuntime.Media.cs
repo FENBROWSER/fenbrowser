@@ -572,7 +572,8 @@ public sealed partial class FenJsBrowserScriptEngine
             _realm = realm;
             _element = element;
             MediaEngineServices.InstallHooks();
-            Controller = new HtmlMediaElementController(this, MediaEngineServices.TypeSupport, MediaEngineServices.Log);
+            Controller = new HtmlMediaElementController(
+                this, MediaEngineServices.TypeSupport, MediaEngineServices.Log, null, MediaEngineServices.AudioOutputs);
         }
 
         public HtmlMediaElementController Controller { get; }
@@ -1446,6 +1447,16 @@ public sealed partial class FenJsBrowserScriptEngine
             case "volume":
                 value = JsValue.FromNumber(GetOrCreateMediaBinding(element).Controller.Volume);
                 return true;
+            // Audio Output Devices API. Both members are [SecureContext], so on an insecure
+            // page the host answers nothing and they are absent from the element and from
+            // HTMLMediaElement.prototype.
+            case "sinkId" when IsSecureContextRealm:
+                value = JsValue.FromString(GetOrCreateMediaBinding(element).Controller.SinkId);
+                return true;
+            case "setSinkId" when IsSecureContextRealm:
+                binding = GetOrCreateMediaBinding(element);
+                value = GetOrCreateHostCallable(element, "setSinkId", (_, args) => SetSinkId(binding, args), length: 1);
+                return true;
             case "muted":
                 value = JsValue.FromBoolean(GetOrCreateMediaBinding(element).Controller.Muted);
                 return true;
@@ -1595,6 +1606,43 @@ public sealed partial class FenJsBrowserScriptEngine
             default:
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Audio Output Devices API §4 <c>setSinkId()</c>. The identifier is read here, and the
+    /// rest happens where the specification says "in parallel": a media element task checks
+    /// it against the endpoints the platform offers and either moves the audio or rejects
+    /// with NotFoundError. A page therefore never sees sinkId change before its promise
+    /// settles, which is what the audio-output tests check.
+    /// </summary>
+    private JsValue SetSinkId(MediaElementBinding binding, IReadOnlyList<JsValue> args)
+    {
+        if (args.Count < 1)
+        {
+            return CreateRejectedPromise(
+                "Failed to execute 'setSinkId' on 'HTMLMediaElement': 1 argument required, but only 0 present.",
+                "TypeError");
+        }
+
+        string sinkId = CoerceToHostString(args[0]) ?? string.Empty;
+        var (promise, resolve, reject) = ((IBuiltinContext)_interpreter).CreatePromiseCapability();
+        binding.QueueTask(() =>
+        {
+            switch (binding.Controller.TrySetSinkId(sinkId))
+            {
+                case SinkIdOutcome.NotFound:
+                    _ = _interpreter.InvokeFunction(
+                        reject,
+                        new[] { CreateDomExceptionValue("NotFoundError", "No audio output device with the requested identifier was found.") },
+                        JsValue.Undefined);
+                    break;
+                default:
+                    _ = _interpreter.InvokeFunction(resolve, new[] { JsValue.Undefined }, JsValue.Undefined);
+                    break;
+            }
+        });
+
+        return promise;
     }
 
     private double RequireFiniteNumber(JsValue value, string property)

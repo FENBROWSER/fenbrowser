@@ -56,6 +56,13 @@ interface HTMLMediaElement : HTMLElement {
   [CEReactions, Reflect="muted"] attribute boolean defaultMuted;
 };
 
+// Audio Output Devices API (https://www.w3.org/TR/audio-output/#htmlmediaelement-interface-extensions)
+[Exposed=Window]
+partial interface HTMLMediaElement {
+  [SecureContext] readonly attribute DOMString sinkId;
+  [SecureContext] Promise<undefined> setSinkId(DOMString sinkId);
+};
+
 [Exposed=Window]
 interface MediaError {
   const unsigned short MEDIA_ERR_ABORTED = 1;
