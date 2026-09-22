@@ -1,5 +1,6 @@
 using FenBrowser.Media.Diagnostics;
 using FenBrowser.Media.Buffers;
+using FenBrowser.Media.Eme;
 using FenBrowser.Media.Pipeline;
 
 namespace FenBrowser.Media.Mse;
@@ -34,6 +35,18 @@ public sealed class MseDecodeSource : IMediaDecodeSource
 
     /// <summary>True after a null read that meant "nothing buffered here yet", not the end.</summary>
     public bool WaitingForData { get; private set; }
+
+    public bool WaitingForKey { get; private set; }
+
+    private readonly CencDecryptor _decryptor = new();
+    private IMediaKeySource? _keys;
+
+    public ValueTask SetMediaKeysAsync(IMediaKeySource? keys, CancellationToken cancellationToken)
+    {
+        _keys = keys;
+        WaitingForKey = false;
+        return ValueTask.CompletedTask;
+    }
 
     public async ValueTask<MediaSourceInfo> OpenAsync(CancellationToken cancellationToken)
     {
@@ -121,12 +134,14 @@ public sealed class MseDecodeSource : IMediaDecodeSource
         if (!_open)
             throw new InvalidOperationException("The source is not open.");
         WaitingForData = false;
+        WaitingForKey = false;
         while (_decoded.Count == 0)
         {
             TrackCursor? cursor;
             CodedFrame? frame;
             EncodedPacket? packet = null;
             bool ended;
+            bool blockedForKey = false;
             lock (_model.Gate)
             {
                 ended = _model.ReadyState == MediaSourceReadyState.Ended;
@@ -138,10 +153,33 @@ public sealed class MseDecodeSource : IMediaDecodeSource
                 {
                     packet = EncodedPacket.Rent(_context.Limits, cursor.Track.Kind, cursor.Track.TrackId, frame.Bytes, frame.Pts, frame.Dts, frame.Duration, frame.IsKeyframe);
                     frame.Packet.Span.CopyTo(packet.Memory.Span);
-                    // The cursor moves under the gate too: it reads the frame list for its
-                    // successor, which an append on the element's thread may be changing.
-                    cursor.Advance(frame);
+                    packet.Encryption = frame.Packet.Encryption;
+
+                    // A frame whose key has not arrived is left where it is: the cursor
+                    // does not move, so the same frame is read again once the licence
+                    // lands, and nothing in the buffer is lost.
+                    if (packet.Encryption is { } encryption && (_keys is null || !_keys.TryGetKey(encryption.KeyId, out _)))
+                    {
+                        packet.Dispose();
+                        packet = null;
+                        blockedForKey = true;
+                    }
+                    else
+                    {
+                        // The cursor moves under the gate too: it reads the frame list for
+                        // its successor, which an append on the element's thread may be
+                        // changing.
+                        cursor.Advance(frame);
+                    }
                 }
+            }
+
+            if (blockedForKey)
+            {
+                WaitingForKey = true;
+                _context.Log.Emit(_context.Player, MediaEventKind.EmeWaitingForKey, MediaLogLevel.Info,
+                    "Waiting for the key a buffered frame needs.");
+                return null;
             }
 
             if (cursor is null || frame is null || packet is null)
@@ -231,6 +269,21 @@ public sealed class MseDecodeSource : IMediaDecodeSource
 
             using (packet)
             {
+                if (packet.Encryption is { } protection)
+                {
+                    if (!_keys!.TryGetKey(protection.KeyId, out byte[] key))
+                        throw new MediaFormatException("The key for a buffered frame went away while it was being read.");
+                    try
+                    {
+                        if (!_decryptor.TryDecrypt(packet.Memory.Span, protection, key))
+                            throw new MediaFormatException("A protected frame does not match its encryption description.");
+                    }
+                    finally
+                    {
+                        Array.Clear(key);
+                    }
+                }
+
                 if (cursor.Decoder is { } audioDecoder2)
                     await audioDecoder2.DecodeAsync(packet, cursor.Output, cancellationToken).ConfigureAwait(false);
                 else if (cursor.VideoDecoder is { } videoDecoder2)

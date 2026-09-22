@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using FenBrowser.Media.Diagnostics;
+using FenBrowser.Media.Pipeline;
 
 namespace FenBrowser.Media.Eme;
 
@@ -43,7 +44,7 @@ internal sealed class KeyIdOrder : IComparer<KeyId>
 /// The key store is read by the decryption thread and written by the session's own thread,
 /// so it is guarded; everything else on a session belongs to whoever created it.
 /// </remarks>
-public sealed class ClearKeyCdm
+public sealed class ClearKeyCdm : IMediaKeySource
 {
     /// <summary>The key system string this CDM answers to.</summary>
     public const string KeySystem = "org.w3.clearkey";

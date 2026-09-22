@@ -1,4 +1,6 @@
 using FenBrowser.Media.Buffers;
+using FenBrowser.Media.Diagnostics;
+using FenBrowser.Media.Eme;
 
 namespace FenBrowser.Media.Pipeline;
 
@@ -70,6 +72,20 @@ public interface IMediaDecodeSource : IAsyncDisposable
     bool WaitingForData => false;
 
     /// <summary>
+    /// True after a null read that meant "the key for the next packet has not arrived".
+    /// The player stalls and the element fires <c>waitingforkey</c> (EME §7.2); the read
+    /// resumes at the same packet once the key is there.
+    /// </summary>
+    bool WaitingForKey => false;
+
+    /// <summary>
+    /// Hands the source the keys a page's CDM has, or null when the element has no
+    /// MediaKeys. Encrypted packets are decrypted here, next to the decoder, so the key
+    /// travels to the media process rather than the media bytes travelling out of it.
+    /// </summary>
+    ValueTask SetMediaKeysAsync(IMediaKeySource? keys, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    /// <summary>
     /// Repositions at or before <paramref name="target"/>; the next read starts at the
     /// container's nearest earlier keyframe and the player discards the rest.
     /// </summary>
@@ -82,6 +98,19 @@ public interface IMediaDecodeSource : IAsyncDisposable
     /// point. A source with no video track ignores this.
     /// </summary>
     ValueTask SetVideoDecodeEnabledAsync(bool enabled, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+}
+
+/// <summary>
+/// Where the decrypting side of the pipeline gets its keys. The Clear Key CDM implements
+/// it; nothing else in the pipeline knows what a key system is.
+/// </summary>
+public interface IMediaKeySource
+{
+    /// <summary>
+    /// Copies out the key for <paramref name="keyId"/>, if the page has given it to us.
+    /// Called from the decode thread.
+    /// </summary>
+    bool TryGetKey(KeyId keyId, out byte[] key);
 }
 
 public interface IMediaDecodeSourceFactory
@@ -157,6 +186,10 @@ public sealed class LocalMediaDecodeSource : IMediaDecodeSource
     private int _videoTrackId = -1;
     private bool _endOfStream;
     private bool _videoDecodeEnabled = true;
+    private readonly CencDecryptor _decryptor = new();
+    private IMediaKeySource? _keys;
+    private EncodedPacket? _blockedPacket;
+    private bool _waitingForKey;
     private bool _awaitingVideoKeyframe;
 
     public LocalMediaDecodeSource(
@@ -227,12 +260,31 @@ public sealed class LocalMediaDecodeSource : IMediaDecodeSource
         return new MediaSourceInfo(info.Tracks, audio, video, info.Duration, info.IsSeekable);
     }
 
+    public bool WaitingForKey => _waitingForKey;
+
+    public ValueTask SetMediaKeysAsync(IMediaKeySource? keys, CancellationToken cancellationToken)
+    {
+        _keys = keys;
+        // A key that just arrived may be the one the blocked packet was waiting for, so
+        // the next read tries it again rather than stalling forever.
+        _waitingForKey = false;
+        return ValueTask.CompletedTask;
+    }
+
     public async ValueTask<DecodedMedia?> ReadAsync(CancellationToken cancellationToken)
     {
         var demuxer = _demuxer ?? throw new InvalidOperationException("The source is not open.");
+        _waitingForKey = false;
         while (_decoded.Count == 0 && !_endOfStream)
         {
-            var packet = await demuxer.ReadPacketAsync(cancellationToken).ConfigureAwait(false);
+            // A packet held back for a missing key is retried before any new one, so the
+            // stream stays in order.
+            var packet = _blockedPacket;
+            if (packet is not null)
+                _blockedPacket = null;
+            else
+                packet = await demuxer.ReadPacketAsync(cancellationToken).ConfigureAwait(false);
+
             if (packet is null)
             {
                 if (_audioDecoder is not null)
@@ -240,6 +292,14 @@ public sealed class LocalMediaDecodeSource : IMediaDecodeSource
                 if (_videoDecoder is not null)
                     await _videoDecoder.DrainAsync(_videoOutput, cancellationToken).ConfigureAwait(false);
                 _endOfStream = true;
+                break;
+            }
+
+            if (packet.Encryption is not null && !TryDecrypt(packet))
+            {
+                // Hold the packet; the element will be told to wait for its key.
+                _blockedPacket = packet;
+                _waitingForKey = true;
                 break;
             }
 
@@ -312,6 +372,7 @@ public sealed class LocalMediaDecodeSource : IMediaDecodeSource
     public async ValueTask DisposeAsync()
     {
         DropDecoded();
+        _decryptor.Dispose();
         if (_audioDecoder is not null)
             await _audioDecoder.DisposeAsync().ConfigureAwait(false);
         if (_videoDecoder is not null)
@@ -325,6 +386,39 @@ public sealed class LocalMediaDecodeSource : IMediaDecodeSource
     {
         while (_decoded.TryDequeue(out var item))
             item.Dispose();
+
+        _blockedPacket?.Dispose();
+        _blockedPacket = null;
+        _waitingForKey = false;
+    }
+
+    /// <summary>
+    /// Decrypts a protected packet in place. False means the key the packet names is not
+    /// one the page has given us yet; the packet is held rather than dropped, because it
+    /// will decode normally as soon as the licence arrives.
+    /// </summary>
+    private bool TryDecrypt(EncodedPacket packet)
+    {
+        var info = packet.Encryption!;
+        if (_keys is null || !_keys.TryGetKey(info.KeyId, out byte[] key))
+        {
+            _context.Log.Emit(_context.Player, MediaEventKind.EmeWaitingForKey, MediaLogLevel.Info,
+                "Waiting for the key a packet needs.");
+            return false;
+        }
+
+        try
+        {
+            if (_decryptor.TryDecrypt(packet.Memory.Span, info, key))
+                return true;
+        }
+        finally
+        {
+            // The key is a copy made for this call; it does not outlive it.
+            Array.Clear(key);
+        }
+
+        throw new MediaFormatException("A protected sample does not match its encryption description.");
     }
 
     private sealed class AudioOutput(Queue<DecodedMedia> queue) : IDecodeOutput<AudioBlock>
