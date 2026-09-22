@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using FenBrowser.Media.Buffers;
@@ -76,6 +76,14 @@ public sealed class FfmpegVideoDecoder : IMediaDecoder<VideoFrame>
     private const int FrameHeight = 108;
     private const int FrameFormat = 116;
     private const int FramePts = 136;
+    private const int FrameHwFramesCtx = 328;
+
+    // AVCodecContext.hw_device_ctx, and AVCodecHWConfig (pix_fmt, methods, device_type).
+    // Read from the libavcodec 63 / libavutil 61 headers this build pins.
+    private const int ContextHwDeviceCtx = 560;
+    private const int HwConfigMethods = 4;
+    private const int HwConfigDeviceType = 8;
+    private const int HwConfigMethodDeviceCtx = 1;
 
     private const int MediaTypeVideo = 0;
     private const int InputBufferPadding = 64;
@@ -86,21 +94,33 @@ public sealed class FfmpegVideoDecoder : IMediaDecoder<VideoFrame>
 
     private readonly string _decoderName;
     private readonly MediaPipelineContext _context;
+    private readonly FfmpegHardwareDevice _hardware;
     private readonly Dictionary<long, MediaTime> _durations = [];
     private IntPtr _context_;
     private IntPtr _packet;
     private IntPtr _frame;
+    private IntPtr _softwareFrame;
+    private IntPtr _deviceContext;
     private CodecConfig? _config;
     private string _lastFormatWarning = string.Empty;
 
     public FfmpegVideoDecoder(string decoderName, MediaPipelineContext context)
+        : this(decoderName, context, FfmpegHardwareDevice.None)
+    {
+    }
+
+    public FfmpegVideoDecoder(string decoderName, MediaPipelineContext context, FfmpegHardwareDevice hardware)
     {
         ArgumentNullException.ThrowIfNull(context);
         _decoderName = decoderName;
         _context = context;
+        _hardware = hardware;
     }
 
-    public string Name => "libavcodec-" + _decoderName;
+    public string Name => (_hardware == FfmpegHardwareDevice.None ? "libavcodec-" : "libavcodec-hw-") + _decoderName;
+
+    /// <summary>Whether the pictures of the current stream are coming off the GPU.</summary>
+    public bool UsesHardware => _deviceContext != IntPtr.Zero;
 
     /// <summary>Frames decoded but not converted because of their pixel format.</summary>
     public long UnconvertedFrames { get; private set; }
@@ -150,11 +170,15 @@ public sealed class FfmpegVideoDecoder : IMediaDecoder<VideoFrame>
         int threads = Math.Clamp(Environment.ProcessorCount, 1, MaxDecodeThreads);
         _ = Native.av_opt_set(_context_, "threads", threads.ToString(CultureInfo.InvariantCulture), 0);
 
+        if (_hardware != FfmpegHardwareDevice.None)
+            AttachHardwareDevice(codec);
+
         Check(Native.avcodec_open2(_context_, codec, IntPtr.Zero), "avcodec_open2");
 
         _packet = Native.av_packet_alloc();
         _frame = Native.av_frame_alloc();
-        if (_packet == IntPtr.Zero || _frame == IntPtr.Zero)
+        _softwareFrame = Native.av_frame_alloc();
+        if (_packet == IntPtr.Zero || _frame == IntPtr.Zero || _softwareFrame == IntPtr.Zero)
             throw new MediaDecoderException("av_packet_alloc/av_frame_alloc failed.");
 
         _config = config;
@@ -234,10 +258,11 @@ public sealed class FfmpegVideoDecoder : IMediaDecoder<VideoFrame>
 
             try
             {
-                EmitFrame(output);
+                EmitFrame(output, ToSystemMemory());
             }
             finally
             {
+                Native.av_frame_unref(_softwareFrame);
                 Native.av_frame_unref(_frame);
             }
         }
@@ -248,12 +273,30 @@ public sealed class FfmpegVideoDecoder : IMediaDecoder<VideoFrame>
     /// <c>yuvj420p</c>, <c>nv12</c>) is carried as is; other formats are counted and
     /// skipped until the converter lands (a logged gap, never a crash).
     /// </summary>
-    private void EmitFrame(IDecodeOutput<VideoFrame> output)
+    /// <summary>
+    /// A picture a hardware decoder produced lives in GPU memory; av_hwframe_transfer_data
+    /// brings it into a system-memory frame. That transfer is the one copy the hardware
+    /// path pays. A software picture is already where it needs to be.
+    /// </summary>
+    private IntPtr ToSystemMemory()
     {
-        int width = Marshal.ReadInt32(_frame, FrameWidth);
-        int height = Marshal.ReadInt32(_frame, FrameHeight);
-        int format = Marshal.ReadInt32(_frame, FrameFormat);
-        long pts = Marshal.ReadInt64(_frame, FramePts);
+        if (_deviceContext == IntPtr.Zero || Marshal.ReadIntPtr(_frame, FrameHwFramesCtx) == IntPtr.Zero)
+            return _frame;
+
+        Check(Native.av_hwframe_transfer_data(_softwareFrame, _frame, 0), "av_hwframe_transfer_data");
+        // The transfer copies the picture but not its timing.
+        Marshal.WriteInt64(_softwareFrame, FramePts, Marshal.ReadInt64(_frame, FramePts));
+        FfmpegHardwareCounters.Transferred(
+            (long)Marshal.ReadInt32(_softwareFrame, FrameLinesize) * Marshal.ReadInt32(_softwareFrame, FrameHeight));
+        return _softwareFrame;
+    }
+
+    private void EmitFrame(IDecodeOutput<VideoFrame> output, IntPtr source)
+    {
+        int width = Marshal.ReadInt32(source, FrameWidth);
+        int height = Marshal.ReadInt32(source, FrameHeight);
+        int format = Marshal.ReadInt32(source, FrameFormat);
+        long pts = Marshal.ReadInt64(source, FramePts);
         if (width <= 0 || height <= 0)
             return;
 
@@ -287,11 +330,11 @@ public sealed class FfmpegVideoDecoder : IMediaDecoder<VideoFrame>
         {
             for (int plane = 0; plane < frame.PlaneCount; plane++)
             {
-                IntPtr source = Marshal.ReadIntPtr(_frame, FrameData + plane * IntPtr.Size);
-                int linesize = Marshal.ReadInt32(_frame, FrameLinesize + plane * sizeof(int));
-                if (source == IntPtr.Zero || linesize <= 0)
+                IntPtr planeData = Marshal.ReadIntPtr(source, FrameData + plane * IntPtr.Size);
+                int linesize = Marshal.ReadInt32(source, FrameLinesize + plane * sizeof(int));
+                if (planeData == IntPtr.Zero || linesize <= 0)
                     throw new MediaDecoderException("libavcodec returned a picture without plane data.");
-                CopyPlane(source, linesize, frame, plane, pixelFormat);
+                CopyPlane(planeData, linesize, frame, plane, pixelFormat);
             }
         }
         catch
@@ -353,8 +396,72 @@ public sealed class FfmpegVideoDecoder : IMediaDecoder<VideoFrame>
         }
     }
 
+    /// <summary>
+    /// Opens the platform's video device and gives it to libavcodec, but only when this
+    /// decoder advertises a hardware configuration that takes one. A device that cannot be
+    /// created - no GPU, no driver, a headless session - leaves the decoder decoding in
+    /// software, with the reason logged once.
+    /// </summary>
+    private void AttachHardwareDevice(IntPtr codec)
+    {
+        int type = (int)_hardware;
+        if (!SupportsHardwareDevice(codec, type))
+        {
+            LogSoftware($"the {_decoderName} decoder has no {DeviceTypeName(type)} configuration");
+            return;
+        }
+
+        int created = Native.av_hwdevice_ctx_create(out IntPtr device, type, null, IntPtr.Zero, 0);
+        if (created < 0 || device == IntPtr.Zero)
+        {
+            LogSoftware($"no {DeviceTypeName(type)} device: {Describe(created)}");
+            return;
+        }
+
+        IntPtr reference = Native.av_buffer_ref(device);
+        if (reference == IntPtr.Zero)
+        {
+            Native.av_buffer_unref(ref device);
+            LogSoftware("av_buffer_ref failed");
+            return;
+        }
+
+        Marshal.WriteIntPtr(_context_, ContextHwDeviceCtx, reference);
+        _deviceContext = device;
+        _context.Log.Emit(_context.Player, MediaEventKind.DecoderAttempt, MediaLogLevel.Info,
+            $"{Name} decodes on the GPU through {DeviceTypeName(type)}.",
+            ("decoder", Name), ("result", "hardware"), ("device", DeviceTypeName(type)));
+    }
+
+    /// <summary>Whether the decoder lists this device type among the ones it takes as an AVHWDeviceContext.</summary>
+    private static bool SupportsHardwareDevice(IntPtr codec, int type)
+    {
+        for (int index = 0; ; index++)
+        {
+            IntPtr config = Native.avcodec_get_hw_config(codec, index);
+            if (config == IntPtr.Zero)
+                return false;
+            if ((Marshal.ReadInt32(config, HwConfigMethods) & HwConfigMethodDeviceCtx) != 0 &&
+                Marshal.ReadInt32(config, HwConfigDeviceType) == type)
+            {
+                return true;
+            }
+        }
+    }
+
+    private static string DeviceTypeName(int type) =>
+        Marshal.PtrToStringAnsi(Native.av_hwdevice_get_type_name(type)) ?? type.ToString(CultureInfo.InvariantCulture);
+
+    private void LogSoftware(string reason) =>
+        _context.Log.Emit(_context.Player, MediaEventKind.DecoderAttempt, MediaLogLevel.Info,
+            $"{Name} decodes in software: {reason}.", ("decoder", Name), ("result", "software"));
+
     private void Release()
     {
+        if (_deviceContext != IntPtr.Zero)
+            Native.av_buffer_unref(ref _deviceContext);
+        if (_softwareFrame != IntPtr.Zero)
+            Native.av_frame_free(ref _softwareFrame);
         if (_frame != IntPtr.Zero)
             Native.av_frame_free(ref _frame);
         if (_packet != IntPtr.Zero)

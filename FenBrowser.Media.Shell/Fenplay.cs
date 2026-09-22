@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json;
 using FenBrowser.Media.Audio;
 using FenBrowser.Media.Diagnostics;
@@ -330,13 +330,21 @@ public sealed class Fenplay
 
     private static string GpuPictures()
     {
+        long transferred = Codecs.Ffmpeg.FfmpegHardwareCounters.TransferredPictures;
+        string libav = transferred == 0
+            ? string.Empty
+            : $"{transferred.ToString(CultureInfo.InvariantCulture)} pictures decoded on the GPU by libavcodec and transferred back ({(Codecs.Ffmpeg.FfmpegHardwareCounters.BytesTransferred / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture)} MB)";
+
         if (!OperatingSystem.IsWindows())
-            return "no GPU path on this platform";
+            return libav.Length > 0 ? libav : "no pictures came off the GPU (software decode)";
+
         long converted = Gpu.Windows.GpuPictureCounters.ConvertedPictures;
         long readBack = Gpu.Windows.GpuPictureCounters.ReadBackPictures;
-        return converted + readBack == 0
-            ? "no pictures came off the GPU (software decode)"
-            : $"{converted.ToString(CultureInfo.InvariantCulture)} pictures converted to BGRA on the GPU, {readBack.ToString(CultureInfo.InvariantCulture)} read back as NV12, {(Gpu.Windows.GpuPictureCounters.BytesReadBack / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture)} MB read back";
+        if (converted + readBack == 0)
+            return libav.Length > 0 ? libav : "no pictures came off the GPU (software decode)";
+
+        string os = $"{converted.ToString(CultureInfo.InvariantCulture)} pictures converted to BGRA on the GPU, {readBack.ToString(CultureInfo.InvariantCulture)} read back as NV12, {(Gpu.Windows.GpuPictureCounters.BytesReadBack / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture)} MB read back";
+        return libav.Length > 0 ? os + "; " + libav : os;
     }
 
     private sealed class PlayClient : IMediaResourceClient

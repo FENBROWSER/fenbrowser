@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using FenBrowser.Media.Buffers;
@@ -79,14 +79,20 @@ public static class FfmpegDecoders
                 continue;
             }
 
+            // The hardware form of the same decoder goes in first, ahead of the software
+            // one (design section 8, M7); it falls back to software by itself when this
+            // machine has no device for it.
+            if (FfmpegHardwareVideoDecoderFactory.PlatformDevice != FfmpegHardwareDevice.None)
+                decoders.Register(new FfmpegHardwareVideoDecoderFactory(codec, found));
             decoders.Register(new FfmpegVideoDecoderFactory(codec, found));
             video++;
         }
 
         log.Emit(PlayerId.None, MediaEventKind.DecoderChosen, MediaLogLevel.Info,
-            $"libavcodec ready: {registered} audio and {video} video decoders ({FfmpegLibrary.Location}).",
+            $"libavcodec ready: {registered} audio and {video} video decoders ({FfmpegLibrary.Location}), video hardware {FfmpegHardwareVideoDecoderFactory.PlatformDevice}.",
             ("decoder", "libavcodec"), ("audio", registered.ToString(CultureInfo.InvariantCulture)),
-            ("video", video.ToString(CultureInfo.InvariantCulture)));
+            ("video", video.ToString(CultureInfo.InvariantCulture)),
+            ("hardware", FfmpegHardwareVideoDecoderFactory.PlatformDevice.ToString()));
         return registered + video > 0;
     }
 }

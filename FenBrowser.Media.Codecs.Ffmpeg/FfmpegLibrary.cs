@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
 
@@ -252,5 +252,25 @@ public static class FfmpegLibrary
 
         [DllImport(AvutilName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr av_get_pix_fmt_name(int pixelFormat);
+
+        // Hardware decoding (design section 8, M7): one AVHWDeviceContext per decoder,
+        // handed to libavcodec, and pictures brought back to system memory frame by frame.
+        [DllImport(AvutilName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int av_hwdevice_ctx_create(out IntPtr deviceContext, int type, [MarshalAs(UnmanagedType.LPStr)] string? device, IntPtr options, int flags);
+
+        [DllImport(AvutilName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr av_hwdevice_get_type_name(int type);
+
+        [DllImport(AvutilName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr av_buffer_ref(IntPtr buffer);
+
+        [DllImport(AvutilName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void av_buffer_unref(ref IntPtr buffer);
+
+        [DllImport(AvutilName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int av_hwframe_transfer_data(IntPtr destination, IntPtr source, int flags);
+
+        [DllImport(AvcodecName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr avcodec_get_hw_config(IntPtr codec, int index);
     }
 }
