@@ -13,7 +13,15 @@ public sealed record MediaPipelineContext(PlayerId Player, MediaLimits Limits, I
 
 /// <summary>What a demuxer learned from the container headers.</summary>
 /// <param name="Duration">Resource duration, or <see cref="MediaTime.PositiveInfinity"/> when unknown or live.</param>
-public sealed record DemuxerInfo(IReadOnlyList<MediaTrackInfo> Tracks, MediaTime Duration, bool IsSeekable);
+public sealed record DemuxerInfo(IReadOnlyList<MediaTrackInfo> Tracks, MediaTime Duration, bool IsSeekable)
+{
+    /// <summary>
+    /// Encrypted Media Extensions initialization data the container carried, as
+    /// (initialization data type, bytes) pairs. Empty for media in the clear; each entry
+    /// becomes one <c>encrypted</c> event on the media element.
+    /// </summary>
+    public IReadOnlyList<(string InitDataType, byte[] InitData)> InitializationData { get; init; } = [];
+}
 
 /// <summary>
 /// Turns a container into compressed packets. Implementations are managed code, check

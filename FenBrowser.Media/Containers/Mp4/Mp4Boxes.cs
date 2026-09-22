@@ -62,6 +62,22 @@ public static class BoxType
     public static readonly uint DfLa = Of("dfLa");
     public static readonly uint Mp3 = Of(".mp3");
 
+    // ISO/IEC 23001-7 Common Encryption.
+    public static readonly uint Encv = Of("encv");
+    public static readonly uint Enca = Of("enca");
+    public static readonly uint Sinf = Of("sinf");
+    public static readonly uint Frma = Of("frma");
+    public static readonly uint Schm = Of("schm");
+    public static readonly uint Schi = Of("schi");
+    public static readonly uint Tenc = Of("tenc");
+    public static readonly uint Senc = Of("senc");
+    public static readonly uint Saiz = Of("saiz");
+    public static readonly uint Saio = Of("saio");
+    public static readonly uint Pssh = Of("pssh");
+    public static readonly uint Sbgp = Of("sbgp");
+    public static readonly uint Sgpd = Of("sgpd");
+    public static readonly uint Seig = Of("seig");
+
     public static readonly uint HandlerVideo = Of("vide");
     public static readonly uint HandlerAudio = Of("soun");
 

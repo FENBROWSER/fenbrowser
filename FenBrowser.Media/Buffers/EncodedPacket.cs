@@ -43,6 +43,13 @@ public sealed class EncodedPacket : IDisposable
 
     public bool IsKeyframe { get; }
 
+    /// <summary>
+    /// How to decrypt this packet, when the container said it is protected. Null for
+    /// packets in the clear, which is every packet of an unencrypted resource and the
+    /// clear lead-in of an encrypted one.
+    /// </summary>
+    public FenBrowser.Media.Eme.CencSampleInfo? Encryption { get; set; }
+
     public int Length => _length;
 
     /// <summary>The packet bytes. Producers fill this before handing the packet on; consumers only read it.</summary>

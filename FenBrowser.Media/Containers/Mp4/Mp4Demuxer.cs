@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Globalization;
 using FenBrowser.Media.Buffers;
 using FenBrowser.Media.Diagnostics;
+using FenBrowser.Media.Eme;
 using FenBrowser.Media.Pipeline;
 
 namespace FenBrowser.Media.Containers.Mp4;
@@ -43,7 +44,7 @@ public sealed class Mp4DemuxerFactory : IDemuxerFactory
     public IDemuxer Create(IByteSource source, MediaPipelineContext context) => new Mp4Demuxer(source, context);
 }
 
-public sealed class Mp4Demuxer : IDemuxer
+public sealed partial class Mp4Demuxer : IDemuxer
 {
     private const int MaxMoovBytes = 64 * 1024 * 1024;
     private const int MaxMoofBytes = 16 * 1024 * 1024;
@@ -71,7 +72,11 @@ public sealed class Mp4Demuxer : IDemuxer
     }
 
     /// <summary>One sample: where it is, how long it is, and when it decodes and shows (track ticks).</summary>
-    private readonly record struct Sample(long Offset, int Size, long Dts, int CtsOffset, int Duration, bool IsSync);
+    private record struct Sample(long Offset, int Size, long Dts, int CtsOffset, int Duration, bool IsSync)
+    {
+        /// <summary>How to decrypt this sample, once its auxiliary information has been read.</summary>
+        public CencSampleInfo? Encryption { get; set; }
+    }
 
     private sealed class Track
     {
@@ -91,6 +96,12 @@ public sealed class Mp4Demuxer : IDemuxer
         public uint DefaultSampleSize;
         public uint DefaultSampleFlags;
         public long FragmentDts;
+
+        /// <summary>The 'tenc' defaults, when this track's samples are protected.</summary>
+        public TrackEncryption? Encryption;
+
+        /// <summary>Auxiliary sample information that lives outside the moof and is read on demand.</summary>
+        public readonly List<PendingAuxInfo> PendingAux = [];
 
         public MediaTime Time(long ticks) => MediaTime.FromTimescale(Clamp((Int128)ticks - EditOffsetTicks), Timescale);
 
@@ -130,6 +141,10 @@ public sealed class Mp4Demuxer : IDemuxer
                 _fragmented = true;
                 ParseMoof(await ReadBoxAsync(header, MaxMoofBytes, cancellationToken).ConfigureAwait(false), header, length);
             }
+            else if (header.Type == BoxType.Pssh)
+            {
+                CollectPssh(header, (await ReadBoxAsync(header, EmeInitData.MaxInitDataBytes, cancellationToken).ConfigureAwait(false)).AsSpan());
+            }
 
             position = header.End;
         }
@@ -163,7 +178,10 @@ public sealed class Mp4Demuxer : IDemuxer
         }
 
         _open = true;
-        return new DemuxerInfo(_trackInfos, duration, IsSeekable: true);
+        return new DemuxerInfo(_trackInfos, duration, IsSeekable: true)
+        {
+            InitializationData = CencInitDataEntries(),
+        };
     }
 
     private static string Describe(CodecConfig config) => config.Kind == MediaTrackKind.Video
@@ -223,6 +241,8 @@ public sealed class Mp4Demuxer : IDemuxer
                 ParseTrak(body, box.DataStart);
             else if (box.Type == BoxType.Mvex)
                 mvex = (body, box.DataStart);
+            else if (box.Type == BoxType.Pssh)
+                CollectPssh(box, body.Span);
         }
 
         if (mvex is { } extends)
@@ -612,6 +632,16 @@ public sealed class Mp4Demuxer : IDemuxer
         if (data.Length < 78)
             throw new MediaFormatException("A visual sample entry is too short.");
 
+        // An 'encv' entry describes protected samples; its 'sinf' box says which format
+        // they would have been, and the rest of the entry is that format's.
+        if (type == BoxType.Encv && !TryReadProtection(track, data[78..], dataPosition + 78, out type))
+        {
+            _context.Log.Emit(_context.Player, MediaEventKind.TrackAdded, MediaLogLevel.Info,
+                $"MP4: video track {track.TrackId} uses a protection scheme this engine cannot read.",
+                ("track", track.TrackId.ToString(CultureInfo.InvariantCulture)));
+            return false;
+        }
+
         MediaCodec codec = MediaCodec.Unknown;
         string? codecString = null;
         ReadOnlyMemory<byte> extradata = default;
@@ -713,6 +743,14 @@ public sealed class Mp4Demuxer : IDemuxer
 
         if (data.Length < childrenAt)
             throw new MediaFormatException("An audio sample entry is too short.");
+
+        if (type == BoxType.Enca && !TryReadProtection(track, data[childrenAt..], dataPosition + childrenAt, out type))
+        {
+            _context.Log.Emit(_context.Player, MediaEventKind.TrackAdded, MediaLogLevel.Info,
+                $"MP4: audio track {track.TrackId} uses a protection scheme this engine cannot read.",
+                ("track", track.TrackId.ToString(CultureInfo.InvariantCulture)));
+            return false;
+        }
 
         MediaCodec codec = MediaCodec.Unknown;
         string? codecString = null;
@@ -940,6 +978,7 @@ public sealed class Mp4Demuxer : IDemuxer
         uint defaultDuration = 0, defaultSize = 0, defaultFlags = 0;
         long? decodeTime = null;
         var runs = new List<(BoxHeader Header, ReadOnlyMemory<byte> Body)>();
+        ReadOnlyMemory<byte> senc = default, saiz = default, saio = default, sbgp = default, sgpd = default;
 
         foreach (var (box, body) in Box.Children(data, dataPosition))
         {
@@ -970,6 +1009,26 @@ public sealed class Mp4Demuxer : IDemuxer
             {
                 runs.Add((box, body));
             }
+            else if (box.Type == BoxType.Senc)
+            {
+                senc = body;
+            }
+            else if (box.Type == BoxType.Saiz)
+            {
+                saiz = body;
+            }
+            else if (box.Type == BoxType.Saio)
+            {
+                saio = body;
+            }
+            else if (box.Type == BoxType.Sbgp)
+            {
+                sbgp = body;
+            }
+            else if (box.Type == BoxType.Sgpd)
+            {
+                sgpd = body;
+            }
         }
 
         if (track is null)
@@ -980,6 +1039,7 @@ public sealed class Mp4Demuxer : IDemuxer
             track.FragmentDts = Track.Clamp(start);
 
         long end = runningOffset;
+        int firstFragmentSample = track.Samples.Count;
         foreach (var (box, body) in runs)
         {
             var span = body.Span;
@@ -1022,6 +1082,11 @@ public sealed class Mp4Demuxer : IDemuxer
             end = offset;
         }
 
+        // The auxiliary information describes the fragment's samples as one run, whichever
+        // trun they came from.
+        ApplySampleEncryption(
+            track, firstFragmentSample, track.Samples.Count - firstFragmentSample, senc, saiz, saio, sbgp, sgpd, baseDataOffset);
+
         return end;
     }
 
@@ -1050,6 +1115,9 @@ public sealed class Mp4Demuxer : IDemuxer
         if (chosen is null)
             return null;
 
+        if (chosen.PendingAux.Count > 0)
+            await ResolvePendingAuxAsync(chosen, chosen.Next, cancellationToken).ConfigureAwait(false);
+
         var sample = chosen.Samples[chosen.Next++];
         var pts = chosen.Time(Track.Clamp((Int128)sample.Dts + sample.CtsOffset));
         // The duration is the distance to the frame's end converted from ticks, not the
@@ -1058,6 +1126,7 @@ public sealed class Mp4Demuxer : IDemuxer
         // microsecond, SourceBuffer-appendWindowEnd-rounding).
         var duration = chosen.Time(Track.Clamp((Int128)sample.Dts + sample.CtsOffset + sample.Duration)) - pts;
         var packet = EncodedPacket.Rent(_context.Limits, chosen.Kind, chosen.Id, sample.Size, pts, chosen.Time(sample.Dts), duration, chosen.Kind == MediaTrackKind.Audio || sample.IsSync);
+        packet.Encryption = sample.Encryption;
         int read = await _source.ReadAtLeastAsync(sample.Offset, packet.Memory, cancellationToken).ConfigureAwait(false);
         if (read < sample.Size)
         {
