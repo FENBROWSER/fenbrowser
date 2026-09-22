@@ -280,6 +280,8 @@ public sealed class Fenplay
             return ExitInputError;
         }
 
+        var process = System.Diagnostics.Process.GetCurrentProcess();
+        var cpuBefore = process.TotalProcessorTime;
         var decode = System.Diagnostics.Stopwatch.StartNew();
         var convert = new System.Diagnostics.Stopwatch();
         long pictures = 0;
@@ -311,13 +313,30 @@ public sealed class Fenplay
         }
 
         decode.Stop();
+        process.Refresh();
+        double cpuMs = (process.TotalProcessorTime - cpuBefore).TotalMilliseconds;
         double decodeMs = decode.Elapsed.TotalMilliseconds;
         double convertMs = convert.Elapsed.TotalMilliseconds;
         await _out.WriteLineAsync($"file:     {Path.GetFileName(args[0])} ({bytes.Length.ToString(CultureInfo.InvariantCulture)} bytes)").ConfigureAwait(false);
         await _out.WriteLineAsync($"video:    {info.VideoTrack.Config.Codec} {width.ToString(CultureInfo.InvariantCulture)}x{height.ToString(CultureInfo.InvariantCulture)}, {pictures.ToString(CultureInfo.InvariantCulture)} pictures, {audioBlocks.ToString(CultureInfo.InvariantCulture)} audio blocks").ConfigureAwait(false);
         await _out.WriteLineAsync($"decode:   {decodeMs.ToString("F0", CultureInfo.InvariantCulture)} ms, {(pictures == 0 ? 0 : decodeMs / pictures).ToString("F2", CultureInfo.InvariantCulture)} ms/picture, {(decodeMs <= 0 ? 0 : pictures * 1000.0 / decodeMs).ToString("F1", CultureInfo.InvariantCulture)} pictures/s (demux + decode + audio)").ConfigureAwait(false);
         await _out.WriteLineAsync($"convert:  {convertMs.ToString("F0", CultureInfo.InvariantCulture)} ms, {(pictures == 0 ? 0 : convertMs / pictures).ToString("F2", CultureInfo.InvariantCulture)} ms/picture, {(convertMs <= 0 ? 0 : pictures * 1000.0 / convertMs).ToString("F1", CultureInfo.InvariantCulture)} pictures/s (YUV to BGRA)").ConfigureAwait(false);
+        // The power budget (design §5): processor time over both stages, and how many
+        // pictures the GPU handed over already converted or as raw NV12.
+        await _out.WriteLineAsync($"cpu:      {cpuMs.ToString("F0", CultureInfo.InvariantCulture)} ms of processor time, {(pictures == 0 ? 0 : cpuMs / pictures).ToString("F2", CultureInfo.InvariantCulture)} ms/picture").ConfigureAwait(false);
+        await _out.WriteLineAsync($"gpu:      {GpuPictures()}").ConfigureAwait(false);
         return ExitOk;
+    }
+
+    private static string GpuPictures()
+    {
+        if (!OperatingSystem.IsWindows())
+            return "no GPU path on this platform";
+        long converted = Gpu.Windows.GpuPictureCounters.ConvertedPictures;
+        long readBack = Gpu.Windows.GpuPictureCounters.ReadBackPictures;
+        return converted + readBack == 0
+            ? "no pictures came off the GPU (software decode)"
+            : $"{converted.ToString(CultureInfo.InvariantCulture)} pictures converted to BGRA on the GPU, {readBack.ToString(CultureInfo.InvariantCulture)} read back as NV12, {(Gpu.Windows.GpuPictureCounters.BytesReadBack / (1024.0 * 1024.0)).ToString("F1", CultureInfo.InvariantCulture)} MB read back";
     }
 
     private sealed class PlayClient : IMediaResourceClient
