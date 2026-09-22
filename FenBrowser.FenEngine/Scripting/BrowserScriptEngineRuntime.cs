@@ -17467,13 +17467,43 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private JsValue CreateRejectedPromise(string message, string name)
     {
         var (promise, _, reject) = ((IBuiltinContext)_interpreter).CreatePromiseCapability();
-        var errorObj = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        _ = _interpreter.InvokeFunction(reject, new[] { CreateErrorValue(name, message) }, JsValue.Undefined);
+        return promise;
+    }
+
+    /// <summary>
+    /// A real error object of the named kind: one of the ECMAScript error constructors, or
+    /// a DOMException for the WebIDL error names. A page checks these with <c>instanceof</c>
+    /// as often as it reads <c>name</c>, and an object carrying the right two properties is
+    /// not the same thing.
+    /// </summary>
+    private JsValue CreateErrorValue(string name, string message)
+    {
+        name ??= "Error";
+        bool isEcmaScriptError = name is "Error" or "TypeError" or "RangeError" or "SyntaxError"
+            or "ReferenceError" or "EvalError" or "URIError";
+
+        var ctor = ReadGlobalValueOrUndefined(isEcmaScriptError ? name : "DOMException");
+        if (_interpreter.CanCallValue(ctor))
+        {
+            try
+            {
+                return isEcmaScriptError
+                    ? _interpreter.ConstructValue(ctor, new[] { JsValue.FromString(message ?? string.Empty) })
+                    : _interpreter.ConstructValue(ctor, new[] { JsValue.FromString(message ?? string.Empty), JsValue.FromString(name) });
+            }
+            catch
+            {
+                // A realm that has lost its constructors still gets something with the
+                // right shape below.
+            }
+        }
+
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
             ["message"] = JsValue.FromString(message ?? string.Empty),
-            ["name"] = JsValue.FromString(name ?? "Error")
+            ["name"] = JsValue.FromString(name)
         });
-        _ = _interpreter.InvokeFunction(reject, new[] { errorObj }, JsValue.Undefined);
-        return promise;
     }
 
     private JsValue CreateViewTransitionResult(JsValue updateArgument)
