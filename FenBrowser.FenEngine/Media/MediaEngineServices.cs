@@ -36,7 +36,9 @@ namespace FenBrowser.FenEngine.Media
         /// The audio device backend players open their streams on: WASAPI on Windows, the
         /// null output elsewhere or when no device can be opened (ADR-0003); tests swap it.
         /// </summary>
-        public static IAudioOutputFactory AudioOutputs { get; set; } = FenBrowser.Media.Audio.Windows.PlatformAudioOutputFactory.Instance;
+        // Tap ids (a MediaElementAudioSourceNode's) reach Web Audio graphs; everything else is a device.
+        public static IAudioOutputFactory AudioOutputs { get; set; } =
+            new FenBrowser.Media.WebAudio.TapAwareAudioOutputFactory(FenBrowser.Media.Audio.Windows.PlatformAudioOutputFactory.Instance);
 
         /// <summary>
         /// Where players demux and decode: null means in this process; the renderer child

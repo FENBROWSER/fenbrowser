@@ -41,6 +41,7 @@ namespace FenBrowser.FenEngine.Media
         private readonly object _gate = new();
         private MediaPlayer _player;
         private IMediaKeySource _mediaKeys;
+        private string _audioSink;
         private readonly VideoPresenter _presenter = new();
         private (bool Playing, double Rate, bool PreservesPitch, double Volume)? _pendingPlayback;
         private (MediaTime Target, bool Approximate)? _pendingSeek;
@@ -153,6 +154,10 @@ namespace FenBrowser.FenEngine.Media
                 {
                     player.SetMediaKeys(_mediaKeys);
                 }
+                if (_audioSink != null)
+                {
+                    player.SetAudioSink(_audioSink);
+                }
                 playback = _pendingPlayback;
                 seek = _pendingSeek;
                 _pendingPlayback = null;
@@ -262,6 +267,22 @@ namespace FenBrowser.FenEngine.Media
             }
 
             player?.SetMediaKeys(keys);
+        }
+
+        /// <summary>
+        /// The element's audio output (setSinkId, or a Web Audio tap). Kept until the player
+        /// exists, like the keys: the choice is often made while the resource is fetched.
+        /// </summary>
+        public void SetAudioSink(string deviceId)
+        {
+            MediaPlayer player;
+            lock (_gate)
+            {
+                _audioSink = deviceId ?? string.Empty;
+                player = _player;
+            }
+
+            player?.SetAudioSink(deviceId ?? string.Empty);
         }
 
         public VideoPlaybackQuality? GetVideoPlaybackQuality()

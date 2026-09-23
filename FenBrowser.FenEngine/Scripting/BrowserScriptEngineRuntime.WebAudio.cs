@@ -42,6 +42,9 @@ public sealed partial class FenJsBrowserScriptEngine
         public int Channels;
         public int Length;
         public readonly Dictionary<int, AudioNodeKernel> Nodes = new();
+        // WA5: element taps and track pipes this context registered, released when it closes.
+        public readonly List<string> Taps = new();
+        public readonly List<string> TrackKeys = new();
         public readonly Dictionary<int, PeriodicWaveData> Waves = new();
         public int NextWaveId = 1;
 
@@ -161,6 +164,9 @@ public sealed partial class FenJsBrowserScriptEngine
                 "convolver" => new ConvolverKernel(graph),
                 "compressor" => new CompressorKernel(graph),
                 "panner" => new PannerKernel(graph),
+                "streamdest" => new StreamDestinationKernel(graph, new AudioTrackPipe(graph.SampleRate, Math.Clamp(arg, 1, WebAudioLimits.MaxChannels))),
+                "streamsource" => new StreamSourceKernel(graph),
+                "elementsource" => new StreamSourceKernel(graph),
                 _ => null,
             };
             if (kernel == null)
@@ -716,6 +722,66 @@ public sealed partial class FenJsBrowserScriptEngine
             return _interpreter.AllocateArray(values);
         });
 
+        // ---- WA5 ------------------------------------------------------------------------
+
+        Native("__fenWaStreamPipe", 2, args =>
+        {
+            if (WebAudioEntry(args) is not { } entry || Kernel(entry, args, 1) is not StreamDestinationKernel destination)
+                return JsValue.FromString(string.Empty);
+            string key = Guid.NewGuid().ToString("N");
+            lock (_audioTrackPipes)
+                _audioTrackPipes[key] = destination.Pipe;
+            entry.TrackKeys.Add(key);
+            return JsValue.FromString(key);
+        });
+
+        Native("__fenWaBindTrack", 4, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is StreamSourceKernel source)
+            {
+                AudioTrackPipe pipe = null;
+                bool live = args.Count > 3 && args[3].Tag == JsValueTag.Boolean && args[3].AsBoolean();
+                string key = ArgString(args, 2);
+                if (live && key.Length > 0)
+                {
+                    lock (_audioTrackPipes)
+                        _audioTrackPipes.TryGetValue(key, out pipe);
+                }
+
+                entry.Graph.Post(_ => source.SetPipe(pipe));
+            }
+
+            return JsValue.Undefined;
+        });
+
+        // WA 1.20: the element's audio leaves the device and feeds this node through a tap.
+        Native("__fenWaBindElement", 3, args =>
+        {
+            if (WebAudioEntry(args) is not { } entry || Kernel(entry, args, 1) is not StreamSourceKernel source || args.Count < 3)
+                return JsValue.Undefined;
+            if (ResolveHostObjectOrNull(args[2]) is not FenBrowser.Core.Dom.V2.Element element || GetOrCreateMediaBinding(element) is not { } binding)
+                return JsValue.Undefined;
+
+            var pipe = new AudioTrackPipe(entry.Graph.SampleRate, 2);
+            string tap = AudioTapRegistry.Register(pipe);
+            entry.Taps.Add(tap);
+            entry.Graph.Post(_ => source.SetPipe(pipe));
+            binding.Controller.RouteAudioToTap(tap);
+            return JsValue.Undefined;
+        });
+
+        // WA 1.20 / design section 3: a cross-origin element without CORS contributes silence.
+        Native("__fenWaSourceMuted", 3, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is StreamSourceKernel source)
+            {
+                bool muted = args.Count > 2 && args[2].Tag == JsValueTag.Boolean && args[2].AsBoolean();
+                entry.Graph.Post(_ => source.Muted = muted);
+            }
+
+            return JsValue.Undefined;
+        });
+
         Native("__fenWaStartRendering", 1, args =>
         {
             if (WebAudioEntry(args) is { Offline: true } entry)
@@ -781,6 +847,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 entry.Closed = true;
                 entry.Wake.Set();
                 DetachWebAudioOutput(entry);
+                ReleaseWebAudioStreams(entry);
             }
 
             return JsValue.Undefined;
@@ -1071,6 +1138,7 @@ public sealed partial class FenJsBrowserScriptEngine
         {
             entry.Running = false;
             entry.Closed = true;
+            ReleaseWebAudioStreams(entry);
             try { entry.Wake.Set(); } catch (ObjectDisposedException) { }
             if (Interlocked.Exchange(ref entry.WaitingForResume, 0) == 1)
                 entry.ResumeSignal.Release();
@@ -1078,6 +1146,25 @@ public sealed partial class FenJsBrowserScriptEngine
         }
 
         _webAudioContexts.Clear();
+    }
+
+    // Tracks' audio, by the key a MediaStreamTrack carries: a destination node in one context
+    // and a source node in another find each other through this.
+    private static readonly Dictionary<string, AudioTrackPipe> _audioTrackPipes = new();
+
+    // A closed context's destination tracks carry nothing more, and its taps reach no graph.
+    private static void ReleaseWebAudioStreams(WebAudioContextEntry entry)
+    {
+        foreach (var tap in entry.Taps)
+            AudioTapRegistry.Unregister(tap);
+        entry.Taps.Clear();
+        lock (_audioTrackPipes)
+        {
+            foreach (var key in entry.TrackKeys)
+                _audioTrackPipes.Remove(key);
+        }
+
+        entry.TrackKeys.Clear();
     }
 
     private WebAudioContextEntry WebAudioEntry(IReadOnlyList<JsValue> args) =>

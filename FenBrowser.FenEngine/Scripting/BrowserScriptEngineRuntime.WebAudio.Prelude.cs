@@ -1276,6 +1276,19 @@ public sealed partial class FenJsBrowserScriptEngine
                         });
                     });
                 }
+                createMediaStreamDestination() { return new MediaStreamAudioDestinationNode(this); }
+                createMediaStreamSource(mediaStream) {
+                    requireArgs(arguments, 1, 'createMediaStreamSource', 'AudioContext');
+                    return new MediaStreamAudioSourceNode(this, { mediaStream: mediaStream });
+                }
+                createMediaStreamTrackSource(mediaStreamTrack) {
+                    requireArgs(arguments, 1, 'createMediaStreamTrackSource', 'AudioContext');
+                    return new MediaStreamTrackAudioSourceNode(this, { mediaStreamTrack: mediaStreamTrack });
+                }
+                createMediaElementSource(mediaElement) {
+                    requireArgs(arguments, 1, 'createMediaElementSource', 'AudioContext');
+                    return new MediaElementAudioSourceNode(this, { mediaElement: mediaElement });
+                }
                 close() {
                     var self = this;
                     var s = this[S];
@@ -1442,6 +1455,111 @@ public sealed partial class FenJsBrowserScriptEngine
                 get renderedBuffer() { return this[S].renderedBuffer; }
             }
             webidl(OfflineAudioCompletionEvent, 'OfflineAudioCompletionEvent');
+
+            // ---- WA5: MediaStream nodes (WA 1.20, 1.21) ---------------------------------------
+
+            function requireRealtime(context, what) {
+                if (!(context instanceof AudioContext)) throw typeError("Failed to construct '" + what + "': parameter 1 is not of type 'AudioContext'.");
+                return context;
+            }
+            function firstAudioTrack(stream, what) {
+                var tracks = stream.getAudioTracks();
+                if (tracks.length === 0) throw domError("Failed to construct '" + what + "': MediaStream has no audio track", 'InvalidStateError');
+                // WA 1.20: the audio track whose id sorts first.
+                return tracks.slice().sort(function (x, y) { return x.id < y.id ? -1 : x.id > y.id ? 1 : 0; })[0];
+            }
+
+            class MediaStreamAudioDestinationNode extends AudioNode {
+                constructor(context, options) {
+                    requireRealtime(context, 'MediaStreamAudioDestinationNode');
+                    var o = dictionary(options, 'AudioNodeOptions');
+                    super(INTERNAL, context, 'streamdest', 1, 0, 2, 'explicit', 'speakers', 2);
+                    applyNodeOptions(this, o);
+                    var pipe = g.__fenWaStreamPipe(context[S].id, this[S].id);
+                    this[S].stream = g.__fenStreamWithAudioPipe(pipe);
+                }
+                get stream() { return this[S].stream; }
+            }
+            webidl(MediaStreamAudioDestinationNode, 'MediaStreamAudioDestinationNode');
+
+            // The node follows its track: an ended track is heard as silence for good, a
+            // disabled one as silence until it is enabled again (mediacapture-main 4.3.1).
+            function trackSourceNode(node, context, track) {
+                function follow(t) {
+                    g.__fenWaBindTrack(context[S].id, node[S].id, t._pipe || '', t.readyState === 'live');
+                    g.__fenWaSourceMuted(context[S].id, node[S].id, !t.enabled);
+                }
+                follow(track);
+                if (Array.isArray(track._consumers)) track._consumers.push(follow);
+            }
+
+            class MediaStreamAudioSourceNode extends AudioNode {
+                constructor(context, options) {
+                    requireRealtime(context, 'MediaStreamAudioSourceNode');
+                    if (options === undefined || options === null) throw typeError("Failed to construct 'MediaStreamAudioSourceNode': 2 arguments required, but only 1 present.");
+                    var o = dictionary(options, 'MediaStreamAudioSourceOptions');
+                    if (!(o.mediaStream instanceof g.MediaStream)) throw typeError("Failed to construct 'MediaStreamAudioSourceNode': member mediaStream is not of type 'MediaStream'.");
+                    var track = firstAudioTrack(o.mediaStream, 'MediaStreamAudioSourceNode');
+                    super(INTERNAL, context, 'streamsource', 0, 1, 2, 'max', 'speakers');
+                    this[S].mediaStream = o.mediaStream;
+                    trackSourceNode(this, context, track);
+                }
+                get mediaStream() { return this[S].mediaStream; }
+            }
+            webidl(MediaStreamAudioSourceNode, 'MediaStreamAudioSourceNode');
+
+            class MediaStreamTrackAudioSourceNode extends AudioNode {
+                constructor(context, options) {
+                    requireRealtime(context, 'MediaStreamTrackAudioSourceNode');
+                    if (options === undefined || options === null) throw typeError("Failed to construct 'MediaStreamTrackAudioSourceNode': 2 arguments required, but only 1 present.");
+                    var o = dictionary(options, 'MediaStreamTrackAudioSourceOptions');
+                    if (!(o.mediaStreamTrack instanceof g.MediaStreamTrack)) throw typeError("Failed to construct 'MediaStreamTrackAudioSourceNode': member mediaStreamTrack is not of type 'MediaStreamTrack'.");
+                    if (o.mediaStreamTrack.kind !== 'audio') throw domError("Failed to construct 'MediaStreamTrackAudioSourceNode': the track is not an audio track.", 'InvalidStateError');
+                    super(INTERNAL, context, 'streamsource', 0, 1, 2, 'max', 'speakers');
+                    trackSourceNode(this, context, o.mediaStreamTrack);
+                }
+            }
+            webidl(MediaStreamTrackAudioSourceNode, 'MediaStreamTrackAudioSourceNode');
+
+            // ---- MediaElementAudioSourceNode (WA 1.20) -----------------------------------------
+
+            var elementSources = new WeakMap();
+            class MediaElementAudioSourceNode extends AudioNode {
+                constructor(context, options) {
+                    requireRealtime(context, 'MediaElementAudioSourceNode');
+                    if (options === undefined || options === null) throw typeError("Failed to construct 'MediaElementAudioSourceNode': 2 arguments required, but only 1 present.");
+                    var o = dictionary(options, 'MediaElementAudioSourceOptions');
+                    if (typeof g.HTMLMediaElement !== 'function' || !(o.mediaElement instanceof g.HTMLMediaElement))
+                        throw typeError("Failed to construct 'MediaElementAudioSourceNode': member mediaElement is not of type 'HTMLMediaElement'.");
+                    // An element feeds one graph at a time; a closed context lets it go.
+                    var previous = elementSources.get(o.mediaElement);
+                    if (previous && previous.context.state !== 'closed')
+                        throw domError("Failed to construct 'MediaElementAudioSourceNode': HTMLMediaElement already connected previously to a different MediaElementSourceNode.", 'InvalidStateError');
+                    super(INTERNAL, context, 'elementsource', 0, 1, 2, 'max', 'speakers');
+                    elementSources.set(o.mediaElement, this);
+                    this[S].mediaElement = o.mediaElement;
+                    g.__fenWaBindElement(context[S].id, this[S].id, o.mediaElement);
+                    // A cross-origin resource fetched without CORS is heard as silence; the
+                    // check runs again whenever the element loads something new.
+                    var node = this, element = o.mediaElement;
+                    function checkOrigin() {
+                        var tainted = false;
+                        try {
+                            var src = element.currentSrc || element.src || '';
+                            if (src && !/^(blob|data|mediasource):/i.test(src)) {
+                                var origin = new URL(src, g.location.href).origin;
+                                tainted = origin !== g.location.origin && !element.hasAttribute('crossorigin');
+                            }
+                        } catch (e) { tainted = false; }
+                        g.__fenWaSourceMuted(context[S].id, node[S].id, tainted);
+                    }
+                    checkOrigin();
+                    element.addEventListener('loadstart', checkOrigin);
+                    element.addEventListener('loadedmetadata', checkOrigin);
+                }
+                get mediaElement() { return this[S].mediaElement; }
+            }
+            webidl(MediaElementAudioSourceNode, 'MediaElementAudioSourceNode');
 
             // ---- hooks the engine calls --------------------------------------------------
 

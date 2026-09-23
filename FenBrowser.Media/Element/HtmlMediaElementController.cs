@@ -839,9 +839,11 @@ public sealed class HtmlMediaElementController
 
         client.Resource = resource;
         _resource = resource;
-        // A sink chosen before this resource existed still applies to it.
-        if (SinkId.Length > 0)
-            resource.SetAudioSink(SinkId);
+        // A sink chosen before this resource existed still applies to it; a Web Audio tap
+        // takes precedence over any device.
+        string sink = _audioTap ?? SinkId;
+        if (sink.Length > 0)
+            resource.SetAudioSink(sink);
         // EME §7.3: a MediaKeys set before the resource existed still applies to it.
         if (_mediaKeys is not null)
             resource.SetMediaKeys(_mediaKeys);
@@ -1506,6 +1508,18 @@ public sealed class HtmlMediaElementController
     /// into the promise's fate, so a page never sees <c>sinkId</c> change before its promise
     /// resolves.
     /// </summary>
+    private string? _audioTap;
+
+    /// <summary>
+    /// WA 1.20 MediaElementAudioSourceNode: from now on the element's audio goes to the
+    /// output a Web Audio tap names instead of any device; null returns it to its sink.
+    /// </summary>
+    public void RouteAudioToTap(string? tapId)
+    {
+        _audioTap = tapId;
+        _resource?.SetAudioSink(tapId ?? SinkId);
+    }
+
     public SinkIdOutcome TrySetSinkId(string sinkId)
     {
         sinkId ??= string.Empty;
@@ -1518,7 +1532,10 @@ public sealed class HtmlMediaElementController
             return SinkIdOutcome.NotFound;
 
         SinkId = sinkId;
-        _resource?.SetAudioSink(sinkId);
+        // While a Web Audio graph owns the element's audio the attribute still changes, but
+        // the audio stays in the graph (WA 1.20).
+        if (_audioTap is null)
+            _resource?.SetAudioSink(sinkId);
         _log.Emit(Player, MediaEventKind.AudioSinkChanged, MediaLogLevel.Info,
             sinkId.Length == 0 ? "The element follows the default audio output." : "The element chose an audio output endpoint.",
             [("sink", sinkId)]);

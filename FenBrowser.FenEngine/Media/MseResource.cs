@@ -73,6 +73,9 @@ namespace FenBrowser.FenEngine.Media
 
         public void SetMediaKeys(IMediaKeySource keys) => _player.SetMediaKeys(keys);
 
+        /// <summary>The element's audio output (setSinkId, or a Web Audio tap).</summary>
+        public void SetAudioSink(string deviceId) => _player.SetAudioSink(deviceId);
+
         public bool IsProviderObject => true;
 
         public VideoPlaybackQuality? GetVideoPlaybackQuality() => _player.GetVideoPlaybackQuality();
