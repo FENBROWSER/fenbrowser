@@ -1623,7 +1623,9 @@ public sealed partial class FenJsBrowserScriptEngine
     /// rest happens where the specification says "in parallel": a media element task checks
     /// it against the endpoints the platform offers and either moves the audio or rejects
     /// with NotFoundError. A page therefore never sees sinkId change before its promise
-    /// settles, which is what the audio-output tests check.
+    /// settles, which is what the audio-output tests check. The two answers that need no
+    /// device lookup come back already settled: a document not allowed to use
+    /// "speaker-selection" is refused, and asking for the current sink resolves.
     /// </summary>
     private JsValue SetSinkId(MediaElementBinding binding, IReadOnlyList<JsValue> args)
     {
@@ -1635,7 +1637,19 @@ public sealed partial class FenJsBrowserScriptEngine
         }
 
         string sinkId = CoerceToHostString(args[0]) ?? string.Empty;
+        if (!IsFeatureEnabledInDocument(FenBrowser.Core.Security.PolicyControlledFeature.SpeakerSelection))
+        {
+            return CreateRejectedPromise(
+                "The permissions policy does not allow 'speaker-selection' in this document.",
+                "NotAllowedError");
+        }
+
         var (promise, resolve, reject) = ((IBuiltinContext)_interpreter).CreatePromiseCapability();
+        if (string.Equals(sinkId, binding.Controller.SinkId, StringComparison.Ordinal))
+        {
+            _ = _interpreter.InvokeFunction(resolve, new[] { JsValue.Undefined }, JsValue.Undefined);
+            return promise;
+        }
         binding.QueueTask(() =>
         {
             switch (binding.Controller.TrySetSinkId(sinkId))
