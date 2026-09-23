@@ -114,6 +114,9 @@ public sealed class AudioParamKernel
         for (int i = 0; i < _values.Length; i++)
         {
             float v = _values[i];
+            // WA 1.6.3: a NaN computed value becomes the default value.
+            if (float.IsNaN(v))
+                _values[i] = v = DefaultValue;
             if (v < min)
                 _values[i] = min;
             else if (v > max)

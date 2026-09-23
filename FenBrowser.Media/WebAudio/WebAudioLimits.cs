@@ -10,10 +10,14 @@ public static class WebAudioLimits
     public const int RenderQuantumFrames = 128;
 
     /// <summary>
-    /// The largest render quantum a <c>renderSizeHint</c> may ask for: six seconds' worth at
-    /// 1 kHz is far past any real use, and keeps one bus bounded.
+    /// The largest render quantum any context may have: WA 1.1 lets a renderSizeHint ask for
+    /// up to six seconds of frames, and this is six seconds at the top sample rate. Buses
+    /// allocate channels only as they are used, so a large quantum costs what it carries.
     /// </summary>
-    public const int MaxRenderQuantumFrames = 6144;
+    public const int MaxRenderQuantumFrames = 6 * 768000;
+
+    /// <summary>WA 1.1: the most frames a renderSizeHint may ask for at <paramref name="sampleRate"/>.</summary>
+    public static int MaxRenderQuantumFor(float sampleRate) => (int)Math.Floor(6.0 * sampleRate);
 
     /// <summary>WA 1.1: at least 32 channels must be supported; this engine supports exactly 32.</summary>
     public const int MaxChannels = 32;

@@ -194,7 +194,9 @@ public sealed class AudioParamTimeline
     {
         lock (_gate)
         {
-            double held = ValueAtLocked(cancelTime);
+            // The held value is what the param outputs, a float; a ramp after the cancel starts
+            // from exactly that.
+            double held = (float)ValueAtLocked(cancelTime);
             int next = FirstAfterLocked(cancelTime);
             int last = next - 1;
 
@@ -281,8 +283,9 @@ public sealed class AudioParamTimeline
         {
             foreach (var existing in _events)
             {
+                // An event at the curve's own start time lands inside it too.
                 if (existing.Kind == AutomationEventKind.SetValueCurve &&
-                    automationEvent.Time > existing.Time &&
+                    automationEvent.Time >= existing.Time &&
                     automationEvent.Time < existing.Time + existing.Duration)
                 {
                     return AutomationError.NotSupported;

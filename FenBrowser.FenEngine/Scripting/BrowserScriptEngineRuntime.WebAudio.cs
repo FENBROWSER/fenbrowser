@@ -74,7 +74,7 @@ public sealed partial class FenJsBrowserScriptEngine
             if (rate <= 0)
                 rate = DefaultAudioContextSampleRate;
             if (!WebAudioLimits.IsValidSampleRate(rate) || channels < 1 || channels > WebAudioLimits.MaxChannels ||
-                quantum < 1 || quantum > WebAudioLimits.MaxRenderQuantumFrames)
+                quantum < 1 || quantum > WebAudioLimits.MaxRenderQuantumFor(rate))
             {
                 return JsValue.FromInt32(0);
             }

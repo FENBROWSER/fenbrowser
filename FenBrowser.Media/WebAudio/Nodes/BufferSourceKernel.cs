@@ -88,8 +88,9 @@ public sealed class BufferSourceKernel : ScheduledSourceKernel
         var buffer = Buffer;
         if (!HasStarted || HasEnded || buffer is null)
         {
-            // WA 1.9.5: with no buffer there is nothing to play, and the node ends once started.
-            if (HasStarted && !HasEnded && buffer is null && frame >= StartFrame)
+            // WA 1.9.5: started with no buffer, the node's stop time becomes now - it ends at
+            // once, whatever start time it was given, and a buffer set later is not played.
+            if (HasStarted && !HasEnded && buffer is null)
                 Finish();
             OutputSilence();
             return;
@@ -115,9 +116,12 @@ public sealed class BufferSourceKernel : ScheduledSourceKernel
         bool loop = Loop;
         if (loop)
         {
-            if (LoopStart >= 0 && LoopEnd > 0 && LoopStart < LoopEnd)
+            // A negative loopStart is clamped into the buffer; a loop that is then empty or
+            // inverted falls back to the whole buffer.
+            double clampedStart = Math.Clamp(LoopStart, 0, buffer.Duration);
+            if (LoopEnd > 0 && clampedStart < LoopEnd)
             {
-                loopStart = LoopStart * bufferRate;
+                loopStart = clampedStart * bufferRate;
                 loopEnd = Math.Min(LoopEnd * bufferRate, length);
             }
         }
@@ -126,7 +130,11 @@ public sealed class BufferSourceKernel : ScheduledSourceKernel
             _enteredLoop = false;
         }
 
-        double offset = Offset * bufferRate;
+        // WA 1.9.4 start(): an offset past the end is clamped to it; playing a loop
+        // backwards from before the loop starts from the loop's start.
+        double offset = Math.Min(Offset * bufferRate, length);
+        if (loop && step < 0 && offset < loopStart)
+            offset = loopStart;
         double durationFrames = Duration * bufferRate;
         long startFrame = StartFrame;
         long stopFrame = StopFrame;
@@ -152,7 +160,11 @@ public sealed class BufferSourceKernel : ScheduledSourceKernel
             {
                 // Sub-sample accurate start: the playhead is where it would have been had
                 // playback begun exactly at the start time.
-                _position = offset + ((f / sampleRate) - StartTime) * computedPlaybackRate * bufferRate;
+                double lead = ((f / sampleRate) - StartTime) * bufferRate;
+                _position = offset + lead * computedPlaybackRate;
+                // The grain's duration is measured from the exact start time, so the part of
+                // a frame before the first output one has already elapsed.
+                _elapsed = lead * Math.Abs(computedPlaybackRate);
                 _playing = true;
             }
 

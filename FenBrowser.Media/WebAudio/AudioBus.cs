@@ -8,7 +8,7 @@ namespace FenBrowser.Media.WebAudio;
 /// </summary>
 public sealed class AudioBus
 {
-    private readonly float[][] _channels;
+    private readonly float[]?[] _channels;
 
     public AudioBus(int capacity, int frames = WebAudioLimits.RenderQuantumFrames)
     {
@@ -17,9 +17,8 @@ public sealed class AudioBus
         if (frames < 1 || frames > WebAudioLimits.MaxRenderQuantumFrames)
             throw new ArgumentOutOfRangeException(nameof(frames));
 
-        _channels = new float[capacity][];
-        for (int i = 0; i < capacity; i++)
-            _channels[i] = new float[frames];
+        _channels = new float[]?[capacity];
+        _channels[0] = new float[frames];
         Frames = frames;
         ChannelCount = 1;
     }
@@ -37,9 +36,19 @@ public sealed class AudioBus
     /// </summary>
     public bool IsSilent { get; private set; } = true;
 
-    public Span<float> Channel(int index) => _channels[index];
+    public Span<float> Channel(int index) => _channels[index]!;
 
-    public float[] ChannelArray(int index) => _channels[index];
+    public float[] ChannelArray(int index) => _channels[index]!;
+
+    /// <summary>
+    /// Channel arrays are allocated the first time a bus carries that many channels, then
+    /// kept: after the graph's first quanta nothing here allocates again.
+    /// </summary>
+    private void EnsureChannels(int count)
+    {
+        for (int i = 0; i < count; i++)
+            _channels[i] ??= new float[Frames];
+    }
 
     /// <summary>Sets the channel count and clears the bus to silence.</summary>
     public void Reset(int channelCount)
@@ -53,13 +62,14 @@ public sealed class AudioBus
     {
         if (channelCount < 1 || channelCount > _channels.Length)
             throw new ArgumentOutOfRangeException(nameof(channelCount));
+        EnsureChannels(channelCount);
         ChannelCount = channelCount;
     }
 
     public void Zero()
     {
         for (int i = 0; i < ChannelCount; i++)
-            Array.Clear(_channels[i]);
+            Array.Clear(_channels[i]!);
         IsSilent = true;
     }
 
@@ -71,7 +81,7 @@ public sealed class AudioBus
     {
         SetChannelCount(source.ChannelCount);
         for (int i = 0; i < ChannelCount; i++)
-            source._channels[i].AsSpan().CopyTo(_channels[i]);
+            source._channels[i].AsSpan().CopyTo(_channels[i]!);
         IsSilent = source.IsSilent;
     }
 }

@@ -309,13 +309,13 @@ public sealed partial class FenJsBrowserScriptEngine
             }
             function checkChannelCount(node, n) {
                 var s = node[S];
+                if (n < 1 || n > 32) throw domError("Failed to set the 'channelCount' property on 'AudioNode': The channel count provided (" + n + ") is outside the range [1, 32].", 'NotSupportedError');
                 if (s.kind === 'splitter' && n !== s.outputs) throw domError("Failed to set the 'channelCount' property on 'AudioNode': ChannelSplitterNode's channelCount cannot be changed.", 'InvalidStateError');
                 if (s.kind === 'merger' && n !== 1) throw domError("Failed to set the 'channelCount' property on 'AudioNode': ChannelMergerNode's channelCount must be 1.", 'InvalidStateError');
                 if (s.kind === 'destination') {
                     if (s.ctx instanceof OfflineAudioContext && n !== s.channelCount) throw domError("Failed to set the 'channelCount' property on 'AudioNode': an OfflineAudioContext destination's channelCount cannot be changed.", 'InvalidStateError');
-                    if (n < 1 || n > s.ctx[S].maxChannels) throw domError("Failed to set the 'channelCount' property on 'AudioNode': The channel count provided (" + n + ") is outside the range [1, " + s.ctx[S].maxChannels + "].", 'IndexSizeError');
+                    if (n > s.ctx[S].maxChannels) throw domError("Failed to set the 'channelCount' property on 'AudioNode': The channel count provided (" + n + ") is outside the range [1, " + s.ctx[S].maxChannels + "].", 'IndexSizeError');
                 }
-                if (n < 1 || n > 32) throw domError("Failed to set the 'channelCount' property on 'AudioNode': The channel count provided (" + n + ") is outside the range [1, 32].", 'NotSupportedError');
             }
             function checkChannelCountMode(node, mode) {
                 var s = node[S];
@@ -536,6 +536,18 @@ public sealed partial class FenJsBrowserScriptEngine
                 var b = s.buffer;
                 if (b === null) { g.__fenWaSetBuffer(s.ctx[S].id, s.id, null, 0); return; }
                 g.__fenWaSetBuffer(s.ctx[S].id, s.id, b[S].data, b[S].sampleRate);
+                acquireContent(b);
+            }
+            // WA 1.4 "acquire the content": the arrays script already holds are detached, and
+            // getChannelData() hands out fresh copies from then on, so nothing script writes
+            // can reach what the engine took.
+            function acquireContent(buffer) {
+                var data = buffer[S].data;
+                for (var c = 0; c < data.length; c++) {
+                    var old = data[c];
+                    data[c] = old.slice();
+                    try { if (typeof old.buffer.transfer === 'function') old.buffer.transfer(); } catch (e) {}
+                }
             }
             function pushLoop(node) {
                 var s = node[S];
@@ -602,11 +614,13 @@ public sealed partial class FenJsBrowserScriptEngine
 
             // WA 1.1 AudioContextRenderSizeCategory / renderSizeHint: 'default' and 'hardware'
             // both mean 128 here; a number asks for that quantum size.
-            function renderSize(hint, what) {
+            function renderSize(hint, what, rate) {
                 if (hint === undefined) return 128;
                 if (typeof hint === 'number') {
+                    // WA 1.1: at most six seconds of frames at the context's rate.
                     var n = toUnsignedLong(hint);
-                    if (n < 1 || n > 6144) throw domError("Failed to construct '" + what + "': The render size hint provided (" + n + ") is outside the range [1, 6144].", 'NotSupportedError');
+                    var max = Math.floor(6 * rate);
+                    if (n < 1 || n > max) throw domError("Failed to construct '" + what + "': The render size hint provided (" + n + ") is outside the range [1, " + max + "].", 'NotSupportedError');
                     return n;
                 }
                 toEnum(hint, ['default', 'hardware'], 'AudioContextRenderSizeCategory');
@@ -646,7 +660,7 @@ public sealed partial class FenJsBrowserScriptEngine
                         rate = toFloat(o.sampleRate, 'sampleRate');
                         if (!(rate >= 3000 && rate <= 768000)) throw domError("Failed to construct 'AudioContext': The sample rate provided (" + rate + ") is outside the range [3000, 768000].", 'NotSupportedError');
                     }
-                    var quantum = renderSize(o.renderSizeHint, 'AudioContext');
+                    var quantum = renderSize(o.renderSizeHint, 'AudioContext', rate || 48000);
                     super(INTERNAL);
                     initContext(this, false, 2, 0, rate, quantum);
                     this[S].latencyHint = hint;
@@ -718,12 +732,12 @@ public sealed partial class FenJsBrowserScriptEngine
                 constructor(a, b, c) {
                     var channels, length, rate, quantum = 128;
                     if (arguments.length === 1 && a !== null && typeof a === 'object') {
-                        quantum = renderSize(a.renderSizeHint, 'OfflineAudioContext');
                         if (a.length === undefined) throw typeError("Failed to construct 'OfflineAudioContext': required member length is undefined.");
                         if (a.sampleRate === undefined) throw typeError("Failed to construct 'OfflineAudioContext': required member sampleRate is undefined.");
                         channels = a.numberOfChannels === undefined ? 1 : toUnsignedLong(a.numberOfChannels);
                         length = toUnsignedLong(a.length);
                         rate = toFloat(a.sampleRate, 'sampleRate');
+                        if (rate >= 3000 && rate <= 768000) quantum = renderSize(a.renderSizeHint, 'OfflineAudioContext', rate);
                     } else {
                         if (arguments.length < 3) throw typeError("Failed to construct 'OfflineAudioContext': 3 arguments required, but only " + arguments.length + " present.");
                         channels = toUnsignedLong(a);
