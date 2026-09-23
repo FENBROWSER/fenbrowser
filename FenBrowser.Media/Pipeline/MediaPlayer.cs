@@ -86,6 +86,9 @@ public sealed class MediaPlayer : IMediaResource
     private bool _reopenRequested;
     private MediaTime? _reportedDuration;
     private bool _fetchedReported;
+    // EME §7.4 "playback blocked waiting for key": set when a read stalls on a missing
+    // key, cleared once a read gets past it (or a seek moves away), so each stall fires
+    // waitingforkey once however many unrelated licences arrive meanwhile.
     private bool _waitingForKeyReported;
     private IMediaKeySource? _mediaKeys;
     private IMediaKeySource? _subscribedKeys;
@@ -306,7 +309,6 @@ public sealed class MediaPlayer : IMediaResource
         {
             _mediaKeys = keys;
             _mediaKeysDirty = true;
-            _waitingForKeyReported = false;
         });
     }
 
@@ -314,7 +316,7 @@ public sealed class MediaPlayer : IMediaResource
     /// A licence arrived. Whatever the decode source was holding back may decode now, so
     /// the media task is woken to try it again.
     /// </summary>
-    private void OnMediaKeysChanged() => Post(() => _waitingForKeyReported = false);
+    private void OnMediaKeysChanged() => Post(() => { });
 
     /// <summary>
     /// Audio Output Devices API: play through one named output endpoint from now on. The
@@ -631,6 +633,11 @@ public sealed class MediaPlayer : IMediaResource
                         if (!_waitingForKeyReported)
                         {
                             _waitingForKeyReported = true;
+
+                            // The element drops to HAVE_CURRENT_DATA with the event; ours
+                            // follows, so the data that arrives with the key raises it again.
+                            if (_readyState > MediaReadyState.HaveCurrentData)
+                                _readyState = MediaReadyState.HaveCurrentData;
                             Report(() => _client.WaitingForKey());
                         }
 
@@ -647,6 +654,7 @@ public sealed class MediaPlayer : IMediaResource
                     break;
                 }
 
+                _waitingForKeyReported = false;
                 if (decoded.Audio is { } block)
                 {
                     if (output is null)
@@ -961,6 +969,10 @@ public sealed class MediaPlayer : IMediaResource
         if (_wholeResourceAvailable && state == MediaReadyState.HaveFutureData)
             state = MediaReadyState.HaveEnoughData;
 
+        // Blocked waiting for a key, what is queued ends where the key is needed.
+        if (_waitingForKeyReported && state > MediaReadyState.HaveCurrentData)
+            state = MediaReadyState.HaveCurrentData;
+
         // Once data has been seen the state never falls back below current data except
         // through a seek, which resets it explicitly; a momentary dip is not a stall.
         if (state < _readyState && state >= MediaReadyState.HaveCurrentData)
@@ -1055,6 +1067,7 @@ public sealed class MediaPlayer : IMediaResource
 
         _endOfStream = false;
         _endReported = false;
+        _waitingForKeyReported = false;
         try
         {
             await _decodeSource!.SeekAsync(target, cancellation).ConfigureAwait(false);

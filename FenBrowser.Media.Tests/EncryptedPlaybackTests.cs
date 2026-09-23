@@ -209,6 +209,18 @@ public class EncryptedPlaybackTests
             Assert.Equal(1, client.WaitingForKeyCount);
             Assert.True(client.ReadyState < MediaReadyState.HaveCurrentData);
 
+            // A licence for some other key wakes the player, but it is still the same stall
+            // (EME §7.4 "playback blocked waiting for key"): no second event.
+            var other = cdm.CreateSession(MediaKeySessionType.Temporary);
+            Assert.NotNull(other);
+            Assert.True(other.GenerateRequest(
+                EmeInitDataType.KeyIds,
+                Encoding.UTF8.GetBytes("{\"kids\":[\"AAAAAAAAAAAAAAAAAAAAAA\"]}")).Succeeded);
+            Assert.True(other.Update(Encoding.ASCII.GetBytes(
+                "{\"keys\":[{\"kty\":\"oct\",\"kid\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"k\":\"AAAAAAAAAAAAAAAAAAAAAA\"}]}")).Succeeded);
+            await Task.Delay(400);
+            Assert.Equal(1, client.WaitingForKeyCount);
+
             // The page's update() call comes in on its own thread; the CDM tells the player.
             Assert.True(session.Update(Encoding.ASCII.GetBytes(License)).Succeeded);
 
