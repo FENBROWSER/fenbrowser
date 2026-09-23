@@ -107,6 +107,53 @@ public sealed class WebAudioRealmTests
         Assert.Equal("TypeError,TypeError,TypeError,[object GainNode]", result);
     }
 
+    [Fact]
+    public async Task AnOscillatorRendersASineFromPageScript()
+    {
+        var engine = await CreateEngineAsync();
+        engine.Evaluate(
+            "globalThis.__r = '';" +
+            "var ctx = new OfflineAudioContext(1, 128, 44100);" +
+            "var osc = new OscillatorNode(ctx, { frequency: 441 });" +
+            "osc.connect(ctx.destination); osc.start();" +
+            "ctx.startRendering().then(function (b) {" +
+            "  var d = b.getChannelData(0), worst = 0;" +
+            "  for (var i = 0; i < d.length; i++) worst = Math.max(worst, Math.abs(d[i] - Math.sin(2 * Math.PI * 441 * i / 44100)));" +
+            "  __r = String(worst < 1e-4);" +
+            "});");
+
+        Assert.Equal("true", await WaitForAsync(engine, "__r"));
+    }
+
+    [Fact]
+    public async Task GetFrequencyResponseUsesTheTypeJustSet()
+    {
+        var engine = await CreateEngineAsync();
+        var result = engine.Evaluate(
+            "(function () {" +
+            "  var ctx = new OfflineAudioContext(1, 128, 44100), f = ctx.createBiquadFilter();" +
+            "  f.type = 'highpass'; f.frequency.value = 1000;" +
+            "  var hz = new Float32Array([10, 20000, 30000]), mag = new Float32Array(3), phase = new Float32Array(3);" +
+            "  f.getFrequencyResponse(hz, mag, phase);" +
+            "  return [mag[0] < 0.01, Math.abs(mag[1] - 1) < 0.01, isNaN(mag[2])].join(',');" +
+            "})()")?.ToString();
+
+        Assert.Equal("true,true,true", result);
+    }
+
+    [Fact]
+    public async Task AParamValueReadsBackWithinItsNominalRange()
+    {
+        var engine = await CreateEngineAsync();
+        var result = engine.Evaluate(
+            "(function () {" +
+            "  var ctx = new OfflineAudioContext(1, 128, 48000), p = ctx.createStereoPanner().pan;" +
+            "  p.value = 3; var a = p.value; p.value = -3; return a + ',' + p.value;" +
+            "})()")?.ToString();
+
+        Assert.Equal("1,-1", result);
+    }
+
     private static async Task<FenJsBrowserScriptEngine> CreateEngineAsync()
     {
         var baseUri = new Uri("https://example.test/");

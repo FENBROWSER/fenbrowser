@@ -42,6 +42,8 @@ public sealed partial class FenJsBrowserScriptEngine
         public int Channels;
         public int Length;
         public readonly Dictionary<int, AudioNodeKernel> Nodes = new();
+        public readonly Dictionary<int, PeriodicWaveData> Waves = new();
+        public int NextWaveId = 1;
 
         // Offline rendering (WA-D5).
         public OfflineAudioRenderer Renderer;
@@ -116,6 +118,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 return JsValue.FromInt32(0);
 
             string kind = ArgString(args, 1);
+            double argNumber = ArgNumber(args, 2);
             int arg = ArgInt(args, 2);
             var graph = entry.Graph;
             AudioNodeKernel kernel = kind switch
@@ -126,6 +129,12 @@ public sealed partial class FenJsBrowserScriptEngine
                 "buffersource" => new BufferSourceKernel(graph),
                 "splitter" => new ChannelSplitterKernel(graph, Math.Clamp(arg, 1, WebAudioLimits.MaxNodePorts)),
                 "merger" => new ChannelMergerKernel(graph, Math.Clamp(arg, 1, WebAudioLimits.MaxNodePorts)),
+                "oscillator" => new OscillatorKernel(graph),
+                "delay" => argNumber > 0 && argNumber < 180 ? new DelayKernel(graph, argNumber) : null,
+                "biquad" => new BiquadKernel(graph),
+                "iir" => new IirFilterKernel(graph),
+                "waveshaper" => new WaveShaperKernel(graph),
+                "stereopanner" => new StereoPannerKernel(graph),
                 _ => null,
             };
             if (kernel == null)
@@ -301,6 +310,123 @@ public sealed partial class FenJsBrowserScriptEngine
                     source.LoopStart = loopStart;
                     source.LoopEnd = loopEnd;
                 });
+            }
+
+            return JsValue.Undefined;
+        });
+
+        // ---- WA2 ------------------------------------------------------------------------
+
+        Native("__fenWaCreatePeriodicWave", 4, args =>
+        {
+            if (WebAudioEntry(args) is not { } entry)
+                return JsValue.FromInt32(0);
+            var real = ReadFloats(args.Count > 1 ? args[1] : JsValue.Undefined);
+            var imag = ReadFloats(args.Count > 2 ? args[2] : JsValue.Undefined);
+            bool disable = args.Count > 3 && args[3].Tag == JsValueTag.Boolean && args[3].AsBoolean();
+            if (real.Length != imag.Length || real.Length < 2 || real.Length > 1 << 20)
+                return JsValue.FromInt32(0);
+            int id = entry.NextWaveId++;
+            entry.Waves[id] = new PeriodicWaveData(real, imag, disable);
+            return JsValue.FromInt32(id);
+        });
+
+        Native("__fenWaOscillatorType", 3, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is OscillatorKernel oscillator)
+            {
+                var waveform = (OscillatorWaveform)Math.Clamp(ArgInt(args, 2), 0, 3);
+                var wave = PeriodicWaveData.BuiltIn(waveform, PeriodicWaveData.TableSizeFor(entry.Graph.SampleRate));
+                entry.Graph.Post(_ => oscillator.SetWave(wave));
+            }
+
+            return JsValue.Undefined;
+        });
+
+        Native("__fenWaOscillatorWave", 3, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is OscillatorKernel oscillator &&
+                entry.Waves.TryGetValue(ArgInt(args, 2), out var wave))
+            {
+                entry.Graph.Post(_ => oscillator.SetWave(wave));
+            }
+
+            return JsValue.Undefined;
+        });
+
+        Native("__fenWaBiquadType", 3, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is BiquadKernel biquad)
+            {
+                var type = (BiquadFilterType)Math.Clamp(ArgInt(args, 2), 0, 7);
+                entry.Graph.Post(_ => biquad.Type = type);
+            }
+
+            return JsValue.Undefined;
+        });
+
+        // WA 1.10.3 getFrequencyResponse: from the params' current values, at the given
+        // frequencies; one outside [0, Nyquist] answers NaN.
+        Native("__fenWaBiquadResponse", 5, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is BiquadKernel biquad && args.Count > 4)
+            {
+                // The realm's type, not the kernel's: a type change reaches the kernel only
+                // when the rendering thread next runs, and this answer is wanted now.
+                var type = args.Count > 5 ? (BiquadFilterType)Math.Clamp(ArgInt(args, 5), 0, 7) : biquad.Type;
+                var coefficients = BiquadKernel.Coefficients(
+                    type, biquad.Frequency.CurrentValue, biquad.Detune.CurrentValue, biquad.Q.CurrentValue, biquad.Gain.CurrentValue, entry.Graph.SampleRate);
+                WriteFrequencyResponse(entry, args[2], args[3], args[4], omega => coefficients.Response(omega));
+            }
+
+            return JsValue.Undefined;
+        });
+
+        Native("__fenWaIirCoefficients", 4, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is IirFilterKernel iir)
+            {
+                var feedforward = ReadDoubles(args.Count > 2 ? args[2] : JsValue.Undefined);
+                var feedback = ReadDoubles(args.Count > 3 ? args[3] : JsValue.Undefined);
+                if (feedforward.Length is >= 1 and <= 20 && feedback.Length is >= 1 and <= 20 && feedback[0] != 0)
+                    entry.Graph.Post(_ => iir.SetCoefficients(feedforward, feedback));
+            }
+
+            return JsValue.Undefined;
+        });
+
+        Native("__fenWaIirResponse", 6, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && args.Count > 5)
+            {
+                var feedforward = ReadDoubles(args[1]);
+                var feedback = ReadDoubles(args[2]);
+                if (feedforward.Length > 0 && feedback.Length > 0 && feedback[0] != 0)
+                    WriteFrequencyResponse(entry, args[3], args[4], args[5], omega => IirFilterKernel.Response(feedforward, feedback, omega));
+            }
+
+            return JsValue.Undefined;
+        });
+
+        Native("__fenWaWaveShaperCurve", 3, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is WaveShaperKernel shaper)
+            {
+                float[] curve = args.Count > 2 && args[2].Tag == JsValueTag.Object ? ReadFloats(args[2]) : null;
+                if (curve is { Length: < 2 })
+                    curve = null;
+                entry.Graph.Post(_ => shaper.Curve = curve);
+            }
+
+            return JsValue.Undefined;
+        });
+
+        Native("__fenWaWaveShaperOversample", 3, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is WaveShaperKernel shaper)
+            {
+                var oversample = (OverSampleType)Math.Clamp(ArgInt(args, 2), 0, 2);
+                entry.Graph.Post(_ => shaper.Oversample = oversample);
             }
 
             return JsValue.Undefined;
@@ -583,6 +709,39 @@ public sealed partial class FenJsBrowserScriptEngine
 
     private string ArgString(IReadOnlyList<JsValue> args, int index) =>
         index < args.Count && args[index].Tag == JsValueTag.String ? CoerceToHostString(args[index]) : string.Empty;
+
+    // Writes a filter's magnitude and phase response at each requested frequency.
+    private void WriteFrequencyResponse(WebAudioContextEntry entry, JsValue frequencies, JsValue magnitudes, JsValue phases, Func<double, (double Magnitude, double Phase)> response)
+    {
+        var hz = ReadFloats(frequencies);
+        var magnitude = new float[hz.Length];
+        var phase = new float[hz.Length];
+        double nyquist = entry.Graph.SampleRate / 2.0;
+        for (int i = 0; i < hz.Length; i++)
+        {
+            double f = hz[i];
+            if (!(f >= 0 && f <= nyquist))
+            {
+                magnitude[i] = float.NaN;
+                phase[i] = float.NaN;
+                continue;
+            }
+
+            var (m, p) = response(Math.PI * f / nyquist);
+            magnitude[i] = (float)m;
+            phase[i] = (float)p;
+        }
+
+        WriteFloats(magnitudes, magnitude);
+        WriteFloats(phases, phase);
+    }
+
+    // A Float64Array's values, copied.
+    private double[] ReadDoubles(JsValue value)
+    {
+        var bytes = ExtractBytesFromArrayLike(value);
+        return MemoryMarshal.Cast<byte, double>(bytes.AsSpan(0, bytes.Length & ~7)).ToArray();
+    }
 
     // A Float32Array's samples, copied (WA 1.4 "acquire the content").
     private float[] ReadFloats(JsValue value)

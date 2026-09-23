@@ -317,6 +317,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 var s = node[S];
                 if (n < 1 || n > 32) throw domError("Failed to set the 'channelCount' property on 'AudioNode': The channel count provided (" + n + ") is outside the range [1, 32].", 'NotSupportedError');
                 if (s.kind === 'splitter' && n !== s.outputs) throw domError("Failed to set the 'channelCount' property on 'AudioNode': ChannelSplitterNode's channelCount cannot be changed.", 'InvalidStateError');
+                if (s.kind === 'stereopanner' && n > 2) throw domError("Failed to set the 'channelCount' property on 'AudioNode': StereoPanner's channelCount (" + n + ") cannot be greater than 2.", 'NotSupportedError');
                 if (s.kind === 'merger' && n !== 1) throw domError("Failed to set the 'channelCount' property on 'AudioNode': ChannelMergerNode's channelCount must be 1.", 'InvalidStateError');
                 if (s.kind === 'destination') {
                     if (s.ctx instanceof OfflineAudioContext && n !== s.channelCount) throw domError("Failed to set the 'channelCount' property on 'AudioNode': an OfflineAudioContext destination's channelCount cannot be changed.", 'InvalidStateError');
@@ -325,6 +326,7 @@ public sealed partial class FenJsBrowserScriptEngine
             }
             function checkChannelCountMode(node, mode) {
                 var s = node[S];
+                if (s.kind === 'stereopanner' && mode === 'max') throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': StereoPanner's channelCountMode cannot be set to 'max'.", 'NotSupportedError');
                 if ((s.kind === 'splitter' || s.kind === 'merger') && mode !== 'explicit') throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': the mode of this node cannot be changed from 'explicit'.", 'InvalidStateError');
                 if (s.kind === 'destination' && s.ctx instanceof OfflineAudioContext && mode !== s.mode) throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': an OfflineAudioContext destination's mode cannot be changed.", 'InvalidStateError');
             }
@@ -584,6 +586,241 @@ public sealed partial class FenJsBrowserScriptEngine
             }
             webidl(ChannelMergerNode, 'ChannelMergerNode');
 
+            // ---- WA2: OscillatorNode, PeriodicWave (WA 1.27, 1.28) ---------------------
+
+            var oscillatorTypes = ['sine', 'square', 'sawtooth', 'triangle', 'custom'];
+
+            function toFloatSequence(v, what, iface) {
+                if (v === null || typeof v !== 'object' || typeof v[Symbol.iterator] !== 'function')
+                    throw typeError("Failed to construct '" + iface + "': The provided value for " + what + " cannot be converted to a sequence.");
+                var out = [];
+                for (var x of v) out.push(toFloat(x, what));
+                return out;
+            }
+            function toDoubleSequence(v, what, iface) {
+                if (v === null || typeof v !== 'object' || typeof v[Symbol.iterator] !== 'function')
+                    throw typeError("Failed to execute '" + iface + "': The provided value for " + what + " cannot be converted to a sequence.");
+                var out = [];
+                for (var x of v) out.push(toDouble(x, what));
+                return out;
+            }
+
+            class PeriodicWave {
+                constructor(context, options) {
+                    requireContext(context, 'PeriodicWave');
+                    var o = dictionary(options, 'PeriodicWaveOptions');
+                    var real = o.real === undefined ? null : toFloatSequence(o.real, 'real', 'PeriodicWave');
+                    var imag = o.imag === undefined ? null : toFloatSequence(o.imag, 'imag', 'PeriodicWave');
+                    initPeriodicWave(this, context, real, imag, toBoolean(o.disableNormalization), "Failed to construct 'PeriodicWave'");
+                }
+            }
+            function initPeriodicWave(wave, context, real, imag, disable, prefix) {
+                // WA 1.28.1: neither array given is a sine; one given pairs with zeros.
+                if (real === null && imag === null) { real = [0, 0]; imag = [0, 1]; }
+                else if (real === null) real = new Array(imag.length).fill(0);
+                else if (imag === null) imag = new Array(real.length).fill(0);
+                if (real.length !== imag.length) throw domError(prefix + ": real and imag have different lengths (" + real.length + ", " + imag.length + ").", 'IndexSizeError');
+                if (real.length < 2) throw domError(prefix + ": the length of real (" + real.length + ") is less than the minimum bound (2).", 'IndexSizeError');
+                var id = g.__fenWaCreatePeriodicWave(context[S].id, new Float32Array(real), new Float32Array(imag), disable);
+                wave[S] = { ctx: context, id: id };
+            }
+            webidl(PeriodicWave, 'PeriodicWave');
+
+            class OscillatorNode extends AudioScheduledSourceNode {
+                constructor(context, options) {
+                    requireContext(context, 'OscillatorNode');
+                    var o = dictionary(options, 'OscillatorOptions');
+                    var type = o.type === undefined ? 'sine' : toEnum(o.type, oscillatorTypes, 'OscillatorType');
+                    if (o.periodicWave !== undefined && !(o.periodicWave instanceof PeriodicWave))
+                        throw typeError("Failed to construct 'OscillatorNode': member periodicWave is not of type 'PeriodicWave'.");
+                    if (type === 'custom' && o.periodicWave === undefined)
+                        throw domError("Failed to construct 'OscillatorNode': A PeriodicWave must be specified if the type is set to 'custom'.", 'InvalidStateError');
+                    super(INTERNAL, context, 'oscillator', 2);
+                    var nyquist = context[S].sampleRate / 2;
+                    makeParam(this, 'frequency', 440, -nyquist, nyquist, 'a-rate');
+                    makeParam(this, 'detune', 0, -153600, 153600, 'a-rate');
+                    applyNodeOptions(this, o);
+                    this[S].type = 'sine';
+                    if (o.periodicWave !== undefined) this.setPeriodicWave(o.periodicWave);
+                    else if (type !== 'sine') this.type = type;
+                    if (o.frequency !== undefined) this[S].params.frequency.value = o.frequency;
+                    if (o.detune !== undefined) this[S].params.detune.value = o.detune;
+                }
+                get type() { return this[S].type; }
+                set type(v) {
+                    var type = String(v);
+                    if (oscillatorTypes.indexOf(type) < 0) return;
+                    if (type === 'custom') {
+                        if (this[S].type === 'custom') return;
+                        throw domError("Failed to set the 'type' property on 'OscillatorNode': 'type' cannot be set directly to 'custom'. Use setPeriodicWave() to create a custom Oscillator type.", 'InvalidStateError');
+                    }
+                    this[S].type = type;
+                    g.__fenWaOscillatorType(this[S].ctx[S].id, this[S].id, oscillatorTypes.indexOf(type));
+                }
+                get frequency() { return this[S].params.frequency; }
+                get detune() { return this[S].params.detune; }
+                setPeriodicWave(periodicWave) {
+                    requireArgs(arguments, 1, 'setPeriodicWave', 'OscillatorNode');
+                    if (!(periodicWave instanceof PeriodicWave)) throw typeError("Failed to execute 'setPeriodicWave' on 'OscillatorNode': parameter 1 is not of type 'PeriodicWave'.");
+                    this[S].type = 'custom';
+                    g.__fenWaOscillatorWave(this[S].ctx[S].id, this[S].id, periodicWave[S].id);
+                }
+            }
+            webidl(OscillatorNode, 'OscillatorNode');
+
+            // ---- DelayNode (WA 1.17) -----------------------------------------------------
+
+            class DelayNode extends AudioNode {
+                constructor(context, options) {
+                    requireContext(context, 'DelayNode');
+                    var o = dictionary(options, 'DelayOptions');
+                    var max = o.maxDelayTime === undefined ? 1 : toDouble(o.maxDelayTime, 'maxDelayTime');
+                    if (!(max > 0 && max < 180)) throw domError("Failed to construct 'DelayNode': The max delay time provided (" + max + ") is outside the range (0, 180).", 'NotSupportedError');
+                    super(INTERNAL, context, 'delay', 1, 1, 2, 'max', 'speakers', max);
+                    makeParam(this, 'delayTime', 0, 0, max, 'a-rate');
+                    applyNodeOptions(this, o);
+                    if (o.delayTime !== undefined) this[S].params.delayTime.value = o.delayTime;
+                }
+                get delayTime() { return this[S].params.delayTime; }
+            }
+            webidl(DelayNode, 'DelayNode');
+
+            // ---- BiquadFilterNode (WA 1.10) ----------------------------------------------
+
+            var biquadTypes = ['lowpass', 'highpass', 'bandpass', 'lowshelf', 'highshelf', 'peaking', 'notch', 'allpass'];
+
+            function checkResponseArrays(method, iface, frequencyHz, magResponse, phaseResponse) {
+                [frequencyHz, magResponse, phaseResponse].forEach(function (a, i) {
+                    if (!(a instanceof Float32Array)) throw typeError("Failed to execute '" + method + "' on '" + iface + "': parameter " + (i + 1) + " is not of type 'Float32Array'.");
+                });
+                if (magResponse.length !== frequencyHz.length || phaseResponse.length !== frequencyHz.length)
+                    throw domError("Failed to execute '" + method + "' on '" + iface + "': the response arrays must be as long as the frequency array.", 'InvalidAccessError');
+            }
+
+            class BiquadFilterNode extends AudioNode {
+                constructor(context, options) {
+                    requireContext(context, 'BiquadFilterNode');
+                    var o = dictionary(options, 'BiquadFilterOptions');
+                    var type = o.type === undefined ? 'lowpass' : toEnum(o.type, biquadTypes, 'BiquadFilterType');
+                    super(INTERNAL, context, 'biquad', 1, 1, 2, 'max', 'speakers');
+                    var nyquist = context[S].sampleRate / 2;
+                    makeParam(this, 'frequency', 350, 0, nyquist, 'a-rate');
+                    makeParam(this, 'detune', 0, -153600, 153600, 'a-rate');
+                    makeParam(this, 'Q', 1, -FLT_MAX, FLT_MAX, 'a-rate');
+                    makeParam(this, 'gain', 0, -FLT_MAX, 1541.273681640625, 'a-rate');
+                    applyNodeOptions(this, o);
+                    this[S].type = 'lowpass';
+                    if (type !== 'lowpass') this.type = type;
+                    var p = this[S].params;
+                    if (o.Q !== undefined) p.Q.value = o.Q;
+                    if (o.detune !== undefined) p.detune.value = o.detune;
+                    if (o.frequency !== undefined) p.frequency.value = o.frequency;
+                    if (o.gain !== undefined) p.gain.value = o.gain;
+                }
+                get type() { return this[S].type; }
+                set type(v) {
+                    var type = String(v);
+                    if (biquadTypes.indexOf(type) < 0) return;
+                    this[S].type = type;
+                    g.__fenWaBiquadType(this[S].ctx[S].id, this[S].id, biquadTypes.indexOf(type));
+                }
+                get frequency() { return this[S].params.frequency; }
+                get detune() { return this[S].params.detune; }
+                get Q() { return this[S].params.Q; }
+                get gain() { return this[S].params.gain; }
+                getFrequencyResponse(frequencyHz, magResponse, phaseResponse) {
+                    requireArgs(arguments, 3, 'getFrequencyResponse', 'BiquadFilterNode');
+                    checkResponseArrays('getFrequencyResponse', 'BiquadFilterNode', frequencyHz, magResponse, phaseResponse);
+                    g.__fenWaBiquadResponse(this[S].ctx[S].id, this[S].id, frequencyHz, magResponse, phaseResponse, biquadTypes.indexOf(this[S].type));
+                }
+            }
+            webidl(BiquadFilterNode, 'BiquadFilterNode');
+
+            // ---- IIRFilterNode (WA 1.22) ---------------------------------------------------
+
+            class IIRFilterNode extends AudioNode {
+                constructor(context, options) {
+                    requireContext(context, 'IIRFilterNode');
+                    if (options === undefined || options === null) throw typeError("Failed to construct 'IIRFilterNode': 2 arguments required, but only 1 present.");
+                    var o = dictionary(options, 'IIRFilterOptions');
+                    if (o.feedforward === undefined) throw typeError("Failed to construct 'IIRFilterNode': required member feedforward is undefined.");
+                    if (o.feedback === undefined) throw typeError("Failed to construct 'IIRFilterNode': required member feedback is undefined.");
+                    var ff = toDoubleSequence(o.feedforward, 'feedforward', 'IIRFilterNode');
+                    var fb = toDoubleSequence(o.feedback, 'feedback', 'IIRFilterNode');
+                    checkIirCoefficients(ff, fb, "Failed to construct 'IIRFilterNode'");
+                    super(INTERNAL, context, 'iir', 1, 1, 2, 'max', 'speakers');
+                    this[S].feedforward = ff;
+                    this[S].feedback = fb;
+                    g.__fenWaIirCoefficients(context[S].id, this[S].id, new Float64Array(ff), new Float64Array(fb));
+                    applyNodeOptions(this, o);
+                }
+                getFrequencyResponse(frequencyHz, magResponse, phaseResponse) {
+                    requireArgs(arguments, 3, 'getFrequencyResponse', 'IIRFilterNode');
+                    checkResponseArrays('getFrequencyResponse', 'IIRFilterNode', frequencyHz, magResponse, phaseResponse);
+                    g.__fenWaIirResponse(this[S].ctx[S].id, new Float64Array(this[S].feedforward), new Float64Array(this[S].feedback), frequencyHz, magResponse, phaseResponse);
+                }
+            }
+            function checkIirCoefficients(ff, fb, prefix) {
+                if (ff.length < 1 || ff.length > 20) throw domError(prefix + ": The number of feedforward coefficients provided (" + ff.length + ") is outside the range [1, 20].", 'NotSupportedError');
+                if (fb.length < 1 || fb.length > 20) throw domError(prefix + ": The number of feedback coefficients provided (" + fb.length + ") is outside the range [1, 20].", 'NotSupportedError');
+                if (ff.every(function (v) { return v === 0; })) throw domError(prefix + ": At least one feedforward coefficient must be non-zero.", 'InvalidStateError');
+                if (fb[0] === 0) throw domError(prefix + ": First feedback coefficient must be non-zero.", 'InvalidStateError');
+            }
+            webidl(IIRFilterNode, 'IIRFilterNode');
+
+            // ---- WaveShaperNode (WA 1.31) ----------------------------------------------------
+
+            var oversampleTypes = ['none', '2x', '4x'];
+
+            class WaveShaperNode extends AudioNode {
+                constructor(context, options) {
+                    requireContext(context, 'WaveShaperNode');
+                    var o = dictionary(options, 'WaveShaperOptions');
+                    var oversample = o.oversample === undefined ? 'none' : toEnum(o.oversample, oversampleTypes, 'OverSampleType');
+                    var curve = o.curve === undefined || o.curve === null ? null : toFloatSequence(o.curve, 'curve', 'WaveShaperNode');
+                    super(INTERNAL, context, 'waveshaper', 1, 1, 2, 'max', 'speakers');
+                    this[S].curve = null;
+                    this[S].oversample = 'none';
+                    applyNodeOptions(this, o);
+                    if (curve !== null) this.curve = new Float32Array(curve);
+                    if (oversample !== 'none') this.oversample = oversample;
+                }
+                get curve() { return this[S].curve; }
+                set curve(v) {
+                    var s = this[S];
+                    if (v !== null && !(v instanceof Float32Array)) throw typeError("Failed to set the 'curve' property on 'WaveShaperNode': The provided value is not of type 'Float32Array'.");
+                    if (v !== null && v.length < 2) throw domError("Failed to set the 'curve' property on 'WaveShaperNode': The curve length provided (" + v.length + ") is less than the minimum bound (2).", 'InvalidStateError');
+                    if (v !== null && s.curveSet) throw domError("Failed to set the 'curve' property on 'WaveShaperNode': The curve can only be set once.", 'InvalidStateError');
+                    if (v !== null) s.curveSet = true;
+                    // WA 1.31: the curve is copied when it is set.
+                    s.curve = v === null ? null : new Float32Array(v);
+                    g.__fenWaWaveShaperCurve(s.ctx[S].id, s.id, s.curve);
+                }
+                get oversample() { return this[S].oversample; }
+                set oversample(v) {
+                    var value = String(v);
+                    if (oversampleTypes.indexOf(value) < 0) return;
+                    this[S].oversample = value;
+                    g.__fenWaWaveShaperOversample(this[S].ctx[S].id, this[S].id, oversampleTypes.indexOf(value));
+                }
+            }
+            webidl(WaveShaperNode, 'WaveShaperNode');
+
+            // ---- StereoPannerNode (WA 1.29) ----------------------------------------------------
+
+            class StereoPannerNode extends AudioNode {
+                constructor(context, options) {
+                    requireContext(context, 'StereoPannerNode');
+                    var o = dictionary(options, 'StereoPannerOptions');
+                    super(INTERNAL, context, 'stereopanner', 1, 1, 2, 'clamped-max', 'speakers');
+                    makeParam(this, 'pan', 0, -1, 1, 'a-rate');
+                    applyNodeOptions(this, o);
+                    if (o.pan !== undefined) this[S].params.pan.value = o.pan;
+                }
+                get pan() { return this[S].params.pan; }
+            }
+            webidl(StereoPannerNode, 'StereoPannerNode');
+
             // ---- BaseAudioContext (WA 1.1) ----------------------------------------------
 
             class BaseAudioContext extends g.EventTarget {
@@ -611,6 +848,22 @@ public sealed partial class FenJsBrowserScriptEngine
                 createChannelMerger(numberOfInputs) {
                     return new ChannelMergerNode(this, { numberOfInputs: numberOfInputs === undefined ? 6 : numberOfInputs });
                 }
+                createOscillator() { return new OscillatorNode(this); }
+                createPeriodicWave(real, imag, constraints) {
+                    requireArgs(arguments, 2, 'createPeriodicWave', 'BaseAudioContext');
+                    var c = dictionary(constraints, 'PeriodicWaveConstraints');
+                    var w = Object.create(PeriodicWave.prototype);
+                    initPeriodicWave(w, this, toFloatSequence(real, 'real', 'createPeriodicWave'), toFloatSequence(imag, 'imag', 'createPeriodicWave'), toBoolean(c.disableNormalization), "Failed to execute 'createPeriodicWave' on 'BaseAudioContext'");
+                    return w;
+                }
+                createDelay(maxDelayTime) { return new DelayNode(this, { maxDelayTime: maxDelayTime === undefined ? 1 : maxDelayTime }); }
+                createBiquadFilter() { return new BiquadFilterNode(this); }
+                createIIRFilter(feedforward, feedback) {
+                    requireArgs(arguments, 2, 'createIIRFilter', 'BaseAudioContext');
+                    return new IIRFilterNode(this, { feedforward: feedforward, feedback: feedback });
+                }
+                createWaveShaper() { return new WaveShaperNode(this); }
+                createStereoPanner() { return new StereoPannerNode(this); }
             }
             handler(BaseAudioContext.prototype, 'onstatechange');
             webidl(BaseAudioContext, 'BaseAudioContext');
