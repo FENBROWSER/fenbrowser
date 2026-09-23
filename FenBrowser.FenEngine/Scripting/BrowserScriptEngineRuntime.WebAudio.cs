@@ -45,6 +45,7 @@ public sealed partial class FenJsBrowserScriptEngine
         // WA5: element taps and track pipes this context registered, released when it closes.
         public readonly List<string> Taps = new();
         public readonly List<string> TrackKeys = new();
+        public readonly System.Collections.Concurrent.ConcurrentDictionary<(int Node, long Request), ScriptProcessorRequest> ScriptRequests = new();
         public readonly Dictionary<int, PeriodicWaveData> Waves = new();
         public int NextWaveId = 1;
 
@@ -167,6 +168,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 "streamdest" => new StreamDestinationKernel(graph, new AudioTrackPipe(graph.SampleRate, Math.Clamp(arg, 1, WebAudioLimits.MaxChannels))),
                 "streamsource" => new StreamSourceKernel(graph),
                 "elementsource" => new StreamSourceKernel(graph),
+                "scriptprocessor" => CreateScriptProcessor(entry, arg),
                 _ => null,
             };
             if (kernel == null)
@@ -782,6 +784,39 @@ public sealed partial class FenJsBrowserScriptEngine
             return JsValue.Undefined;
         });
 
+        Native("__fenWaAudioProcessInput", 5, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && args.Count > 4 &&
+                entry.ScriptRequests.TryGetValue((ArgInt(args, 1), (long)ArgNumber(args, 2)), out var request))
+            {
+                int channel = ArgInt(args, 3);
+                if (channel >= 0 && channel < request.Input.Length)
+                    WriteFloats(args[4], request.Input[channel]);
+            }
+
+            return JsValue.Undefined;
+        });
+
+        Native("__fenWaAudioProcessDone", 4, args =>
+        {
+            if (WebAudioEntry(args) is { } entry &&
+                entry.ScriptRequests.TryRemove((ArgInt(args, 1), (long)ArgNumber(args, 2)), out var request))
+            {
+                if (args.Count > 3 && args[3].Tag == JsValueTag.Object)
+                {
+                    for (int c = 0; c < request.Output.Length; c++)
+                    {
+                        var samples = ReadFloats(ReadJsProperty(args[3], c.ToString(CultureInfo.InvariantCulture)));
+                        Array.Copy(samples, request.Output[c], Math.Min(samples.Length, request.Output[c].Length));
+                    }
+                }
+
+                ScriptProcessorKernel.Complete(request);
+            }
+
+            return JsValue.Undefined;
+        });
+
         Native("__fenWaStartRendering", 1, args =>
         {
             if (WebAudioEntry(args) is { Offline: true } entry)
@@ -1165,6 +1200,25 @@ public sealed partial class FenJsBrowserScriptEngine
         }
 
         entry.TrackKeys.Clear();
+    }
+
+    // WA 1.30: the realm packs bufferSize, input and output channels into one number.
+    private ScriptProcessorKernel CreateScriptProcessor(WebAudioContextEntry entry, int packed)
+    {
+        int bufferSize = packed / 4096;
+        int inputs = (packed / 64) % 64;
+        int outputs = packed % 64;
+        if (bufferSize < 256 || bufferSize > 16384 || inputs > 32 || outputs > 32)
+            return null;
+
+        var kernel = new ScriptProcessorKernel(entry.Graph, bufferSize, inputs, outputs) { WaitForScript = entry.Offline };
+        kernel.BlockReady = (node, request) =>
+        {
+            entry.ScriptRequests[(node.Id, request.Id)] = request;
+            QueueWebAudioHook("__fenWaOnAudioProcess", JsValue.FromInt32(entry.Id), JsValue.FromInt32(node.Id),
+                JsValue.FromNumber(request.Id), JsValue.FromNumber(request.PlaybackTime));
+        };
+        return kernel;
     }
 
     private WebAudioContextEntry WebAudioEntry(IReadOnlyList<JsValue> args) =>

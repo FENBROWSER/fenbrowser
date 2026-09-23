@@ -319,6 +319,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 if (s.kind === 'splitter' && n !== s.outputs) throw domError("Failed to set the 'channelCount' property on 'AudioNode': ChannelSplitterNode's channelCount cannot be changed.", 'InvalidStateError');
                 if ((s.kind === 'convolver' || s.kind === 'compressor' || s.kind === 'panner') && n > 2) throw domError("Failed to set the 'channelCount' property on 'AudioNode': the channelCount of this node (" + n + ") cannot be greater than 2.", 'NotSupportedError');
                 if (s.kind === 'stereopanner' && n > 2) throw domError("Failed to set the 'channelCount' property on 'AudioNode': StereoPanner's channelCount (" + n + ") cannot be greater than 2.", 'NotSupportedError');
+                if (s.kind === 'scriptprocessor' && n !== s.channelCount) throw domError("Failed to set the 'channelCount' property on 'AudioNode': channelCount cannot be changed from " + s.channelCount + " to " + n + ".", 'NotSupportedError');
                 if (s.kind === 'merger' && n !== 1) throw domError("Failed to set the 'channelCount' property on 'AudioNode': ChannelMergerNode's channelCount must be 1.", 'InvalidStateError');
                 if (s.kind === 'destination') {
                     if (s.ctx instanceof OfflineAudioContext && n !== s.channelCount) throw domError("Failed to set the 'channelCount' property on 'AudioNode': an OfflineAudioContext destination's channelCount cannot be changed.", 'InvalidStateError');
@@ -328,6 +329,7 @@ public sealed partial class FenJsBrowserScriptEngine
             function checkChannelCountMode(node, mode) {
                 var s = node[S];
                 if ((s.kind === 'convolver' || s.kind === 'compressor' || s.kind === 'panner') && mode === 'max') throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': the channelCountMode of this node cannot be 'max'.", 'NotSupportedError');
+                if (s.kind === 'scriptprocessor' && mode !== 'explicit') throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': channelCountMode cannot be changed from 'explicit' to '" + mode + "'.", 'NotSupportedError');
                 if (s.kind === 'stereopanner' && mode === 'max') throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': StereoPanner's channelCountMode cannot be set to 'max'.", 'NotSupportedError');
                 if ((s.kind === 'splitter' || s.kind === 'merger') && mode !== 'explicit') throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': the mode of this node cannot be changed from 'explicit'.", 'InvalidStateError');
                 if (s.kind === 'destination' && s.ctx instanceof OfflineAudioContext && mode !== s.mode) throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': an OfflineAudioContext destination's mode cannot be changed.", 'InvalidStateError');
@@ -1098,6 +1100,19 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
                 createWaveShaper() { return new WaveShaperNode(this); }
                 createStereoPanner() { return new StereoPannerNode(this); }
+                createScriptProcessor(bufferSize, numberOfInputChannels, numberOfOutputChannels) {
+                    var size = bufferSize === undefined ? 0 : toUnsignedLong(bufferSize);
+                    var inputs = numberOfInputChannels === undefined ? 2 : toUnsignedLong(numberOfInputChannels);
+                    var outputs = numberOfOutputChannels === undefined ? 2 : toUnsignedLong(numberOfOutputChannels);
+                    if ([0, 256, 512, 1024, 2048, 4096, 8192, 16384].indexOf(size) < 0) throw domError("Failed to execute 'createScriptProcessor' on 'BaseAudioContext': buffer size (" + size + ") must be 0 or a power of two between 256 and 16384.", 'IndexSizeError');
+                    if (inputs > 32) throw domError("Failed to execute 'createScriptProcessor' on 'BaseAudioContext': number of input channels (" + inputs + ") exceeds maximum (32).", 'IndexSizeError');
+                    if (outputs > 32) throw domError("Failed to execute 'createScriptProcessor' on 'BaseAudioContext': number of output channels (" + outputs + ") exceeds maximum (32).", 'IndexSizeError');
+                    if (inputs === 0 && outputs === 0) throw domError("Failed to execute 'createScriptProcessor' on 'BaseAudioContext': number of input channels and output channels cannot both be zero.", 'IndexSizeError');
+                    if (size === 0) size = Math.max(1024, this[S].quantum);
+                    // A buffer is a whole number of render quanta, or it cannot be filled.
+                    if (size % this[S].quantum !== 0) throw domError("Failed to execute 'createScriptProcessor' on 'BaseAudioContext': buffer size (" + size + ") must be a multiple of the render quantum size (" + this[S].quantum + ").", 'NotSupportedError');
+                    return new ScriptProcessorNode(INTERNAL, this, size, inputs, outputs);
+                }
                 createAnalyser() { return new AnalyserNode(this); }
                 createConvolver() { return new ConvolverNode(this); }
                 createDynamicsCompressor() { return new DynamicsCompressorNode(this); }
@@ -1560,6 +1575,52 @@ public sealed partial class FenJsBrowserScriptEngine
                 get mediaElement() { return this[S].mediaElement; }
             }
             webidl(MediaElementAudioSourceNode, 'MediaElementAudioSourceNode');
+
+            // ---- ScriptProcessorNode (WA 1.30) -----------------------------------------------
+
+            class AudioProcessingEvent extends g.Event {
+                constructor(type, init) {
+                    if (arguments.length < 2) throw typeError("Failed to construct 'AudioProcessingEvent': 2 arguments required, but only " + arguments.length + " present.");
+                    var o = dictionary(init, 'AudioProcessingEventInit');
+                    if (o.playbackTime === undefined) throw typeError("Failed to construct 'AudioProcessingEvent': required member playbackTime is undefined.");
+                    if (!(o.inputBuffer instanceof AudioBuffer)) throw typeError("Failed to construct 'AudioProcessingEvent': required member inputBuffer is not of type 'AudioBuffer'.");
+                    if (!(o.outputBuffer instanceof AudioBuffer)) throw typeError("Failed to construct 'AudioProcessingEvent': required member outputBuffer is not of type 'AudioBuffer'.");
+                    super(type, o);
+                    this[S] = { playbackTime: toDouble(o.playbackTime, 'playbackTime'), inputBuffer: o.inputBuffer, outputBuffer: o.outputBuffer };
+                }
+                get playbackTime() { return this[S].playbackTime; }
+                get inputBuffer() { return this[S].inputBuffer; }
+                get outputBuffer() { return this[S].outputBuffer; }
+            }
+            webidl(AudioProcessingEvent, 'AudioProcessingEvent');
+
+            class ScriptProcessorNode extends AudioNode {
+                constructor(token, context, bufferSize, inputs, outputs) {
+                    if (token !== INTERNAL) throw typeError('Illegal constructor');
+                    super(INTERNAL, context, 'scriptprocessor', 1, 1, Math.max(1, inputs), 'explicit', 'speakers', bufferSize * 4096 + inputs * 64 + outputs);
+                    this[S].bufferSize = bufferSize;
+                    this[S].inputChannels = inputs;
+                    this[S].outputChannels = outputs;
+                    context[S].nodes.set(this[S].id, this);
+                }
+                get bufferSize() { return this[S].bufferSize; }
+            }
+            handler(ScriptProcessorNode.prototype, 'onaudioprocess');
+            webidl(ScriptProcessorNode, 'ScriptProcessorNode');
+
+            g.__fenWaOnAudioProcess = function (contextId, nodeId, requestId, playbackTime) {
+                var context = contexts.get(contextId);
+                if (!context) return;
+                var node = context[S].nodes.get(nodeId);
+                var cs = context[S];
+                if (!node) { g.__fenWaAudioProcessDone(contextId, nodeId, requestId, []); return; }
+                var s = node[S];
+                var input = bufferFromChannels(Math.max(1, s.inputChannels), s.bufferSize, cs.sampleRate);
+                for (var c = 0; c < s.inputChannels; c++) g.__fenWaAudioProcessInput(contextId, nodeId, requestId, c, input[S].data[c]);
+                var output = bufferFromChannels(Math.max(1, s.outputChannels), s.bufferSize, cs.sampleRate);
+                try { fire(node, new AudioProcessingEvent('audioprocess', { playbackTime: playbackTime, inputBuffer: input, outputBuffer: output })); }
+                finally { g.__fenWaAudioProcessDone(contextId, nodeId, requestId, output[S].data); }
+            };
 
             // ---- hooks the engine calls --------------------------------------------------
 
