@@ -38,6 +38,9 @@ public sealed partial class FenJsBrowserScriptEngine
 
     private void InstallFenJsEme()
     {
+        Native("__fenEmeAllowedByPolicy", 0, _ =>
+            JsValue.FromBoolean(IsFeatureEnabledInDocument(FenBrowser.Core.Security.PolicyControlledFeature.EncryptedMedia)));
+
         Native("__fenEmeRequestAccess", 2, args =>
         {
             string keySystem = args.Count > 0 && args[0].Tag == JsValueTag.String ? CoerceToHostString(args[0]) : null;

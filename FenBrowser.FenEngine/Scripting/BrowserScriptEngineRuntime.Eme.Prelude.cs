@@ -347,6 +347,13 @@ public sealed partial class FenJsBrowserScriptEngine
                         return;
                     }
 
+                    // EME §3.1.1 step 3: the document must be allowed to use the
+                    // "encrypted-media" policy-controlled feature.
+                    if (!g.__fenEmeAllowedByPolicy()) {
+                        reject(new g.DOMException("The permissions policy does not allow 'encrypted-media' in this document.", 'SecurityError'));
+                        return;
+                    }
+
                     var candidates = [];
                     try {
                         for (var i = 0; i < configurations.length; i++) {
