@@ -204,8 +204,11 @@ public sealed class HtmlMediaElementController
     /// to HAVE_CURRENT_DATA, and with data ahead of the position to HAVE_FUTURE_DATA
     /// (HAVE_ENOUGH_DATA once the source has ended), inside the append and ahead of its
     /// update and updateend. The player's decode-driven readiness only ever adds to this.
+    /// A frame at the position that is encrypted with a key the element's MediaKeys does
+    /// not hold is not data for it: <paramref name="needsMissingKey"/> answers that for the
+    /// position and keys, and while it holds the element stays at HAVE_METADATA (EME §7.4).
     /// </summary>
-    public void ApplyMediaSourceReadiness(MediaTimeRanges buffered, bool ended)
+    public void ApplyMediaSourceReadiness(MediaTimeRanges buffered, bool ended, Func<MediaTime, Eme.IMediaKeySource?, bool>? needsMissingKey = null)
     {
         ArgumentNullException.ThrowIfNull(buffered);
         if (ReadyState == MediaReadyState.HaveNothing || _resource is not { IsProviderObject: true } || _pendingSeek)
@@ -230,6 +233,9 @@ public sealed class HtmlMediaElementController
             if (index < 0)
                 return;
         }
+
+        if (needsMissingKey is not null && needsMissingKey(position, _mediaKeys))
+            return;
 
         var state = MediaReadyState.HaveCurrentData;
         if (buffered.End(index) > position || ended)

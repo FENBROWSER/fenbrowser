@@ -377,7 +377,7 @@ public sealed partial class FenJsBrowserScriptEngine
             controller.ApplyMediaSourceMetadata(new MediaResourceMetadata(duration, width, height, tracks));
         }
 
-        controller.ApplyMediaSourceReadiness(buffered, ended);
+        controller.ApplyMediaSourceReadiness(buffered, ended, entry.Model.NeedsMissingKey);
     }
 
     private JsValue DescribeTracks(SourceBufferModel buffer)

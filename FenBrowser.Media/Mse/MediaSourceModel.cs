@@ -265,6 +265,41 @@ public sealed class MediaSourceModel
         }
     }
 
+    /// <summary>
+    /// Whether a track's frame for <paramref name="position"/> is encrypted with a key that
+    /// <paramref name="keys"/> (the element's MediaKeys, or null) does not hold. Such a frame
+    /// is buffered but cannot be decoded, so it is not "data for the current playback
+    /// position" (HTML §4.8.11.7) and the element must not leave HAVE_METADATA over it (EME
+    /// §7.4 "Wait for Key").
+    /// </summary>
+    public bool NeedsMissingKey(MediaTime position, Eme.IMediaKeySource? keys)
+    {
+        lock (Gate)
+        {
+            foreach (var buffer in _sourceBuffers)
+            {
+                foreach (var track in buffer.TrackBuffers)
+                {
+                    CodedFrame? next = null;
+                    foreach (var frame in track.Frames)
+                    {
+                        if (frame.End <= position)
+                            continue;
+                        if (next is null || frame.Pts < next.Pts)
+                            next = frame;
+                        if (frame.Pts <= position)
+                            break;
+                    }
+
+                    if (next?.Packet.Encryption is { } encryption && (keys is null || !keys.TryGetKey(encryption.KeyId, out _)))
+                        return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     /// <summary>HTML seekable for a MediaSource (MSE §8 "HTMLMediaElement.seekable").</summary>
     public MediaTimeRanges Seekable
     {
