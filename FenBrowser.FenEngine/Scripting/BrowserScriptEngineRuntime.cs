@@ -11760,7 +11760,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     EventTarget.prototype.addEventListener = function(type, callback) {
                         var delegate = fenGlobalEventMethod(this, 'addEventListener');
                         if (delegate) return delegate.apply(this, arguments);
-                        if (typeof callback !== 'function') return;
+                        // An EventListener is a function or an object with
+                        // handleEvent; only a null callback is ignored (DOM 2.7 step 2).
+                        if (callback === null || (typeof callback !== 'function' && typeof callback !== 'object')) return;
                         var flat = this._fenFlattenOptions(arguments[2]);
                         // DOM 2.7 step 2.
                         if (flat.signal && flat.signal.aborted) return;
@@ -11782,6 +11784,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         if (flat.signal && typeof flat.signal.addEventListener === 'function') {
                             var target = this;
                             flat.signal.addEventListener('abort', function () {
+                                entry.removed = true;
                                 var live = fenListenerMap(target)[type];
                                 if (!live) return;
                                 var at = live.indexOf(entry);
@@ -11797,27 +11800,75 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         if (!listeners) return;
                         for (var i = listeners.length - 1; i >= 0; i--) {
                             if (listeners[i].callback === callback &&
-                                listeners[i].capture === capture) listeners.splice(i, 1);
+                                listeners[i].capture === capture) {
+                                listeners[i].removed = true;
+                                listeners.splice(i, 1);
+                            }
                         }
                     };
+                    // DOM 2.9 "dispatch" for a target with no parent: the event
+                    // path is the target alone, so every listener runs AT_TARGET
+                    // with currentTarget set, and both are reset afterwards.
                     EventTarget.prototype.dispatchEvent = function(event) {
                         var delegate = fenGlobalEventMethod(this, 'dispatchEvent');
                         if (delegate) return delegate.apply(this, arguments);
                         if (!event || typeof event.type !== 'string') return true;
+                        // DOM 2.7 dispatchEvent() step 1.
+                        if (event._fenDispatching) {
+                            throw new DOMException("Failed to execute 'dispatchEvent' on 'EventTarget': The event is already being dispatched.", 'InvalidStateError');
+                        }
+                        event._fenDispatching = true;
                         event.target = this;
+                        event.srcElement = this;
+                        event.currentTarget = this;
+                        event.eventPhase = 2;
+                        event._fenPath = [this];
                         var map = fenListenerMap(this);
                         var listeners = (map[event.type] || []).slice();
-                        for (var i = 0; i < listeners.length; i++) {
-                            var entry = listeners[i];
-                            // DOM 2.9 step 5: a once listener is removed before it
-                            // is called, so a handler that dispatches the same
-                            // event again does not re-enter it.
-                            if (entry.once) {
-                                var live = map[event.type];
-                                var at = live ? live.indexOf(entry) : -1;
-                                if (at >= 0) live.splice(at, 1);
+                        try {
+                            for (var i = 0; i < listeners.length; i++) {
+                                var entry = listeners[i];
+                                // DOM 2.10 "inner invoke" steps: stop immediately
+                                // when asked to, and skip a listener removed by an
+                                // earlier one in this same dispatch.
+                                if (event._immediatePropagationStopped) break;
+                                if (entry.removed) continue;
+                                // A once listener is removed before it is called,
+                                // so a handler that dispatches the same event
+                                // again does not re-enter it.
+                                if (entry.once) {
+                                    entry.removed = true;
+                                    var live = map[event.type];
+                                    var at = live ? live.indexOf(entry) : -1;
+                                    if (at >= 0) live.splice(at, 1);
+                                }
+                                var callback = entry.callback;
+                                try {
+                                    if (typeof callback === 'function') {
+                                        callback.call(this, event);
+                                    } else {
+                                        var handleEvent = callback.handleEvent;
+                                        if (typeof handleEvent !== 'function') {
+                                            throw new TypeError('The listener object has no handleEvent method.');
+                                        }
+                                        handleEvent.call(callback, event);
+                                    }
+                                } catch (listenerError) {
+                                    // Web IDL "call a user object's operation":
+                                    // the exception is reported, not swallowed,
+                                    // and the next listener still runs.
+                                    if (typeof globalThis.reportError === 'function') {
+                                        try { globalThis.reportError(listenerError); } catch (_reportFailure) {}
+                                    }
+                                }
                             }
-                            try { entry.callback.call(this, event); } catch(e) {}
+                        } finally {
+                            event.eventPhase = 0;
+                            event.currentTarget = null;
+                            event._fenPath = null;
+                            event._fenDispatching = false;
+                            event._propagationStopped = false;
+                            event._immediatePropagationStopped = false;
                         }
                         return !event.defaultPrevented;
                     };
@@ -12839,8 +12890,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         this.defaultPrevented = true;
                     }
                 };
+                // DOM 2.2 composedPath(): the path of the dispatch in progress, and
+                // empty once it is over.
                 Event.prototype.composedPath = function () {
-                    return [];
+                    return this._fenPath ? this._fenPath.slice() : [];
                 };
                 Event.NONE = 0;
                 Event.CAPTURING_PHASE = 1;
