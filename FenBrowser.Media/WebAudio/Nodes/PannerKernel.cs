@@ -59,8 +59,8 @@ public sealed class ListenerKernel : AudioNodeKernel
 /// <summary>
 /// WA 1.23 PannerNode: the source placed relative to the context's listener. The panning
 /// follows the spec's azimuth and elevation computation (WA 6.2) and its equal-power law;
-/// the distance and cone gains are WA 6.3 and 6.4. HRTF panning uses the same equal-power
-/// law (design WA-D10 leaves measured head-related responses out).
+/// the distance and cone gains are WA 6.3 and 6.4. HRTF panning is a synthetic spherical head
+/// (<see cref="SphericalHeadHrtf"/>, design WA-D10) rather than a measured response set.
 /// </summary>
 public sealed class PannerKernel : AudioNodeKernel
 {
@@ -83,6 +83,8 @@ public sealed class PannerKernel : AudioNodeKernel
     public AudioParamKernel OrientationZ { get; }
 
     public PanningModel PanningModel { get; set; }
+
+    private SphericalHeadHrtf? _hrtf;
 
     public DistanceModel DistanceModel { get; set; } = DistanceModel.Inverse;
 
@@ -120,6 +122,13 @@ public sealed class PannerKernel : AudioNodeKernel
         var inL = input.Channel(0);
         var inR = stereo ? input.Channel(1) : inL;
 
+        if (PanningModel == PanningModel.Hrtf)
+        {
+            ProcessHrtf(listener, constant, inL, inR, left, right, n);
+            output.MarkNotSilent();
+            return;
+        }
+
         double azimuth = 0, gain = 1;
         for (int i = 0; i < n; i++)
         {
@@ -146,7 +155,54 @@ public sealed class PannerKernel : AudioNodeKernel
         output.MarkNotSilent();
     }
 
-    // WA 6.2 "Azimuth and Elevation" (the azimuth half: equal-power panning ignores elevation).
+    // HRTF: the head is pointed once per quantum (as engines do for their convolution
+    // kernels); the distance and cone gain still follow every frame of an automated position.
+    private void ProcessHrtf(ListenerKernel listener, bool constant, Span<float> inL, Span<float> inR, Span<float> left, Span<float> right, int n)
+    {
+        _hrtf ??= new SphericalHeadHrtf(Graph.SampleRate);
+        var source = new Vec(PositionX.Values[0], PositionY.Values[0], PositionZ.Values[0]);
+        var listenerPosition = new Vec(listener.PositionX.Values[0], listener.PositionY.Values[0], listener.PositionZ.Values[0]);
+        var forward = new Vec(listener.ForwardX.Values[0], listener.ForwardY.Values[0], listener.ForwardZ.Values[0]);
+        var up = new Vec(listener.UpX.Values[0], listener.UpY.Values[0], listener.UpZ.Values[0]);
+        _hrtf.SetDirection(Azimuth(source, listenerPosition, forward, up), Elevation(source, listenerPosition, forward, up));
+        _hrtf.Process(inL, inR, left, right, n);
+
+        double gain = 1;
+        for (int i = 0; i < n; i++)
+        {
+            if (i == 0 || !constant)
+            {
+                int k = constant ? 0 : i;
+                var at = new Vec(PositionX.Values[k], PositionY.Values[k], PositionZ.Values[k]);
+                var orientation = new Vec(OrientationX.Values[k], OrientationY.Values[k], OrientationZ.Values[k]);
+                var from = new Vec(listener.PositionX.Values[k], listener.PositionY.Values[k], listener.PositionZ.Values[k]);
+                gain = DistanceGain((at - from).Length) * ConeGain(at, orientation, from);
+            }
+
+            float g = (float)gain;
+            left[i] *= g;
+            right[i] *= g;
+        }
+    }
+
+    // WA 6.2 "Azimuth and Elevation": the elevation half, which only HRTF panning hears.
+    internal static double Elevation(Vec source, Vec listener, Vec forward, Vec up)
+    {
+        var sourceListener = (source - listener).Normalized();
+        if (sourceListener.IsZero)
+            return 0;
+
+        var listenerRight = forward.Cross(up).Normalized();
+        var upAligned = listenerRight.Cross(forward.Normalized());
+        double elevation = 90 - 180 * Math.Acos(Math.Clamp(sourceListener.Dot(upAligned), -1, 1)) / Math.PI;
+        if (elevation > 90)
+            elevation = 180 - elevation;
+        else if (elevation < -90)
+            elevation = -180 - elevation;
+        return double.IsNaN(elevation) ? 0 : elevation;
+    }
+
+    // WA 6.2 "Azimuth and Elevation": the azimuth half.
     internal static double Azimuth(Vec source, Vec listener, Vec forward, Vec up)
     {
         var sourceListener = (source - listener).Normalized();

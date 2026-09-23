@@ -175,4 +175,62 @@ public class WebAudioSpatialTests
         int peak = Array.IndexOf(decibels, decibels.Max());
         Assert.Equal(100, peak);
     }
+    // An impulse through an HRTF panner at (x, y, z), left and right ear.
+    private static (float[] Left, float[] Right) HrtfImpulse(float x, float y, float z)
+    {
+        var graph = new AudioGraph(Rate, 2);
+        var impulse = new float[512];
+        impulse[0] = 1;
+        var source = new BufferSourceKernel(graph) { Buffer = new AudioBufferData([impulse], Rate) };
+        var panner = new PannerKernel(graph) { PanningModel = PanningModel.Hrtf, RolloffFactor = 0 };
+        panner.PositionX.Timeline.SetValueAtTime(x, 0);
+        panner.PositionY.Timeline.SetValueAtTime(y, 0);
+        panner.PositionZ.Timeline.SetValueAtTime(z, 0);
+        graph.Post(g =>
+        {
+            g.AddNode(source);
+            g.AddNode(panner);
+            g.Connect(source, 0, panner, 0);
+            g.Connect(panner, 0, g.Destination, 0);
+            source.Start(0, 0, double.PositiveInfinity);
+        });
+
+        var result = new OfflineAudioRenderer(graph, 2, 512).RenderAll();
+        return (result[0], result[1]);
+    }
+
+    private static int FirstNonZero(float[] data) => Array.FindIndex(data, v => Math.Abs(v) > 1e-6f);
+
+    private static double Energy(float[] data) => data.Sum(v => (double)v * v);
+
+    [Fact]
+    public void AnHrtfSourceStraightAheadReachesBothEarsAlike()
+    {
+        var (left, right) = HrtfImpulse(0, 0, -1);
+        for (int i = 0; i < left.Length; i++)
+            Assert.Equal(left[i], right[i], 6);
+        Assert.True(Energy(left) > 0.1);
+    }
+
+    [Fact]
+    public void AnHrtfSourceToTheRightIsLouderAndEarlierInTheRightEar()
+    {
+        var (left, right) = HrtfImpulse(1, 0, 0);
+        Assert.True(Energy(right) > 2 * Energy(left), $"right {Energy(right)} left {Energy(left)}");
+        // About 0.65 ms of interaural delay at 44.1 kHz.
+        Assert.InRange(FirstNonZero(left) - FirstNonZero(right), 20, 35);
+    }
+
+    [Fact]
+    public void AnHrtfSourceAboveSoundsDifferentFromOneBelow()
+    {
+        var above = HrtfImpulse(0, 1, -1);
+        var below = HrtfImpulse(0, -1, -1);
+        double difference = 0;
+        for (int i = 0; i < above.Left.Length; i++)
+            difference = Math.Max(difference, Math.Abs(above.Left[i] - below.Left[i]));
+        Assert.True(difference > 0.05, $"max difference {difference}");
+        // Same distance and azimuth: the level barely changes, the spectrum does.
+        Assert.InRange(Energy(above.Left) / Energy(below.Left), 0.5, 2);
+    }
 }
