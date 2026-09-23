@@ -420,6 +420,11 @@ namespace FenBrowser.Tooling
                     $"[compiled-code-coverage] {FenBrowser.Js.Diagnostics.CompiledCodeCoverage.Describe()}");
             }
 
+            if (FenBrowser.Js.Interpreter2.Interp2Options.Log)
+            {
+                Console.Write(FenBrowser.Js.Interpreter2.Interp2Stats.Report());
+            }
+
             Console.WriteLine($"[debug-site] Bundle: {bundleDir}");
         }
 
