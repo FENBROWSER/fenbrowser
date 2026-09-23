@@ -96,6 +96,39 @@ public class WebAudioNodeTests
     }
 
     [Fact]
+    public void ADelayOutputsMonoSilenceUntilItsDelayedInputArrives()
+    {
+        // WA 1.17 (WebAudio issue #25): the output's channel count is the delayed input's.
+        var graph = new AudioGraph(Rate, 2);
+        var ones = Enumerable.Repeat(1f, 1024).ToArray();
+        var source = new BufferSourceKernel(graph) { Buffer = new AudioBufferData([ones, ones], Rate) };
+        var delay = new DelayKernel(graph, 1);
+        delay.DelayTime.Timeline.SetValueAtTime(256 / (double)Rate, 0);
+        graph.Post(g =>
+        {
+            g.AddNode(source);
+            g.AddNode(delay);
+            g.Connect(source, 0, delay, 0);
+            g.Connect(delay, 0, g.Destination, 0);
+            source.Start(0, 0, double.PositiveInfinity);
+        });
+
+        var renderer = new OfflineAudioRenderer(graph, 2, 128 * 4);
+        var counts = new List<int>();
+        for (int q = 0; q < 4; q++)
+        {
+            renderer.RenderQuantum();
+            counts.Add(delay.Outputs[0].Bus.ChannelCount);
+        }
+
+        // Quantum 1's last sample already interpolates towards frame 0 (the float delay time
+        // lands a hair under 256 frames), so only the quanta either side are unambiguous.
+        Assert.Equal(1, counts[0]);
+        Assert.Equal(2, counts[2]);
+        Assert.Equal(2, counts[3]);
+    }
+
+    [Fact]
     public void AFeedbackLoopThroughADelayIsNotMutedAndRepeatsEachQuantum()
     {
         var graph = new AudioGraph(Rate, 1);

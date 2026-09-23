@@ -14,6 +14,10 @@ public sealed class DelayKernel : AudioNodeKernel
     private long _writtenFrames;
     private bool _hadSignal;
     private long _silentSince = long.MaxValue;
+    // The channel count of each quantum written, by quantum number (stored + 1 so that 0 is
+    // "never written"): the output takes the count of the input it is delaying.
+    private readonly long[] _blockNumber;
+    private readonly int[] _blockChannels;
 
     public DelayKernel(AudioGraph graph, double maxDelayTime)
         : base(graph, 1, 1, 2, ChannelCountMode.Max, ChannelInterpretation.Speakers)
@@ -23,6 +27,9 @@ public sealed class DelayKernel : AudioNodeKernel
         // Room for the longest delay, one quantum being written, and interpolation.
         _ringFrames = (int)Math.Ceiling(maxDelayTime * graph.SampleRate) + 2 * graph.QuantumFrames + 2;
         _ring[0] = new float[_ringFrames];
+        int blocks = _ringFrames / graph.QuantumFrames + 2;
+        _blockNumber = new long[blocks];
+        _blockChannels = new int[blocks];
     }
 
     public double MaxDelayTime { get; }
@@ -59,6 +66,10 @@ public sealed class DelayKernel : AudioNodeKernel
             _ringChannels = input.ChannelCount;
         }
 
+        long block = _writtenFrames / quantum;
+        _blockNumber[block % _blockNumber.Length] = block + 1;
+        _blockChannels[block % _blockNumber.Length] = input.ChannelCount;
+
         int start = (int)(_writtenFrames % _ringFrames);
         for (int c = 0; c < _ringChannels; c++)
         {
@@ -88,7 +99,7 @@ public sealed class DelayKernel : AudioNodeKernel
     {
         int quantum = Graph.QuantumFrames;
         var output = Outputs[0].Bus;
-        output.Reset(_ringChannels);
+        output.Reset(1);
 
         // Nothing has come in yet, or everything that did has already come out.
         long tail = (long)Math.Ceiling(MaxDelayTime * Graph.SampleRate) + quantum;
@@ -99,6 +110,19 @@ public sealed class DelayKernel : AudioNodeKernel
         var delay = DelayTime.Values;
         double minimum = InCycle ? quantum : 0;
         double maximum = MaxDelayTime * sampleRate;
+
+        // WA 1.17 (WebAudio issue #25): the output has the channel count of the input it is
+        // delaying, so reading history that was never written is mono silence.
+        long writtenEnd = _writtenFrames + (InCycle ? 0 : quantum);
+        int channels = 1;
+        for (int i = 0; i < quantum; i++)
+        {
+            double d = Math.Clamp(delay[i] * sampleRate, minimum, maximum);
+            long k = (long)Math.Floor(_writtenFrames + i - d);
+            channels = Math.Max(channels, Math.Max(ChannelsAt(k, writtenEnd), ChannelsAt(k + 1, writtenEnd)));
+        }
+
+        output.Reset(channels);
 
         // The frame index of this quantum's first sample in the write sequence (the counter
         // advances after the read). In a cycle this quantum has not been written yet, which
@@ -118,7 +142,7 @@ public sealed class DelayKernel : AudioNodeKernel
             double fraction = position - k;
             int a = k < 0 ? -1 : (int)(k % _ringFrames);
             int b = k + 1 < 0 ? -1 : (int)((k + 1) % _ringFrames);
-            for (int c = 0; c < _ringChannels; c++)
+            for (int c = 0; c < channels; c++)
             {
                 var ring = _ring[c]!;
                 float s0 = a < 0 ? 0f : ring[a];
@@ -128,5 +152,14 @@ public sealed class DelayKernel : AudioNodeKernel
         }
 
         output.MarkNotSilent();
+    }
+
+    private int ChannelsAt(long frame, long writtenEnd)
+    {
+        if (frame < 0 || frame >= writtenEnd)
+            return 0;
+        long block = frame / Graph.QuantumFrames;
+        int slot = (int)(block % _blockNumber.Length);
+        return _blockNumber[slot] == block + 1 ? _blockChannels[slot] : 0;
     }
 }
