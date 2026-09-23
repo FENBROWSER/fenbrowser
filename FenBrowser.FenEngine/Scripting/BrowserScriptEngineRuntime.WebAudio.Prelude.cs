@@ -317,6 +317,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 var s = node[S];
                 if (n < 1 || n > 32) throw domError("Failed to set the 'channelCount' property on 'AudioNode': The channel count provided (" + n + ") is outside the range [1, 32].", 'NotSupportedError');
                 if (s.kind === 'splitter' && n !== s.outputs) throw domError("Failed to set the 'channelCount' property on 'AudioNode': ChannelSplitterNode's channelCount cannot be changed.", 'InvalidStateError');
+                if ((s.kind === 'convolver' || s.kind === 'compressor' || s.kind === 'panner') && n > 2) throw domError("Failed to set the 'channelCount' property on 'AudioNode': the channelCount of this node (" + n + ") cannot be greater than 2.", 'NotSupportedError');
                 if (s.kind === 'stereopanner' && n > 2) throw domError("Failed to set the 'channelCount' property on 'AudioNode': StereoPanner's channelCount (" + n + ") cannot be greater than 2.", 'NotSupportedError');
                 if (s.kind === 'merger' && n !== 1) throw domError("Failed to set the 'channelCount' property on 'AudioNode': ChannelMergerNode's channelCount must be 1.", 'InvalidStateError');
                 if (s.kind === 'destination') {
@@ -326,6 +327,7 @@ public sealed partial class FenJsBrowserScriptEngine
             }
             function checkChannelCountMode(node, mode) {
                 var s = node[S];
+                if ((s.kind === 'convolver' || s.kind === 'compressor' || s.kind === 'panner') && mode === 'max') throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': the channelCountMode of this node cannot be 'max'.", 'NotSupportedError');
                 if (s.kind === 'stereopanner' && mode === 'max') throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': StereoPanner's channelCountMode cannot be set to 'max'.", 'NotSupportedError');
                 if ((s.kind === 'splitter' || s.kind === 'merger') && mode !== 'explicit') throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': the mode of this node cannot be changed from 'explicit'.", 'InvalidStateError');
                 if (s.kind === 'destination' && s.ctx instanceof OfflineAudioContext && mode !== s.mode) throw domError("Failed to set the 'channelCountMode' property on 'AudioNode': an OfflineAudioContext destination's mode cannot be changed.", 'InvalidStateError');
@@ -821,6 +823,238 @@ public sealed partial class FenJsBrowserScriptEngine
             }
             webidl(StereoPannerNode, 'StereoPannerNode');
 
+            // ---- WA3: AnalyserNode (WA 1.8) -----------------------------------------------
+
+            class AnalyserNode extends AudioNode {
+                constructor(context, options) {
+                    requireContext(context, 'AnalyserNode');
+                    var o = dictionary(options, 'AnalyserOptions');
+                    var fftSize = o.fftSize === undefined ? 2048 : toUnsignedLong(o.fftSize);
+                    var maxDb = o.maxDecibels === undefined ? -30 : toDouble(o.maxDecibels, 'maxDecibels');
+                    var minDb = o.minDecibels === undefined ? -100 : toDouble(o.minDecibels, 'minDecibels');
+                    var smoothing = o.smoothingTimeConstant === undefined ? 0.8 : toDouble(o.smoothingTimeConstant, 'smoothingTimeConstant');
+                    checkFftSize(fftSize, "Failed to construct 'AnalyserNode'");
+                    if (minDb >= maxDb) throw domError("Failed to construct 'AnalyserNode': minDecibels (" + minDb + ") must be less than maxDecibels (" + maxDb + ").", 'IndexSizeError');
+                    if (!(smoothing >= 0 && smoothing <= 1)) throw domError("Failed to construct 'AnalyserNode': The smoothing value provided (" + smoothing + ") is outside the range [0, 1].", 'IndexSizeError');
+                    super(INTERNAL, context, 'analyser', 1, 1, 2, 'max', 'speakers');
+                    var s = this[S];
+                    s.fftSize = fftSize; s.minDb = minDb; s.maxDb = maxDb; s.smoothing = smoothing;
+                    applyNodeOptions(this, o);
+                }
+                get fftSize() { return this[S].fftSize; }
+                set fftSize(v) { var n = toUnsignedLong(v); checkFftSize(n, "Failed to set the 'fftSize' property on 'AnalyserNode'"); this[S].fftSize = n; }
+                get frequencyBinCount() { return this[S].fftSize / 2; }
+                get minDecibels() { return this[S].minDb; }
+                set minDecibels(v) {
+                    var d = toDouble(v, 'minDecibels');
+                    if (d >= this[S].maxDb) throw domError("Failed to set the 'minDecibels' property on 'AnalyserNode': The minDecibels provided (" + d + ") is greater than or equal to the maxDecibels (" + this[S].maxDb + ").", 'IndexSizeError');
+                    this[S].minDb = d;
+                }
+                get maxDecibels() { return this[S].maxDb; }
+                set maxDecibels(v) {
+                    var d = toDouble(v, 'maxDecibels');
+                    if (d <= this[S].minDb) throw domError("Failed to set the 'maxDecibels' property on 'AnalyserNode': The maxDecibels provided (" + d + ") is less than or equal to the minDecibels (" + this[S].minDb + ").", 'IndexSizeError');
+                    this[S].maxDb = d;
+                }
+                get smoothingTimeConstant() { return this[S].smoothing; }
+                set smoothingTimeConstant(v) {
+                    var d = toDouble(v, 'smoothingTimeConstant');
+                    if (!(d >= 0 && d <= 1)) throw domError("Failed to set the 'smoothingTimeConstant' property on 'AnalyserNode': The smoothing value provided (" + d + ") is outside the range [0, 1].", 'IndexSizeError');
+                    this[S].smoothing = d;
+                }
+                getFloatFrequencyData(array) { analyserRead(this, 0, array, Float32Array, 'getFloatFrequencyData', 'Float32Array'); }
+                getByteFrequencyData(array) { analyserRead(this, 1, array, Uint8Array, 'getByteFrequencyData', 'Uint8Array'); }
+                getFloatTimeDomainData(array) { analyserRead(this, 2, array, Float32Array, 'getFloatTimeDomainData', 'Float32Array'); }
+                getByteTimeDomainData(array) { analyserRead(this, 3, array, Uint8Array, 'getByteTimeDomainData', 'Uint8Array'); }
+            }
+            function checkFftSize(n, prefix) {
+                if (n < 32 || n > 32768 || (n & (n - 1)) !== 0)
+                    throw domError(prefix + ": The value provided (" + n + ") is not a power of two in the range [32, 32768].", 'IndexSizeError');
+            }
+            function analyserRead(node, kind, array, type, method, typeName) {
+                if (arguments.length < 3 || !(array instanceof type))
+                    throw typeError("Failed to execute '" + method + "' on 'AnalyserNode': parameter 1 is not of type '" + typeName + "'.");
+                var s = node[S];
+                g.__fenWaAnalyserRead(s.ctx[S].id, s.id, kind, array, s.fftSize, s.minDb, s.maxDb, s.smoothing);
+            }
+            webidl(AnalyserNode, 'AnalyserNode');
+
+            // ---- ConvolverNode (WA 1.14) -----------------------------------------------------
+
+            class ConvolverNode extends AudioNode {
+                constructor(context, options) {
+                    requireContext(context, 'ConvolverNode');
+                    var o = dictionary(options, 'ConvolverOptions');
+                    super(INTERNAL, context, 'convolver', 1, 1, 2, 'clamped-max', 'speakers');
+                    this[S].normalize = !toBoolean(o.disableNormalization);
+                    this[S].buffer = null;
+                    applyNodeOptions(this, o);
+                    if (o.buffer !== undefined && o.buffer !== null) this.buffer = o.buffer;
+                }
+                get buffer() { return this[S].buffer; }
+                set buffer(v) {
+                    var s = this[S];
+                    if (v !== null && !(v instanceof AudioBuffer)) throw typeError("Failed to set the 'buffer' property on 'ConvolverNode': The provided value is not of type 'AudioBuffer'.");
+                    if (v !== null) {
+                        var ch = v[S].data.length;
+                        if (ch !== 1 && ch !== 2 && ch !== 4) throw domError("Failed to set the 'buffer' property on 'ConvolverNode': The buffer must have 1, 2, or 4 channels, not " + ch + ".", 'NotSupportedError');
+                        if (v[S].sampleRate !== s.ctx[S].sampleRate) throw domError("Failed to set the 'buffer' property on 'ConvolverNode': The buffer sample rate " + v[S].sampleRate + " does not match the context rate " + s.ctx[S].sampleRate + ".", 'NotSupportedError');
+                    }
+                    s.buffer = v;
+                    g.__fenWaConvolverBuffer(s.ctx[S].id, s.id, v === null ? null : v[S].data, v === null ? 0 : v[S].sampleRate, s.normalize);
+                    if (v !== null) acquireContent(v);
+                }
+                get normalize() { return this[S].normalize; }
+                set normalize(v) { this[S].normalize = toBoolean(v); }
+            }
+            webidl(ConvolverNode, 'ConvolverNode');
+
+            // ---- DynamicsCompressorNode (WA 1.15) ---------------------------------------------
+
+            class DynamicsCompressorNode extends AudioNode {
+                constructor(context, options) {
+                    requireContext(context, 'DynamicsCompressorNode');
+                    var o = dictionary(options, 'DynamicsCompressorOptions');
+                    super(INTERNAL, context, 'compressor', 1, 1, 2, 'clamped-max', 'speakers');
+                    makeParam(this, 'threshold', -24, -100, 0, 'k-rate', true);
+                    makeParam(this, 'knee', 30, 0, 40, 'k-rate', true);
+                    makeParam(this, 'ratio', 12, 1, 20, 'k-rate', true);
+                    makeParam(this, 'attack', 0.003, 0, 1, 'k-rate', true);
+                    makeParam(this, 'release', 0.25, 0, 1, 'k-rate', true);
+                    applyNodeOptions(this, o);
+                    var p = this[S].params;
+                    ['attack', 'knee', 'ratio', 'release', 'threshold'].forEach(function (name) {
+                        if (o[name] !== undefined) p[name].value = o[name];
+                    });
+                }
+                get threshold() { return this[S].params.threshold; }
+                get knee() { return this[S].params.knee; }
+                get ratio() { return this[S].params.ratio; }
+                get attack() { return this[S].params.attack; }
+                get release() { return this[S].params.release; }
+                get reduction() { return g.__fenWaCompressorReduction(this[S].ctx[S].id, this[S].id); }
+            }
+            webidl(DynamicsCompressorNode, 'DynamicsCompressorNode');
+
+            // ---- PannerNode / AudioListener (WA 1.23, 1.24) -----------------------------------
+
+            var panningModels = ['equalpower', 'HRTF'];
+            var distanceModels = ['linear', 'inverse', 'exponential'];
+
+            class PannerNode extends AudioNode {
+                constructor(context, options) {
+                    requireContext(context, 'PannerNode');
+                    var o = dictionary(options, 'PannerOptions');
+                    super(INTERNAL, context, 'panner', 1, 1, 2, 'clamped-max', 'speakers');
+                    var s = this[S];
+                    s.panningModel = 'equalpower'; s.distanceModel = 'inverse';
+                    s.refDistance = 1; s.maxDistance = 10000; s.rolloffFactor = 1;
+                    s.coneInnerAngle = 360; s.coneOuterAngle = 360; s.coneOuterGain = 0;
+                    var self = this;
+                    ['positionX', 'positionY', 'positionZ'].forEach(function (n) { makeParam(self, n, 0, -FLT_MAX, FLT_MAX, 'a-rate'); });
+                    makeParam(this, 'orientationX', 1, -FLT_MAX, FLT_MAX, 'a-rate');
+                    makeParam(this, 'orientationY', 0, -FLT_MAX, FLT_MAX, 'a-rate');
+                    makeParam(this, 'orientationZ', 0, -FLT_MAX, FLT_MAX, 'a-rate');
+                    applyNodeOptions(this, o);
+                    if (o.panningModel !== undefined) this.panningModel = toEnum(o.panningModel, panningModels, 'PanningModelType');
+                    if (o.distanceModel !== undefined) this.distanceModel = toEnum(o.distanceModel, distanceModels, 'DistanceModelType');
+                    ['positionX', 'positionY', 'positionZ', 'orientationX', 'orientationY', 'orientationZ'].forEach(function (n) {
+                        if (o[n] !== undefined) s.params[n].value = o[n];
+                    });
+                    ['refDistance', 'maxDistance', 'rolloffFactor', 'coneInnerAngle', 'coneOuterAngle', 'coneOuterGain'].forEach(function (n) {
+                        if (o[n] !== undefined) self[n] = o[n];
+                    });
+                    pushPanner(this);
+                }
+                get panningModel() { return this[S].panningModel; }
+                set panningModel(v) { var m = String(v); if (panningModels.indexOf(m) < 0) return; this[S].panningModel = m; pushPanner(this); }
+                get distanceModel() { return this[S].distanceModel; }
+                set distanceModel(v) { var m = String(v); if (distanceModels.indexOf(m) < 0) return; this[S].distanceModel = m; pushPanner(this); }
+                get positionX() { return this[S].params.positionX; }
+                get positionY() { return this[S].params.positionY; }
+                get positionZ() { return this[S].params.positionZ; }
+                get orientationX() { return this[S].params.orientationX; }
+                get orientationY() { return this[S].params.orientationY; }
+                get orientationZ() { return this[S].params.orientationZ; }
+                get refDistance() { return this[S].refDistance; }
+                set refDistance(v) {
+                    var d = toDouble(v, 'refDistance');
+                    if (d < 0) throw new RangeError("Failed to set the 'refDistance' property on 'PannerNode': The provided value (" + d + ") is less than the minimum bound (0).");
+                    this[S].refDistance = d; pushPanner(this);
+                }
+                get maxDistance() { return this[S].maxDistance; }
+                set maxDistance(v) {
+                    var d = toDouble(v, 'maxDistance');
+                    if (!(d > 0)) throw new RangeError("Failed to set the 'maxDistance' property on 'PannerNode': The provided value (" + d + ") is less than or equal to the minimum bound (0).");
+                    this[S].maxDistance = d; pushPanner(this);
+                }
+                get rolloffFactor() { return this[S].rolloffFactor; }
+                set rolloffFactor(v) {
+                    var d = toDouble(v, 'rolloffFactor');
+                    if (d < 0) throw new RangeError("Failed to set the 'rolloffFactor' property on 'PannerNode': The provided value (" + d + ") is less than the minimum bound (0).");
+                    this[S].rolloffFactor = d; pushPanner(this);
+                }
+                get coneInnerAngle() { return this[S].coneInnerAngle; }
+                set coneInnerAngle(v) { this[S].coneInnerAngle = toDouble(v, 'coneInnerAngle'); pushPanner(this); }
+                get coneOuterAngle() { return this[S].coneOuterAngle; }
+                set coneOuterAngle(v) { this[S].coneOuterAngle = toDouble(v, 'coneOuterAngle'); pushPanner(this); }
+                get coneOuterGain() { return this[S].coneOuterGain; }
+                set coneOuterGain(v) {
+                    var d = toDouble(v, 'coneOuterGain');
+                    if (!(d >= 0 && d <= 1)) throw domError("Failed to set the 'coneOuterGain' property on 'PannerNode': The provided value (" + d + ") is outside the range [0, 1].", 'InvalidStateError');
+                    this[S].coneOuterGain = d; pushPanner(this);
+                }
+                setPosition(x, y, z) {
+                    requireArgs(arguments, 3, 'setPosition', 'PannerNode');
+                    var p = this[S].params;
+                    p.positionX.value = x; p.positionY.value = y; p.positionZ.value = z;
+                }
+                setOrientation(x, y, z) {
+                    requireArgs(arguments, 3, 'setOrientation', 'PannerNode');
+                    var p = this[S].params;
+                    p.orientationX.value = x; p.orientationY.value = y; p.orientationZ.value = z;
+                }
+            }
+            function pushPanner(node) {
+                var s = node[S];
+                g.__fenWaPannerConfig(s.ctx[S].id, s.id, panningModels.indexOf(s.panningModel), distanceModels.indexOf(s.distanceModel),
+                    s.refDistance, s.maxDistance, s.rolloffFactor, s.coneInnerAngle, s.coneOuterAngle, s.coneOuterGain);
+            }
+            webidl(PannerNode, 'PannerNode');
+
+            class AudioListener {
+                constructor(token, context) {
+                    if (token !== INTERNAL) throw typeError('Illegal constructor');
+                    // The listener's params belong to a graph node of its own.
+                    this[S] = { ctx: context, id: g.__fenWaListenerId(context[S].id), params: {} };
+                    var self = this;
+                    [['positionX', 0], ['positionY', 0], ['positionZ', 0], ['forwardX', 0], ['forwardY', 0], ['forwardZ', -1], ['upX', 0], ['upY', 1], ['upZ', 0]].forEach(function (d) {
+                        makeParam(self, d[0], d[1], -FLT_MAX, FLT_MAX, 'a-rate');
+                    });
+                }
+                get positionX() { return this[S].params.positionX; }
+                get positionY() { return this[S].params.positionY; }
+                get positionZ() { return this[S].params.positionZ; }
+                get forwardX() { return this[S].params.forwardX; }
+                get forwardY() { return this[S].params.forwardY; }
+                get forwardZ() { return this[S].params.forwardZ; }
+                get upX() { return this[S].params.upX; }
+                get upY() { return this[S].params.upY; }
+                get upZ() { return this[S].params.upZ; }
+                setPosition(x, y, z) {
+                    requireArgs(arguments, 3, 'setPosition', 'AudioListener');
+                    var p = this[S].params;
+                    p.positionX.value = x; p.positionY.value = y; p.positionZ.value = z;
+                }
+                setOrientation(x, y, z, xUp, yUp, zUp) {
+                    requireArgs(arguments, 6, 'setOrientation', 'AudioListener');
+                    var p = this[S].params;
+                    p.forwardX.value = x; p.forwardY.value = y; p.forwardZ.value = z;
+                    p.upX.value = xUp; p.upY.value = yUp; p.upZ.value = zUp;
+                }
+            }
+            webidl(AudioListener, 'AudioListener');
+
             // ---- BaseAudioContext (WA 1.1) ----------------------------------------------
 
             class BaseAudioContext extends g.EventTarget {
@@ -864,6 +1098,11 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
                 createWaveShaper() { return new WaveShaperNode(this); }
                 createStereoPanner() { return new StereoPannerNode(this); }
+                createAnalyser() { return new AnalyserNode(this); }
+                createConvolver() { return new ConvolverNode(this); }
+                createDynamicsCompressor() { return new DynamicsCompressorNode(this); }
+                createPanner() { return new PannerNode(this); }
+                get listener() { return this[S].listener; }
             }
             handler(BaseAudioContext.prototype, 'onstatechange');
             webidl(BaseAudioContext, 'BaseAudioContext');
@@ -891,6 +1130,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 };
                 contexts.set(id, context);
                 context[S].destination = new AudioDestinationNode(INTERNAL, context, offline ? channels : 2);
+                context[S].listener = new AudioListener(INTERNAL, context);
             }
             function setState(context, state) {
                 var s = context[S];

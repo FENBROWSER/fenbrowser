@@ -135,6 +135,10 @@ public sealed partial class FenJsBrowserScriptEngine
                 "iir" => new IirFilterKernel(graph),
                 "waveshaper" => new WaveShaperKernel(graph),
                 "stereopanner" => new StereoPannerKernel(graph),
+                "analyser" => new AnalyserKernel(graph),
+                "convolver" => new ConvolverKernel(graph),
+                "compressor" => new CompressorKernel(graph),
+                "panner" => new PannerKernel(graph),
                 _ => null,
             };
             if (kernel == null)
@@ -427,6 +431,146 @@ public sealed partial class FenJsBrowserScriptEngine
             {
                 var oversample = (OverSampleType)Math.Clamp(ArgInt(args, 2), 0, 2);
                 entry.Graph.Post(_ => shaper.Oversample = oversample);
+            }
+
+            return JsValue.Undefined;
+        });
+
+        // ---- WA3 ------------------------------------------------------------------------
+
+        Native("__fenWaListenerId", 1, args =>
+        {
+            if (WebAudioEntry(args) is not { } entry)
+                return JsValue.FromInt32(0);
+            var listener = entry.Graph.Listener;
+            entry.Nodes[listener.Id] = listener;
+            return JsValue.FromInt32(listener.Id);
+        });
+
+        // WA 1.8: the analyser's four read methods. The realm passes its current settings so a
+        // read right after changing fftSize uses the new size.
+        Native("__fenWaAnalyserRead", 8, args =>
+        {
+            if (WebAudioEntry(args) is not { } entry || Kernel(entry, args, 1) is not AnalyserKernel analyser || args.Count < 8)
+                return JsValue.Undefined;
+
+            int kind = ArgInt(args, 2);
+            int fftSize = Math.Clamp(ArgInt(args, 4), 32, AnalyserKernel.MaxFftSize);
+            double minDb = ArgNumber(args, 5), maxDb = ArgNumber(args, 6);
+            analyser.FftSize = fftSize;
+            analyser.MinDecibels = minDb;
+            analyser.MaxDecibels = maxDb;
+            analyser.SmoothingTimeConstant = Math.Clamp(ArgNumber(args, 7), 0, 1);
+            var target = args[3];
+            int capacity = TypedArrayLength(target);
+            switch (kind)
+            {
+                case 0:
+                case 1:
+                {
+                    var decibels = analyser.FrequencyDecibels(entry.Graph.CurrentFrame);
+                    int count = Math.Min(capacity, decibels.Length);
+                    if (kind == 0)
+                    {
+                        var values = new float[count];
+                        for (int i = 0; i < count; i++)
+                            values[i] = (float)decibels[i];
+                        WriteFloats(target, values, count);
+                    }
+                    else
+                    {
+                        var bytes = new byte[count];
+                        double range = maxDb - minDb;
+                        for (int i = 0; i < count; i++)
+                        {
+                            double scaled = Math.Floor(255 / range * (decibels[i] - minDb));
+                            bytes[i] = (byte)(double.IsNaN(scaled) ? 0 : Math.Clamp(scaled, 0, 255));
+                        }
+
+                        WriteBytes(target, bytes);
+                    }
+
+                    break;
+                }
+
+                default:
+                {
+                    var samples = analyser.TimeDomain(fftSize);
+                    int count = Math.Min(capacity, samples.Length);
+                    if (kind == 2)
+                    {
+                        WriteFloats(target, samples, count);
+                    }
+                    else
+                    {
+                        var bytes = new byte[count];
+                        for (int i = 0; i < count; i++)
+                            bytes[i] = (byte)Math.Clamp(Math.Floor(128 * (1 + (double)samples[i])), 0, 255);
+                        WriteBytes(target, bytes);
+                    }
+
+                    break;
+                }
+            }
+
+            return JsValue.Undefined;
+        });
+
+        Native("__fenWaConvolverBuffer", 5, args =>
+        {
+            if (WebAudioEntry(args) is not { } entry || Kernel(entry, args, 1) is not ConvolverKernel convolver)
+                return JsValue.Undefined;
+
+            float[][] response = null;
+            if (args.Count > 2 && args[2].Tag == JsValueTag.Object)
+            {
+                int channelCount = (int)ReadJsProperty(args[2], "length").AsNumber();
+                if (channelCount is 1 or 2 or 4)
+                {
+                    response = new float[channelCount][];
+                    for (int c = 0; c < channelCount; c++)
+                        response[c] = ReadFloats(ReadJsProperty(args[2], c.ToString(CultureInfo.InvariantCulture)));
+                    bool normalize = args.Count > 4 && args[4].Tag == JsValueTag.Boolean && args[4].AsBoolean();
+                    if (normalize && response[0].Length > 0)
+                    {
+                        double scale = ConvolverKernel.NormalizationScale(response, (float)ArgNumber(args, 3));
+                        foreach (var channel in response)
+                        {
+                            for (int i = 0; i < channel.Length; i++)
+                                channel[i] = (float)(channel[i] * scale);
+                        }
+                    }
+                }
+            }
+
+            entry.Graph.Post(_ => convolver.SetResponse(response));
+            return JsValue.Undefined;
+        });
+
+        Native("__fenWaCompressorReduction", 2, args =>
+            WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is CompressorKernel compressor
+                ? JsValue.FromNumber(compressor.Reduction)
+                : JsValue.FromNumber(0));
+
+        Native("__fenWaPannerConfig", 10, args =>
+        {
+            if (WebAudioEntry(args) is { } entry && Kernel(entry, args, 1) is PannerKernel panner)
+            {
+                var model = (PanningModel)Math.Clamp(ArgInt(args, 2), 0, 1);
+                var distance = (DistanceModel)Math.Clamp(ArgInt(args, 3), 0, 2);
+                double reference = ArgNumber(args, 4), max = ArgNumber(args, 5), rolloff = ArgNumber(args, 6);
+                double inner = ArgNumber(args, 7), outer = ArgNumber(args, 8), outerGain = ArgNumber(args, 9);
+                entry.Graph.Post(_ =>
+                {
+                    panner.PanningModel = model;
+                    panner.DistanceModel = distance;
+                    panner.RefDistance = reference;
+                    panner.MaxDistance = max;
+                    panner.RolloffFactor = rolloff;
+                    panner.ConeInnerAngle = inner;
+                    panner.ConeOuterAngle = outer;
+                    panner.ConeOuterGain = outerGain;
+                });
             }
 
             return JsValue.Undefined;
@@ -748,6 +892,26 @@ public sealed partial class FenJsBrowserScriptEngine
     {
         var bytes = ExtractBytesFromArrayLike(value);
         return MemoryMarshal.Cast<byte, float>(bytes.AsSpan(0, bytes.Length & ~3)).ToArray();
+    }
+
+    private int TypedArrayLength(JsValue target) =>
+        target.Tag == JsValueTag.Object && _interpreter.Heap.GetObject(target.AsObjectHandle()) is TypedArrayObject array && !array.IsViewDetached
+            ? array.Length
+            : 0;
+
+    // Writes the first <count> samples into a Float32Array, leaving the rest of it untouched.
+    private void WriteFloats(JsValue target, float[] samples, int count) =>
+        WriteFloats(target, count == samples.Length ? samples : samples.AsSpan(0, count).ToArray());
+
+    // Writes bytes into the start of a Uint8Array.
+    private void WriteBytes(JsValue target, byte[] bytes)
+    {
+        if (target.Tag != JsValueTag.Object)
+            return;
+        if (_interpreter.Heap.GetObject(target.AsObjectHandle()) is not TypedArrayView view || view.IsViewDetached || view.IsViewOutOfBounds())
+            return;
+        var destination = view.Buffer.Data.AsSpan(view.ByteOffset, view.ByteLength);
+        bytes.AsSpan(0, Math.Min(bytes.Length, destination.Length)).CopyTo(destination);
     }
 
     // Writes samples straight into a Float32Array the realm allocated.
