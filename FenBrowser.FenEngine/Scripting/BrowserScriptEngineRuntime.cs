@@ -17193,6 +17193,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (target == null || eventValue.Tag == JsValueTag.Undefined)
             return true;
 
+        // Listeners run arbitrary script between the reads of the event below, and a
+        // collection one of them triggers must not sweep the event under the dispatch.
+        using var eventPins = PinFenJsValues(eventValue);
+
         // Check if event bubbles
         var bubblesValue = ReadJsProperty(eventValue, "bubbles");
         var bubbles = bubblesValue.Tag == JsValueTag.Boolean && bubblesValue.AsBoolean();
