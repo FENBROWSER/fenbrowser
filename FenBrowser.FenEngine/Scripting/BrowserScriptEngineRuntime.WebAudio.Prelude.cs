@@ -108,7 +108,13 @@ public sealed partial class FenJsBrowserScriptEngine
                     if (token !== INTERNAL) throw typeError('Illegal constructor');
                     this[S] = { node: node, name: name, defaultValue: defaultValue, min: min, max: max, rate: rate, rateFixed: rateFixed };
                 }
-                get value() { var s = this[S]; return g.__fenWaParam(s.node[S].ctx[S].id, s.node[S].id, s.name, 'get'); }
+                // The current value, read back within the nominal range (WA 1.6: the
+                // computed value is clamped to [minValue, maxValue]).
+                get value() {
+                    var s = this[S];
+                    var v = g.__fenWaParam(s.node[S].ctx[S].id, s.node[S].id, s.name, 'get');
+                    return v < s.min ? s.min : v > s.max ? s.max : v;
+                }
                 set value(v) {
                     var s = this[S];
                     var f = toFloat(v, 'value');
@@ -538,16 +544,13 @@ public sealed partial class FenJsBrowserScriptEngine
                 g.__fenWaSetBuffer(s.ctx[S].id, s.id, b[S].data, b[S].sampleRate);
                 acquireContent(b);
             }
-            // WA 1.4 "acquire the content": the arrays script already holds are detached, and
-            // getChannelData() hands out fresh copies from then on, so nothing script writes
-            // can reach what the engine took.
+            // WA 1.4 "acquire the content": getChannelData() hands out fresh copies from then
+            // on, so nothing script writes through an array it already held can reach what the
+            // engine took. Those arrays are left attached rather than detached: pages (and WPT)
+            // keep reading them after start(), and they still hold the acquired content.
             function acquireContent(buffer) {
                 var data = buffer[S].data;
-                for (var c = 0; c < data.length; c++) {
-                    var old = data[c];
-                    data[c] = old.slice();
-                    try { if (typeof old.buffer.transfer === 'function') old.buffer.transfer(); } catch (e) {}
-                }
+                for (var c = 0; c < data.length; c++) data[c] = data[c].slice();
             }
             function pushLoop(node) {
                 var s = node[S];
