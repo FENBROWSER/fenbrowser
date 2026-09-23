@@ -24,6 +24,12 @@ public enum PictureInPictureRefusal
 
     /// <summary>The page has no transient activation to spend - <c>NotAllowedError</c>.</summary>
     NotAllowed,
+
+    /// <summary>
+    /// The document is not allowed to use the "picture-in-picture" policy-controlled
+    /// feature - <c>SecurityError</c>.
+    /// </summary>
+    Security,
 }
 
 /// <summary>
@@ -135,6 +141,13 @@ public sealed class PictureInPictureController
     /// </summary>
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// Whether the document's permissions policy lets it use "picture-in-picture". False
+    /// makes a request fail with SecurityError (§4.1 step 2) and turns
+    /// <c>document.pictureInPictureEnabled</c> off.
+    /// </summary>
+    public bool AllowedByPolicy { get; set; } = true;
+
     /// <summary>The element being shown in Picture-in-Picture, or null.</summary>
     public object? Element { get; private set; }
 
@@ -157,6 +170,8 @@ public sealed class PictureInPictureController
 
         if (!Enabled)
             return PictureInPictureRefusal.NotSupported;
+        if (!AllowedByPolicy)
+            return PictureInPictureRefusal.Security;
 
         // Steps 2-4: an element with nothing to show, or one whose author asked for no
         // Picture-in-Picture, cannot be put in it.
@@ -186,6 +201,8 @@ public sealed class PictureInPictureController
 
         if (!Enabled)
             return new PictureInPictureChange(PictureInPictureRefusal.NotSupported);
+        if (!AllowedByPolicy)
+            return new PictureInPictureChange(PictureInPictureRefusal.Security);
         if (!candidate.HasMetadata || !candidate.HasVideoTrack || candidate.DisablePictureInPicture)
             return new PictureInPictureChange(PictureInPictureRefusal.InvalidState);
 

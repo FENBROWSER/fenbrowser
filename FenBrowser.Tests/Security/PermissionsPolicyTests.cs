@@ -117,6 +117,35 @@ namespace FenBrowser.Tests.Security
         }
 
         [Fact]
+        public void ContainerAllow_DecidesOnlyTheFeaturesItNames()
+        {
+            const string parent = "https://a.example";
+            Assert.False(PermissionsPolicy.EvaluateContainerAllow(
+                "picture-in-picture 'none'", PolicyControlledFeature.PictureInPicture, parent, parent));
+            Assert.True(PermissionsPolicy.EvaluateContainerAllow(
+                "encrypted-media", PolicyControlledFeature.EncryptedMedia, "https://b.example", parent));
+            Assert.False(PermissionsPolicy.EvaluateContainerAllow(
+                "speaker-selection 'self'", PolicyControlledFeature.SpeakerSelection, "https://b.example", parent));
+
+            // Not named: the feature's default allowlist decides, which the caller applies.
+            Assert.Null(PermissionsPolicy.EvaluateContainerAllow(
+                "autoplay", PolicyControlledFeature.PictureInPicture, parent, parent));
+            Assert.Null(PermissionsPolicy.EvaluateContainerAllow(
+                null, PolicyControlledFeature.EncryptedMedia, parent, parent));
+        }
+
+        [Fact]
+        public void DefaultAllowlists_StarForPictureInPicture_SelfForMediaKeysAndSpeakers()
+        {
+            const string parent = "https://a.example";
+            Assert.True(PermissionsPolicy.DefaultAllowlistAllows(PolicyControlledFeature.PictureInPicture, "https://b.example", parent));
+            Assert.False(PermissionsPolicy.DefaultAllowlistAllows(PolicyControlledFeature.EncryptedMedia, "https://b.example", parent));
+            Assert.False(PermissionsPolicy.DefaultAllowlistAllows(PolicyControlledFeature.SpeakerSelection, "https://b.example", parent));
+            Assert.True(PermissionsPolicy.DefaultAllowlistAllows(PolicyControlledFeature.SpeakerSelection, parent, parent));
+            Assert.True(PermissionsPolicy.Parse("encrypted-media=()").Allowlists.ContainsKey(PolicyControlledFeature.EncryptedMedia));
+        }
+
+        [Fact]
         public void ParseLegacyFeaturePolicy_UsesSameSyntax()
         {
             var policy = PermissionsPolicy.ParseLegacyFeaturePolicy("fullscreen *; geolocation (self)");

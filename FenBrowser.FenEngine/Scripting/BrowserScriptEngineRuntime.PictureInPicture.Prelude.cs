@@ -135,6 +135,8 @@ public sealed partial class FenJsBrowserScriptEngine
                     return 'Must be handling a user gesture to request Picture-in-Picture.';
                 if (name === 'NotSupportedError')
                     return 'Picture-in-Picture is not available.';
+                if (name === 'SecurityError')
+                    return 'The permissions policy does not allow Picture-in-Picture in this document.';
                 return 'The element is not eligible for Picture-in-Picture, or nothing is in Picture-in-Picture.';
             }
 

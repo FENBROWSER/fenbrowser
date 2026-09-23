@@ -26,14 +26,18 @@ public sealed partial class FenJsBrowserScriptEngine
         get
         {
             _pictureInPicture ??= new PictureInPictureController(MediaEngineServices.Log);
-            _pictureInPicture.Enabled = IsPictureInPictureAllowedHere();
+            _pictureInPicture.AllowedByPolicy = IsFeatureEnabledInDocument(FenBrowser.Core.Security.PolicyControlledFeature.PictureInPicture);
             return _pictureInPicture;
         }
     }
 
     private void InstallFenJsPictureInPicture()
     {
-        Native("__fenPipEnabled", 0, _ => JsValue.FromBoolean(PictureInPicture.Enabled));
+        Native("__fenPipEnabled", 0, _ =>
+        {
+            var controller = PictureInPicture;
+            return JsValue.FromBoolean(controller.Enabled && controller.AllowedByPolicy);
+        });
 
         Native("__fenPipElement", 0, _ =>
             PictureInPicture.Element is Element element ? ToHostNodeOrNull(element) : JsValue.Null);
@@ -121,24 +125,6 @@ public sealed partial class FenJsBrowserScriptEngine
         return true;
     }
 
-    /// <summary>
-    /// Whether this document offers Picture-in-Picture. The feature's default allowlist is
-    /// "*", so it is offered unless a policy names it and that policy does not reach this
-    /// origin - a document with a policy that says nothing about Picture-in-Picture still
-    /// has it.
-    /// </summary>
-    private bool IsPictureInPictureAllowedHere()
-    {
-        var policy = DocumentSecurityContext?.PermissionsPolicy ?? PermissionsPolicyProvider?.Invoke();
-        if (policy is null || policy == FenBrowser.Core.Security.PermissionsPolicy.None)
-            return true;
-        if (!policy.Allowlists.ContainsKey(FenBrowser.Core.Security.PolicyControlledFeature.PictureInPicture))
-            return true;
-
-        var origin = TryResolveCurrentOrigin(null);
-        return policy.IsFeatureAllowed(FenBrowser.Core.Security.PolicyControlledFeature.PictureInPicture, origin, origin);
-    }
-
     private JsValue PipResult(PictureInPictureRefusal refusal) => PipResult(new PictureInPictureChange(refusal));
 
     private JsValue PipResult(in PictureInPictureChange change)
@@ -150,6 +136,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 PictureInPictureRefusal.NotSupported => "NotSupportedError",
                 PictureInPictureRefusal.InvalidState => "InvalidStateError",
                 PictureInPictureRefusal.NotAllowed => "NotAllowedError",
+                PictureInPictureRefusal.Security => "SecurityError",
                 _ => string.Empty,
             }),
             ["width"] = JsValue.FromInt32(change.Window?.Width ?? 0),

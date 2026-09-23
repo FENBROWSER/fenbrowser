@@ -1075,6 +1075,81 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     }
 
     /// <summary>
+    /// Permissions Policy §9.8 "Is feature enabled in document for origin?" for this realm's
+    /// document at its own origin. A frame's document inherits the policy of its container
+    /// (§9.7): disabled when the embedding document has the feature disabled, otherwise
+    /// what the iframe's allow attribute says when it names the feature, otherwise the
+    /// feature's default allowlist ("*", or "self" against the embedding document's
+    /// origin). The top-level document's own header then decides. A frame document's own
+    /// header is not consulted: frame realms carry their parent's security context.
+    /// </summary>
+    internal bool IsFeatureEnabledInDocument(FenBrowser.Core.Security.PolicyControlledFeature feature)
+    {
+        if (_parentRealmOwner is { } owner && _embeddingFrameElement is { } container)
+        {
+            // The embedding document is the container's node document. Every frame realm is
+            // created by the top realm today, so for a nested frame that is not the realm
+            // that created this one.
+            var root = owner;
+            while (root._parentRealmOwner is { } above)
+            {
+                root = above;
+            }
+
+            var parent = root.FindRealmOwningDocument(container.OwnerDocument) ?? owner;
+            string parentOrigin = parent.TryResolveCurrentOrigin(null);
+            if (!parent.IsFeatureEnabledInDocument(feature))
+            {
+                return false;
+            }
+
+            // about:blank and srcdoc documents take their creator's origin.
+            string origin = TryResolveCurrentOrigin(null);
+            if (string.IsNullOrEmpty(origin) || origin.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
+            {
+                origin = parentOrigin;
+            }
+
+            bool? declared = FenBrowser.Core.Security.PermissionsPolicy.EvaluateContainerAllow(
+                container.GetAttribute("allow"), feature, origin, parentOrigin);
+            return declared ?? FenBrowser.Core.Security.PermissionsPolicy.DefaultAllowlistAllows(feature, origin, parentOrigin);
+        }
+
+        var policy = DocumentSecurityContext?.PermissionsPolicy ?? PermissionsPolicyProvider?.Invoke();
+        if (policy == null)
+        {
+            return true;
+        }
+
+        string self = TryResolveCurrentOrigin(null);
+        return policy.IsFeatureAllowed(feature, self, self);
+    }
+
+    private FenJsBrowserScriptEngine FindRealmOwningDocument(Document document)
+    {
+        if (document == null)
+        {
+            return null;
+        }
+
+        if (ReferenceEquals(_currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument, document))
+        {
+            return this;
+        }
+
+        foreach (var entry in _iframeRealms)
+        {
+            var found = entry.Value?.FindRealmOwningDocument(document);
+            if (found != null)
+            {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Resolves the current document origin for Permissions-Policy checks.
     /// Falls back to the document's URL when no explicit origin is available.
     /// </summary>

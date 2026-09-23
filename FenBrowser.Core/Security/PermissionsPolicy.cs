@@ -24,7 +24,9 @@ namespace FenBrowser.Core.Security
         PictureInPicture = 13,
         ScreenWakeLock = 14,
         Gamepad = 15,
-        Unknown = 16
+        Unknown = 16,
+        EncryptedMedia = 17,
+        SpeakerSelection = 18
     }
 
     /// <summary>
@@ -238,7 +240,7 @@ namespace FenBrowser.Core.Security
         /// names it: "*" for the two features whose specifications say so, and "self" for
         /// the rest, which is what every one of these features defaults to.
         /// </summary>
-        private static bool DefaultAllowlistAllows(PolicyControlledFeature feature, string origin, string documentOrigin)
+        public static bool DefaultAllowlistAllows(PolicyControlledFeature feature, string origin, string documentOrigin)
         {
             if (feature is PolicyControlledFeature.PictureInPicture or PolicyControlledFeature.Gamepad)
                 return true;
@@ -270,6 +272,25 @@ namespace FenBrowser.Core.Security
                 feature,
                 frameOrigin,
                 documentOrigin);
+        }
+
+        /// <summary>
+        /// Permissions Policy §9.7 steps 3-4 for a container: whether the iframe's allow
+        /// attribute enables <paramref name="feature"/> for a document at
+        /// <paramref name="frameOrigin"/> embedded by one at <paramref name="parentOrigin"/>,
+        /// or null when the attribute does not name the feature and its default allowlist
+        /// decides instead.
+        /// </summary>
+        public static bool? EvaluateContainerAllow(
+            string allowAttribute,
+            PolicyControlledFeature feature,
+            string frameOrigin,
+            string parentOrigin)
+        {
+            if (!ParseIframeAllowAttribute(allowAttribute).ContainsKey(feature))
+                return null;
+
+            return IsIframeFeatureAllowed(allowAttribute, feature, frameOrigin, parentOrigin);
         }
 
         /// <summary>
@@ -503,6 +524,8 @@ namespace FenBrowser.Core.Security
                 "picture-in-picture" => PolicyControlledFeature.PictureInPicture,
                 "screen-wake-lock" or "wake-lock" => PolicyControlledFeature.ScreenWakeLock,
                 "gamepad" => PolicyControlledFeature.Gamepad,
+                "encrypted-media" => PolicyControlledFeature.EncryptedMedia,
+                "speaker-selection" => PolicyControlledFeature.SpeakerSelection,
                 _ => PolicyControlledFeature.Unknown
             };
         }
