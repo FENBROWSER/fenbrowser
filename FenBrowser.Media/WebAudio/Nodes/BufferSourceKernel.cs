@@ -96,7 +96,7 @@ public sealed class BufferSourceKernel : ScheduledSourceKernel
         }
 
         // Nothing to do before the quantum that contains the first frame at or after the start time.
-        if (frame + WebAudioLimits.RenderQuantumFrames <= StartFrame)
+        if (frame + Graph.QuantumFrames <= StartFrame)
         {
             OutputSilence();
             return;
@@ -135,7 +135,8 @@ public sealed class BufferSourceKernel : ScheduledSourceKernel
         output.Reset(buffer.ChannelCount);
         bool finished = false;
 
-        for (int index = 0; index < WebAudioLimits.RenderQuantumFrames; index++)
+        int quantum = Graph.QuantumFrames;
+        for (int index = 0; index < quantum; index++)
         {
             long f = frame + index;
             if (f >= stopFrame || _elapsed >= durationFrames)

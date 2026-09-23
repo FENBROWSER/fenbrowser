@@ -24,18 +24,24 @@ public sealed class AudioGraph
     private long _currentFrame;
     private int _nextNodeId;
 
-    public AudioGraph(float sampleRate, int destinationChannels, IWebAudioEventSink? events = null)
+    public AudioGraph(float sampleRate, int destinationChannels, IWebAudioEventSink? events = null, int quantumFrames = WebAudioLimits.RenderQuantumFrames)
     {
         if (!WebAudioLimits.IsValidSampleRate(sampleRate))
             throw new ArgumentOutOfRangeException(nameof(sampleRate));
+        if (quantumFrames < 1 || quantumFrames > WebAudioLimits.MaxRenderQuantumFrames)
+            throw new ArgumentOutOfRangeException(nameof(quantumFrames));
 
         SampleRate = sampleRate;
+        QuantumFrames = quantumFrames;
         Events = events;
         Destination = new DestinationKernel(this, destinationChannels);
         _nodes.Add(Destination);
     }
 
     public float SampleRate { get; }
+
+    /// <summary>The render quantum size (WA 1.1 renderQuantumSize); 128 unless a renderSizeHint chose another.</summary>
+    public int QuantumFrames { get; }
 
     public IWebAudioEventSink? Events { get; }
 
@@ -133,7 +139,7 @@ public sealed class AudioGraph
         foreach (var node in _order)
             node.RenderQuantum(frame);
 
-        Interlocked.Add(ref _currentFrame, WebAudioLimits.RenderQuantumFrames);
+        Interlocked.Add(ref _currentFrame, QuantumFrames);
     }
 
     /// <summary>Runs pending control messages without rendering (a suspended or closed context).</summary>

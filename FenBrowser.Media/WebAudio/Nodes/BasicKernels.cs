@@ -163,7 +163,7 @@ public abstract class ScheduledSourceKernel : AudioNodeKernel
         if (!HasStarted || HasEnded)
             return (0, 0);
 
-        long end = frame + WebAudioLimits.RenderQuantumFrames;
+        long end = frame + Graph.QuantumFrames;
         long from = Math.Max(frame, StartFrame);
         long to = Math.Min(end, StopFrame);
         if (from >= to)
@@ -173,7 +173,7 @@ public abstract class ScheduledSourceKernel : AudioNodeKernel
 
     /// <summary>True once the quantum starting at <paramref name="frame"/> reaches the stop time.</summary>
     protected bool ReachesStop(long frame) =>
-        HasStarted && frame + WebAudioLimits.RenderQuantumFrames >= StopFrame;
+        HasStarted && frame + Graph.QuantumFrames >= StopFrame;
 
     /// <summary>Marks the source finished and tells the control thread, once.</summary>
     protected void Finish()

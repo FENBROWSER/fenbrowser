@@ -6,8 +6,14 @@ namespace FenBrowser.Media.WebAudio;
 /// </summary>
 public static class WebAudioLimits
 {
-    /// <summary>WA 2.4: the render quantum.</summary>
+    /// <summary>WA 2.4: the default render quantum size.</summary>
     public const int RenderQuantumFrames = 128;
+
+    /// <summary>
+    /// The largest render quantum a <c>renderSizeHint</c> may ask for: six seconds' worth at
+    /// 1 kHz is far past any real use, and keeps one bus bounded.
+    /// </summary>
+    public const int MaxRenderQuantumFrames = 6144;
 
     /// <summary>WA 1.1: at least 32 channels must be supported; this engine supports exactly 32.</summary>
     public const int MaxChannels = 32;

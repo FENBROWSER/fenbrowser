@@ -14,12 +14,14 @@ public enum AutomationRate
 /// </summary>
 public sealed class AudioParamKernel
 {
-    private readonly float[] _values = new float[WebAudioLimits.RenderQuantumFrames];
-    private readonly AudioBus _monoBus = new(1);
+    private readonly float[] _values;
+    private readonly AudioBus _monoBus;
     private float _currentValue;
 
-    internal AudioParamKernel(AudioNodeKernel owner, string name, float defaultValue, float minValue, float maxValue, AutomationRate rate, bool rateFixed)
+    internal AudioParamKernel(AudioNodeKernel owner, string name, float defaultValue, float minValue, float maxValue, AutomationRate rate, bool rateFixed, int frames)
     {
+        _values = new float[frames];
+        _monoBus = new AudioBus(1, frames);
         Owner = owner;
         Name = name;
         DefaultValue = defaultValue;

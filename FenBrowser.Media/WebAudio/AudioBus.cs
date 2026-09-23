@@ -2,7 +2,7 @@ namespace FenBrowser.Media.WebAudio;
 
 /// <summary>
 /// One render quantum of planar audio: <see cref="ChannelCount"/> channels of
-/// <see cref="WebAudioLimits.RenderQuantumFrames"/> frames each. The channel arrays are
+/// <see cref="Frames"/> frames each (the context's render quantum size). The channel arrays are
 /// allocated once, at the most channels the bus will ever carry, so changing the channel
 /// count while rendering never allocates (design WA-D3).
 /// </summary>
@@ -10,14 +10,17 @@ public sealed class AudioBus
 {
     private readonly float[][] _channels;
 
-    public AudioBus(int capacity)
+    public AudioBus(int capacity, int frames = WebAudioLimits.RenderQuantumFrames)
     {
         if (capacity < 1 || capacity > WebAudioLimits.MaxChannels)
             throw new ArgumentOutOfRangeException(nameof(capacity));
+        if (frames < 1 || frames > WebAudioLimits.MaxRenderQuantumFrames)
+            throw new ArgumentOutOfRangeException(nameof(frames));
 
         _channels = new float[capacity][];
         for (int i = 0; i < capacity; i++)
-            _channels[i] = new float[WebAudioLimits.RenderQuantumFrames];
+            _channels[i] = new float[frames];
+        Frames = frames;
         ChannelCount = 1;
     }
 
@@ -25,6 +28,8 @@ public sealed class AudioBus
     public int ChannelCount { get; private set; }
 
     public int Capacity => _channels.Length;
+
+    public int Frames { get; }
 
     /// <summary>
     /// True when every channel is known to be zero. Kernels use it to skip work, and a node

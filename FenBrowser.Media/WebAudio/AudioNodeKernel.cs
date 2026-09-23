@@ -11,10 +11,10 @@ public sealed class AudioNodeInput
 {
     private readonly AudioNodeKernel _owner;
 
-    internal AudioNodeInput(AudioNodeKernel owner)
+    internal AudioNodeInput(AudioNodeKernel owner, int frames)
     {
         _owner = owner;
-        Bus = new AudioBus(WebAudioLimits.MaxChannels);
+        Bus = new AudioBus(WebAudioLimits.MaxChannels, frames);
     }
 
     public List<AudioConnection> Connections { get; } = [];
@@ -52,9 +52,9 @@ public sealed class AudioNodeInput
 /// <summary>An output of a node: the bus it writes each quantum.</summary>
 public sealed class AudioNodeOutput
 {
-    internal AudioNodeOutput()
+    internal AudioNodeOutput(int frames)
     {
-        Bus = new AudioBus(WebAudioLimits.MaxChannels);
+        Bus = new AudioBus(WebAudioLimits.MaxChannels, frames);
     }
 
     public AudioBus Bus { get; }
@@ -81,10 +81,10 @@ public abstract class AudioNodeKernel
         Id = graph.NextNodeId();
         Inputs = new AudioNodeInput[inputs];
         for (int i = 0; i < inputs; i++)
-            Inputs[i] = new AudioNodeInput(this);
+            Inputs[i] = new AudioNodeInput(this, graph.QuantumFrames);
         Outputs = new AudioNodeOutput[outputs];
         for (int i = 0; i < outputs; i++)
-            Outputs[i] = new AudioNodeOutput();
+            Outputs[i] = new AudioNodeOutput(graph.QuantumFrames);
         ChannelCount = channelCount;
         ChannelCountMode = mode;
         ChannelInterpretation = interpretation;
@@ -121,7 +121,7 @@ public abstract class AudioNodeKernel
 
     protected AudioParamKernel AddParam(string name, float defaultValue, float minValue, float maxValue, AutomationRate rate, bool rateFixed = false)
     {
-        var param = new AudioParamKernel(this, name, defaultValue, minValue, maxValue, rate, rateFixed);
+        var param = new AudioParamKernel(this, name, defaultValue, minValue, maxValue, rate, rateFixed, Graph.QuantumFrames);
         _params.Add(param);
         return param;
     }

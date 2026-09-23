@@ -44,7 +44,7 @@ public sealed class OfflineAudioRenderer
 
         _graph.RenderQuantum();
         var output = _graph.Destination.Output;
-        int count = (int)Math.Min(WebAudioLimits.RenderQuantumFrames, Length - _written);
+        int count = (int)Math.Min(_graph.QuantumFrames, Length - _written);
         for (int c = 0; c < _result.Length; c++)
         {
             var destination = _result[c].AsSpan((int)_written, count);
