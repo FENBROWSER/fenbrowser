@@ -7523,6 +7523,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsEme();
         InstallFenJsPictureInPicture();
         InstallFenJsMediaStream();
+        InstallFenJsWebAudio();
         InstallFenJsDocumentAll();
         // Last: this only publishes members nothing else has claimed, so it has to
         // see the finished surface.
