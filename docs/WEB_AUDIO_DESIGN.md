@@ -36,8 +36,9 @@ in script, so the renderer has to follow the spec's arithmetic, not merely sound
   again in the engine against `WebAudioLimits` (32 channels, 3 000-768 000 Hz, buffer length
   bounded by `MediaLimits`), so a bad native call cannot allocate without bound.
 - IIR filters are checked for stability only as the spec requires; an unstable filter
-  produces NaN/Inf, which the destination flushes to zero so no non-finite sample ever
-  reaches a device.
+  produces NaN/Inf, which a device output flushes to zero so no non-finite sample ever
+  reaches a device. An `OfflineAudioContext`'s rendered buffer keeps them: it only reaches
+  script, and the spec's computation is observable there.
 - A cross-origin media element or stream contributes silence to the graph (WA 1.21, 1.24).
 - `decodeAudioData` parses untrusted bytes only through the existing, fuzzed demuxers.
 

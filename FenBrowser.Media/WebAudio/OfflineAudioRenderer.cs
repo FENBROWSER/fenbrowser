@@ -50,13 +50,10 @@ public sealed class OfflineAudioRenderer
             var destination = _result[c].AsSpan((int)_written, count);
             if (c < output.ChannelCount && !output.IsSilent)
             {
-                var source = output.Channel(c)[..count];
-                for (int i = 0; i < count; i++)
-                {
-                    // A non-finite sample never leaves the graph (design section 3).
-                    float v = source[i];
-                    destination[i] = float.IsFinite(v) ? v : 0f;
-                }
+                // The rendered buffer keeps NaN and infinities, as the spec's computation
+                // does (a page can see them); only a device output flushes them (design
+                // section 3).
+                output.Channel(c)[..count].CopyTo(destination);
             }
         }
 
