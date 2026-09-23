@@ -1059,6 +1059,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (function.Kind == FunctionKind.Async)
             {
                 var capability = NewPromiseCapability();
+                using var capabilityScope = PinPromiseCapability(capability);
                 var registers = new JsValue[function.RegisterCount];
                 for (var i = 0; i < registers.Length; i++)
                     registers[i] = JsValue.Undefined;
@@ -1322,6 +1323,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (function.Kind == FunctionKind.Async)
         {
             var capability = NewPromiseCapability();
+            using var capabilityScope = PinPromiseCapability(capability);
             var registers = new JsValue[function.RegisterCount];
             for (var i = 0; i < registers.Length; i++)
             {
