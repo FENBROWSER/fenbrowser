@@ -5893,6 +5893,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var transferred = args.Count > 2
             ? ExtractTransferredMessagePorts(args[2])
             : Array.Empty<MessagePortEndpoint>();
+        // The payload already holds its own copy; transferred buffers leave the sender.
+        if (args.Count > 2)
+            DetachTransferredArrayBuffers(args[2]);
         if (DiagnosticPaths.AppendEnabled)
         {
             DiagnosticPaths.AppendLogText(
@@ -5964,6 +5967,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var transferred = args != null && args.Count > 1 && worker.Realm != null
             ? worker.Realm.ExtractTransferredMessagePorts(args[1])
             : Array.Empty<MessagePortEndpoint>();
+        if (args != null && args.Count > 1 && worker.Realm != null)
+            worker.Realm.DetachTransferredArrayBuffers(args[1]);
         if (DiagnosticPaths.AppendEnabled)
         {
             DiagnosticPaths.AppendLogText(
