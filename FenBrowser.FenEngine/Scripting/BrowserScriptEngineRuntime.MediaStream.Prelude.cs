@@ -54,17 +54,35 @@ public sealed partial class FenJsBrowserScriptEngine
 
             // ---- MediaStreamTrack ----
 
+            var INTERNAL = {};
+            function newId() {
+                var hex = '';
+                for (var i = 0; i < 32; i++) hex += Math.floor(Math.random() * 16).toString(16);
+                return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-4' + hex.slice(13, 16) + '-8' + hex.slice(17, 20) + '-' + hex.slice(20, 32);
+            }
+
+            // A track belongs to its source: an element's capture (stream._element), or an
+            // audio pipe a Web Audio graph fills (_pipe). Clones share the source.
             function MediaStreamTrack(stream, state) {
+                if (stream !== INTERNAL && !(stream === null || stream instanceof MediaStream))
+                    throw new TypeError('Illegal constructor');
                 g.EventTarget.call(this);
-                this._stream = stream;
+                this._stream = stream === INTERNAL ? null : stream;
                 this._id = state.id;
                 this._kind = state.kind;
-                this._label = state.label;
+                this._label = state.label || '';
+                this._pipe = state.pipe || null;
                 this._live = true;
                 this._muted = false;
                 this._enabled = true;
+                // Whatever renders this track (a Web Audio source node) and must hear when it
+                // is stopped or disabled.
+                this._consumers = [];
             }
             defineInterface('MediaStreamTrack', MediaStreamTrack);
+            function notifyConsumers(track) {
+                for (var i = 0; i < track._consumers.length; i++) track._consumers[i](track);
+            }
             accessor(MediaStreamTrack.prototype, 'id', function () { return this._id; });
             accessor(MediaStreamTrack.prototype, 'kind', function () { return this._kind; });
             accessor(MediaStreamTrack.prototype, 'label', function () { return this._label; });
@@ -72,16 +90,31 @@ public sealed partial class FenJsBrowserScriptEngine
             accessor(MediaStreamTrack.prototype, 'readyState', function () { return this._live ? 'live' : 'ended'; });
             accessor(MediaStreamTrack.prototype, 'enabled',
                 function () { return this._enabled; },
-                function (v) { this._enabled = !!v; });
+                function (v) {
+                    var next = !!v;
+                    if (next === this._enabled) return;
+                    this._enabled = next;
+                    notifyConsumers(this);
+                });
             handlerAttribute(MediaStreamTrack.prototype, 'onended');
             handlerAttribute(MediaStreamTrack.prototype, 'onmute');
             handlerAttribute(MediaStreamTrack.prototype, 'onunmute');
             method(MediaStreamTrack.prototype, 'stop', function () {
                 // Stopping a track does not fire ended - the page did it on purpose.
                 if (!this._live) return;
-                if (this._stream) g.__fenCaptureStreamStopTrack(this._stream._element, this._id);
+                if (this._stream && this._stream._element) g.__fenCaptureStreamStopTrack(this._stream._element, this._id);
                 this._live = false;
-                if (this._stream) this._stream._sync();
+                if (this._stream && this._stream._element) this._stream._sync();
+                notifyConsumers(this);
+            }, 0);
+            // mediacapture-main clone(): a new track with its own id on the same source.
+            method(MediaStreamTrack.prototype, 'clone', function () {
+                var t = new MediaStreamTrack(INTERNAL, { id: newId(), kind: this._kind, label: this._label, pipe: this._pipe });
+                t._live = this._live;
+                t._muted = this._muted;
+                t._enabled = this._enabled;
+                t._element = this._stream ? this._stream._element : this._element;
+                return t;
             }, 0);
             method(MediaStreamTrack.prototype, 'getSettings', function () {
                 return { deviceId: this._id };
@@ -108,11 +141,26 @@ public sealed partial class FenJsBrowserScriptEngine
 
             // ---- MediaStream ----
 
-            function MediaStream(element, id) {
+            // mediacapture-main 4.2: MediaStream(), MediaStream(stream) and
+            // MediaStream(tracks). An element's capture builds one through the INTERNAL token.
+            function MediaStream(a, b, c) {
+                if (!(this instanceof MediaStream)) throw new TypeError("Failed to construct 'MediaStream': Please use the 'new' operator.");
                 g.EventTarget.call(this);
-                this._element = element;
-                this._id = id;
                 this._tracks = [];
+                if (a === INTERNAL) {
+                    this._element = b;
+                    this._id = c;
+                    return;
+                }
+                this._element = null;
+                this._id = newId();
+                var source = a === undefined ? [] : a instanceof MediaStream ? a.getTracks() : a;
+                if (source === null || typeof source !== 'object' || typeof source[Symbol.iterator] !== 'function')
+                    throw new TypeError("Failed to construct 'MediaStream': The provided value cannot be converted to a sequence.");
+                for (var t of source) {
+                    if (!(t instanceof MediaStreamTrack)) throw new TypeError("Failed to construct 'MediaStream': Failed to convert value to 'MediaStreamTrack'.");
+                    if (this._tracks.indexOf(t) < 0) this._tracks.push(t);
+                }
             }
             defineInterface('MediaStream', MediaStream);
             accessor(MediaStream.prototype, 'id', function () { return this._id; });
@@ -129,6 +177,18 @@ public sealed partial class FenJsBrowserScriptEngine
             method(MediaStream.prototype, 'getVideoTracks', function () {
                 return this._tracks.filter(function (t) { return t.kind === 'video'; });
             }, 0);
+            method(MediaStream.prototype, 'addTrack', function (track) {
+                if (!(track instanceof MediaStreamTrack)) throw new TypeError("Failed to execute 'addTrack' on 'MediaStream': parameter 1 is not of type 'MediaStreamTrack'.");
+                if (this._tracks.indexOf(track) < 0) this._tracks.push(track);
+            }, 1);
+            method(MediaStream.prototype, 'removeTrack', function (track) {
+                if (!(track instanceof MediaStreamTrack)) throw new TypeError("Failed to execute 'removeTrack' on 'MediaStream': parameter 1 is not of type 'MediaStreamTrack'.");
+                var at = this._tracks.indexOf(track);
+                if (at >= 0) this._tracks.splice(at, 1);
+            }, 1);
+            method(MediaStream.prototype, 'clone', function () {
+                return new MediaStream(this._tracks.map(function (t) { return t.clone(); }));
+            }, 0);
             method(MediaStream.prototype, 'getTrackById', function (id) {
                 for (var i = 0; i < this._tracks.length; i++)
                     if (this._tracks[i].id === String(id)) return this._tracks[i];
@@ -143,6 +203,7 @@ public sealed partial class FenJsBrowserScriptEngine
             // Brings the page's objects in line with what the element has now, and fires
             // what that change owes the page. The tracks a page already holds are kept.
             method(MediaStream.prototype, '_sync', function () {
+                if (!this._element) return;
                 var state = g.__fenCaptureStreamPoll(this._element);
                 if (!state) return;
 
@@ -210,7 +271,7 @@ public sealed partial class FenJsBrowserScriptEngine
                     if (!stream) {
                         var id = g.__fenCaptureStream(element);
                         if (id === null) throw new g.DOMException('The element cannot be captured.', 'InvalidStateError');
-                        stream = new MediaStream(element, id);
+                        stream = new MediaStream(INTERNAL, element, id);
                         streams.set(element, stream);
 
                         // The element's own events are what move the capture along: a
@@ -225,6 +286,15 @@ public sealed partial class FenJsBrowserScriptEngine
                     return stream;
                 }, 0);
             }
+
+            // For Web Audio (WA 1.21): a stream with one audio track fed by an engine pipe.
+            Object.defineProperty(g, '__fenStreamWithAudioPipe', {
+                value: function (pipe) {
+                    var track = new MediaStreamTrack(INTERNAL, { id: newId(), kind: 'audio', label: '', pipe: pipe });
+                    return new MediaStream([track]);
+                },
+                configurable: true, writable: true, enumerable: false,
+            });
         })();
         """;
 }
