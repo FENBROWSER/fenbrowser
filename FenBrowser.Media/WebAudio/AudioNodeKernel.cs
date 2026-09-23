@@ -160,6 +160,12 @@ public abstract class AudioNodeKernel
     /// <summary>Produces this quantum's outputs from <see cref="Inputs"/> and the computed params.</summary>
     protected abstract void Process(long frame);
 
+    /// <summary>
+    /// A node this one reads without a connection - a panner reads the context's listener -
+    /// and so must be ordered after (WA 2.4).
+    /// </summary>
+    internal virtual AudioNodeKernel? ExtraDependency => null;
+
     /// <summary>Called on the rendering thread after the node has been removed from the graph.</summary>
     internal virtual void OnRemoved()
     {

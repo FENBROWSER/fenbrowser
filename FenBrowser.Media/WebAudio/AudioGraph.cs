@@ -20,6 +20,7 @@ public sealed class AudioGraph
     private readonly ConcurrentQueue<Action<AudioGraph>> _controlMessages = new();
     private readonly List<AudioNodeKernel> _nodes = [];
     private readonly List<AudioNodeKernel> _order = [];
+    private readonly List<DelayKernel> _cycleDelays = [];
     private bool _orderDirty = true;
     private long _currentFrame;
     private int _nextNodeId;
@@ -36,6 +37,8 @@ public sealed class AudioGraph
         Events = events;
         Destination = new DestinationKernel(this, destinationChannels);
         _nodes.Add(Destination);
+        Listener = new ListenerKernel(this);
+        _nodes.Add(Listener);
     }
 
     public float SampleRate { get; }
@@ -46,6 +49,9 @@ public sealed class AudioGraph
     public IWebAudioEventSink? Events { get; }
 
     public DestinationKernel Destination { get; }
+
+    /// <summary>WA 1.24: the context's one AudioListener.</summary>
+    public ListenerKernel Listener { get; }
 
     /// <summary>The first frame of the next quantum to render; safe to read from any thread.</summary>
     public long CurrentFrame => Interlocked.Read(ref _currentFrame);
@@ -139,6 +145,10 @@ public sealed class AudioGraph
         foreach (var node in _order)
             node.RenderQuantum(frame);
 
+        // A delay closing a cycle takes its input last, once what feeds it has rendered.
+        foreach (var delay in _cycleDelays)
+            delay.CompleteCycleQuantum();
+
         Interlocked.Add(ref _currentFrame, QuantumFrames);
     }
 
@@ -151,28 +161,66 @@ public sealed class AudioGraph
 
     internal void RaiseSourceEnded(AudioNodeKernel node) => Events?.SourceEnded(node.Id);
 
-    // WA 2.4 steps 3-4: order the nodes so every node comes after what feeds it, and mute
-    // the nodes of any cycle that has no DelayNode in it. Iterative Tarjan, so a long chain
-    // of nodes cannot overflow the stack.
+    // WA 2.4 steps 3-4: order the nodes so every node comes after what feeds it. A cycle
+    // is legal only through a DelayNode: the first pass finds every cycle and marks the
+    // delays in them, the second orders the graph without those delays' input edges, and
+    // whatever is still cyclic then has no delay in it and is muted.
     private void ComputeOrder()
     {
         _order.Clear();
+        _cycleDelays.Clear();
         int count = _nodes.Count;
         var index = new Dictionary<AudioNodeKernel, int>(count, ReferenceEqualityComparer.Instance);
         for (int i = 0; i < count; i++)
             index[_nodes[i]] = i;
 
-        var dependencies = new List<int>[count];
-        for (int i = 0; i < count; i++)
+        foreach (var node in _nodes)
+        {
+            if (node is DelayKernel delay)
+                delay.InCycle = false;
+        }
+
+        foreach (var component in StronglyConnected(Dependencies(index, skipCycleDelayInputs: false)))
+        {
+            if (component.Cyclic)
+            {
+                foreach (int member in component.Members)
+                {
+                    if (_nodes[member] is DelayKernel delay)
+                        delay.InCycle = true;
+                }
+            }
+        }
+
+        foreach (var component in StronglyConnected(Dependencies(index, skipCycleDelayInputs: true)))
+        {
+            foreach (int member in component.Members)
+            {
+                var node = _nodes[member];
+                node.MutedByCycle = component.Cyclic;
+                _order.Add(node);
+                if (node is DelayKernel { InCycle: true } delay)
+                    _cycleDelays.Add(delay);
+            }
+        }
+    }
+
+    private List<int>[] Dependencies(Dictionary<AudioNodeKernel, int> index, bool skipCycleDelayInputs)
+    {
+        var dependencies = new List<int>[_nodes.Count];
+        for (int i = 0; i < _nodes.Count; i++)
         {
             var list = new List<int>();
             var node = _nodes[i];
-            foreach (var input in node.Inputs)
+            if (!(skipCycleDelayInputs && node is DelayKernel { InCycle: true }))
             {
-                foreach (var c in input.Connections)
+                foreach (var input in node.Inputs)
                 {
-                    if (index.TryGetValue(c.Node, out int d))
-                        list.Add(d);
+                    foreach (var c in input.Connections)
+                    {
+                        if (index.TryGetValue(c.Node, out int d))
+                            list.Add(d);
+                    }
                 }
             }
 
@@ -185,9 +233,21 @@ public sealed class AudioGraph
                 }
             }
 
+            if (node.ExtraDependency is { } extra && index.TryGetValue(extra, out int e))
+                list.Add(e);
+
             dependencies[i] = list;
         }
 
+        return dependencies;
+    }
+
+    // Iterative Tarjan, so a long chain of nodes cannot overflow the stack. Components come
+    // out after everything they depend on.
+    private static List<(List<int> Members, bool Cyclic)> StronglyConnected(List<int>[] dependencies)
+    {
+        int count = dependencies.Length;
+        var result = new List<(List<int>, bool)>();
         var order = new int[count];
         var low = new int[count];
         var onStack = new bool[count];
@@ -237,25 +297,21 @@ public sealed class AudioGraph
 
                 if (low[v] == order[v])
                 {
-                    // A strongly connected component, emitted after everything it depends on.
-                    var component = new List<int>();
+                    var members = new List<int>();
                     int w;
                     do
                     {
                         w = stack.Pop();
                         onStack[w] = false;
-                        component.Add(w);
+                        members.Add(w);
                     }
                     while (w != v);
 
-                    bool cyclic = component.Count > 1 || dependencies[v].Contains(v);
-                    foreach (int member in component)
-                    {
-                        _nodes[member].MutedByCycle = cyclic;
-                        _order.Add(_nodes[member]);
-                    }
+                    result.Add((members, members.Count > 1 || dependencies[v].Contains(v)));
                 }
             }
         }
+
+        return result;
     }
 }
