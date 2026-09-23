@@ -175,6 +175,63 @@ public class WebAudioSpatialTests
         int peak = Array.IndexOf(decibels, decibels.Max());
         Assert.Equal(100, peak);
     }
+    // A mono response convolving input whose layout changes: quantum 0 is `first`, later
+    // quanta are `rest` (each a list of channels, filled by the caller).
+    private static float[][] ConvolveChangingLayout(float[][] first, float[][] rest)
+    {
+        var graph = new AudioGraph(Rate, 2);
+        var convolver = new ConvolverKernel(graph);
+        var response = new float[256];
+        response[200] = 1;
+        convolver.SetResponse([response]);
+        var feed = new BusFeed(graph, first, rest);
+        graph.Post(g =>
+        {
+            g.AddNode(feed);
+            g.AddNode(convolver);
+            g.Connect(feed, 0, convolver, 0);
+            g.Connect(convolver, 0, g.Destination, 0);
+        });
+        return new OfflineAudioRenderer(graph, 2, 512).RenderAll();
+    }
+
+    private sealed class BusFeed(AudioGraph graph, float[][] first, float[][] rest)
+        : AudioNodeKernel(graph, 0, 1, 2, ChannelCountMode.Max, ChannelInterpretation.Speakers)
+    {
+        protected override void Process(long frame)
+        {
+            var channels = frame == 0 ? first : rest;
+            var output = Outputs[0].Bus;
+            output.Reset(channels.Length);
+            for (int c = 0; c < channels.Length; c++)
+                channels[c].AsSpan(0, output.Frames).CopyTo(output.Channel(c));
+            output.MarkNotSilent();
+        }
+    }
+
+    [Fact]
+    public void AMonoResponseKeepsAStereoTailAfterTheInputTurnsMono()
+    {
+        var impulse = new float[128];
+        impulse[0] = 1;
+        var silence = new float[128];
+        var result = ConvolveChangingLayout([silence, impulse], [silence]);
+        Assert.Equal(1f, result[1][200], 5);
+        Assert.Equal(0f, result[0][200], 5);
+    }
+
+    [Fact]
+    public void AMonoResponseCarriesMonoHistoryIntoStereo()
+    {
+        var impulse = new float[128];
+        impulse[0] = 1;
+        var silence = new float[128];
+        var result = ConvolveChangingLayout([impulse], [silence, silence]);
+        // The mono impulse is heard in both channels once the output turns stereo.
+        Assert.Equal(1f, result[0][200], 5);
+        Assert.Equal(1f, result[1][200], 5);
+    }
+
     // An impulse through an HRTF panner at (x, y, z), left and right ear.
     private static (float[] Left, float[] Right) HrtfImpulse(float x, float y, float z)
     {

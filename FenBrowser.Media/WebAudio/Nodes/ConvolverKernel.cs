@@ -49,8 +49,18 @@ public sealed class ConvolverKernel : AudioNodeKernel
     }
 
     /// <summary>Control message: a new impulse response (or none), already normalized if asked.</summary>
-    public void SetResponse(float[][]? response) =>
+    public void SetResponse(float[][]? response)
+    {
         _engine = response is null ? null : new Engine(response, Graph.QuantumFrames);
+        _stereoTailEnd = 0;
+        _rightPathLive = false;
+    }
+
+    // A mono response turns stereo input into stereo output. Up-mixing must stay linear: the
+    // right path keeps running, fed the mono input, until the last stereo input's tail has
+    // left, and starts from the left path's history when stereo arrives after mono.
+    private long _stereoTailEnd;
+    private bool _rightPathLive;
 
     protected override void Process(long frame)
     {
@@ -66,12 +76,30 @@ public sealed class ConvolverKernel : AudioNodeKernel
 
         int irChannels = engine.Channels;
         bool stereoInput = input.ChannelCount >= 2;
-        int outChannels = irChannels == 1 && !stereoInput ? 1 : 2;
+        if (stereoInput)
+            _stereoTailEnd = frame + Graph.QuantumFrames + engine.ResponseLength;
+        bool stereoOutput = stereoInput || frame < _stereoTailEnd;
+        int outChannels = irChannels == 1 && !stereoOutput ? 1 : 2;
         output.Reset(outChannels);
+        // Mono input up-mixed the way this node's channelInterpretation says (WA 4): both
+        // sides for "speakers", the left alone for "discrete".
+        bool discrete = ChannelInterpretation == ChannelInterpretation.Discrete;
+        if (irChannels == 1)
+        {
+            if (stereoOutput && !_rightPathLive)
+            {
+                if (discrete)
+                    engine.ClearPath(1);
+                else
+                    engine.CopyPath(0, 1);
+            }
+
+            _rightPathLive = stereoOutput;
+        }
 
         bool silent = input.IsSilent;
         var left = silent ? Span<float>.Empty : input.Channel(0);
-        var right = silent ? Span<float>.Empty : stereoInput ? input.Channel(1) : left;
+        var right = silent ? Span<float>.Empty : stereoInput ? input.Channel(1) : discrete && irChannels == 1 ? Span<float>.Empty : left;
 
         switch (irChannels)
         {
@@ -117,6 +145,7 @@ public sealed class ConvolverKernel : AudioNodeKernel
             _fft = new Fft(_fftSize);
             Channels = response.Length;
             int length = response[0].Length;
+            ResponseLength = length;
             int partitions = Math.Max(1, (length + block - 1) / block);
             _partitionsReal = new double[Channels][][];
             _partitionsImag = new double[Channels][][];
@@ -145,6 +174,34 @@ public sealed class ConvolverKernel : AudioNodeKernel
         }
 
         public int Channels { get; }
+
+        public int ResponseLength { get; }
+
+        /// <summary>Forgets a path's input history.</summary>
+        public void ClearPath(int index)
+        {
+            var path = _paths[index];
+            Array.Clear(path.Window);
+            foreach (var spectrum in path.SpectraReal)
+                Array.Clear(spectrum);
+            foreach (var spectrum in path.SpectraImag)
+                Array.Clear(spectrum);
+        }
+
+        /// <summary>Gives path <paramref name="to"/> the input history of path <paramref name="from"/>.</summary>
+        public void CopyPath(int from, int to)
+        {
+            var a = _paths[from];
+            var b = _paths[to];
+            Array.Copy(a.Window, b.Window, a.Window.Length);
+            for (int i = 0; i < a.SpectraReal.Length; i++)
+            {
+                Array.Copy(a.SpectraReal[i], b.SpectraReal[i], a.SpectraReal[i].Length);
+                Array.Copy(a.SpectraImag[i], b.SpectraImag[i], a.SpectraImag[i].Length);
+            }
+
+            b.Head = a.Head;
+        }
 
         /// <summary>Convolves one block of <paramref name="input"/> (null = silence) with a response channel.</summary>
         public void Convolve(int pathIndex, int responseChannel, Span<float> input, Span<float> output, bool accumulate)
@@ -222,7 +279,7 @@ public sealed class ConvolverKernel : AudioNodeKernel
 
             public double[][] SpectraImag { get; }
 
-            public int Head { get; private set; }
+            public int Head { get; set; }
 
             public void Advance() => Head = (Head + 1) % SpectraReal.Length;
         }
