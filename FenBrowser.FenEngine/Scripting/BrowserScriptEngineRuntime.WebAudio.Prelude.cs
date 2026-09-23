@@ -1115,10 +1115,13 @@ public sealed partial class FenJsBrowserScriptEngine
                         }
                         var bytes;
                         try {
-                            if (audioData.detached) throw 0;
+                            if (audioData.detached === true) throw 0;
+                            new Uint8Array(audioData);
                             bytes = new Uint8Array(audioData.transfer());
                         } catch (e) {
-                            reject(domError("Failed to execute 'decodeAudioData' on 'BaseAudioContext': Cannot decode detached ArrayBuffer", 'DataCloneError'));
+                            var cloneError = domError("Failed to execute 'decodeAudioData' on 'BaseAudioContext': Cannot decode detached ArrayBuffer", 'DataCloneError');
+                            if (typeof errorCallback === 'function') { try { errorCallback.call(undefined, cloneError); } catch (x) { if (typeof g.reportError === 'function') g.reportError(x); } }
+                            reject(cloneError);
                             return;
                         }
                         var id = g.__fenWaDecode(s.id, bytes);
@@ -1167,11 +1170,13 @@ public sealed partial class FenJsBrowserScriptEngine
                 context[S].destination = new AudioDestinationNode(INTERNAL, context, offline ? channels : 2);
                 context[S].listener = new AudioListener(INTERNAL, context);
             }
+            // WA 1.1: [[control thread state]] changes at once; statechange is queued, so a
+            // promise settled in the same task is seen before the event.
             function setState(context, state) {
                 var s = context[S];
                 if (s.state === state) return;
                 s.state = state;
-                fire(context, new g.Event('statechange'));
+                queueTask(function () { fire(context, new g.Event('statechange')); });
             }
 
             // ---- AudioContext (WA 1.2) ---------------------------------------------------
@@ -1192,8 +1197,11 @@ public sealed partial class FenJsBrowserScriptEngine
                         if (!(rate >= 3000 && rate <= 768000)) throw domError("Failed to construct 'AudioContext': The sample rate provided (" + rate + ") is outside the range [3000, 768000].", 'NotSupportedError');
                     }
                     var quantum = renderSize(o.renderSizeHint, 'AudioContext', rate || 48000);
+                    var sink = o.sinkId === undefined ? '' : sinkTarget(o.sinkId, "Failed to construct 'AudioContext'");
                     super(INTERNAL);
                     initContext(this, false, 2, 0, rate, quantum);
+                    this[S].sinkId = typeof sink === 'string' ? sink : new AudioSinkInfo(INTERNAL, 'none');
+                    if (sink !== '') g.__fenWaSetSink(this[S].id, typeof sink === 'string' ? sink : null);
                     this[S].latencyHint = hint;
                     var self = this;
                     // WA 1.2.1 step 10: a context allowed to start begins rendering, and says
@@ -1207,7 +1215,34 @@ public sealed partial class FenJsBrowserScriptEngine
                         });
                     }
                 }
-                get baseLatency() { return 128 / this[S].sampleRate; }
+                get baseLatency() { return this[S].quantum / this[S].sampleRate; }
+                get sinkId() { return this[S].sinkId; }
+                get playbackStats() {
+                    var s = this[S];
+                    if (!s.playbackStats) s.playbackStats = new AudioPlaybackStats(INTERNAL, this);
+                    return s.playbackStats;
+                }
+                // WA 1.2.3 setSinkId: an output device's id, '' for the default, or
+                // { type: 'none' } to render without one.
+                setSinkId(sinkId) {
+                    var self = this;
+                    var s = this[S];
+                    var argc = arguments.length;
+                    return new Promise(function (resolve, reject) {
+                        if (argc < 1) { reject(typeError("Failed to execute 'setSinkId' on 'AudioContext': 1 argument required, but only 0 present.")); return; }
+                        var target;
+                        try { target = sinkTarget(sinkId, "Failed to execute 'setSinkId' on 'AudioContext'"); } catch (e) { reject(e); return; }
+                        if (s.state === 'closed') { reject(domError("Failed to execute 'setSinkId' on 'AudioContext': the context is closed.", 'InvalidStateError')); return; }
+                        if (sameSink(s.sinkId, target)) { resolve(); return; }
+                        var result = g.__fenWaSetSink(s.id, typeof target === 'string' ? target : null);
+                        if (result === 'NotFoundError') { reject(domError("Failed to execute 'setSinkId' on 'AudioContext': the device '" + target + "' was not found.", 'NotFoundError')); return; }
+                        queueTask(function () {
+                            s.sinkId = typeof target === 'string' ? target : new AudioSinkInfo(INTERNAL, 'none');
+                            resolve();
+                            queueTask(function () { fire(self, new g.Event('sinkchange')); });
+                        });
+                    });
+                }
                 get outputLatency() { return g.__fenWaOutputLatency(this[S].id); }
                 getOutputTimestamp() {
                     var s = this[S];
@@ -1225,6 +1260,7 @@ public sealed partial class FenJsBrowserScriptEngine
                             if (s.state !== 'closed') setState(self, 'running');
                             resolve();
                         });
+                        s.pendingStart = false;
                     });
                 }
                 suspend() {
@@ -1255,7 +1291,63 @@ public sealed partial class FenJsBrowserScriptEngine
                     });
                 }
             }
+            handler(AudioContext.prototype, 'onsinkchange');
             webidl(AudioContext, 'AudioContext');
+
+            function sinkTarget(v, prefix) {
+                if (v !== null && typeof v === 'object') {
+                    if (v.type === undefined) throw typeError(prefix + ": required member type is undefined.");
+                    toEnum(v.type, ['none'], 'AudioSinkType');
+                    return { type: 'none' };
+                }
+                return String(v);
+            }
+            function sameSink(current, target) {
+                if (typeof current === 'string' && typeof target === 'string') return current === target;
+                return typeof current === 'object' && typeof target === 'object';
+            }
+
+            class AudioSinkInfo {
+                constructor(token, type) {
+                    if (token !== INTERNAL) throw typeError('Illegal constructor');
+                    this[S] = { type: type };
+                }
+                get type() { return this[S].type; }
+            }
+            webidl(AudioSinkInfo, 'AudioSinkInfo');
+
+            // AudioPlaybackStats: a snapshot the engine refreshes at most once a second, so every
+            // read in one task - and toJSON() - sees the same numbers.
+            class AudioPlaybackStats {
+                constructor(token, context) {
+                    if (token !== INTERNAL) throw typeError('Illegal constructor');
+                    this[S] = { ctx: context };
+                }
+                get underrunDuration() { return statsOf(this)[0]; }
+                get underrunEvents() { return statsOf(this)[1]; }
+                get totalDuration() { return statsOf(this)[2]; }
+                get averageLatency() { return statsOf(this)[3]; }
+                get minimumLatency() { return statsOf(this)[4]; }
+                get maximumLatency() { return statsOf(this)[5]; }
+                resetLatency() { g.__fenWaPlaybackStats(this[S].ctx[S].id, true); this[S].frozen = null; }
+                toJSON() {
+                    var v = statsOf(this);
+                    return { underrunDuration: v[0], underrunEvents: v[1], totalDuration: v[2], averageLatency: v[3], minimumLatency: v[4], maximumLatency: v[5] };
+                }
+            }
+            // Run to completion: once read, the numbers hold until the script that read them
+            // has finished (the next microtask checkpoint), even if it busy-waits past the
+            // engine's once-a-second refresh.
+            function statsOf(stats) {
+                var s = stats[S];
+                if (s.frozen) return s.frozen;
+                var v = g.__fenWaPlaybackStats(s.ctx[S].id, false);
+                s.frozen = v && v.length === 6 ? v : [0, 0, 0, 0, 0, 0];
+                // A promise job, so it runs ahead of any await that follows the read.
+                Promise.resolve().then(function () { s.frozen = null; });
+                return s.frozen;
+            }
+            webidl(AudioPlaybackStats, 'AudioPlaybackStats');
 
             // ---- OfflineAudioContext (WA 1.3) ------------------------------------------
 
@@ -1383,9 +1475,9 @@ public sealed partial class FenJsBrowserScriptEngine
                 for (var c = 0; c < s.channels; c++) g.__fenWaReadResult(s.id, c, buffer[S].data[c]);
                 var resolve = s.completeRendering;
                 s.completeRendering = null;
+                setState(context, 'closed');
                 if (resolve) resolve(buffer);
                 queueTask(function () {
-                    setState(context, 'closed');
                     fire(context, new OfflineAudioCompletionEvent('complete', { renderedBuffer: buffer }));
                 });
             };

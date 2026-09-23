@@ -25,8 +25,8 @@ public sealed class WebAudioRealmTests
             "src.start(128 / 48000);" +
             "ctx.startRendering().then(function (b) { var d = b.getChannelData(0); __r = [d[0], d[127], d[128], d[255], ctx.state].join(','); });");
 
-        Assert.Equal("0,0,1,1,running", await WaitForAsync(engine, "__r"));
-        Assert.Equal("closed", await WaitForAsync(engine, "ctx.state === 'closed' ? 'closed' : ''"));
+        // WA 1.3.4: the context is already closed when startRendering()'s promise resolves.
+        Assert.Equal("0,0,1,1,closed", await WaitForAsync(engine, "__r"));
     }
 
     [Fact]

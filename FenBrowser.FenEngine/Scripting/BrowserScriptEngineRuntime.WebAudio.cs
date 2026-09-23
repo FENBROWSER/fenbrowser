@@ -49,10 +49,19 @@ public sealed partial class FenJsBrowserScriptEngine
         public readonly System.Collections.Concurrent.ConcurrentDictionary<int, DecodedAudio> Decoded = new();
         public int NextDecodeId = 1;
 
-        // AudioContext device output (WA-D6); null when no device could be opened.
-        public FenBrowser.Media.Audio.IAudioOutput Output;
+        // AudioContext output (WA-D6): this context's share of its sink's mixer; both null
+        // when no device could be opened or the sink is { type: 'none' }.
+        public WebAudioOutputMixer Mixer;
         public WebAudioDeviceRenderer DeviceRenderer;
         public double OutputLatency;
+
+        // AudioPlaybackStats snapshot, refreshed at most once a second.
+        public double[] Stats = new double[6];
+        public long StatsTakenAt;
+        public double LatencySum;
+        public long LatencySamples;
+        public double LatencyMin = double.MaxValue;
+        public double LatencyMax;
 
         // Offline rendering (WA-D5).
         public OfflineAudioRenderer Renderer;
@@ -82,12 +91,9 @@ public sealed partial class FenJsBrowserScriptEngine
             int length = ArgInt(args, 2);
             float rate = (float)ArgNumber(args, 3);
             int quantum = ArgInt(args, 4);
-            FenBrowser.Media.Audio.IAudioOutput output = null;
-            FenBrowser.Media.Audio.AudioStreamFormat deviceFormat = default;
-            if (!offline)
-                (output, deviceFormat) = TryOpenWebAudioOutput(rate);
+            var mixer = offline ? null : WebAudioMixerFor(string.Empty);
             if (rate <= 0)
-                rate = output != null ? deviceFormat.SampleRate : DefaultAudioContextSampleRate;
+                rate = mixer != null ? mixer.Format.SampleRate : DefaultAudioContextSampleRate;
             if (!WebAudioLimits.IsValidSampleRate(rate) || channels < 1 || channels > WebAudioLimits.MaxChannels ||
                 quantum < 1 || quantum > WebAudioLimits.MaxRenderQuantumFor(rate))
             {
@@ -107,8 +113,8 @@ public sealed partial class FenJsBrowserScriptEngine
             entry.Nodes[entry.Graph.Destination.Id] = entry.Graph.Destination;
             if (offline)
                 entry.Renderer = new OfflineAudioRenderer(entry.Graph, channels, length);
-            else if (output != null)
-                AttachWebAudioOutput(entry, output, deviceFormat);
+            else if (mixer != null)
+                AttachWebAudioOutput(entry, mixer);
             _webAudioContexts[entry.Id] = entry;
             return JsValue.FromInt32(entry.Id);
         });
@@ -642,6 +648,74 @@ public sealed partial class FenJsBrowserScriptEngine
             return JsValue.Undefined;
         });
 
+        // WA 1.2.3 setSinkId: null renders without a device ({ type: 'none' }).
+        Native("__fenWaSetSink", 2, args =>
+        {
+            if (WebAudioEntry(args) is not { Offline: false } entry)
+                return JsValue.Undefined;
+
+            bool none = args.Count < 2 || args[1].Tag != JsValueTag.String;
+            string deviceId = none ? null : CoerceToHostString(args[1]);
+            WebAudioOutputMixer next = null;
+            if (!none)
+            {
+                if (deviceId.Length > 0 && !MediaEngineServices.AudioOutputs.Devices.Any(d => d.DeviceId == deviceId))
+                    return JsValue.FromString("NotFoundError");
+                next = WebAudioMixerFor(deviceId);
+                if (next == null)
+                    return JsValue.FromString("NotFoundError");
+            }
+
+            SwitchWebAudioOutput(entry, next);
+            return JsValue.Undefined;
+        });
+
+        Native("__fenWaPlaybackStats", 2, args =>
+        {
+            if (WebAudioEntry(args) is not { } entry)
+                return JsValue.Undefined;
+            bool reset = args.Count > 1 && args[1].Tag == JsValueTag.Boolean && args[1].AsBoolean();
+            if (reset)
+            {
+                entry.LatencySum = 0;
+                entry.LatencySamples = 0;
+                entry.LatencyMin = double.MaxValue;
+                entry.LatencyMax = 0;
+                // The interval starts now: its only sample is the current latency.
+                entry.Stats[3] = entry.Stats[4] = entry.Stats[5] = entry.OutputLatency;
+                return JsValue.Undefined;
+            }
+
+            long now = Stopwatch.GetTimestamp();
+            if (entry.StatsTakenAt == 0 || Stopwatch.GetElapsedTime(entry.StatsTakenAt, now).TotalSeconds >= 1)
+            {
+                double rate = entry.Graph.SampleRate;
+                double total = entry.Graph.CurrentFrame / rate;
+                long underruns = entry.Mixer?.Underruns ?? 0;
+                double latency = entry.OutputLatency;
+                if (total > 0)
+                {
+                    entry.LatencySum += latency;
+                    entry.LatencySamples++;
+                    entry.LatencyMin = Math.Min(entry.LatencyMin, latency);
+                    entry.LatencyMax = Math.Max(entry.LatencyMax, latency);
+                }
+
+                double average = entry.LatencySamples > 0 ? entry.LatencySum / entry.LatencySamples : 0;
+                entry.Stats = new[]
+                {
+                    Math.Min(total, underruns * entry.Graph.QuantumFrames / rate), underruns, total,
+                    average, entry.LatencySamples > 0 ? entry.LatencyMin : 0, entry.LatencyMax,
+                };
+                entry.StatsTakenAt = total > 0 ? now : 0;
+            }
+
+            var values = new JsValue[6];
+            for (int i = 0; i < 6; i++)
+                values[i] = JsValue.FromNumber(entry.Stats[i]);
+            return _interpreter.AllocateArray(values);
+        });
+
         Native("__fenWaStartRendering", 1, args =>
         {
             if (WebAudioEntry(args) is { Offline: true } entry)
@@ -676,7 +750,6 @@ public sealed partial class FenJsBrowserScriptEngine
                 if (entry.DeviceRenderer != null)
                 {
                     entry.DeviceRenderer.Running = true;
-                    entry.Output.Start();
                 }
                 else
                 {
@@ -694,10 +767,7 @@ public sealed partial class FenJsBrowserScriptEngine
             {
                 entry.Running = false;
                 if (entry.DeviceRenderer != null)
-                {
                     entry.DeviceRenderer.Running = false;
-                    entry.Output.Stop();
-                }
             }
 
             return JsValue.Undefined;
@@ -710,24 +780,7 @@ public sealed partial class FenJsBrowserScriptEngine
                 entry.Running = false;
                 entry.Closed = true;
                 entry.Wake.Set();
-                if (entry.Output != null)
-                {
-                    entry.DeviceRenderer.Running = false;
-                    var closing = entry.Output;
-                    entry.Output = null;
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            closing.Stop();
-                            await closing.DisposeAsync().ConfigureAwait(false);
-                        }
-                        catch (Exception ex)
-                        {
-                            EngineLogCompat.Warn($"[WebAudio] closing the output failed: {ex.Message}", LogCategory.JavaScript);
-                        }
-                    });
-                }
+                DetachWebAudioOutput(entry);
             }
 
             return JsValue.Undefined;
@@ -849,61 +902,81 @@ public sealed partial class FenJsBrowserScriptEngine
         });
     }
 
-    // WA-D6: an AudioContext renders into the system's default output. Opening it here
-    // also tells a context that asked for no rate which rate the device runs at.
-    private static (FenBrowser.Media.Audio.IAudioOutput Output, FenBrowser.Media.Audio.AudioStreamFormat Format) TryOpenWebAudioOutput(float requestedRate)
+    // WA-D6: every AudioContext playing to one sink shares one device stream through a
+    // mixer, opened the first time a context needs that sink. Opening it also tells a context
+    // that asked for no sample rate which rate the device runs at.
+    private static readonly Dictionary<string, WebAudioOutputMixer> s_webAudioMixers = new(StringComparer.Ordinal);
+
+    private static WebAudioOutputMixer WebAudioMixerFor(string sinkId)
     {
         if (string.Equals(Environment.GetEnvironmentVariable("FEN_WEBAUDIO_OUTPUT"), "off", StringComparison.OrdinalIgnoreCase))
-            return (null, default);
+            return null;
 
-        FenBrowser.Media.Audio.IAudioOutput output = null;
-        try
+        lock (s_webAudioMixers)
         {
-            output = MediaEngineServices.AudioOutputs.Create();
-            var pending = new PendingWebAudioCallback();
-            var format = output.OpenAsync(new FenBrowser.Media.Audio.AudioStreamFormat(requestedRate > 0 ? (int)requestedRate : 48000, 2), pending, CancellationToken.None)
-                .AsTask().GetAwaiter().GetResult();
-            if (!WebAudioLimits.IsValidSampleRate(format.SampleRate) || format.Channels < 1)
-                throw new InvalidOperationException("The device format is outside what Web Audio supports.");
-            WebAudioOutputs.Add(output, pending);
-            return (output, format);
-        }
-        catch (Exception ex)
-        {
-            EngineLogCompat.Info($"[WebAudio] no audio output, rendering without one: {ex.Message}", LogCategory.JavaScript);
-            if (output != null)
-                _ = output.DisposeAsync().AsTask();
-            return (null, default);
+            if (s_webAudioMixers.TryGetValue(sinkId, out var existing))
+                return existing;
+
+            FenBrowser.Media.Audio.IAudioOutput output = null;
+            try
+            {
+                output = sinkId.Length == 0 ? MediaEngineServices.AudioOutputs.Create() : MediaEngineServices.AudioOutputs.Create(sinkId);
+                if (output == null)
+                    return null;
+                var mixer = WebAudioOutputMixer.Open(output, 48000);
+                if (!WebAudioLimits.IsValidSampleRate(mixer.Format.SampleRate) || mixer.Format.Channels < 1)
+                    throw new InvalidOperationException("The device format is outside what Web Audio supports.");
+                s_webAudioMixers[sinkId] = mixer;
+                return mixer;
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Info($"[WebAudio] no audio output, rendering without one: {ex.Message}", LogCategory.JavaScript);
+                if (output != null)
+                    _ = output.DisposeAsync().AsTask();
+                return null;
+            }
         }
     }
 
-    private static void AttachWebAudioOutput(WebAudioContextEntry entry, FenBrowser.Media.Audio.IAudioOutput output, FenBrowser.Media.Audio.AudioStreamFormat format)
+    private static void AttachWebAudioOutput(WebAudioContextEntry entry, WebAudioOutputMixer mixer)
     {
-        var renderer = new WebAudioDeviceRenderer(entry.Graph, format);
-        if (WebAudioOutputs.TryGetValue(output, out var pending))
-            pending.Target = renderer;
-        entry.Output = output;
+        var renderer = new WebAudioDeviceRenderer(entry.Graph, mixer.Format) { Running = entry.Running };
+        entry.Mixer = mixer;
         entry.DeviceRenderer = renderer;
-        entry.OutputLatency = 2.0 * entry.Graph.QuantumFrames / format.SampleRate;
+        entry.OutputLatency = 2.0 * entry.Graph.QuantumFrames / mixer.Format.SampleRate;
+        mixer.Add(renderer);
     }
 
-    // The output is opened before the graph exists (its rate decides the graph's), so the
-    // device first renders through this stand-in until the real renderer is attached.
-    private sealed class PendingWebAudioCallback : FenBrowser.Media.Audio.IAudioRenderCallback
+    private static void DetachWebAudioOutput(WebAudioContextEntry entry)
     {
-        public volatile WebAudioDeviceRenderer Target;
-
-        public int Render(Span<float> destination, int channels)
+        if (entry.DeviceRenderer is { } renderer)
         {
-            var target = Target;
-            if (target != null)
-                return target.Render(destination, channels);
-            destination.Clear();
-            return destination.Length / channels;
+            renderer.Running = false;
+            entry.Mixer?.Remove(renderer);
+        }
+
+        entry.Mixer = null;
+        entry.DeviceRenderer = null;
+    }
+
+    // setSinkId: the context moves to another sink's mixer, or (null) to rendering without one.
+    private void SwitchWebAudioOutput(WebAudioContextEntry entry, WebAudioOutputMixer next)
+    {
+        DetachWebAudioOutput(entry);
+        if (next != null)
+        {
+            AttachWebAudioOutput(entry, next);
+            return;
+        }
+
+        // No device: the paced thread keeps time.
+        if (entry.Running)
+        {
+            EnsureWebAudioPacer(entry);
+            entry.Wake.Set();
         }
     }
-
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<FenBrowser.Media.Audio.IAudioOutput, PendingWebAudioCallback> WebAudioOutputs = new();
 
     // Without an output device an AudioContext renders on a thread paced to real time, so
     // currentTime advances and sources end as they would when heard.
@@ -923,7 +996,8 @@ public sealed partial class FenJsBrowserScriptEngine
             {
                 while (!entry.Closed && !_realmAbandoned)
                 {
-                    if (!entry.Running)
+                    // A device renders the graph itself; the paced thread only keeps time without one.
+                    if (!entry.Running || entry.DeviceRenderer != null)
                     {
                         wasRunning = false;
                         graph.DrainControlMessages();
@@ -1000,24 +1074,7 @@ public sealed partial class FenJsBrowserScriptEngine
             try { entry.Wake.Set(); } catch (ObjectDisposedException) { }
             if (Interlocked.Exchange(ref entry.WaitingForResume, 0) == 1)
                 entry.ResumeSignal.Release();
-            if (entry.Output is { } output)
-            {
-                entry.Output = null;
-                if (entry.DeviceRenderer != null)
-                    entry.DeviceRenderer.Running = false;
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        output.Stop();
-                        await output.DisposeAsync().ConfigureAwait(false);
-                    }
-                    catch (Exception ex)
-                    {
-                        EngineLogCompat.Warn($"[WebAudio] closing the output failed: {ex.Message}", LogCategory.JavaScript);
-                    }
-                });
-            }
+            DetachWebAudioOutput(entry);
         }
 
         _webAudioContexts.Clear();
