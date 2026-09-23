@@ -217,29 +217,6 @@ public sealed partial class FenJsBrowserScriptEngine
                         globalThis.cancelIdleCallback = function (handle) { clearTimeout(handle); };
                     }
 
-                    // HTML §8.1.3.7.2 "report an exception": fire an ErrorEvent at
-                    // window (so onerror and every 'error' listener see it) and, unless
-                    // a handler cancelled it, report it to the console. React 19 routes
-                    // every uncaught render error through here; when it only reached a
-                    // page's own onerror beacon, a landing page emptied itself in silence.
-                    if (typeof globalThis.reportError !== 'function') {
-                        globalThis.reportError = function (error) {
-                            var message = String(error && error.message !== undefined ? error.message : error);
-                            var handled = false;
-                            try {
-                                if (typeof globalThis.ErrorEvent === 'function' && typeof globalThis.dispatchEvent === 'function') {
-                                    var event = new ErrorEvent('error', { message: message, error: error, cancelable: true });
-                                    handled = globalThis.dispatchEvent(event) === false;
-                                } else if (typeof globalThis.onerror === 'function') {
-                                    handled = globalThis.onerror(message, '', 0, 0, error) === true;
-                                }
-                            } catch (dispatchFailure) {}
-                            if (!handled && globalThis.console && typeof console.error === 'function') {
-                                console.error('Uncaught ' + (error && error.stack ? error.stack : message));
-                            }
-                        };
-                    }
-
                     if (typeof globalThis.onerror === 'undefined') globalThis.onerror = null;
                     if (typeof globalThis.origin !== 'string' && globalThis.location) globalThis.origin = String(globalThis.location.origin || '');
                     ['screenX', 'screenY', 'screenLeft', 'screenTop'].forEach(function (name) {

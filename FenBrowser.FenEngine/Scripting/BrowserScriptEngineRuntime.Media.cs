@@ -1003,6 +1003,7 @@ public sealed partial class FenJsBrowserScriptEngine
             {
                 _ = _realm.RecordDiagnosticCallbackFailure(callback, JsValue.Undefined, new[] { JsValue.FromNumber(now), metadata }, "video-frame-callback", null, ex);
                 EngineLogCompat.Warn($"[FenJsBridge] requestVideoFrameCallback callback failed: {ex.Description ?? ex.Message}", LogCategory.JavaScript);
+                _realm.ReportFenJsException(ex);
             }
         }
 

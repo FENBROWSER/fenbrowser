@@ -645,6 +645,7 @@ public sealed partial class FenJsBrowserScriptEngine
             catch (JsThrownException ex)
             {
                 EngineLogCompat.Warn($"[FenJsBridge] text track task failed: {ex.Description ?? ex.Message}", LogCategory.JavaScript);
+                ReportFenJsException(ex);
             }
             finally
             {

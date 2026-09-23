@@ -3969,6 +3969,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     });
                     RecordMissingGlobalReference(desc ?? jte.Message, item.ScriptRecord, baseUri);
+                    ReportFenJsException(jte);
                     var scriptFailedFields = CreateScriptRecordFields(item.ScriptRecord);
                     scriptFailedFields["batch"] = batchLabel;
                     scriptFailedFields["origin"] = origin;
@@ -7533,6 +7534,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 (_, args) => BuildStyleSheetRuleDescriptors(args),
                 length: 1));
         InstallFenJsBrowserSurfaceFillers();
+        InstallFenJsErrorReporting();
         InstallTopWindowPostMessageBridge(globalThisValue);
     }
 
@@ -10056,6 +10058,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 "microtask",
                                 string.Empty,
                                 exception);
+                            ReportFenJsException(exception);
                             attributedMicrotaskFailure = exception;
                         });
                         TraceFenJsCallbackStage("stage-5-microtask-checkpoint-complete", origin, callbackId, callbackProvenance);
@@ -10134,6 +10137,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         FenBrowser.Core.EngineLogCompat.Warn(
                             $"[FenJsTimers] {origin} callback failed: {ex.Message}",
                             FenBrowser.Core.Logging.LogCategory.JavaScript);
+                        ReportFenJsException(ex);
                     }
                 }
 
@@ -17299,7 +17303,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     TryReadWindowEventHandler(windowTarget, type, out var winHandler) &&
                     _interpreter.CanCallValue(winHandler))
                 {
-                    TryInvokeFenJsEventCallback(winHandler, windowTarget, eventValue, type);
+                    InvokeWindowEventHandler(winHandler, windowTarget, eventValue, type);
                 }
             }
         }
@@ -22023,7 +22027,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (TryReadWindowEventHandler(target, type, out var handler) &&
             _interpreter.CanCallValue(handler))
         {
-            TryInvokeFenJsEventCallback(handler, target, eventValue, type);
+            InvokeWindowEventHandler(handler, target, eventValue, type);
         }
 
         return !ReadJsBoolProperty(eventValue, "defaultPrevented");
@@ -22450,6 +22454,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             EngineLogCompat.Warn(
                 $"[FenJsBridge] Event listener for '{eventType ?? string.Empty}' failed: {description ?? ex.Message}",
                 LogCategory.JavaScript);
+            ReportFenJsException(ex);
             return false;
         }
         catch (Exception ex)
@@ -22862,6 +22867,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
             TraceDynamicScriptExecutionFailure(scriptRecord, batchLabel, "JsThrownException", desc ?? jte.Message);
             RecordMissingGlobalReference(desc ?? jte.Message, scriptRecord, _currentBaseUri);
+            ReportFenJsException(jte);
             return false;
         }
         catch (Exception ex)
