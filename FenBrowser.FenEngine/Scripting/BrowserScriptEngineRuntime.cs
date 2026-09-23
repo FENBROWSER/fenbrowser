@@ -21065,7 +21065,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         // worker or a MessagePort (HTML 9.3.3, 9.4.4, 10.2.6), so the event is trusted
         // (DOM 2.5 isTrusted). Cloudflare Turnstile ignores untrusted messages, so its
         // widget never answered its own frame's handshake.
-        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        var messageEvent = _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
             ["type"] = JsValue.FromString("message"),
             ["isTrusted"] = JsValue.FromBoolean(true),
@@ -21084,6 +21084,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             ["defaultPrevented"] = JsValue.FromBoolean(false),
             ["timeStamp"] = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds)
         });
+
+        // It is a MessageEvent (HTML 9.3.3), so the Event methods - stopPropagation,
+        // stopImmediatePropagation, preventDefault, composedPath - come with it.
+        var messageEventConstructor = ReadGlobalValueOrUndefined("MessageEvent");
+        if (messageEventConstructor.Tag == JsValueTag.Object)
+        {
+            var prototype = ReadJsProperty(messageEventConstructor, "prototype");
+            if (prototype.Tag == JsValueTag.Object)
+            {
+                _interpreter.Heap.GetObject(messageEvent.AsObjectHandle()).SetPrototype(prototype.AsObjectHandle());
+            }
+        }
+
+        return messageEvent;
     }
 
     // HTML: postMessage(message, targetOrigin, transfer) and the newer
@@ -21959,6 +21973,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         foreach (var listener in callbacks)
         {
+            // DOM §2.10 "inner invoke": stop once a listener asked for it.
+            if (ReadImmediatePropagationStopped(eventValue, dispatchState))
+            {
+                break;
+            }
+
             // DOM §2.9: a listener removed by an earlier one in this dispatch is
             // skipped, and a once listener is removed before it is called.
             if (!listeners.Contains(listener))
