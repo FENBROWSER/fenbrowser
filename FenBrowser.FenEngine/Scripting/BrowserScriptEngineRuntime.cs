@@ -1788,9 +1788,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     {
         var document = domRoot as Document ?? domRoot?.OwnerDocument;
         var frameElement = TryGetFrameElementForDocument(document);
-        return frameElement == null
-            ? SetDomAsyncCore(domRoot, baseUri, resetSession: false, restorePreviousContext: true)
-            : SetSubdocumentRealmAsync(frameElement, domRoot, baseUri, options);
+        if (frameElement == null)
+        {
+            return SetDomAsyncCore(domRoot, baseUri, resetSession: false, restorePreviousContext: true);
+        }
+
+        // HTML 7.3.1: a frame's browsing context is a child of the one whose document
+        // holds the frame element. The host hands every frame to the top realm, so a frame
+        // inside a frame goes to the realm of the document it sits in - otherwise its
+        // window.parent would be the top window.
+        var owner = FindRealmOwningDocument(frameElement.OwnerDocument) ?? this;
+        return owner.SetSubdocumentRealmAsync(frameElement, domRoot, baseUri, options);
     }
 
     private async Task SetSubdocumentRealmAsync(
@@ -1893,7 +1901,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 "iframe_diagnostics.txt",
                 $"{DateTimeOffset.UtcNow:O} TryGetFrameRealm: doc={document != null} frame={frame != null}");
         }
-        if (frame != null && _iframeRealms.TryGetValue(frame, out realm))
+        realm = FindRealmForFrame(frame);
+        if (realm != null)
         {
             if (DiagnosticPaths.IframeDiagnosticsEnabled)
             {
@@ -21628,7 +21637,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private void RefreshFrameRealmViewport(Element frameElement)
     {
         if (!IsIFrameElement(frameElement) ||
-            !_iframeRealms.TryGetValue(frameElement, out var frameRealm))
+            FindRealmForFrame(frameElement) is not { } frameRealm)
         {
             return;
         }
