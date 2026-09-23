@@ -940,6 +940,27 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
+    /// <summary>
+    /// A WebIDL named properties object (<see cref="NamedPropertiesObject"/>) with the
+    /// given [[Prototype]] and class string, for a host to put in its global's prototype
+    /// chain.
+    /// </summary>
+    public JsValue AllocateNamedPropertiesObject(Func<string, JsValue?> resolve, JsValue prototype, string classString)
+    {
+        ArgumentNullException.ThrowIfNull(resolve);
+        var obj = new NamedPropertiesObject(resolve, _heap.GetObject);
+        obj.SetPrototype(prototype.Tag == JsValueTag.Object ? prototype.AsObjectHandle() : null);
+        var toStringTagId = GetWellKnownSymbolId("toStringTag");
+        if (toStringTagId != 0)
+        {
+            _ = obj.DefineOwnSymbolProperty(toStringTagId,
+                new Objects.JsPropertyDescriptor(JsValue.FromString(classString),
+                    Writable: false, Enumerable: false, Configurable: true));
+        }
+
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
     public JsValue AllocateModuleNamespaceObject(
         Environments.ModuleEnvironmentRecord environment,
         IReadOnlyDictionary<string, string> localNames)

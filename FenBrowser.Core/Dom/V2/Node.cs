@@ -586,11 +586,22 @@ namespace FenBrowser.Core.Dom.V2
                 oldScope?.UnregisterId(element.Id, element);
             }
 
+            string exposedName = this is Element named && TreeScope.IsNameExposed(named) ? named.GetAttributeNS(null, "name") : null;
+            if (!string.IsNullOrEmpty(exposedName))
+            {
+                oldScope?.UnregisterName(exposedName, (Element)this);
+            }
+
             _treeScope = newScope;
 
             if (this is Element insertedElement && !string.IsNullOrEmpty(insertedElement.Id))
             {
                 newScope?.RegisterId(insertedElement.Id, insertedElement);
+            }
+
+            if (!string.IsNullOrEmpty(exposedName))
+            {
+                newScope?.RegisterName(exposedName, (Element)this);
             }
 
             for (var child = FirstChild; child != null; child = child._nextSibling)

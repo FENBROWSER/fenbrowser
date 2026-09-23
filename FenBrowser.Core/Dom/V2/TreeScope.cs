@@ -17,6 +17,7 @@ namespace FenBrowser.Core.Dom.V2
         private Dictionary<string, IdBucket> _idIndex;
         private bool _idIndexInitialized;
         private long _treeOrderGeneration;
+        private Dictionary<string, List<Element>> _nameIndex;
 
         private sealed class IdBucket
         {
@@ -125,6 +126,126 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         internal int FullRebuildCount { get; private set; }
+
+        /// <summary>
+        /// HTML 7.2.2.3: the elements whose name attribute makes them named objects of a
+        /// Window - embed, form, img and object in the HTML namespace - plus the frame
+        /// containers, whose name is their child navigable's target name.
+        /// </summary>
+        internal static bool IsNameExposed(Element element) =>
+            element?.NamespaceUri == Namespaces.Html &&
+            element.LocalName is "embed" or "form" or "img" or "object" or "iframe" or "frame";
+
+        private static bool IsFrameContainer(Element element) => element.LocalName is "iframe" or "frame";
+
+        /// <summary>
+        /// The first iframe or frame in tree order whose name is <paramref name="name"/>: the
+        /// container of the document-tree child navigable with that target name.
+        /// </summary>
+        public Element GetNamedFrameContainer(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return null;
+            EnsureNameIndex();
+            if (!_nameIndex.TryGetValue(name, out var named))
+                return null;
+
+            Element first = null;
+            foreach (var element in named)
+            {
+                if (!IsFrameContainer(element))
+                    continue;
+                if (first == null ||
+                    (element.CompareDocumentPosition(first) & DocumentPosition.Following) != 0)
+                    first = element;
+            }
+
+            return first;
+        }
+
+        public void RegisterName(string name, Element element)
+        {
+            if (string.IsNullOrEmpty(name) || _nameIndex == null || !IsNameExposed(element))
+                return;
+            if (!_nameIndex.TryGetValue(name, out var list))
+                _nameIndex[name] = list = new List<Element>();
+            if (!list.Contains(element))
+                list.Add(element);
+        }
+
+        public void UnregisterName(string name, Element element)
+        {
+            if (string.IsNullOrEmpty(name) || _nameIndex == null || !_nameIndex.TryGetValue(name, out var list))
+                return;
+            list.Remove(element);
+            if (list.Count == 0)
+                _nameIndex.Remove(name);
+        }
+
+        /// <summary>
+        /// HTML 7.2.2.3 "named objects" of a Window with name <paramref name="name"/>, in
+        /// tree order: HTML embed, form, img and object elements with that name, and
+        /// elements of any namespace with that id. Empty when there are none.
+        /// </summary>
+        public IReadOnlyList<Element> GetNamedObjects(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+                return Array.Empty<Element>();
+
+            EnsureIdIndex();
+            EnsureNameIndex();
+            List<Element> result = null;
+            if (_idIndex.TryGetValue(name, out var bucket))
+            {
+                result = new List<Element>(bucket.Elements);
+            }
+
+            if (_nameIndex.TryGetValue(name, out var named))
+            {
+                foreach (var element in named)
+                {
+                    if (!IsFrameContainer(element) && (result == null || !result.Contains(element)))
+                        (result ??= new List<Element>()).Add(element);
+                }
+            }
+
+            if (result == null)
+                return Array.Empty<Element>();
+            if (result.Count > 1)
+            {
+                // Rare: put them in tree order by walking the tree once.
+                var members = new HashSet<Element>(result);
+                result.Clear();
+                foreach (var node in _root.Descendants())
+                {
+                    if (node is Element element && members.Contains(element))
+                        result.Add(element);
+                }
+            }
+
+            return result;
+        }
+
+        private void EnsureNameIndex()
+        {
+            if (_nameIndex != null)
+                return;
+
+            _nameIndex = new Dictionary<string, List<Element>>(StringComparer.Ordinal);
+            foreach (var node in _root.Descendants())
+            {
+                if (node is Element element && IsNameExposed(element))
+                {
+                    var name = element.GetAttributeNS(null, "name");
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        if (!_nameIndex.TryGetValue(name, out var list))
+                            _nameIndex[name] = list = new List<Element>();
+                        list.Add(element);
+                    }
+                }
+            }
+        }
 
         private void EnsureIdIndex()
         {

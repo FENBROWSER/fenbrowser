@@ -7610,6 +7610,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsMediaStream();
         InstallFenJsAudioOutputDevices();
         InstallFenJsWebAudio();
+        InstallFenJsWindowNamedProperties();
         InstallFenJsDocumentAll();
         // Last: this only publishes members nothing else has claimed, so it has to
         // see the finished surface.
@@ -20687,14 +20688,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _interpreter.SetObjectProperty(parent, "frames", frames);
         }
 
-        if (!string.IsNullOrWhiteSpace(frameName))
+        // The real window finds its child frames by name through WindowProperties
+        // (HTML 7.2.2.3), live and in tree order; only the stand-in parent objects, which
+        // have no named properties object, carry them as plain properties.
+        if (!string.IsNullOrWhiteSpace(frameName) && !parent.Equals(_fenJsGlobalThis))
         {
             _interpreter.SetObjectProperty(frames, frameName, window);
             _interpreter.SetObjectProperty(parent, frameName, window);
-            if (_fenJsGlobalThis.Tag == JsValueTag.Object && !parent.Equals(_fenJsGlobalThis))
-            {
-                _interpreter.SetObjectProperty(_fenJsGlobalThis, frameName, window);
-            }
         }
 
         var frameIndex = ReadJsProperty(window, "__fenFrameIndex");

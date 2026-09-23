@@ -129,7 +129,9 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public string Id
         {
-            get => GetAttribute("id");
+            // DOM 4.9: an element's ID is its id attribute in the null namespace; an
+            // attribute a page set as urn:x:id is not one.
+            get => GetAttributeNS(null, "id");
             set => SetAttribute("id", value);
         }
 
@@ -171,11 +173,23 @@ namespace FenBrowser.Core.Dom.V2
         /// Creates a new Element with the given local name.
         /// </summary>
         public Element(string localName, Document owner = null, string namespaceUri = null)
+            : this(localName, owner, namespaceUri, nullMeansHtml: true)
+        {
+        }
+
+        /// <summary>
+        /// Creates an element in exactly <paramref name="namespaceUri"/>: null is the null
+        /// namespace, as createElementNS(null, ...) asks for, not HTML.
+        /// </summary>
+        public static Element CreateInNamespace(string localName, Document owner, string namespaceUri) =>
+            new Element(localName, owner, string.IsNullOrEmpty(namespaceUri) ? null : namespaceUri, nullMeansHtml: false);
+
+        private Element(string localName, Document owner, string namespaceUri, bool nullMeansHtml)
         {
             if (string.IsNullOrEmpty(localName))
                 throw new ArgumentException("Element name cannot be null or empty", nameof(localName));
 
-            var isHtmlElement = namespaceUri == null || namespaceUri == Namespaces.Html;
+            var isHtmlElement = (nullMeansHtml && namespaceUri == null) || namespaceUri == Namespaces.Html;
             LocalName = isHtmlElement ? localName.ToLowerInvariant() : localName;
 
             // HTML element names are ASCII case-insensitive and expose an uppercase
@@ -486,7 +500,7 @@ namespace FenBrowser.Core.Dom.V2
             var name = attr.Name;
 
             // Update ID index
-            if (name.Equals("id", StringComparison.OrdinalIgnoreCase))
+            if (attr.NamespaceUri == null && name.Equals("id", StringComparison.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrEmpty(oldValue))
                     _treeScope?.UnregisterId(oldValue, this);
@@ -496,6 +510,11 @@ namespace FenBrowser.Core.Dom.V2
                 _flags = string.IsNullOrEmpty(attr.Value)
                     ? (_flags & ~NodeFlags.HasId)
                     : (_flags | NodeFlags.HasId);
+            }
+            else if (attr.NamespaceUri == null && name.Equals("name", StringComparison.OrdinalIgnoreCase))
+            {
+                _treeScope?.UnregisterName(oldValue, this);
+                _treeScope?.RegisterName(attr.Value, this);
             }
 
             // Update class flag
@@ -551,12 +570,15 @@ namespace FenBrowser.Core.Dom.V2
         {
             var name = attr.Name;
 
-            if (name.Equals("id", StringComparison.OrdinalIgnoreCase))
+            if (attr.NamespaceUri == null && name.Equals("id", StringComparison.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrEmpty(oldValue))
                     _treeScope?.UnregisterId(oldValue, this);
                 _flags &= ~NodeFlags.HasId;
             }
+
+            if (attr.NamespaceUri == null && name.Equals("name", StringComparison.OrdinalIgnoreCase))
+                _treeScope?.UnregisterName(oldValue, this);
 
             if (name.Equals("class", StringComparison.OrdinalIgnoreCase))
                 _flags &= ~NodeFlags.HasClass;
