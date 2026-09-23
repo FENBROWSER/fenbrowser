@@ -550,16 +550,26 @@ public sealed partial class FenJsBrowserScriptEngine
                 var s = node[S];
                 var b = s.buffer;
                 if (b === null) { g.__fenWaSetBuffer(s.ctx[S].id, s.id, null, 0); return; }
-                g.__fenWaSetBuffer(s.ctx[S].id, s.id, b[S].data, b[S].sampleRate);
-                acquireContent(b);
+                g.__fenWaSetBuffer(s.ctx[S].id, s.id, acquireContent(b), b[S].sampleRate);
             }
             // WA 1.4 "acquire the content": getChannelData() hands out fresh copies from then
             // on, so nothing script writes through an array it already held can reach what the
             // engine took. Those arrays are left attached rather than detached: pages (and WPT)
             // keep reading them after start(), and they still hold the acquired content.
+            // Returns what the engine takes - silence of the same shape when any channel's
+            // ArrayBuffer has been detached (transferred away), as step 1 requires.
             function acquireContent(buffer) {
                 var data = buffer[S].data;
-                for (var c = 0; c < data.length; c++) data[c] = data[c].slice();
+                var detached = false;
+                for (var c = 0; c < data.length; c++) if (data[c].buffer.detached === true || data[c].buffer.byteLength === 0 && data[c].length !== 0) detached = true;
+                if (detached) {
+                    var silent = [];
+                    for (var d = 0; d < data.length; d++) silent.push(new Float32Array(buffer[S].length));
+                    return silent;
+                }
+                var taken = data.slice();
+                for (var k = 0; k < data.length; k++) data[k] = data[k].slice();
+                return taken;
             }
             function pushLoop(node) {
                 var s = node[S];
@@ -906,8 +916,7 @@ public sealed partial class FenJsBrowserScriptEngine
                         if (v[S].sampleRate !== s.ctx[S].sampleRate) throw domError("Failed to set the 'buffer' property on 'ConvolverNode': The buffer sample rate " + v[S].sampleRate + " does not match the context rate " + s.ctx[S].sampleRate + ".", 'NotSupportedError');
                     }
                     s.buffer = v;
-                    g.__fenWaConvolverBuffer(s.ctx[S].id, s.id, v === null ? null : v[S].data, v === null ? 0 : v[S].sampleRate, s.normalize);
-                    if (v !== null) acquireContent(v);
+                    g.__fenWaConvolverBuffer(s.ctx[S].id, s.id, v === null ? null : acquireContent(v), v === null ? 0 : v[S].sampleRate, s.normalize);
                 }
                 get normalize() { return this[S].normalize; }
                 set normalize(v) { this[S].normalize = toBoolean(v); }
