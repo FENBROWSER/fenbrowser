@@ -20040,11 +20040,53 @@ fallbackArraySpecies:
         var fn = new NativeFunctionObject("structuredClone", (_, args) =>
         {
             if (args.Count == 0) return JsValue.Undefined;
-            return StructuredCloneValue(args[0], new Dictionary<ObjectHandle, ObjectHandle>());
+            var memo = new Dictionary<ObjectHandle, ObjectHandle>();
+            var transferred = CollectStructuredCloneTransfer(args.Count > 1 ? args[1] : JsValue.Undefined, memo);
+            var result = StructuredCloneValue(args[0], memo);
+            // HTML StructuredSerializeWithTransfer: the originals are detached only once the
+            // whole value serialized, so a failed clone leaves them usable.
+            foreach (var buffer in transferred)
+                buffer.Detach();
+            return result;
         }, length: 1);
         _structuredCloneHandle = _heap.AllocateObject(fn, AllocationSite.Current());
         _heap.PushRoot(_structuredCloneHandle.Value);
         return _structuredCloneHandle.Value;
+    }
+
+    // HTML 2.7.3 StructuredSerializeWithTransfer steps 1-4: options.transfer lists the
+    // ArrayBuffers whose contents move to the clone. Each gets its clone up front (in the memo,
+    // so references inside the value find it); the caller detaches the originals afterwards.
+    private List<ArrayBufferObject> CollectStructuredCloneTransfer(JsValue options, Dictionary<ObjectHandle, ObjectHandle> memo)
+    {
+        var buffers = new List<ArrayBufferObject>();
+        if (options.Tag is JsValueTag.Undefined or JsValueTag.Null)
+            return buffers;
+        if (options.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("structuredClone: options must be an object."));
+        if (!TryGetPropertyValue(_heap.GetObject(options.AsObjectHandle()), options, "transfer", out var list) ||
+            list.Tag == JsValueTag.Undefined)
+            return buffers;
+
+        foreach (var item in DrainIterableToListCapped(list, "structuredClone", cap: 100_000))
+        {
+            if (item.Tag != JsValueTag.Object || _heap.GetObject(item.AsObjectHandle()) is not ArrayBufferObject buffer)
+                throw new JsThrownException(CreateDataCloneError("Only ArrayBuffers can be transferred."));
+            if (buffer.IsSharedArrayBuffer)
+                throw new JsThrownException(CreateDataCloneError("A SharedArrayBuffer cannot be transferred."));
+            if (buffer.IsDetached)
+                throw new JsThrownException(CreateDataCloneError("A detached ArrayBuffer cannot be transferred."));
+            if (memo.ContainsKey(item.AsObjectHandle()))
+                throw new JsThrownException(CreateDataCloneError("An ArrayBuffer is listed twice in the transfer list."));
+
+            var moved = new ArrayBufferObject(buffer.ByteLength, buffer.IsResizable ? buffer.MaxByteLength : 0, buffer.IsResizable);
+            moved.SetPrototype(EnsureArrayBufferPrototype());
+            Array.Copy(buffer.Data, moved.Data, buffer.ByteLength);
+            memo[item.AsObjectHandle()] = _heap.AllocateObject(moved, AllocationSite.Current());
+            buffers.Add(buffer);
+        }
+
+        return buffers;
     }
 
     private JsValue StructuredCloneValue(JsValue value, Dictionary<ObjectHandle, ObjectHandle> memo)
@@ -20091,6 +20133,20 @@ fallbackArraySpecies:
                 var cloneObj = new RegExpObject(r.Pattern, r.Flags, r.NativeProgram);
                 cloneObj.SetPrototype(EnsureRegExpPrototype());
                 var h = _heap.AllocateObject(cloneObj, AllocationSite.Current());
+                memo[sourceHandle] = h;
+                return JsValue.FromObject(h);
+            }
+            case ArrayBufferObject buffer:
+            {
+                // HTML 2.7.3 StructuredSerializeInternal: an ArrayBuffer's bytes are copied.
+                if (buffer.IsDetached)
+                    throw new JsThrownException(CreateDataCloneError("A detached ArrayBuffer cannot be cloned."));
+                if (buffer.IsSharedArrayBuffer)
+                    return value;
+                var copy = new ArrayBufferObject(buffer.ByteLength, buffer.IsResizable ? buffer.MaxByteLength : 0, buffer.IsResizable);
+                copy.SetPrototype(EnsureArrayBufferPrototype());
+                Array.Copy(buffer.Data, copy.Data, buffer.ByteLength);
+                var h = _heap.AllocateObject(copy, AllocationSite.Current());
                 memo[sourceHandle] = h;
                 return JsValue.FromObject(h);
             }
