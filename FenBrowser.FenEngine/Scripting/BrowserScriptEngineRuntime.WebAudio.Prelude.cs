@@ -41,6 +41,9 @@ public sealed partial class FenJsBrowserScriptEngine
                 if (!isFinite(f)) throw typeError("The provided float value for " + what + " is outside the range of a float.");
                 return f;
             }
+            function floats(values, what) {
+                return values.map(function (v, i) { return toFloat(v, what + ' argument ' + (i + 1)); });
+            }
             function toDouble(v, what) {
                 var n = Number(v);
                 if (!isFinite(n)) throw typeError("The provided double value for " + what + " is non-finite.");
@@ -1008,13 +1011,16 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
                 setPosition(x, y, z) {
                     requireArgs(arguments, 3, 'setPosition', 'PannerNode');
+                    // WebIDL converts every argument before the body runs: a bad z leaves x alone.
+                    var v = floats([x, y, z], 'setPosition');
                     var p = this[S].params;
-                    p.positionX.value = x; p.positionY.value = y; p.positionZ.value = z;
+                    p.positionX.value = v[0]; p.positionY.value = v[1]; p.positionZ.value = v[2];
                 }
                 setOrientation(x, y, z) {
                     requireArgs(arguments, 3, 'setOrientation', 'PannerNode');
+                    var v = floats([x, y, z], 'setOrientation');
                     var p = this[S].params;
-                    p.orientationX.value = x; p.orientationY.value = y; p.orientationZ.value = z;
+                    p.orientationX.value = v[0]; p.orientationY.value = v[1]; p.orientationZ.value = v[2];
                 }
             }
             function pushPanner(node) {
@@ -1045,14 +1051,16 @@ public sealed partial class FenJsBrowserScriptEngine
                 get upZ() { return this[S].params.upZ; }
                 setPosition(x, y, z) {
                     requireArgs(arguments, 3, 'setPosition', 'AudioListener');
+                    var v = floats([x, y, z], 'setPosition');
                     var p = this[S].params;
-                    p.positionX.value = x; p.positionY.value = y; p.positionZ.value = z;
+                    p.positionX.value = v[0]; p.positionY.value = v[1]; p.positionZ.value = v[2];
                 }
                 setOrientation(x, y, z, xUp, yUp, zUp) {
                     requireArgs(arguments, 6, 'setOrientation', 'AudioListener');
+                    var v = floats([x, y, z, xUp, yUp, zUp], 'setOrientation');
                     var p = this[S].params;
-                    p.forwardX.value = x; p.forwardY.value = y; p.forwardZ.value = z;
-                    p.upX.value = xUp; p.upY.value = yUp; p.upZ.value = zUp;
+                    p.forwardX.value = v[0]; p.forwardY.value = v[1]; p.forwardZ.value = v[2];
+                    p.upX.value = v[3]; p.upY.value = v[4]; p.upZ.value = v[5];
                 }
             }
             webidl(AudioListener, 'AudioListener');
