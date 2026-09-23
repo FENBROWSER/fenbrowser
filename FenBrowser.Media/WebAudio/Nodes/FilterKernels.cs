@@ -236,7 +236,12 @@ public sealed class BiquadKernel : AudioNodeKernel
             output.MarkNotSilent();
     }
 
-    internal static double FlushDenormal(double v) => Math.Abs(v) < 1e-30 ? 0 : v;
+    // Flush what would be a denormal once stored as a float sample (below FLT_MIN): the
+    // feedback then never grinds through denormals, and two filters whose coefficients differ
+    // by a power of two stay exact scalings of each other down to that boundary.
+    internal static double FlushDenormal(double v) => Math.Abs(v) < FltMin ? 0 : v;
+
+    private const double FltMin = 1.1754943508222875e-38;
 }
 
 /// <summary>
