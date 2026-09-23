@@ -44,7 +44,13 @@ public class MsePlayerTests
         public void Stalled() { }
         public void FetchedEntirely() { Fetched = true; Events.Enqueue("fetched"); }
         public int WaitingForKeyCount { get; private set; }
-        public void WaitingForKey() { WaitingForKeyCount++; Events.Enqueue("waitingforkey"); }
+        public bool MetadataBeforeFirstWait { get; private set; }
+        public void WaitingForKey()
+        {
+            if (WaitingForKeyCount == 0) MetadataBeforeFirstWait = Metadata is not null;
+            WaitingForKeyCount++;
+            Events.Enqueue("waitingforkey");
+        }
 
         public async Task WaitForAsync(Func<bool> condition, int timeoutMs = 5000)
         {
@@ -362,6 +368,12 @@ public class MsePlayerTests
 
             await client.WaitForAsync(() => client.WaitingForKeyCount > 0, 10000);
             Assert.Null(client.Failure);
+
+            // EME §7.2 only lets the element fire waitingforkey once it has reached
+            // HAVE_METADATA, and the controller drops a report that arrives earlier. The stall
+            // happens on the very first protected frame, so the metadata report has to be
+            // ahead of it in the client's queue.
+            Assert.True(client.MetadataBeforeFirstWait, "the pipeline reported waiting for a key before the metadata");
         }
         finally
         {
