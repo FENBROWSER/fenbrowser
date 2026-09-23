@@ -1103,6 +1103,41 @@ public sealed partial class FenJsBrowserScriptEngine
                 createDynamicsCompressor() { return new DynamicsCompressorNode(this); }
                 createPanner() { return new PannerNode(this); }
                 get listener() { return this[S].listener; }
+                // WA 1.1.3 decodeAudioData: the ArrayBuffer is detached, the decode runs in
+                // parallel, and the result is resampled to this context's rate.
+                decodeAudioData(audioData, successCallback, errorCallback) {
+                    var s = this[S];
+                    var argc = arguments.length;
+                    return new Promise(function (resolve, reject) {
+                        if (argc < 1 || !(audioData instanceof ArrayBuffer)) {
+                            reject(typeError("Failed to execute 'decodeAudioData' on 'BaseAudioContext': parameter 1 is not of type 'ArrayBuffer'."));
+                            return;
+                        }
+                        var bytes;
+                        try {
+                            if (audioData.detached) throw 0;
+                            bytes = new Uint8Array(audioData.transfer());
+                        } catch (e) {
+                            reject(domError("Failed to execute 'decodeAudioData' on 'BaseAudioContext': Cannot decode detached ArrayBuffer", 'DataCloneError'));
+                            return;
+                        }
+                        var id = g.__fenWaDecode(s.id, bytes);
+                        s.decodes = s.decodes || new Map();
+                        s.decodes.set(id, function (ok, channels, length, message) {
+                            if (!ok) {
+                                var err = domError("Unable to decode audio data" + (message ? ': ' + message : ''), 'EncodingError');
+                                if (typeof errorCallback === 'function') { try { errorCallback.call(undefined, err); } catch (e) { if (typeof g.reportError === 'function') g.reportError(e); } }
+                                reject(err);
+                                return;
+                            }
+                            var buffer = bufferFromChannels(channels, length, s.sampleRate);
+                            for (var c = 0; c < channels; c++) g.__fenWaReadDecoded(s.id, id, c, buffer[S].data[c]);
+                            g.__fenWaReleaseDecoded(s.id, id);
+                            if (typeof successCallback === 'function') { try { successCallback.call(undefined, buffer); } catch (e) { if (typeof g.reportError === 'function') g.reportError(e); } }
+                            resolve(buffer);
+                        });
+                    });
+                }
             }
             handler(BaseAudioContext.prototype, 'onstatechange');
             webidl(BaseAudioContext, 'BaseAudioContext');
@@ -1324,6 +1359,13 @@ public sealed partial class FenJsBrowserScriptEngine
                 var node = context[S].nodes.get(nodeId);
                 context[S].nodes.delete(nodeId);
                 if (node) fire(node, new g.Event('ended'));
+            };
+            g.__fenWaOnDecoded = function (contextId, requestId, ok, channels, length, message) {
+                var context = contexts.get(contextId);
+                if (!context || !context[S].decodes) return;
+                var done = context[S].decodes.get(requestId);
+                context[S].decodes.delete(requestId);
+                if (done) done(ok, channels, length, message);
             };
             g.__fenWaOnSuspended = function (contextId, frame) {
                 var context = contexts.get(contextId);

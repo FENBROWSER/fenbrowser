@@ -5241,6 +5241,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             frameRealm.AbandonRealm();
         }
 
+        CloseAllWebAudioContexts();
+
         Interlocked.Increment(ref _fenJsSessionGeneration);
         RequestRender = null;
         _parentRealmOwner = null;
@@ -6073,6 +6075,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         {
             frameRealm.AbandonRealm();
         }
+
+        // A new document: the previous one's audio contexts stop and release their devices.
+        CloseAllWebAudioContexts();
 
         // Establish the large-stack worker BEFORE taking _fenJsLock. ResetFenJsSession
         // transitively calls InstallFenJsDomGlobals -> EvaluateWithFenJsRaw, which spawns
