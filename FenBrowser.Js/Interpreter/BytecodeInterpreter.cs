@@ -4201,7 +4201,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             var sourceObj = _heap.GetObject(iter.SourceHandle);
-            var length = GetArrayLength(sourceObj);
+            int length;
+            if (sourceObj is TypedArrayObject typedArray)
+            {
+                // ECMA-262 23.1.5.1 CreateArrayIterator step for a typed array: out of
+                // bounds (detached included) is a TypeError, the length is TypedArrayLength.
+                if (typedArray.IsViewDetached || typedArray.IsOutOfBounds())
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Cannot perform %ArrayIteratorPrototype%.next on a detached or out-of-bounds TypedArray."));
+                }
+
+                length = typedArray.Length;
+            }
+            else
+            {
+                length = GetArrayLength(sourceObj);
+            }
+
             if (iter.Index >= length)
             {
                 iter.IsExhausted = true;
@@ -21626,38 +21643,25 @@ fallbackArraySpecies:
             return JsValue.FromString(sb.ToString());
         }, length: 1);
 
+        // ECMA-262 23.2.3.19 / .37 / .7 keys, values, entries: ValidateTypedArray, then
+        // CreateArrayIterator(O, kind). The iterator reads the typed array live, so a later
+        // write is seen and a detach mid-iteration throws, as the spec requires.
         DefineNativePrototypeMethod(protoHandle, proto, "keys", (thisValue, _) =>
         {
-            var self = ValidateTypedArray(thisValue);
-            var keys = new List<JsValue>(self.Length);
-            for (var i = 0; i < self.Length; i++) keys.Add(JsValue.FromNumber(i));
-            var arr = CreateArrayObject(keys);
-            var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
-            return CreateArrayIterator(JsValue.FromObject(arrHandle), ArrayIteratorKind.Value);
+            ValidateTypedArray(thisValue);
+            return CreateArrayIterator(thisValue, ArrayIteratorKind.Key);
         }, length: 0);
 
         DefineNativePrototypeMethod(protoHandle, proto, "values", (thisValue, _) =>
         {
-            var self = ValidateTypedArray(thisValue);
-            var values = new List<JsValue>(self.Length);
-            for (var i = 0; i < self.Length; i++) values.Add(self.GetElement(i));
-            var arr = CreateArrayObject(values);
-            var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
-            return CreateArrayIterator(JsValue.FromObject(arrHandle), ArrayIteratorKind.Value);
+            ValidateTypedArray(thisValue);
+            return CreateArrayIterator(thisValue, ArrayIteratorKind.Value);
         }, length: 0);
 
         DefineNativePrototypeMethod(protoHandle, proto, "entries", (thisValue, _) =>
         {
-            var self = ValidateTypedArray(thisValue);
-            var entries = new List<JsValue>(self.Length);
-            for (var i = 0; i < self.Length; i++)
-            {
-                var pair = CreateArrayObject(new[] { JsValue.FromNumber(i), self.GetElement(i) });
-                entries.Add(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())));
-            }
-            var arr = CreateArrayObject(entries);
-            var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
-            return CreateArrayIterator(JsValue.FromObject(arrHandle), ArrayIteratorKind.Value);
+            ValidateTypedArray(thisValue);
+            return CreateArrayIterator(thisValue, ArrayIteratorKind.Entry);
         }, length: 0);
 
         DefineNativePrototypeMethod(protoHandle, proto, "toString", (thisValue, _) =>
