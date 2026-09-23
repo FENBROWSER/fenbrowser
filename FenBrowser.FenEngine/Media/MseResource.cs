@@ -76,6 +76,8 @@ namespace FenBrowser.FenEngine.Media
         /// <summary>The element's audio output (setSinkId, or a Web Audio tap).</summary>
         public void SetAudioSink(string deviceId) => _player.SetAudioSink(deviceId);
 
+        public void SetAudioCapture(FenBrowser.Media.Audio.IAudioCapture capture) => _player.SetAudioCapture(capture);
+
         public bool IsProviderObject => true;
 
         public VideoPlaybackQuality? GetVideoPlaybackQuality() => _player.GetVideoPlaybackQuality();

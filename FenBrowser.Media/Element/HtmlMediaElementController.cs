@@ -853,6 +853,8 @@ public sealed class HtmlMediaElementController
         // EME §7.3: a MediaKeys set before the resource existed still applies to it.
         if (_mediaKeys is not null)
             resource.SetMediaKeys(_mediaKeys);
+        if (_audioCapture is not null)
+            resource.SetAudioCapture(_audioCapture);
         PushPlaybackState();
         if (!Paused || _host.HasAutoplayAttribute)
             _resource.RequestFullLoad();
@@ -1524,6 +1526,18 @@ public sealed class HtmlMediaElementController
     {
         _audioTap = tapId;
         _resource?.SetAudioSink(tapId ?? SinkId);
+    }
+
+    private Audio.IAudioCapture? _audioCapture;
+
+    /// <summary>
+    /// captureStream(): a copy of the element's audio, taken before its volume and muting,
+    /// goes to <paramref name="capture"/> from this resource on and from every later one.
+    /// </summary>
+    public void SetAudioCapture(Audio.IAudioCapture? capture)
+    {
+        _audioCapture = capture;
+        _resource?.SetAudioCapture(capture);
     }
 
     public SinkIdOutcome TrySetSinkId(string sinkId)

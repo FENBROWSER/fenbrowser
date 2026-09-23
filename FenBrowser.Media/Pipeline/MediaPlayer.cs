@@ -334,6 +334,22 @@ public sealed class MediaPlayer : IMediaResource
     /// <summary>The endpoint audio is going to now; empty while it follows the system default.</summary>
     public string SinkId => Volatile.Read(ref _sinkId);
 
+    private IAudioCapture? _capture;
+
+    /// <summary>
+    /// A copy of the rendered audio, before volume and muting, for a captured stream; null
+    /// stops it. Applies to the renderer playing now and to any that replaces it.
+    /// </summary>
+    public void SetAudioCapture(IAudioCapture? capture)
+    {
+        Volatile.Write(ref _capture, capture);
+        Post(() =>
+        {
+            if (_renderer is { } renderer)
+                renderer.Capture = Volatile.Read(ref _capture);
+        });
+    }
+
     public void UpdateVideoVisibility(bool visible)
     {
         Post(() =>
@@ -518,7 +534,7 @@ public sealed class MediaPlayer : IMediaResource
             var format = await _output.OpenAsync(_audioRequested, _relay, cancellation).ConfigureAwait(false);
             var audioClock = new AudioMasterClock(_output.Position);
             _clock = audioClock;
-            _renderer = new AudioRenderer(format, audioClock);
+            _renderer = new AudioRenderer(format, audioClock) { Capture = Volatile.Read(ref _capture) };
             _relay.Target = _renderer;
         }
         else
@@ -882,6 +898,7 @@ public sealed class MediaPlayer : IMediaResource
             Rate = _rate,
             Volume = _effectiveVolume,
             Muted = _effectiveVolume <= 0,
+            Capture = Volatile.Read(ref _capture),
         };
 
         var oldRenderer = _renderer;

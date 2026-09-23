@@ -6,6 +6,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Media.Element;
 using FenBrowser.Media.Streams;
+using FenBrowser.Media.WebAudio;
 
 namespace FenBrowser.FenEngine.Scripting;
 
@@ -20,6 +21,21 @@ public sealed partial class FenJsBrowserScriptEngine
 {
     /// <summary>One captured stream per element: captureStream() hands back the same one.</summary>
     private readonly Dictionary<Element, MediaStreamModel> _capturedStreams = new();
+
+    /// <summary>The rate and layout of a captured audio track's pipe; a reader converts from it.</summary>
+    private const float CapturedAudioRate = 48000f;
+    private const int CapturedAudioChannels = 2;
+
+    /// <summary>What carries an element's audio into its captured audio tracks.</summary>
+    private sealed class CapturedAudio
+    {
+        public AudioCaptureWriter Writer { get; } = new(CapturedAudioRate, CapturedAudioChannels);
+
+        /// <summary>Per live audio track: the key a MediaStreamAudioSourceNode finds its pipe by.</summary>
+        public Dictionary<string, (string Key, AudioTrackPipe Pipe)> Pipes { get; } = new(StringComparer.Ordinal);
+    }
+
+    private readonly Dictionary<Element, CapturedAudio> _capturedAudio = new();
 
     private void InstallFenJsMediaStream()
     {
@@ -65,14 +81,15 @@ public sealed partial class FenJsBrowserScriptEngine
             // for an element is being paused or having nothing buffered to play.
             bool muted = controller.Paused || controller.ReadyState < MediaReadyState.HaveCurrentData;
             var change = stream.Follow(tracks, muted);
+            var audio = FollowCapturedAudio(element, controller, stream);
 
             return _interpreter.AllocateObject(new Dictionary<string, JsValue>
             {
                 ["id"] = JsValue.FromString(stream.Id),
                 ["active"] = JsValue.FromBoolean(stream.Active),
-                ["tracks"] = TrackList(stream.Tracks),
-                ["added"] = TrackList(change.Added),
-                ["removed"] = TrackList(change.Removed),
+                ["tracks"] = TrackList(stream.Tracks, audio),
+                ["added"] = TrackList(change.Added, audio),
+                ["removed"] = TrackList(change.Removed, audio),
             });
         });
 
@@ -108,7 +125,68 @@ public sealed partial class FenJsBrowserScriptEngine
             _interpreter.RegisterGlobalValue(name, _interpreter.AllocateNativeFunction(name, (_, args) => body(args), length: length));
     }
 
-    private JsValue TrackList(IReadOnlyList<MediaStreamTrackModel> tracks)
+    /// <summary>
+    /// Gives every live captured audio track a pipe and points the element's audio capture
+    /// at them; a track that ended, or left, loses its pipe, and with none left the element
+    /// stops copying its audio.
+    /// </summary>
+    private CapturedAudio FollowCapturedAudio(Element element, HtmlMediaElementController controller, MediaStreamModel stream)
+    {
+        _capturedAudio.TryGetValue(element, out var audio);
+        var live = new List<MediaStreamTrackModel>();
+        foreach (var track in stream.Tracks)
+        {
+            if (track.Kind == MediaStreamTrackKind.Audio && track.Live)
+                live.Add(track);
+        }
+
+        if (live.Count == 0 && audio == null)
+        {
+            return null;
+        }
+
+        if (audio == null)
+        {
+            audio = new CapturedAudio();
+            _capturedAudio[element] = audio;
+        }
+
+        bool changed = false;
+        foreach (var track in live)
+        {
+            if (audio.Pipes.ContainsKey(track.Id))
+                continue;
+            var pipe = new AudioTrackPipe(CapturedAudioRate, CapturedAudioChannels);
+            string key = Guid.NewGuid().ToString("N");
+            lock (_audioTrackPipes)
+                _audioTrackPipes[key] = pipe;
+            audio.Pipes[track.Id] = (key, pipe);
+            changed = true;
+        }
+
+        foreach (var id in new List<string>(audio.Pipes.Keys))
+        {
+            if (live.Exists(t => string.Equals(t.Id, id, StringComparison.Ordinal)))
+                continue;
+            lock (_audioTrackPipes)
+                _audioTrackPipes.Remove(audio.Pipes[id].Key);
+            audio.Pipes.Remove(id);
+            changed = true;
+        }
+
+        if (changed)
+        {
+            var pipes = new List<AudioTrackPipe>();
+            foreach (var entry in audio.Pipes.Values)
+                pipes.Add(entry.Pipe);
+            audio.Writer.SetPipes(pipes);
+            controller.SetAudioCapture(pipes.Count > 0 ? audio.Writer : null);
+        }
+
+        return audio;
+    }
+
+    private JsValue TrackList(IReadOnlyList<MediaStreamTrackModel> tracks, CapturedAudio audio)
     {
         var values = new JsValue[tracks.Count];
         for (int i = 0; i < tracks.Count; i++)
@@ -121,6 +199,9 @@ public sealed partial class FenJsBrowserScriptEngine
                 ["label"] = JsValue.FromString(track.Label),
                 ["live"] = JsValue.FromBoolean(track.Live),
                 ["muted"] = JsValue.FromBoolean(track.Muted),
+                ["pipe"] = audio != null && audio.Pipes.TryGetValue(track.Id, out var captured)
+                    ? JsValue.FromString(captured.Key)
+                    : JsValue.Null,
             });
         }
 

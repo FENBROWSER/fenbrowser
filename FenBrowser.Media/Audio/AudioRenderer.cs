@@ -52,6 +52,19 @@ public sealed class AudioRenderer : IAudioRenderCallback
 
     public AudioStreamFormat OutputFormat => _output;
 
+    private IAudioCapture? _capture;
+
+    /// <summary>
+    /// Where a copy of every rendered frame goes before the volume and the muted state are
+    /// applied, or null. A captured stream carries the element's audio whatever its volume
+    /// (mediacapture-fromelement, captureStream()).
+    /// </summary>
+    public IAudioCapture? Capture
+    {
+        get => Volatile.Read(ref _capture);
+        set => Volatile.Write(ref _capture, value);
+    }
+
     /// <summary>Effective volume in [0, 1]; the muted state zeroes the output without changing it.</summary>
     public double Volume
     {
@@ -149,6 +162,8 @@ public sealed class AudioRenderer : IAudioRenderCallback
         int frames = destination.Length / channels;
         int written = 0;
         double volume = Muted ? 0.0 : Volume;
+        var capture = Capture;
+        float mixVolume = capture is null ? (float)volume : 1f;
         double rate = Rate;
         double resample = PitchPreserved ? 1.0 : rate;
 
@@ -186,7 +201,7 @@ public sealed class AudioRenderer : IAudioRenderCallback
                 int i1 = Math.Min(i0 + 1, blockFrames - 1);
                 float t = (float)(_position - i0);
                 var dst = destination.Slice(written * channels, channels);
-                Mix(samples, blockChannels, i0, i1, t, dst, (float)volume);
+                Mix(samples, blockChannels, i0, i1, t, dst, mixVolume);
                 written++;
                 _position += step;
             }
@@ -209,6 +224,19 @@ public sealed class AudioRenderer : IAudioRenderCallback
 
         if (written < frames)
             destination[(written * channels)..].Clear();
+
+        if (capture is not null)
+        {
+            var rendered = destination[..(frames * channels)];
+            capture.Write(rendered, channels, _output.SampleRate);
+            if (volume != 1.0)
+            {
+                float gain = (float)volume;
+                for (int i = 0; i < rendered.Length; i++)
+                    rendered[i] *= gain;
+            }
+        }
+
         Interlocked.Add(ref _outputFrames, frames);
         return written;
     }

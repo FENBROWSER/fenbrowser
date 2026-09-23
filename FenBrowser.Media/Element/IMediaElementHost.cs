@@ -161,6 +161,14 @@ public interface IMediaResource : IDisposable
     {
     }
 
+    /// <summary>
+    /// Where a copy of this resource's audio goes before the element's volume and muting,
+    /// or null to stop copying: what a captureStream() audio track carries.
+    /// </summary>
+    void SetAudioCapture(Audio.IAudioCapture? capture)
+    {
+    }
+
     /// <summary>The latest picture for the compositor, or null for a resource without video.</summary>
     Video.VideoPresenter? Presenter => null;
 

@@ -158,6 +158,10 @@ namespace FenBrowser.FenEngine.Media
                 {
                     player.SetAudioSink(_audioSink);
                 }
+                if (_audioCapture != null)
+                {
+                    player.SetAudioCapture(_audioCapture);
+                }
                 playback = _pendingPlayback;
                 seek = _pendingSeek;
                 _pendingPlayback = null;
@@ -283,6 +287,21 @@ namespace FenBrowser.FenEngine.Media
             }
 
             player?.SetAudioSink(deviceId ?? string.Empty);
+        }
+
+        private FenBrowser.Media.Audio.IAudioCapture _audioCapture;
+
+        /// <summary>A captured stream's copy of the audio; kept until the player exists, like the sink.</summary>
+        public void SetAudioCapture(FenBrowser.Media.Audio.IAudioCapture capture)
+        {
+            MediaPlayer player;
+            lock (_gate)
+            {
+                _audioCapture = capture;
+                player = _player;
+            }
+
+            player?.SetAudioCapture(capture);
         }
 
         public VideoPlaybackQuality? GetVideoPlaybackQuality()
