@@ -135,9 +135,12 @@ public sealed class PannerKernel : AudioNodeKernel
                 gain = DistanceGain((source - listenerPosition).Length) * ConeGain(source, orientation, listenerPosition);
             }
 
+            // The panned sample and the distance/cone gain are each a float before they meet,
+            // as every engine's float pipeline has them, so a static source's output is exact.
             PanEqualPower(azimuth, stereo, inL[i], inR[i], out float l, out float r);
-            left[i] = (float)(l * gain);
-            right[i] = (float)(r * gain);
+            float g = (float)gain;
+            left[i] = l * g;
+            right[i] = r * g;
         }
 
         output.MarkNotSilent();
