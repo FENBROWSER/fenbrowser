@@ -21926,7 +21926,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         "loadstart", "progress", "suspend", "emptied", "stalled", "loadedmetadata", "loadeddata",
         "canplay", "canplaythrough", "playing", "waiting", "seeking", "seeked", "ended",
         "durationchange", "timeupdate", "play", "pause", "ratechange", "resize", "volumechange",
-        "cuechange"
+        "cuechange",
+        // EME §5 HTMLMediaElement extensions: onencrypted and onwaitingforkey.
+        "encrypted", "waitingforkey"
     };
 
     private static readonly HashSet<string> InlineEventHandlerAttributeNames =
