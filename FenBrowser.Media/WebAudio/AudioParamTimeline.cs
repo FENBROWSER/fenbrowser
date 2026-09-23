@@ -213,6 +213,13 @@ public sealed class AudioParamTimeline
                 InsertLocked(new AutomationEvent { Kind = AutomationEventKind.SetValue, Time = cancelTime, Value = held });
             }
             else if (last >= 0 && _events[last].Kind == AutomationEventKind.SetValueCurve &&
+                     cancelTime <= _events[last].Time)
+            {
+                // WA 1.6.2: the curve is cut to the duration it had played by the cancel time,
+                // which is none - it never happened, and the value before it holds.
+                TruncateAfterLocked(last - 1);
+            }
+            else if (last >= 0 && _events[last].Kind == AutomationEventKind.SetValueCurve &&
                      cancelTime < _events[last].Time + _events[last].Duration)
             {
                 _events[last] = _events[last] with { CurveCutoff = cancelTime };

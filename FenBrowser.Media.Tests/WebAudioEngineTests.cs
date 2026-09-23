@@ -276,4 +276,17 @@ public class WebAudioEngineTests
         var result = new OfflineAudioRenderer(graph, 1, 128).RenderAll();
         Assert.Equal(new float[] { 0, 1, 2, 3, 4, 5, 2, 3, 4, 5, 2 }, result[0][..11]);
     }
+    [Fact]
+    public void CancellingAtACurvesStartRemovesTheCurve()
+    {
+        // WA 1.6.2: the curve is cut to the duration it had played by the cancel time - none.
+        var timeline = new AudioParamTimeline(1);
+        timeline.SetValueAtTime(0.5, 0);
+        timeline.SetValueCurveAtTime([-1f, 1f], 1, 0.1);
+        timeline.CancelAndHoldAtTime(1);
+
+        Assert.Equal(0.5, timeline.ValueAt(1), 6);
+        Assert.Equal(0.5, timeline.ValueAt(1.05), 6);
+        Assert.Equal(0.5, timeline.ValueAt(2), 6);
+    }
 }
