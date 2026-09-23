@@ -25244,13 +25244,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     {
         var obj = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
 
-        // closed â€” read-only getter
-        _interpreter.SetObjectProperty(obj, "closed",
-            _interpreter.AllocateNativeFunction("get closed", (_, _2) =>
-            {
-                var check = JsDialogBridge.IsPopupWindowClosed;
-                return JsValue.FromBoolean(check != null && check(handle));
-            }, length: 0));
+        // closed: a getter (HTML 7.2.2.1), so it answers for the window as it is now.
+        _interpreter.Heap.GetObject(obj.AsObjectHandle()).DefineOwnProperty(
+            "closed",
+            JsPropertyDescriptor.Accessor(
+                _interpreter.AllocateNativeFunction("get closed", (_, _2) =>
+                {
+                    var check = JsDialogBridge.IsPopupWindowClosed;
+                    return JsValue.FromBoolean(check != null && check(handle));
+                }, length: 0),
+                JsValue.Undefined,
+                Enumerable: true,
+                Configurable: true));
 
         // name
         _interpreter.SetObjectProperty(obj, "name", JsValue.FromString(name ?? ""));
