@@ -1455,7 +1455,7 @@ public sealed partial class FenJsBrowserScriptEngine
             // page the host answers nothing and they are absent from the element and from
             // HTMLMediaElement.prototype.
             case "sinkId" when IsSecureContextRealm:
-                value = JsValue.FromString(GetOrCreateMediaBinding(element).Controller.SinkId);
+                value = JsValue.FromString(PageAudioOutputId(GetOrCreateMediaBinding(element).Controller.SinkId));
                 return true;
             case "setSinkId" when IsSecureContextRealm:
                 binding = GetOrCreateMediaBinding(element);
@@ -1645,14 +1645,19 @@ public sealed partial class FenJsBrowserScriptEngine
         }
 
         var (promise, resolve, reject) = ((IBuiltinContext)_interpreter).CreatePromiseCapability();
-        if (string.Equals(sinkId, binding.Controller.SinkId, StringComparison.Ordinal))
+        if (string.Equals(sinkId, PageAudioOutputId(binding.Controller.SinkId), StringComparison.Ordinal))
         {
             _ = _interpreter.InvokeFunction(resolve, new[] { JsValue.Undefined }, JsValue.Undefined);
             return promise;
         }
+
+        // Only an output this document was given names a device: another origin's
+        // identifier, or a platform one, matches nothing here.
+        string endpoint = ResolveExposedAudioOutput(sinkId);
         binding.QueueTask(() =>
         {
-            switch (binding.Controller.TrySetSinkId(sinkId))
+            var outcome = endpoint == null ? SinkIdOutcome.NotFound : binding.Controller.TrySetSinkId(endpoint);
+            switch (outcome)
             {
                 case SinkIdOutcome.NotFound:
                     _ = _interpreter.InvokeFunction(

@@ -7608,6 +7608,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsEme();
         InstallFenJsPictureInPicture();
         InstallFenJsMediaStream();
+        InstallFenJsAudioOutputDevices();
         InstallFenJsWebAudio();
         InstallFenJsDocumentAll();
         // Last: this only publishes members nothing else has claimed, so it has to

@@ -663,11 +663,12 @@ public sealed partial class FenJsBrowserScriptEngine
                 return JsValue.Undefined;
 
             bool none = args.Count < 2 || args[1].Tag != JsValueTag.String;
-            string deviceId = none ? null : CoerceToHostString(args[1]);
+            // The page names an output by the identifier this document was given for it.
+            string deviceId = none ? null : ResolveExposedAudioOutput(CoerceToHostString(args[1]));
             WebAudioOutputMixer next = null;
             if (!none)
             {
-                if (deviceId.Length > 0 && !MediaEngineServices.AudioOutputs.Devices.Any(d => d.DeviceId == deviceId))
+                if (deviceId == null || (deviceId.Length > 0 && !MediaEngineServices.AudioOutputs.Devices.Any(d => d.DeviceId == deviceId)))
                     return JsValue.FromString("NotFoundError");
                 next = WebAudioMixerFor(deviceId);
                 if (next == null)
