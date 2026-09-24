@@ -15,6 +15,13 @@ public interface IMediaElementHost
     /// <summary>The <c>src</c> content attribute, or null when absent.</summary>
     string? SrcAttribute { get; }
 
+    /// <summary>
+    /// A URL the pipeline loads the element's assigned media provider object
+    /// (<c>srcObject</c>: a MediaStream, MediaSource or Blob) from, or null when none is
+    /// assigned. HTML 4.8.11.5 step 6: it takes precedence over src and source children.
+    /// </summary>
+    string? ProviderObjectUrl => null;
+
     bool HasAutoplayAttribute { get; }
 
     bool HasLoopAttribute { get; }

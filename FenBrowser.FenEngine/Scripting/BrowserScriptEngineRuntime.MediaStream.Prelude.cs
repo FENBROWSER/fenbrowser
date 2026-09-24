@@ -261,6 +261,48 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
             }, 0);
 
+            // ---- HTMLMediaElement.srcObject (HTML 4.8.11.2) ----
+            // The assigned media provider object: a MediaStream, MediaSource or Blob. The
+            // pipeline loads a MediaSource or Blob through a blob: URL of its own, which is
+            // revoked when the object is replaced; a MediaStream goes by its id.
+            var providers = new WeakMap();
+            var providerUrls = new WeakMap();
+            if (typeof g.HTMLMediaElement === 'function' && g.HTMLMediaElement.prototype) {
+                Object.defineProperty(g.HTMLMediaElement.prototype, 'srcObject', {
+                    get: function () {
+                        return providers.has(this) ? providers.get(this) : null;
+                    },
+                    set: function (value) {
+                        if (value === undefined) value = null;
+                        if (value !== null &&
+                            !(value instanceof MediaStream) &&
+                            !(typeof g.MediaSource === 'function' && value instanceof g.MediaSource) &&
+                            !(typeof g.ManagedMediaSource === 'function' && value instanceof g.ManagedMediaSource) &&
+                            !(typeof g.Blob === 'function' && value instanceof g.Blob)) {
+                            throw new TypeError("Failed to set the 'srcObject' property on 'HTMLMediaElement': " +
+                                "The provided value is not of type '(MediaSourceHandle or MediaStream or MediaSource or Blob)'.");
+                        }
+                        var previousUrl = providerUrls.get(this);
+                        if (previousUrl) g.URL.revokeObjectURL(previousUrl);
+                        providerUrls.delete(this);
+                        var url = null;
+                        if (value === null) {
+                            providers.delete(this);
+                        } else {
+                            providers.set(this, value);
+                            if (value instanceof MediaStream) {
+                                url = 'fen-mediastream:' + value.id;
+                            } else {
+                                url = g.URL.createObjectURL(value);
+                                providerUrls.set(this, url);
+                            }
+                        }
+                        g.__fenSetMediaProvider(this, url);
+                    },
+                    configurable: true, enumerable: true
+                });
+            }
+
             // ---- HTMLMediaElement.captureStream() ----
 
             var streams = new WeakMap();

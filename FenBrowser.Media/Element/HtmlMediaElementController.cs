@@ -99,6 +99,7 @@ public sealed class HtmlMediaElementController
     private enum SelectionMode
     {
         None,
+        Object,
         Attribute,
         Children,
     }
@@ -624,9 +625,10 @@ public sealed class HtmlMediaElementController
     private void SelectResource(int generation)
     {
         // ⌛ 5. Pending text tracks: M5.
-        // ⌛ 6–9. Choose the mode (no srcObject yet).
+        // ⌛ 6–9. Choose the mode: an assigned media provider object, then src, then children.
+        string? providerUrl = _host.ProviderObjectUrl;
         object? firstSource = null;
-        if (_host.SrcAttribute is null)
+        if (providerUrl is null && _host.SrcAttribute is null)
         {
             for (var node = _host.FirstChild; node is not null; node = _host.NextSibling(node))
             {
@@ -638,7 +640,11 @@ public sealed class HtmlMediaElementController
             }
         }
 
-        if (_host.SrcAttribute is not null)
+        if (providerUrl is not null)
+        {
+            _mode = SelectionMode.Object;
+        }
+        else if (_host.SrcAttribute is not null)
         {
             _mode = SelectionMode.Attribute;
         }
@@ -659,6 +665,14 @@ public sealed class HtmlMediaElementController
         // ⌛ 10–11.
         SetNetworkState(MediaNetworkState.Loading);
         QueueEvent("loadstart");
+
+        // ⌛ 12, object: currentSrc stays empty; the provider object is the resource.
+        if (_mode == SelectionMode.Object)
+        {
+            CurrentSrc = string.Empty;
+            StartResource(providerUrl!, generation);
+            return;
+        }
 
         // 12.
         if (_mode == SelectionMode.Attribute)
@@ -831,7 +845,12 @@ public sealed class HtmlMediaElementController
         StopResource();
         _tracks = [];
         Log(MediaEventKind.SourceSelected, MediaLogLevel.Info, "Fetching the media resource.",
-            ("mode", _mode == SelectionMode.Attribute ? "attribute" : "children"));
+            ("mode", _mode switch
+            {
+                SelectionMode.Object => "object",
+                SelectionMode.Attribute => "attribute",
+                _ => "children",
+            }));
 
         var client = new ResourceClient(this, generation);
         var request = new MediaFetchRequest(url, _host.IsVideo, _host.CrossOriginAttribute, _host.PreloadAttribute);
@@ -884,6 +903,9 @@ public sealed class HtmlMediaElementController
         StopResource();
         switch (_mode)
         {
+            // An object that cannot be used fails like the src attribute: the dedicated
+            // media source failure steps.
+            case SelectionMode.Object:
             case SelectionMode.Attribute:
                 FailWithAttribute(generation, reason);
                 break;

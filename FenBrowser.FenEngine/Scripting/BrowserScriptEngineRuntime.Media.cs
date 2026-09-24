@@ -640,6 +640,9 @@ public sealed partial class FenJsBrowserScriptEngine
 
         public string SrcAttribute => HtmlAttribute(_element, "src");
 
+        /// <summary>The URL srcObject's provider object loads from; set by the srcObject setter.</summary>
+        public string ProviderObjectUrl { get; set; }
+
         public bool HasAutoplayAttribute => HtmlAttribute(_element, "autoplay") != null;
 
         public bool HasLoopAttribute => HtmlAttribute(_element, "loop") != null;

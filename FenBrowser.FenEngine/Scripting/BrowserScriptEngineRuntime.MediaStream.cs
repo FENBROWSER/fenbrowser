@@ -39,6 +39,25 @@ public sealed partial class FenJsBrowserScriptEngine
 
     private void InstallFenJsMediaStream()
     {
+        // HTML 4.8.11.2 srcObject setter: assign the provider object, then run the media
+        // element load algorithm. The prelude keeps the object and passes the URL the
+        // pipeline loads it from (null when the object was cleared).
+        Native("__fenSetMediaProvider", 2, args =>
+        {
+            if (ResolveHostObjectOrNull(args.Count > 0 ? args[0] : JsValue.Undefined) is not Element element ||
+                !(IsVideoElement(element) || IsAudioElement(element)))
+            {
+                return JsValue.Undefined;
+            }
+
+            var binding = GetOrCreateMediaBinding(element);
+            binding.ProviderObjectUrl = args.Count > 1 && args[1].Tag == JsValueTag.String
+                ? CoerceToHostString(args[1])
+                : null;
+            binding.Controller.Load();
+            return JsValue.Undefined;
+        });
+
         // The stream an element is captured into, created on the first call. The prelude
         // builds the MediaStream object around the identifier this returns.
         Native("__fenCaptureStream", 1, args =>
