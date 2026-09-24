@@ -190,6 +190,8 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 if (c == '#')
                 {
                     i++;
+                    if (i >= input.Length || !IsIdentStart(input[i]) || (input[i] == '-' && i + 1 < input.Length && char.IsDigit(input[i + 1])))
+                        throw new DomException("SyntaxError", $"Expected valid identifier after # at position {i}");
                     var ident = ReadIdent(input, ref i);
                     if (string.IsNullOrEmpty(ident))
                         throw new DomException("SyntaxError", $"Expected identifier after # at position {i}");
@@ -303,13 +305,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 throw new DomException("SyntaxError", $"Expected attribute name at position {i}");
             SkipWhitespace(input, ref i);
 
-            if (i >= input.Length)
-                throw new DomException("SyntaxError", "Unexpected end of attribute selector");
-
-            // Just presence check?
-            if (input[i] == ']')
+            if (i >= input.Length || input[i] == ']')
             {
-                i++;
+                if (i < input.Length) i++;
                 return new Token(TokenType.AttributeSelector, attrName, null, AttributeMatchType.Exists);
             }
 
@@ -364,9 +362,10 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 SkipWhitespace(input, ref i);
             }
 
-            if (i >= input.Length || input[i] != ']')
+            if (i < input.Length && input[i] == ']')
+                i++;
+            else if (i < input.Length)
                 throw new DomException("SyntaxError", "Expected ] at end of attribute selector");
-            i++;
 
             return new Token(TokenType.AttributeSelector, attrName, value, matchType, caseInsensitive);
         }
@@ -467,6 +466,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 sb.Append(c);
             }
 
+            if (quote == '\0')
+                return sb.ToString().Trim();
+
             throw new DomException("SyntaxError", "Unterminated functional pseudo-class");
         }
 
@@ -494,7 +496,10 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
             i++;
             if (i >= input.Length)
-                return false;
+            {
+                escaped = "\uFFFD";
+                return true;
+            }
 
             int hexStart = i;
             int hexLen = 0;

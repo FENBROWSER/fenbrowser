@@ -25921,8 +25921,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             {
                                 return _owner.ToHostNodeOrNull(document.QuerySelector(selector));
                             }
-                            catch (DomException)
+                            catch (DomException ex)
                             {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
                                 return JsValue.Null;
                             }
                         },
@@ -25944,8 +25945,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             {
                                 return _owner.CreateNodeArrayLike(document.QuerySelectorAll(selector));
                             }
-                            catch (DomException)
+                            catch (DomException ex)
                             {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
                                 return _owner.CreateNodeArrayLike(Array.Empty<Node>());
                             }
                         },
@@ -28085,8 +28087,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             {
                                 return _owner.ToHostNodeOrNull(element.QuerySelector(selector));
                             }
-                            catch (DomException)
+                            catch (DomException ex)
                             {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
                                 return JsValue.Null;
                             }
                         },
@@ -28108,8 +28111,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             {
                                 return _owner.CreateNodeArrayLike(element.QuerySelectorAll(selector));
                             }
-                            catch (DomException)
+                            catch (DomException ex)
                             {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
                                 return _owner.CreateNodeArrayLike(Array.Empty<Node>());
                             }
                         },
