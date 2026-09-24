@@ -177,10 +177,31 @@ def last_log_line(log_path):
 
 
 def fmt(result):
-    if not result:
+    if not result or not result["total"]:
         return "0/0"
-    return f"{result['passed']}/{result['total']} = {100.0 * result['passed'] / result['total']:.1f}%" \
-        if result["total"] else "0/0"
+    text = f"{result['passed']}/{result['total']} = {100.0 * result['passed'] / result['total']:.1f}%"
+    # Tests that never ran or timed out are not failures of the engine's logic,
+    # but they are not passes either; say so instead of hiding them in the rate.
+    extra = []
+    if result.get("notRun"):
+        extra.append(f"{result['notRun']} not run")
+    if result.get("timedOut"):
+        extra.append(f"{result['timedOut']} timed out")
+    if result.get("abandonedWorkers"):
+        extra.append(f"{result['abandonedWorkers']} stuck workers")
+    return text + (f"  ({', '.join(extra)})" if extra else "")
+
+
+def engine_commit():
+    """HEAD of this checkout, with -dirty for uncommitted changes: the value the
+    runner stamps into every result as fenbrowserCommit."""
+    try:
+        head = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", REPO, "status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, check=True).stdout.strip()
+        return head + ("-dirty" if dirty else "")
+    except Exception:
+        return "unknown"
 
 
 def write_total(outdir):
@@ -213,7 +234,8 @@ def full_batches(root):
         if os.path.basename(d.rstrip("/\\")) not in ("expressions", "statements"):
             batches.append(d)
     batches += sorted(glob.glob(os.path.join(t, "built-ins", "*", "")))
-    batches += [os.path.join(t, "intl402"), os.path.join(t, "annexB"), os.path.join(t, "staging")]
+    batches += [os.path.join(t, "intl402"), os.path.join(t, "annexB"), os.path.join(t, "staging"),
+                os.path.join(t, "harness")]
     return [os.path.normpath(b) for b in batches if os.path.isdir(b)]
 
 
@@ -244,14 +266,18 @@ def cmd_full(a, exe, root):
                 + glob.glob(os.path.join(outdir, "_batched_total.json")):
             os.remove(f)
     batches = full_batches(root)
-    print(f"{len(batches)} batches  per-test {TIMEOUT_MS}ms  stall {a.stall}s  ->  {outdir}")
+    commit = engine_commit()
+    print(f"{len(batches)} batches  per-test {TIMEOUT_MS}ms  stall {a.stall}s  engine {commit}  ->  {outdir}")
     stalled = []
     for i, scope in enumerate(batches, 1):
         tag = tag_for(root, scope)
         out = os.path.join(outdir, f"b_{tag}.json")
         log = os.path.join(outdir, f"b_{tag}.log")
         cached = load_result(out)
-        if cached:  # resume: a batch with a valid JSON is done
+        # Resume: a batch is done when it has a result from this same engine
+        # revision. One from another revision is stale and runs again, so a
+        # store never mixes revisions silently.
+        if cached and cached.get("fenbrowserCommit") == commit:
             print(f"[{i:3}/{len(batches)}] {tag:<44} SKIP  {fmt(cached)} (cached)")
             continue
         print(f"[{i:3}/{len(batches)}] {tag:<44} run ...", flush=True)
@@ -404,6 +430,8 @@ def main(argv):
     s.set_defaults(fn=cmd_status)
 
     a = p.parse_args(argv)
+    if any(arg == "--timeout-ms" or arg.startswith("--timeout-ms=") for arg in getattr(a, "runner_args", [])):
+        sys.exit(f"--timeout-ms is fixed at {TIMEOUT_MS} by the test262 protocol and cannot be forwarded")
     os.chdir(REPO)
     if a.cmd == "status":
         return cmd_status(a)

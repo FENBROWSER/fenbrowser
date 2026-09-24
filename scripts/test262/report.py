@@ -33,12 +33,15 @@ def keyfor(path):
 def main():
     latest = {}
     dupes = collections.Counter()
+    revisions = collections.Counter()
     for f in glob.glob(BATCHED + "/b_*.json"):
         mtime = os.path.getmtime(f)
         try:
             d = json.load(open(f, encoding="utf-8-sig"))
         except Exception:
             continue
+        rev = d.get("fenbrowserCommit") or "unknown"
+        revisions[rev[:12] + ("-dirty" if rev.endswith("-dirty") else "")] += 1
         for t in d.get("tests", []):
             p = t.get("path", "")
             if not p or "_FIXTURE" in p:
@@ -65,6 +68,10 @@ def main():
         cat[k]["total"] += 1
         if st in ("pass", "passed", "ok"):
             cat[k]["pass"] += 1
+        elif st in ("harnessunsupported", "invalidtestconfiguration", "unsupportedfeature"):
+            cat[k]["notrun"] += 1
+        elif st == "timedout":
+            cat[k]["timeout"] += 1
 
     if dupes:
         print(f"WARNING: {len(dupes)} duplicate test path(s) found across batches; newest result kept:")
@@ -77,6 +84,8 @@ def main():
         rows.append((k, tot, pa, tot - pa, round(100.0 * pa / tot, 1) if tot else 0.0))
     T = sum(r[1] for r in rows)
     P = sum(r[2] for r in rows)
+    NOTRUN = sum(c["notrun"] for c in cat.values())
+    TIMEOUTS = sum(c["timeout"] for c in cat.values())
     below = sorted([r for r in rows if r[4] < 100.0], key=lambda r: -r[3])
     perfect = [r for r in rows if r[4] >= 100.0]
 
@@ -88,6 +97,11 @@ def main():
                "See the test262 results rule in AGENTS.md / CLAUDE.md.\n")
     out.append(f"- Snapshot: **{ts}**")
     out.append(f"- Overall: **{P}/{T} = {round(100*P/T,2) if T else 0}%**")
+    out.append(f"- Not run (unsupported harness/feature/config): **{NOTRUN}**; timed out: **{TIMEOUTS}**")
+    # Every batch records the engine revision it ran; a store built across
+    # several revisions is a mix, and says so.
+    rev_text = ", ".join(f"`{r}` ({n} batches)" for r, n in revisions.most_common())
+    out.append(f"- Engine revisions: {rev_text}" + (" — **mixed: rerun stale batches**" if len(revisions) > 1 else ""))
     out.append(f"- Categories: **{len(rows)}** total, **{len(perfect)}** at 100%, "
                f"**{len(below)}** below 100% (the worklist)\n")
     out.append("## Below 100% — worklist (ranked by failures, biggest wins first)\n")
@@ -99,7 +113,9 @@ def main():
     with open(DOC, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out))
     print(f"wrote {DOC}: {P}/{T} ({round(100*P/T,2) if T else 0}%), "
-          f"{len(below)} categories below 100%")
+          f"{len(below)} categories below 100%, {NOTRUN} not run, {TIMEOUTS} timed out")
+    if len(revisions) > 1:
+        print(f"WARNING: results come from {len(revisions)} engine revisions: {rev_text}")
 
 
 if __name__ == "__main__":
