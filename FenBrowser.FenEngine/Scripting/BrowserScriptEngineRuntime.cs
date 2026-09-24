@@ -11395,10 +11395,15 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         _interpreter.InsertNamedPropertiesObject(windowPrototype, "WindowProperties", ResolveWindowNamedProperty);
     }
 
-    // The document's named objects for `name`: elements of any namespace whose id
-    // is `name`, and HTML embed, form, img and object elements whose name attribute is. Child
-    // navigables are published on the window itself, so they never reach here.
-    // One match is returned as itself, several as a live HTMLCollection.
+    // HTML 7.2.2.3 named access on the Window object. A child navigable whose
+    // target name is `name` wins, as its WindowProxy. Otherwise the named objects:
+    // elements of any namespace whose id is `name`, and HTML embed, form, img and
+    // object elements whose name attribute is - the null-namespace attributes
+    // (DOM 4.9 "ID"), so xml:id or p:id do not count. One element is returned as
+    // itself, several as a live HTMLCollection. A frame's own document hangs off
+    // its element in this engine, so the walk stops at frames and never matches
+    // elements of a child document. The target name is read from the frame's name
+    // attribute; a name the child sets on its own window is not seen here.
     private JsValue? ResolveWindowNamedProperty(string name)
     {
         var document = _hostHooks?.CurrentDocument;
@@ -11407,31 +11412,66 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return null;
         }
 
-        bool IsNamedObject(Element element) =>
-            string.Equals(element.GetAttributeNS(null, "id"), name, StringComparison.Ordinal) ||
-            (string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
-             element.LocalName is "embed" or "form" or "img" or "object" &&
-             string.Equals(element.GetAttributeNS(null, "name"), name, StringComparison.Ordinal));
-
-        Element first = null;
-        foreach (var node in document.DocumentElement.SelfAndDescendants())
+        var matches = CollectWindowNamedObjects(document, name, out var frame);
+        if (frame != null)
         {
-            if (node is not Element element || !IsNamedObject(element))
+            var window = GetIFrameContentWindowForCurrentContext(frame);
+            if (window.Tag is not (JsValueTag.Undefined or JsValueTag.Null))
             {
-                continue;
+                return window;
             }
-
-            if (first != null)
-            {
-                return ToHostOrNull(
-                    new FenJsHtmlCollectionHost(new FilteredHTMLCollection(document, IsNamedObject)),
-                    HostObjectKind.Other);
-            }
-
-            first = element;
         }
 
-        return first == null ? null : ToHostNodeOrNull(first);
+        return matches.Count switch
+        {
+            0 => null,
+            1 => ToHostNodeOrNull(matches[0]),
+            _ => ToHostOrNull(
+                new FenJsHtmlCollectionHost(new ComputedHTMLCollection(
+                    () => CollectWindowNamedObjects(document, name, out _))),
+                HostObjectKind.Other),
+        };
+    }
+
+    private static List<Element> CollectWindowNamedObjects(Document document, string name, out Element frame)
+    {
+        var matches = new List<Element>();
+        Element firstFrame = null;
+
+        void Walk(Node node)
+        {
+            for (var child = node.FirstChild; child != null; child = child.NextSibling)
+            {
+                if (child is not Element element)
+                {
+                    continue;
+                }
+
+                if (string.Equals(element.GetAttributeNS(null, "id"), name, StringComparison.Ordinal) ||
+                    (string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                     element.LocalName is "embed" or "form" or "img" or "object" &&
+                     string.Equals(element.GetAttributeNS(null, "name"), name, StringComparison.Ordinal)))
+                {
+                    matches.Add(element);
+                }
+
+                if (IsIFrameElement(element))
+                {
+                    if (firstFrame == null && string.Equals(element.GetAttributeNS(null, "name"), name, StringComparison.Ordinal))
+                    {
+                        firstFrame = element;
+                    }
+
+                    continue;
+                }
+
+                Walk(element);
+            }
+        }
+
+        Walk(document);
+        frame = firstFrame;
+        return matches;
     }
 
     private void InstallFenJsNativeBrowserConstructors()
