@@ -9618,7 +9618,13 @@ pre {{
             var taggedId = element.GetAttribute(WebDriverDomIdAttribute);
             if (!string.IsNullOrWhiteSpace(taggedId))
             {
-                if (_elementMap.TryGetValue(taggedId, out var taggedElement))
+                // The attribute travels with cloneNode, innerHTML and outerHTML, so a
+                // different node can carry another element's id. While that element
+                // is still in its document the id is its own (WebDriver 12.1: a web
+                // element reference identifies one node); the newcomer gets a new id
+                // below rather than taking it over.
+                if (_elementMap.TryGetValue(taggedId, out var taggedElement) &&
+                    (ReferenceEquals(taggedElement, element) || taggedElement == null || !taggedElement.IsConnected))
                 {
                     if (!ReferenceEquals(taggedElement, element))
                     {
