@@ -928,8 +928,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
             string raw = ReconstructSelectorText(tokens);
             if (string.IsNullOrWhiteSpace(raw)) return null;
 
+            string nestedText = null;
             if (parentSelector != null)
             {
+                nestedText = raw.Contains('&') ? raw : "& " + raw.TrimStart();
                 raw = ResolveNestingSelector(raw, parentSelector.Raw);
             }
 
@@ -955,6 +957,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return new CssSelector
             {
                 Raw = raw?.Trim(),
+                NestedText = nestedText?.Trim(),
                 Chains = chains,
                 Specificity = specificity 
             };

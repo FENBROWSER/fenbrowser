@@ -95,7 +95,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
     public class CssSelector
     {
+        /// <summary>The selector the cascade matches: a nested rule's is resolved against its parent.</summary>
         public string Raw { get; set; }
+        /// <summary>
+        /// A nested rule's selector as CSSOM serialises it (CSS Nesting 1 §5.1: relative
+        /// selectors gain a leading "&amp; "); null for top-level rules, where it is Raw.
+        /// </summary>
+        public string NestedText { get; set; }
         public Specificity Specificity { get; set; }
         public List<SelectorChain> Chains { get; set; } = new List<SelectorChain>();
     }

@@ -10438,12 +10438,407 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSRule') >= 0;
                 });
                 CSSRule.STYLE_RULE = 1;
+                CSSRule.MEDIA_RULE = 4;
+                CSSRule.FONT_FACE_RULE = 5;
+                CSSRule.PAGE_RULE = 6;
+                CSSRule.KEYFRAMES_RULE = 7;
+                CSSRule.KEYFRAME_RULE = 8;
+                CSSRule.SUPPORTS_RULE = 12;
+
                 var CSSStyleRule = defineCtor('CSSStyleRule', CSSRule, ['CSSRule', 'CSSStyleRule'], function (candidate) {
                     return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSStyleRule') >= 0;
+                });
+                var CSSFontFaceRule = defineCtor('CSSFontFaceRule', CSSRule, ['CSSRule', 'CSSFontFaceRule'], function (candidate) {
+                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSFontFaceRule') >= 0;
                 });
                 var CSSStyleSheet = defineCtor('CSSStyleSheet', null, ['StyleSheet', 'CSSStyleSheet'], function (candidate) {
                     return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSStyleSheet') >= 0;
                 });
+                var CSSStyleDeclaration = defineCtor('CSSStyleDeclaration', null, ['CSSStyleDeclaration'], function (candidate) {
+                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSStyleDeclaration') >= 0;
+                });
+                var CSSNestedDeclarations = defineCtor('CSSNestedDeclarations', CSSRule, ['CSSRule', 'CSSNestedDeclarations'], function (candidate) {
+                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSNestedDeclarations') >= 0;
+                });
+
+                globalThis.CSSRule = CSSRule;
+                globalThis.CSSStyleRule = CSSStyleRule;
+                globalThis.CSSFontFaceRule = CSSFontFaceRule;
+                globalThis.CSSStyleSheet = CSSStyleSheet;
+                globalThis.CSSStyleDeclaration = CSSStyleDeclaration;
+                globalThis.CSSNestedDeclarations = CSSNestedDeclarations;
+
+                // CSS Syntax 3.3 preprocessing: CR, CRLF and FF become LF; NUL and
+                // lone surrogates become U+FFFD. A well-formed pair is kept.
+                function __fenPreprocessInput(str) {
+                    if (!str) return '';
+                    var s = String(str).replace(/\r\n|[\r\f]/g, '\n');
+                    var out = '';
+                    for (var i = 0; i < s.length; i++) {
+                        var c = s.charCodeAt(i);
+                        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {
+                            var next = s.charCodeAt(i + 1);
+                            if (next >= 0xDC00 && next <= 0xDFFF) {
+                                out += s[i] + s[i + 1];
+                                i++;
+                                continue;
+                            }
+                        }
+                        out += (c === 0 || (c >= 0xD800 && c <= 0xDFFF)) ? '\uFFFD' : s[i];
+                    }
+                    return out;
+                }
+
+                function __fenHasNonPrintable(s) {
+                    for (var i = 0; i < s.length; i++) {
+                        var cp = s.codePointAt(i);
+                        if (cp > 0xffff) i++;
+                        if ((cp >= 1 && cp <= 8) || cp === 0x0b || (cp >= 0x0e && cp <= 0x1f) || cp === 0x7f) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                function __fenParseAnB(str) {
+                    var s = String(str == null ? '' : str).trim();
+                    if (!s) return null;
+                    if (s === 'odd') return '2n+1';
+                    if (s === 'even') return '2n';
+
+                    if (/^\s*[+-]\s+/.test(s)) return null;
+                    if (/[0-9]\s+[nN]/.test(s)) return null;
+                    if (/[+-]\s*[+-]/.test(s)) return null;
+                    if (/[0-9]\s*[-+]\s*[nN]/.test(s)) return null;
+
+                    var intMatch = s.match(/^([+-]?[0-9]+)$/);
+                    if (intMatch) {
+                        return String(parseInt(intMatch[1], 10));
+                    }
+
+                    var nIdx = -1;
+                    for (var i = 0; i < s.length; i++) {
+                        if (s[i] === 'n' || s[i] === 'N') {
+                            nIdx = i;
+                            break;
+                        }
+                    }
+                    if (nIdx < 0) return null;
+
+                    var aPart = s.slice(0, nIdx).trim();
+                    var aVal;
+                    if (aPart === '' || aPart === '+') {
+                        aVal = 1;
+                    } else if (aPart === '-') {
+                        aVal = -1;
+                    } else {
+                        if (!/^[+-]?[0-9]+$/.test(aPart)) return null;
+                        aVal = parseInt(aPart, 10);
+                    }
+
+                    var bPart = s.slice(nIdx + 1).trim();
+                    var bVal = 0;
+                    if (bPart.length > 0) {
+                        if (!/^[+-]/.test(bPart)) return null;
+                        var sign = bPart[0];
+                        var rest = bPart.slice(1).trim();
+                        if (!/^[0-9]+$/.test(rest)) return null;
+                        var num = parseInt(rest, 10);
+                        bVal = (sign === '-') ? -num : num;
+                    }
+
+                    if (aVal === 0) {
+                        return String(bVal);
+                    }
+                    var res = (aVal === 1) ? 'n' : (aVal === -1) ? '-n' : (aVal + 'n');
+                    if (bVal > 0) {
+                        res += '+' + bVal;
+                    } else if (bVal < 0) {
+                        res += bVal;
+                    }
+                    return res;
+                }
+
+                function __fenCanonicalizeSelector(sel) {
+                    if (sel == null) return null;
+                    sel = __fenPreprocessInput(sel);
+                    if (__fenHasNonPrintable(sel)) return null;
+                    sel = sel.trim();
+
+                    var nthMatch = sel.match(/^(:nth-(?:last-)?(?:child|of-type)\()([^)]*)(\))$/i);
+                    if (nthMatch) {
+                        var anb = __fenParseAnB(nthMatch[2]);
+                        if (anb === null) return null;
+                        return nthMatch[1] + anb + nthMatch[3];
+                    }
+
+                    sel = sel.replace(/([a-zA-Z0-9_-])\s*([+>~])\s*([a-zA-Z0-9_-])/g, '$1 $2 $3');
+                    return sel;
+                }
+
+                function __fenParseUnicodeRange(val) {
+                    if (typeof val !== 'string') return null;
+                    var s = val.replace(/\/\*[\s\S]*?\*\//g, '').trim();
+                    if (!s || /\s/.test(s)) return null;
+                    if (s.indexOf('(') >= 0 || s.indexOf(')') >= 0) return null;
+                    if (!/^[uU]\+/.test(s)) return null;
+
+                    var rest = s.slice(2);
+                    if (!rest) return null;
+
+                    if (rest.indexOf('?') >= 0) {
+                        var qMatch = rest.match(/^([0-9a-fA-F]*?)(\?+)$/i);
+                        if (!qMatch) return null;
+                        var hexPart = qMatch[1];
+                        var qPart = qMatch[2];
+                        if (hexPart.length + qPart.length > 6) return null;
+
+                        var startCode = parseInt(hexPart + '0'.repeat(qPart.length), 16);
+                        var endCode = parseInt(hexPart + 'F'.repeat(qPart.length), 16);
+                        if (endCode > 0x10ffff) return null;
+
+                        return 'U+' + startCode.toString(16).toUpperCase() + '-' + endCode.toString(16).toUpperCase();
+                    }
+
+                    if (rest.indexOf('-') >= 0) {
+                        var parts = rest.split('-');
+                        if (parts.length !== 2) return null;
+                        if (!/^[0-9a-fA-F]{1,6}$/i.test(parts[0]) || !/^[0-9a-fA-F]{1,6}$/i.test(parts[1])) return null;
+                        var startCode = parseInt(parts[0], 16);
+                        var endCode = parseInt(parts[1], 16);
+                        if (startCode > endCode || endCode > 0x10ffff) return null;
+
+                        if (startCode === endCode) {
+                            return 'U+' + startCode.toString(16).toUpperCase();
+                        }
+                        return 'U+' + startCode.toString(16).toUpperCase() + '-' + endCode.toString(16).toUpperCase();
+                    }
+
+                    if (!/^[0-9a-fA-F]{1,6}$/i.test(rest)) return null;
+                    var code = parseInt(rest, 16);
+                    if (code > 0x10ffff) return null;
+
+                    return 'U+' + code.toString(16).toUpperCase();
+                }
+
+                function __fenParseDeclarations(text) {
+                    var decls = [];
+                    if (!text) return decls;
+                    var i = 0, n = text.length;
+                    while (i < n) {
+                        while (i < n && (text.charCodeAt(i) <= 32 || text[i] === ';')) i++;
+                        if (i >= n) break;
+
+                        if (text[i] === '@') {
+                            while (i < n && text[i] !== ';' && text[i] !== '{') i++;
+                            if (i < n && text[i] === '{') {
+                                var depth = 1;
+                                i++;
+                                while (i < n && depth > 0) {
+                                    if (text[i] === '{') depth++;
+                                    else if (text[i] === '}') depth--;
+                                    i++;
+                                }
+                            } else if (i < n && text[i] === ';') {
+                                i++;
+                            }
+                            continue;
+                        }
+
+                        var start = i;
+                        var colonIdx = -1;
+                        var braceDepth = 0, parenDepth = 0;
+                        while (i < n) {
+                            var c = text[i];
+                            if (c === '{') braceDepth++;
+                            else if (c === '}') { if (braceDepth > 0) braceDepth--; }
+                            else if (c === '(') parenDepth++;
+                            else if (c === ')') { if (parenDepth > 0) parenDepth--; }
+                            else if (c === ':' && colonIdx < 0 && braceDepth === 0 && parenDepth === 0) {
+                                colonIdx = i;
+                            } else if (c === ';' && braceDepth === 0 && parenDepth === 0) {
+                                break;
+                            }
+                            i++;
+                        }
+                        if (colonIdx > start) {
+                            var propName = text.slice(start, colonIdx).trim();
+                            var propVal = text.slice(colonIdx + 1, i).trim();
+                            if (propName.length > 0 && !/[;{}]/.test(propName)) {
+                                if (!propName.startsWith('--') && (propVal.indexOf('{') >= 0 || propVal.indexOf('}') >= 0)) {
+                                    var tv = propVal.trim();
+                                    if (!tv.startsWith('{') || !tv.endsWith('}') || tv.indexOf('var(') < 0) {
+                                        if (i < n && text[i] === ';') i++;
+                                        continue;
+                                    }
+                                }
+                                decls.push({ name: propName, value: propVal });
+                            }
+                        }
+                        if (i < n && text[i] === ';') i++;
+                    }
+                    return decls;
+                }
+
+                function __fenWrapStyleProxy(decl) {
+                    return new Proxy(decl, {
+                        get: function (target, prop, receiver) {
+                            if (typeof prop === 'string') {
+                                if (prop in target) {
+                                    return Reflect.get(target, prop, receiver);
+                                }
+                                var idx = parseInt(prop, 10);
+                                if (!isNaN(idx) && String(idx) === prop) {
+                                    return target.item(idx);
+                                }
+                                return target.getPropertyValue(prop);
+                            }
+                            return Reflect.get(target, prop, receiver);
+                        },
+                        set: function (target, prop, value, receiver) {
+                            if (typeof prop === 'string') {
+                                if (prop === 'cssText') {
+                                    target.cssText = value;
+                                    return true;
+                                }
+                                if (prop in target) {
+                                    return Reflect.set(target, prop, value, receiver);
+                                }
+                                target.setProperty(prop, value);
+                                return true;
+                            }
+                            return Reflect.set(target, prop, value, receiver);
+                        }
+                    });
+                }
+
+                function __fenCreateCssStyleDeclaration(initialText) {
+                    var decls = __fenParseDeclarations(initialText);
+                    var propMap = {};
+                    var propOrder = [];
+
+                    for (var i = 0; i < decls.length; i++) {
+                        var d = decls[i];
+                        var kebab = d.name.toLowerCase();
+                        var val = d.value;
+                        var priority = '';
+                        var impIdx = val.lastIndexOf('!important');
+                        if (impIdx >= 0) {
+                            priority = 'important';
+                            val = val.slice(0, impIdx).trim();
+                        }
+                        if (kebab === 'unicode-range') {
+                            var ur = __fenParseUnicodeRange(val);
+                            if (ur) val = ur;
+                        }
+                        if (!(kebab in propMap)) {
+                            propOrder.push(kebab);
+                        }
+                        propMap[kebab] = { name: d.name, value: val, priority: priority };
+                    }
+
+                    var declObj = Object.create(CSSStyleDeclaration.prototype);
+                    Object.defineProperty(declObj, '__fenDomBrands', { value: ['CSSStyleDeclaration'], enumerable: false });
+
+                    declObj.getPropertyValue = function (prop) {
+                        if (!prop || typeof prop !== 'string') return '';
+                        var kebab = prop.startsWith('--') ? prop : prop.replace(/[A-Z]/g, function (m) { return '-' + m.toLowerCase(); });
+                        var entry = propMap[kebab.toLowerCase()];
+                        return entry ? entry.value : '';
+                    };
+
+                    declObj.getPropertyPriority = function (prop) {
+                        if (!prop || typeof prop !== 'string') return '';
+                        var kebab = prop.startsWith('--') ? prop : prop.replace(/[A-Z]/g, function (m) { return '-' + m.toLowerCase(); });
+                        var entry = propMap[kebab.toLowerCase()];
+                        return entry ? entry.priority : '';
+                    };
+
+                    declObj.setProperty = function (prop, val, priority) {
+                        if (!prop || typeof prop !== 'string') return;
+                        var kebab = prop.startsWith('--') ? prop : prop.replace(/[A-Z]/g, function (m) { return '-' + m.toLowerCase(); });
+                        var key = kebab.toLowerCase();
+                        if (val === null || val === undefined || val === '') {
+                            declObj.removeProperty(kebab);
+                            return;
+                        }
+                        val = String(val);
+                        val = __fenPreprocessInput(val);
+                        if (__fenHasNonPrintable(val)) return;
+                        val = val.trim();
+                        val = val.replace(/\burl\(\s*("[^"]*"|'[^']*')\s*\)/gi, 'url($1)');
+
+                        if (key === 'z-index') {
+                            if (!/^[+-]?[0-9]+$/.test(val)) return;
+                        } else if (key === 'unicode-range') {
+                            var ur = __fenParseUnicodeRange(val);
+                            if (!ur) return;
+                            val = ur;
+                        } else {
+                            var numMatch = val.match(/^([+-]?(?:[0-9]*\.[0-9]+|[0-9]+))([a-zA-Z%]*)$/);
+                            if (numMatch) {
+                                var num = parseFloat(numMatch[1]);
+                                if (!isNaN(num)) {
+                                    val = num.toString() + (numMatch[2] || '');
+                                }
+                            }
+                        }
+
+                        if (!(key in propMap)) {
+                            propOrder.push(key);
+                        }
+                        propMap[key] = { name: prop, value: val, priority: priority === 'important' ? 'important' : '' };
+                    };
+
+                    declObj.removeProperty = function (prop) {
+                        if (!prop || typeof prop !== 'string') return '';
+                        var kebab = prop.startsWith('--') ? prop : prop.replace(/[A-Z]/g, function (m) { return '-' + m.toLowerCase(); });
+                        var key = kebab.toLowerCase();
+                        if (key in propMap) {
+                            var oldVal = propMap[key].value;
+                            delete propMap[key];
+                            var idx = propOrder.indexOf(key);
+                            if (idx >= 0) propOrder.splice(idx, 1);
+                            return oldVal;
+                        }
+                        return '';
+                    };
+
+                    declObj.item = function (index) {
+                        index = index | 0;
+                        return (index >= 0 && index < propOrder.length) ? propOrder[index] : '';
+                    };
+
+                    Object.defineProperty(declObj, 'length', {
+                        get: function () { return propOrder.length; },
+                        configurable: true, enumerable: true
+                    });
+
+                    Object.defineProperty(declObj, 'cssText', {
+                        get: function () {
+                            var res = [];
+                            for (var j = 0; j < propOrder.length; j++) {
+                                var e = propMap[propOrder[j]];
+                                if (e) {
+                                    res.push(e.name + ': ' + e.value + (e.priority ? ' !important' : ''));
+                                }
+                            }
+                            return res.join('; ') + (res.length ? ';' : '');
+                        },
+                        set: function (newText) {
+                            propMap = {};
+                            propOrder = [];
+                            var newDecls = __fenParseDeclarations(newText);
+                            for (var j = 0; j < newDecls.length; j++) {
+                                declObj.setProperty(newDecls[j].name, newDecls[j].value);
+                            }
+                        },
+                        configurable: true, enumerable: true
+                    });
+
+                    return __fenWrapStyleProxy(declObj);
+                }
+
                 function __fenParseCssRule(text) {
                     text = String(text == null ? '' : text).trim();
                     var open = text.indexOf('{');
@@ -10454,26 +10849,59 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         throw err;
                     }
                     var selector = text.slice(0, open).trim();
-                    var declarations = text.slice(open + 1, close).split(';').map(function (d) { return d.trim(); }).filter(Boolean)
-                        .map(function (d) { var i = d.indexOf(':'); return i > 0 ? d.slice(0, i).trim() + ': ' + d.slice(i + 1).trim() : d; });
-                    var rule = Object.create(CSSStyleRule.prototype);
-                    Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSStyleRule'], enumerable: false });
-                    rule.selectorText = selector;
-                    rule.type = 1;
+                    var body = text.slice(open + 1, close);
+                    var rule;
+                    if (selector.charAt(0) === '@') {
+                        if (/^@font-face\b/i.test(selector)) {
+                            rule = Object.create(CSSFontFaceRule.prototype);
+                            Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSFontFaceRule'], enumerable: false });
+                            rule.type = 5;
+                        } else {
+                            rule = Object.create(CSSRule.prototype);
+                            Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule'], enumerable: false });
+                            rule.type = 0;
+                        }
+                    } else {
+                        rule = Object.create(CSSStyleRule.prototype);
+                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSStyleRule'], enumerable: false });
+                        rule.type = 1;
+                        var currentSelector = selector;
+                        Object.defineProperty(rule, 'selectorText', {
+                            get: function () { return currentSelector; },
+                            set: function (val) {
+                                var can = __fenCanonicalizeSelector(val);
+                                if (can !== null) currentSelector = can;
+                            },
+                            configurable: true, enumerable: true
+                        });
+                    }
                     rule.parentStyleSheet = null;
-                    rule.style = { cssText: declarations.join('; ') + (declarations.length ? ';' : '') };
+                    rule.style = __fenCreateCssStyleDeclaration(body);
                     Object.defineProperty(rule, 'cssText', {
-                        get: function () { return this.selectorText + ' { ' + this.style.cssText + (declarations.length ? ' ' : '') + '}'; },
+                        get: function () {
+                            var head = this.selectorText || (selector.charAt(0) === '@' ? selector : '');
+                            return head + ' { ' + this.style.cssText + (this.style.length ? ' ' : '') + '}';
+                        },
                         configurable: true, enumerable: true
                     });
                     return rule;
                 }
-                // A rule the engine parsed, wrapped in its CSSOM interface.
-                // Declarations arrive already serialised, so the only work here is
-                // giving them the shape CSSOM asks for.
+
                 function __fenBuildCssRule(descriptor, parentStyleSheet) {
                     var rule;
-                    if (descriptor.type === 4) {
+                    if (descriptor.isNestedDeclarations) {
+                        rule = Object.create(CSSNestedDeclarations.prototype);
+                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSNestedDeclarations'], enumerable: false });
+                        rule.type = 0;
+                        rule.parentStyleSheet = parentStyleSheet || null;
+                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '');
+                        Object.defineProperty(rule, 'cssText', {
+                            get: function () {
+                                return this.style.cssText;
+                            },
+                            configurable: true, enumerable: true
+                        });
+                    } else if (descriptor.type === 4) {
                         rule = Object.create(CSSRule.prototype);
                         Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule'], enumerable: false });
                         rule.type = 4;
@@ -10496,8 +10924,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         rule = Object.create(CSSStyleRule.prototype);
                         Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSStyleRule'], enumerable: false });
                         rule.type = 1;
-                        rule.selectorText = descriptor.selectorText || '';
-                        rule.style = { cssText: descriptor.declarations || '' };
+                        var currentSelector = descriptor.selectorText || '';
+                        Object.defineProperty(rule, 'selectorText', {
+                            get: function () { return currentSelector; },
+                            set: function (val) {
+                                var can = __fenCanonicalizeSelector(val);
+                                if (can !== null) currentSelector = can;
+                            },
+                            configurable: true, enumerable: true
+                        });
+                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '');
                         if (descriptor.rules && descriptor.rules.length) {
                             rule.cssRules = __fenBuildCssRules(descriptor.rules, parentStyleSheet);
                         }
@@ -10508,13 +10944,24 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             },
                             configurable: true, enumerable: true
                         });
+                    } else if (descriptor.type === 5) {
+                        rule = Object.create(CSSFontFaceRule.prototype);
+                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSFontFaceRule'], enumerable: false });
+                        rule.type = 5;
+                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '');
+                        Object.defineProperty(rule, 'cssText', {
+                            get: function () {
+                                return '@font-face { ' + this.style.cssText + (this.style.cssText ? ' ' : '') + '}';
+                            },
+                            configurable: true, enumerable: true
+                        });
                     } else {
                         rule = Object.create(CSSRule.prototype);
                         Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule'], enumerable: false });
                         rule.type = descriptor.type || 0;
                         if (descriptor.name !== undefined) rule.name = descriptor.name;
                         if (descriptor.declarations !== undefined) {
-                            rule.style = { cssText: descriptor.declarations };
+                            rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations);
                         }
                         if (descriptor.rules && descriptor.rules.length) {
                             rule.cssRules = __fenBuildCssRules(descriptor.rules, parentStyleSheet);
@@ -24165,12 +24612,31 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         {
             // CSSRule.STYLE_RULE
             case FenBrowser.FenEngine.Rendering.Css.CssStyleRule style:
+                var nestedDesc = new List<JsValue>();
+                if (style.NestedRules != null)
+                {
+                    foreach (var nr in style.NestedRules)
+                    {
+                        var d = DescribeCssRule(nr);
+                        if (d.Tag != JsValueTag.Undefined)
+                            nestedDesc.Add(d);
+                    }
+                }
+                if (style.NestedRules != null && style.NestedRules.Count > 0 && style.Declarations != null && style.Declarations.Count > 0)
+                {
+                    nestedDesc.Add(_interpreter.AllocateObject(new Dictionary<string, JsValue>
+                    {
+                        ["type"] = JsValue.FromInt32(0),
+                        ["isNestedDeclarations"] = JsValue.FromBoolean(true),
+                        ["declarations"] = JsValue.FromString(SerializeDeclarations(style.Declarations))
+                    }));
+                }
                 return _interpreter.AllocateObject(new Dictionary<string, JsValue>
                 {
                     ["type"] = JsValue.FromInt32(1),
-                    ["selectorText"] = JsValue.FromString(style.Selector?.Raw ?? string.Empty),
+                    ["selectorText"] = JsValue.FromString(style.Selector?.NestedText ?? style.Selector?.Raw ?? string.Empty),
                     ["declarations"] = JsValue.FromString(SerializeDeclarations(style.Declarations)),
-                    ["rules"] = DescribeCssRules(style.NestedRules)
+                    ["rules"] = _interpreter.AllocateArray(nestedDesc)
                 });
 
             // CSSRule.MEDIA_RULE
