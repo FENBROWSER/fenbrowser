@@ -240,9 +240,13 @@ namespace FenBrowser.Core.Security
         /// names it: "*" for the two features whose specifications say so, and "self" for
         /// the rest, which is what every one of these features defaults to.
         /// </summary>
+        /// <summary>Whether the feature's default allowlist is "*" rather than "self".</summary>
+        public static bool DefaultAllowlistIsAll(PolicyControlledFeature feature) =>
+            feature is PolicyControlledFeature.PictureInPicture or PolicyControlledFeature.Gamepad;
+
         public static bool DefaultAllowlistAllows(PolicyControlledFeature feature, string origin, string documentOrigin)
         {
-            if (feature is PolicyControlledFeature.PictureInPicture or PolicyControlledFeature.Gamepad)
+            if (DefaultAllowlistIsAll(feature))
                 return true;
 
             if (string.IsNullOrEmpty(origin) || string.IsNullOrEmpty(documentOrigin))
@@ -545,7 +549,7 @@ namespace FenBrowser.Core.Security
             return value;
         }
 
-        internal static string NormalizeOrigin(string origin)
+        public static string NormalizeOrigin(string origin)
         {
             origin = StripQuotes(origin);
             if (origin.Length == 0)
