@@ -159,6 +159,42 @@ namespace FenBrowser.FenEngine.Rendering
         public RenderTelemetrySnapshot LastRenderTelemetry { get; private set; }
         private CssLoader.CssLoadTiming _lastCssLoadTiming;
         public IExecutionContext Context => _activeJs?.GlobalContext;
+        public string DocumentEncodingOverride { get; set; }
+
+        /// <summary>The Content-Type the document was served with; null when there was none (a file).</summary>
+        public string DocumentContentType { get; set; }
+
+        // HTML 7.5.1 step 9 hands an XML MIME type (MIME Sniffing 4.6: text/xml,
+        // application/xml, or any +xml subtype) to the XML parser. A file has no
+        // Content-Type, so its extension stands in for one.
+        private static bool IsXmlDocument(string contentType, Uri baseUri)
+        {
+            if (!string.IsNullOrWhiteSpace(contentType))
+            {
+                var essence = contentType.Split(';')[0].Trim();
+                // An SVG document still goes through the HTML parser, which renders
+                // it as inline SVG; layout has no path for an <svg> document element.
+                return essence.Equals("text/xml", StringComparison.OrdinalIgnoreCase) ||
+                       essence.Equals("application/xml", StringComparison.OrdinalIgnoreCase) ||
+                       (essence.EndsWith("+xml", StringComparison.OrdinalIgnoreCase) &&
+                        !essence.Equals("image/svg+xml", StringComparison.OrdinalIgnoreCase));
+            }
+
+            var path = baseUri?.AbsolutePath ?? string.Empty;
+            return path.EndsWith(".xhtml", StringComparison.OrdinalIgnoreCase) ||
+                   path.EndsWith(".xht", StringComparison.OrdinalIgnoreCase) ||
+                   path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase);
+        }
+        public Document CurrentDocument
+        {
+            get
+            {
+                lock (_renderStateLock)
+                {
+                    return (_activeDom as Document) ?? _activeDom?.OwnerDocument;
+                }
+            }
+        }
 
         private void SetActiveDom(Node dom, bool markSnapshotUnstable = false)
         {
@@ -1612,6 +1648,24 @@ public void Dispose()
         private async Task<DomParseResult> RunDomParseAsync(string html, Uri baseUri, long renderGeneration)
         {
             var parseInput = html ?? string.Empty;
+            if (IsXmlDocument(DocumentContentType, baseUri))
+            {
+                var xmlDoc = XmlDomParser.ParseWithErrorDocument(parseInput, "application/xhtml+xml");
+                if (baseUri != null)
+                {
+                    string absoluteBase = baseUri.AbsoluteUri;
+                    xmlDoc.URL = absoluteBase;
+                    xmlDoc.BaseURI = absoluteBase;
+                }
+                Node xmlRoot = (Node)xmlDoc.DocumentElement ?? xmlDoc;
+                return new DomParseResult
+                {
+                    Dom = xmlRoot,
+                    TokenizingMs = 0,
+                    ParsingMs = 0,
+                    TokenCount = 0
+                };
+            }
             var interleavedBatchSize = ResolveInterleavedTokenBatchSize(EnableInterleavedPrimaryParse, parseInput.Length);
             var parseCheckpointState = new ParseCheckpointState
             {
@@ -1724,6 +1778,11 @@ public void Dispose()
                     string absoluteBase = baseUri.AbsoluteUri;
                     parsedDocument.URL = absoluteBase;
                     parsedDocument.BaseURI = absoluteBase;
+                }
+
+                if (!string.IsNullOrWhiteSpace(DocumentEncodingOverride) && parsedDocument.CharacterSet == "UTF-8")
+                {
+                    parsedDocument.CharacterSet = DocumentEncodingOverride;
                 }
 
                 Node parsedRoot = (Node)parsedDocument.DocumentElement ?? parsedDocument;

@@ -121,6 +121,7 @@ namespace FenBrowser.Core
 
         /// <summary>Parsed Permissions-Policy header value from the response headers.</summary>
         public Security.PermissionsPolicy PermissionsPolicy { get; set; } = Security.PermissionsPolicy.None;
+        public string DetectedEncoding { get; set; }
 
         public bool TryGetHeaderValues(string name, out IEnumerable<string> values)
         {
@@ -149,6 +150,7 @@ namespace FenBrowser.Core
         public sealed class TextEntry
         {
             public string Body;
+            public byte[] RawBytes;
             public string ContentType;
             public Uri FinalUri;
             public int StatusCode;
@@ -1098,8 +1100,9 @@ public Uri LastTextResponseUri { get; private set; }
             return true;
         }
 
-        private static string DecodeTextResponse(byte[] buffer, string contentTypeHeader)
+        private static string DecodeTextResponse(byte[] buffer, string contentTypeHeader, FetchContext context, out string detectedEncodingName)
         {
+            detectedEncodingName = null;
             if (buffer == null || buffer.Length == 0)
             {
                 return string.Empty;
@@ -1108,7 +1111,17 @@ public Uri LastTextResponseUri { get; private set; }
             string decoded;
             try
             {
-                decoded = EncodingSniffer.DecodeToUtf8(buffer, contentTypeHeader);
+                if (string.Equals(context?.Destination, "style", StringComparison.OrdinalIgnoreCase) ||
+                    contentTypeHeader?.TrimStart().StartsWith("text/css", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    decoded = EncodingSniffer.DecodeCssToUtf8(buffer, contentTypeHeader, context?.LinkCharset, context?.FallbackEncoding);
+                }
+                else
+                {
+                    var enc = EncodingSniffer.DetermineEncoding(buffer, contentTypeHeader);
+                    detectedEncodingName = enc?.WebName;
+                    decoded = enc.GetString(buffer);
+                }
             }
             catch
             {
@@ -1116,6 +1129,11 @@ public Uri LastTextResponseUri { get; private set; }
             }
 
             return decoded;
+        }
+
+        private static string DecodeTextResponse(byte[] buffer, string contentTypeHeader, FetchContext context = null)
+        {
+            return DecodeTextResponse(buffer, contentTypeHeader, context, out _);
         }
 
         private static string HashForFile(string key)
@@ -1469,10 +1487,17 @@ public Uri LastTextResponseUri { get; private set; }
                 {
                     var cachedFinalUri = cachedDetailed.FinalUri ?? url;
                     LastTextResponseUri = cachedFinalUri;
+                    string cachedBody = cachedDetailed.Body;
+                    if (cachedDetailed.RawBytes != null &&
+                        (string.Equals(context?.Destination, "style", StringComparison.OrdinalIgnoreCase) ||
+                         cachedDetailed.ContentType?.TrimStart().StartsWith("text/css", StringComparison.OrdinalIgnoreCase) == true))
+                    {
+                        cachedBody = EncodingSniffer.DecodeCssToUtf8(cachedDetailed.RawBytes, cachedDetailed.ContentType, context?.LinkCharset, context?.FallbackEncoding);
+                    }
                     return new FetchResult
                     {
                         Status = FetchStatus.Success,
-                        Content = cachedDetailed.Body,
+                        Content = cachedBody,
                         StatusCode = cachedDetailed.StatusCode,
                         FinalUri = cachedFinalUri,
                         ContentType = cachedDetailed.ContentType,
@@ -1841,7 +1866,7 @@ public Uri LastTextResponseUri { get; private set; }
                     ? MimeSniffer.SniffMimeType(bodyBytes, ct)
                     : ct;
 
-                var text = DecodeTextResponse(bodyBytes, resp.Content?.Headers?.ContentType?.ToString());
+                var text = DecodeTextResponse(bodyBytes, resp.Content?.Headers?.ContentType?.ToString(), context, out var detectedEncoding);
 
                 if (IsTopLevelDocumentRequest(secFetchDest))
                 {
@@ -1934,6 +1959,7 @@ public Uri LastTextResponseUri { get; private set; }
                             VaryHeaders = varyHeaders,
                             VaryRequestValues = CaptureVaryRequestValues(varyHeaders, context, accept),
                             Body = text ?? string.Empty,
+                            RawBytes = bodyBytes,
                             ContentType = effectiveMime ?? string.Empty,
                             FinalUri = finalUri,
                             StatusCode = (int)resp.StatusCode,
@@ -1959,6 +1985,7 @@ public Uri LastTextResponseUri { get; private set; }
                 return new FetchResult {
                     Status = FetchStatus.Success,
                     Content = text,
+                    DetectedEncoding = detectedEncoding,
                     StatusCode = (int)resp.StatusCode,
                     FinalUri = finalUri,
                     ContentType = effectiveMime,

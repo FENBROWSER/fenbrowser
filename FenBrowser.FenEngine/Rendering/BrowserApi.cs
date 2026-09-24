@@ -1694,6 +1694,12 @@ pre {{
                     }
                 } catch (Exception ex) { TryLogWarn($"[BrowserHost] Raw source dump failed for '{uri}': {ex.Message}", LogCategory.General); }
 
+                if (_engine != null)
+                {
+                    _engine.DocumentEncodingOverride = result.DetectedEncoding;
+                    _engine.DocumentContentType = result.ContentType;
+                }
+
                 var trackedCssFetcher = CreateTrackedCssFetcher(navigationId);
                 var trackedImageFetcher = CreateTrackedImageFetcher(navigationId);
                 SetActiveRenderNavigation(navigationId);
@@ -2951,6 +2957,52 @@ pre {{
                 $"redirects={Math.Max(0, result?.RedirectCount ?? 0)}";
         }
 
+        // The charset a <link> or <?xml-stylesheet?> gives for the sheet at `sheet`,
+        // which CSS Syntax 3 3.2 uses as the fallback before the document's own
+        // encoding. Each href is resolved against the document base and compared
+        // whole, so only the element that asked for this sheet counts.
+        private Uri ResolveAgainstDocument(Document doc, string href)
+        {
+            var baseUri = Uri.TryCreate(doc.BaseURI, UriKind.Absolute, out var b) ? b : _current;
+            return baseUri != null && Uri.TryCreate(baseUri, href.Trim(), out var resolved) ? resolved : null;
+        }
+
+        private string FindStylesheetCharsetAttribute(Document doc, Uri sheet)
+        {
+            if (doc == null || sheet == null)
+            {
+                return null;
+            }
+
+            foreach (var node in doc.Descendants())
+            {
+                if (node is Element link && string.Equals(link.LocalName, "link", StringComparison.OrdinalIgnoreCase))
+                {
+                    var href = link.GetAttribute("href");
+                    if (!string.IsNullOrEmpty(href) && ResolveAgainstDocument(doc, href) == sheet)
+                    {
+                        return link.GetAttribute("charset");
+                    }
+                }
+            }
+
+            foreach (var child in doc.ChildNodes)
+            {
+                if (child is ProcessingInstruction pi && string.Equals(pi.Target, "xml-stylesheet", StringComparison.OrdinalIgnoreCase))
+                {
+                    var data = pi.Data ?? string.Empty;
+                    var href = Regex.Match(data, @"href=[""']([^""']+)[""']");
+                    var charset = Regex.Match(data, @"charset=[""']([^""']+)[""']");
+                    if (href.Success && charset.Success && ResolveAgainstDocument(doc, href.Groups[1].Value) == sheet)
+                    {
+                        return charset.Groups[1].Value;
+                    }
+                }
+            }
+
+            return null;
+        }
+
         private Func<Uri, Task<string>> CreateTrackedCssFetcher(long navigationId)
         {
             return async uri =>
@@ -2958,6 +3010,9 @@ pre {{
                 _navigationSubresources.MarkLoadStarted(navigationId);
                 try
                 {
+                    var doc = _engine?.CurrentDocument;
+                    var linkCharset = FindStylesheetCharsetAttribute(doc, uri);
+
                     return await _resources.FetchCssAsync(new FetchContext
                     {
                         RequestUri = MapRuntimeUri(uri),
@@ -2969,7 +3024,9 @@ pre {{
                         CredentialsMode = "include",
                         ReferrerPolicy = CurrentReferrerPolicy,
                         ContentSecurityPolicy = CurrentPolicy,
-                        Method = "GET"
+                        Method = "GET",
+                        FallbackEncoding = (doc?.CharacterSet != null && doc.CharacterSet != "UTF-8") ? doc.CharacterSet : (_engine?.DocumentEncodingOverride ?? doc?.CharacterSet),
+                        LinkCharset = linkCharset
                     }).ConfigureAwait(false);
                 }
                 finally

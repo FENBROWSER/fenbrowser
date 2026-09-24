@@ -62,7 +62,7 @@ namespace FenBrowser.Core.Network
                 // The legacy Windows-1252 fallback below is for HTML documents and
                 // corrupts non-ASCII generated content when text/css omits charset.
                 if (contentTypeHeader.TrimStart().StartsWith("text/css", StringComparison.OrdinalIgnoreCase))
-                    return Encoding.UTF8;
+                    return DetermineCssEncoding(bytes, contentTypeHeader);
             }
 
             // 3. Prescan HTML <meta> declarations in the first 1024 bytes. The scan
@@ -546,6 +546,109 @@ namespace FenBrowser.Core.Network
 
             var encoding = DetermineEncoding(bytes, contentTypeHeader);
             return encoding.GetString(bytes);
+        }
+
+        /// <summary>
+        /// Decodes CSS stylesheet bytes using CSS Syntax Level 3 rules (BOM -> HTTP charset -> @charset -> fallback).
+        /// </summary>
+        public static string DecodeCssToUtf8(byte[] bytes, string contentTypeHeader, string linkCharset = null, string documentCharset = null)
+        {
+            if (bytes == null)
+                throw new ArgumentNullException(nameof(bytes));
+
+            var encoding = DetermineCssEncoding(bytes, contentTypeHeader, linkCharset, documentCharset);
+            var result = encoding.GetString(bytes);
+            if (result.Length > 0 && result[0] == '\uFEFF')
+            {
+                result = result.Substring(1);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Determines CSS stylesheet encoding per CSS Syntax Level 3.
+        /// </summary>
+        public static Encoding DetermineCssEncoding(byte[] bytes, string contentTypeHeader, string linkCharset = null, string documentCharset = null)
+        {
+            if (bytes == null || bytes.Length == 0)
+                return Encoding.UTF8;
+
+            // 1. Check BOM.
+            var bomEncoding = DetectBom(bytes);
+            if (bomEncoding != null)
+                return bomEncoding;
+
+            // 2. Check HTTP Content-Type charset parameter.
+            if (!string.IsNullOrEmpty(contentTypeHeader))
+            {
+                var httpCharset = ExtractCharsetFromContentType(contentTypeHeader);
+                if (!string.IsNullOrEmpty(httpCharset))
+                {
+                    var enc = GetEncodingByName(httpCharset);
+                    if (enc != null)
+                        return enc;
+                }
+            }
+
+            // 3. Check @charset in the first 1024 bytes (must be ASCII bytes `@charset "` and followed by `;`).
+            var atCharset = DetectAtCharset(bytes);
+            if (atCharset != null)
+            {
+                // Per CSS Syntax: UTF-16 in @charset is not allowed, falls back to UTF-8.
+                if (atCharset.WebName.Equals("utf-16", StringComparison.OrdinalIgnoreCase) ||
+                    atCharset.WebName.Equals("utf-16be", StringComparison.OrdinalIgnoreCase) ||
+                    atCharset.WebName.Equals("utf-16le", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Encoding.UTF8;
+                }
+                return atCharset;
+            }
+
+            // 4. Fallback: <link charset="..."> attribute
+            if (!string.IsNullOrWhiteSpace(linkCharset))
+            {
+                var enc = GetEncodingByName(linkCharset.Trim());
+                if (enc != null)
+                    return enc;
+            }
+
+            // 5. Fallback: Document character set
+            if (!string.IsNullOrWhiteSpace(documentCharset))
+            {
+                var enc = GetEncodingByName(documentCharset.Trim());
+                if (enc != null)
+                    return enc;
+            }
+
+            // 6. Default fallback
+            return Encoding.UTF8;
+        }
+
+        private static Encoding DetectAtCharset(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length < 12) return null;
+            // Matches 0x40 0x63 0x68 0x61 0x72 0x73 0x65 0x74 0x20 0x22 ("@charset \"")
+            byte[] prefix = new byte[] { 0x40, 0x63, 0x68, 0x61, 0x72, 0x73, 0x65, 0x74, 0x20, 0x22 };
+            if (bytes.Length < prefix.Length + 2) return null;
+            for (int i = 0; i < prefix.Length; i++)
+            {
+                if (bytes[i] != prefix[i]) return null;
+            }
+            int max = Math.Min(bytes.Length, 1024);
+            int quoteIdx = -1;
+            for (int i = prefix.Length; i < max; i++)
+            {
+                if (bytes[i] == 0x22) // '"'
+                {
+                    quoteIdx = i;
+                    break;
+                }
+            }
+            if (quoteIdx < 0 || quoteIdx + 1 >= bytes.Length || bytes[quoteIdx + 1] != 0x3B) // ';'
+                return null;
+
+            var label = Encoding.ASCII.GetString(bytes, prefix.Length, quoteIdx - prefix.Length);
+            return GetEncodingByName(label.Trim());
         }
     }
 }

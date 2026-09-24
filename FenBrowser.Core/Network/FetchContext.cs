@@ -20,6 +20,8 @@ public sealed record FetchContext
     public string CredentialsMode { get; init; } = "same-origin";
     public ReferrerPolicyDirective? ReferrerPolicy { get; init; }
     public CspPolicy ContentSecurityPolicy { get; init; }
+    public string FallbackEncoding { get; init; }
+    public string LinkCharset { get; init; }
 
     /// <summary>
     /// Nonce of the authorizing HTML element (e.g. &lt;script nonce&gt;) that triggered

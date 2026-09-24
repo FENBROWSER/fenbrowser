@@ -955,6 +955,56 @@ namespace FenBrowser.FenEngine.Rendering
 
             var extTasks = new List<Task>();
             var gate = new System.Threading.SemaphoreSlim(8); // Shared gate for all CSS fetches (links + imports)
+
+            // Collect XML processing instructions for xml-stylesheet
+            var ownerDoc = root.OwnerDocument;
+            if (ownerDoc?.ChildNodes != null)
+            {
+                foreach (var child in ownerDoc.ChildNodes)
+                {
+                    if (child is ProcessingInstruction pi && string.Equals(pi.Target, "xml-stylesheet", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var data = pi.Data ?? string.Empty;
+                        var mHref = System.Text.RegularExpressions.Regex.Match(data, @"href=[""']([^""']+)[""']");
+                        if (mHref.Success)
+                        {
+                            var href = mHref.Groups[1].Value;
+                            var abs = ResolveUri(baseUri, href);
+                            if (abs != null)
+                            {
+                                var order = sourceIndex++;
+                                extTasks.Add(RunDetachedAsync(async () =>
+                                {
+                                    await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                                    try
+                                    {
+                                        var css = await fetchExternalCssAsync(abs).WaitAsync(cancellationToken).ConfigureAwait(false);
+                                        if (!string.IsNullOrWhiteSpace(css))
+                                        {
+                                            lock (cssBlobs)
+                                            {
+                                                cssBlobs.Add(new CssSource
+                                                {
+                                                    CssText = css,
+                                                    Origin = CssOrigin.External,
+                                                    SourceOrder = order,
+                                                    SequenceOrder = order,
+                                                    BaseUri = abs
+                                                });
+                                            }
+                                        }
+                                    }
+                                    finally
+                                    {
+                                        gate.Release();
+                                    }
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+
             foreach (var node in stylesheetNodes)
             {
                 if (string.Equals(node.TagName, "style", StringComparison.OrdinalIgnoreCase))

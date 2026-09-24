@@ -61,7 +61,7 @@ public static class XmlDomParser
                 new System.IO.StringReader(xml),
                 new XmlReaderSettings
                 {
-                    DtdProcessing = DtdProcessing.Prohibit,
+                    DtdProcessing = DtdProcessing.Ignore,
                     XmlResolver = null,
                     ConformanceLevel = ConformanceLevel.Document,
                     IgnoreComments = false,
@@ -77,6 +77,10 @@ public static class XmlDomParser
 
         var document = (XDocument)parsed;
         var doc = new Document(contentType: contentType ?? XmlContentType);
+        if (document.Declaration != null && !string.IsNullOrWhiteSpace(document.Declaration.Encoding))
+        {
+            doc.CharacterSet = document.Declaration.Encoding;
+        }
 
         foreach (var node in document.Nodes())
         {

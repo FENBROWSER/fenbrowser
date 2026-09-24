@@ -217,7 +217,7 @@ namespace FenBrowser.Core.Dom.V2
         /// The document's character encoding.
         /// https://dom.spec.whatwg.org/#dom-document-characterset
         /// </summary>
-        public string CharacterSet { get; internal set; } = "UTF-8";
+        public string CharacterSet { get; set; } = "UTF-8";
 
         /// <summary>
         /// The document's compatibility mode (quirks, limited quirks, or no quirks).
