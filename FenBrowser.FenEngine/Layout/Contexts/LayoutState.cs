@@ -160,6 +160,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         public bool Equals(LayoutState other)
         {
+            var sameFloatManager = object.ReferenceEquals(this.FloatManager, other.FloatManager) ||
+                                   (this.FloatManager != null &&
+                                    other.FloatManager != null &&
+                                    !this.FloatManager.HasFloats &&
+                                    !other.FloatManager.HasFloats);
             return this.IsForced == other.IsForced &&
                    SameForcedSize(this.ForcedWidth, other.ForcedWidth) &&
                    SameForcedSize(this.ForcedHeight, other.ForcedHeight) &&
@@ -172,7 +177,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                    this.FloatOriginY == other.FloatOriginY &&
                    this.ScrollOffsetX == other.ScrollOffsetX &&
                    this.ScrollOffsetY == other.ScrollOffsetY &&
-                   object.ReferenceEquals(this.FloatManager, other.FloatManager) &&
+                   sameFloatManager &&
                    object.ReferenceEquals(this.ScrollContainer, other.ScrollContainer) &&
                    object.ReferenceEquals(this.SubgridContext, other.SubgridContext);
         }

@@ -90,4 +90,37 @@ public sealed class InlineFloatAvoidanceTests
         Assert.Equal(10f, state.FloatOriginX);
         Assert.Equal(50f, state.FloatOriginY);
     }
+
+    [Fact]
+    public void LayoutState_EmptyFloatManagers_AreEquivalent()
+    {
+        var first = new LayoutState(new SKSize(800, 600), 800, 600, 800, 600)
+        {
+            FloatManager = new FloatManager()
+        };
+        var second = new LayoutState(new SKSize(800, 600), 800, 600, 800, 600)
+        {
+            FloatManager = new FloatManager()
+        };
+
+        Assert.True(first.Equals(second));
+    }
+
+    [Fact]
+    public void LayoutState_NonEmptyFloatManagers_RemainDistinct()
+    {
+        var firstManager = new FloatManager();
+        firstManager.AddFloat(new SKRect(0, 0, 10, 10), isLeft: true);
+        var secondManager = new FloatManager();
+        var first = new LayoutState(new SKSize(800, 600), 800, 600, 800, 600)
+        {
+            FloatManager = firstManager
+        };
+        var second = new LayoutState(new SKSize(800, 600), 800, 600, 800, 600)
+        {
+            FloatManager = secondManager
+        };
+
+        Assert.False(first.Equals(second));
+    }
 }
