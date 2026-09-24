@@ -67,6 +67,70 @@ namespace FenBrowser.FenEngine.Rendering.Css
     {
         public string Name { get; set; }
         public List<CssRule> Rules { get; } = new List<CssRule>();
+        /// <summary>True for <c>@layer a, b;</c>, which declares layer order and has no block.</summary>
+        public bool IsStatement { get; set; }
+    }
+
+    // The rules below are only produced when CssSyntaxParser.PreserveCssomRules is
+    // set: the cascade resolves @import, @supports, @container and @keyframes from
+    // the stylesheet text before parsing, but CSSOM has to report them as rules.
+
+    public class CssImportRule : CssRule
+    {
+        public string Href { get; set; }
+        /// <summary>null without a layer; "" for an anonymous <c>layer</c>.</summary>
+        public string ImportLayerName { get; set; }
+        public string SupportsText { get; set; }
+        public string MediaText { get; set; }
+    }
+
+    public class CssNamespaceRule : CssRule
+    {
+        public string Prefix { get; set; }
+        public string NamespaceUri { get; set; }
+    }
+
+    public class CssSupportsRule : CssRule
+    {
+        public string Condition { get; set; }
+        public List<CssRule> Rules { get; } = new List<CssRule>();
+    }
+
+    public class CssContainerRule : CssRule
+    {
+        public string Condition { get; set; }
+        public List<CssRule> Rules { get; } = new List<CssRule>();
+    }
+
+    public class CssKeyframesRule : CssRule
+    {
+        public string Name { get; set; }
+        public List<CssKeyframeRule> Keyframes { get; } = new List<CssKeyframeRule>();
+    }
+
+    public class CssKeyframeRule : CssRule
+    {
+        public string KeyText { get; set; }
+        public List<CssDeclaration> Declarations { get; } = new List<CssDeclaration>();
+    }
+
+    public class CssPageRule : CssRule
+    {
+        public string Selector { get; set; }
+        public List<CssDeclaration> Declarations { get; } = new List<CssDeclaration>();
+    }
+
+    public class CssFontFeatureValuesRule : CssRule
+    {
+        public string FontFamily { get; set; }
+        /// <summary>Feature blocks by at-keyword (annotation, styleset, ...), in source order.</summary>
+        public List<KeyValuePair<string, List<CssDeclaration>>> Blocks { get; } = new List<KeyValuePair<string, List<CssDeclaration>>>();
+    }
+
+    public class CssCounterStyleRule : CssRule
+    {
+        public string Name { get; set; }
+        public List<CssDeclaration> Declarations { get; } = new List<CssDeclaration>();
     }
 
     public class CssScopeRule : CssRule

@@ -10462,39 +10462,295 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 // are parsed only as far as selector + declaration block. google.com's
                 // safeStyleSheet helper validates every CSS-in-JS rule by inserting it into
                 // a detached document's <style> sheet and reading back cssRules[0].cssText.
-                var CSSRule = defineCtor('CSSRule', null, ['CSSRule'], function (candidate) {
-                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSRule') >= 0;
-                });
-                CSSRule.STYLE_RULE = 1;
-                CSSRule.MEDIA_RULE = 4;
-                CSSRule.FONT_FACE_RULE = 5;
-                CSSRule.PAGE_RULE = 6;
-                CSSRule.KEYFRAMES_RULE = 7;
-                CSSRule.KEYFRAME_RULE = 8;
-                CSSRule.SUPPORTS_RULE = 12;
+                // CSSOM 6.4: the CSSRule interfaces. A rule keeps its state in a slot
+                // (__fenRuleState) and every attribute is an accessor on the interface
+                // prototype, the way WebIDL lays them out.
+                function __fenBrandMatch(name) {
+                    return function (candidate) {
+                        return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf(name) >= 0;
+                    };
+                }
+                function __fenCssInterface(name, base, brands) {
+                    return defineCtor(name, base, brands, __fenBrandMatch(name));
+                }
+                function __fenDefineAccessor(proto, name, get, set) {
+                    Object.defineProperty(proto, name, { get: get, set: set, enumerable: true, configurable: true });
+                }
+                function __fenDefineMethod(proto, name, fn) {
+                    Object.defineProperty(proto, name, { value: fn, writable: true, enumerable: true, configurable: true });
+                }
 
-                var CSSStyleRule = defineCtor('CSSStyleRule', CSSRule, ['CSSRule', 'CSSStyleRule'], function (candidate) {
-                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSStyleRule') >= 0;
+                var __fenRuleState = new WeakMap();
+                function __fenRuleSlot(rule) {
+                    var state = rule !== null && typeof rule === 'object' ? __fenRuleState.get(rule) : undefined;
+                    if (!state) throw new TypeError('Illegal invocation');
+                    return state;
+                }
+
+                var CSSRule = __fenCssInterface('CSSRule', null, ['CSSRule']);
+                var __fenCssRuleTypes = {
+                    STYLE_RULE: 1, CHARSET_RULE: 2, IMPORT_RULE: 3, MEDIA_RULE: 4, FONT_FACE_RULE: 5,
+                    PAGE_RULE: 6, KEYFRAMES_RULE: 7, KEYFRAME_RULE: 8, MARGIN_RULE: 9, NAMESPACE_RULE: 10,
+                    COUNTER_STYLE_RULE: 11, SUPPORTS_RULE: 12, FONT_FEATURE_VALUES_RULE: 14
+                };
+                Object.keys(__fenCssRuleTypes).forEach(function (key) {
+                    Object.defineProperty(CSSRule, key, { value: __fenCssRuleTypes[key], enumerable: true });
+                    Object.defineProperty(CSSRule.prototype, key, { value: __fenCssRuleTypes[key], enumerable: true });
                 });
-                var CSSFontFaceRule = defineCtor('CSSFontFaceRule', CSSRule, ['CSSRule', 'CSSFontFaceRule'], function (candidate) {
-                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSFontFaceRule') >= 0;
+                __fenDefineAccessor(CSSRule.prototype, 'type', function () { return __fenRuleSlot(this).type; });
+                // CSSOM 6.4.2: setting cssText does nothing.
+                __fenDefineAccessor(CSSRule.prototype, 'cssText',
+                    function () { var state = __fenRuleSlot(this); return state.serialize(); },
+                    function (_value) { __fenRuleSlot(this); });
+                __fenDefineAccessor(CSSRule.prototype, 'parentRule', function () { return __fenRuleSlot(this).parent || null; });
+                __fenDefineAccessor(CSSRule.prototype, 'parentStyleSheet', function () { return __fenRuleSlot(this).sheet || null; });
+
+                // CSSOM 6.4.1 CSSRuleList: a read-only indexed list. The list is a plain
+                // object whose own index properties are kept in step with its items.
+                var CSSRuleList = __fenCssInterface('CSSRuleList', null, ['CSSRuleList']);
+                var __fenRuleListState = new WeakMap();
+                function __fenRuleListSlot(list) {
+                    var state = list !== null && typeof list === 'object' ? __fenRuleListState.get(list) : undefined;
+                    if (!state) throw new TypeError('Illegal invocation');
+                    return state;
+                }
+                __fenDefineAccessor(CSSRuleList.prototype, 'length', function () { return __fenRuleListSlot(this).items.length; });
+                __fenDefineMethod(CSSRuleList.prototype, 'item', function (index) {
+                    var items = __fenRuleListSlot(this).items;
+                    index = index >>> 0;
+                    return index < items.length ? items[index] : null;
                 });
+                __fenDefineMethod(CSSRuleList.prototype, Symbol.iterator, Array.prototype[Symbol.iterator]);
+
+                function __fenSyncIndexed(target, state) {
+                    for (var i = state.items.length; i < state.indexed; i++) delete target[i];
+                    for (var j = 0; j < state.items.length; j++) {
+                        Object.defineProperty(target, j, { value: state.items[j], enumerable: true, configurable: true });
+                    }
+                    state.indexed = state.items.length;
+                }
+                function __fenCreateRuleList(mirror) {
+                    var list = Object.create(CSSRuleList.prototype);
+                    var state = { items: [], indexed: 0, list: list, mirror: mirror || null, mirrorIndexed: 0 };
+                    state.sync = function () {
+                        __fenSyncIndexed(list, state);
+                        if (state.mirror) {
+                            var mirrorState = { items: state.items, indexed: state.mirrorIndexed };
+                            __fenSyncIndexed(state.mirror, mirrorState);
+                            state.mirrorIndexed = mirrorState.indexed;
+                        }
+                    };
+                    __fenRuleListState.set(list, state);
+                    return state;
+                }
+
+                var CSSGroupingRule = __fenCssInterface('CSSGroupingRule', CSSRule, ['CSSRule', 'CSSGroupingRule']);
+                __fenDefineAccessor(CSSGroupingRule.prototype, 'cssRules', function () { return __fenRuleSlot(this).children.list; });
+                __fenDefineMethod(CSSGroupingRule.prototype, 'insertRule', function (text, index) {
+                    return __fenInsertChildRule(this, text, index);
+                });
+                __fenDefineMethod(CSSGroupingRule.prototype, 'deleteRule', function (index) {
+                    __fenDeleteChildRule(this, index);
+                });
+
+                var CSSConditionRule = __fenCssInterface('CSSConditionRule', CSSGroupingRule, ['CSSRule', 'CSSGroupingRule', 'CSSConditionRule']);
+                __fenDefineAccessor(CSSConditionRule.prototype, 'conditionText', function () { return __fenRuleSlot(this).conditionText(); });
+
+                var CSSMediaRule = __fenCssInterface('CSSMediaRule', CSSConditionRule, ['CSSRule', 'CSSGroupingRule', 'CSSConditionRule', 'CSSMediaRule']);
+                // [SameObject, PutForwards=mediaText]
+                __fenDefineAccessor(CSSMediaRule.prototype, 'media',
+                    function () { return __fenRuleSlot(this).media; },
+                    function (value) { __fenRuleSlot(this).media.mediaText = value; });
+
+                var CSSSupportsRule = __fenCssInterface('CSSSupportsRule', CSSConditionRule, ['CSSRule', 'CSSGroupingRule', 'CSSConditionRule', 'CSSSupportsRule']);
+
+                var CSSContainerRule = __fenCssInterface('CSSContainerRule', CSSConditionRule, ['CSSRule', 'CSSGroupingRule', 'CSSConditionRule', 'CSSContainerRule']);
+                __fenDefineAccessor(CSSContainerRule.prototype, 'containerName', function () { return __fenRuleSlot(this).containerName; });
+                __fenDefineAccessor(CSSContainerRule.prototype, 'containerQuery', function () { return __fenRuleSlot(this).containerQuery; });
+
+                var CSSStyleRule = __fenCssInterface('CSSStyleRule', CSSGroupingRule, ['CSSRule', 'CSSGroupingRule', 'CSSStyleRule']);
+                __fenDefineAccessor(CSSStyleRule.prototype, 'selectorText',
+                    function () { return __fenRuleSlot(this).selector; },
+                    function (value) { __fenSetRuleSelector(__fenRuleSlot(this), value); });
+                // [SameObject, PutForwards=cssText]
+                __fenDefineAccessor(CSSStyleRule.prototype, 'style',
+                    function () { return __fenRuleSlot(this).style; },
+                    function (value) { __fenRuleSlot(this).style.cssText = value; });
+
+                var CSSNestedDeclarations = __fenCssInterface('CSSNestedDeclarations', CSSRule, ['CSSRule', 'CSSNestedDeclarations']);
+                __fenDefineAccessor(CSSNestedDeclarations.prototype, 'style',
+                    function () { return __fenRuleSlot(this).style; },
+                    function (value) { __fenRuleSlot(this).style.cssText = value; });
+
+                var CSSImportRule = __fenCssInterface('CSSImportRule', CSSRule, ['CSSRule', 'CSSImportRule']);
+                __fenDefineAccessor(CSSImportRule.prototype, 'href', function () { return __fenRuleSlot(this).href; });
+                __fenDefineAccessor(CSSImportRule.prototype, 'media',
+                    function () { return __fenRuleSlot(this).media; },
+                    function (value) { __fenRuleSlot(this).media.mediaText = value; });
+                __fenDefineAccessor(CSSImportRule.prototype, 'styleSheet', function () { return __fenImportedSheet(this, __fenRuleSlot(this)); });
+                __fenDefineAccessor(CSSImportRule.prototype, 'layerName', function () { return __fenRuleSlot(this).layerName; });
+                __fenDefineAccessor(CSSImportRule.prototype, 'supportsText', function () { return __fenRuleSlot(this).supportsText; });
+
+                var CSSNamespaceRule = __fenCssInterface('CSSNamespaceRule', CSSRule, ['CSSRule', 'CSSNamespaceRule']);
+                __fenDefineAccessor(CSSNamespaceRule.prototype, 'namespaceURI', function () { return __fenRuleSlot(this).namespaceURI; });
+                __fenDefineAccessor(CSSNamespaceRule.prototype, 'prefix', function () { return __fenRuleSlot(this).prefix; });
+
+                var CSSFontFaceRule = __fenCssInterface('CSSFontFaceRule', CSSRule, ['CSSRule', 'CSSFontFaceRule']);
+                __fenDefineAccessor(CSSFontFaceRule.prototype, 'style', function () { return __fenRuleSlot(this).style; });
+
+                var CSSPageRule = __fenCssInterface('CSSPageRule', CSSGroupingRule, ['CSSRule', 'CSSGroupingRule', 'CSSPageRule']);
+                __fenDefineAccessor(CSSPageRule.prototype, 'selectorText',
+                    function () { return __fenRuleSlot(this).selector; },
+                    function (value) { __fenSetPageSelector(__fenRuleSlot(this), value); });
+                __fenDefineAccessor(CSSPageRule.prototype, 'style',
+                    function () { return __fenRuleSlot(this).style; },
+                    function (value) { __fenRuleSlot(this).style.cssText = value; });
+
+                var CSSKeyframesRule = __fenCssInterface('CSSKeyframesRule', CSSRule, ['CSSRule', 'CSSKeyframesRule']);
+                __fenDefineAccessor(CSSKeyframesRule.prototype, 'name',
+                    function () { return __fenRuleSlot(this).name; },
+                    function (value) { var state = __fenRuleSlot(this); state.name = String(value); state.notify(); });
+                __fenDefineAccessor(CSSKeyframesRule.prototype, 'cssRules', function () { return __fenRuleSlot(this).children.list; });
+                __fenDefineAccessor(CSSKeyframesRule.prototype, 'length', function () { return __fenRuleSlot(this).children.items.length; });
+                __fenDefineMethod(CSSKeyframesRule.prototype, 'appendRule', function (text) { __fenAppendKeyframe(this, __fenRuleSlot(this), text); });
+                __fenDefineMethod(CSSKeyframesRule.prototype, 'deleteRule', function (select) {
+                    var state = __fenRuleSlot(this);
+                    var at = __fenFindKeyframeIndex(state, select);
+                    if (at < 0) return;
+                    __fenDetachCssRule(state.children.items.splice(at, 1)[0]);
+                    state.children.sync();
+                    state.notify();
+                });
+                __fenDefineMethod(CSSKeyframesRule.prototype, 'findRule', function (select) {
+                    var state = __fenRuleSlot(this);
+                    var at = __fenFindKeyframeIndex(state, select);
+                    return at < 0 ? null : state.children.items[at];
+                });
+
+                var CSSKeyframeRule = __fenCssInterface('CSSKeyframeRule', CSSRule, ['CSSRule', 'CSSKeyframeRule']);
+                __fenDefineAccessor(CSSKeyframeRule.prototype, 'keyText',
+                    function () { return __fenRuleSlot(this).keyText; },
+                    function (value) {
+                        var state = __fenRuleSlot(this);
+                        var normalized = __fenNormalizeKeyText(value);
+                        if (normalized === null) {
+                            throw new DOMException("Failed to set the 'keyText' property on 'CSSKeyframeRule': The key '" + value + "' is invalid and cannot be parsed", 'SyntaxError');
+                        }
+                        state.keyText = normalized;
+                        state.notify();
+                    });
+                __fenDefineAccessor(CSSKeyframeRule.prototype, 'style',
+                    function () { return __fenRuleSlot(this).style; },
+                    function (value) { __fenRuleSlot(this).style.cssText = value; });
+
+                var CSSLayerBlockRule = __fenCssInterface('CSSLayerBlockRule', CSSGroupingRule, ['CSSRule', 'CSSGroupingRule', 'CSSLayerBlockRule']);
+                __fenDefineAccessor(CSSLayerBlockRule.prototype, 'name', function () { return __fenRuleSlot(this).name; });
+                var CSSLayerStatementRule = __fenCssInterface('CSSLayerStatementRule', CSSRule, ['CSSRule', 'CSSLayerStatementRule']);
+                __fenDefineAccessor(CSSLayerStatementRule.prototype, 'nameList', function () { return __fenRuleSlot(this).nameList; });
+
+                var CSSScopeRule = __fenCssInterface('CSSScopeRule', CSSGroupingRule, ['CSSRule', 'CSSGroupingRule', 'CSSScopeRule']);
+                __fenDefineAccessor(CSSScopeRule.prototype, 'start', function () { return __fenRuleSlot(this).start; });
+                __fenDefineAccessor(CSSScopeRule.prototype, 'end', function () { return __fenRuleSlot(this).end; });
+
+                var CSSPropertyRule = __fenCssInterface('CSSPropertyRule', CSSRule, ['CSSRule', 'CSSPropertyRule']);
+                __fenDefineAccessor(CSSPropertyRule.prototype, 'name', function () { return __fenRuleSlot(this).name; });
+                __fenDefineAccessor(CSSPropertyRule.prototype, 'syntax', function () {
+                    return __fenUnquote(__fenRuleSlot(this).style.getPropertyValue('syntax'));
+                });
+                __fenDefineAccessor(CSSPropertyRule.prototype, 'inherits', function () {
+                    return __fenRuleSlot(this).style.getPropertyValue('inherits').trim().toLowerCase() === 'true';
+                });
+                __fenDefineAccessor(CSSPropertyRule.prototype, 'initialValue', function () {
+                    var value = __fenRuleSlot(this).style.getPropertyValue('initial-value');
+                    return value === '' ? null : value;
+                });
+
+                // CSS Counter Styles 3 §9.1: one attribute per descriptor.
+                var CSSCounterStyleRule = __fenCssInterface('CSSCounterStyleRule', CSSRule, ['CSSRule', 'CSSCounterStyleRule']);
+                __fenDefineAccessor(CSSCounterStyleRule.prototype, 'name',
+                    function () { return __fenRuleSlot(this).name; },
+                    function (value) { var state = __fenRuleSlot(this); state.name = String(value); state.notify(); });
+                [['system', 'system'], ['symbols', 'symbols'], ['additiveSymbols', 'additive-symbols'],
+                 ['negative', 'negative'], ['prefix', 'prefix'], ['suffix', 'suffix'], ['range', 'range'],
+                 ['pad', 'pad'], ['speakAs', 'speak-as'], ['fallback', 'fallback']].forEach(function (pair) {
+                    __fenDefineAccessor(CSSCounterStyleRule.prototype, pair[0],
+                        function () { return __fenRuleSlot(this).style.getPropertyValue(pair[1]); },
+                        function (value) { __fenRuleSlot(this).style.setProperty(pair[1], value); });
+                });
+
+                // CSS Fonts 4 §6.9.1: the feature value blocks, each a maplike from a
+                // feature name to its list of values.
+                var CSSFontFeatureValuesMap = __fenCssInterface('CSSFontFeatureValuesMap', null, ['CSSFontFeatureValuesMap']);
+                var __fenFeatureMapState = new WeakMap();
+                function __fenFeatureMapSlot(map) {
+                    var state = map !== null && typeof map === 'object' ? __fenFeatureMapState.get(map) : undefined;
+                    if (!state) throw new TypeError('Illegal invocation');
+                    return state;
+                }
+                __fenDefineAccessor(CSSFontFeatureValuesMap.prototype, 'size', function () { return __fenFeatureMapSlot(this).entries.size; });
+                __fenDefineMethod(CSSFontFeatureValuesMap.prototype, 'get', function (key) {
+                    var value = __fenFeatureMapSlot(this).entries.get(String(key));
+                    return value === undefined ? undefined : value.slice();
+                });
+                __fenDefineMethod(CSSFontFeatureValuesMap.prototype, 'has', function (key) { return __fenFeatureMapSlot(this).entries.has(String(key)); });
+                __fenDefineMethod(CSSFontFeatureValuesMap.prototype, 'set', function (key, value) {
+                    var state = __fenFeatureMapSlot(this);
+                    var list = (value !== null && typeof value === 'object' ? Array.prototype.slice.call(value) : [value])
+                        .map(function (item) { return Number(item) >>> 0; });
+                    state.entries.set(String(key), list);
+                    state.notify();
+                    return this;
+                });
+                __fenDefineMethod(CSSFontFeatureValuesMap.prototype, 'delete', function (key) {
+                    var state = __fenFeatureMapSlot(this);
+                    var removed = state.entries.delete(String(key));
+                    if (removed) state.notify();
+                    return removed;
+                });
+                __fenDefineMethod(CSSFontFeatureValuesMap.prototype, 'clear', function () {
+                    var state = __fenFeatureMapSlot(this);
+                    if (state.entries.size) { state.entries.clear(); state.notify(); }
+                });
+                __fenDefineMethod(CSSFontFeatureValuesMap.prototype, 'forEach', function (callback, thisArg) {
+                    var map = this;
+                    __fenFeatureMapSlot(this).entries.forEach(function (value, key) { callback.call(thisArg, value.slice(), key, map); });
+                });
+                ['keys', 'values', 'entries'].forEach(function (name) {
+                    __fenDefineMethod(CSSFontFeatureValuesMap.prototype, name, function () {
+                        var snapshot = new Map();
+                        __fenFeatureMapSlot(this).entries.forEach(function (value, key) { snapshot.set(key, value.slice()); });
+                        return snapshot[name]();
+                    });
+                });
+                __fenDefineMethod(CSSFontFeatureValuesMap.prototype, Symbol.iterator, CSSFontFeatureValuesMap.prototype.entries);
+
+                var CSSFontFeatureValuesRule = __fenCssInterface('CSSFontFeatureValuesRule', CSSRule, ['CSSRule', 'CSSFontFeatureValuesRule']);
+                __fenDefineAccessor(CSSFontFeatureValuesRule.prototype, 'fontFamily',
+                    function () { return __fenRuleSlot(this).fontFamily; },
+                    function (value) { var state = __fenRuleSlot(this); state.fontFamily = String(value); state.notify(); });
+                var __fenFeatureBlocks = [['annotation', 'annotation'], ['ornaments', 'ornaments'], ['stylistic', 'stylistic'],
+                    ['swash', 'swash'], ['characterVariant', 'character-variant'], ['styleset', 'styleset']];
+                __fenFeatureBlocks.forEach(function (pair) {
+                    __fenDefineAccessor(CSSFontFeatureValuesRule.prototype, pair[0], function () { return __fenRuleSlot(this).maps[pair[1]]; });
+                });
+
                 var CSSStyleSheet = defineCtor('CSSStyleSheet', null, ['StyleSheet', 'CSSStyleSheet'], function (candidate) {
                     return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSStyleSheet') >= 0;
                 });
                 var CSSStyleDeclaration = defineCtor('CSSStyleDeclaration', null, ['CSSStyleDeclaration'], function (candidate) {
                     return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSStyleDeclaration') >= 0;
                 });
-                var CSSNestedDeclarations = defineCtor('CSSNestedDeclarations', CSSRule, ['CSSRule', 'CSSNestedDeclarations'], function (candidate) {
-                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('CSSNestedDeclarations') >= 0;
-                });
 
-                globalThis.CSSRule = CSSRule;
-                globalThis.CSSStyleRule = CSSStyleRule;
-                globalThis.CSSFontFaceRule = CSSFontFaceRule;
-                globalThis.CSSStyleSheet = CSSStyleSheet;
-                globalThis.CSSStyleDeclaration = CSSStyleDeclaration;
-                globalThis.CSSNestedDeclarations = CSSNestedDeclarations;
+                [CSSRule, CSSRuleList, CSSGroupingRule, CSSConditionRule, CSSMediaRule, CSSSupportsRule,
+                 CSSContainerRule, CSSStyleRule, CSSNestedDeclarations, CSSImportRule, CSSNamespaceRule,
+                 CSSFontFaceRule, CSSPageRule, CSSKeyframesRule, CSSKeyframeRule, CSSLayerBlockRule,
+                 CSSLayerStatementRule, CSSScopeRule, CSSPropertyRule, CSSCounterStyleRule,
+                 CSSFontFeatureValuesRule, CSSFontFeatureValuesMap,
+                 CSSStyleSheet, CSSStyleDeclaration].forEach(function (ctor) {
+                    Object.defineProperty(globalThis, ctor.prototype[Symbol.toStringTag], {
+                        value: ctor, writable: true, enumerable: false, configurable: true
+                    });
+                });
 
                 // CSS Syntax 3.3 preprocessing: CR, CRLF and FF become LF; NUL and
                 // lone surrogates become U+FFFD. A well-formed pair is kept.
@@ -10898,172 +11154,439 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 // Sheet -> the callback that republishes it after one of its rules changed.
                 var __fenSheetNotifiers = new WeakMap();
 
-                function __fenRuleStyleChanged(rule) {
-                    return function () {
-                        var sheet = rule.parentStyleSheet;
-                        var notify = sheet && __fenSheetNotifiers.get(sheet);
-                        if (notify) notify();
-                    };
+                function __fenRuleMutated(state) {
+                    var notify = state.sheet && __fenSheetNotifiers.get(state.sheet);
+                    if (notify) notify();
                 }
 
-                function __fenParseCssRule(text) {
-                    text = String(text == null ? '' : text).trim();
-                    var open = text.indexOf('{');
-                    var close = text.lastIndexOf('}');
-                    if (open <= 0 || close < open) {
-                        throw new DOMException("Failed to execute 'insertRule' on 'CSSStyleSheet': Failed to parse the rule '" + text + "'.", 'SyntaxError');
+                function __fenIndent(text) {
+                    return String(text).replace(/\n/g, '\n  ');
+                }
+
+                // CSSOM 6.4.2 "serialize a CSS rule" for rules holding a rule list:
+                // each child on its own line, indented, then the closing brace.
+                function __fenSerializeRuleBlock(head, children) {
+                    var out = head + ' {';
+                    for (var i = 0; i < children.items.length; i++) {
+                        out += '\n  ' + __fenIndent(children.items[i].cssText);
                     }
-                    var selector = text.slice(0, open).trim();
-                    var body = text.slice(open + 1, close);
-                    var rule;
-                    if (selector.charAt(0) === '@') {
-                        if (/^@font-face\b/i.test(selector)) {
-                            rule = Object.create(CSSFontFaceRule.prototype);
-                            Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSFontFaceRule'], enumerable: false });
-                            rule.type = 5;
-                        } else {
-                            rule = Object.create(CSSRule.prototype);
-                            Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule'], enumerable: false });
-                            rule.type = 0;
+                    return out + '\n}';
+                }
+
+                function __fenSerializeDeclarationBlock(head, style) {
+                    var declarations = style.cssText;
+                    return head + ' { ' + (declarations ? declarations + ' ' : '') + '}';
+                }
+
+                function __fenSerializeCssString(value) {
+                    return '"' + String(value).replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\a ') + '"';
+                }
+
+                function __fenUnquote(value) {
+                    value = String(value || '').trim();
+                    var quote = value.charAt(0);
+                    return (quote === '"' || quote === "'") && value.charAt(value.length - 1) === quote
+                        ? value.slice(1, -1)
+                        : value;
+                }
+
+                // CSS Animations 1 §3: from = 0%, to = 100%, and percentages in 0..100.
+                function __fenNormalizeKeyText(text) {
+                    var parts = String(text == null ? '' : text).split(',');
+                    var out = [];
+                    for (var i = 0; i < parts.length; i++) {
+                        var part = parts[i].trim().toLowerCase();
+                        if (part === 'from') { out.push('0%'); continue; }
+                        if (part === 'to') { out.push('100%'); continue; }
+                        var match = part.match(/^([+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:e[+-]?[0-9]+)?)%$/);
+                        if (!match) return null;
+                        var value = parseFloat(match[1]);
+                        if (!(value >= 0 && value <= 100)) return null;
+                        out.push(value + '%');
+                    }
+                    return out.length ? out.join(', ') : null;
+                }
+
+                function __fenFindKeyframeIndex(state, select) {
+                    var key = __fenNormalizeKeyText(select);
+                    if (key === null) return -1;
+                    var items = state.children.items;
+                    for (var i = items.length - 1; i >= 0; i--) {
+                        if (__fenRuleState.get(items[i]).keyText === key) return i;
+                    }
+                    return -1;
+                }
+
+                // A <keyframes-name> serialises as an identifier unless it would read
+                // as a keyword there (CSS Animations 1 §3).
+                function __fenSerializeKeyframesName(name) {
+                    var lower = name.toLowerCase();
+                    var keyword = ['none', 'initial', 'inherit', 'unset', 'revert', 'revert-layer', 'default'].indexOf(lower) >= 0;
+                    return !keyword && /^(?:--|-?[A-Za-z_\u0080-￿])[A-Za-z0-9_\-\u0080-￿]*$/.test(name)
+                        ? name
+                        : __fenSerializeCssString(name);
+                }
+
+                var __fenRuleProtos = {
+                    'style': [CSSStyleRule, 1], 'nested-declarations': [CSSNestedDeclarations, 0],
+                    'media': [CSSMediaRule, 4], 'supports': [CSSSupportsRule, 12], 'container': [CSSContainerRule, 0],
+                    'layer-block': [CSSLayerBlockRule, 0], 'layer-statement': [CSSLayerStatementRule, 0],
+                    'scope': [CSSScopeRule, 0], 'font-face': [CSSFontFaceRule, 5], 'property': [CSSPropertyRule, 0],
+                    'page': [CSSPageRule, 6], 'counter-style': [CSSCounterStyleRule, 11], 'import': [CSSImportRule, 3],
+                    'namespace': [CSSNamespaceRule, 10], 'keyframes': [CSSKeyframesRule, 7], 'keyframe': [CSSKeyframeRule, 8],
+                    'font-feature-values': [CSSFontFeatureValuesRule, 14]
+                };
+
+                function __fenBuildCssRule(descriptor, sheet, parentRule) {
+                    var entry = descriptor && __fenRuleProtos[descriptor.kind];
+                    if (!entry) return null;
+                    var rule = Object.create(entry[0].prototype);
+                    var state = { kind: descriptor.kind, type: entry[1], sheet: sheet || null, parent: parentRule || null };
+                    state.notify = function () { __fenRuleMutated(state); };
+                    __fenRuleState.set(rule, state);
+
+                    function declarations() {
+                        state.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '', state.notify);
+                    }
+                    function children(mirror) {
+                        state.children = __fenCreateRuleList(mirror);
+                        var list = descriptor.rules || [];
+                        for (var i = 0; i < list.length; i++) {
+                            var child = __fenBuildCssRule(list[i], sheet, rule);
+                            if (child) state.children.items.push(child);
                         }
-                    } else {
-                        rule = Object.create(CSSStyleRule.prototype);
-                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSStyleRule'], enumerable: false });
-                        rule.type = 1;
-                        var currentSelector = selector;
-                        Object.defineProperty(rule, 'selectorText', {
-                            get: function () { return currentSelector; },
-                            set: function (val) {
-                                var can = __fenCanonicalizeSelector(val);
-                                if (can !== null) currentSelector = can;
-                            },
-                            configurable: true, enumerable: true
-                        });
+                        state.children.sync();
                     }
-                    rule.parentStyleSheet = null;
-                    rule.parentRule = null;
-                    rule.style = __fenCreateCssStyleDeclaration(body, __fenRuleStyleChanged(rule));
-                    Object.defineProperty(rule, 'cssText', {
-                        get: function () {
-                            var head = this.selectorText || (selector.charAt(0) === '@' ? selector : '');
-                            return head + ' { ' + this.style.cssText + (this.style.length ? ' ' : '') + '}';
-                        },
-                        configurable: true, enumerable: true
+
+                    switch (descriptor.kind) {
+                        case 'style':
+                            state.selector = descriptor.selectorText || '';
+                            declarations();
+                            children();
+                            state.serialize = function () {
+                                var body = state.style.cssText;
+                                if (!state.children.items.length) {
+                                    return state.selector + ' { ' + (body ? body + ' ' : '') + '}';
+                                }
+                                var out = state.selector + ' {';
+                                if (body) out += '\n  ' + body;
+                                for (var i = 0; i < state.children.items.length; i++) {
+                                    out += '\n  ' + __fenIndent(state.children.items[i].cssText);
+                                }
+                                return out + '\n}';
+                            };
+                            break;
+                        case 'nested-declarations':
+                            declarations();
+                            state.serialize = function () { return state.style.cssText; };
+                            break;
+                        case 'media':
+                            state.media = __fenCreateMediaList(descriptor.conditionText || '', state.notify);
+                            state.conditionText = function () { return state.media.mediaText; };
+                            children();
+                            state.serialize = function () { return __fenSerializeRuleBlock('@media ' + state.media.mediaText, state.children); };
+                            break;
+                        case 'supports':
+                        case 'container':
+                            var condition = descriptor.conditionText || '';
+                            state.conditionText = function () { return condition; };
+                            if (descriptor.kind === 'container') {
+                                var named = condition.match(/^(?!not\b|\(|style\(|scroll-state\()([^\s(]+)\s*([\s\S]*)$/i);
+                                state.containerName = named ? named[1] : '';
+                                state.containerQuery = named ? named[2] : condition;
+                            }
+                            children();
+                            state.serialize = function () { return __fenSerializeRuleBlock('@' + descriptor.kind + ' ' + condition, state.children); };
+                            break;
+                        case 'layer-block':
+                            state.name = descriptor.name || '';
+                            children();
+                            state.serialize = function () { return __fenSerializeRuleBlock('@layer' + (state.name ? ' ' + state.name : ''), state.children); };
+                            break;
+                        case 'layer-statement':
+                            state.nameList = Object.freeze(String(descriptor.name || '').split(',')
+                                .map(function (name) { return name.trim(); })
+                                .filter(function (name) { return name.length > 0; }));
+                            state.serialize = function () { return '@layer ' + state.nameList.join(', ') + ';'; };
+                            break;
+                        case 'scope':
+                            state.start = descriptor.start == null ? null : descriptor.start;
+                            state.end = descriptor.end == null ? null : descriptor.end;
+                            children();
+                            state.serialize = function () {
+                                var head = '@scope' + (state.start !== null ? ' (' + state.start + ')' : '') +
+                                    (state.end !== null ? ' to (' + state.end + ')' : '');
+                                return __fenSerializeRuleBlock(head, state.children);
+                            };
+                            break;
+                        case 'font-face':
+                            declarations();
+                            state.serialize = function () { return __fenSerializeDeclarationBlock('@font-face', state.style); };
+                            break;
+                        case 'property':
+                            state.name = descriptor.name || '';
+                            declarations();
+                            state.serialize = function () { return __fenSerializeDeclarationBlock('@property ' + state.name, state.style); };
+                            break;
+                        case 'page':
+                            state.selector = descriptor.selectorText || '';
+                            declarations();
+                            children();
+                            state.serialize = function () {
+                                return __fenSerializeDeclarationBlock('@page' + (state.selector ? ' ' + state.selector : ''), state.style);
+                            };
+                            break;
+                        case 'counter-style':
+                            state.name = descriptor.name || '';
+                            declarations();
+                            state.serialize = function () { return __fenSerializeDeclarationBlock('@counter-style ' + state.name, state.style); };
+                            break;
+                        case 'import':
+                            state.href = descriptor.href || '';
+                            state.media = __fenCreateMediaList(descriptor.media || '', state.notify);
+                            state.layerName = descriptor.layerName == null ? null : descriptor.layerName;
+                            state.supportsText = descriptor.supportsText == null ? null : descriptor.supportsText;
+                            state.serialize = function () {
+                                var out = '@import url(' + __fenSerializeCssString(state.href) + ')';
+                                if (state.layerName !== null) out += state.layerName === '' ? ' layer' : ' layer(' + state.layerName + ')';
+                                if (state.supportsText !== null) out += ' supports(' + state.supportsText + ')';
+                                if (state.media.mediaText) out += ' ' + state.media.mediaText;
+                                return out + ';';
+                            };
+                            break;
+                        case 'namespace':
+                            state.prefix = descriptor.prefix || '';
+                            state.namespaceURI = descriptor.namespaceURI || '';
+                            state.serialize = function () {
+                                return '@namespace ' + (state.prefix ? state.prefix + ' ' : '') +
+                                    'url(' + __fenSerializeCssString(state.namespaceURI) + ');';
+                            };
+                            break;
+                        case 'keyframes':
+                            state.name = descriptor.name || '';
+                            // CSSKeyframesRule has an indexed getter of its own.
+                            children(rule);
+                            state.serialize = function () {
+                                return __fenSerializeRuleBlock('@keyframes ' + __fenSerializeKeyframesName(state.name), state.children);
+                            };
+                            break;
+                        case 'font-feature-values':
+                            state.fontFamily = descriptor.fontFamily || '';
+                            state.maps = {};
+                            __fenFeatureBlocks.forEach(function (pair) {
+                                var map = Object.create(CSSFontFeatureValuesMap.prototype);
+                                __fenFeatureMapState.set(map, { entries: new Map(), notify: state.notify });
+                                state.maps[pair[1]] = map;
+                            });
+                            (descriptor.blocks || []).forEach(function (block) {
+                                var entries = __fenFeatureMapState.get(state.maps[block[0]]).entries;
+                                block[1].forEach(function (entry) {
+                                    entries.set(entry[0], String(entry[1]).trim().split(/\s+/).filter(Boolean).map(function (n) { return Number(n) >>> 0; }));
+                                });
+                            });
+                            state.serialize = function () {
+                                var out = '@font-feature-values ' + state.fontFamily + ' {';
+                                __fenFeatureBlocks.forEach(function (pair) {
+                                    var entries = __fenFeatureMapState.get(state.maps[pair[1]]).entries;
+                                    if (!entries.size) return;
+                                    var body = [];
+                                    entries.forEach(function (value, key) { body.push(key + ': ' + value.join(' ') + ';'); });
+                                    out += ' @' + pair[1] + ' { ' + body.join(' ') + ' }';
+                                });
+                                return out + ' }';
+                            };
+                            break;
+                        case 'keyframe':
+                            state.keyText = descriptor.keyText || '';
+                            declarations();
+                            state.serialize = function () { return __fenSerializeDeclarationBlock(state.keyText, state.style); };
+                            break;
+                    }
+                    return rule;
+                }
+
+                function __fenBuildCssRules(descriptors, sheet, parentRule) {
+                    var list = __fenCreateRuleList(null);
+                    if (descriptors) {
+                        for (var i = 0; i < descriptors.length; i++) {
+                            var rule = __fenBuildCssRule(descriptors[i], sheet, parentRule);
+                            if (rule) list.items.push(rule);
+                        }
+                    }
+                    list.sync();
+                    return list;
+                }
+
+                function __fenSetRuleSelector(state, value) {
+                    var canonical = __fenCanonicalizeSelector(value);
+                    if (canonical === null || canonical === '') return;
+                    state.selector = canonical;
+                    state.notify();
+                }
+
+                function __fenSetPageSelector(state, value) {
+                    var text = String(value).trim();
+                    if (text !== '' && !/^[A-Za-z_-]*(?::(?:first|left|right|blank))*$/i.test(text)) return;
+                    state.selector = text;
+                    state.notify();
+                }
+
+                // CSSOM 6.4.1 "parse a CSS rule": exactly one rule, or a SyntaxError.
+                function __fenParseSingleRule(text, method, iface) {
+                    text = String(text);
+                    var descriptors = null;
+                    try { descriptors = globalThis.__fenParseStyleSheetText(text); } catch (_parseError) { descriptors = null; }
+                    if (!descriptors || descriptors.length !== 1 || !__fenRuleProtos[descriptors[0].kind]) {
+                        throw new DOMException("Failed to execute '" + method + "' on '" + iface + "': Failed to parse the rule '" + text + "'.", 'SyntaxError');
+                    }
+                    return descriptors[0];
+                }
+
+                function __fenHierarchyError(method, iface, why) {
+                    throw new DOMException("Failed to execute '" + method + "' on '" + iface + "': " + why, 'HierarchyRequestError');
+                }
+
+                // CSSOM 6.4.3 "insert a CSS rule" into a grouping rule: @import and
+                // @namespace only exist at the top level of a sheet.
+                function __fenInsertChildRule(rule, text, index) {
+                    var state = __fenRuleSlot(rule);
+                    var iface = rule[Symbol.toStringTag];
+                    var items = state.children.items;
+                    index = index === undefined ? 0 : (index >>> 0);
+                    if (index > items.length) {
+                        throw new DOMException("Failed to execute 'insertRule' on '" + iface + "': the index " + index + " must be less than or equal to the length of the rule list.", 'IndexSizeError');
+                    }
+                    var descriptor = __fenParseSingleRule(text, 'insertRule', iface);
+                    if (descriptor.kind === 'import' || descriptor.kind === 'namespace') {
+                        __fenHierarchyError('insertRule', iface, "'@" + descriptor.kind + "' rules cannot be inserted inside a group rule.");
+                    }
+                    var child = __fenBuildCssRule(descriptor, state.sheet, rule);
+                    items.splice(index, 0, child);
+                    state.children.sync();
+                    state.notify();
+                    return index;
+                }
+
+                function __fenDeleteChildRule(rule, index) {
+                    var state = __fenRuleSlot(rule);
+                    var items = state.children.items;
+                    index = index >>> 0;
+                    if (index >= items.length) {
+                        throw new DOMException("Failed to execute 'deleteRule' on '" + rule[Symbol.toStringTag] + "': the index " + index + " is greated than the length of the rule list.", 'IndexSizeError');
+                    }
+                    __fenDetachCssRule(items.splice(index, 1)[0]);
+                    state.children.sync();
+                    state.notify();
+                }
+
+                // CSS Animations 1 §6.2 appendRule: one keyframe rule, else nothing.
+                function __fenAppendKeyframe(rule, state, text) {
+                    var descriptors = null;
+                    try { descriptors = globalThis.__fenParseStyleSheetText('@keyframes x { ' + String(text) + ' }'); } catch (_parseError) { descriptors = null; }
+                    var frames = descriptors && descriptors.length === 1 && descriptors[0].kind === 'keyframes' ? descriptors[0].rules : null;
+                    if (!frames || frames.length !== 1) return;
+                    var frame = __fenBuildCssRule(frames[0], state.sheet, rule);
+                    state.children.items.push(frame);
+                    state.children.sync();
+                    state.notify();
+                }
+
+                // CSSOM 6.4.3 top-level constraints: @import rules come first (after
+                // @layer statements), then @namespace rules, then everything else.
+                function __fenCheckSheetInsert(items, index, kind) {
+                    function kindAt(i) { return __fenRuleState.get(items[i]).kind; }
+                    var i;
+                    if (kind === 'import') {
+                        for (i = 0; i < index; i++) {
+                            if (kindAt(i) !== 'import' && kindAt(i) !== 'layer-statement') {
+                                __fenHierarchyError('insertRule', 'CSSStyleSheet', 'Failed to insert the rule.');
+                            }
+                        }
+                    } else if (kind === 'namespace') {
+                        for (i = 0; i < items.length; i++) {
+                            var existing = kindAt(i);
+                            if (existing !== 'import' && existing !== 'namespace' && existing !== 'layer-statement') {
+                                throw new DOMException("Failed to execute 'insertRule' on 'CSSStyleSheet': Failed to insert @namespace rule after a style rule.", 'InvalidStateError');
+                            }
+                        }
+                        for (i = index; i < items.length; i++) {
+                            if (kindAt(i) === 'import') __fenHierarchyError('insertRule', 'CSSStyleSheet', 'Failed to insert the rule.');
+                        }
+                    } else if (kind !== 'layer-statement') {
+                        for (i = index; i < items.length; i++) {
+                            if (kindAt(i) === 'import' || kindAt(i) === 'namespace') {
+                                __fenHierarchyError('insertRule', 'CSSStyleSheet', 'Failed to insert the rule.');
+                            }
+                        }
+                    }
+                }
+
+                // The sheet an @import brings in (CSSOM 6.4.4). Its rules are not
+                // loaded here; the cascade fetches imports on its own.
+                var __fenImportedSheets = new WeakMap();
+                function __fenImportedSheet(rule, state) {
+                    var imported = __fenImportedSheets.get(rule);
+                    if (imported) return imported;
+                    var parentSheet = state.sheet;
+                    var href = state.href;
+                    try {
+                        href = new URL(state.href, (parentSheet && parentSheet.href) || (globalThis.document && document.baseURI) || undefined).href;
+                    } catch (_urlError) { }
+                    imported = Object.create(CSSStyleSheet.prototype);
+                    __fenInitStyleSheet(imported, {
+                        href: href,
+                        media: state.media,
+                        loadRules: function () { return []; },
+                        onChange: function () { }
                     });
-                    return rule;
+                    imported.ownerRule = rule;
+                    imported.parentStyleSheet = parentSheet || null;
+                    __fenImportedSheets.set(rule, imported);
+                    return imported;
                 }
 
-                function __fenBuildCssRule(descriptor, parentStyleSheet) {
-                    var rule;
-                    if (descriptor.isNestedDeclarations) {
-                        rule = Object.create(CSSNestedDeclarations.prototype);
-                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSNestedDeclarations'], enumerable: false });
-                        rule.type = 0;
-                        rule.parentStyleSheet = parentStyleSheet || null;
-                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '', __fenRuleStyleChanged(rule));
-                        Object.defineProperty(rule, 'cssText', {
-                            get: function () {
-                                return this.style.cssText;
-                            },
-                            configurable: true, enumerable: true
-                        });
-                    } else if (descriptor.type === 4) {
-                        rule = Object.create(CSSRule.prototype);
-                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule'], enumerable: false });
-                        rule.type = 4;
-                        rule.conditionText = descriptor.conditionText || '';
-                        rule.media = {
-                            mediaText: rule.conditionText,
-                            length: rule.conditionText ? 1 : 0,
-                            item: function (i) { return i === 0 ? rule.conditionText : null; }
-                        };
-                        rule.cssRules = __fenBuildCssRules(descriptor.rules, parentStyleSheet);
-                        Object.defineProperty(rule, 'cssText', {
-                            get: function () {
-                                return '@media ' + this.conditionText + ' { ' +
-                                    Array.prototype.map.call(this.cssRules, function (r) { return r.cssText; }).join(' ') +
-                                    ' }';
-                            },
-                            configurable: true, enumerable: true
-                        });
-                    } else if (descriptor.type === 1) {
-                        rule = Object.create(CSSStyleRule.prototype);
-                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSStyleRule'], enumerable: false });
-                        rule.type = 1;
-                        var currentSelector = descriptor.selectorText || '';
-                        Object.defineProperty(rule, 'selectorText', {
-                            get: function () { return currentSelector; },
-                            set: function (val) {
-                                var can = __fenCanonicalizeSelector(val);
-                                if (can !== null) currentSelector = can;
-                            },
-                            configurable: true, enumerable: true
-                        });
-                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '', __fenRuleStyleChanged(rule));
-                        if (descriptor.rules && descriptor.rules.length) {
-                            rule.cssRules = __fenBuildCssRules(descriptor.rules, parentStyleSheet);
-                        }
-                        Object.defineProperty(rule, 'cssText', {
-                            get: function () {
-                                return this.selectorText + ' { ' + this.style.cssText +
-                                    (this.style.cssText ? ' ' : '') + '}';
-                            },
-                            configurable: true, enumerable: true
-                        });
-                    } else if (descriptor.type === 5) {
-                        rule = Object.create(CSSFontFaceRule.prototype);
-                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSFontFaceRule'], enumerable: false });
-                        rule.type = 5;
-                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '', __fenRuleStyleChanged(rule));
-                        Object.defineProperty(rule, 'cssText', {
-                            get: function () {
-                                return '@font-face { ' + this.style.cssText + (this.style.cssText ? ' ' : '') + '}';
-                            },
-                            configurable: true, enumerable: true
-                        });
-                    } else {
-                        rule = Object.create(CSSRule.prototype);
-                        Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule'], enumerable: false });
-                        rule.type = descriptor.type || 0;
-                        if (descriptor.name !== undefined) rule.name = descriptor.name;
-                        if (descriptor.declarations !== undefined) {
-                            rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations, __fenRuleStyleChanged(rule));
-                        }
-                        if (descriptor.rules && descriptor.rules.length) {
-                            rule.cssRules = __fenBuildCssRules(descriptor.rules, parentStyleSheet);
-                        }
-                        var keyword = descriptor.atKeyword;
-                        Object.defineProperty(rule, 'cssText', {
-                            get: function () {
-                                var head = keyword ? ('@' + keyword + (this.name ? ' ' + this.name : '')) : '';
-                                var body = this.style ? this.style.cssText
-                                    : (this.cssRules
-                                        ? Array.prototype.map.call(this.cssRules, function (r) { return r.cssText; }).join(' ')
-                                        : '');
-                                return head + ' { ' + body + (body ? ' ' : '') + '}';
-                            },
-                            configurable: true, enumerable: true
-                        });
+                // Media Queries 4 §3: a media query list splits at top-level commas;
+                // each query serialises lowercased with collapsed whitespace, and one
+                // that does not parse becomes "not all".
+                function __fenNormalizeMediaQuery(query) {
+                    query = query.trim().replace(/\s+/g, ' ');
+                    if (!/["']/.test(query)) query = query.toLowerCase();
+                    var shape = '';
+                    var depth = 0;
+                    for (var i = 0; i < query.length; i++) {
+                        var c = query[i];
+                        if (c === '(') { if (depth++ === 0) shape += 'P'; continue; }
+                        if (c === ')') { if (--depth < 0) return 'not all'; continue; }
+                        if (depth === 0) shape += c;
                     }
-
-                    rule.parentStyleSheet = parentStyleSheet || null;
-                    // CSSOM 6.4.2: a top-level rule has no parent rule; a nested one's
-                    // is the grouping rule that holds it.
-                    rule.parentRule = null;
-                    if (rule.cssRules) {
-                        for (var i = 0; i < rule.cssRules.length; i++) rule.cssRules[i].parentRule = rule;
-                    }
-                    return rule;
+                    if (depth !== 0) return 'not all';
+                    var typed = /^(?:(not|only) )?([a-z_-][a-z0-9_-]*)((?: and (?:not )?P)*)$/.exec(shape);
+                    var reserved = ['and', 'or', 'not', 'only', 'layer'];
+                    var valid = (typed && reserved.indexOf(typed[2]) < 0) ||
+                        /^(?:not )?P(?: and (?:not )?P)*$/.test(shape) ||
+                        /^(?:not )?P(?: or (?:not )?P)*$/.test(shape);
+                    if (!valid || /[^a-z0-9_\-\s(),:.<>=\/%+"']/.test(query)) return 'not all';
+                    return query.replace(/\(\s*/g, '(').replace(/\s*\)/g, ')').replace(/\s*:\s*/g, ': ');
                 }
-
-                function __fenBuildCssRules(descriptors, parentStyleSheet) {
-                    var built = [];
-                    built.item = function (i) { return i >= 0 && i < built.length ? built[i] : null; };
-                    if (!descriptors) return built;
-                    for (var i = 0; i < descriptors.length; i++) {
-                        built.push(__fenBuildCssRule(descriptors[i], parentStyleSheet));
+                function __fenParseMediaQueryList(value) {
+                    var text = String(value == null ? '' : value);
+                    var queries = [];
+                    var depth = 0, start = 0;
+                    for (var i = 0; i <= text.length; i++) {
+                        var c = text[i];
+                        if (c === '(') depth++;
+                        else if (c === ')') depth--;
+                        if (i === text.length || (c === ',' && depth === 0)) {
+                            var query = text.slice(start, i);
+                            start = i + 1;
+                            if (query.trim() === '') {
+                                if (text.trim() !== '') queries.push('not all');
+                                continue;
+                            }
+                            queries.push(__fenNormalizeMediaQuery(query));
+                        }
                     }
-                    return built;
+                    return text.trim() === '' ? [] : queries;
                 }
 
                 // CSSOM 4.1 MediaList: the media queries of a sheet, as a list.
@@ -11076,12 +11599,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     var items = [];
                     var indexed = 0;
                     function parse(value) {
-                        var parsed = [];
-                        String(value == null ? '' : value).split(',').forEach(function (query) {
-                            query = query.trim().replace(/\s+/g, ' ');
-                            if (query) parsed.push(query);
-                        });
-                        return parsed;
+                        return __fenParseMediaQueryList(value);
                     }
                     function update(next) {
                         items = next;
@@ -11137,11 +11655,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     throw new DOMException(message, 'NotAllowedError');
                 }
 
+                // CSSOM 6.4.3 "remove a CSS rule": the removed rule loses its parents.
+                // Its own descendants stay attached to it, but no longer to a sheet.
                 function __fenDetachCssRule(rule) {
-                    rule.parentStyleSheet = null;
-                    if (rule.cssRules) {
-                        for (var i = 0; i < rule.cssRules.length; i++) __fenDetachCssRule(rule.cssRules[i]);
-                    }
+                    var state = __fenRuleState.get(rule);
+                    if (!state) return;
+                    state.parent = null;
+                    (function clearSheet(current) {
+                        current.sheet = null;
+                        if (current.children) {
+                            for (var i = 0; i < current.children.items.length; i++) {
+                                clearSheet(__fenRuleState.get(current.children.items[i]));
+                            }
+                        }
+                    })(state);
                 }
 
                 function __fenSerializeCssRules(rules) {
@@ -11161,11 +11688,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         if (rules) return rules;
                         var descriptors = null;
                         try { descriptors = init.loadRules(); } catch (_ruleError) { descriptors = null; }
-                        rules = __fenBuildCssRules(descriptors, sheet);
+                        rules = __fenBuildCssRules(descriptors, sheet, null);
                         return rules;
                     }
                     function changed() {
-                        init.onChange(materialise());
+                        init.onChange(materialise().items);
                     }
                     function assertModifiable(method) {
                         // CSSOM 6.1.2: a pending replace() sets the disallow-modification flag.
@@ -11180,19 +11707,23 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     function replaceRules(text) {
                         // cssRules is [SameObject]: replacing swaps the list's contents.
                         var live = materialise();
-                        for (var i = 0; i < live.length; i++) __fenDetachCssRule(live[i]);
+                        for (var i = 0; i < live.items.length; i++) __fenDetachCssRule(live.items[i]);
                         var descriptors = null;
                         try { descriptors = globalThis.__fenParseStyleSheetText(text); } catch (_parseError) { descriptors = null; }
-                        var replacement = __fenBuildCssRules(descriptors, sheet);
-                        live.length = 0;
-                        for (var j = 0; j < replacement.length; j++) live.push(replacement[j]);
+                        var replacement = __fenBuildCssRules(descriptors, sheet, null);
+                        live.items.length = 0;
+                        for (var j = 0; j < replacement.items.length; j++) {
+                            // CSSOM 6.1.2 replace(): a constructed sheet drops its @import rules.
+                            if (__fenRuleState.get(replacement.items[j]).kind !== 'import') live.items.push(replacement.items[j]);
+                        }
+                        live.sync();
                         constructed.sourceText = text;
                         changed();
                     }
                     __fenSheetNotifiers.set(sheet, ruleMutated);
 
-                    Object.defineProperty(sheet, 'cssRules', { get: materialise, configurable: true, enumerable: true });
-                    Object.defineProperty(sheet, 'rules', { get: materialise, configurable: true, enumerable: true });
+                    Object.defineProperty(sheet, 'cssRules', { get: function () { return materialise().list; }, configurable: true, enumerable: true });
+                    Object.defineProperty(sheet, 'rules', { get: function () { return materialise().list; }, configurable: true, enumerable: true });
                     sheet.ownerNode = init.ownerNode || null;
                     sheet.ownerRule = null;
                     sheet.parentStyleSheet = null;
@@ -11201,7 +11732,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     // CSSOM 6.1: href is the location an external sheet came from, and
                     // null for one the document carries inline or script constructed.
                     sheet.href = init.href || null;
-                    sheet.media = __fenCreateMediaList(init.mediaText || '', constructed ? changed : null);
+                    sheet.media = init.media || __fenCreateMediaList(init.mediaText || '', constructed ? changed : null);
                     Object.defineProperty(sheet, 'disabled', {
                         get: function () { return disabled; },
                         set: function (value) {
@@ -11217,27 +11748,40 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         assertModifiable('insertRule');
                         var live = materialise();
                         index = index === undefined ? 0 : (index >>> 0);
-                        if (index > live.length) {
-                            throw new DOMException("Failed to execute 'insertRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + live.length + ").", 'IndexSizeError');
+                        if (index > live.items.length) {
+                            throw new DOMException("Failed to execute 'insertRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + live.items.length + ").", 'IndexSizeError');
                         }
-                        var rule = __fenParseCssRule(text);
-                        rule.parentStyleSheet = sheet;
-                        live.splice(index, 0, rule);
+                        var descriptor = __fenParseSingleRule(text, 'insertRule', 'CSSStyleSheet');
+                        if (constructed && descriptor.kind === 'import') {
+                            throw new DOMException("Failed to execute 'insertRule' on 'CSSStyleSheet': Can't insert @import rules into a constructed stylesheet.", 'SyntaxError');
+                        }
+                        __fenCheckSheetInsert(live.items, index, descriptor.kind);
+                        live.items.splice(index, 0, __fenBuildCssRule(descriptor, sheet, null));
+                        live.sync();
                         ruleMutated();
                         return index;
                     };
                     sheet.addRule = function (selector, block, index) {
-                        sheet.insertRule(selector + ' { ' + block + ' }', index === undefined ? materialise().length : index);
+                        sheet.insertRule(selector + ' { ' + block + ' }', index === undefined ? materialise().items.length : index);
                         return -1;
                     };
                     sheet.deleteRule = function (index) {
                         assertModifiable('deleteRule');
                         var live = materialise();
                         index = index >>> 0;
-                        if (index >= live.length) {
-                            throw new DOMException("Failed to execute 'deleteRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + (live.length - 1) + ").", 'IndexSizeError');
+                        if (index >= live.items.length) {
+                            throw new DOMException("Failed to execute 'deleteRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + (live.items.length - 1) + ").", 'IndexSizeError');
                         }
-                        __fenDetachCssRule(live.splice(index, 1)[0]);
+                        if (__fenRuleState.get(live.items[index]).kind === 'namespace') {
+                            for (var i = 0; i < live.items.length; i++) {
+                                var kind = __fenRuleState.get(live.items[i]).kind;
+                                if (kind !== 'import' && kind !== 'namespace') {
+                                    throw new DOMException("Failed to execute 'deleteRule' on 'CSSStyleSheet': Failed to delete an @namespace rule while other rules exist.", 'InvalidStateError');
+                                }
+                            }
+                        }
+                        __fenDetachCssRule(live.items.splice(index, 1)[0]);
+                        live.sync();
                         ruleMutated();
                     };
                     sheet.removeRule = sheet.deleteRule;
@@ -11274,7 +11818,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var source = constructed.sourceText;
                             var text = source != null && !/@import/i.test(source)
                                 ? source
-                                : __fenSerializeCssRules(materialise());
+                                : __fenSerializeCssRules(materialise().items);
                             return [text, sheet.media.mediaText, constructed.baseURL];
                         };
                     }
@@ -25446,7 +25990,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         try
         {
             var parsed = new FenBrowser.FenEngine.Rendering.Css.CssSyntaxParser(
-                new FenBrowser.FenEngine.Rendering.Css.CssTokenizer(cssText)).ParseStylesheet();
+                new FenBrowser.FenEngine.Rendering.Css.CssTokenizer(cssText))
+            {
+                PreserveCssomRules = true
+            }.ParseStylesheet();
             return DescribeCssRules(parsed.Rules);
         }
         catch (Exception ex)
@@ -25515,88 +26062,181 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return _interpreter.AllocateArray(described);
     }
 
+    /// <summary>
+    /// One CSSOM rule descriptor: <c>kind</c> names the CSSOM interface the prelude
+    /// wraps it in (CSSOM 6.4), plus whatever that interface reports.
+    /// </summary>
     private JsValue DescribeCssRule(FenBrowser.FenEngine.Rendering.Css.CssRule rule)
     {
+        Dictionary<string, JsValue> fields;
         switch (rule)
         {
-            // CSSRule.STYLE_RULE
             case FenBrowser.FenEngine.Rendering.Css.CssStyleRule style:
-                var nestedDesc = new List<JsValue>();
-                if (style.NestedRules != null)
+                var nested = new List<JsValue>();
+                foreach (var nestedRule in style.NestedRules)
                 {
-                    foreach (var nr in style.NestedRules)
-                    {
-                        var d = DescribeCssRule(nr);
-                        if (d.Tag != JsValueTag.Undefined)
-                            nestedDesc.Add(d);
-                    }
+                    var d = DescribeCssRule(nestedRule);
+                    if (d.Tag != JsValueTag.Undefined) nested.Add(d);
                 }
-                if (style.NestedRules != null && style.NestedRules.Count > 0 && style.Declarations != null && style.Declarations.Count > 0)
+                if (style.NestedRules.Count > 0 && style.Declarations.Count > 0)
                 {
-                    nestedDesc.Add(_interpreter.AllocateObject(new Dictionary<string, JsValue>
+                    // CSS Nesting 1 §3.3: declarations after nested rules become a
+                    // CSSNestedDeclarations rule.
+                    nested.Add(_interpreter.AllocateObject(new Dictionary<string, JsValue>
                     {
-                        ["type"] = JsValue.FromInt32(0),
-                        ["isNestedDeclarations"] = JsValue.FromBoolean(true),
+                        ["kind"] = JsValue.FromString("nested-declarations"),
                         ["declarations"] = JsValue.FromString(SerializeDeclarations(style.Declarations))
                     }));
                 }
-                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                fields = new Dictionary<string, JsValue>
                 {
-                    ["type"] = JsValue.FromInt32(1),
+                    ["kind"] = JsValue.FromString("style"),
                     ["selectorText"] = JsValue.FromString(style.Selector?.NestedText ?? style.Selector?.Raw ?? string.Empty),
                     ["declarations"] = JsValue.FromString(SerializeDeclarations(style.Declarations)),
-                    ["rules"] = _interpreter.AllocateArray(nestedDesc)
-                });
+                    ["rules"] = _interpreter.AllocateArray(nested)
+                };
+                break;
 
-            // CSSRule.MEDIA_RULE
             case FenBrowser.FenEngine.Rendering.Css.CssMediaRule media:
-                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
-                {
-                    ["type"] = JsValue.FromInt32(4),
-                    ["conditionText"] = JsValue.FromString(media.Condition ?? string.Empty),
-                    ["rules"] = DescribeCssRules(media.Rules)
-                });
+                fields = DescribeGroupingRule("media", media.Rules);
+                fields["conditionText"] = JsValue.FromString(media.Condition ?? string.Empty);
+                break;
 
-            // CSSRule.FONT_FACE_RULE
-            case FenBrowser.FenEngine.Rendering.Css.CssFontFaceRule fontFace:
-                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
-                {
-                    ["type"] = JsValue.FromInt32(5),
-                    ["declarations"] = JsValue.FromString(SerializeDeclarations(fontFace.Declarations))
-                });
+            case FenBrowser.FenEngine.Rendering.Css.CssSupportsRule supports:
+                fields = DescribeGroupingRule("supports", supports.Rules);
+                fields["conditionText"] = JsValue.FromString(supports.Condition ?? string.Empty);
+                break;
 
-            // @layer and @scope postdate the numbered constants, so they report 0 the
-            // way every rule type added since does.
+            case FenBrowser.FenEngine.Rendering.Css.CssContainerRule container:
+                fields = DescribeGroupingRule("container", container.Rules);
+                fields["conditionText"] = JsValue.FromString(container.Condition ?? string.Empty);
+                break;
+
+            case FenBrowser.FenEngine.Rendering.Css.CssLayerRule { IsStatement: true } layerStatement:
+                fields = new Dictionary<string, JsValue>
+                {
+                    ["kind"] = JsValue.FromString("layer-statement"),
+                    ["name"] = JsValue.FromString(layerStatement.Name ?? string.Empty)
+                };
+                break;
+
             case FenBrowser.FenEngine.Rendering.Css.CssLayerRule layer:
-                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
-                {
-                    ["type"] = JsValue.FromInt32(0),
-                    ["atKeyword"] = JsValue.FromString("layer"),
-                    ["name"] = JsValue.FromString(layer.Name ?? string.Empty),
-                    ["rules"] = DescribeCssRules(layer.Rules)
-                });
+                fields = DescribeGroupingRule("layer-block", layer.Rules);
+                fields["name"] = JsValue.FromString(layer.Name ?? string.Empty);
+                break;
 
             case FenBrowser.FenEngine.Rendering.Css.CssScopeRule scope:
-                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
-                {
-                    ["type"] = JsValue.FromInt32(0),
-                    ["atKeyword"] = JsValue.FromString("scope"),
-                    ["name"] = JsValue.FromString(scope.EndSelector ?? string.Empty),
-                    ["rules"] = DescribeCssRules(scope.Rules)
-                });
+                fields = DescribeGroupingRule("scope", scope.Rules);
+                fields["start"] = string.IsNullOrEmpty(scope.ScopeSelector) ? JsValue.Null : JsValue.FromString(scope.ScopeSelector);
+                fields["end"] = string.IsNullOrEmpty(scope.EndSelector) ? JsValue.Null : JsValue.FromString(scope.EndSelector);
+                break;
+
+            case FenBrowser.FenEngine.Rendering.Css.CssFontFaceRule fontFace:
+                fields = DescribeDeclarationRule("font-face", fontFace.Declarations);
+                break;
 
             case FenBrowser.FenEngine.Rendering.Css.CssPropertyRule property:
-                return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                fields = DescribeDeclarationRule("property", property.Declarations);
+                fields["name"] = JsValue.FromString(property.Name ?? string.Empty);
+                break;
+
+            case FenBrowser.FenEngine.Rendering.Css.CssPageRule page:
+                fields = DescribeDeclarationRule("page", page.Declarations);
+                fields["selectorText"] = JsValue.FromString(page.Selector ?? string.Empty);
+                break;
+
+            case FenBrowser.FenEngine.Rendering.Css.CssCounterStyleRule counterStyle:
+                fields = DescribeDeclarationRule("counter-style", counterStyle.Declarations);
+                fields["name"] = JsValue.FromString(counterStyle.Name ?? string.Empty);
+                break;
+
+            case FenBrowser.FenEngine.Rendering.Css.CssImportRule import:
+                fields = new Dictionary<string, JsValue>
                 {
-                    ["type"] = JsValue.FromInt32(0),
-                    ["atKeyword"] = JsValue.FromString("property"),
-                    ["name"] = JsValue.FromString(property.Name ?? string.Empty),
-                    ["declarations"] = JsValue.FromString(SerializeDeclarations(property.Declarations))
-                });
+                    ["kind"] = JsValue.FromString("import"),
+                    ["href"] = JsValue.FromString(import.Href ?? string.Empty),
+                    ["layerName"] = import.ImportLayerName != null ? JsValue.FromString(import.ImportLayerName) : JsValue.Null,
+                    ["supportsText"] = import.SupportsText != null ? JsValue.FromString(import.SupportsText) : JsValue.Null,
+                    ["media"] = JsValue.FromString(import.MediaText ?? string.Empty)
+                };
+                break;
+
+            case FenBrowser.FenEngine.Rendering.Css.CssNamespaceRule ns:
+                fields = new Dictionary<string, JsValue>
+                {
+                    ["kind"] = JsValue.FromString("namespace"),
+                    ["prefix"] = JsValue.FromString(ns.Prefix ?? string.Empty),
+                    ["namespaceURI"] = JsValue.FromString(ns.NamespaceUri ?? string.Empty)
+                };
+                break;
+
+            case FenBrowser.FenEngine.Rendering.Css.CssFontFeatureValuesRule featureValues:
+                var blocks = new List<JsValue>(featureValues.Blocks.Count);
+                foreach (var (blockName, declarations) in featureValues.Blocks)
+                {
+                    var entries = new List<JsValue>(declarations.Count);
+                    foreach (var declaration in declarations)
+                    {
+                        entries.Add(_interpreter.AllocateArray(new[]
+                        {
+                            JsValue.FromString(declaration.Property ?? string.Empty),
+                            JsValue.FromString(declaration.Value ?? string.Empty)
+                        }));
+                    }
+                    blocks.Add(_interpreter.AllocateArray(new[] { JsValue.FromString(blockName), _interpreter.AllocateArray(entries) }));
+                }
+                fields = new Dictionary<string, JsValue>
+                {
+                    ["kind"] = JsValue.FromString("font-feature-values"),
+                    ["fontFamily"] = JsValue.FromString(featureValues.FontFamily ?? string.Empty),
+                    ["blocks"] = _interpreter.AllocateArray(blocks)
+                };
+                break;
+
+            case FenBrowser.FenEngine.Rendering.Css.CssKeyframesRule keyframes:
+                var frames = new List<JsValue>(keyframes.Keyframes.Count);
+                foreach (var frame in keyframes.Keyframes)
+                {
+                    frames.Add(_interpreter.AllocateObject(new Dictionary<string, JsValue>
+                    {
+                        ["kind"] = JsValue.FromString("keyframe"),
+                        ["keyText"] = JsValue.FromString(frame.KeyText ?? string.Empty),
+                        ["declarations"] = JsValue.FromString(SerializeDeclarations(frame.Declarations))
+                    }));
+                }
+                fields = new Dictionary<string, JsValue>
+                {
+                    ["kind"] = JsValue.FromString("keyframes"),
+                    ["name"] = JsValue.FromString(keyframes.Name ?? string.Empty),
+                    ["rules"] = _interpreter.AllocateArray(frames)
+                };
+                break;
 
             default:
                 return JsValue.Undefined;
         }
+
+        return _interpreter.AllocateObject(fields);
+    }
+
+    private Dictionary<string, JsValue> DescribeGroupingRule(string kind, IReadOnlyList<FenBrowser.FenEngine.Rendering.Css.CssRule> rules)
+    {
+        return new Dictionary<string, JsValue>
+        {
+            ["kind"] = JsValue.FromString(kind),
+            ["rules"] = DescribeCssRules(rules)
+        };
+    }
+
+    private static Dictionary<string, JsValue> DescribeDeclarationRule(
+        string kind,
+        IReadOnlyList<FenBrowser.FenEngine.Rendering.Css.CssDeclaration> declarations)
+    {
+        return new Dictionary<string, JsValue>
+        {
+            ["kind"] = JsValue.FromString(kind),
+            ["declarations"] = JsValue.FromString(SerializeDeclarations(declarations))
+        };
     }
 
     private static string SerializeDeclarations(

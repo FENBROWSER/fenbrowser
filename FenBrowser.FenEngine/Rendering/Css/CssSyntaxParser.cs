@@ -8,7 +8,7 @@ using System.Linq;
 
 namespace FenBrowser.FenEngine.Rendering.Css
 {
-    public class CssSyntaxParser
+    public partial class CssSyntaxParser
     {
         private readonly CssTokenizer _tokenizer;
         private CssToken _currentToken;
@@ -51,6 +51,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (_currentToken.Type == CssTokenType.AtKeyword)
                 {
                     var rule = ConsumeAtRule(0);
+                    if (PreserveCssomRules && !AcceptTopLevelCssomRule(rule)) rule = null;
                     if (!TryAddRule(sheet.Rules, rule)) break;
                     ConsumeWhitespace();
                     continue;
@@ -58,6 +59,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
                 // Qualified Rule (Style Rule)
                 var qRule = ConsumeQualifiedRule(null, 0);
+                if (PreserveCssomRules && qRule != null) AcceptTopLevelCssomRule(qRule);
                 if (qRule != null && !TryAddRule(sheet.Rules, qRule))
                 {
                     break;
@@ -118,7 +120,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 else if (_currentToken.Type == CssTokenType.Semicolon)
                 {
                     ConsumeToken();
-                    return new CssLayerRule { Name = rawNames, Rules = { } }; 
+                    return new CssLayerRule { Name = rawNames, IsStatement = true };
                 }
                 return null;
             }
@@ -207,6 +209,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
 
                 return null;
+            }
+
+            if (PreserveCssomRules && TryConsumeCssomAtRule(name, nestingDepth, out var cssomRule))
+            {
+                return cssomRule;
             }
 
             // Unknown @rule, consume until semicolon or block
@@ -468,6 +475,15 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (_currentToken.Type == CssTokenType.LeftBrace)
                 {
                     ConsumeToken(); // {
+                    if (PreserveCssomRules)
+                    {
+                        var conditional = CreateCssomConditionRule(name, condition, out var conditionalRules);
+                        ParseInsideBlockWithParent(conditionalRules, parentSelector, nestingDepth + 1);
+                        if (_currentToken.Type == CssTokenType.RightBrace)
+                            ConsumeToken(); // }
+                        return conditional;
+                    }
+
                     var atRule = new CssMediaRule { Condition = condition };
                     ParseInsideBlockWithParent(atRule.Rules, parentSelector, nestingDepth + 1);
                     if (_currentToken.Type == CssTokenType.RightBrace)

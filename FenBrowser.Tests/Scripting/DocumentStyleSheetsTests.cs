@@ -122,7 +122,7 @@ public sealed class DocumentStyleSheetsTests : IDisposable
         // CSSRule.MEDIA_RULE, nesting its own rules.
         Assert.Equal("4", engine.Evaluate("document.styleSheets[0].cssRules[1].type")?.ToString());
         Assert.Equal(
-            "(min-width:100px)",
+            "(min-width: 100px)",
             engine.Evaluate("document.styleSheets[0].cssRules[1].conditionText")?.ToString());
         Assert.Equal("2", engine.Evaluate("document.styleSheets[0].cssRules[1].cssRules.length")?.ToString());
         Assert.Equal(".c", engine.Evaluate("document.styleSheets[0].cssRules[1].cssRules[1].selectorText")?.ToString());
