@@ -68,8 +68,24 @@ for cat_dir in sorted(os.listdir(abs_dir)):
         except Exception:
             pass
 
+    # How many test files the category holds, so a run cut short shows as
+    # such instead of reporting the files it did reach as the whole category.
+    available = 0
+    wpt_root = data.get("WptRoot") or "D:/wpt"
+    cat_path = os.path.join(wpt_root, cat_label.strip("/"))
+    if os.path.isdir(cat_path):
+        for _, dirs, files in os.walk(cat_path):
+            dirs[:] = [d for d in dirs if d not in ("resources", "support", "tools", "reference")]
+            available += sum(1 for n in files
+                             if n.endswith((".html", ".htm", ".xhtml", ".any.js", ".window.js", ".worker.js"))
+                             and "-ref." not in n and "-notref." not in n)
+    incomplete = bool(data.get("TimedOut") or data.get("Stalled") or test_end < test_start
+                      or data.get("ExitCode", 0) not in (0, 1))
+
     categories.append({
         "name": cat_label,
+        "available": available,
+        "incomplete": incomplete,
         "test_start": test_start,
         "test_end": test_end,
         "statuses": statuses,
@@ -99,13 +115,20 @@ with open(report_path, "w", encoding="utf-8") as f:
         f.write(f"**Subtests:** {grand_passing_subtests}/{grand_total_subtests} = {pct:.1f}%\n")
     f.write("\n")
 
-    f.write("| Category | Files | Harness OK | Subtest Pass | Subtest Total | Pass % |\n")
-    f.write("|----------|-------|------------|--------------|---------------|--------|\n")
+    incomplete_count = sum(1 for c in categories if c["incomplete"])
+    if incomplete_count:
+        f.write(f"**Incomplete runs:** {incomplete_count} categor{'y' if incomplete_count == 1 else 'ies'} "
+                "did not finish; their numbers cover only the files that ran.\n\n")
+
+    f.write("| Category | Files run / in category | Run | Harness OK | Subtest Pass | Subtest Total | Pass % |\n")
+    f.write("|----------|-------------------------|-----|------------|--------------|---------------|--------|\n")
 
     for cat in sorted(categories, key=lambda c: -c["test_start"]):
         ok = cat["statuses"].get("OK", 0)
         sub_pct = (cat["subtest_pass"] / cat["subtest_total"] * 100) if cat["subtest_total"] > 0 else 0
-        f.write(f"| {cat['name']} | {cat['test_start']} | {ok} | {cat['subtest_pass']} | {cat['subtest_total']} | {sub_pct:.1f}% |\n")
+        run = "INCOMPLETE" if cat["incomplete"] else "complete"
+        files = f"{cat['test_start']} / {cat['available']}" if cat["available"] else str(cat["test_start"])
+        f.write(f"| {cat['name']} | {files} | {run} | {ok} | {cat['subtest_pass']} | {cat['subtest_total']} | {sub_pct:.1f}% |\n")
 
     f.write(f"\n*Report generated {now} from `{RESULTS_DIR}`*\n")
 

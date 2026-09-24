@@ -33,12 +33,22 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 STORE = os.path.join("Results", "wpt", "categories")
 LAUNCHER = os.path.join(REPO, "scripts", "wpt", "webdriver-launcher.cmd")
 
-# Top-level WPT directories that are not test suites, or that need a product
-# FenBrowser cannot host (native device APIs, tooling, infra).
+# Top-level WPT directories that hold no tests: shared resources, fonts, media
+# files, IDL, tooling.
 SKIP_DIRS = {
-    "common", "conformance-checkers", "css", "docs", "fonts", "images", "infrastructure",
-    "interfaces", "media", "resources", "tools", "webdriver", "wasm", "_venv3",
+    "common", "conformance-checkers", "docs", "fonts", "images", "interfaces", "media",
+    "resources", "tools", "_venv3",
 }
+
+# Test suites the default sweep cannot run, and why. Say so rather than drop them.
+UNSWEPT_SUITES = {
+    "webdriver": "wdspec tests need webdriver.client in the WPT venv; run "
+                 "`category webdriver --suite webdriver` once it is installed",
+}
+
+# Directories too large for one category run; the sweep runs each subdirectory
+# (and the directory's own loose files) separately.
+SPLIT_DIRS = {"css"}
 
 
 def find_root(explicit):
@@ -80,6 +90,20 @@ def get(d, key):
     return d.get(key, d.get(key[0].lower() + key[1:]))
 
 
+def is_complete(d):
+    """A category run counts as done only when it started tests, finished every
+    one it started, and neither timed out nor stalled. wptrunner exits 1 when
+    results were unexpected (without expectation metadata: any failure), so 0
+    and 1 are both finished runs; any other exit code is not. Anything else is
+    incomplete: shown as such and rerun by the next sweep."""
+    if not d:
+        return False
+    started = get(d, "TestStart") or 0
+    ended = get(d, "TestEnd") or 0
+    return (started > 0 and ended >= started and not get(d, "TimedOut") and not get(d, "Stalled")
+            and (get(d, "ExitCode") or 0) in (0, 1))
+
+
 def summarize(d):
     if not d:
         return "no summary"
@@ -91,7 +115,11 @@ def summarize(d):
         tail = "  STALLED"
     elif get(d, "TimedOut"):
         tail = "  TIMED-OUT"
-    return f"files {ok}/{ended} harness-OK  {' '.join(f'{k}={v}' for k, v in sorted(counts.items()))}{tail}"
+    elif not is_complete(d):
+        tail = f"  INCOMPLETE (exit {get(d, 'ExitCode')}, {get(d, 'TestEnd') or 0}/{get(d, 'TestStart') or 0} finished)"
+    subtests = get(d, "UnexpectedSubtestFailures") or 0
+    return (f"files {ok}/{ended} harness-OK  {' '.join(f'{k}={v}' for k, v in sorted(counts.items()))}"
+            f"  failing-subtests={subtests}{tail}")
 
 
 def run_category(tooling, root, category, outdir, a):
@@ -132,7 +160,12 @@ def top_level_categories(root):
     cats = []
     for name in sorted(os.listdir(root)):
         full = os.path.join(root, name)
-        if name.startswith(".") or name in SKIP_DIRS or not os.path.isdir(full):
+        if name.startswith(".") or name in SKIP_DIRS or name in UNSWEPT_SUITES or not os.path.isdir(full):
+            continue
+        if name in SPLIT_DIRS:
+            cats += [f"{name}/{sub}" for sub in sorted(os.listdir(full))
+                     if os.path.isdir(os.path.join(full, sub)) and not sub.startswith(".")
+                     and sub not in ("support", "resources", "tools", "reference", "common")]
             continue
         cats.append(name)
     return cats
@@ -158,7 +191,7 @@ def cmd_category(a, tooling, root):
         rc, secs = run_category(tooling, root, category, outdir, a)
         d = load_summary(outdir)
         print(f"  -> {summarize(d)}  ({secs:.0f}s, exit {rc})")
-        if d is None:
+        if not is_complete(d):
             rc_all = 1
     if not a.no_report and a.out == STORE:
         subprocess.run([sys.executable, os.path.join(REPO, "scripts", "wpt", "report.py")], check=False)
@@ -169,21 +202,24 @@ def cmd_sweep(a, tooling, root):
     cats = [c.strip() for c in a.categories.split(",")] if a.categories else top_level_categories(root)
     os.makedirs(a.out, exist_ok=True)
     print(f"{len(cats)} categories  processes {a.processes}  per-test {a.timeout}s  stall {a.stall}s  ->  {a.out}")
+    if not a.categories:
+        for suite, why in UNSWEPT_SUITES.items():
+            print(f"  not swept: {suite} - {why}")
     failed = []
     for i, category in enumerate(cats, 1):
         outdir = os.path.join(a.out, tag_for(category))
         cached = None if a.fresh else load_summary(outdir)
-        if cached:
+        if is_complete(cached):
             print(f"[{i:3}/{len(cats)}] {category:<36} SKIP  {summarize(cached)} (cached)")
             continue
         print(f"[{i:3}/{len(cats)}] {category:<36} run ...", flush=True)
         rc, secs = run_category(tooling, root, category, outdir, a)
         d = load_summary(outdir)
         print(f"[{i:3}/{len(cats)}] {category:<36} {summarize(d)}  ({secs:.0f}s)")
-        if d is None:
+        if not is_complete(d):
             failed.append(category)
     if failed:
-        print("no summary written for (rerun with `category <name>`): " + ", ".join(failed))
+        print("incomplete (rerun with `category <name>`): " + ", ".join(failed))
     if not a.no_report and a.out == STORE:
         subprocess.run([sys.executable, os.path.join(REPO, "scripts", "wpt", "report.py")], check=False)
     return 0
@@ -207,6 +243,9 @@ def cmd_status(a, tooling=None, root=None):
         return 0
     for tag, s in rows:
         print(f"  {tag:<36} {s}")
+    incomplete = sum(1 for _, s in rows if "INCOMPLETE" in s or "STALLED" in s or "TIMED-OUT" in s)
+    if incomplete:
+        print(f"{incomplete} of {len(rows)} categories are incomplete")
     return 0
 
 
