@@ -422,6 +422,8 @@ namespace FenBrowser.Core.Dom.V2
     {
         private readonly ContainerNode _root;
         private readonly string[] _classNames;
+        private List<WeakReference<Element>> _snapshot;
+        private long _snapshotVersion = -1;
 
         public ClassNameHTMLCollection(ContainerNode root, string classNames)
         {
@@ -430,49 +432,62 @@ namespace FenBrowser.Core.Dom.V2
                 .Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
         }
 
-        public override int Length
-        {
-            get
-            {
-                int count = 0;
-                foreach (var el in MatchingElements())
-                    count++;
-                return count;
-            }
-        }
+        public override int Length => GetSnapshot().Count;
 
         public override Element this[int index]
         {
             get
             {
                 if (index < 0) return null;
-                int i = 0;
-                foreach (var el in MatchingElements())
-                {
-                    if (i == index) return el;
-                    i++;
-                }
-                return null;
+                var snapshot = GetSnapshot();
+                return index < snapshot.Count && snapshot[index].TryGetTarget(out var element)
+                    ? element
+                    : null;
             }
         }
 
         public override Element NamedItem(string name)
         {
             if (string.IsNullOrEmpty(name)) return null;
-            foreach (var el in MatchingElements())
+            foreach (var reference in GetSnapshot())
             {
-                if (el.Id == name || el.GetAttribute("name") == name)
-                    return el;
+                if (reference.TryGetTarget(out var element) &&
+                    (element.Id == name || element.GetAttribute("name") == name))
+                {
+                    return element;
+                }
             }
             return null;
         }
 
         public override IEnumerator<Element> GetEnumerator()
         {
-            var snapshot = new List<Element>();
+            foreach (var reference in GetSnapshot())
+            {
+                if (reference.TryGetTarget(out var element))
+                {
+                    yield return element;
+                }
+            }
+        }
+
+        private List<WeakReference<Element>> GetSnapshot()
+        {
+            var version = Node.MutationSequence;
+            if (_snapshot != null && _snapshotVersion == version)
+            {
+                return _snapshot;
+            }
+
+            var snapshot = new List<WeakReference<Element>>();
             foreach (var el in MatchingElements())
-                snapshot.Add(el);
-            return snapshot.GetEnumerator();
+            {
+                snapshot.Add(new WeakReference<Element>(el));
+            }
+
+            _snapshot = snapshot;
+            _snapshotVersion = version;
+            return snapshot;
         }
 
         private IEnumerable<Element> MatchingElements()

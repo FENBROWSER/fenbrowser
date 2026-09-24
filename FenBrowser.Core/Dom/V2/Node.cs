@@ -274,7 +274,12 @@ namespace FenBrowser.Core.Dom.V2
         /// <summary>Returns true if any descendant needs repainting.</summary>
         public bool ChildPaintDirty => (_flags & NodeFlags.ChildPaintDirty) != 0;
 
+        private static long _mutationSequence;
         private static long _styleMutationSequence;
+
+        public static long MutationSequence => Volatile.Read(ref _mutationSequence);
+
+        private static void NoteMutation() => Interlocked.Increment(ref _mutationSequence);
 
         /// <summary>
         /// Advances on every style invalidation, whether or not a flag flipped.
@@ -292,6 +297,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void MarkDirty(InvalidationKind kind)
         {
+            NoteMutation();
             bool propagateStyle = false;
             bool propagateLayout = false;
             bool propagatePaint = false;
@@ -334,6 +340,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void MarkInsertedSubtreeDirty()
         {
+            NoteMutation();
             NoteStyleMutation();
             _flags |= NodeFlags.StyleDirty;
             PropagateChildDirtyUp(

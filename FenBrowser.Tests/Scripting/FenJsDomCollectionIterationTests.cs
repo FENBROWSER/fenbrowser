@@ -42,6 +42,24 @@ public sealed class FenJsDomCollectionIterationTests
         Assert.Equal("true|first|false|second|false|true", result);
     }
 
+    [Fact]
+    public async Task HtmlCollection_ClassNameMembershipRemainsLive()
+    {
+        var result = await EvaluateAsync(
+            "var root=document.getElementById('root');" +
+            "var items=root.getElementsByClassName('item');" +
+            "var firstLength=items.length;" +
+            "var added=document.createElement('div');" +
+            "added.className='item'; added.id='added';" +
+            "root.appendChild(added);" +
+            "var afterAdd=items.length;" +
+            "added.className='other';" +
+            "var afterClassChange=items.length;" +
+            "[firstLength,afterAdd,afterClassChange,items[0].id,items[1]===added].join('|');");
+
+        Assert.Equal("1|2|1|first|false", result);
+    }
+
     private static async Task<string> EvaluateAsync(string script)
     {
         var baseUri = new Uri("https://fixture.test/html-collection-iterator.html");
@@ -49,7 +67,7 @@ public sealed class FenJsDomCollectionIterationTests
         {
             BrowserScriptEngineRuntime.Reset();
             var document = new HtmlParser(
-                "<html><body><img id='first'><img id='second'></body></html>",
+                "<html><body><div id='root'><img id='first' class='item'><img id='second'></div></body></html>",
                 baseUri).Parse();
             var engine = new FenJsBrowserScriptEngine(CreateHost())
             {
