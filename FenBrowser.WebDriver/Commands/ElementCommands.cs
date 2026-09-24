@@ -519,7 +519,14 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             var base64 = await _handler.Browser.TakeElementScreenshotAsync(element);
-            return WebDriverResponse.Success(base64 ?? string.Empty);
+            if (string.IsNullOrEmpty(base64))
+            {
+                // WebDriver 17.2: an element that cannot be captured (no rect in the
+                // viewport, or no frame) is an error, not an empty image.
+                throw new WebDriverException(ErrorCodes.UnableToCaptureScreen, "Could not capture the element");
+            }
+
+            return WebDriverResponse.Success(base64);
         }
         
         private (string strategy, string selector) ParseLocator(JsonElement? body)

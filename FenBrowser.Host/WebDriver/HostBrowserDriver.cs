@@ -1147,14 +1147,83 @@ namespace FenBrowser.Host.WebDriver
             return cropped;
         }
 
+        /// <summary>
+        /// WebDriver 17.2 Take Element Screenshot: scroll the element into view,
+        /// capture the viewport and crop it to the element's rect. The engine has no
+        /// element capture of its own, so this was an empty string.
+        /// </summary>
         public async Task<string> TakeElementScreenshotAsync(object element)
         {
-            return await RunOnMainThread(async () =>
+            if (element is not string id)
+            {
+                return string.Empty;
+            }
+
+            var documentRect = await GetElementRectAsync(element).ConfigureAwait(false);
+            var scroll = await RunOnMainThread(async () =>
             {
                 var host = _tabs.ActiveTab?.Browser?.Host;
-                if (host == null || element is not string id) return "";
-                return await host.CaptureElementScreenshotAsync(id);
-            });
+                if (host == null)
+                {
+                    throw new InvalidOperationException("Current browsing context is no longer open");
+                }
+
+                var x = documentRect.X.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var y = documentRect.Y.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var result = await host.ExecuteScriptAsync(
+                    $"window.scrollTo({x}, {y}); return window.scrollX + ',' + window.scrollY;").ConfigureAwait(false);
+                return result?.ToString() ?? "0,0";
+            }).ConfigureAwait(false);
+
+            var parts = scroll.Split(',');
+            double.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var scrollX);
+            double.TryParse(parts.Length > 1 ? parts[1] : "0", System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var scrollY);
+
+            var viewport = await TakeScreenshotAsync().ConfigureAwait(false);
+            if (string.IsNullOrEmpty(viewport))
+            {
+                return string.Empty;
+            }
+
+            var dpiScale = Math.Max(WindowManager.Instance.DpiScale, 1f);
+            return CropScreenshot(
+                viewport,
+                (documentRect.X - scrollX) * dpiScale,
+                (documentRect.Y - scrollY) * dpiScale,
+                documentRect.Width * dpiScale,
+                documentRect.Height * dpiScale);
+        }
+
+        /// <summary>
+        /// Crops a base64 PNG to a rect in its pixel space, clipped to the image;
+        /// empty when nothing of the rect is inside it.
+        /// </summary>
+        internal static string CropScreenshot(string base64Png, double x, double y, double width, double height)
+        {
+            using var source = SkiaSharp.SKBitmap.Decode(Convert.FromBase64String(base64Png));
+            if (source == null)
+            {
+                return string.Empty;
+            }
+
+            var left = Math.Clamp((int)Math.Floor(x), 0, source.Width);
+            var top = Math.Clamp((int)Math.Floor(y), 0, source.Height);
+            var right = Math.Clamp((int)Math.Ceiling(x + width), left, source.Width);
+            var bottom = Math.Clamp((int)Math.Ceiling(y + height), top, source.Height);
+            if (right - left < 1 || bottom - top < 1)
+            {
+                return string.Empty;
+            }
+
+            using var cropped = new SkiaSharp.SKBitmap(right - left, bottom - top, source.ColorType, source.AlphaType);
+            if (!source.ExtractSubset(cropped, new SkiaSharp.SKRectI(left, top, right, bottom)))
+            {
+                return string.Empty;
+            }
+
+            using var image = SkiaSharp.SKImage.FromBitmap(cropped);
+            using var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+            return Convert.ToBase64String(data.ToArray());
         }
 
         public async Task<string> PrintPageAsync(WdPrintOptions options)

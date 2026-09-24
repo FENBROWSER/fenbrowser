@@ -888,7 +888,14 @@ namespace FenBrowser.WebDriver.Commands
                 : new WdPrintOptions();
 
             var base64 = await Browser.PrintPageAsync(options);
-            return WebDriverResponse.Success(base64 ?? string.Empty);
+            if (string.IsNullOrEmpty(base64))
+            {
+                // An empty string is not a PDF; answering success with it hid that
+                // printing is not implemented.
+                throw new WebDriverException(ErrorCodes.UnsupportedOperation, "Print Page is not supported by this browser yet");
+            }
+
+            return WebDriverResponse.Success(base64);
         }
 
         private WebDriverResponse RegisterSessionSecurityContext(WebDriverResponse response)

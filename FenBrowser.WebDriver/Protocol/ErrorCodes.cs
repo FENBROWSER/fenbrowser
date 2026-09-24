@@ -48,6 +48,7 @@ namespace FenBrowser.WebDriver.Protocol
         public const string UnknownError = "unknown error";
         public const string UnsupportedOperation = "unsupported operation";
         public const string UnexpectedAlertOpen = "unexpected alert open";
+        public const string UnableToCaptureScreen = "unable to capture screen";
         
         // Security
         public const string InsecureCertificate = "insecure certificate";
@@ -83,6 +84,7 @@ namespace FenBrowser.WebDriver.Protocol
                 InsecureCertificate => 400,
                 UnexpectedAlertOpen => 500,
                 UnsupportedOperation => 500,
+                UnableToCaptureScreen => 500,
                 _ => 500
             };
         }
