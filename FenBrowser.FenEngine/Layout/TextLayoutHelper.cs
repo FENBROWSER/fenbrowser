@@ -24,6 +24,14 @@ namespace FenBrowser.FenEngine.Layout
             "Roboto",
             "Open Sans"
         };
+        private static readonly object s_systemTypefaceCacheLock = new object();
+        private static readonly Dictionary<SystemTypefaceCacheKey, SKTypeface> s_systemTypefaceCache = new();
+        private const int MaxSystemTypefaceCacheEntries = 64;
+
+        private readonly record struct SystemTypefaceCacheKey(
+            string Family,
+            int Weight,
+            SKFontStyleSlant Slant);
 
         /// <summary>
         /// Resolves the appropriate Typeface based on font-family, weight, slant and content.
@@ -49,11 +57,18 @@ namespace FenBrowser.FenEngine.Layout
                     var tf = FenBrowser.FenEngine.Rendering.FontRegistry.TryResolve(clean, weight, slant);
                     if (tf != null && SupportsCharacters(tf, text)) return tf;
 
+                    if (TryGetCachedSystemTypeface(clean, weight, slant, out var cachedSystemTypeface) &&
+                        SupportsCharacters(cachedSystemTypeface, text))
+                    {
+                        return cachedSystemTypeface;
+                    }
+
                     // Fallback to Skia system font matching
                     var systemTf = SKTypeface.FromFamilyName(clean, (SKFontStyleWeight)weight, SKFontStyleWidth.Normal, slant);
-                    if (systemTf != null && !string.IsNullOrEmpty(systemTf.FamilyName) && SupportsCharacters(systemTf, text)) 
+                    if (systemTf != null && !string.IsNullOrEmpty(systemTf.FamilyName) && SupportsCharacters(systemTf, text))
                     {
-                         return systemTf;
+                        CacheSystemTypeface(clean, weight, slant, systemTf);
+                        return systemTf;
                     }
                 }
             }
@@ -114,9 +129,54 @@ namespace FenBrowser.FenEngine.Layout
             return SKTypeface.FromFamilyName("Segoe UI") ?? SKTypeface.FromFamilyName("Arial") ?? SKTypeface.Default;
         }
 
+        private static bool TryGetCachedSystemTypeface(
+            string family,
+            int weight,
+            SKFontStyleSlant slant,
+            out SKTypeface typeface)
+        {
+            var key = new SystemTypefaceCacheKey(family.ToLowerInvariant(), weight, slant);
+            lock (s_systemTypefaceCacheLock)
+            {
+                return s_systemTypefaceCache.TryGetValue(key, out typeface);
+            }
+        }
+
+        private static void CacheSystemTypeface(
+            string family,
+            int weight,
+            SKFontStyleSlant slant,
+            SKTypeface typeface)
+        {
+            if (typeface == null ||
+                !string.Equals(typeface.FamilyName, family, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var key = new SystemTypefaceCacheKey(family.ToLowerInvariant(), weight, slant);
+            lock (s_systemTypefaceCacheLock)
+            {
+                if (s_systemTypefaceCache.Count < MaxSystemTypefaceCacheEntries)
+                {
+                    s_systemTypefaceCache[key] = typeface;
+                }
+            }
+        }
+
         private static bool SupportsCharacters(SKTypeface tf, string text)
         {
             if (string.IsNullOrEmpty(text) || tf == null) return true;
+            var requiresGlyphCheck = false;
+            foreach (var c in text)
+            {
+                if (c <= 127) continue;
+                requiresGlyphCheck = true;
+                break;
+            }
+
+            if (!requiresGlyphCheck) return true;
+
             using var font = new SKFont(tf);
             foreach (var c in text)
             {
