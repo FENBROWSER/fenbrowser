@@ -47,6 +47,43 @@ public static class Test262GateVerifier
             }
         }
 
+        // Tests that never ran cannot be counted as anything: a harness include
+        // the runner does not load hides the whole test.
+        if (currentSummary.HarnessUnsupported > 0)
+        {
+            violations.Add($"Every selected test must run violated: harnessUnsupported={currentSummary.HarnessUnsupported}.");
+        }
+
+        var unexpectedTimeouts = CountTestsWithStatus(current, "TimedOut");
+        if (unexpectedTimeouts > 0)
+        {
+            violations.Add($"No unexpected timeouts violated: timedOut={unexpectedTimeouts}.");
+        }
+
+        if (previousSummary is not null)
+        {
+            var before = previousSummary.Value;
+            if (currentSummary.Total != before.Total)
+            {
+                violations.Add($"Results must cover the same tests violated: previousTotal={before.Total}, currentTotal={currentSummary.Total}.");
+            }
+
+            if (currentSummary.RuntimeErrors > before.RuntimeErrors)
+            {
+                violations.Add($"No new runtime errors violated: previous={before.RuntimeErrors}, current={currentSummary.RuntimeErrors}.");
+            }
+
+            if (currentSummary.TimedOut > before.TimedOut)
+            {
+                violations.Add($"No new timeouts violated: previous={before.TimedOut}, current={currentSummary.TimedOut}.");
+            }
+
+            if (currentSummary.InvalidTestConfiguration > before.InvalidTestConfiguration)
+            {
+                violations.Add($"No new invalid test configurations violated: previous={before.InvalidTestConfiguration}, current={currentSummary.InvalidTestConfiguration}.");
+            }
+        }
+
         var currentFailures = BuildFailureSet(current);
         var previousFailures = previous is null ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) : BuildFailureSet(previous.Value);
         var newFailures = currentFailures.Except(previousFailures, StringComparer.OrdinalIgnoreCase).ToList();
@@ -120,7 +157,11 @@ public static class Test262GateVerifier
             ReadInt(summary, "parserErrors"),
             ReadInt(summary, "crashes"),
             ReadInt(summary, "expectedFailures"),
-            ReadInt(summary, "unexpectedPasses"));
+            ReadInt(summary, "unexpectedPasses"),
+            ReadInt(summary, "runtimeErrors"),
+            ReadInt(summary, "timedOut"),
+            ReadInt(summary, "harnessUnsupported"),
+            ReadInt(summary, "invalidTestConfiguration"));
     }
 
     private static int ReadInt(JsonElement element, string key)
@@ -173,6 +214,26 @@ public static class Test262GateVerifier
         }
 
         return fallback;
+    }
+
+    private static int CountTestsWithStatus(JsonElement root, string status)
+    {
+        if (!root.TryGetProperty("tests", out var tests) || tests.ValueKind != JsonValueKind.Array)
+        {
+            return 0;
+        }
+
+        var count = 0;
+        foreach (var t in tests.EnumerateArray())
+        {
+            if (t.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String &&
+                string.Equals(st.GetString(), status, StringComparison.OrdinalIgnoreCase))
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     private static int CountUncategorizedFailures(JsonElement root)
@@ -341,5 +402,9 @@ public static class Test262GateVerifier
         int ParserErrors,
         int Crashes,
         int ExpectedFailures,
-        int UnexpectedPasses);
+        int UnexpectedPasses,
+        int RuntimeErrors,
+        int TimedOut,
+        int HarnessUnsupported,
+        int InvalidTestConfiguration);
 }
