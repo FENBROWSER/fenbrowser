@@ -15764,6 +15764,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             props[name] = JsValue.FromString(inlineValue);
         }
 
+        ResolveComputedInsets(element, cs, props);
+
         // CSSOM §6.7.3: every property is readable both as its dashed name
         // (getPropertyValue / bracket access) and as the camel-cased IDL
         // attribute, plus cssFloat for float. Everything above wrote dashed
