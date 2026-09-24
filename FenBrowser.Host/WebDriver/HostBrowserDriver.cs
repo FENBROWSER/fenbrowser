@@ -982,7 +982,12 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task<string> TakeScreenshotAsync()
         {
+            // A single-colour capture can be a frame that has not been painted yet,
+            // so it is retried; but a page that really is one colour (a blank or
+            // plain reftest page) gives the same colour twice running, and that
+            // answer is kept instead of paying for every attempt.
             const int maxAttempts = 10;
+            uint? previousSolidColor = null;
             for (var attempt = 0; attempt < maxAttempts; attempt++)
             {
                 await RunOnMainThread(() =>
@@ -1001,12 +1006,13 @@ namespace FenBrowser.Host.WebDriver
                 // Allow the render thread to process the requested frame before capture.
                 await Task.Delay(70).ConfigureAwait(false);
 
+                var isLastAttempt = attempt == maxAttempts - 1;
                 var capture = await RunOnMainThread(() =>
                 {
                     var bitmap = WindowManager.Instance.CaptureScreenshot();
                     if (bitmap == null)
                     {
-                        return (Base64: string.Empty, IsSolid: true, Width: 0, Height: 0);
+                        return (Base64: string.Empty, IsSolid: true, SolidColor: (uint?)null);
                     }
 
                     try
@@ -1014,14 +1020,21 @@ namespace FenBrowser.Host.WebDriver
                         var screenshotBitmap = TryCropToWebViewport(bitmap);
                         try
                         {
-                            var isSolid = IsSolidColor(screenshotBitmap);
+                            var solidColor = SolidColorOf(screenshotBitmap);
+                            var keep = solidColor == null || isLastAttempt ||
+                                       (previousSolidColor != null && previousSolidColor == solidColor);
+                            // PNG-encode only the capture that will be returned.
+                            if (!keep)
+                            {
+                                return (Base64: string.Empty, IsSolid: true, SolidColor: solidColor);
+                            }
+
                             using var image = SkiaSharp.SKImage.FromBitmap(screenshotBitmap);
                             using var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
                             return (
                                 Base64: Convert.ToBase64String(data.ToArray()),
-                                IsSolid: isSolid,
-                                Width: screenshotBitmap.Width,
-                                Height: screenshotBitmap.Height);
+                                IsSolid: false,
+                                SolidColor: solidColor);
                         }
                         finally
                         {
@@ -1037,15 +1050,12 @@ namespace FenBrowser.Host.WebDriver
                     }
                 });
 
-                if (!capture.IsSolid)
+                if (!capture.IsSolid || isLastAttempt)
                 {
                     return capture.Base64;
                 }
 
-                if (attempt == maxAttempts - 1)
-                {
-                    return capture.Base64;
-                }
+                previousSolidColor = capture.SolidColor;
 
                 // Solid captures can occur while waiting for asynchronous paint submission.
                 // Retry with a short progressive backoff rather than synthesizing pixels.
@@ -1055,26 +1065,49 @@ namespace FenBrowser.Host.WebDriver
             return string.Empty;
         }
 
-        private static bool IsSolidColor(SkiaSharp.SKBitmap bitmap)
+        /// <summary>
+        /// The bitmap's one colour, or null when it has more than one. Reads the
+        /// pixel buffer directly: GetPixel per pixel cost a full-viewport scan of
+        /// managed calls on every capture.
+        /// </summary>
+        internal static uint? SolidColorOf(SkiaSharp.SKBitmap bitmap)
         {
             if (bitmap == null || bitmap.Width <= 0 || bitmap.Height <= 0)
             {
-                return true;
+                return 0;
             }
 
-            var first = bitmap.GetPixel(0, 0);
+            if (bitmap.BytesPerPixel != 4)
+            {
+                var first = bitmap.GetPixel(0, 0);
+                for (var y = 0; y < bitmap.Height; y++)
+                {
+                    for (var x = 0; x < bitmap.Width; x++)
+                    {
+                        if (bitmap.GetPixel(x, y) != first)
+                        {
+                            return null;
+                        }
+                    }
+                }
+
+                return (uint)first;
+            }
+
+            var rowBytes = bitmap.RowBytes;
+            var bytes = bitmap.GetPixelSpan();
+            var firstPixel = System.Runtime.InteropServices.MemoryMarshal.Read<uint>(bytes);
             for (var y = 0; y < bitmap.Height; y++)
             {
-                for (var x = 0; x < bitmap.Width; x++)
+                var row = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(
+                    bytes.Slice(y * rowBytes, bitmap.Width * 4));
+                if (row.IndexOfAnyExcept(firstPixel) >= 0)
                 {
-                    if (bitmap.GetPixel(x, y) != first)
-                    {
-                        return false;
-                    }
+                    return null;
                 }
             }
 
-            return true;
+            return firstPixel;
         }
 
         private static SkiaSharp.SKBitmap TryCropToWebViewport(SkiaSharp.SKBitmap sourceBitmap)
