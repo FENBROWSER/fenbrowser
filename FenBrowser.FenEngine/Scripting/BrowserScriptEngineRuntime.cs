@@ -18833,7 +18833,15 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var document = Document.CreateHtmlDocument();
         var url = ResolveElementUrlProperty(iframe, "src");
         document.URL = string.IsNullOrWhiteSpace(url) ? "about:blank" : url;
-        document.BaseURI = document.URL;
+        // HTML 4.2.3 fallback base URL: an about:blank or about:srcdoc document
+        // resolves against its creator's base URL, not against itself.
+        var creatorBase = iframe.OwnerDocument?.BaseURI;
+        document.BaseURI =
+            (document.URL.StartsWith("about:blank", StringComparison.OrdinalIgnoreCase) ||
+             document.URL.StartsWith("about:srcdoc", StringComparison.OrdinalIgnoreCase)) &&
+            !string.IsNullOrEmpty(creatorBase)
+                ? creatorBase
+                : document.URL;
 
         if (document.ParentNode == null)
         {
