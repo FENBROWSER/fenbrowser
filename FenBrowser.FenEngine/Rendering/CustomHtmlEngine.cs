@@ -630,7 +630,7 @@ public void Dispose()
                 SetActiveDom(null);
                 // _cachedView = null;
                 _cachedRenderer = null;
-                JavaScriptEngine.SetVisualRectProvider(null);
+                JavaScriptEngine.RemoveProviders(this);
             }
             catch (Exception ex)
             {
@@ -1442,7 +1442,7 @@ public void Dispose()
             activeRenderer = _cachedRenderer;
 
             // Only set up visual rect provider if we own the renderer
-            JavaScriptEngine.SetVisualRectProvider(element =>
+            JavaScriptEngine.SetVisualRectProvider(this, () => _activeDom, element =>
             {
                 if (element == null || _cachedRenderer == null)
                 {

@@ -5,6 +5,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
@@ -240,8 +241,19 @@ namespace FenBrowser.FenEngine.Scripting
 {
     public static class JavaScriptEngine
     {
-        private static Func<FenBrowser.Core.Dom.V2.Element, SkiaSharp.SKRect?> _visualRectProvider;
-        private static Action<FenBrowser.Core.Dom.V2.Element> _scrollToElementProvider;
+        // Geometry and scrolling come from whichever tab owns the element. Each tab
+        // (a BrowserIntegration or a standalone CustomHtmlEngine) registers under
+        // its own owner with the top-level document it serves; one process-wide
+        // slot let the last tab created answer for every tab, and let any tab's
+        // disposal clear it for all of them.
+        private sealed record Registration(
+            object Owner,
+            Func<FenBrowser.Core.Dom.V2.Node> Root,
+            Func<FenBrowser.Core.Dom.V2.Element, SkiaSharp.SKRect?> VisualRect,
+            Action<FenBrowser.Core.Dom.V2.Element> ScrollTo);
+
+        private static readonly object ProviderGate = new();
+        private static Registration[] _registrations = Array.Empty<Registration>();
 
         public static Core.FenValue Evaluate(string script)
         {
@@ -260,7 +272,7 @@ namespace FenBrowser.FenEngine.Scripting
             if (element == null)
                 return false;
 
-            var provider = System.Threading.Volatile.Read(ref _visualRectProvider);
+            var provider = ResolveRegistration(element, r => r.VisualRect != null)?.VisualRect;
             if (provider == null)
                 return false;
 
@@ -283,15 +295,84 @@ namespace FenBrowser.FenEngine.Scripting
             return true;
         }
 
+        /// <summary>Registers (or, with null, removes) the visual-rect provider of the tab <paramref name="owner"/>.</summary>
         public static void SetVisualRectProvider(
+            object owner,
+            Func<FenBrowser.Core.Dom.V2.Node> root,
             Func<FenBrowser.Core.Dom.V2.Element, SkiaSharp.SKRect?> provider)
         {
-            System.Threading.Volatile.Write(ref _visualRectProvider, provider);
+            Update(owner, existing => existing with { Root = root ?? existing.Root, VisualRect = provider }, root,
+                visualRect: provider, scrollTo: null);
         }
 
-        public static void SetScrollToElementProvider(Action<FenBrowser.Core.Dom.V2.Element> provider)
+        /// <summary>Registers (or, with null, removes) the scroll-to-element provider of the tab <paramref name="owner"/>.</summary>
+        public static void SetScrollToElementProvider(
+            object owner,
+            Func<FenBrowser.Core.Dom.V2.Node> root,
+            Action<FenBrowser.Core.Dom.V2.Element> provider)
         {
-            System.Threading.Volatile.Write(ref _scrollToElementProvider, provider);
+            Update(owner, existing => existing with { Root = root ?? existing.Root, ScrollTo = provider }, root,
+                visualRect: null, scrollTo: provider);
+        }
+
+        /// <summary>Drops everything <paramref name="owner"/> registered.</summary>
+        public static void RemoveProviders(object owner)
+        {
+            lock (ProviderGate)
+            {
+                _registrations = _registrations.Where(r => !ReferenceEquals(r.Owner, owner)).ToArray();
+            }
+        }
+
+        private static void Update(
+            object owner,
+            Func<Registration, Registration> change,
+            Func<FenBrowser.Core.Dom.V2.Node> root,
+            Func<FenBrowser.Core.Dom.V2.Element, SkiaSharp.SKRect?> visualRect,
+            Action<FenBrowser.Core.Dom.V2.Element> scrollTo)
+        {
+            ArgumentNullException.ThrowIfNull(owner);
+            lock (ProviderGate)
+            {
+                var list = _registrations.ToList();
+                var index = list.FindIndex(r => ReferenceEquals(r.Owner, owner));
+                var updated = index >= 0 ? change(list[index]) : new Registration(owner, root, visualRect, scrollTo);
+                if (index >= 0) list.RemoveAt(index);
+                if (updated.VisualRect != null || updated.ScrollTo != null) list.Add(updated);
+                _registrations = list.ToArray();
+            }
+        }
+
+        // The registration whose top-level document holds the element; with only
+        // one tab registered (or a detached element), that one.
+        private static Registration ResolveRegistration(
+            FenBrowser.Core.Dom.V2.Element element,
+            Func<Registration, bool> usable)
+        {
+            var registrations = System.Threading.Volatile.Read(ref _registrations).Where(usable).ToArray();
+            if (registrations.Length <= 1)
+            {
+                return registrations.FirstOrDefault();
+            }
+
+            FenBrowser.Core.Dom.V2.Node top = element;
+            while (top.ParentNode != null)
+            {
+                top = top.ParentNode;
+            }
+
+            for (var i = registrations.Length - 1; i >= 0; i--)
+            {
+                var root = registrations[i].Root?.Invoke();
+                if (root != null && (ReferenceEquals(root, top) ||
+                                     (root is FenBrowser.Core.Dom.V2.Element rootElement && ReferenceEquals(rootElement.OwnerDocument, top)) ||
+                                     ReferenceEquals((root as FenBrowser.Core.Dom.V2.Document)?.DocumentElement, top)))
+                {
+                    return registrations[i];
+                }
+            }
+
+            return null;
         }
 
         public static bool TryScrollToElement(FenBrowser.Core.Dom.V2.Element element)
@@ -299,7 +380,7 @@ namespace FenBrowser.FenEngine.Scripting
             if (element == null)
                 return false;
 
-            var provider = System.Threading.Volatile.Read(ref _scrollToElementProvider);
+            var provider = ResolveRegistration(element, r => r.ScrollTo != null)?.ScrollTo;
             if (provider == null)
                 return false;
 

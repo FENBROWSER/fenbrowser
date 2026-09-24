@@ -333,7 +333,7 @@ public class BrowserIntegration : IDisposable
         // Wire up the visual rect provider so JavaScript's getBoundingClientRect()
         // can access layout geometry from the renderer.
         // This bridges DOM Element -> LayoutBox -> absolute viewport coordinates -> DOMRect.
-        FenBrowser.FenEngine.Scripting.JavaScriptEngine.SetVisualRectProvider(element =>
+        FenBrowser.FenEngine.Scripting.JavaScriptEngine.SetVisualRectProvider(this, () => _browser?.Engine?.GetActiveDom(), element =>
         {
             if (element == null || _renderer == null)
                 return null;
@@ -363,7 +363,7 @@ public class BrowserIntegration : IDisposable
         // scrollIntoView() defaults to block:"start" (align the element's top to
         // the viewport top), unlike ScrollToElement's nearest/bottom policy, so
         // resolve the element rect and scroll its top to the top of the viewport.
-        FenBrowser.FenEngine.Scripting.JavaScriptEngine.SetScrollToElementProvider(element =>
+        FenBrowser.FenEngine.Scripting.JavaScriptEngine.SetScrollToElementProvider(this, () => _browser?.Engine?.GetActiveDom(), element =>
         {
             if (element == null)
             {
@@ -964,6 +964,7 @@ public class BrowserIntegration : IDisposable
         // 1. Stop accepting new work immediately.
         _running = false;
         _lifetimeCts.Cancel();
+        FenBrowser.FenEngine.Scripting.JavaScriptEngine.RemoveProviders(this);
 
         // 2. Unblock and stop the engine thread.
         _wakeEvent.Set();
