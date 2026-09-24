@@ -644,6 +644,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private JsValue _fenJsTopWindowFacade = JsValue.Undefined;
     private JsValue _fenJsSameOriginTopWindowFacade = JsValue.Undefined;
     private readonly System.Diagnostics.Stopwatch _fenJsClock = System.Diagnostics.Stopwatch.StartNew();
+    private static readonly Dictionary<string, JsValue> ComputedStyleInitialValues = BuildComputedStyleInitialValues();
     private readonly BrowserFenJsHostHooks _hostHooks = new();
     private readonly NavigationEpoch _navigationEpoch = NavigationEpoch.Initial;
     private string _currentDocumentId = string.Empty;
@@ -16188,6 +16189,27 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         _interpreter.RegisterGlobalValue("getComputedStyle", getComputedStyleFn);
     }
 
+    private static Dictionary<string, JsValue> BuildComputedStyleInitialValues()
+    {
+        var values = new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in CssComputed.InitialValues)
+        {
+            var value = JsValue.FromString(pair.Value ?? string.Empty);
+            values[pair.Key] = value;
+            if (pair.Key.IndexOf('-') >= 0)
+            {
+                values[CssPropToCamel(pair.Key)] = value;
+            }
+        }
+
+        if (values.TryGetValue("float", out var floatValue))
+        {
+            values["cssFloat"] = floatValue;
+        }
+
+        return values;
+    }
+
     private JsValue CreateComputedStyleObjectForElement(Element element)
     {
         if (element == null)
@@ -16197,7 +16219,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         var cs = element.GetComputedStyle() ?? new CssComputed();
 
-        var props = new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
+        var props = new Dictionary<string, JsValue>(ComputedStyleInitialValues, StringComparer.OrdinalIgnoreCase);
         // Populate from the raw Map first (all CSS properties)
         if (cs.Map != null)
         {
@@ -16265,18 +16287,6 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 var propName = kv.Key.StartsWith("--") ? kv.Key : "--" + kv.Key;
                 if (!props.ContainsKey(propName))
                     props[propName] = JsValue.FromString(kv.Value ?? string.Empty);
-            }
-        }
-
-        // CSSOM §6.7.5: a computed style reports every property, so an unset one
-        // reads as its initial value rather than undefined. Closure's positioning
-        // code tests `overflow != "visible"` on each ancestor; an undefined overflow
-        // made every ancestor a clipping box and google.com's menus never opened.
-        foreach (var initial in CssComputed.InitialValues)
-        {
-            if (!props.ContainsKey(initial.Key))
-            {
-                props[initial.Key] = JsValue.FromString(initial.Value);
             }
         }
 
