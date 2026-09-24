@@ -10921,6 +10921,64 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 ].forEach(function (name) { defineHostMethod(Range.prototype, name); });
             })();
             """);
+        InstallWindowNamedProperties();
+    }
+
+    /// <summary>
+    /// HTML 7.2.2.3 named access on the Window object: Window.prototype's
+    /// [[Prototype]] becomes the WindowProperties named properties object (WebIDL
+    /// 3.7.4), so <c>window.someId</c> and a bare <c>someId</c> find the element.
+    /// Anything the window or Window.prototype defines still wins.
+    /// </summary>
+    private void InstallWindowNamedProperties()
+    {
+        if (!_interpreter.TryReadGlobalValue("Window", out var windowCtor) ||
+            !_interpreter.TryGetObjectProperty(windowCtor, "prototype", out var windowPrototype) ||
+            windowPrototype.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        _interpreter.InsertNamedPropertiesObject(windowPrototype, "WindowProperties", ResolveWindowNamedProperty);
+    }
+
+    // The document's named objects for `name`: elements of any namespace whose id
+    // is `name`, and HTML embed, form, img and object elements whose name attribute is. Child
+    // navigables are published on the window itself, so they never reach here.
+    // One match is returned as itself, several as a live HTMLCollection.
+    private JsValue? ResolveWindowNamedProperty(string name)
+    {
+        var document = _hostHooks?.CurrentDocument;
+        if (string.IsNullOrEmpty(name) || document?.DocumentElement == null)
+        {
+            return null;
+        }
+
+        bool IsNamedObject(Element element) =>
+            string.Equals(element.GetAttribute("id"), name, StringComparison.Ordinal) ||
+            (string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+             element.LocalName is "embed" or "form" or "img" or "object" &&
+             string.Equals(element.GetAttribute("name"), name, StringComparison.Ordinal));
+
+        Element first = null;
+        foreach (var node in document.DocumentElement.SelfAndDescendants())
+        {
+            if (node is not Element element || !IsNamedObject(element))
+            {
+                continue;
+            }
+
+            if (first != null)
+            {
+                return ToHostOrNull(
+                    new FenJsHtmlCollectionHost(new FilteredHTMLCollection(document, IsNamedObject)),
+                    HostObjectKind.Other);
+            }
+
+            first = element;
+        }
+
+        return first == null ? null : ToHostNodeOrNull(first);
     }
 
     private void InstallFenJsNativeBrowserConstructors()
@@ -24700,6 +24758,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         private readonly HashSet<string> _functionPrototypeProperties = new(StringComparer.Ordinal);
         private FenJsBrowserScriptEngine _owner;
         private Document _document;
+        internal Document CurrentDocument => _document;
         private BrowserSurfaceProfile _navigator;
         private FenJsLocationHost _location;
         private Uri _baseUri;

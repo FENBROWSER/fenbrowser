@@ -913,6 +913,38 @@ public sealed partial class BytecodeInterpreter
     // as enumerable own properties. Used as the lightweight namespace object
     // for `import * as ns from "mod"`. A full ECMA-262 namespace exotic object
     // with frozen [[Set]] / Symbol.toStringTag is deferred.
+    /// <summary>
+    /// Splices a WebIDL named properties object (see <see cref="Objects.NamedPropertiesObject"/>)
+    /// between <paramref name="interfacePrototype"/> and its current [[Prototype]]
+    /// (WebIDL 3.7.4: an interface prototype object's [[Prototype]] is its named
+    /// properties object, whose [[Prototype]] is the inherited interface's prototype).
+    /// </summary>
+    public JsValue InsertNamedPropertiesObject(
+        JsValue interfacePrototype, string className, Func<string, JsValue?> resolve)
+    {
+        ArgumentNullException.ThrowIfNull(className);
+        ArgumentNullException.ThrowIfNull(resolve);
+        if (interfacePrototype.Tag != JsValueTag.Object)
+            throw new ArgumentException("An interface prototype object is required.", nameof(interfacePrototype));
+
+        var target = _heap.GetObject(interfacePrototype.AsObjectHandle());
+        var named = new Objects.NamedPropertiesObject(resolve);
+        named.SetPrototype(target.PrototypeHandle);
+
+        // WebIDL 3.7.4: the class string is "<Interface>Properties".
+        var toStringTagId = GetWellKnownSymbolId("toStringTag");
+        if (toStringTagId != 0)
+        {
+            _ = named.DefineOwnSymbolProperty(toStringTagId,
+                new Objects.JsPropertyDescriptor(JsValue.FromString(className),
+                    Writable: false, Enumerable: false, Configurable: true));
+        }
+
+        var handle = _heap.AllocateObject(named, AllocationSite.Current());
+        target.SetPrototype(handle);
+        return JsValue.FromObject(handle);
+    }
+
     public JsValue AllocateNamespaceObject(IReadOnlyDictionary<string, JsValue> exports)
     {
         ArgumentNullException.ThrowIfNull(exports);
