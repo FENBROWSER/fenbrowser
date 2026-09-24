@@ -17593,6 +17593,122 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return values;
     }
 
+    private bool TryInvokeHotHostMethod(
+        JsValue receiver,
+        string methodName,
+        IReadOnlyList<JsValue> args,
+        out JsValue result)
+    {
+        result = JsValue.Undefined;
+        if (methodName is not (
+            "createElement" or
+            "createTextNode" or
+            "getAttribute" or
+            "setAttribute" or
+            "getBoundingClientRect" or
+            "getClientRects" or
+            "getElementsByTagName" or
+            "getElementsByClassName"))
+        {
+            return false;
+        }
+
+        if (!TryResolveHostObject(receiver, out var hostObject))
+        {
+            return false;
+        }
+
+        try
+        {
+            switch (hostObject)
+            {
+                case Document document when methodName == "createElement":
+                {
+                    var localName = args.Count > 0 ? CoerceToHostString(args[0]) : "div";
+                    result = UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(document.CreateElement(localName)));
+                    return true;
+                }
+                case Document document when methodName == "createTextNode":
+                {
+                    var data = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                    result = ToHostNodeOrNull(document.CreateTextNode(data));
+                    return true;
+                }
+                case Element element when methodName == "getAttribute":
+                {
+                    var attributeName = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                    var attributeValue = element.GetAttribute(attributeName);
+                    result = attributeValue == null ? JsValue.Null : JsValue.FromString(attributeValue);
+                    return true;
+                }
+                case Element element when methodName == "setAttribute":
+                {
+                    var attributeName = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                    var attributeValue = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                    element.SetAttribute(attributeName, attributeValue);
+                    ApplyElementSetAttributeSideEffects(element, attributeName, attributeValue);
+                    result = JsValue.Undefined;
+                    return true;
+                }
+                case Element element when methodName == "getBoundingClientRect":
+                    result = ReadElementBoundingClientRect(element);
+                    return true;
+                case Element element when methodName == "getClientRects":
+                    result = ReadElementClientRects(element);
+                    return true;
+                case Element element when methodName == "getElementsByTagName":
+                {
+                    var qualifiedName = args.Count > 0 ? CoerceToHostString(args[0]) : "*";
+                    result = ToHostOrNull(
+                        new FenJsHtmlCollectionHost(element.GetElementsByTagName(qualifiedName)),
+                        HostObjectKind.Other);
+                    return true;
+                }
+                case Element element when methodName == "getElementsByClassName":
+                {
+                    var className = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                    result = ToHostOrNull(
+                        new FenJsHtmlCollectionHost(element.GetElementsByClassName(className)),
+                        HostObjectKind.Other);
+                    return true;
+                }
+                default:
+                    return false;
+            }
+        }
+        catch (DomException ex)
+        {
+            ThrowDomException(
+                ex.Name,
+                string.IsNullOrEmpty(ex.Message)
+                    ? $"Failed to execute '{methodName}'."
+                    : ex.Message);
+        }
+
+        return true;
+    }
+
+    private void ApplyElementSetAttributeSideEffects(
+        Element element,
+        string attributeName,
+        string attributeValue)
+    {
+        ApplyEventHandlerContentAttributeChange(element, attributeName, attributeValue);
+        if ((string.Equals(attributeName, "src", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(attributeName, "srcdoc", StringComparison.OrdinalIgnoreCase)) &&
+            IsIFrameElement(element))
+        {
+            QueueFrameElementLoad(element);
+        }
+        if (IsIFrameElement(element) &&
+            (string.Equals(attributeName, "width", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(attributeName, "height", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(attributeName, "style", StringComparison.OrdinalIgnoreCase)))
+        {
+            NotifyResizeObservers(element);
+        }
+    }
+
     private JsValue InvokeFenJsHostMethod(JsValue receiver, string methodName, IReadOnlyList<JsValue> args)
     {
         if (receiver.Tag != JsValueTag.HostObject || string.IsNullOrWhiteSpace(methodName))
@@ -17608,6 +17724,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 },
                 LogMarker.EngineBug);
             ThrowDomException("TypeError", "Illegal invocation");
+        }
+
+        var normalizedArgs = args ?? Array.Empty<JsValue>();
+        if (TryInvokeHotHostMethod(receiver, methodName, normalizedArgs, out var fastResult))
+        {
+            return fastResult;
         }
 
         var handle = receiver.AsHostObjectHandle();
@@ -17627,7 +17749,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             ThrowDomException("TypeError", "Illegal invocation");
         }
 
-        return _interpreter.InvokeFunction(method, args ?? Array.Empty<JsValue>(), receiver);
+        return _interpreter.InvokeFunction(method, normalizedArgs, receiver);
     }
 
     private HostObjectHandle RegisterHostObject(object hostObject, HostObjectKind kind)
@@ -24604,59 +24726,64 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return GetOrCreateHostCallable(
             container,
             method,
-            (_, args) =>
-            {
-                var first = args.Count > 0 ? ResolveHostObjectOrNull<Node>(args[0]) : null;
-                if (first == null)
-                {
-                    ThrowDomException("TypeError", $"Failed to execute '{method}' on 'Node': parameter 1 is not of type 'Node'.");
-                }
-
-                switch (method)
-                {
-                    case "appendChild":
-                    {
-                        var moved = SnapshotFragmentChildren(first);
-                        var appended = ToHostNodeOrNull(container.AppendChild(first));
-                        UpgradeInsertedCustomElements(first, moved);
-                        QueueFrameLoadsForTree(first);
-                        return appended;
-                    }
-                    case "removeChild":
-                        return ToHostNodeOrNull(container.RemoveChild(first));
-                    case "insertBefore":
-                    {
-                        var reference = args.Count > 1 && args[1].Tag != JsValueTag.Null && args[1].Tag != JsValueTag.Undefined
-                            ? ResolveHostObjectOrNull<Node>(args[1])
-                            : null;
-                        if (args.Count > 1 && args[1].Tag != JsValueTag.Null && reference == null)
-                        {
-                            ThrowDomException("TypeError", "Failed to execute 'insertBefore' on 'Node': parameter 2 is not of type 'Node'.");
-                        }
-
-                        var moved = SnapshotFragmentChildren(first);
-                        var inserted = ToHostNodeOrNull(container.InsertBefore(first, reference));
-                        UpgradeInsertedCustomElements(first, moved);
-                        QueueFrameLoadsForTree(first);
-                        return inserted;
-                    }
-                    default:
-                    {
-                        var child = args.Count > 1 ? ResolveHostObjectOrNull<Node>(args[1]) : null;
-                        if (child == null)
-                        {
-                            ThrowDomException("TypeError", "Failed to execute 'replaceChild' on 'Node': parameter 2 is not of type 'Node'.");
-                        }
-
-                        var moved = SnapshotFragmentChildren(first);
-                        var replaced = ToHostNodeOrNull(container.ReplaceChild(first, child));
-                        UpgradeInsertedCustomElements(first, moved);
-                        QueueFrameLoadsForTree(first);
-                        return replaced;
-                    }
-                }
-            },
+            (_, args) => InvokeContainerMutation(container, method, args),
             length: method == "appendChild" || method == "removeChild" ? 1 : 2);
+    }
+
+    private JsValue InvokeContainerMutation(
+        ContainerNode container,
+        string method,
+        IReadOnlyList<JsValue> args)
+    {
+        var first = args.Count > 0 ? ResolveHostObjectOrNull<Node>(args[0]) : null;
+        if (first == null)
+        {
+            ThrowDomException("TypeError", $"Failed to execute '{method}' on 'Node': parameter 1 is not of type 'Node'.");
+        }
+
+        switch (method)
+        {
+            case "appendChild":
+            {
+                var moved = SnapshotFragmentChildren(first);
+                var appended = ToHostNodeOrNull(container.AppendChild(first));
+                UpgradeInsertedCustomElements(first, moved);
+                QueueFrameLoadsForTree(first);
+                return appended;
+            }
+            case "removeChild":
+                return ToHostNodeOrNull(container.RemoveChild(first));
+            case "insertBefore":
+            {
+                var reference = args.Count > 1 && args[1].Tag != JsValueTag.Null && args[1].Tag != JsValueTag.Undefined
+                    ? ResolveHostObjectOrNull<Node>(args[1])
+                    : null;
+                if (args.Count > 1 && args[1].Tag != JsValueTag.Null && reference == null)
+                {
+                    ThrowDomException("TypeError", "Failed to execute 'insertBefore' on 'Node': parameter 2 is not of type 'Node'.");
+                }
+
+                var moved = SnapshotFragmentChildren(first);
+                var inserted = ToHostNodeOrNull(container.InsertBefore(first, reference));
+                UpgradeInsertedCustomElements(first, moved);
+                QueueFrameLoadsForTree(first);
+                return inserted;
+            }
+            default:
+            {
+                var child = args.Count > 1 ? ResolveHostObjectOrNull<Node>(args[1]) : null;
+                if (child == null)
+                {
+                    ThrowDomException("TypeError", "Failed to execute 'replaceChild' on 'Node': parameter 2 is not of type 'Node'.");
+                }
+
+                var moved = SnapshotFragmentChildren(first);
+                var replaced = ToHostNodeOrNull(container.ReplaceChild(first, child));
+                UpgradeInsertedCustomElements(first, moved);
+                QueueFrameLoadsForTree(first);
+                return replaced;
+            }
+        }
     }
 
     private JsValue CreateCompareDocumentPositionCallable(Node node)
@@ -29635,20 +29762,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var attributeName = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
                             var attributeValue = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
                             element.SetAttribute(attributeName, attributeValue);
-                            _owner.ApplyEventHandlerContentAttributeChange(element, attributeName, attributeValue);
-                            if ((string.Equals(attributeName, "src", StringComparison.OrdinalIgnoreCase) ||
-                                 string.Equals(attributeName, "srcdoc", StringComparison.OrdinalIgnoreCase)) &&
-                                IsIFrameElement(element))
-                            {
-                                _owner.QueueFrameElementLoad(element);
-                            }
-                            if (IsIFrameElement(element) &&
-                                (string.Equals(attributeName, "width", StringComparison.OrdinalIgnoreCase) ||
-                                 string.Equals(attributeName, "height", StringComparison.OrdinalIgnoreCase) ||
-                                 string.Equals(attributeName, "style", StringComparison.OrdinalIgnoreCase)))
-                            {
-                                _owner.NotifyResizeObservers(element);
-                            }
+                            _owner.ApplyElementSetAttributeSideEffects(element, attributeName, attributeValue);
                             return JsValue.Undefined;
                         },
                         length: 2);

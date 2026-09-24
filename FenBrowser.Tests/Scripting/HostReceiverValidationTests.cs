@@ -46,6 +46,42 @@ public sealed class HostReceiverValidationTests
         }
     }
 
+    [Fact]
+    public async Task ElementMutationMethods_UseCallReceiver()
+    {
+        var baseUri = new Uri("https://fixture.test/host-receiver-mutation.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><div id='first'></div><div id='second'></div></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            var result = engine.Evaluate(
+                "(function(){" +
+                "var first=document.getElementById('first');" +
+                "var second=document.getElementById('second');" +
+                "var setAttribute=first.setAttribute;" +
+                "setAttribute.call(second,'data-state','ok');" +
+                "var child=document.createElement('span');" +
+                "var appendChild=first.appendChild;" +
+                "var appended=appendChild.call(second,child);" +
+                "return [second.getAttribute('data-state'),first.hasAttribute('data-state'),second.contains(child),appended===child].join('|');" +
+                "})();");
+
+            Assert.Equal("ok|false|true|true", result?.ToString());
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static JsHostAdapter CreateHost() =>
         new(
             navigate: _ => { },
