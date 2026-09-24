@@ -85,7 +85,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
                 return;
             }
 
-            ShiftSubtreeUniform(box, -box.Geometry.ContentBox.Left, -box.Geometry.ContentBox.Top);
+            var dx = -box.Geometry.ContentBox.Left;
+            var dy = -box.Geometry.ContentBox.Top;
+            if (dx == 0f && dy == 0f)
+            {
+                return;
+            }
+
+            ShiftSubtreeUniform(box, dx, dy);
         }
 
         // Same traversal the reset has always used — no visited set, so it stays
@@ -131,6 +138,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
 
         public static void ShiftSubtree(LayoutBox box, float dx, float dy)
         {
+            if (dx == 0f && dy == 0f)
+            {
+                return;
+            }
+
             s_shiftSubtreeRoots++;
             ShiftSubtree(box, dx, dy, depth: 0, visited: null);
         }
