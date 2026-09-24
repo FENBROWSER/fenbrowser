@@ -23299,9 +23299,42 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return;
         }
 
-        var fragment = HtmlParser.ParseFragment(anchor, html ?? string.Empty, options: null, out _);
+        // DOM Parsing 7.1 insertAdjacentHTML: the position is an ASCII case-insensitive
+        // keyword; beforebegin/afterend parse in the parent's context and need a parent
+        // that is not the document.
+        var normalizedPosition = (position ?? string.Empty).ToLowerInvariant();
+        Node context;
+        switch (normalizedPosition)
+        {
+            case "beforebegin":
+            case "afterend":
+                context = anchor.ParentNode;
+                if (context == null || context is Document)
+                {
+                    ThrowDomException("NoModificationAllowedError", "The element has no parent to insert next to.");
+                    return;
+                }
+                break;
+            case "afterbegin":
+            case "beforeend":
+                context = anchor;
+                break;
+            default:
+                ThrowDomException("SyntaxError", $"'{position}' is not a valid insertion position.");
+                return;
+        }
+
+        // A context that is not an element, or is the html element of an HTML
+        // document, parses as if it were a body element.
+        if (context is not Element contextElement ||
+            (string.Equals(contextElement.LocalName, "html", StringComparison.Ordinal) &&
+             string.Equals(contextElement.NamespaceUri, Namespaces.Html, StringComparison.Ordinal)))
+        {
+            contextElement = (anchor.OwnerDocument ?? new Document()).CreateElement("body");
+        }
+
+        var fragment = HtmlParser.ParseFragment(contextElement, html ?? string.Empty, options: null, out _);
         var insertedRoots = new List<Element>();
-        var normalizedPosition = (position ?? string.Empty).Trim().ToLowerInvariant();
 
         void TrackInserted(Node node)
         {
