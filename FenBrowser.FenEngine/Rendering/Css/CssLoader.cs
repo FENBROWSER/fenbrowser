@@ -1129,7 +1129,29 @@ namespace FenBrowser.FenEngine.Rendering
                 });
                 extTasks.Add(t);
             }
-            if (extTasks.Count > 0) 
+
+            // CSSOM 6.2: a document's or shadow root's adopted stylesheets follow its
+            // own stylesheets in the cascade, in array order.
+            foreach (var (adopted, scope) in EnumerateAdoptedStyleSheets(root))
+            {
+                if (string.IsNullOrWhiteSpace(adopted.CssText))
+                {
+                    continue;
+                }
+
+                cssBlobs.Add(new CssSource
+                {
+                    CssText = WrapInMediaQuery(adopted),
+                    Origin = CssOrigin.Inline,
+                    SourceOrder = sourceIndex,
+                    SequenceOrder = sourceIndex,
+                    BaseUri = adopted.BaseUri ?? baseUri,
+                    ShadowScopeRoot = scope
+                });
+                sourceIndex++;
+            }
+
+            if (extTasks.Count > 0)
             {
                 if (progressiveStylesReady != null)
                 {
@@ -1535,6 +1557,48 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        /// <summary>
+        /// The adopted stylesheets that apply under <paramref name="root"/>: its
+        /// document's, then each shadow root's (scoped to that root) in tree order.
+        /// </summary>
+        private static IEnumerable<(FenBrowser.Core.Css.AdoptedStyleSheet Sheet, ShadowRoot Scope)> EnumerateAdoptedStyleSheets(Element root)
+        {
+            if (root == null)
+            {
+                yield break;
+            }
+
+            var document = root.OwnerDocument;
+            if (document != null && ReferenceEquals(document.DocumentElement, root))
+            {
+                foreach (var sheet in document.AdoptedStyleSheets)
+                {
+                    yield return (sheet, null);
+                }
+            }
+
+            foreach (var element in EnumerateElementsIncludingShadowTrees(root))
+            {
+                var shadowRoot = element.GetAttachedShadowRoot();
+                if (shadowRoot == null)
+                {
+                    continue;
+                }
+
+                foreach (var sheet in shadowRoot.AdoptedStyleSheets)
+                {
+                    yield return (sheet, shadowRoot);
+                }
+            }
+        }
+
+        private static string WrapInMediaQuery(FenBrowser.Core.Css.AdoptedStyleSheet sheet)
+        {
+            return string.IsNullOrWhiteSpace(sheet.MediaText)
+                ? sheet.CssText
+                : "@media " + sheet.MediaText + " {\n" + sheet.CssText + "\n}";
+        }
+
         private static void ApplyShadowScope(IEnumerable<NewCss.CssRule> rules, ShadowRoot shadowScopeRoot)
         {
             if (rules == null)
@@ -1587,6 +1651,14 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     builder.Append(element.TextContent ?? string.Empty).Append('\0');
                 }
+            }
+
+            foreach (var (adopted, scope) in EnumerateAdoptedStyleSheets(root))
+            {
+                builder.Append('A').Append(scope?.ScopeIdentity ?? 0).Append('\0')
+                    .Append(adopted.MediaText).Append('\0')
+                    .Append(adopted.BaseUri?.AbsoluteUri ?? string.Empty).Append('\0')
+                    .Append(adopted.CssText).Append('\0');
             }
 
             return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(

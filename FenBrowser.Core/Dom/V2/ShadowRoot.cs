@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using FenBrowser.Core.Css;
 
 namespace FenBrowser.Core.Dom.V2
 {
@@ -250,36 +251,21 @@ namespace FenBrowser.Core.Dom.V2
 
         // --- Stylesheets ---
 
-        private List<object> _adoptedStylesheets;
+        private List<AdoptedStyleSheet> _adoptedStylesheets = new();
 
         /// <summary>
-        /// The adopted stylesheets for this shadow root.
-        /// https://dom.spec.whatwg.org/#dom-documentorshadowroot-adoptedstylesheets
+        /// The adopted stylesheets for this shadow root, in cascade order.
+        /// https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets
         /// </summary>
-        public IReadOnlyList<object> AdoptedStyleSheets => _adoptedStylesheets ??= new List<object>();
+        public IReadOnlyList<AdoptedStyleSheet> AdoptedStyleSheets => _adoptedStylesheets;
 
         /// <summary>
-        /// Sets the adopted stylesheets.
+        /// Replaces the adopted stylesheets and restyles the tree they apply to.
         /// </summary>
-        public void SetAdoptedStyleSheets(IEnumerable<object> stylesheets)
+        public void SetAdoptedStyleSheets(IEnumerable<AdoptedStyleSheet> stylesheets)
         {
-            _adoptedStylesheets ??= new List<object>();
-            _adoptedStylesheets.Clear();
-            if (stylesheets == null)
-            {
-                return;
-            }
-
-            foreach (var stylesheet in stylesheets)
-            {
-                if (stylesheet == null)
-                    throw new ArgumentNullException(nameof(stylesheets), "Adopted stylesheets cannot contain null entries.");
-
-                if (_adoptedStylesheets.Contains(stylesheet))
-                    continue;
-
-                _adoptedStylesheets.Add(stylesheet);
-            }
+            _adoptedStylesheets = AdoptedStyleSheet.CopyList(stylesheets);
+            InvalidateDocumentStyle();
         }
 
         // --- Active Element ---

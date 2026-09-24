@@ -201,17 +201,20 @@ namespace FenBrowser.Tests.Dom
         }
 
         [Fact]
-        public void ShadowRoot_SetAdoptedStyleSheets_DeduplicatesAndRejectsNull()
+        public void ShadowRoot_SetAdoptedStyleSheets_KeepsDuplicatesAndRejectsNull()
         {
             var document = Document.CreateHtmlDocument();
             var host = document.CreateElement("div");
             var shadowRoot = host.AttachShadow(new ShadowRootInit { Mode = ShadowRootMode.Open });
-            var sheet = new object();
+            var sheet = new FenBrowser.Core.Css.AdoptedStyleSheet("div { color: blue; }");
 
+            // CSSOM: adoptedStyleSheets is an ObservableArray, so a sheet may appear
+            // twice and its later position is the one that counts in the cascade.
             shadowRoot.SetAdoptedStyleSheets(new[] { sheet, sheet });
 
-            Assert.Single(shadowRoot.AdoptedStyleSheets);
-            Assert.Throws<ArgumentNullException>(() => shadowRoot.SetAdoptedStyleSheets(new object[] { null }));
+            Assert.Equal(2, shadowRoot.AdoptedStyleSheets.Count);
+            Assert.Throws<ArgumentNullException>(() => shadowRoot.SetAdoptedStyleSheets(
+                new FenBrowser.Core.Css.AdoptedStyleSheet[] { null }));
         }
 
         [Fact]

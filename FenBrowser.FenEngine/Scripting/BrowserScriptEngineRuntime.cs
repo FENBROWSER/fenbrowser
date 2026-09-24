@@ -7501,6 +7501,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 "__fenStyleSheetRules",
                 (_, args) => BuildStyleSheetRuleDescriptors(args),
                 length: 1));
+        _interpreter.RegisterGlobalValue(
+            "__fenParseStyleSheetText",
+            _interpreter.AllocateNativeFunction(
+                "__fenParseStyleSheetText",
+                (_, args) => ParseStyleSheetRuleDescriptors(args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty),
+                length: 1));
+        _interpreter.RegisterGlobalValue(
+            "__fenSetAdoptedStyleSheets",
+            _interpreter.AllocateNativeFunction(
+                "__fenSetAdoptedStyleSheets",
+                (_, args) => SetAdoptedStyleSheets(args),
+                length: 2));
         InstallFenJsBrowserSurfaceFillers();
         InstallTopWindowPostMessageBridge(globalThisValue);
     }
@@ -10168,8 +10180,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             """
             (function () {
                 var ordinaryHasInstance = Function.prototype[Symbol.hasInstance];
+                // Interfaces with a WebIDL constructor register here; every other
+                // interface object throws "Illegal constructor".
+                var constructHooks = {};
                 function defineCtor(name, baseCtor, prototypeBrands, match) {
                     var ctor = function () {
+                        var construct = constructHooks[name];
+                        if (construct) {
+                            if (new.target === undefined) {
+                                throw new TypeError("Failed to construct '" + name + "': Please use the 'new' operator.");
+                            }
+                            return construct(new.target, arguments);
+                        }
                         if (name === 'HTMLElement') {
                             if (globalThis.__fenCustomElementConstructionElement) {
                                 return globalThis.__fenCustomElementConstructionElement;
@@ -10718,7 +10740,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     });
                 }
 
-                function __fenCreateCssStyleDeclaration(initialText) {
+                function __fenCreateCssStyleDeclaration(initialText, onChange) {
                     var decls = __fenParseDeclarations(initialText);
                     var propMap = {};
                     var propOrder = [];
@@ -10842,7 +10864,46 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         configurable: true, enumerable: true
                     });
 
+                    // A rule's declarations belong to its stylesheet: an edit through
+                    // rule.style has to reach whatever applies the sheet.
+                    if (onChange) {
+                        var rawSetProperty = declObj.setProperty;
+                        var rawRemoveProperty = declObj.removeProperty;
+                        var cssTextAccessor = Object.getOwnPropertyDescriptor(declObj, 'cssText');
+                        var batching = false;
+                        declObj.setProperty = function () {
+                            var result = rawSetProperty.apply(this, arguments);
+                            if (!batching) onChange();
+                            return result;
+                        };
+                        declObj.removeProperty = function () {
+                            var result = rawRemoveProperty.apply(this, arguments);
+                            if (!batching) onChange();
+                            return result;
+                        };
+                        Object.defineProperty(declObj, 'cssText', {
+                            get: cssTextAccessor.get,
+                            set: function (newText) {
+                                batching = true;
+                                try { cssTextAccessor.set.call(this, newText); } finally { batching = false; }
+                                onChange();
+                            },
+                            configurable: true, enumerable: true
+                        });
+                    }
+
                     return __fenWrapStyleProxy(declObj);
+                }
+
+                // Sheet -> the callback that republishes it after one of its rules changed.
+                var __fenSheetNotifiers = new WeakMap();
+
+                function __fenRuleStyleChanged(rule) {
+                    return function () {
+                        var sheet = rule.parentStyleSheet;
+                        var notify = sheet && __fenSheetNotifiers.get(sheet);
+                        if (notify) notify();
+                    };
                 }
 
                 function __fenParseCssRule(text) {
@@ -10850,9 +10911,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     var open = text.indexOf('{');
                     var close = text.lastIndexOf('}');
                     if (open <= 0 || close < open) {
-                        var err = new Error("Failed to execute 'insertRule' on 'CSSStyleSheet': Failed to parse the rule '" + text + "'.");
-                        err.name = 'SyntaxError';
-                        throw err;
+                        throw new DOMException("Failed to execute 'insertRule' on 'CSSStyleSheet': Failed to parse the rule '" + text + "'.", 'SyntaxError');
                     }
                     var selector = text.slice(0, open).trim();
                     var body = text.slice(open + 1, close);
@@ -10882,7 +10941,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         });
                     }
                     rule.parentStyleSheet = null;
-                    rule.style = __fenCreateCssStyleDeclaration(body);
+                    rule.parentRule = null;
+                    rule.style = __fenCreateCssStyleDeclaration(body, __fenRuleStyleChanged(rule));
                     Object.defineProperty(rule, 'cssText', {
                         get: function () {
                             var head = this.selectorText || (selector.charAt(0) === '@' ? selector : '');
@@ -10900,7 +10960,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSNestedDeclarations'], enumerable: false });
                         rule.type = 0;
                         rule.parentStyleSheet = parentStyleSheet || null;
-                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '');
+                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '', __fenRuleStyleChanged(rule));
                         Object.defineProperty(rule, 'cssText', {
                             get: function () {
                                 return this.style.cssText;
@@ -10939,7 +10999,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             },
                             configurable: true, enumerable: true
                         });
-                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '');
+                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '', __fenRuleStyleChanged(rule));
                         if (descriptor.rules && descriptor.rules.length) {
                             rule.cssRules = __fenBuildCssRules(descriptor.rules, parentStyleSheet);
                         }
@@ -10954,7 +11014,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         rule = Object.create(CSSFontFaceRule.prototype);
                         Object.defineProperty(rule, '__fenDomBrands', { value: ['CSSRule', 'CSSFontFaceRule'], enumerable: false });
                         rule.type = 5;
-                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '');
+                        rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations || '', __fenRuleStyleChanged(rule));
                         Object.defineProperty(rule, 'cssText', {
                             get: function () {
                                 return '@font-face { ' + this.style.cssText + (this.style.cssText ? ' ' : '') + '}';
@@ -10967,7 +11027,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         rule.type = descriptor.type || 0;
                         if (descriptor.name !== undefined) rule.name = descriptor.name;
                         if (descriptor.declarations !== undefined) {
-                            rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations);
+                            rule.style = __fenCreateCssStyleDeclaration(descriptor.declarations, __fenRuleStyleChanged(rule));
                         }
                         if (descriptor.rules && descriptor.rules.length) {
                             rule.cssRules = __fenBuildCssRules(descriptor.rules, parentStyleSheet);
@@ -10987,6 +11047,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     }
 
                     rule.parentStyleSheet = parentStyleSheet || null;
+                    // CSSOM 6.4.2: a top-level rule has no parent rule; a nested one's
+                    // is the grouping rule that holds it.
+                    rule.parentRule = null;
+                    if (rule.cssRules) {
+                        for (var i = 0; i < rule.cssRules.length; i++) rule.cssRules[i].parentRule = rule;
+                    }
                     return rule;
                 }
 
@@ -11000,97 +11066,482 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return built;
                 }
 
+                // CSSOM 4.1 MediaList: the media queries of a sheet, as a list.
+                var MediaList = defineCtor('MediaList', null, ['MediaList'], function (candidate) {
+                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('MediaList') >= 0;
+                });
+
+                function __fenCreateMediaList(text, onChange) {
+                    var list = Object.create(MediaList.prototype);
+                    var items = [];
+                    var indexed = 0;
+                    function parse(value) {
+                        var parsed = [];
+                        String(value == null ? '' : value).split(',').forEach(function (query) {
+                            query = query.trim().replace(/\s+/g, ' ');
+                            if (query) parsed.push(query);
+                        });
+                        return parsed;
+                    }
+                    function update(next) {
+                        items = next;
+                        for (var i = items.length; i < indexed; i++) delete list[i];
+                        for (var j = 0; j < items.length; j++) {
+                            Object.defineProperty(list, j, { value: items[j], enumerable: true, configurable: true });
+                        }
+                        indexed = items.length;
+                        if (onChange) onChange();
+                    }
+                    Object.defineProperty(list, 'mediaText', {
+                        get: function () { return items.join(', '); },
+                        set: function (value) { update(parse(value)); },
+                        enumerable: true, configurable: true
+                    });
+                    Object.defineProperty(list, 'length', {
+                        get: function () { return items.length; },
+                        enumerable: true, configurable: true
+                    });
+                    list.item = function (index) {
+                        index = index >>> 0;
+                        return index < items.length ? items[index] : null;
+                    };
+                    list.appendMedium = function (medium) {
+                        var parsed = parse(medium);
+                        if (parsed.length !== 1 || items.indexOf(parsed[0]) >= 0) return;
+                        update(items.concat(parsed));
+                    };
+                    list.deleteMedium = function (medium) {
+                        var parsed = parse(medium);
+                        var at = parsed.length === 1 ? items.indexOf(parsed[0]) : -1;
+                        if (at < 0) {
+                            throw new DOMException("Failed to execute 'deleteMedium' on 'MediaList': Failed to delete '" + medium + "'.", 'NotFoundError');
+                        }
+                        update(items.slice(0, at).concat(items.slice(at + 1)));
+                    };
+                    list.toString = function () { return items.join(', '); };
+                    var initialChange = onChange;
+                    onChange = null;
+                    update(parse(text));
+                    onChange = initialChange;
+                    return list;
+                }
+
+                // CSSOM 6.1 CSSStyleSheet. One model serves both kinds of sheet: one
+                // owned by a <style> or <link>, whose rules come from the engine's parse
+                // of the element's text, and a constructed sheet (CSSOM 6.1.2,
+                // `new CSSStyleSheet()`), whose rules come from replace()/replaceSync()
+                // and which applies wherever a document or shadow root adopts it.
+                var __fenConstructedSheets = new WeakMap();
+
+                function __fenThrowNotAllowed(message) {
+                    throw new DOMException(message, 'NotAllowedError');
+                }
+
+                function __fenDetachCssRule(rule) {
+                    rule.parentStyleSheet = null;
+                    if (rule.cssRules) {
+                        for (var i = 0; i < rule.cssRules.length; i++) __fenDetachCssRule(rule.cssRules[i]);
+                    }
+                }
+
+                function __fenSerializeCssRules(rules) {
+                    return rules.map(function (rule) { return rule.cssText; }).join(String.fromCharCode(10));
+                }
+
+                function __fenInitStyleSheet(sheet, init) {
+                    Object.defineProperty(sheet, '__fenDomBrands', { value: ['StyleSheet', 'CSSStyleSheet'], enumerable: false });
+                    var constructed = init.constructed || null;
+                    var rules = null;
+                    var disabled = !!init.disabled;
+
+                    // CSSOM 6.4: cssRules reflects what the engine parsed. Building it
+                    // costs a parse of the whole sheet, and most sheets are never read
+                    // back, so it happens on the first access and not before.
+                    function materialise() {
+                        if (rules) return rules;
+                        var descriptors = null;
+                        try { descriptors = init.loadRules(); } catch (_ruleError) { descriptors = null; }
+                        rules = __fenBuildCssRules(descriptors, sheet);
+                        return rules;
+                    }
+                    function changed() {
+                        init.onChange(materialise());
+                    }
+                    function assertModifiable(method) {
+                        // CSSOM 6.1.2: a pending replace() sets the disallow-modification flag.
+                        if (constructed && constructed.pendingReplace) {
+                            __fenThrowNotAllowed("Failed to execute '" + method + "' on 'CSSStyleSheet': Can't modify the stylesheet while a replace() is pending.");
+                        }
+                    }
+                    function ruleMutated() {
+                        if (constructed) constructed.sourceText = null;
+                        changed();
+                    }
+                    function replaceRules(text) {
+                        // cssRules is [SameObject]: replacing swaps the list's contents.
+                        var live = materialise();
+                        for (var i = 0; i < live.length; i++) __fenDetachCssRule(live[i]);
+                        var descriptors = null;
+                        try { descriptors = globalThis.__fenParseStyleSheetText(text); } catch (_parseError) { descriptors = null; }
+                        var replacement = __fenBuildCssRules(descriptors, sheet);
+                        live.length = 0;
+                        for (var j = 0; j < replacement.length; j++) live.push(replacement[j]);
+                        constructed.sourceText = text;
+                        changed();
+                    }
+                    __fenSheetNotifiers.set(sheet, ruleMutated);
+
+                    Object.defineProperty(sheet, 'cssRules', { get: materialise, configurable: true, enumerable: true });
+                    Object.defineProperty(sheet, 'rules', { get: materialise, configurable: true, enumerable: true });
+                    sheet.ownerNode = init.ownerNode || null;
+                    sheet.ownerRule = null;
+                    sheet.parentStyleSheet = null;
+                    sheet.title = init.title || null;
+                    sheet.type = 'text/css';
+                    // CSSOM 6.1: href is the location an external sheet came from, and
+                    // null for one the document carries inline or script constructed.
+                    sheet.href = init.href || null;
+                    sheet.media = __fenCreateMediaList(init.mediaText || '', constructed ? changed : null);
+                    Object.defineProperty(sheet, 'disabled', {
+                        get: function () { return disabled; },
+                        set: function (value) {
+                            value = !!value;
+                            if (value === disabled) return;
+                            disabled = value;
+                            if (constructed) changed();
+                        },
+                        configurable: true, enumerable: true
+                    });
+
+                    sheet.insertRule = function (text, index) {
+                        assertModifiable('insertRule');
+                        var live = materialise();
+                        index = index === undefined ? 0 : (index >>> 0);
+                        if (index > live.length) {
+                            throw new DOMException("Failed to execute 'insertRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + live.length + ").", 'IndexSizeError');
+                        }
+                        var rule = __fenParseCssRule(text);
+                        rule.parentStyleSheet = sheet;
+                        live.splice(index, 0, rule);
+                        ruleMutated();
+                        return index;
+                    };
+                    sheet.addRule = function (selector, block, index) {
+                        sheet.insertRule(selector + ' { ' + block + ' }', index === undefined ? materialise().length : index);
+                        return -1;
+                    };
+                    sheet.deleteRule = function (index) {
+                        assertModifiable('deleteRule');
+                        var live = materialise();
+                        index = index >>> 0;
+                        if (index >= live.length) {
+                            throw new DOMException("Failed to execute 'deleteRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + (live.length - 1) + ").", 'IndexSizeError');
+                        }
+                        __fenDetachCssRule(live.splice(index, 1)[0]);
+                        ruleMutated();
+                    };
+                    sheet.removeRule = sheet.deleteRule;
+                    sheet.replaceSync = function (text) {
+                        if (!constructed) {
+                            __fenThrowNotAllowed("Failed to execute 'replaceSync' on 'CSSStyleSheet': Can't call replaceSync on non-constructed CSSStyleSheets.");
+                        }
+                        assertModifiable('replaceSync');
+                        replaceRules(String(text));
+                    };
+                    sheet.replace = function (text) {
+                        if (!constructed) {
+                            return Promise.reject(new DOMException("Failed to execute 'replace' on 'CSSStyleSheet': Can't call replace on non-constructed CSSStyleSheets.", 'NotAllowedError'));
+                        }
+                        if (constructed.pendingReplace) {
+                            return Promise.reject(new DOMException("Failed to execute 'replace' on 'CSSStyleSheet': Can't call replace while another replace() is pending.", 'NotAllowedError'));
+                        }
+                        var source = String(text);
+                        constructed.pendingReplace = true;
+                        return Promise.resolve().then(function () {
+                            constructed.pendingReplace = false;
+                            replaceRules(source);
+                            return sheet;
+                        });
+                    };
+
+                    if (constructed) {
+                        // What an adopting tree cascades: the text replace() was given
+                        // while it still matches the rules, else the rules re-serialized.
+                        // @import is never loaded from a constructed sheet, so text that
+                        // carries one is always re-serialized from the parsed rules.
+                        constructed.describe = function () {
+                            if (disabled) return null;
+                            var source = constructed.sourceText;
+                            var text = source != null && !/@import/i.test(source)
+                                ? source
+                                : __fenSerializeCssRules(materialise());
+                            return [text, sheet.media.mediaText, constructed.baseURL];
+                        };
+                    }
+                }
+
+                constructHooks.CSSStyleSheet = function (newTarget, args) {
+                    var options = args[0];
+                    if (options != null && typeof options !== 'object' && typeof options !== 'function') {
+                        throw new TypeError("Failed to construct 'CSSStyleSheet': The provided value is not of type 'CSSStyleSheetInit'.");
+                    }
+                    options = options || {};
+                    var constructorDocument = globalThis.document;
+                    var baseURL = constructorDocument ? String(constructorDocument.baseURI) : '';
+                    if (options.baseURL !== undefined) {
+                        try {
+                            baseURL = new URL(String(options.baseURL), baseURL).href;
+                        } catch (_urlError) {
+                            __fenThrowNotAllowed("Failed to construct 'CSSStyleSheet': The base URL '" + options.baseURL + "' is invalid.");
+                        }
+                    }
+                    var media = options.media;
+                    var mediaText = media === undefined ? ''
+                        : (media instanceof MediaList ? media.mediaText : String(media));
+                    var constructed = {
+                        constructorDocument: constructorDocument,
+                        baseURL: baseURL,
+                        sourceText: '',
+                        pendingReplace: false,
+                        adopters: []
+                    };
+                    var proto = newTarget && typeof newTarget.prototype === 'object' ? newTarget.prototype : CSSStyleSheet.prototype;
+                    var sheet = Object.create(proto);
+                    __fenInitStyleSheet(sheet, {
+                        constructed: constructed,
+                        mediaText: mediaText,
+                        disabled: !!options.disabled,
+                        loadRules: function () { return []; },
+                        onChange: function () { __fenRepublishAdopters(constructed); }
+                    });
+                    __fenConstructedSheets.set(sheet, constructed);
+                    return sheet;
+                };
+
                 Object.defineProperty(globalThis, '__fenCreateStyleSheet', {
                     value: function (ownerNode) {
                         var sheet = Object.create(CSSStyleSheet.prototype);
-                        Object.defineProperty(sheet, '__fenDomBrands', { value: ['StyleSheet', 'CSSStyleSheet'], enumerable: false });
-                        var rules = null;
-
-                        // CSSOM 6.4: cssRules reflects what the engine parsed. Building
-                        // it costs a parse of the whole sheet, and most sheets are never
-                        // read back, so it happens on the first access and not before.
-                        function materialise() {
-                            if (rules) return rules;
-                            var descriptors = null;
-                            try {
-                                if (typeof globalThis.__fenStyleSheetRules === 'function') {
-                                    descriptors = globalThis.__fenStyleSheetRules(ownerNode);
-                                }
-                            } catch (_ruleError) { descriptors = null; }
-                            rules = __fenBuildCssRules(descriptors, sheet);
-                            return rules;
-                        }
-
-                        Object.defineProperty(sheet, 'cssRules', {
-                            get: materialise, configurable: true, enumerable: true
-                        });
-                        Object.defineProperty(sheet, 'rules', {
-                            get: materialise, configurable: true, enumerable: true
-                        });
-                        sheet.ownerNode = ownerNode || null;
-                        sheet.parentStyleSheet = null;
-                        sheet.title = (ownerNode && ownerNode.getAttribute)
-                            ? (ownerNode.getAttribute('title') || null) : null;
-                        sheet.type = 'text/css';
-                        sheet.disabled = false;
-                        // CSSOM 6.1: href is the location an external sheet came from,
-                        // and null for one the document carries inline.
-                        sheet.href = (ownerNode && ownerNode.tagName === 'LINK' && ownerNode.href)
-                            ? String(ownerNode.href) : null;
                         var mediaText = (ownerNode && ownerNode.getAttribute)
                             ? (ownerNode.getAttribute('media') || '') : '';
-                        sheet.media = {
+                        __fenInitStyleSheet(sheet, {
+                            ownerNode: ownerNode || null,
+                            title: (ownerNode && ownerNode.getAttribute) ? ownerNode.getAttribute('title') : null,
+                            href: (ownerNode && ownerNode.tagName === 'LINK' && ownerNode.href) ? String(ownerNode.href) : null,
                             mediaText: mediaText,
-                            length: mediaText ? 1 : 0,
-                            item: function (i) { return i === 0 && mediaText ? mediaText : null; }
-                        };
-                        function sync() {
-                            if (ownerNode && ownerNode.textContent !== undefined) {
-                                ownerNode.textContent = materialise().map(function (r) { return r.cssText; }).join(String.fromCharCode(10));
+                            loadRules: function () {
+                                return typeof globalThis.__fenStyleSheetRules === 'function'
+                                    ? globalThis.__fenStyleSheetRules(ownerNode)
+                                    : null;
+                            },
+                            // Rules inserted through the CSSOM are mirrored into the owning
+                            // element's text so the cascade sees them.
+                            onChange: function (live) {
+                                if (ownerNode && ownerNode.textContent !== undefined) {
+                                    ownerNode.textContent = __fenSerializeCssRules(live);
+                                }
                             }
-                        }
-                        sheet.insertRule = function (text, index) {
-                            var live = materialise();
-                            index = index === undefined ? 0 : (index | 0);
-                            if (index < 0 || index > live.length) {
-                                var err = new Error("Failed to execute 'insertRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + live.length + ").");
-                                err.name = 'IndexSizeError';
-                                throw err;
-                            }
-                            var rule = __fenParseCssRule(text);
-                            rule.parentStyleSheet = sheet;
-                            live.splice(index, 0, rule);
-                            sync();
-                            return index;
-                        };
-                        sheet.addRule = function (selector, block, index) {
-                            sheet.insertRule(selector + ' { ' + block + ' }', index === undefined ? materialise().length : index);
-                            return -1;
-                        };
-                        sheet.deleteRule = function (index) {
-                            var live = materialise();
-                            index = index | 0;
-                            if (index < 0 || index >= live.length) {
-                                var err = new Error("Failed to execute 'deleteRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + (live.length - 1) + ").");
-                                err.name = 'IndexSizeError';
-                                throw err;
-                            }
-                            live.splice(index, 1);
-                            sync();
-                        };
-                        sheet.removeRule = sheet.deleteRule;
-                        sheet.replaceSync = function (text) {
-                            var live = materialise();
-                            live.length = 0;
-                            String(text || '').split('}').forEach(function (chunk) {
-                                if (chunk.trim()) { live.push(__fenParseCssRule(chunk + '}')); }
-                            });
-                            sync();
-                        };
+                        });
                         return sheet;
                     },
                     enumerable: false, configurable: true, writable: true
                 });
+
+                // CSSOM 6.2 DocumentOrShadowRoot.adoptedStyleSheets: an ObservableArray
+                // (WebIDL 3.10.2) of constructed sheets. The array is a Proxy over a
+                // backing Array, so Array.isArray holds and every Array method works,
+                // and its traps validate each sheet and republish the list to the
+                // engine, which cascades it after the tree's own stylesheets.
+                var __fenAdoptedByRoot = new WeakMap();
+                var __fenCanWeakRef = typeof WeakRef === 'function';
+
+                function __fenAdoptedDocumentOf(root) {
+                    return root && root.nodeType === 9 ? root : (root ? root.ownerDocument : null);
+                }
+
+                function __fenValidateAdoptedSheet(root, value) {
+                    if (!(value instanceof CSSStyleSheet)) {
+                        throw new TypeError("Failed to set the 'adoptedStyleSheets' property: Failed to convert value to 'CSSStyleSheet'.");
+                    }
+                    var constructed = __fenConstructedSheets.get(value);
+                    if (!constructed) {
+                        __fenThrowNotAllowed("Failed to set the 'adoptedStyleSheets' property: Can't adopt non-constructed stylesheets.");
+                    }
+                    if (constructed.constructorDocument !== __fenAdoptedDocumentOf(root)) {
+                        __fenThrowNotAllowed("Failed to set the 'adoptedStyleSheets' property: Sharing constructed stylesheets in multiple documents is not allowed.");
+                    }
+                    return constructed;
+                }
+
+                function __fenPublishAdopted(record) {
+                    // Entries are defined, not assigned: [[Set]] on a fresh array would
+                    // run any setter a page put on Array.prototype and hand it our list.
+                    var entries = [];
+                    var count = 0;
+                    for (var i = 0; i < record.backing.length; i++) {
+                        var constructed = __fenConstructedSheets.get(record.backing[i]);
+                        var described = constructed && constructed.describe();
+                        if (described) {
+                            Object.defineProperty(entries, count++, { value: described, writable: true, enumerable: true, configurable: true });
+                        }
+                    }
+                    if (typeof globalThis.__fenSetAdoptedStyleSheets === 'function') {
+                        globalThis.__fenSetAdoptedStyleSheets(record.root, entries);
+                    }
+                }
+
+                // A sheet remembers the trees that adopt it so a change to it restyles
+                // them. It holds them weakly where it can: a stylesheet shared by a
+                // component class outlives every shadow root that adopted it.
+                function __fenTrackAdopter(constructed, record) {
+                    for (var i = 0; i < constructed.adopters.length; i++) {
+                        var entry = constructed.adopters[i];
+                        if ((__fenCanWeakRef ? entry.deref() : entry) === record) return;
+                    }
+                    constructed.adopters.push(__fenCanWeakRef ? new WeakRef(record) : record);
+                }
+
+                function __fenRepublishAdopters(constructed) {
+                    var live = [];
+                    for (var i = 0; i < constructed.adopters.length; i++) {
+                        var entry = constructed.adopters[i];
+                        var record = __fenCanWeakRef ? entry.deref() : entry;
+                        if (!record) continue;
+                        var stillAdopted = false;
+                        for (var j = 0; j < record.backing.length; j++) {
+                            if (__fenConstructedSheets.get(record.backing[j]) === constructed) { stillAdopted = true; break; }
+                        }
+                        if (!stillAdopted) continue;
+                        live.push(entry);
+                        __fenPublishAdopted(record);
+                    }
+                    constructed.adopters = live;
+                }
+
+                function __fenArrayIndex(key) {
+                    if (typeof key !== 'string') return -1;
+                    var index = Number(key);
+                    return index >>> 0 === index && index !== 4294967295 && String(index) === key ? index : -1;
+                }
+
+                function __fenStoreAdopted(record, index, value) {
+                    var constructed = __fenValidateAdoptedSheet(record.root, value);
+                    Object.defineProperty(record.backing, index, { value: value, writable: true, enumerable: true, configurable: true });
+                    __fenTrackAdopter(constructed, record);
+                }
+
+                function __fenSetAdoptedLength(record, value) {
+                    var length = value >>> 0;
+                    if (length !== Number(value)) throw new RangeError('Invalid array length');
+                    if (length > record.backing.length) return false;
+                    record.backing.length = length;
+                    return true;
+                }
+
+                function __fenAdoptedRecordFor(root) {
+                    var record = __fenAdoptedByRoot.get(root);
+                    var document = __fenAdoptedDocumentOf(root);
+                    if (record) {
+                        // CSSOM 6.2: moving a shadow root to another document empties
+                        // its adopted list, since the sheets belong to the old one.
+                        if (record.document !== document) {
+                            record.document = document;
+                            if (record.backing.length) {
+                                record.backing.length = 0;
+                                __fenPublishAdopted(record);
+                            }
+                        }
+                        return record;
+                    }
+                    record = { root: root, document: document, backing: [], proxy: null };
+                    record.proxy = new Proxy(record.backing, {
+                        set: function (target, key, value, receiver) {
+                            var index = __fenArrayIndex(key);
+                            if (index >= 0) {
+                                if (index > target.length) return false;
+                                __fenStoreAdopted(record, index, value);
+                                __fenPublishAdopted(record);
+                                return true;
+                            }
+                            if (key === 'length') {
+                                var ok = __fenSetAdoptedLength(record, value);
+                                if (ok) __fenPublishAdopted(record);
+                                return ok;
+                            }
+                            return Reflect.set(target, key, value, receiver);
+                        },
+                        defineProperty: function (target, key, descriptor) {
+                            var index = __fenArrayIndex(key);
+                            if (index < 0 && key !== 'length') return Reflect.defineProperty(target, key, descriptor);
+                            if ('get' in descriptor || 'set' in descriptor || !('value' in descriptor)) return false;
+                            var value = descriptor.value;
+                            if (key === 'length') {
+                                var ok = __fenSetAdoptedLength(record, value);
+                                if (ok) __fenPublishAdopted(record);
+                                return ok;
+                            }
+                            if (index > target.length) return false;
+                            __fenStoreAdopted(record, index, value);
+                            __fenPublishAdopted(record);
+                            return true;
+                        },
+                        deleteProperty: function (target, key) {
+                            var index = __fenArrayIndex(key);
+                            if (index < 0) return Reflect.deleteProperty(target, key);
+                            if (index >= target.length) return true;
+                            if (index !== target.length - 1) return false;
+                            target.length = index;
+                            __fenPublishAdopted(record);
+                            return true;
+                        }
+                    });
+                    __fenAdoptedByRoot.set(root, record);
+                    return record;
+                }
+
+                function __fenDefineAdoptedStyleSheets(proto) {
+                    if (!proto) return;
+                    Object.defineProperty(proto, 'adoptedStyleSheets', {
+                        get: function () {
+                            return __fenAdoptedRecordFor(this).proxy;
+                        },
+                        set: function (value) {
+                            if (value == null || typeof value[Symbol.iterator] !== 'function') {
+                                throw new TypeError("Failed to set the 'adoptedStyleSheets' property: The provided value cannot be converted to a sequence.");
+                            }
+                            var record = __fenAdoptedRecordFor(this);
+                            var sheets = Array.from(value);
+                            for (var i = 0; i < sheets.length; i++) __fenValidateAdoptedSheet(this, sheets[i]);
+                            record.backing.length = 0;
+                            for (var j = 0; j < sheets.length; j++) __fenStoreAdopted(record, j, sheets[j]);
+                            __fenPublishAdopted(record);
+                        },
+                        enumerable: true, configurable: true
+                    });
+                }
+                __fenDefineAdoptedStyleSheets(globalThis.Document && globalThis.Document.prototype);
+                __fenDefineAdoptedStyleSheets(globalThis.ShadowRoot && globalThis.ShadowRoot.prototype);
+
+                // CSSOM 6.2 DocumentOrShadowRoot.styleSheets for a shadow root: the
+                // sheets of its own <style> and <link> elements, in tree order.
+                // Adopted sheets are not in it.
+                if (globalThis.ShadowRoot) {
+                    Object.defineProperty(ShadowRoot.prototype, 'styleSheets', {
+                        get: function () {
+                            var list = [];
+                            var owners = this.querySelectorAll('style, link');
+                            for (var i = 0; i < owners.length; i++) {
+                                var sheet = owners[i].sheet;
+                                if (sheet) list.push(sheet);
+                            }
+                            list.item = function (index) {
+                                index = index >>> 0;
+                                return index < list.length ? list[index] : null;
+                            };
+                            return list;
+                        },
+                        enumerable: true, configurable: true
+                    });
+                }
 
                 defineCtor('DOMStringMap', null, ['DOMStringMap'], function (candidate) {
                     return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('DOMStringMap') >= 0;
@@ -24975,7 +25426,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return _interpreter.AllocateArray(Array.Empty<JsValue>());
         }
 
-        var cssText = element.TextContent;
+        return ParseStyleSheetRuleDescriptors(element.TextContent);
+    }
+
+    /// <summary>
+    /// Parses stylesheet text with the engine's CSS parser into CSSOM rule
+    /// descriptors: a style element's text, or what a constructed sheet's
+    /// replace()/replaceSync() was given.
+    /// </summary>
+    private JsValue ParseStyleSheetRuleDescriptors(string cssText)
+    {
         if (string.IsNullOrWhiteSpace(cssText))
         {
             return _interpreter.AllocateArray(Array.Empty<JsValue>());
@@ -24994,6 +25454,48 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 FenBrowser.Core.Logging.LogCategory.CSS);
             return _interpreter.AllocateArray(Array.Empty<JsValue>());
         }
+    }
+
+    /// <summary>
+    /// CSSOM 6.2 adoptedStyleSheets: the prelude publishes a document's or shadow
+    /// root's adopted list as [cssText, mediaText, baseURL] entries whenever the
+    /// array or one of its sheets changes; the cascade reads them from the DOM.
+    /// </summary>
+    private JsValue SetAdoptedStyleSheets(IReadOnlyList<JsValue> args)
+    {
+        if (args.Count < 2)
+        {
+            return JsValue.Undefined;
+        }
+
+        var root = ResolveHostObjectOrNull(args[0]);
+        if (root is not Document && root is not ShadowRoot)
+        {
+            return JsValue.Undefined;
+        }
+
+        var sheets = new List<FenBrowser.Core.Css.AdoptedStyleSheet>();
+        var count = (int)CoerceToFiniteNumber(ReadJsProperty(args[1], "length"), 0);
+        for (var i = 0; i < count; i++)
+        {
+            var entry = ReadJsProperty(args[1], i.ToString(CultureInfo.InvariantCulture));
+            var baseUrl = CoerceToHostString(ReadJsProperty(entry, "2"));
+            sheets.Add(new FenBrowser.Core.Css.AdoptedStyleSheet(
+                CoerceToHostString(ReadJsProperty(entry, "0")),
+                CoerceToHostString(ReadJsProperty(entry, "1")),
+                Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri) ? baseUri : null));
+        }
+
+        if (root is Document document)
+        {
+            document.SetAdoptedStyleSheets(sheets);
+        }
+        else
+        {
+            ((ShadowRoot)root).SetAdoptedStyleSheets(sheets);
+        }
+
+        return JsValue.Undefined;
     }
 
     private JsValue DescribeCssRules(IReadOnlyList<FenBrowser.FenEngine.Rendering.Css.CssRule> rules)

@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using FenBrowser.Core.Css;
 
 namespace FenBrowser.Core.Dom.V2
 {
@@ -224,6 +225,23 @@ namespace FenBrowser.Core.Dom.V2
         /// https://dom.spec.whatwg.org/#dom-document-compatmode
         /// </summary>
         public string CompatMode => Mode == QuirksMode.Quirks ? "BackCompat" : "CSS1Compat";
+
+        private List<AdoptedStyleSheet> _adoptedStyleSheets = new();
+
+        /// <summary>
+        /// The document's adopted stylesheets, which cascade after its own sheets.
+        /// https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets
+        /// </summary>
+        public IReadOnlyList<AdoptedStyleSheet> AdoptedStyleSheets => _adoptedStyleSheets;
+
+        /// <summary>
+        /// Replaces the adopted stylesheets and restyles the document.
+        /// </summary>
+        public void SetAdoptedStyleSheets(IEnumerable<AdoptedStyleSheet> stylesheets)
+        {
+            _adoptedStyleSheets = AdoptedStyleSheet.CopyList(stylesheets);
+            InvalidateDocumentStyle();
+        }
 
         /// <summary>
         /// Internal quirks mode setting.
