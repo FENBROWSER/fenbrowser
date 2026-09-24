@@ -124,4 +124,35 @@ public class MediaStreamResourceTests
 
         Assert.All(buffer, sample => Assert.Equal(0f, sample));
     }
+
+    [Fact]
+    public void AVideoOnlyStreamWaitsForItsFirstPictureThenShowsIt()
+    {
+        var video = new VideoTrackSource();
+        var source = new LiveStreamSource();
+        source.Update([new LiveTrack("v", MediaTrackKind.Video, null, Live: true, Enabled: true, video)]);
+        var client = new RecordingClient();
+        using var resource = Create(source, client);
+        Assert.Equal(MediaReadyState.HaveNothing, client.ReadyState);
+
+        // A 4x2 BGRA picture, every pixel blue.
+        var pixels = new byte[4 * 2 * 4];
+        for (int i = 0; i < pixels.Length; i += 4) { pixels[i] = 255; pixels[i + 3] = 255; }
+        video.Publish(pixels, 4, 2, 16);
+
+        Assert.Equal(MediaReadyState.HaveEnoughData, client.ReadyState);
+        Assert.Equal(4, client.Metadata!.VideoWidth);
+        using var picture = new PictureLease(resource.Presenter!.Acquire()!);
+        Assert.Equal((4, 2), (picture.Value.Width, picture.Value.Height));
+        var copy = new byte[4 * 2 * 4];
+        picture.Value.WriteBgra(copy, 16);
+        Assert.Equal(pixels, copy);
+    }
+
+    private readonly struct PictureLease(FenBrowser.Media.Video.PresentedPicture value) : IDisposable
+    {
+        public FenBrowser.Media.Video.PresentedPicture Value { get; } = value;
+
+        public void Dispose() => Value.Release();
+    }
 }

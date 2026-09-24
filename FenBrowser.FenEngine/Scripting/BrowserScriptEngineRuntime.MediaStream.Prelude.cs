@@ -279,7 +279,7 @@ public sealed partial class FenJsBrowserScriptEngine
                         Object.defineProperty(t, '__fenProviderWatched', { value: true });
                         t._consumers.push(syncProviders);
                     }
-                    return { id: String(t._id), kind: String(t._kind), pipe: t._pipe || '', live: !!t._live, enabled: !!t._enabled };
+                    return { id: String(t._id), kind: String(t._kind), pipe: t._pipe || '', video: t._video || '', live: !!t._live, enabled: !!t._enabled };
                 }));
             }
             function retainStream(stream) {
@@ -341,6 +341,56 @@ public sealed partial class FenJsBrowserScriptEngine
                     },
                     configurable: true, enumerable: true
                 });
+            }
+
+            // ---- HTMLCanvasElement.captureStream() (mediacapture-fromelement 3) ----
+            if (typeof g.HTMLCanvasElement === 'function' && g.HTMLCanvasElement.prototype &&
+                typeof g.__fenCanvasCaptureStream === 'function') {
+                var CanvasCaptureMediaStreamTrack = function CanvasCaptureMediaStreamTrack() {
+                    throw new TypeError('Illegal constructor');
+                };
+                CanvasCaptureMediaStreamTrack.prototype = Object.create(MediaStreamTrack.prototype);
+                Object.defineProperty(CanvasCaptureMediaStreamTrack.prototype, 'constructor',
+                    { value: CanvasCaptureMediaStreamTrack, writable: true, configurable: true });
+                Object.defineProperty(CanvasCaptureMediaStreamTrack.prototype, Symbol.toStringTag,
+                    { value: 'CanvasCaptureMediaStreamTrack', configurable: true });
+                accessor(CanvasCaptureMediaStreamTrack.prototype, 'canvas', function () { return this._canvas; });
+                // mediacapture-fromelement issue 48 (tentative): a canvas track's settings
+                // are the canvas's current size.
+                method(CanvasCaptureMediaStreamTrack.prototype, 'getSettings', function () {
+                    var canvas = this._canvas;
+                    return { width: canvas.width, height: canvas.height, resizeMode: 'none' };
+                }, 0);
+                method(CanvasCaptureMediaStreamTrack.prototype, 'requestFrame', function () {
+                    if (this._live) g.__fenCanvasRequestFrame(this._video);
+                }, 0);
+                Object.defineProperty(g, 'CanvasCaptureMediaStreamTrack',
+                    { value: CanvasCaptureMediaStreamTrack, writable: true, configurable: true });
+
+                // A stopped canvas track takes no more frames.
+                var stopTrack = MediaStreamTrack.prototype.stop;
+                method(MediaStreamTrack.prototype, 'stop', function () {
+                    var wasLive = this._live;
+                    stopTrack.call(this);
+                    if (wasLive && this._video) g.__fenCanvasCaptureStop(this._video);
+                }, 0);
+
+                method(g.HTMLCanvasElement.prototype, 'captureStream', function (frameRate) {
+                    var rate = -1;
+                    if (frameRate !== undefined) {
+                        rate = Number(frameRate);
+                        if (!(rate >= 0)) {
+                            throw new g.DOMException('The frame rate must be a non-negative number.', 'NotSupportedError');
+                        }
+                    }
+                    var key = g.__fenCanvasCaptureStream(this, rate);
+                    if (key === null) throw new g.DOMException('The canvas cannot be captured.', 'InvalidStateError');
+                    var track = new MediaStreamTrack(INTERNAL, { id: newId(), kind: 'video', label: '', pipe: null });
+                    Object.setPrototypeOf(track, CanvasCaptureMediaStreamTrack.prototype);
+                    Object.defineProperty(track, '_video', { value: key });
+                    Object.defineProperty(track, '_canvas', { value: this });
+                    return new MediaStream([track]);
+                }, 0);
             }
 
             // ---- HTMLMediaElement.captureStream() ----

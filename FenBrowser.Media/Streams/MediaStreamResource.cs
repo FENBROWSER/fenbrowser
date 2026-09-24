@@ -1,5 +1,6 @@
 using FenBrowser.Media.Audio;
 using FenBrowser.Media.Element;
+using FenBrowser.Media.Video;
 using FenBrowser.Media.WebAudio;
 
 namespace FenBrowser.Media.Streams;
@@ -9,7 +10,8 @@ namespace FenBrowser.Media.Streams;
 /// elements"): a live resource with an infinite duration and nothing seekable, ready as
 /// soon as the stream is active, whose position is the time it has spent playing and which
 /// ends when the stream goes inactive. Its audio is every live, enabled audio track's pipe,
-/// read from just behind the live edge, resampled to the device rate and mixed.
+/// read from just behind the live edge, resampled to the device rate and mixed. Its picture
+/// is the first live, enabled video track's latest one.
 /// </summary>
 public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
 {
@@ -35,6 +37,10 @@ public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
 
     private IAudioOutput? _output;
     private IAudioCapture? _capture;
+    private readonly VideoPresenter _presenter = new();
+    private VideoTrackSource? _videoSource;
+    private int _videoWidth;
+    private int _videoHeight;
     private AudioStreamFormat _format = Requested;
     private string _sink = string.Empty;
     private volatile bool _playing;
@@ -68,6 +74,8 @@ public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
 
     /// <summary>A stream stops delaying the load event at once, like a MediaSource.</summary>
     public bool IsProviderObject => true;
+
+    public VideoPresenter? Presenter => _presenter;
 
     /// <summary>Seconds of playback so far: a stream's position is the time it has played.</summary>
     public double PositionSeconds
@@ -141,6 +149,8 @@ public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
 
         _source.Changed -= OnSourceChanged;
         _positionTimer.Dispose();
+        FollowVideo(null);
+        _presenter.Clear();
         IAudioOutput? output;
         lock (_gate)
         {
@@ -162,6 +172,14 @@ public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
             return;
 
         var tracks = _source.Tracks;
+        FollowVideo(tracks.FirstOrDefault(t => t.Live && t.Enabled && t.Kind == MediaTrackKind.Video)?.VideoSource);
+        if (_source.Active && !_metadataReported && !_source.HasAudio && _videoSource is { Sequence: 0 })
+        {
+            // mediacapture-main 6: with only a video track, the element has nothing to show -
+            // HAVE_NOTHING - until the track's first frame; that frame reports again.
+            return;
+        }
+
         if (_source.Active)
         {
             // mediacapture-main 6: an active stream is ready at once; it has no duration
@@ -178,7 +196,7 @@ public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
                 infos.Add(new MediaTrackInfo(i, config, MediaTime.PositiveInfinity, Label: track.Id, IsDefault: true));
             }
 
-            _client.MetadataAvailable(new MediaResourceMetadata(MediaTime.PositiveInfinity, 0, 0, infos));
+            _client.MetadataAvailable(new MediaResourceMetadata(MediaTime.PositiveInfinity, _videoWidth, _videoHeight, infos));
             _client.SeekableChanged(MediaTimeRanges.Empty);
             _client.BufferedChanged(MediaTimeRanges.Empty);
             _client.ReadyStateChanged(MediaReadyState.HaveEnoughData);
@@ -192,6 +210,50 @@ public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
             _endReported = true;
             _client.ReachedEnd();
         }
+    }
+
+    // The video track shown: its pictures go to the presenter as they are produced.
+    private void FollowVideo(VideoTrackSource? source)
+    {
+        if (ReferenceEquals(source, _videoSource))
+            return;
+
+        if (_videoSource is not null)
+            _videoSource.FrameProduced -= OnVideoFrame;
+        _videoSource = source;
+        if (source is null)
+        {
+            _presenter.Clear();
+            return;
+        }
+
+        source.FrameProduced += OnVideoFrame;
+        if (source.Sequence > 0)
+            OnVideoFrame(source);
+    }
+
+    // The producer's thread: take the picture, and tell the element when its size changed.
+    private void OnVideoFrame(VideoTrackSource source)
+    {
+        if (Volatile.Read(ref _disposed) != 0 || !ReferenceEquals(source, _videoSource))
+            return;
+
+        var frame = source.CopyLatest(MediaLimits.Default, MediaTime.FromSeconds(PositionSeconds));
+        if (frame is null)
+            return;
+
+        int width = frame.Width, height = frame.Height;
+        _presenter.Publish(frame);
+        if (width != _videoWidth || height != _videoHeight)
+        {
+            _videoWidth = width;
+            _videoHeight = height;
+            _post(() => _client.VideoSizeChanged(width, height));
+        }
+
+        // The first picture of a stream that was waiting for one makes it ready.
+        if (!_metadataReported)
+            _post(Evaluate);
     }
 
     private void ReportPosition()

@@ -4,7 +4,13 @@ using FenBrowser.Media.WebAudio;
 namespace FenBrowser.Media.Streams;
 
 /// <summary>One MediaStreamTrack as a media element playing its stream sees it.</summary>
-public sealed record LiveTrack(string Id, MediaTrackKind Kind, AudioTrackPipe? AudioPipe, bool Live, bool Enabled);
+public sealed record LiveTrack(
+    string Id,
+    MediaTrackKind Kind,
+    AudioTrackPipe? AudioPipe,
+    bool Live,
+    bool Enabled,
+    VideoTrackSource? VideoSource = null);
 
 /// <summary>
 /// The tracks of a MediaStream assigned as a media element's srcObject, kept current by the

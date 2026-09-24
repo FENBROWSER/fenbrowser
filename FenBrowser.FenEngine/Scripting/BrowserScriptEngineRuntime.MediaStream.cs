@@ -37,8 +37,191 @@ public sealed partial class FenJsBrowserScriptEngine
 
     private readonly Dictionary<Element, CapturedAudio> _capturedAudio = new();
 
+    /// <summary>
+    /// One canvas.captureStream() track (mediacapture-fromelement 3): the canvas it reads,
+    /// the source its frames go to, and when it last took one.
+    /// </summary>
+    private sealed class CanvasCapture
+    {
+        public Element Canvas { get; init; }
+
+        public VideoTrackSource Source { get; } = new();
+
+        /// <summary>Frames a second: less than zero follows every change, zero only requestFrame().</summary>
+        public double FrameRate { get; init; }
+
+        /// <summary>
+        /// The canvas's change count when it was last captured. It starts at the count when
+        /// capture began: a frame is taken when the canvas is painted, not when capture starts.
+        /// </summary>
+        public long LastVersion { get; set; }
+
+        public long LastFrameTicks { get; set; }
+
+        public bool FrameRequested { get; set; }
+    }
+
+    private readonly Dictionary<string, CanvasCapture> _canvasCaptures = new(StringComparer.Ordinal);
+    private System.Threading.Timer _canvasCaptureTimer;
+    private int _canvasCaptureQueued;
+
+    // The capture timer's tick: one pass on the realm's thread at a time.
+    private void QueueCanvasCapture()
+    {
+        if (_realmAbandoned || System.Threading.Interlocked.Exchange(ref _canvasCaptureQueued, 1) == 1)
+        {
+            return;
+        }
+
+        Document document = null;
+        lock (_canvasCaptures)
+        {
+            foreach (var capture in _canvasCaptures.Values)
+            {
+                document = capture.Canvas.OwnerDocument;
+                break;
+            }
+        }
+
+        if (document == null)
+        {
+            System.Threading.Volatile.Write(ref _canvasCaptureQueued, 0);
+            return;
+        }
+
+        QueueMediaTask(document, () =>
+        {
+            System.Threading.Volatile.Write(ref _canvasCaptureQueued, 0);
+            CaptureCanvases();
+        });
+    }
+
+    /// <summary>
+    /// mediacapture-fromelement 3: a frame is taken when the canvas was painted since the
+    /// last one, no more often than the track's frame rate, or when requestFrame() asked.
+    /// Runs on the realm's thread, where the bitmap is drawn.
+    /// </summary>
+    private void CaptureCanvases()
+    {
+        List<CanvasCapture> captures;
+        lock (_canvasCaptures)
+        {
+            captures = new List<CanvasCapture>(_canvasCaptures.Values);
+        }
+
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        foreach (var capture in captures)
+        {
+            if (!_canvasRenderingContexts.TryGetValue(capture.Canvas, out var context) || context.Bitmap is not { } bitmap ||
+                bitmap.Width <= 0 || bitmap.Height <= 0)
+            {
+                continue;
+            }
+
+            bool requested = capture.FrameRequested;
+            bool changed = context.Version != capture.LastVersion;
+            if (capture.FrameRate == 0 ? !requested : !(requested || changed))
+            {
+                continue;
+            }
+
+            if (capture.FrameRate > 0 && !requested &&
+                System.Diagnostics.Stopwatch.GetElapsedTime(capture.LastFrameTicks, now).TotalMilliseconds < 1000.0 / capture.FrameRate)
+            {
+                continue;
+            }
+
+            var pixels = bitmap.GetPixelSpan();
+            int stride = bitmap.RowBytes;
+            if (bitmap.ColorType == SkiaSharp.SKColorType.Bgra8888)
+            {
+                capture.Source.Publish(pixels, bitmap.Width, bitmap.Height, stride);
+            }
+            else
+            {
+                // RGBA (the platform colour type off Windows): swap red and blue.
+                var bgra = new byte[bitmap.Width * bitmap.Height * 4];
+                for (int row = 0; row < bitmap.Height; row++)
+                {
+                    var source = pixels.Slice(row * stride, bitmap.Width * 4);
+                    var target = bgra.AsSpan(row * bitmap.Width * 4, bitmap.Width * 4);
+                    for (int i = 0; i < source.Length; i += 4)
+                    {
+                        target[i] = source[i + 2];
+                        target[i + 1] = source[i + 1];
+                        target[i + 2] = source[i];
+                        target[i + 3] = source[i + 3];
+                    }
+                }
+
+                capture.Source.Publish(bgra, bitmap.Width, bitmap.Height, bitmap.Width * 4);
+            }
+
+            capture.LastVersion = context.Version;
+            capture.LastFrameTicks = now;
+            capture.FrameRequested = false;
+        }
+    }
+
     private void InstallFenJsMediaStream()
     {
+        // mediacapture-fromelement 3.1 captureStream(frameRate): the key the track carries.
+        Native("__fenCanvasCaptureStream", 2, args =>
+        {
+            if (ResolveHostObjectOrNull(args.Count > 0 ? args[0] : JsValue.Undefined) is not Element canvas || !IsCanvasElement(canvas))
+            {
+                return JsValue.Null;
+            }
+
+            double rate = args.Count > 1 && args[1].Tag is JsValueTag.Number or JsValueTag.Int32
+                ? (args[1].Tag == JsValueTag.Int32 ? args[1].AsInt32() : args[1].AsNumber())
+                : -1;
+            var key = Guid.NewGuid().ToString("N");
+            lock (_canvasCaptures)
+            {
+                _canvasCaptures[key] = new CanvasCapture
+                {
+                    Canvas = canvas,
+                    FrameRate = rate,
+                    LastVersion = _canvasRenderingContexts.TryGetValue(canvas, out var context) ? context.Version : 0,
+                };
+                _canvasCaptureTimer ??= new System.Threading.Timer(_ => QueueCanvasCapture(), null, 16, 16);
+            }
+
+            return JsValue.FromString(key);
+        });
+
+        // 3.2 requestFrame(): the next capture takes a frame even if nothing changed.
+        Native("__fenCanvasRequestFrame", 1, args =>
+        {
+            var key = args.Count > 0 && args[0].Tag == JsValueTag.String ? CoerceToHostString(args[0]) : null;
+            lock (_canvasCaptures)
+            {
+                if (key != null && _canvasCaptures.TryGetValue(key, out var capture))
+                    capture.FrameRequested = true;
+            }
+
+            return JsValue.Undefined;
+        });
+
+        // The track stopped: no more frames.
+        Native("__fenCanvasCaptureStop", 1, args =>
+        {
+            var key = args.Count > 0 && args[0].Tag == JsValueTag.String ? CoerceToHostString(args[0]) : null;
+            lock (_canvasCaptures)
+            {
+                if (key != null)
+                    _canvasCaptures.Remove(key);
+                if (_canvasCaptures.Count == 0)
+                {
+                    _canvasCaptureTimer?.Dispose();
+                    _canvasCaptureTimer = null;
+                }
+            }
+
+            return JsValue.Undefined;
+        });
+
         // A MediaStream some element plays: its tracks, as that element's resource reads
         // them. (url, [{ id, kind, pipe, live, enabled }]).
         Native("__fenSyncMediaStream", 2, args =>
@@ -73,12 +256,24 @@ public sealed partial class FenJsBrowserScriptEngine
                         _audioTrackPipes.TryGetValue(pipeKey, out pipe);
                 }
 
+                VideoTrackSource video = null;
+                var videoKey = Read("video");
+                if (videoKey.Length > 0)
+                {
+                    lock (_canvasCaptures)
+                    {
+                        if (_canvasCaptures.TryGetValue(videoKey, out var capture))
+                            video = capture.Source;
+                    }
+                }
+
                 tracks.Add(new LiveTrack(
                     Read("id"),
                     string.Equals(Read("kind"), "video", StringComparison.Ordinal) ? FenBrowser.Media.MediaTrackKind.Video : FenBrowser.Media.MediaTrackKind.Audio,
                     pipe,
                     Flag("live"),
-                    Flag("enabled")));
+                    Flag("enabled"),
+                    video));
             }
 
             LiveStreamRegistry.GetOrAdd(url).Update(tracks);
