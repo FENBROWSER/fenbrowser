@@ -17150,6 +17150,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // latter is a real failure, so disambiguate by re-checking ownership.
     private void DeleteOrThrow(JsObject obj, string key)
     {
+        // ECMA-262 7.3.10 DeletePropertyOrThrow: a Proxy's [[Delete]] is its
+        // deleteProperty trap, which only the interpreter can run.
+        if (obj is ProxyObject proxy)
+        {
+            if (!ProxyDelete(proxy, key))
+                throw new JsThrownException(CreateTypeError($"Cannot delete property '{key}'."));
+            return;
+        }
+
         if (obj.DeleteProperty(key))
             return;
         if (obj.TryGetOwnProperty(key, out _))
@@ -17393,13 +17402,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 var fromKey = JsIndexKeys.For(i);
                 var toKey = (i + insert).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                // 23.1.3.34 step 4.b: Set(O, to, fromValue, true) and
+                // DeletePropertyOrThrow(O, to) - a Proxy runs its traps.
                 if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
                 {
-                    _ = obj.SetProperty(toKey, v);
+                    SetOrThrow(ownerHandle, obj, toKey, v);
                 }
                 else
                 {
-                    obj.DeleteProperty(toKey);
+                    DeleteOrThrow(obj, toKey);
                 }
             }
         }
@@ -17578,22 +17589,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var hasLower = TryGetPropertyValue(obj, thisValue, lowerKey, out var lowerValue);
             var hasUpper = TryGetPropertyValue(obj, thisValue, upperKey, out var upperValue);
 
+            // 23.1.3.26 steps 7.h-7.k: Set(O, key, value, true) and
+            // DeletePropertyOrThrow - a Proxy runs its traps.
             if (hasUpper)
             {
-                _ = obj.SetProperty(lowerKey, upperValue);
+                SetOrThrow(ownerHandle, obj, lowerKey, upperValue);
             }
             else
             {
-                obj.DeleteProperty(lowerKey);
+                DeleteOrThrow(obj, lowerKey);
             }
 
             if (hasLower)
             {
-                _ = obj.SetProperty(upperKey, lowerValue);
+                SetOrThrow(ownerHandle, obj, upperKey, lowerValue);
             }
             else
             {
-                obj.DeleteProperty(upperKey);
+                DeleteOrThrow(obj, upperKey);
             }
         }
 
@@ -24218,7 +24231,7 @@ fallbackArraySpecies:
         }
         var obj = ResolveObject(receiver);
         var key = ToPropertyKey(frame.Registers[keyReg]);
-        var deleted = obj.DeleteProperty(key);
+        var deleted = obj is ProxyObject proxyDel ? ProxyDelete(proxyDel, key) : obj.DeleteProperty(key);
         if (!deleted && frame.Function.IsStrictMode)
         {
             ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{key}'."));
