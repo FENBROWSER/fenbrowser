@@ -219,6 +219,28 @@ namespace FenBrowser.Core.Dom.V2
             _ancestorFeatureHash = BloomHash(TagName?.ToUpperInvariant());
         }
 
+        /// <summary>
+        /// DOM 4.9 "insert adjacent": puts <paramref name="node"/> before or after this
+        /// element, or first or last inside it. Returns null when "beforebegin" or
+        /// "afterend" has no parent to insert into.
+        /// </summary>
+        public Node InsertAdjacent(string where, Node node)
+        {
+            switch ((where ?? string.Empty).ToLowerInvariant())
+            {
+                case "beforebegin":
+                    return ParentNode is ContainerNode before ? before.InsertBefore(node, this) : null;
+                case "afterbegin":
+                    return InsertBefore(node, FirstChild);
+                case "beforeend":
+                    return InsertBefore(node, null);
+                case "afterend":
+                    return ParentNode is ContainerNode after ? after.InsertBefore(node, NextSibling) : null;
+                default:
+                    throw new DomException("SyntaxError", $"'{where}' is not a valid insertion position");
+            }
+        }
+
         protected override void ValidateChildType(Node node)
         {
             if (node is Document)

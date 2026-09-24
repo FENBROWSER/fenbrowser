@@ -11331,6 +11331,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     'setAttributeNS',
                     'removeAttributeNS',
                     'getAttributeNodeNS',
+                    'insertAdjacentElement',
+                    'insertAdjacentText',
+                    'insertAdjacentHTML',
                     'toggleAttribute',
                     'getAttributeNode',
                     'setAttributeNode',
@@ -29080,6 +29083,57 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 HostObjectKind.Other);
                         },
                         length: 1);
+                    return true;
+                case "insertAdjacentElement":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "insertAdjacentElement",
+                        (_, args) =>
+                        {
+                            var where = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            var target = args.Count > 1 ? _owner.ResolveHostObjectOrNull<Element>(args[1]) : null;
+                            if (target == null)
+                            {
+                                _owner.ThrowDomException(
+                                    "TypeError",
+                                    "Failed to execute 'insertAdjacentElement': parameter 2 is not of type 'Element'.");
+                                return JsValue.Undefined;
+                            }
+
+                            try
+                            {
+                                return _owner.ToHostNodeOrNull(element.InsertAdjacent(where, target));
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 2);
+                    return true;
+                case "insertAdjacentText":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "insertAdjacentText",
+                        (_, args) =>
+                        {
+                            // DOM 4.9: a new Text node with the data, inserted adjacent.
+                            var where = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            var data = args.Count > 1 ? CoerceToHostString(args[1]) : "undefined";
+                            var text = (element.OwnerDocument ?? CurrentDocument).CreateTextNode(data);
+                            try
+                            {
+                                element.InsertAdjacent(where, text);
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                            }
+
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
                     return true;
                 case "insertAdjacentHTML":
                     value = _owner.GetOrCreateHostCallable(
