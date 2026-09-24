@@ -1306,6 +1306,17 @@ public Uri LastTextResponseUri { get; private set; }
                 context.NetworkPartitionKey.ToStorageKey(),
                 " ",
                 BuildTextCacheKey(context, accept, topLevelDocumentUri, secFetchDest, fetchMode));
+
+            // A stylesheet's text depends on who asked (CSS Syntax 3 3.2: the <link>
+            // charset and the referring document's encoding), and a joiner receives
+            // the owner's already-decoded text. The response cache re-decodes stored
+            // bytes per request; an in-flight join cannot, so it is only shared by
+            // requests that would decode alike.
+            if (string.Equals(secFetchDest, "style", StringComparison.OrdinalIgnoreCase))
+            {
+                key = string.Concat(key, " enc=", context.FallbackEncoding, "|", context.LinkCharset);
+            }
+
             return true;
         }
 
