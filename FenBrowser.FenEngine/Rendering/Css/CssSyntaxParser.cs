@@ -1003,7 +1003,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                  case CssTokenType.LeftBracket: return "[";
                  case CssTokenType.RightBracket: return "]";
                  case CssTokenType.Comma: return ",";
-                 case CssTokenType.Whitespace: return " ";
+                 case CssTokenType.Whitespace: return token.Value ?? " ";
                  case CssTokenType.CDO: return "<!--";
                  case CssTokenType.CDC: return "-->";
              }

@@ -41,9 +41,38 @@ namespace FenBrowser.FenEngine.Rendering.Css
             _position = position;
         }
 
+        // Whitespace tokens keep their text (custom property values and selector
+        // serialisation preserve it), but nearly every run is spaces or one newline
+        // followed by indentation, so those come from a table instead of a substring.
+        private const int CachedWhitespaceRun = 32;
+        private static readonly string[] SpaceRuns = BuildWhitespaceRuns(string.Empty);
+        private static readonly string[] NewlineRuns = BuildWhitespaceRuns("\n");
+
+        private static string[] BuildWhitespaceRuns(string prefix)
+        {
+            var runs = new string[CachedWhitespaceRun];
+            for (int i = 0; i < runs.Length; i++)
+            {
+                runs[i] = prefix + new string(' ', i);
+            }
+            return runs;
+        }
+
+        private static string WhitespaceText(string input, int start, int length)
+        {
+            int spacesFrom = input[start] == '\n' ? start + 1 : start;
+            int spaces = start + length - spacesFrom;
+            if (spaces < CachedWhitespaceRun && input.AsSpan(spacesFrom, spaces).IndexOfAnyExcept(' ') < 0)
+            {
+                return spacesFrom == start ? SpaceRuns[spaces] : NewlineRuns[spaces];
+            }
+            return input.Substring(start, length);
+        }
+
         private static string Preprocess(string input)
         {
             if (string.IsNullOrEmpty(input)) return string.Empty;
+            if (input[0] == '\uFEFF') input = input.Substring(1);
 
             int firstSpecialCharacter = 0;
             while (firstSpecialCharacter < input.Length)
@@ -120,8 +149,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             if (IsWhitespace(code))
             {
+                int start = _position;
                 ConsumeWhitespace();
-                return new CssToken(CssTokenType.Whitespace);
+                return new CssToken(CssTokenType.Whitespace, WhitespaceText(_input, start, _position - start));
             }
 
             if (code == '"' || code == '\'')
@@ -177,14 +207,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 {
                     return ConsumeNumericToken();
                 }
-                if (StartsWithIdentifier())
-                {
-                    return ConsumeIdentLikeToken();
-                }
                 if (_position + 2 < _length && _input[_position + 1] == '-' && _input[_position + 2] == '>')
                 {
                     _position += 3;
                     return new CssToken(CssTokenType.CDC);
+                }
+                if (StartsWithIdentifier())
+                {
+                    return ConsumeIdentLikeToken();
                 }
                 _position++;
                 return new CssToken(CssTokenType.Delim, '-');
@@ -624,7 +654,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         private static bool AreValidEscape(string str, int index)
         {
             if (index >= str.Length || str[index] != '\\') return false;
-            if (index + 1 >= str.Length) return false;
+            if (index + 1 >= str.Length) return true;
             return str[index + 1] != '\n';
         }
 
