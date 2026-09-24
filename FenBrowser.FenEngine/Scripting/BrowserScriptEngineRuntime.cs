@@ -11297,6 +11297,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     'createComment',
                     'createDocumentFragment',
                     'importNode',
+                    'adoptNode',
                     'createRange',
                     'createAttribute',
                     'createEvent',
@@ -11319,6 +11320,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     'hasAttribute',
                     'setAttribute',
                     'removeAttribute',
+                    'getAttributeNS',
+                    'hasAttributeNS',
+                    'setAttributeNS',
+                    'removeAttributeNS',
+                    'getAttributeNodeNS',
                     'toggleAttribute',
                     'getAttributeNode',
                     'setAttributeNode',
@@ -11402,10 +11408,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         bool IsNamedObject(Element element) =>
-            string.Equals(element.GetAttribute("id"), name, StringComparison.Ordinal) ||
+            string.Equals(element.GetAttributeNS(null, "id"), name, StringComparison.Ordinal) ||
             (string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
              element.LocalName is "embed" or "form" or "img" or "object" &&
-             string.Equals(element.GetAttribute("name"), name, StringComparison.Ordinal));
+             string.Equals(element.GetAttributeNS(null, "name"), name, StringComparison.Ordinal));
 
         Element first = null;
         foreach (var node in document.DocumentElement.SelfAndDescendants())
@@ -24393,6 +24399,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return sb.ToString();
     }
 
+    // A namespace argument is a DOMString? (WebIDL 3.2.17): null and undefined are
+    // the null namespace, and so is "" once DOM "validate and extract" sees it.
+    private static string ReadNullableNamespace(IReadOnlyList<JsValue> args, int index)
+    {
+        if (args.Count <= index || args[index].Tag is JsValueTag.Null or JsValueTag.Undefined)
+        {
+            return null;
+        }
+
+        var namespaceUri = CoerceToHostString(args[index]);
+        return namespaceUri.Length == 0 ? null : namespaceUri;
+    }
+
     private static string CoerceToHostString(JsValue value)
     {
         return value.Tag switch
@@ -26787,6 +26806,33 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         (_, _) => _owner.ToHostNodeOrNull(document.CreateDocumentFragment()),
                         length: 0);
                     return true;
+                case "adoptNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "adoptNode",
+                        (_, args) =>
+                        {
+                            var node = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (node == null)
+                            {
+                                _owner.ThrowDomException(
+                                    "TypeError",
+                                    "Failed to execute 'adoptNode': parameter 1 is not of type 'Node'.");
+                                return JsValue.Undefined;
+                            }
+
+                            try
+                            {
+                                return _owner.ToHostNodeOrNull(document.AdoptNode(node));
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 1);
+                    return true;
                 case "importNode":
                     value = _owner.GetOrCreateHostCallable(
                         document,
@@ -28322,6 +28368,79 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 : null;
                             var localName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
                             return _owner.ToHostOrNull(element.GetAttributeNodeNS(namespaceUri, localName), HostObjectKind.Other);
+                        },
+                        length: 2);
+                    return true;
+                case "getAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "getAttributeNS",
+                        (_, args) =>
+                        {
+                            var attributeValue = element.GetAttributeNS(ReadNullableNamespace(args, 0),
+                                args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty);
+                            return attributeValue == null ? JsValue.Null : JsValue.FromString(attributeValue);
+                        },
+                        length: 2);
+                    return true;
+                case "hasAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "hasAttributeNS",
+                        (_, args) => JsValue.FromBoolean(element.HasAttributeNS(ReadNullableNamespace(args, 0),
+                            args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty)),
+                        length: 2);
+                    return true;
+                case "setAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "setAttributeNS",
+                        (_, args) =>
+                        {
+                            var namespaceUri = ReadNullableNamespace(args, 0);
+                            var qualifiedName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            var attributeValue = args.Count > 2 ? CoerceToHostString(args[2]) : string.Empty;
+                            try
+                            {
+                                element.SetAttributeNS(namespaceUri, qualifiedName, attributeValue);
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+
+                            // A null-namespace attribute is the same attribute setAttribute
+                            // would have set, so it runs the same change steps.
+                            if (namespaceUri == null)
+                            {
+                                _owner.ApplyEventHandlerContentAttributeChange(element, qualifiedName, attributeValue);
+                                if ((string.Equals(qualifiedName, "src", StringComparison.OrdinalIgnoreCase) ||
+                                     string.Equals(qualifiedName, "srcdoc", StringComparison.OrdinalIgnoreCase)) &&
+                                    IsIFrameElement(element))
+                                {
+                                    _owner.QueueFrameElementLoad(element);
+                                }
+                            }
+                            return JsValue.Undefined;
+                        },
+                        length: 3);
+                    return true;
+                case "removeAttributeNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "removeAttributeNS",
+                        (_, args) =>
+                        {
+                            var namespaceUri = ReadNullableNamespace(args, 0);
+                            var localName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            var hadAttribute = element.HasAttributeNS(namespaceUri, localName);
+                            element.RemoveAttributeNS(namespaceUri, localName);
+                            if (hadAttribute && namespaceUri == null)
+                            {
+                                _owner.ApplyEventHandlerContentAttributeChange(element, localName, null);
+                            }
+                            return JsValue.Undefined;
                         },
                         length: 2);
                     return true;

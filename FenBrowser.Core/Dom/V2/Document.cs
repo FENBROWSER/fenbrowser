@@ -476,7 +476,7 @@ namespace FenBrowser.Core.Dom.V2
             Element el = string.Equals(namespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
                          string.Equals(localName, "template", StringComparison.OrdinalIgnoreCase)
                 ? new HtmlTemplateElement(this)
-                : new Element(localName, this, namespaceUri);
+                : new Element(localName, this, namespaceUri, namespaceIsExplicit: true);
             if (prefix != null)
                 el.Prefix = prefix;
 
@@ -590,6 +590,27 @@ namespace FenBrowser.Core.Dom.V2
             var clone = node.CloneNode(deep);
             SetOwnerDocumentRecursive(clone, this);
             return clone;
+        }
+
+        /// <summary>
+        /// Moves a node, with its subtree, into this document.
+        /// https://dom.spec.whatwg.org/#dom-document-adoptnode
+        /// </summary>
+        public Node AdoptNode(Node node)
+        {
+            if (node == null)
+                throw new DomException("NotFoundError", "Node cannot be null");
+            if (node is Document)
+                throw new DomException("NotSupportedError", "Cannot adopt a Document node");
+            if (node is ShadowRoot)
+                throw new DomException("HierarchyRequestError", "Cannot adopt a ShadowRoot");
+
+            // DOM 4.2.5 adopt: remove it from its parent, then give the subtree this
+            // node document.
+            (node.ParentNode as ContainerNode)?.RemoveChild(node);
+            if (node._ownerDocument != this)
+                SetOwnerDocumentRecursive(node, this);
+            return node;
         }
 
         private static void SetOwnerDocumentRecursive(Node node, Document ownerDocument)

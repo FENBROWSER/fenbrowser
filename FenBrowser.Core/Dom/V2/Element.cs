@@ -171,9 +171,30 @@ namespace FenBrowser.Core.Dom.V2
         /// Creates a new Element with the given local name.
         /// </summary>
         public Element(string localName, Document owner = null, string namespaceUri = null)
+            : this(localName, owner, namespaceUri, namespaceIsExplicit: false)
+        {
+        }
+
+        /// <summary>
+        /// Creates an element in exactly <paramref name="namespaceUri"/>. The other
+        /// constructor reads a null namespace as "HTML" for internal callers; here, as
+        /// in DOM 4.5 createElementNS, null (or "") is the null namespace.
+        /// </summary>
+        internal Element(string localName, Document owner, string namespaceUri, bool namespaceIsExplicit)
         {
             if (string.IsNullOrEmpty(localName))
                 throw new ArgumentException("Element name cannot be null or empty", nameof(localName));
+
+            if (namespaceIsExplicit && string.IsNullOrEmpty(namespaceUri))
+            {
+                LocalName = localName;
+                _tagName = localName;
+                NamespaceUri = null;
+                _ownerDocument = owner;
+                _flags |= NodeFlags.IsElement | NodeFlags.IsContainer;
+                _ancestorFeatureHash = BloomHash(localName.ToUpperInvariant());
+                return;
+            }
 
             var isHtmlElement = namespaceUri == null || namespaceUri == Namespaces.Html;
             LocalName = isHtmlElement ? localName.ToLowerInvariant() : localName;
@@ -302,24 +323,39 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void SetAttributeNS(string namespaceUri, string qualifiedName, string value)
         {
-            if (string.IsNullOrEmpty(qualifiedName))
-                throw new DomException("InvalidCharacterError", "Attribute name cannot be empty");
+            // DOM 4.9 "validate and extract": "" is the null namespace, the name must
+            // be a QName, and the prefix must agree with the namespace.
+            if (string.IsNullOrEmpty(namespaceUri))
+                namespaceUri = null;
+            if (string.IsNullOrEmpty(qualifiedName) || !Document.IsValidXmlQualifiedName(qualifiedName))
+                throw new DomException("InvalidCharacterError", $"'{qualifiedName}' is not a valid qualified name");
+
+            int colon = qualifiedName.IndexOf(':');
+            var prefix = colon >= 0 ? qualifiedName.Substring(0, colon) : null;
+            var localName = colon >= 0 ? qualifiedName.Substring(colon + 1) : qualifiedName;
+
+            if (prefix != null && namespaceUri == null)
+                throw new DomException("NamespaceError", "A prefixed attribute name needs a namespace");
+            if (prefix == "xml" && namespaceUri != Namespaces.Xml)
+                throw new DomException("NamespaceError", "The xml prefix needs the XML namespace");
+            if ((prefix == "xmlns" || qualifiedName == "xmlns") != (namespaceUri == Namespaces.Xmlns))
+                throw new DomException("NamespaceError", "xmlns names and the XMLNS namespace go together");
+
+            AttributeSanitizer.ValidateValue(localName, value, out var sanitizedValue);
+            value = sanitizedValue ?? "";
 
             EngineContext.Current.AssertNotInPhase(
                 EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
 
-            // Extract local name and prefix
-            int colon = qualifiedName.IndexOf(':');
-            var localName = colon >= 0 ? qualifiedName.Substring(colon + 1) : qualifiedName;
-
             var existing = _attributes?.GetNamedItemNS(namespaceUri, localName);
             if (existing != null)
             {
-                existing.Value = value ?? "";
+                if (!string.Equals(existing.Value, value, StringComparison.Ordinal))
+                    existing.Value = value;
             }
             else
             {
-                var attr = new Attr(namespaceUri, qualifiedName, value ?? "", this);
+                var attr = new Attr(namespaceUri, qualifiedName, value, this);
                 Attributes.Add(attr);
                 OnAttributeAdded(attr);
             }
