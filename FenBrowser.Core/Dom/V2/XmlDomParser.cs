@@ -161,7 +161,7 @@ public static class XmlDomParser
         }
         else
         {
-            created = doc.CreateElement(elementName.LocalName);
+            created = doc.CreateElementNS(null, elementName.LocalName);
         }
 
         foreach (var attribute in element.Attributes())

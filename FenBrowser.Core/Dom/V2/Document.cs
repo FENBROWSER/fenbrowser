@@ -396,13 +396,31 @@ namespace FenBrowser.Core.Dom.V2
             // Validate per XML Name production (https://www.w3.org/TR/xml/#NT-Name)
             // Name ::= NameStartChar (NameChar)*
             // NameStartChar ::= ":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] | ...
-            if (!IsValidXmlName(localName))
+            if (!DomNames.IsValidElementLocalName(localName))
                 throw new DomException("InvalidCharacterError", $"'{localName}' is not a valid element name");
+            // DOM 4.5 createElement: the HTML namespace for an HTML document or one
+            // served as application/xhtml+xml, otherwise the null namespace; only
+            // an HTML document lowercases the name.
+            var isHtmlDocument = IsHtmlDocumentType();
+            if (!isHtmlDocument &&
+                !string.Equals(ContentType, "application/xhtml+xml", StringComparison.OrdinalIgnoreCase))
+            {
+                return new Element(localName, this, null, namespaceIsExplicit: true);
+            }
+
             var el = string.Equals(localName, "template", StringComparison.OrdinalIgnoreCase)
                 ? new HtmlTemplateElement(this)
-                : new Element(localName, this);
+                : isHtmlDocument
+                    ? new Element(localName, this)
+                    : new Element(localName, this, Namespaces.Html, namespaceIsExplicit: true);
             return el;
         }
+
+        // DOM 4.5: an HTML document is one whose type is "html"; this engine
+        // records that as its content type.
+        private bool IsHtmlDocumentType() =>
+            string.IsNullOrEmpty(ContentType) ||
+            string.Equals(ContentType, "text/html", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
         /// Validates a name against the XML Name production.
@@ -438,40 +456,9 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public Element CreateElementNS(string namespaceUri, string qualifiedName)
         {
-            if (string.IsNullOrEmpty(qualifiedName))
-                throw new DomException("InvalidCharacterError", "Element name cannot be empty");
-
-            if (!IsValidQualifiedName(qualifiedName))
-                throw new DomException("InvalidCharacterError", $"'{qualifiedName}' is not a valid qualified name");
-
-            int colon = qualifiedName.IndexOf(':');
-            if (colon == 0 || colon == qualifiedName.Length - 1 || qualifiedName.IndexOf(':', colon + 1) >= 0)
-                throw new DomException("NamespaceError", $"'{qualifiedName}' is not a valid namespace-qualified name");
-
-            var prefix = colon >= 0 ? qualifiedName.Substring(0, colon) : null;
-            var localName = colon >= 0 ? qualifiedName.Substring(colon + 1) : qualifiedName;
-
-            if (prefix != null && string.IsNullOrEmpty(namespaceUri))
-                throw new DomException("NamespaceError", "Qualified names with a prefix require a namespace URI");
-
-            if (string.Equals(prefix, "xml", StringComparison.Ordinal) &&
-                !string.Equals(namespaceUri, "http://www.w3.org/XML/1998/namespace", StringComparison.Ordinal))
-            {
-                throw new DomException("NamespaceError", "xml prefix requires the XML namespace");
-            }
-
-            if (string.Equals(prefix, "xmlns", StringComparison.Ordinal) &&
-                !string.Equals(namespaceUri, "http://www.w3.org/2000/xmlns/", StringComparison.Ordinal))
-            {
-                throw new DomException("NamespaceError", "xmlns prefix requires the XMLNS namespace");
-            }
-
-            if (string.Equals(namespaceUri, "http://www.w3.org/2000/xmlns/", StringComparison.Ordinal) &&
-                !string.Equals(prefix, "xmlns", StringComparison.Ordinal) &&
-                !string.Equals(qualifiedName, "xmlns", StringComparison.Ordinal))
-            {
-                throw new DomException("NamespaceError", "XMLNS namespace requires xmlns-qualified names");
-            }
+            // DOM 4.5 createElementNS: "validate and extract" in the element context.
+            string prefix, localName;
+            (namespaceUri, prefix, localName) = DomNames.ValidateAndExtract(namespaceUri, qualifiedName, forElement: true);
 
             Element el = string.Equals(namespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
                          string.Equals(localName, "template", StringComparison.OrdinalIgnoreCase)
@@ -642,10 +629,12 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public Attr CreateAttribute(string localName)
         {
-            if (string.IsNullOrEmpty(localName))
-                throw new DomException("InvalidCharacterError", "Attribute name cannot be empty");
+            // DOM 4.5 createAttribute: a valid attribute local name, lowercased in an
+            // HTML document.
+            if (!DomNames.IsValidAttributeLocalName(localName))
+                throw new DomException("InvalidCharacterError", $"'{localName}' is not a valid attribute name");
 
-            return new Attr(localName.ToLowerInvariant(), "");
+            return new Attr(IsHtmlDocumentType() ? localName.ToLowerInvariant() : localName, "");
         }
 
         /// <summary>
@@ -654,9 +643,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public Attr CreateAttributeNS(string namespaceUri, string qualifiedName)
         {
-            if (string.IsNullOrEmpty(qualifiedName))
-                throw new DomException("InvalidCharacterError", "Attribute name cannot be empty");
-
+            (namespaceUri, _, _) = DomNames.ValidateAndExtract(namespaceUri, qualifiedName, forElement: false);
             return new Attr(namespaceUri, qualifiedName, "");
         }
 

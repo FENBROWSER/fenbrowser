@@ -131,7 +131,8 @@ namespace FenBrowser.Core.Dom.V2.Security
             if (string.IsNullOrEmpty(name))
                 return AttributeValidationResult.Invalid("Attribute name cannot be empty");
 
-            if (!IsValidXmlName(name))
+            // DOM 4.9 setAttribute: a valid attribute local name.
+            if (!DomNames.IsValidAttributeLocalName(name))
                 return AttributeValidationResult.Invalid($"Invalid characters in attribute name: {name}");
 
             // Event-handler names are valid DOM attributes. Mark them as noteworthy

@@ -74,7 +74,7 @@ public sealed class DomNamespacedAttributeTests : IDisposable
             [err(function () { e.setAttributeNS(null, 'p:a', '1'); }),
              err(function () { e.setAttributeNS('urn:x', 'xml:a', '1'); }),
              err(function () { e.setAttributeNS('urn:x', 'xmlns', '1'); }),
-             err(function () { e.setAttributeNS('urn:x', '1bad', '1'); })].join('|')")?.ToString());
+             err(function () { e.setAttributeNS('urn:x', 'a b', '1'); })].join('|')")?.ToString());
     }
 
     [Fact]

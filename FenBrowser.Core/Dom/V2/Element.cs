@@ -197,7 +197,9 @@ namespace FenBrowser.Core.Dom.V2
             }
 
             var isHtmlElement = namespaceUri == null || namespaceUri == Namespaces.Html;
-            LocalName = isHtmlElement ? localName.ToLowerInvariant() : localName;
+            // createElementNS keeps the name it was given, even in the HTML namespace
+            // (DOM 4.5: only createElement lowercases, and only in an HTML document).
+            LocalName = isHtmlElement && !namespaceIsExplicit ? localName.ToLowerInvariant() : localName;
 
             // HTML element names are ASCII case-insensitive and expose an uppercase
             // HTML tagName. Foreign namespace names preserve their source/local case.
@@ -323,23 +325,9 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void SetAttributeNS(string namespaceUri, string qualifiedName, string value)
         {
-            // DOM 4.9 "validate and extract": "" is the null namespace, the name must
-            // be a QName, and the prefix must agree with the namespace.
-            if (string.IsNullOrEmpty(namespaceUri))
-                namespaceUri = null;
-            if (string.IsNullOrEmpty(qualifiedName) || !Document.IsValidXmlQualifiedName(qualifiedName))
-                throw new DomException("InvalidCharacterError", $"'{qualifiedName}' is not a valid qualified name");
-
-            int colon = qualifiedName.IndexOf(':');
-            var prefix = colon >= 0 ? qualifiedName.Substring(0, colon) : null;
-            var localName = colon >= 0 ? qualifiedName.Substring(colon + 1) : qualifiedName;
-
-            if (prefix != null && namespaceUri == null)
-                throw new DomException("NamespaceError", "A prefixed attribute name needs a namespace");
-            if (prefix == "xml" && namespaceUri != Namespaces.Xml)
-                throw new DomException("NamespaceError", "The xml prefix needs the XML namespace");
-            if ((prefix == "xmlns" || qualifiedName == "xmlns") != (namespaceUri == Namespaces.Xmlns))
-                throw new DomException("NamespaceError", "xmlns names and the XMLNS namespace go together");
+            // DOM 4.9 setAttributeNS: "validate and extract" in the attribute context.
+            string localName;
+            (namespaceUri, _, localName) = DomNames.ValidateAndExtract(namespaceUri, qualifiedName, forElement: false);
 
             AttributeSanitizer.ValidateValue(localName, value, out var sanitizedValue);
             value = sanitizedValue ?? "";

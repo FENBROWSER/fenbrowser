@@ -29248,7 +29248,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var name = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
                             var publicId = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
                             var systemId = args.Count > 2 ? CoerceToHostString(args[2]) : string.Empty;
-                            if (!Document.IsValidXmlQualifiedName(name))
+                            if (!DomNames.IsValidDoctypeName(name))
                             {
                                 throw new DomException("InvalidCharacterError", $"The qualified name '{name}' is not valid.");
                             }
