@@ -961,6 +961,17 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
+    /// <summary>
+    /// An empty <see cref="ForwardingObject"/> with Object.prototype; the host defines its
+    /// own properties first and sets its source afterwards.
+    /// </summary>
+    public JsValue AllocateForwardingObject()
+    {
+        var obj = new ForwardingObject();
+        obj.SetPrototype(EnsureObjectPrototype());
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
     public JsValue AllocateModuleNamespaceObject(
         Environments.ModuleEnvironmentRecord environment,
         IReadOnlyDictionary<string, string> localNames)

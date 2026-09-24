@@ -18681,7 +18681,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var href = ResolveIFrameWindowHref(iframe, frameDocument, frameUri);
 
         var frameWindowListeners = GetIFrameWindowListeners(iframe);
-        var window = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        var window = _interpreter.AllocateForwardingObject();
         var location = CreatePlainLocationObject(href);
 
         _interpreter.SetObjectProperty(window, "document", document);
@@ -18831,6 +18831,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         SetStoredHostProperty(iframe, "__fenIframeContentWindow", window);
+        ForwardContentWindowToFrameRealm(window, iframe);
         var defaultViewDocument = frameDocument;
         if (defaultViewDocument == null)
         {
