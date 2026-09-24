@@ -816,6 +816,62 @@ namespace FenBrowser.Tests.WebDriver
             Assert.NotNull(aliveResponse);
         }
 
+        [Theory]
+        [InlineData("{\"id\":\"foo\"}")]
+        [InlineData("{\"id\":true}")]
+        [InlineData("{\"id\":[]}")]
+        [InlineData("{\"id\":{}}")]
+        [InlineData("{\"id\":-1}")]
+        [InlineData("{\"id\":65536}")]
+        [InlineData("{\"id\":1.5}")]
+        [InlineData("{\"id\":{\"shadow-6066-11e4-a52e-4f735466cecf\":\"x\"}}")]
+        [InlineData("{}")]
+        public async Task SwitchToFrame_RejectsIdsThatAreNotNullANumberOrAnElement(string body)
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            var handler = new CommandHandler(manager) { Browser = new ScriptStubBrowserDriver() };
+            var match = new CommandRouter().Match("POST", $"/session/{session.Id}/frame");
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(match, body));
+
+            Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
+        }
+
+        [Theory]
+        [InlineData("{\"id\":null}")]
+        [InlineData("{\"id\":0}")]
+        public async Task SwitchToFrame_AcceptsNullAndAnIndex(string body)
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            var handler = new CommandHandler(manager) { Browser = new ScriptStubBrowserDriver() };
+            var match = new CommandRouter().Match("POST", $"/session/{session.Id}/frame");
+
+            var response = await handler.ExecuteAsync(match, body);
+
+            Assert.NotNull(response);
+        }
+
+        [Theory]
+        [InlineData("{\"width\":\"a\"}")]
+        [InlineData("{\"height\":false}")]
+        [InlineData("{\"x\":true}")]
+        [InlineData("{\"y\":[]}")]
+        [InlineData("{\"width\":-1}")]
+        [InlineData("{\"height\":-2}")]
+        public async Task SetWindowRect_RejectsMembersThatAreNotNullOrANumberInRange(string body)
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            var handler = new CommandHandler(manager) { Browser = new ScriptStubBrowserDriver() };
+            var match = new CommandRouter().Match("POST", $"/session/{session.Id}/window/rect");
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(match, body));
+
+            Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
+        }
+
         private sealed class StubElement
         {
         }

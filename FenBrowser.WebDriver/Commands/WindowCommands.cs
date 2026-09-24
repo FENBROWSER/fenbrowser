@@ -234,19 +234,13 @@ namespace FenBrowser.WebDriver.Commands
         {
             _handler.GetSession(sessionId);
             
-            int? x = null, y = null, width = null, height = null;
-            
-            if (body.HasValue)
-            {
-                if (body.Value.TryGetProperty("x", out var xEl) && xEl.ValueKind == JsonValueKind.Number)
-                    x = xEl.GetInt32();
-                if (body.Value.TryGetProperty("y", out var yEl) && yEl.ValueKind == JsonValueKind.Number)
-                    y = yEl.GetInt32();
-                if (body.Value.TryGetProperty("width", out var wEl) && wEl.ValueKind == JsonValueKind.Number)
-                    width = wEl.GetInt32();
-                if (body.Value.TryGetProperty("height", out var hEl) && hEl.ValueKind == JsonValueKind.Number)
-                    height = hEl.GetInt32();
-            }
+            // WebDriver 11.8.2 Set Window Rect: each member is null/absent or a Number
+            // in range (width and height 0..2^31-1, x and y any 32-bit integer);
+            // anything else is an invalid argument, not a silently ignored value.
+            var x = ReadRectMember(body, "x", int.MinValue);
+            var y = ReadRectMember(body, "y", int.MinValue);
+            var width = ReadRectMember(body, "width", 0);
+            var height = ReadRectMember(body, "height", 0);
             
             if (_handler.Browser != null)
             {
@@ -354,12 +348,15 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
 
-            var handle = Guid.NewGuid().ToString("N");
-            var created = await _handler.Browser.NewWindowAsync(windowType);
-            if (!string.IsNullOrWhiteSpace(created))
+            // The type is only a hint, and this browser opens every new top-level
+            // context as a tab: report what was created, not what was asked for.
+            var handle = await _handler.Browser.NewWindowAsync(windowType);
+            if (string.IsNullOrWhiteSpace(handle))
             {
-                handle = created;
+                throw new WebDriverException(ErrorCodes.UnknownError, "The browser did not create a new top-level browsing context");
             }
+
+            windowType = "tab";
 
             if (!session.WindowHandles.Contains(handle))
             {
@@ -396,23 +393,34 @@ namespace FenBrowser.WebDriver.Commands
         public async Task<WebDriverResponse> SwitchToFrameAsync(string sessionId, JsonElement? body)
         {
             var session = _handler.GetSession(sessionId);
-            object frameReference = null;
-            if (body.HasValue && body.Value.TryGetProperty("id", out var idEl) && idEl.ValueKind != JsonValueKind.Null)
+            // WebDriver 11.5 Switch To Frame: id is null (the top-level context), an
+            // integer 0..65535 (a child frame index) or a web element reference.
+            // Anything else - a missing id, a string, a shadow root - is an invalid
+            // argument; it used to mean "switch to the top level".
+            if (!body.HasValue || body.Value.ValueKind != JsonValueKind.Object ||
+                !body.Value.TryGetProperty("id", out var idEl))
             {
-                if (idEl.ValueKind == JsonValueKind.Object &&
-                    idEl.TryGetProperty(ElementReference.Identifier, out var elementIdEl))
-                {
-                    var webDriverElementId = elementIdEl.GetString();
-                    frameReference = session.GetElement(webDriverElementId);
-                }
-                else if (idEl.ValueKind == JsonValueKind.String)
-                {
-                    frameReference = idEl.GetString();
-                }
-                else if (idEl.ValueKind == JsonValueKind.Number && idEl.TryGetInt32(out var idx))
-                {
-                    frameReference = idx;
-                }
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Switch To Frame requires an id");
+            }
+
+            object frameReference = null;
+            switch (idEl.ValueKind)
+            {
+                case JsonValueKind.Null:
+                    break;
+                case JsonValueKind.Number:
+                    if (!idEl.TryGetDouble(out var number) || number != Math.Floor(number) || number < 0 || number > 65535)
+                    {
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, "Frame index must be an integer from 0 to 65535");
+                    }
+                    frameReference = (int)number;
+                    break;
+                case JsonValueKind.Object when idEl.TryGetProperty(ElementReference.Identifier, out var elementIdEl) &&
+                                               elementIdEl.ValueKind == JsonValueKind.String:
+                    frameReference = session.GetElement(elementIdEl.GetString());
+                    break;
+                default:
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Frame id must be null, a number or a web element reference");
             }
 
             if (_handler.Browser != null)
@@ -424,6 +432,23 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.UnknownError, "Browser not connected");
             }
             return WebDriverResponse.Success(null);
+        }
+
+        private static int? ReadRectMember(JsonElement? body, string name, long minimum)
+        {
+            if (!body.HasValue || body.Value.ValueKind != JsonValueKind.Object ||
+                !body.Value.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null)
+            {
+                return null;
+            }
+
+            if (value.ValueKind != JsonValueKind.Number || !value.TryGetDouble(out var number) ||
+                double.IsNaN(number) || number < minimum || number > int.MaxValue)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"'{name}' must be null or a number from {minimum} to {int.MaxValue}");
+            }
+
+            return (int)Math.Floor(number);
         }
 
         public async Task<WebDriverResponse> SwitchToParentFrameAsync(string sessionId)

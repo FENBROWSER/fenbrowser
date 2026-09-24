@@ -265,12 +265,13 @@ namespace FenBrowser.Host.WebDriver
             }
 
             var activeTab = tabs.ActiveTab;
-            if (activeTab != null)
+            if (activeTab != null && activeTab.Id != beforeActiveTabId)
             {
                 return activeTab.Id.ToString();
             }
 
-            return beforeActiveTabId?.ToString() ?? Guid.NewGuid().ToString("N");
+            // No new context: never hand back an existing tab (or a made-up id) as new.
+            throw new InvalidOperationException("New Window did not create a tab.");
         }
 
         public Task SwitchToWindowAsync(string windowHandle)
