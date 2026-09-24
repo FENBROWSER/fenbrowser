@@ -18001,6 +18001,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             return context.Bitmap;
         }
 
+        if (IsVideoElement(element))
+        {
+            return CopyCurrentVideoFrame(element);
+        }
+
         if (string.Equals(element.TagName, "img", StringComparison.OrdinalIgnoreCase))
         {
             var src = element.GetAttribute("src");
@@ -31284,6 +31289,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 args.Count >= 3 ? (float)CanvasArg(args, 2, 0d) : 0f,
                                 destWidth,
                                 destHeight);
+
+                            // A video's frame is a copy made for this draw; a canvas or image
+                            // bitmap belongs to its owner.
+                            if (_owner.ResolveHostObjectOrNull<Element>(args[0]) is { } source && IsVideoElement(source))
+                            {
+                                bitmap.Dispose();
+                            }
+
                             return JsValue.Undefined;
                         },
                         length: 3);

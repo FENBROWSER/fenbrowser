@@ -444,6 +444,30 @@ public sealed partial class FenJsBrowserScriptEngine
     }
 
     /// <summary>Must be called on the JS worker of the owning realm.</summary>
+    /// <summary>
+    /// HTML 4.12.5.1.14 drawImage with a video: the frame at the current playback position,
+    /// as a new bitmap the caller owns; null before the element has a frame.
+    /// </summary>
+    internal SkiaSharp.SKBitmap CopyCurrentVideoFrame(Element video)
+    {
+        if (!_mediaElements.TryGetValue(video, out var binding) || binding.AcquireCurrentPicture() is not { } picture)
+        {
+            return null;
+        }
+
+        try
+        {
+            var bitmap = new SkiaSharp.SKBitmap(new SkiaSharp.SKImageInfo(
+                picture.Width, picture.Height, SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul));
+            picture.WriteBgra(bitmap.GetPixelSpan(), bitmap.RowBytes);
+            return bitmap;
+        }
+        finally
+        {
+            picture.Release();
+        }
+    }
+
     private MediaElementBinding GetOrCreateMediaBinding(Element element)
     {
         var realm = MediaRealmFor(element);
@@ -561,6 +585,9 @@ public sealed partial class FenJsBrowserScriptEngine
         /// <summary>The MediaSource a just-set blob src resolved to, until the resource selection algorithm consumes it.</summary>
         internal (string Url, int Id)? PinnedMediaSource;
         private VideoPresenter _presenter;
+
+        /// <summary>The picture the element shows now, with a reference held; null when there is none.</summary>
+        internal FenBrowser.Media.Video.PresentedPicture AcquireCurrentPicture() => _presenter?.Acquire();
         private ElementVisibility _visibility = ElementVisibility.OnScreen;
         private readonly List<(int Handle, JsValue Callback)> _videoFrameCallbacks = new();
         private HashSet<int> _videoFrameCallbacksRunning;
