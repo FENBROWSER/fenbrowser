@@ -94,6 +94,22 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
+            if (!ReferenceEquals(root, root.OwnerDocument?.DocumentElement))
+            {
+                var incrementalChildren = new List<Element>();
+                foreach (var child in root.ChildNodes)
+                {
+                    if (child is Element element)
+                    {
+                        incrementalChildren.Add(element);
+                    }
+                }
+
+                ProcessChildSubtrees(incrementalChildren, engine, result, log, deadline, root);
+                inlineStyleCacheStatistics = engine.GetInlineStyleCacheStatistics();
+                return new Dictionary<Node, CssComputed>(result);
+            }
+
             // Walk root's children serially (typically <head> and <body>).
             // For <body>, we defer its children to parallel phase.
             Element bodyElement = null;
@@ -131,31 +147,40 @@ namespace FenBrowser.FenEngine.Rendering
                     bodyChildren.Add(el);
             }
 
-            if (bodyChildren.Count < ParallelThreshold)
-            {
-                // Small document – serial is faster.
-                foreach (var child in bodyChildren)
-                {
-                    ComputeSingleNode(child, engine, result, log, deadline, root);
-                    ProcessSubtreeSerial(child, engine, result, log, deadline, root);
-                }
-            }
-            else
-            {
-                // Phase 3: Parallel fan-out across body's children.
-                Parallel.ForEach(bodyChildren, 
-                    new ParallelOptions { MaxDegreeOfParallelism = Math.Min(Environment.ProcessorCount, 8) }, 
-                    subtreeRoot =>
-                {
-                    ComputeSingleNode(subtreeRoot, engine, result, log, deadline, root);
-                    ProcessSubtreeSerial(subtreeRoot, engine, result, log, deadline, root);
-                });
-            }
+            ProcessChildSubtrees(bodyChildren, engine, result, log, deadline, root);
 
             inlineStyleCacheStatistics = engine.GetInlineStyleCacheStatistics();
             double __f = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
             FenBrowser.Core.EngineLogCompat.Log(FenBrowser.Core.Logging.LogCategory.Rendering, FenBrowser.Core.Logging.LogLevel.Info, $"[PERF-CASCADE] elemVisits={CascadeEngine.NElems} collectMs={CascadeEngine.TCollect*__f:F0} sortMs={CascadeEngine.TSort*__f:F0} applyMs={CascadeEngine.TApply*__f:F0} matchedDecls={CascadeEngine.NMatches} universalBucket={engine.UniversalCandidateCount} cacheHitMs={CascadeEngine.TCacheHit*__f:F0} cacheHits={CascadeEngine.NCacheHit} mainPass={CascadeEngine.NMain} pseudoPass={CascadeEngine.NPseudo} pseudoCollectMs={CascadeEngine.TPseudoCollect*__f:F0}");
             return new Dictionary<Node, CssComputed>(result);
+        }
+
+        private static void ProcessChildSubtrees(
+            List<Element> children,
+            CascadeEngine engine,
+            ConcurrentDictionary<Node, CssComputed> result,
+            Action<string> log,
+            FenBrowser.Core.Deadlines.FrameDeadline deadline,
+            Element docRoot)
+        {
+            if (children.Count < ParallelThreshold)
+            {
+                foreach (var child in children)
+                {
+                    ComputeSingleNode(child, engine, result, log, deadline, docRoot);
+                    ProcessSubtreeSerial(child, engine, result, log, deadline, docRoot);
+                }
+                return;
+            }
+
+            Parallel.ForEach(
+                children,
+                new ParallelOptions { MaxDegreeOfParallelism = Math.Min(Environment.ProcessorCount, 8) },
+                subtreeRoot =>
+                {
+                    ComputeSingleNode(subtreeRoot, engine, result, log, deadline, docRoot);
+                    ProcessSubtreeSerial(subtreeRoot, engine, result, log, deadline, docRoot);
+                });
         }
 
         /// <summary>
