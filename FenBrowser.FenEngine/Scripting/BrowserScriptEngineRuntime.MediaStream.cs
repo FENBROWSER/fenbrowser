@@ -39,6 +39,63 @@ public sealed partial class FenJsBrowserScriptEngine
 
     private void InstallFenJsMediaStream()
     {
+        // A MediaStream some element plays: its tracks, as that element's resource reads
+        // them. (url, [{ id, kind, pipe, live, enabled }]).
+        Native("__fenSyncMediaStream", 2, args =>
+        {
+            var url = args.Count > 0 && args[0].Tag == JsValueTag.String ? CoerceToHostString(args[0]) : null;
+            if (string.IsNullOrEmpty(url) || args.Count < 2 || args[1].Tag != JsValueTag.Object)
+            {
+                return JsValue.Undefined;
+            }
+
+            var tracks = new List<LiveTrack>();
+            _interpreter.TryGetObjectProperty(args[1], "length", out var lengthValue);
+            int length = lengthValue.Tag == JsValueTag.Int32 ? lengthValue.AsInt32() : (int)(lengthValue.Tag == JsValueTag.Number ? lengthValue.AsNumber() : 0);
+            for (int i = 0; i < length; i++)
+            {
+                if (!_interpreter.TryGetObjectProperty(args[1], i.ToString(System.Globalization.CultureInfo.InvariantCulture), out var entry) ||
+                    entry.Tag != JsValueTag.Object)
+                {
+                    continue;
+                }
+
+                string Read(string name) =>
+                    _interpreter.TryGetObjectProperty(entry, name, out var v) && v.Tag == JsValueTag.String ? CoerceToHostString(v) : string.Empty;
+                bool Flag(string name) =>
+                    _interpreter.TryGetObjectProperty(entry, name, out var v) && v.Tag == JsValueTag.Boolean && v.AsBoolean();
+
+                var pipeKey = Read("pipe");
+                AudioTrackPipe pipe = null;
+                if (pipeKey.Length > 0)
+                {
+                    lock (_audioTrackPipes)
+                        _audioTrackPipes.TryGetValue(pipeKey, out pipe);
+                }
+
+                tracks.Add(new LiveTrack(
+                    Read("id"),
+                    string.Equals(Read("kind"), "video", StringComparison.Ordinal) ? FenBrowser.Media.MediaTrackKind.Video : FenBrowser.Media.MediaTrackKind.Audio,
+                    pipe,
+                    Flag("live"),
+                    Flag("enabled")));
+            }
+
+            LiveStreamRegistry.GetOrAdd(url).Update(tracks);
+            return JsValue.Undefined;
+        });
+
+        // No element plays the stream any more.
+        Native("__fenForgetMediaStream", 1, args =>
+        {
+            if (args.Count > 0 && args[0].Tag == JsValueTag.String)
+            {
+                LiveStreamRegistry.Remove(CoerceToHostString(args[0]));
+            }
+
+            return JsValue.Undefined;
+        });
+
         // HTML 4.8.11.2 srcObject setter: assign the provider object, then run the media
         // element load algorithm. The prelude keeps the object and passes the URL the
         // pipeline loads it from (null when the object was cleared).

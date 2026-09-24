@@ -267,6 +267,43 @@ public sealed partial class FenJsBrowserScriptEngine
             // revoked when the object is replaced; a MediaStream goes by its id.
             var providers = new WeakMap();
             var providerUrls = new WeakMap();
+
+            // Streams some element plays, with how many elements play each. Their track
+            // lists are pushed to the engine whenever they change.
+            var providerStreams = new Map();
+            function streamUrl(stream) { return 'fen-mediastream:' + stream.id; }
+            function syncProviders() { providerStreams.forEach(function (_, stream) { syncStream(stream); }); }
+            function syncStream(stream) {
+                g.__fenSyncMediaStream(streamUrl(stream), stream._tracks.map(function (t) {
+                    if (!t.__fenProviderWatched) {
+                        Object.defineProperty(t, '__fenProviderWatched', { value: true });
+                        t._consumers.push(syncProviders);
+                    }
+                    return { id: String(t._id), kind: String(t._kind), pipe: t._pipe || '', live: !!t._live, enabled: !!t._enabled };
+                }));
+            }
+            function retainStream(stream) {
+                providerStreams.set(stream, (providerStreams.get(stream) || 0) + 1);
+                syncStream(stream);
+            }
+            function releaseStream(stream) {
+                var count = (providerStreams.get(stream) || 0) - 1;
+                if (count > 0) { providerStreams.set(stream, count); return; }
+                providerStreams.delete(stream);
+                g.__fenForgetMediaStream(streamUrl(stream));
+            }
+            ['addTrack', 'removeTrack', '_sync'].forEach(function (name) {
+                var original = MediaStream.prototype[name];
+                if (typeof original !== 'function') return;
+                Object.defineProperty(MediaStream.prototype, name, {
+                    value: function () {
+                        var result = original.apply(this, arguments);
+                        if (providerStreams.has(this)) syncStream(this);
+                        return result;
+                    },
+                    writable: true, configurable: true
+                });
+            });
             if (typeof g.HTMLMediaElement === 'function' && g.HTMLMediaElement.prototype) {
                 Object.defineProperty(g.HTMLMediaElement.prototype, 'srcObject', {
                     get: function () {
@@ -285,13 +322,16 @@ public sealed partial class FenJsBrowserScriptEngine
                         var previousUrl = providerUrls.get(this);
                         if (previousUrl) g.URL.revokeObjectURL(previousUrl);
                         providerUrls.delete(this);
+                        var previous = providers.get(this);
+                        if (previous instanceof MediaStream) releaseStream(previous);
                         var url = null;
                         if (value === null) {
                             providers.delete(this);
                         } else {
                             providers.set(this, value);
                             if (value instanceof MediaStream) {
-                                url = 'fen-mediastream:' + value.id;
+                                retainStream(value);
+                                url = streamUrl(value);
                             } else {
                                 url = g.URL.createObjectURL(value);
                                 providerUrls.set(this, url);

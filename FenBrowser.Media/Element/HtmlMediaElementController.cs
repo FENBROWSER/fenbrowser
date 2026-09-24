@@ -293,7 +293,11 @@ public sealed class HtmlMediaElementController
     private bool IsBlocked => ReadyState <= MediaReadyState.HaveCurrentData;
 
     // Negative rates are rejected by the setter, so the direction is always forwards.
-    private bool HasEndedPlayback => IsAtTheEnd && !_host.HasLoopAttribute;
+    private bool HasEndedPlayback => (IsAtTheEnd && !_host.HasLoopAttribute) || _liveProviderEnded;
+
+    // mediacapture-main 6: a MediaStream that goes inactive ends playback - ended is true -
+    // though a live stream has no duration to reach. Cleared by the load algorithm.
+    private bool _liveProviderEnded;
 
     /// <summary>The current playback position is the end of a media resource with a known duration.</summary>
     private bool IsAtTheEnd =>
@@ -509,6 +513,8 @@ public sealed class HtmlMediaElementController
             task.Cancelled = true;
             task.SettlePromisesNow?.Invoke();
         }
+
+        _liveProviderEnded = false;
 
         // 6. abort
         if (NetworkState is MediaNetworkState.Loading or MediaNetworkState.Idle)
@@ -1288,6 +1294,8 @@ public sealed class HtmlMediaElementController
     {
         if (_duration is { } duration && !duration.IsInfinite)
             _currentPosition = MediaTime.Max(_currentPosition, duration);
+        else if (_mode == SelectionMode.Object)
+            _liveProviderEnded = true;
         _host.PlaybackPositionChanged(monotonic: true);
 
         // 1. Loop: seek to the earliest possible position.

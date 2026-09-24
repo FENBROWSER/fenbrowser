@@ -13,6 +13,7 @@ using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Media;
 using FenBrowser.Media.Element;
+using FenBrowser.Media.Streams;
 using FenBrowser.Media.Video;
 
 namespace FenBrowser.FenEngine.Scripting;
@@ -1087,7 +1088,13 @@ public sealed partial class FenJsBrowserScriptEngine
             IMediaResource resource;
             var pinned = PinnedMediaSource;
             PinnedMediaSource = null;
-            if (!_realm.TryStartMediaSourceResource(_element, request, client, QueueTask, pinned, out resource))
+            if (request.Url != null && request.Url.StartsWith(LiveStreamRegistry.Scheme, StringComparison.Ordinal))
+            {
+                // A MediaStream provider object: a live resource over its tracks.
+                resource = new MediaStreamResource(
+                    LiveStreamRegistry.GetOrAdd(request.Url), client, QueueTask, MediaEngineServices.AudioOutputs);
+            }
+            else if (!_realm.TryStartMediaSourceResource(_element, request, client, QueueTask, pinned, out resource))
             {
                 // A blob: URL for a Blob (srcObject = blob, or src = createObjectURL(blob)) is
                 // read from the realm's blob URL store; File API 8.3.2 gives the response the
