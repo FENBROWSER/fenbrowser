@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text;
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
@@ -1660,10 +1660,13 @@ public sealed class BytecodeCompiler
             }
             _instructions.Add(new Instruction(OpCode.Move, 0, reg, 0));
         }
-        else if (hasPendingFinally)
+        else
         {
-            EmitAbruptCompletion(0, -1, leaveTrailingScopes: false);
-            // The finally may have written register 0; restore the undefined result.
+            if (hasPendingFinally)
+            {
+                EmitAbruptCompletion(0, -1, leaveTrailingScopes: false);
+            }
+            // ECMA-262 14.10.3: `return;` without expression always yields undefined.
             var undef = LoadUndefinedConstant();
             _instructions.Add(new Instruction(OpCode.Move, 0, undef, 0));
         }

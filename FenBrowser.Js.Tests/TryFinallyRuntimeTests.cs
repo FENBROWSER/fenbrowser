@@ -154,4 +154,17 @@ try {
 } finally { result = result * 10 + 4; }
 result;"));
     }
+
+    [Fact]
+    public void BareReturnInCatch_ReturnsUndefinedNotTheCaughtValue()
+    {
+        // ECMA-262 14.10.1: `return;` completes with undefined. The catch binding's
+        // register must not leak out as the return value.
+        var fn = new BytecodeCompiler().CompileScript(new SourceText(
+            "var f = () => { try { throw 1; } catch (e) { return; } };" +
+            "var g = function () { var x = 'stale'; try { x; throw 2; } catch (e) { return; } };" +
+            "f() === undefined && g() === undefined;"));
+        new BytecodeVerifier().Verify(fn);
+        Assert.True(new BytecodeInterpreter().Execute(fn).AsBoolean());
+    }
 }
