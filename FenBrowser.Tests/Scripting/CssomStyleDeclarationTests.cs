@@ -56,6 +56,30 @@ public sealed class CssomStyleDeclarationTests
     }
 
     [Fact]
+    public async Task ComputedCustomPropertiesSubstituteVarReferencesWithNestedFallbacks()
+    {
+        // CSS Variables 1 section 3: the computed value has every var() substituted,
+        // and a fallback may hold parentheses of its own.
+        var result = await RunAsync(
+            "<style>#p { --size: 4px; --calc: var(--missing, calc(1px + var(--size))); --plain: a var(--size) b }</style><p id='p'>x</p>",
+            @"var cs = getComputedStyle(document.getElementById('p'));
+              return [cs.getPropertyValue('--calc').trim(), cs.getPropertyValue('--plain').trim()].join('|');");
+
+        Assert.Equal("calc(1px + 4px)|a 4px b", result);
+    }
+
+    [Fact]
+    public async Task ComputedCustomPropertiesInAReferenceCycleUseTheirFallback()
+    {
+        var result = await RunAsync(
+            "<style>#p { --a: var(--b, one); --b: var(--a, two) }</style><p id='p'>x</p>",
+            @"var cs = getComputedStyle(document.getElementById('p'));
+              return cs.getPropertyValue('--a').trim();");
+
+        Assert.DoesNotContain("var(", result);
+    }
+
+    [Fact]
     public async Task InvalidKeywordDeclarationDoesNotOverrideAnEarlierValidOne()
     {
         var result = await RunAsync(

@@ -15268,7 +15268,168 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             props["cssFloat"] = floatValue;
         }
 
+        ResolveComputedCustomProperties(props);
+
         return CreateComputedStyleObject(props);
+    }
+
+    // CSS Variables 1 §3: a custom property's computed value is its specified
+    // value with every var() substituted. The cascade keeps custom properties as
+    // authored, so getComputedStyle substitutes here, and only for the ones that
+    // hold a var().
+    private static void ResolveComputedCustomProperties(Dictionary<string, JsValue> props)
+    {
+        List<string> pending = null;
+        foreach (var (key, value) in props)
+        {
+            if (key.StartsWith("--", StringComparison.Ordinal) &&
+                value.Tag == JsValueTag.String &&
+                value.AsString().Contains("var(", StringComparison.OrdinalIgnoreCase))
+            {
+                (pending ??= new List<string>()).Add(key);
+            }
+        }
+
+        if (pending == null)
+        {
+            return;
+        }
+
+        var resolved = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var key in pending)
+        {
+            resolved[key] = SubstituteCustomPropertyReferences(
+                props[key].AsString(), props, new HashSet<string>(StringComparer.Ordinal) { key });
+        }
+
+        foreach (var (key, value) in resolved)
+        {
+            props[key] = JsValue.FromString(value);
+        }
+    }
+
+    // A comment directly before a var() serialises as the empty comment, and two
+    // adjacent var()s are kept apart by one, so that substitution cannot glue their
+    // tokens together (CSS Syntax 3 §9, the serialisation pairs table).
+    private static readonly System.Text.RegularExpressions.Regex CommentBeforeVar = new(@"/\*.*?\*/\s*(?=var\()", System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
+    private static readonly System.Text.RegularExpressions.Regex AdjacentVars = new(@"\)\s*(?=var\()", System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    private static readonly System.Text.RegularExpressions.Regex RepeatedEmptyComments = new(@"(/\*\*/)+", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static string SubstituteCustomPropertyReferences(string raw, Dictionary<string, JsValue> props, HashSet<string> referencing)
+    {
+        var text = AdjacentVars.Replace(CommentBeforeVar.Replace(raw, "/**/"), ")/**/");
+        var output = new StringBuilder(text.Length);
+        int i = 0;
+        while (i < text.Length)
+        {
+            int start = text.IndexOf("var(", i, StringComparison.OrdinalIgnoreCase);
+            if (start < 0 || !TryReadVarFunction(text, start, out var end, out var name, out var fallback))
+            {
+                output.Append(text, i, text.Length - i);
+                break;
+            }
+
+            output.Append(text, i, start - i);
+            var value = ResolveCustomPropertyReference(name, fallback, props, referencing);
+            output.Append(value);
+
+            // Keep an ident or number that follows from merging into the value's last token.
+            if (end < text.Length && value.Length > 0 &&
+                char.IsLetterOrDigit(value[^1]) && char.IsLetterOrDigit(text[end]))
+            {
+                output.Append("/**/");
+            }
+
+            i = end;
+        }
+
+        return RepeatedEmptyComments.Replace(output.ToString(), "/**/");
+    }
+
+    // var( <custom-property-name> [, <declaration-value>? ]? ) starting at `start`;
+    // `end` is the index after its closing parenthesis. Parentheses in the fallback
+    // nest, and a quoted string may hold any of them.
+    private static bool TryReadVarFunction(string text, int start, out int end, out string name, out string fallback)
+    {
+        end = -1;
+        name = null;
+        fallback = null;
+        int depth = 1, comma = -1;
+        char quote = '\0';
+        for (int j = start + 4; j < text.Length; j++)
+        {
+            char c = text[j];
+            if (quote != '\0')
+            {
+                if (c == '\\') j++;
+                else if (c == quote) quote = '\0';
+                continue;
+            }
+
+            if (c == '"' || c == '\'') quote = c;
+            else if (c == '(') depth++;
+            else if (c == ',' && depth == 1 && comma < 0) comma = j;
+            else if (c == ')' && --depth == 0)
+            {
+                end = j + 1;
+                int nameEnd = comma >= 0 ? comma : j;
+                name = text.Substring(start + 4, nameEnd - start - 4).Trim();
+                fallback = comma >= 0 ? text.Substring(comma + 1, j - comma - 1).Trim() : null;
+                return name.StartsWith("--", StringComparison.Ordinal);
+            }
+        }
+
+        return false;
+    }
+
+    private static string ResolveCustomPropertyReference(
+        string name, string fallback, Dictionary<string, JsValue> props, HashSet<string> referencing)
+    {
+        string value;
+        if (!referencing.Contains(name) && props.TryGetValue(name, out var stored) && stored.Tag == JsValueTag.String)
+        {
+            value = stored.AsString();
+            if (value.Contains("var(", StringComparison.OrdinalIgnoreCase))
+            {
+                value = SubstituteCustomPropertyReferences(value, props, new HashSet<string>(referencing, StringComparer.Ordinal) { name });
+            }
+        }
+        else
+        {
+            // Undefined or part of a cycle: the fallback, itself substituted, or nothing.
+            value = fallback == null ? string.Empty
+                : fallback.Contains("var(", StringComparison.OrdinalIgnoreCase)
+                    ? SubstituteCustomPropertyReferences(fallback, props, referencing)
+                    : fallback;
+        }
+
+        return StripTrailingComment(value);
+    }
+
+    // A comment ending the substituted value is dropped; one inside a string is kept.
+    private static string StripTrailingComment(string value)
+    {
+        var trimmed = value.TrimEnd();
+        if (!trimmed.EndsWith("*/", StringComparison.Ordinal))
+        {
+            return value;
+        }
+
+        int commentStart = trimmed.LastIndexOf("/*", trimmed.Length - 2, StringComparison.Ordinal);
+        if (commentStart < 0)
+        {
+            return value;
+        }
+
+        char quote = '\0';
+        for (int k = 0; k < commentStart; k++)
+        {
+            char c = trimmed[k];
+            if (quote != '\0') { if (c == quote) quote = '\0'; }
+            else if (c == '"' || c == '\'') quote = c;
+        }
+
+        return quote == '\0' ? trimmed[..commentStart].TrimEnd() : value;
     }
 
     /// <summary>
