@@ -13,6 +13,33 @@ namespace FenBrowser.Tests.Scripting;
 public sealed class DynamicElementStyleTests
 {
     [Fact]
+    public async Task TextMutationRefreshesGeometryAfterEarlierRead()
+    {
+        BrowserScriptEngineRuntime.Reset();
+        try
+        {
+            using var browser = new BrowserHost();
+            Assert.True(await browser.NavigateAsync(
+                "data:text/html,<style>#box{width:100px;white-space:pre}</style><div id='box'>x</div>"));
+
+            var result = await browser.ExecuteScriptAsync(@"
+                (function () {
+                    var box = document.getElementById('box');
+                    var before = box.getBoundingClientRect().height;
+                    box.textContent = 'one\ntwo';
+                    var after = box.getBoundingClientRect().height;
+                    return String(after > before);
+                })();");
+
+            Assert.Equal("true", result?.ToString());
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
+    [Fact]
     public async Task CreatedElement_GetsStylesheetRulesAndGeometry()
     {
         BrowserScriptEngineRuntime.Reset();

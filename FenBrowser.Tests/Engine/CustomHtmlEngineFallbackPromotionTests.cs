@@ -63,7 +63,7 @@ namespace FenBrowser.Tests.Engine
                 "IncrementalRecascadeAsync",
                 BindingFlags.NonPublic | BindingFlags.Instance);
             Assert.NotNull(method);
-            await Assert.IsAssignableFrom<Task>(method.Invoke(engine, null));
+            await Assert.IsAssignableFrom<Task>(method.Invoke(engine, new object[] { true }));
 
             Assert.Equal("none", engine.LastComputedStyles[spinner].Display);
             Assert.Equal("block", engine.LastComputedStyles[checkmark].Display);

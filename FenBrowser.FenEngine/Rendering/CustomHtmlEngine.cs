@@ -1984,6 +1984,8 @@ public void Dispose()
         private bool _recascadeWorkerRunning;
         private bool _recascadeRequested;
         private int _recascadeDelayMs;
+        private Node _lastScriptLayoutFlushRoot;
+        private long _lastScriptLayoutFlushSequence = -1;
 
         /// <summary>
         /// Schedule a CSS re-cascade on the current DOM using cached render parameters.
@@ -2092,7 +2094,7 @@ public void Dispose()
                             EngineLogCompat.Info("[CustomHtmlEngine] Full recascade (stylesheet change)", LogCategory.CSS);
                             return RecascadeAsync();
                         }
-                        : IncrementalRecascadeAsync;
+                        : () => IncrementalRecascadeAsync();
                     var scriptEngine = _activeJs;
                     if (scriptEngine != null)
                     {
@@ -2154,6 +2156,13 @@ private void FlushPendingLayoutForScript(Element element)
                 return;
             }
 
+            var styleSequence = Node.MutationSequence;
+            if (ReferenceEquals(root, _lastScriptLayoutFlushRoot) &&
+                styleSequence == _lastScriptLayoutFlushSequence)
+            {
+                return;
+            }
+
             // CSSOM View: a geometry read flushes pending style and layout for the
             // document. EnsureLayout lays its root out at the origin and replaces the
             // renderer's whole box cache with that subtree, so it can only ever be
@@ -2177,7 +2186,7 @@ private void FlushPendingLayoutForScript(Element element)
                 // A scheduled pass is queued behind the running script, so waiting
                 // for it here would wait for ourselves; run the pass inline instead.
                 // The queued pass then finds nothing dirty and returns.
-                IncrementalRecascadeAsync().GetAwaiter().GetResult();
+                IncrementalRecascadeAsync(notifyRepaint: false).GetAwaiter().GetResult();
             }
 
             renderer.EnsureLayout(
@@ -2186,6 +2195,9 @@ private void FlushPendingLayoutForScript(Element element)
                 (float)(_activeViewportWidth ?? 1920),
                 (float)(_activeViewportHeight ?? GetPrimaryWindowHeight()),
                 _activeBaseUri?.AbsoluteUri);
+            ScheduleRepaintFromJs();
+            _lastScriptLayoutFlushRoot = root;
+            _lastScriptLayoutFlushSequence = Node.MutationSequence;
         }
 
         /// <summary>
@@ -2221,7 +2233,7 @@ private void FlushPendingLayoutForScript(Element element)
         /// recascades only those subtrees, then fires OnRepaintReady.
         /// Falls back to full recascade if >30% of tree is dirty.
         /// </summary>
-        private async Task IncrementalRecascadeAsync()
+        private async Task IncrementalRecascadeAsync(bool notifyRepaint = true)
         {
             long renderGeneration;
             Node activeDom;
@@ -2371,7 +2383,7 @@ private void FlushPendingLayoutForScript(Element element)
             }
 
             // Trigger repaint with updated styles
-            if (IsCurrentRenderGeneration(renderGeneration))
+            if (notifyRepaint && IsCurrentRenderGeneration(renderGeneration))
             {
                 OnRepaintReady(domEl);
             }
