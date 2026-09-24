@@ -258,6 +258,40 @@ namespace FenBrowser.Tests.WebDriver
             Assert.Equal(3000, timeout);
         }
 
+        [Theory]
+        [InlineData("POST", "execute/sync", 3000, "script timeout")]
+        [InlineData("POST", "url", 7000, "timeout")]
+        [InlineData("POST", "back", 7000, "timeout")]
+        [InlineData("POST", "forward", 7000, "timeout")]
+        [InlineData("POST", "refresh", 7000, "timeout")]
+        public void ScriptsAndNavigationsRunUnderTheirSessionTimeouts(string method, string path, int expectedMs, string expectedError)
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            session.Timeouts.Script = 1000;
+            session.Timeouts.PageLoad = 5000;
+            var handler = new CommandHandler(manager);
+
+            var deadline = handler.GetProtocolCommandDeadline(
+                new CommandRouter().Match(method, $"/session/{session.Id}/{path}"));
+
+            Assert.NotNull(deadline);
+            Assert.Equal(expectedMs, deadline.Value.TimeoutMs);
+            Assert.Equal(expectedError, deadline.Value.ErrorCode);
+        }
+
+        [Fact]
+        public void NullScriptTimeoutMeansNoDeadline()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            session.Timeouts.Script = null;
+            var handler = new CommandHandler(manager);
+
+            Assert.Null(handler.GetProtocolCommandDeadline(
+                new CommandRouter().Match("POST", $"/session/{session.Id}/execute/sync")));
+        }
+
         [Fact]
         public async Task UnresponsiveSession_UsesCachedStateForWptCleanup()
         {

@@ -407,23 +407,57 @@ namespace FenBrowser.WebDriver.Commands
         }
 
         internal int? GetProtocolCommandTimeoutMs(RouteMatch match)
+            => GetProtocolCommandDeadline(match)?.TimeoutMs;
+
+        /// <summary>
+        /// The outer deadline a command runs under, and the error it fails with when
+        /// the deadline passes (WebDriver 9 "timeouts"): scripts use the session's
+        /// script timeout, navigations (Navigate To, Back, Forward, Refresh) its page
+        /// load timeout. Null when the command has no deadline, or the session set
+        /// that timeout to null (meaning none).
+        /// </summary>
+        internal (int TimeoutMs, string ErrorCode)? GetProtocolCommandDeadline(RouteMatch match)
         {
-            if (match == null ||
-                !string.Equals(match.Command, "ExecuteAsyncScript", StringComparison.Ordinal))
+            if (match == null)
             {
                 return null;
             }
 
-            var value = GetSession(match.GetSessionId()).Timeouts.Script ?? 30000;
+            long? value;
+            string errorCode;
+            switch (match.Command)
+            {
+                case "ExecuteScript":
+                case "ExecuteAsyncScript":
+                    value = GetSession(match.GetSessionId()).Timeouts.Script;
+                    errorCode = ErrorCodes.ScriptTimeout;
+                    break;
+                case "NavigateTo":
+                case "Back":
+                case "Forward":
+                case "Refresh":
+                    value = GetSession(match.GetSessionId()).Timeouts.PageLoad;
+                    errorCode = ErrorCodes.Timeout;
+                    break;
+                default:
+                    return null;
+            }
+
+            if (value == null)
+            {
+                return null;
+            }
+
             if (value <= 0)
             {
-                return 31000;
+                return (31000, errorCode);
             }
 
             const int transportGraceMs = 2000;
-            return value >= int.MaxValue - transportGraceMs
+            var timeoutMs = value >= int.MaxValue - transportGraceMs
                 ? int.MaxValue
                 : (int)value + transportGraceMs;
+            return (timeoutMs, errorCode);
         }
 
         internal void MarkSessionUnresponsive(string sessionId)

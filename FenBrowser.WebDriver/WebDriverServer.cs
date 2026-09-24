@@ -343,21 +343,23 @@ namespace FenBrowser.WebDriver
                         try
                         {
                             var executionTask = _handler.ExecuteParsedAsync(routeMatch, body);
-                            var commandTimeoutMs = _handler.GetProtocolCommandTimeoutMs(routeMatch);
-                            if (commandTimeoutMs.HasValue)
+                            var deadline = _handler.GetProtocolCommandDeadline(routeMatch);
+                            if (deadline.HasValue)
                             {
                                 try
                                 {
                                     return await WebDriverCommandDeadline.WaitAsync(
                                         executionTask,
-                                        commandTimeoutMs.Value).ConfigureAwait(false);
+                                        deadline.Value.TimeoutMs).ConfigureAwait(false);
                                 }
                                 catch (TimeoutException)
                                 {
+                                    // The browser is still busy with the command, so later
+                                    // commands for this session must not queue behind it.
                                     _handler.MarkSessionUnresponsive(sessionId);
                                     throw new WebDriverException(
-                                        ErrorCodes.ScriptTimeout,
-                                        "Script execution timed out");
+                                        deadline.Value.ErrorCode,
+                                        $"{routeMatch.Command} did not finish within {deadline.Value.TimeoutMs} ms");
                                 }
                             }
 
