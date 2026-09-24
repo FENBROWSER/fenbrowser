@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FenBrowser vs Chrome Large Benchmark</title>
+<style>
+:root {
+  color-scheme: light;
+  --ink: #172033;
+  --muted: #5d6b82;
+  --line: #d7deea;
+  --panel: #ffffff;
+  --page: #eef2f7;
+  --accent: #315efb;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.35 Arial, sans-serif;
+}
+header {
+  align-items: center;
+  background: #14213d;
+  color: #fff;
+  display: flex;
+  gap: 18px;
+  min-height: 72px;
+  padding: 14px 24px;
+}
+header h1 { font-size: 22px; margin: 0; }
+header p { color: #cbd8f4; margin: 3px 0 0; }
+#surface { padding: 20px; }
+#cards {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: 0 2px 5px rgba(20, 33, 61, .08);
+  min-height: 112px;
+  overflow: hidden;
+  padding: 10px;
+}
+.card:nth-child(3n) { border-top: 4px solid #315efb; }
+.card:nth-child(4n) { border-top-color: #16a085; }
+.card:nth-child(5n) { border-top-color: #e67e22; }
+.card header {
+  background: transparent;
+  color: var(--ink);
+  display: block;
+  min-height: 0;
+  padding: 0;
+}
+.card h2 { font-size: 14px; margin: 0 0 6px; }
+.card p { color: var(--muted); margin: 0 0 8px; }
+.card .metric {
+  background: #edf2ff;
+  border-radius: 4px;
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+  padding: 3px 6px;
+}
+.card:nth-child(2n) .metric { background: #e8f7f2; }
+.card:nth-child(7n) .metric { background: #fff3e4; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>FenBrowser vs Chrome Large Benchmark</h1>
+    <p>DOM construction, mutation, layout, JavaScript, and event-loop workload</p>
+  </div>
+</header>
+<main id="surface">
+  <div id="cards"></div>
+</main>
+<script>
+(function () {
+  var state = {
+    status: "running",
+    errors: [],
+    cardCount: 900,
+    createdElements: 0,
+    createdTextNodes: 0,
+    domBuildMs: 0,
+    domMutationMs: 0,
+    layoutMs: 0,
+    mutationAttributeMs: 0,
+    mutationTextMs: 0,
+    mutationAppendMs: 0,
+    mutationRemoveMs: 0,
+    mutationQueryMs: 0,
+    layoutRectMs: 0,
+    layoutComputedStyleMs: 0,
+    jsCpuMs: 0,
+    eventLoopMs: 0,
+    totalHarnessMs: 0,
+    domChecksum: 0,
+    mutationChecksum: 0,
+    layoutChecksum: 0,
+    layoutValidCount: 0,
+    layoutSampleCount: 0,
+    jsChecksum: 0,
+    timerChecksum: 0,
+    timerTicks: 0,
+    addedNodes: 0,
+    removedNodes: 0,
+    selectedCards: 0,
+    viewport: null,
+    clockSource: "date",
+    clockResolutionMs: 0,
+    readyState: document.readyState
+  };
+  window.__BROWSER_BENCHMARK__ = state;
+  window.onerror = function (message, source, line, column, error) {
+    state.errors.push("error:" + String(message) + ":" + String(line) + ":" + String(column));
+    if (state.status === "running") {
+      state.status = "failed";
+    }
+  };
+  function now() {
+    if (window.performance && typeof window.performance.now === "function") {
+      return window.performance.now();
+    }
+    return Date.now();
+  }
+  function mix(value) {
+    var n = Number(value);
+    if (!isFinite(n)) {
+      n = 0;
+    }
+    return Math.floor(Math.abs(n));
+  }
+  function addChecksum(current, value) {
+    return (current * 33 + mix(value)) % 2147483647;
+  }
+  function text(value) {
+    return document.createTextNode(String(value));
+  }
+  function finishFailure(error) {
+    state.status = "failed";
+    if (error && error.message) {
+      state.errors.push("exception:" + String(error.message));
+    } else {
+      state.errors.push("exception:" + String(error));
+    }
+  }
+  function run() {
+    var started = now();
+    var cards = document.getElementById("cards");
+    var i;
+    var j;
+    var fragment = document.createDocumentFragment();
+    var nodes = [];
+    var extras = [];
+    var selected;
+    try {
+      if (window.performance && typeof window.performance.now === "function") {
+        state.clockSource = "performance.now";
+      }
+      var resolutionStart = now();
+      var resolutionValue = now();
+      state.clockResolutionMs = Math.max(0, resolutionValue - resolutionStart);
+      var buildStart = now();
+      for (i = 0; i < state.cardCount; i++) {
+        var card = document.createElement("article");
+        card.className = "card";
+        card.setAttribute("data-index", String(i));
+        card.setAttribute("data-kind", i % 3 === 0 ? "alpha" : (i % 3 === 1 ? "beta" : "gamma"));
+        var cardHeader = document.createElement("header");
+        var heading = document.createElement("h2");
+        heading.appendChild(text("Benchmark row " + i));
+        cardHeader.appendChild(heading);
+        var paragraph = document.createElement("p");
+        paragraph.appendChild(text("deterministic payload " + (i * 17 + 3)));
+        var metric = document.createElement("span");
+        metric.className = "metric";
+        metric.setAttribute("data-value", String(i * 3 + 1));
+        metric.appendChild(text("score " + ((i * 7) % 101)));
+        card.appendChild(cardHeader);
+        card.appendChild(paragraph);
+        card.appendChild(metric);
+        fragment.appendChild(card);
+        nodes.push(card);
+        state.createdElements += 5;
+        state.createdTextNodes += 3;
+        state.domChecksum = addChecksum(state.domChecksum, i);
+        state.domChecksum = addChecksum(state.domChecksum, String(i * 17 + 3).length);
+        state.domChecksum = addChecksum(state.domChecksum, (i * 7) % 101);
+      }
+      cards.appendChild(fragment);
+      state.domBuildMs = Math.max(0, now() - buildStart);
+      var mutationStart = now();
+      for (i = 0; i < state.cardCount; i += 2) {
+        var current = nodes[i];
+        var attributeStart = now();
+        current.setAttribute("data-state", i % 4 === 0 ? "even" : "odd");
+        state.mutationAttributeMs += Math.max(0, now() - attributeStart);
+        var textStart = now();
+        current.getElementsByTagName("p")[0].textContent = "mutated payload " + (i + 1);
+        state.mutationTextMs += Math.max(0, now() - textStart);
+        state.mutationChecksum = addChecksum(state.mutationChecksum, i);
+        state.mutationChecksum = addChecksum(state.mutationChecksum, (i + 1) * 5);
+      }
+      var appendStart = now();
+      for (i = 0; i < 100; i++) {
+        var extra = document.createElement("div");
+        extra.className = "temporary";
+        extra.setAttribute("data-temp", String(i));
+        extra.appendChild(text("temporary " + i));
+        cards.appendChild(extra);
+        extras.push(extra);
+        state.addedNodes++;
+      }
+      state.mutationAppendMs = Math.max(0, now() - appendStart);
+      var removeStart = now();
+      for (i = 0; i < extras.length; i++) {
+        cards.removeChild(extras[i]);
+        state.removedNodes++;
+      }
+      state.mutationRemoveMs = Math.max(0, now() - removeStart);
+      var queryStart = now();
+      selected = cards.getElementsByClassName("card");
+      state.selectedCards = selected.length;
+      for (i = 0; i < selected.length; i++) {
+        state.mutationChecksum = addChecksum(state.mutationChecksum, selected[i].getAttribute("data-index"));
+      }
+      state.mutationQueryMs = Math.max(0, now() - queryStart);
+      state.domMutationMs = Math.max(0, now() - mutationStart);
+      var layoutStart = now();
+      for (i = 0; i < selected.length; i++) {
+        var rectStart = now();
+        var rect = selected[i].getBoundingClientRect();
+        state.layoutRectMs += Math.max(0, now() - rectStart);
+        var styleStart = now();
+        var style = getComputedStyle(selected[i]);
+        state.layoutComputedStyleMs += Math.max(0, now() - styleStart);
+        state.layoutSampleCount++;
+        if (rect.width > 0 && rect.height > 0 && style.display !== "none") {
+          state.layoutValidCount++;
+        }
+        state.layoutChecksum = addChecksum(state.layoutChecksum, Math.round(rect.width));
+        state.layoutChecksum = addChecksum(state.layoutChecksum, Math.round(rect.height));
+        state.layoutChecksum = addChecksum(state.layoutChecksum, style.display);
+      }
+      state.layoutMs = Math.max(0, now() - layoutStart);
+      var jsStart = now();
+      var numeric = 0;
+      for (i = 0; i < 90000; i++) {
+        numeric = (numeric + ((i * 17) % 97) - ((i * 5) % 31) + 1000000) % 2147483647;
+        state.jsChecksum = addChecksum(state.jsChecksum, numeric);
+      }
+      var values = [];
+      for (i = 0; i < 18000; i++) {
+        values.push((i * 13) % 997);
+        state.jsChecksum = addChecksum(state.jsChecksum, values[values.length - 1]);
+      }
+      var objectValue = { a: 0, b: 0, c: 0 };
+      for (i = 0; i < 18000; i++) {
+        objectValue.a = (objectValue.a + i) % 1009;
+        objectValue.b = (objectValue.b ^ (i % 251)) % 1009;
+        objectValue.c = (objectValue.c + (i * 3)) % 1009;
+      }
+      state.jsChecksum = addChecksum(state.jsChecksum, objectValue.a);
+      state.jsChecksum = addChecksum(state.jsChecksum, objectValue.b);
+      state.jsChecksum = addChecksum(state.jsChecksum, objectValue.c);
+      var word = "fenbrowser-chrome-benchmark";
+      for (i = 0; i < 7000; i++) {
+        word = word.substring(0, word.length - 1) + String.fromCharCode(97 + (i % 26));
+        state.jsChecksum = addChecksum(state.jsChecksum, word.length + i);
+      }
+      state.jsCpuMs = Math.max(0, now() - jsStart);
+      state.viewport = {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        clientWidth: document.documentElement.clientWidth,
+        clientHeight: document.documentElement.clientHeight,
+        devicePixelRatio: window.devicePixelRatio || 1
+      };
+      var timerStart = now();
+      var timerTick = function (tick) {
+        state.timerTicks++;
+        state.timerChecksum = (state.timerChecksum + tick * 37) % 2147483647;
+        if (state.timerTicks < 24) {
+          return;
+        }
+        state.readyState = document.readyState;
+        state.eventLoopMs = Math.max(0, now() - timerStart);
+        state.totalHarnessMs = Math.max(0, now() - started);
+        state.status = "complete";
+      };
+      var scheduleTimer = function (tick) {
+        setTimeout(function () {
+          timerTick(tick);
+        }, 0);
+      };
+      for (i = 0; i < 24; i++) {
+        scheduleTimer(i + 1);
+      }
+    } catch (error) {
+      finishFailure(error);
+    }
+  }
+  if (document.readyState === "complete") {
+    setTimeout(run, 0);
+  } else {
+    window.addEventListener("load", function () {
+      setTimeout(run, 0);
+    });
+  }
+})();
+</script>
+</body>
+</html>

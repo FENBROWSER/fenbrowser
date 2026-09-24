@@ -29,6 +29,7 @@ bld/
 *.txt
 *.html
 !tools/html-tokenizer-bench/corpus/benchmark-seed.html
+!scripts/browser_benchmark_fixture.html
 *.js
 !FenBrowser.Js/
 !scripts/bench_obfuscated_vm.js
@@ -51,6 +52,7 @@ bld/
 !scripts/acid3_probe.py
 !scripts/chrome_captcha_probe.py
 !scripts/fenlog.py
+!scripts/run_browser_vs_chrome_benchmark.py
 *.log
 *.png
 /wpt/

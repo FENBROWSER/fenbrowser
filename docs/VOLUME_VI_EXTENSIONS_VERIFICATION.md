@@ -362,6 +362,31 @@ Standard xUnit tests covering internal components:
   corpus. They do not establish full WHATWG conformance, FFI cost, or an
   end-to-end browser performance improvement.
 
+### 3.4 FenBrowser vs Chrome Large Browser Benchmark
+
+- `scripts/run_browser_vs_chrome_benchmark.py` runs the same local, no-store
+  fixture against a fresh headless FenBrowser WebDriver process and a fresh
+  headless Chrome CDP process. The fixture is
+  `scripts/browser_benchmark_fixture.html`.
+- The default command is `python scripts/run_browser_vs_chrome_benchmark.py`.
+  It calibrates the FenBrowser content viewport, matches Chrome to it, alternates
+  engine order by repetition, and runs five independent cold-process samples
+  per engine by default.
+- The page exercises DOM construction and mutation, layout/style reads,
+  JavaScript CPU work, and timer delivery. Functional checksums, structural
+  counts, visible layout samples, `performance.now` availability, and viewport
+  equality are hard accuracy gates. A sample with page or browser errors is
+  rejected rather than averaged.
+- Reports are written below `Results/benchmarks/browser-vs-chrome/`, with JSON,
+  Markdown, per-run artifacts, and `latest.json`/`latest.md`. The report
+  includes per-sample values, means, medians, sample standard deviations,
+  minima, maxima, fixture hash, tooling hash, and browser/build context.
+- `navigationToResultMs` is the comparable navigation-start-to-marker metric.
+  `wallToResultMs` also includes fresh-process startup and automation overhead;
+  `navigationResponseMs` is diagnostic because WebDriver and CDP expose
+  different readiness boundaries. Layout checksums are diagnostic because
+  browser geometry rounding may differ.
+
 ---
 
 ## 4. Comprehensive Source Encyclopedia
