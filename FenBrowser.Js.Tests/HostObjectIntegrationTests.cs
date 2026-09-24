@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Host;
 using FenBrowser.Js.Interpreter;
@@ -196,6 +196,45 @@ public sealed class HostObjectIntegrationTests
         Assert.Contains(hooks.Reads, read => read.Handle.Equals(handle) && read.Prop == "length");
         Assert.Contains(hooks.Reads, read => read.Handle.Equals(handle) && read.Prop == "0");
         Assert.Contains(hooks.Reads, read => read.Handle.Equals(handle) && read.Prop == "nodeType");
+    }
+
+    [Fact]
+    public void InheritedSetterRunsInsteadOfTheHostHook()
+    {
+        // ECMA-262 10.1.9.2: with no own property, [[Set]] finds the setter on the
+        // prototype chain and calls it with the host object as receiver - the way
+        // a script-defined accessor on an interface prototype expects.
+        var (interpreter, hooks, _) = Setup();
+        var result = Run(interpreter, @"
+            var seen = 'unset';
+            myHost.__proto__ = Object.defineProperty({}, 'color', {
+                get: function () { return 'from getter'; },
+                set: function (v) { seen = v + ':' + (this === myHost); },
+                configurable: true
+            });
+            myHost.color = 'red';
+            seen;
+        ");
+
+        Assert.Equal("red:true", result.AsString());
+        Assert.Empty(hooks.Writes);
+    }
+
+    [Fact]
+    public void InheritedGetterOnlyAccessorLeavesTheWriteToTheHost()
+    {
+        var (interpreter, hooks, handle) = Setup();
+        _ = Run(interpreter, @"
+            myHost.__proto__ = Object.defineProperty({}, 'color', {
+                get: function () { return 'from getter'; },
+                configurable: true
+            });
+            myHost.color = 'red';
+        ");
+
+        Assert.Single(hooks.Writes);
+        Assert.Equal(handle, hooks.Writes[0].Handle);
+        Assert.Equal("red", hooks.Writes[0].Value.AsString());
     }
 
     [Fact]

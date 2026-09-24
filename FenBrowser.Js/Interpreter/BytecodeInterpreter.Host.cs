@@ -156,6 +156,18 @@ public sealed partial class BytecodeInterpreter
             return;
         }
 
+        // ECMA-262 10.1.9.2 OrdinarySetWithOwnDescriptor: with no own property the
+        // prototype chain decides, and an inherited setter is called with the host
+        // object as receiver. Reads already let prototype members shadow the host
+        // hook; without the same order here, an accessor script defines on an
+        // interface prototype (Document.prototype.adoptedStyleSheets) is skipped and
+        // the host stores the value as an expando.
+        if (TryGetHostObjectPrototypeSetter(handle, key, out var inherited))
+        {
+            _ = CallSetter(inherited, value, receiver);
+            return;
+        }
+
         if (_hostHooks.TrySetHostProperty(handle, key, value))
         {
             return;
@@ -518,6 +530,24 @@ public sealed partial class BytecodeInterpreter
 
         var prototypeObject = _heap.GetObject(prototype.AsObjectHandle());
         return TryGetPropertyValue(prototypeObject, receiver, key, out value);
+    }
+
+    private bool TryGetHostObjectPrototypeSetter(
+        HostObjectHandle handle,
+        string key,
+        out JsPropertyDescriptor descriptor)
+    {
+        var prototype = GetExplicitHostObjectPrototype(handle);
+        if (prototype.Tag == JsValueTag.Object &&
+            _heap.GetObject(prototype.AsObjectHandle()).TryGetProperty(key, ResolvePrototypeDelegate, out descriptor) &&
+            descriptor.IsAccessor &&
+            descriptor.Set.Tag != JsValueTag.Undefined)
+        {
+            return true;
+        }
+
+        descriptor = default;
+        return false;
     }
 
     private bool TryGetHostObjectPrototypeSymbolProperty(
