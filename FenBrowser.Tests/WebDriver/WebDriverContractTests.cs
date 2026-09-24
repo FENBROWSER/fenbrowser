@@ -492,6 +492,27 @@ namespace FenBrowser.Tests.WebDriver
             Assert.Equal(ErrorCodes.StaleElementReference, ex.ErrorCode);
         }
 
+        [Theory]
+        [InlineData("{\"actions\":[42]}")]
+        [InlineData("{\"actions\":[{\"type\":\"pointer\",\"id\":\"p\",\"actions\":[{\"type\":\"pointerMove\",\"x\":\"a\",\"y\":0}]}]}")]
+        [InlineData("{\"actions\":[{\"type\":\"pointer\",\"id\":\"p\",\"actions\":[{\"type\":\"pointerMove\",\"x\":0,\"y\":0,\"origin\":\"elsewhere\"}]}]}")]
+        [InlineData("{\"actions\":[{\"type\":\"pointer\",\"id\":\"p\",\"actions\":[{\"type\":\"pointerMove\",\"x\":0,\"y\":0,\"duration\":-1}]}]}")]
+        [InlineData("{\"actions\":[{\"type\":\"pointer\",\"id\":\"p\",\"actions\":[{\"type\":\"pointerDown\"}]}]}")]
+        [InlineData("{\"actions\":[{\"type\":\"pointer\",\"id\":\"p\",\"actions\":[{\"type\":\"pointerDown\",\"button\":\"left\"}]}]}")]
+        [InlineData("{\"actions\":[{\"type\":\"pointer\",\"id\":\"p\",\"parameters\":{\"pointerType\":\"finger\"},\"actions\":[{\"type\":\"pause\"}]}]}")]
+        [InlineData("{\"actions\":[{\"type\":\"key\",\"id\":\"k\",\"actions\":[{\"type\":\"keyDown\",\"value\":7}]}]}")]
+        public async Task PerformActions_RejectsMalformedSequencesAndMembers(string body)
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            var handler = new CommandHandler(manager) { Browser = new ScriptStubBrowserDriver() };
+            var match = new CommandRouter().Match("POST", $"/session/{session.Id}/actions");
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(match, body));
+
+            Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
+        }
+
         [Fact]
         public async Task PerformActions_RejectsUnsupportedWheelSource()
         {

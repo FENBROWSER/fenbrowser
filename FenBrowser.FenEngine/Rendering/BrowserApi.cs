@@ -9178,8 +9178,9 @@ pre {{
                 switch (action.Type?.ToLowerInvariant())
                 {
                     case "pointermove":
-                        // Move pointer to position
-                        if (action.Origin == "viewport")
+                        // WebDriver 17.4.2: origin defaults to "viewport", so a move
+                        // without one goes to (x, y) rather than staying where it was.
+                        if (string.IsNullOrEmpty(action.Origin) || action.Origin == "viewport")
                         {
                             _pointerX = action.X;
                             _pointerY = action.Y;

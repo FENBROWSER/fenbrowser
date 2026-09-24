@@ -681,7 +681,13 @@ namespace FenBrowser.WebDriver.Commands
             var sequenceIds = new HashSet<string>(StringComparer.Ordinal);
             foreach (var seqEl in actionsEl.EnumerateArray())
             {
-                if (seqEl.ValueKind != JsonValueKind.Object) continue;
+                // WebDriver 17.4.2 "extract an action sequence": every entry must be
+                // an object; a malformed one fails the command rather than being skipped.
+                if (seqEl.ValueKind != JsonValueKind.Object)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Action sequence must be an object");
+                }
+
                 var sequence = new WdActionSequence();
                 if (!seqEl.TryGetProperty("type", out var typeEl) || typeEl.ValueKind != JsonValueKind.String)
                 {
@@ -709,6 +715,8 @@ namespace FenBrowser.WebDriver.Commands
                     throw new WebDriverException(ErrorCodes.InvalidArgument, "Action sequence actions must be an array");
                 }
 
+                ValidatePointerParameters(sequence.Type, seqEl);
+
                 foreach (var itemEl in itemsEl.EnumerateArray())
                 {
                     if (itemEl.ValueKind != JsonValueKind.Object)
@@ -723,32 +731,7 @@ namespace FenBrowser.WebDriver.Commands
                     }
 
                     item.Type = itType.GetString() ?? string.Empty;
-                    if (itemEl.TryGetProperty("duration", out var dur) && dur.ValueKind == JsonValueKind.Number)
-                    {
-                        if (!dur.TryGetInt32(out var d) || d < 0)
-                        {
-                            throw new WebDriverException(ErrorCodes.InvalidArgument, "Action duration must be a non-negative integer");
-                        }
-
-                        item.Duration = d;
-                    }
-
-                    if (itemEl.TryGetProperty("x", out var xEl) && xEl.ValueKind == JsonValueKind.Number && xEl.TryGetInt32(out var x)) item.X = x;
-                    if (itemEl.TryGetProperty("y", out var yEl) && yEl.ValueKind == JsonValueKind.Number && yEl.TryGetInt32(out var y)) item.Y = y;
-                    if (itemEl.TryGetProperty("button", out var bEl) && bEl.ValueKind == JsonValueKind.Number && bEl.TryGetInt32(out var b)) item.Button = b;
-                    if (itemEl.TryGetProperty("value", out var vEl) && vEl.ValueKind == JsonValueKind.String) item.Value = vEl.GetString() ?? string.Empty;
-                    if (itemEl.TryGetProperty("origin", out var originEl))
-                    {
-                        if (originEl.ValueKind == JsonValueKind.String)
-                        {
-                            item.Origin = originEl.GetString() ?? string.Empty;
-                        }
-                        else if (originEl.ValueKind == JsonValueKind.Object &&
-                                 originEl.TryGetProperty(ElementReference.Identifier, out var originIdEl))
-                        {
-                            item.Origin = originIdEl.GetString() ?? string.Empty;
-                        }
-                    }
+                    ReadActionMembers(itemEl, item);
 
                     ValidateActionItem(sequence.Type, item);
                     sequence.Actions.Add(item);
@@ -1424,6 +1407,110 @@ namespace FenBrowser.WebDriver.Commands
                 ErrorCodes.UnsupportedOperation,
                 SecurityAudit.BuildBlockedMessage(reasonCode),
                 SecurityAudit.CreateFailureData(reasonCode, detail, sessionId));
+        }
+
+        // WebDriver 17.4.2: each member an action carries must have the right type;
+        // a wrong one is an invalid argument, not a value quietly left at its default.
+        private static void ReadActionMembers(JsonElement itemEl, WdActionItem item)
+        {
+            var type = item.Type?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (TryGetDefined(itemEl, "duration", out var duration))
+            {
+                item.Duration = ReadInteger(duration, "duration", 0);
+            }
+
+            if (type == "pointermove" || type == "scroll")
+            {
+                item.X = TryGetDefined(itemEl, "x", out var x) ? ReadCoordinate(x, "x") : 0;
+                item.Y = TryGetDefined(itemEl, "y", out var y) ? ReadCoordinate(y, "y") : 0;
+                if (TryGetDefined(itemEl, "origin", out var origin))
+                {
+                    if (origin.ValueKind == JsonValueKind.String &&
+                        origin.GetString() is "viewport" or "pointer")
+                    {
+                        item.Origin = origin.GetString();
+                    }
+                    else if (origin.ValueKind == JsonValueKind.Object &&
+                             origin.TryGetProperty(ElementReference.Identifier, out var originId) &&
+                             originId.ValueKind == JsonValueKind.String)
+                    {
+                        item.Origin = originId.GetString() ?? string.Empty;
+                    }
+                    else
+                    {
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, "Action origin must be \"viewport\", \"pointer\" or an element reference");
+                    }
+                }
+            }
+
+            if (type == "pointerdown" || type == "pointerup")
+            {
+                if (!TryGetDefined(itemEl, "button", out var button))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Pointer button is required");
+                }
+
+                item.Button = ReadInteger(button, "button", 0);
+            }
+
+            if (type == "keydown" || type == "keyup")
+            {
+                if (!TryGetDefined(itemEl, "value", out var value) || value.ValueKind != JsonValueKind.String)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "Key action value must be a string");
+                }
+
+                item.Value = value.GetString() ?? string.Empty;
+            }
+        }
+
+        private static bool TryGetDefined(JsonElement element, string name, out JsonElement value)
+        {
+            return element.TryGetProperty(name, out value) && value.ValueKind != JsonValueKind.Undefined;
+        }
+
+        private static int ReadInteger(JsonElement value, string name, long minimum)
+        {
+            if (value.ValueKind != JsonValueKind.Number || !value.TryGetDouble(out var number) ||
+                number != Math.Floor(number) || number < minimum || number > int.MaxValue)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"Action {name} must be an integer of at least {minimum}");
+            }
+
+            return (int)number;
+        }
+
+        private static int ReadCoordinate(JsonElement value, string name)
+        {
+            if (value.ValueKind != JsonValueKind.Number || !value.TryGetDouble(out var number) ||
+                double.IsNaN(number) || number < int.MinValue || number > int.MaxValue)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"Action {name} must be a number");
+            }
+
+            return (int)Math.Floor(number);
+        }
+
+        // WebDriver 17.4.2 "process pointer parameters": parameters is an object
+        // whose pointerType is mouse, pen or touch.
+        private static void ValidatePointerParameters(string sequenceType, JsonElement sequence)
+        {
+            if (!string.Equals(sequenceType, "pointer", StringComparison.OrdinalIgnoreCase) ||
+                !TryGetDefined(sequence, "parameters", out var parameters))
+            {
+                return;
+            }
+
+            if (parameters.ValueKind != JsonValueKind.Object)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Pointer parameters must be an object");
+            }
+
+            if (TryGetDefined(parameters, "pointerType", out var pointerType) &&
+                !(pointerType.ValueKind == JsonValueKind.String && pointerType.GetString() is "mouse" or "pen" or "touch"))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "pointerType must be \"mouse\", \"pen\" or \"touch\"");
+            }
         }
 
         private static void ValidateActionItem(string sequenceType, WdActionItem item)
