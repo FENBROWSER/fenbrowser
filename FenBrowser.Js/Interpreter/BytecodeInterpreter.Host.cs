@@ -760,8 +760,39 @@ public sealed partial class BytecodeInterpreter
     /// of a script constructor, for host objects the embedder models in
     /// script (DOMException) rather than as native cells.
     /// </summary>
+    [ThreadStatic] private static BytecodeInterpreter? t_currentHostEntry;
+
+    /// <summary>
+    /// The interpreter the host most recently entered on this thread - by running
+    /// a script, calling or constructing a function, or pumping microtasks - and
+    /// has not yet left. A host binding that receives a JS value while that code
+    /// runs converts it through this interpreter: WebIDL's DOMString conversion is
+    /// ECMA-262 ToString, which may call the value's own toString().
+    /// </summary>
+    public static BytecodeInterpreter? CurrentHostEntry => t_currentHostEntry;
+
+    /// <summary>ECMA-262 7.1.17 ToString, for host code. Throws what ToString throws.</summary>
+    public string ToJsString(JsValue value) => ToStringValue(value);
+
+    private HostEntryScope EnterFromHost()
+    {
+        var previous = t_currentHostEntry;
+        t_currentHostEntry = this;
+        return new HostEntryScope(previous);
+    }
+
+    private readonly struct HostEntryScope : IDisposable
+    {
+        private readonly BytecodeInterpreter? _previous;
+
+        public HostEntryScope(BytecodeInterpreter? previous) => _previous = previous;
+
+        public void Dispose() => t_currentHostEntry = _previous;
+    }
+
     public JsValue ConstructValue(JsValue constructor, IReadOnlyList<JsValue> args)
     {
+        using var entry = EnterFromHost();
         try
         {
             return ConstructFunction(constructor, args);
@@ -775,6 +806,7 @@ public sealed partial class BytecodeInterpreter
 
     public JsValue InvokeFunction(JsValue function, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
+        using var entry = EnterFromHost();
         // Give each host-initiated invocation (timer/event callback) a fresh wall-clock
         // budget. The deadline field is otherwise only armed by Execute, so without this
         // a callback would inherit the previous script's already-expired deadline and

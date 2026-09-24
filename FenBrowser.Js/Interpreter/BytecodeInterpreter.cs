@@ -1038,6 +1038,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     [MayExecuteJs]
     public JsValue Execute(BytecodeFunction function)
     {
+        using var entry = EnterFromHost();
+        return ExecuteCore(function);
+    }
+
+    private JsValue ExecuteCore(BytecodeFunction function)
+    {
         _instructionCount = 0;
         if (WallClockTimeoutMs > 0)
         {
@@ -1417,10 +1423,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Drain the microtask/promise-job queues from a host callback boundary (timers,
     // events) so promise reactions scheduled inside a setTimeout/rAF callback run with
     // the same checkpoint semantics as top-level script execution.
-    public void PumpMicrotasks() => DrainPendingMicrotasks();
+    public void PumpMicrotasks()
+    {
+        using var entry = EnterFromHost();
+        DrainPendingMicrotasks();
+    }
 
     public void PumpMicrotasks(Action<JsValue, Exception> onQueueMicrotaskFailure)
     {
+        using var entry = EnterFromHost();
         ArgumentNullException.ThrowIfNull(onQueueMicrotaskFailure);
         DrainPendingMicrotasks(onQueueMicrotaskFailure);
     }

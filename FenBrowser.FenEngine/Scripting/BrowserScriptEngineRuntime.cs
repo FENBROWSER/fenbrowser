@@ -24460,15 +24460,25 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return namespaceUri.Length == 0 ? null : namespaceUri;
     }
 
+    // WebIDL 3.2.10 DOMString conversion is ECMA-262 ToString: an object goes
+    // through its own toString()/valueOf() (a URL object becomes its href), and a
+    // number is formatted the JS way (1e+21, Infinity). Both need the interpreter
+    // that is running the calling code.
     private static string CoerceToHostString(JsValue value)
     {
+        if (value.Tag is JsValueTag.Object or JsValueTag.HostObject or JsValueTag.Number &&
+            BytecodeInterpreter.CurrentHostEntry is { } interpreter)
+        {
+            return interpreter.ToJsString(value);
+        }
+
         return value.Tag switch
         {
             JsValueTag.Undefined => "undefined",
             JsValueTag.Null => "null",
             JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
             JsValueTag.Int32 => value.AsInt32().ToString(CultureInfo.InvariantCulture),
-            JsValueTag.Number => value.AsNumber().ToString(CultureInfo.InvariantCulture),
+            JsValueTag.Number => value.AsNumber().ToString("R", CultureInfo.InvariantCulture),
             JsValueTag.String => value.AsString(),
             JsValueTag.Symbol => value.AsSymbolDescription() is string d ? $"Symbol({d})" : "Symbol()",
             JsValueTag.BigInt => value.AsBigInt().ToString(CultureInfo.InvariantCulture),
