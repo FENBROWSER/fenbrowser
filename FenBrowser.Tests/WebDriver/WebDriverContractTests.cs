@@ -600,6 +600,74 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public async Task DeleteSession_ClosesTheSessionsTabsButNotTheLastOne()
+        {
+            var manager = new SessionManager();
+            var browser = new IsolatedWindowBrowserDriver();
+            var handler = new CommandHandler(manager) { Browser = browser };
+            var router = new CommandRouter();
+
+            var a = ((NewSessionResponse)(await handler.ExecuteAsync(router.Match("POST", "/session"), """{"capabilities":{"alwaysMatch":{}}}""")).Value).SessionId;
+            var b = ((NewSessionResponse)(await handler.ExecuteAsync(router.Match("POST", "/session"), """{"capabilities":{"alwaysMatch":{}}}""")).Value).SessionId;
+            var handleA = Assert.Single(manager.GetSession(a).WindowHandles);
+            var handleB = Assert.Single(manager.GetSession(b).WindowHandles);
+
+            await handler.ExecuteAsync(router.Match("DELETE", $"/session/{a}"), null);
+
+            Assert.DoesNotContain(handleA, browser.SnapshotHandles);
+            Assert.Contains(handleB, browser.SnapshotHandles);
+
+            await handler.ExecuteAsync(router.Match("DELETE", $"/session/{b}"), null);
+
+            Assert.Contains(handleB, browser.SnapshotHandles);
+            Assert.Equal(0, manager.ActiveSessionCount);
+        }
+
+        [Fact]
+        public async Task NewSession_IsRolledBackWhenTheBrowserCannotBeSetUp()
+        {
+            var manager = new SessionManager();
+            var handler = new CommandHandler(manager) { Browser = FailingSwitchDriver.Wrap(new IsolatedWindowBrowserDriver()) };
+            var router = new CommandRouter();
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() =>
+                handler.ExecuteAsync(router.Match("POST", "/session"), """{"capabilities":{"alwaysMatch":{}}}"""));
+
+            Assert.Equal(ErrorCodes.SessionNotCreated, ex.ErrorCode);
+            Assert.Equal(0, manager.ActiveSessionCount);
+        }
+
+        /// <summary>Forwards to a real stub driver but fails every window switch.</summary>
+        public class FailingSwitchDriver : System.Reflection.DispatchProxy
+        {
+            private IBrowserDriver _inner = null!;
+
+            public static IBrowserDriver Wrap(IBrowserDriver inner)
+            {
+                var proxy = Create<IBrowserDriver, FailingSwitchDriver>();
+                ((FailingSwitchDriver)(object)proxy)._inner = inner;
+                return proxy;
+            }
+
+            protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args)
+            {
+                if (targetMethod!.Name == nameof(IBrowserDriver.SwitchToWindowAsync))
+                {
+                    throw new InvalidOperationException("window switch failed");
+                }
+
+                try
+                {
+                    return targetMethod.Invoke(_inner, args);
+                }
+                catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException != null)
+                {
+                    throw ex.InnerException;
+                }
+            }
+        }
+
+        [Fact]
         public async Task SwitchToWindow_RejectsHandleOwnedByAnotherSession()
         {
             var manager = new SessionManager();

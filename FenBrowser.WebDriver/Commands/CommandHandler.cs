@@ -228,7 +228,7 @@ namespace FenBrowser.WebDriver.Commands
                  
                 // Session
                 "NewSession" => await CreateSessionAndInitializeTopLevelContextAsync(json),
-                "DeleteSession" => DeleteSessionSecure(match.GetSessionId()),
+                "DeleteSession" => await DeleteSessionAndCloseContextsAsync(match.GetSessionId()),
                 "GetTimeouts" => _sessionCommands.GetTimeouts(match.GetSessionId()),
                 "SetTimeouts" => _sessionCommands.SetTimeouts(match.GetSessionId(), json),
                 
@@ -920,27 +920,82 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             // Session isolation: provision a dedicated top-level context instead of attaching to pre-existing global handles.
-            var dedicatedHandle = await Browser.NewWindowAsync("tab").ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(dedicatedHandle))
+            // WebDriver 8.1 New Session: if the browser cannot be set up the session
+            // must not exist, so a failure here deletes it (and any tab made for it)
+            // instead of leaving a registered session with no usable context.
+            string dedicatedHandle = null;
+            try
             {
-                var current = await Browser.GetWindowHandleAsync().ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(current))
+                try
                 {
-                    dedicatedHandle = current;
+                    dedicatedHandle = await Browser.NewWindowAsync("tab").ConfigureAwait(false);
+                }
+                catch (InvalidOperationException)
+                {
+                    dedicatedHandle = null;
+                }
+
+                if (string.IsNullOrWhiteSpace(dedicatedHandle))
+                {
+                    var current = await Browser.GetWindowHandleAsync().ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(current))
+                    {
+                        dedicatedHandle = current;
+                    }
+                }
+
+                session.WindowHandles.Clear();
+                if (!string.IsNullOrWhiteSpace(dedicatedHandle))
+                {
+                    await CloseStaleBrowserContextsAfterSessionBootstrapAsync(dedicatedHandle).ConfigureAwait(false);
+                    session.WindowHandles.Add(dedicatedHandle);
+                    session.CurrentWindowHandle = dedicatedHandle;
+                    await Browser.SwitchToWindowAsync(dedicatedHandle).ConfigureAwait(false);
+                    await Browser.DeleteAllCookiesAsync().ConfigureAwait(false);
+                }
+                session.WindowStateInitialized = true;
+                return response;
+            }
+            catch (Exception ex) when (ex is not WebDriverException)
+            {
+                DeleteSessionSecure(created.SessionId);
+                throw new WebDriverException(ErrorCodes.SessionNotCreated, $"Could not set up the browser for the session: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Delete Session also closes the top-level contexts the session opened, so
+        /// they do not accumulate across sessions. The browser's last tab stays
+        /// open: the host needs one to keep running.
+        /// </summary>
+        private async Task<WebDriverResponse> DeleteSessionAndCloseContextsAsync(string sessionId)
+        {
+            var session = string.IsNullOrWhiteSpace(sessionId) ? null : _sessionManager.GetSession(sessionId);
+            if (Browser != null && session != null && !IsSessionUnresponsive(sessionId))
+            {
+                try
+                {
+                    var owned = session.WindowHandles.ToArray();
+                    var open = (await Browser.GetWindowHandlesAsync().ConfigureAwait(false)).ToList();
+                    foreach (var handle in owned)
+                    {
+                        if (open.Count <= 1 || !open.Contains(handle))
+                        {
+                            continue;
+                        }
+
+                        await Browser.SwitchToWindowAsync(handle).ConfigureAwait(false);
+                        await Browser.CloseWindowAsync().ConfigureAwait(false);
+                        open.Remove(handle);
+                    }
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or WebDriverException)
+                {
+                    // Closing is best effort; the session is deleted regardless.
                 }
             }
 
-            session.WindowHandles.Clear();
-            if (!string.IsNullOrWhiteSpace(dedicatedHandle))
-            {
-                await CloseStaleBrowserContextsAfterSessionBootstrapAsync(dedicatedHandle).ConfigureAwait(false);
-                session.WindowHandles.Add(dedicatedHandle);
-                session.CurrentWindowHandle = dedicatedHandle;
-                await Browser.SwitchToWindowAsync(dedicatedHandle).ConfigureAwait(false);
-                await Browser.DeleteAllCookiesAsync().ConfigureAwait(false);
-            }
-            session.WindowStateInitialized = true;
-            return response;
+            return DeleteSessionSecure(sessionId);
         }
 
         private async Task CloseStaleBrowserContextsAfterSessionBootstrapAsync(string dedicatedHandle)
