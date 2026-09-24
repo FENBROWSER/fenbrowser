@@ -17,11 +17,13 @@ namespace FenBrowser.FenEngine.Layout
     {
         private const float DefaultFontSize = 16f;
         private const int MaxTextLayoutCacheSize = 50000;
+        private const int MaxTokenWidthCacheSize = 16384;
         private const int MaxCacheableTextChars = 64 * 1024;
         private const float FallbackMaxWidth = 1_000_000f;
 
         private static readonly ConcurrentDictionary<TextLayoutCacheKey, (LayoutMetrics Metrics, List<ComputedTextLine> Lines)>
             s_textLayoutCache = new();
+        private static readonly ConcurrentDictionary<TokenWidthCacheKey, float> s_tokenWidthCache = new();
         private static readonly object s_cacheMutationLock = new();
 
         // Insertion order of the cache keys, so a full cache evicts in O(1). Only ever
@@ -63,6 +65,14 @@ namespace FenBrowser.FenEngine.Layout
             string WhiteSpaceMode,
             long FontGeneration);
 
+        private readonly record struct TokenWidthCacheKey(
+            string Text,
+            string FontFamily,
+            float FontSize,
+            int FontWeight,
+            SKFontStyleSlant FontStyle,
+            long FontGeneration);
+
         private readonly record struct TextToken(string Text, bool IsWhitespace = false, bool IsNewline = false);
 
         static TextLayoutComputer()
@@ -79,8 +89,38 @@ namespace FenBrowser.FenEngine.Layout
             lock (s_cacheMutationLock)
             {
                 s_textLayoutCache.Clear();
+                s_tokenWidthCache.Clear();
                 s_cacheInsertionOrder.Clear();
             }
+        }
+
+        private static float MeasureTokenWidth(
+            SKFont font,
+            string text,
+            string fontFamily,
+            float fontSize,
+            int fontWeight,
+            SKFontStyleSlant fontStyle,
+            long fontGeneration)
+        {
+            var key = new TokenWidthCacheKey(
+                text,
+                fontFamily,
+                fontSize,
+                fontWeight,
+                fontStyle,
+                fontGeneration);
+            if (s_tokenWidthCache.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+
+            var width = font.MeasureText(text);
+            if (s_tokenWidthCache.Count < MaxTokenWidthCacheSize)
+            {
+                s_tokenWidthCache.TryAdd(key, width);
+            }
+            return width;
         }
 
         public static (LayoutMetrics Metrics, List<ComputedTextLine> Lines) ComputeTextLayout(
@@ -124,7 +164,9 @@ namespace FenBrowser.FenEngine.Layout
             if (cacheable && s_textLayoutCache.TryGetValue(cacheKey, out var cached))
             {
                 Interlocked.Increment(ref s_cacheHits);
-                var cachedLines = CloneLines(cached.Lines);
+                var cachedLines = style?.TextAlign is SKTextAlign.Center or SKTextAlign.Right
+                    ? CloneLines(cached.Lines)
+                    : cached.Lines;
                 ApplyHorizontalAlignment(cachedLines, maxLineWidth, style?.TextAlign);
                 return (cached.Metrics, cachedLines);
             }
@@ -154,7 +196,14 @@ namespace FenBrowser.FenEngine.Layout
             var currentY = 0f;
             var currentWidth = 0f;
             var minContentWidth = 0f;
-            var spaceWidth = font.MeasureText(" ");
+            var spaceWidth = MeasureTokenWidth(
+                font,
+                " ",
+                style?.FontFamilyName ?? string.Empty,
+                fontSize,
+                resolvedWeight,
+                resolvedSlant,
+                fontGeneration);
 
             void FlushLine(bool forceEmptyLine = false)
             {
@@ -193,7 +242,14 @@ namespace FenBrowser.FenEngine.Layout
 
                 var tokenWidth = token.IsWhitespace && collapseWhitespace
                     ? spaceWidth
-                    : font.MeasureText(token.Text);
+                    : MeasureTokenWidth(
+                        font,
+                        token.Text,
+                        style?.FontFamilyName ?? string.Empty,
+                        fontSize,
+                        resolvedWeight,
+                        resolvedSlant,
+                        fontGeneration);
 
                 if (!token.IsWhitespace && !string.IsNullOrEmpty(token.Text))
                 {
