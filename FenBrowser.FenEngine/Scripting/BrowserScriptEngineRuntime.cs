@@ -21396,6 +21396,15 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 // the cascade and google.com's Settings menu (shown via
                 // `popup.style.display = ''`) never got a box.
                 bool removeDeclaration = string.IsNullOrWhiteSpace(val);
+                if (!removeDeclaration && HasNonPrintableCodePoint(val))
+                {
+                    return JsValue.Undefined;
+                }
+                if (!removeDeclaration && string.Equals(prop, "z-index", StringComparison.OrdinalIgnoreCase) &&
+                    !IsValidZIndexValue(val))
+                {
+                    return JsValue.Undefined;
+                }
                 bool replaced = false;
                 bool changed = false;
                 var sb = new System.Text.StringBuilder();
@@ -21446,19 +21455,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             {
                 var prop = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
                 var styleAttr = element.GetAttribute("style") ?? string.Empty;
-                // cssText sentinel: return the full inline style string.
+                var validDecls = ParseValidInlineDeclarations(styleAttr);
                 if (prop == "__cssText__")
-                    return JsValue.FromString(styleAttr);
-                if (string.IsNullOrEmpty(styleAttr) || string.IsNullOrEmpty(prop))
-                    return JsValue.FromString(string.Empty);
-                // Parse the inline style to find the requested property value.
-                foreach (var decl in styleAttr.Split(';', StringSplitOptions.RemoveEmptyEntries))
                 {
-                    var colonIdx = decl.IndexOf(':');
-                    if (colonIdx < 0) continue;
-                    var name = decl.Substring(0, colonIdx).Trim();
-                    if (string.Equals(name, prop, StringComparison.OrdinalIgnoreCase))
-                        return JsValue.FromString(decl.Substring(colonIdx + 1).Trim());
+                    if (validDecls.Count == 0) return JsValue.FromString(string.Empty);
+                    return JsValue.FromString(string.Join("; ", validDecls.Select(d => $"{d.Name}: {d.Value}")) + ";");
+                }
+                if (string.IsNullOrEmpty(styleAttr) || string.IsNullOrEmpty(prop) || validDecls.Count == 0)
+                    return JsValue.FromString(string.Empty);
+
+                for (int j = validDecls.Count - 1; j >= 0; j--)
+                {
+                    if (string.Equals(validDecls[j].Name, prop, StringComparison.OrdinalIgnoreCase))
+                        return JsValue.FromString(validDecls[j].Value);
                 }
                 return JsValue.FromString(string.Empty);
             },
@@ -21554,6 +21563,105 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         _fenJsStylePrototype = prototype;
         return prototype;
+    }
+
+    // CSS 2.1 9.9.1 z-index: auto | <integer>, plus the CSS-wide keywords, and any
+    // value holding var(), which is only checked once substituted (CSS Variables 1 3).
+    private static bool IsValidZIndexValue(string value)
+    {
+        var v = value.Trim();
+        return v.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+               v.Equals("initial", StringComparison.OrdinalIgnoreCase) ||
+               v.Equals("inherit", StringComparison.OrdinalIgnoreCase) ||
+               v.Equals("unset", StringComparison.OrdinalIgnoreCase) ||
+               v.Equals("revert", StringComparison.OrdinalIgnoreCase) ||
+               v.Equals("revert-layer", StringComparison.OrdinalIgnoreCase) ||
+               v.Contains("var(", StringComparison.OrdinalIgnoreCase) ||
+               int.TryParse(v, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _);
+    }
+
+    private static bool HasNonPrintableCodePoint(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        for (int i = 0; i < s.Length; i++)
+        {
+            int cp = char.ConvertToUtf32(s, i);
+            if (char.IsSurrogate(s[i])) i++;
+            if ((cp >= 0 && cp <= 8) || cp == 0x0B || (cp >= 0x0E && cp <= 0x1F) || cp == 0x7F)
+                return true;
+        }
+        return false;
+    }
+
+    private static List<(string Name, string Value)> ParseValidInlineDeclarations(string styleAttr)
+    {
+        var list = new List<(string Name, string Value)>();
+        if (string.IsNullOrWhiteSpace(styleAttr)) return list;
+
+        int i = 0, n = styleAttr.Length;
+        while (i < n)
+        {
+            while (i < n && (styleAttr[i] <= ' ' || styleAttr[i] == ';')) i++;
+            if (i >= n) break;
+
+            int start = i;
+            int colonIdx = -1;
+            int braceDepth = 0, parenDepth = 0;
+            char inQuote = '\0';
+            while (i < n)
+            {
+                char c = styleAttr[i];
+                if (inQuote != '\0')
+                {
+                    if (c == inQuote) inQuote = '\0';
+                }
+                else if (c == '"' || c == '\'')
+                {
+                    inQuote = c;
+                }
+                else if (c == '{') braceDepth++;
+                else if (c == '}') { if (braceDepth > 0) braceDepth--; else break; }
+                else if (c == '(') parenDepth++;
+                else if (c == ')') { if (parenDepth > 0) parenDepth--; }
+                else if (c == ':' && colonIdx < 0 && braceDepth == 0 && parenDepth == 0)
+                {
+                    colonIdx = i;
+                }
+                else if (c == ';' && braceDepth == 0 && parenDepth == 0)
+                {
+                    break;
+                }
+                i++;
+            }
+
+            if (colonIdx > start && inQuote == '\0' && braceDepth == 0)
+            {
+                var name = styleAttr.Substring(start, colonIdx - start).Trim();
+                var val = styleAttr.Substring(colonIdx + 1, i - colonIdx - 1).Trim();
+                if (parenDepth > 0 && i >= n && val.StartsWith("url(", StringComparison.OrdinalIgnoreCase))
+                {
+                    while (parenDepth > 0)
+                    {
+                        val += ")";
+                        parenDepth--;
+                    }
+                }
+                if (parenDepth == 0 && name.Length > 0 && val.Length > 0 && !val.StartsWith(":") && !name.Contains(':') && !name.Contains(';') && !name.Contains('{') && !name.Contains('}'))
+                {
+                    if (val.EndsWith("/*", StringComparison.Ordinal) || val.StartsWith("/*", StringComparison.Ordinal) || (val.Contains("/*") && !val.Contains("*/")))
+                    {
+                        // malformed comment
+                    }
+                    else
+                    {
+                        list.Add((name, val));
+                    }
+                }
+            }
+            if (i < n && styleAttr[i] == ';') i++;
+            else if (i < n && styleAttr[i] == '}') { i++; break; }
+        }
+        return list;
     }
 
     private void NotifyResizeObservers(Element element)
