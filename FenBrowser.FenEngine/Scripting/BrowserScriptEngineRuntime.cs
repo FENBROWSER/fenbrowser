@@ -695,6 +695,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private JsValue _fenJsFileConstructor = JsValue.Undefined;
     private Uri _activeParentBaseUri;
     private bool _fenJsDomConstructorsInstalled;
+    private bool _hasCustomElementDefinitions;
     private long _temporaryFenJsGlobalCounter;
     private BytecodeCompiler _compiler;
     private BytecodeInterpreter _interpreter;
@@ -7482,6 +7483,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         InstallFenJsPerformance();
         InstallFenJsTimers();
+        InstallCustomElementDefinitionTracker();
         InstallFenJsBrowserConstructors();
         InstallFenJsNativeRangeConstructor(document);
         InstallFenJsEventTarget();
@@ -8754,6 +8756,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     // x.com's bootstrap specifically) call performance.now()/mark()/measure() during
     // hydration; a missing `performance` global throws ReferenceError and aborts the
     // app mount before any content renders. https://www.w3.org/TR/hr-time-3/
+    private void InstallCustomElementDefinitionTracker()
+    {
+        _interpreter.RegisterGlobalValue(
+            "__fenCustomElementDefined",
+            _interpreter.AllocateNativeFunction(
+                "__fenCustomElementDefined",
+                (_, _) =>
+                {
+                    _hasCustomElementDefinitions = true;
+                    return JsValue.Undefined;
+                },
+                length: 1));
+    }
+
     private void InstallFenJsPerformance()
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -15507,6 +15523,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         });
                     } catch (_constructorMarkerError) {}
                     this._registry[name] = { constructor: constructor, options: options };
+                    if (typeof globalThis.__fenCustomElementDefined === 'function') globalThis.__fenCustomElementDefined(name);
                     if (typeof document !== 'undefined') {
                         upgradeCustomElementTree(document, this, name);
                     }
@@ -17987,6 +18004,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private void UpgradeInsertedCustomElements(Node child, Node[] movedFromFragment)
     {
+        if (!_hasCustomElementDefinitions)
+        {
+            return;
+        }
+
         if (movedFromFragment == null)
         {
             UpgradeCustomElementTreeIfDefined(ToHostNodeOrNull(child));
@@ -18002,9 +18024,32 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
     }
 
+    private bool HasCustomElementDefinitions(JsValue registry)
+    {
+        if (registry.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var registryObject = _interpreter.Heap.GetObject(registry.AsObjectHandle());
+        if (!registryObject.TryGetOwnProperty("_registry", out var definitionsValue) ||
+            definitionsValue.Value.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var definitions = _interpreter.Heap.GetObject(definitionsValue.Value.AsObjectHandle());
+        foreach (var _ in definitions.EnumerateOwnProperties())
+        {
+            return true;
+        }
+
+        return false;
+    }
+
     private JsValue UpgradeCustomElementTreeIfDefined(JsValue rootValue)
     {
-        if (rootValue.Tag != JsValueTag.HostObject || _interpreter == null)
+        if (!_hasCustomElementDefinitions || rootValue.Tag != JsValueTag.HostObject || _interpreter == null)
         {
             return rootValue;
         }
@@ -18015,7 +18060,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         var upgrade = ReadJsProperty(registry, "upgrade");
-        if (!_interpreter.CanCallValue(upgrade))
+        if (!_interpreter.CanCallValue(upgrade) || !HasCustomElementDefinitions(registry))
         {
             return rootValue;
         }
