@@ -12216,10 +12216,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     // It is not cosmetic: the web-components polyfill installs its
                     // __shady_* surface on EventTarget.prototype when the global is
                     // present, and every element has to be able to see it.
+                    // Window.prototype inherits from its WindowProperties named
+                    // properties object (WebIDL 3.7.4), so for Window it is that
+                    // object that is linked to EventTarget.prototype.
                     [globalThis.Node, globalThis.Window].forEach(function (ctor) {
                         if (typeof ctor !== 'function' || !ctor.prototype) return;
-                        if (Object.getPrototypeOf(ctor.prototype) !== Object.prototype) return;
-                        try { Object.setPrototypeOf(ctor.prototype, EventTarget.prototype); }
+                        var last = ctor.prototype;
+                        var next = Object.getPrototypeOf(last);
+                        if (ctor === globalThis.Window && next !== Object.prototype && next &&
+                            Object.getPrototypeOf(next) === Object.prototype) {
+                            last = next;
+                            next = Object.prototype;
+                        }
+                        if (next !== Object.prototype) return;
+                        try { Object.setPrototypeOf(last, EventTarget.prototype); }
                         catch (_eventTargetLinkError) { }
                     });
 

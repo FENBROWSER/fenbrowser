@@ -80,4 +80,18 @@ public sealed class WindowNamedAccessTests : IDisposable
         Assert.Equal("object|undefined", engine.Evaluate(
             "var before = typeof window.gone; document.getElementById('gone').remove(); before + '|' + typeof window.gone")?.ToString());
     }
+
+    [Fact]
+    public void WindowInheritsEventTargetThroughWindowProperties()
+    {
+        var engine = Load("<html><body><div id='named3'></div></body></html>");
+
+        Assert.Equal("true|WindowProperties|true|shadowing", engine.Evaluate(@"
+            var npo = Object.getPrototypeOf(Window.prototype);
+            EventTarget.prototype.named3 = 'shadowing';
+            [window instanceof EventTarget,
+             Object.prototype.toString.call(npo).slice(8, -1),
+             Object.getPrototypeOf(npo) === EventTarget.prototype,
+             window.named3].join('|')")?.ToString());
+    }
 }
