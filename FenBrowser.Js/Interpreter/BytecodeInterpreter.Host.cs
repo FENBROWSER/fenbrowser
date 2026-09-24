@@ -156,6 +156,32 @@ public sealed partial class BytecodeInterpreter
             return;
         }
 
+        // ECMA-262 10.1.9.2 OrdinarySetWithOwnDescriptor: a name the platform object
+        // does not implement itself is looked up on its prototype chain. An inherited
+        // accessor's setter runs with the object as the receiver (an interface
+        // attribute a script defined on HTMLMediaElement.prototype, a polyfill's
+        // accessor), and an inherited read-only data property refuses the write.
+        if (TryGetHostObjectPrototypeDescriptor(handle, key, out var inherited) &&
+            !_hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.InCheck, out _))
+        {
+            if (inherited.IsAccessor)
+            {
+                if (!CallSetter(inherited, value, receiver))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Cannot set property '" + key + "' which has only a getter."));
+                }
+
+                return;
+            }
+
+            if (!inherited.Writable)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot assign to read-only property '" + key + "'."));
+            }
+        }
+
         if (_hostHooks.TrySetHostProperty(handle, key, value))
         {
             return;
@@ -500,6 +526,25 @@ public sealed partial class BytecodeInterpreter
             current = current.PrototypeHandle is { } next ? _heap.GetObject(next) : null;
         }
 
+        return false;
+    }
+
+    /// <summary>The first descriptor for <paramref name="key"/> on the host object's explicit prototype chain.</summary>
+    private bool TryGetHostObjectPrototypeDescriptor(HostObjectHandle handle, string key, out JsPropertyDescriptor descriptor)
+    {
+        var prototype = GetExplicitHostObjectPrototype(handle);
+        var current = prototype.Tag == JsValueTag.Object ? _heap.GetObject(prototype.AsObjectHandle()) : null;
+        while (current is not null)
+        {
+            if (current.TryGetOwnProperty(key, out descriptor))
+            {
+                return true;
+            }
+
+            current = current.PrototypeHandle is { } next ? _heap.GetObject(next) : null;
+        }
+
+        descriptor = default;
         return false;
     }
 
