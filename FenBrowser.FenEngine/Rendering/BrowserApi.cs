@@ -2967,6 +2967,24 @@ pre {{
             return baseUri != null && Uri.TryCreate(baseUri, href.Trim(), out var resolved) ? resolved : null;
         }
 
+        // What CSS Syntax 3 section 3.2 needs to decode the sheet at `sheet` for `doc`:
+        // the charset its <link>/<?xml-stylesheet?> names, and the referring
+        // document's encoding. Every stylesheet fetch passes both, or whichever fetch
+        // of the same sheet finishes first decides its text.
+        private (string LinkCharset, string FallbackEncoding) StylesheetDecodingHints(Document doc, Uri sheet)
+        {
+            var documentEncoding = doc?.CharacterSet;
+            if (string.IsNullOrEmpty(documentEncoding) ||
+                (documentEncoding.Equals("UTF-8", StringComparison.OrdinalIgnoreCase) &&
+                 ReferenceEquals(doc, _engine?.CurrentDocument)))
+            {
+                // The top-level document's detected encoding, when parsing left the default.
+                documentEncoding = _engine?.DocumentEncodingOverride ?? documentEncoding;
+            }
+
+            return (FindStylesheetCharsetAttribute(doc, sheet), documentEncoding);
+        }
+
         private string FindStylesheetCharsetAttribute(Document doc, Uri sheet)
         {
             if (doc == null || sheet == null)
@@ -3010,8 +3028,7 @@ pre {{
                 _navigationSubresources.MarkLoadStarted(navigationId);
                 try
                 {
-                    var doc = _engine?.CurrentDocument;
-                    var linkCharset = FindStylesheetCharsetAttribute(doc, uri);
+                    var (linkCharset, fallbackEncoding) = StylesheetDecodingHints(_engine?.CurrentDocument, uri);
 
                     return await _resources.FetchCssAsync(new FetchContext
                     {
@@ -3025,7 +3042,7 @@ pre {{
                         ReferrerPolicy = CurrentReferrerPolicy,
                         ContentSecurityPolicy = CurrentPolicy,
                         Method = "GET",
-                        FallbackEncoding = (doc?.CharacterSet != null && doc.CharacterSet != "UTF-8") ? doc.CharacterSet : (_engine?.DocumentEncodingOverride ?? doc?.CharacterSet),
+                        FallbackEncoding = fallbackEncoding,
                         LinkCharset = linkCharset
                     }).ConfigureAwait(false);
                 }
@@ -6147,6 +6164,7 @@ pre {{
             }
 
             var document = stylesheetRoot?.OwnerDocument;
+            var (linkCharset, fallbackEncoding) = StylesheetDecodingHints(document ?? _engine?.CurrentDocument, resourceUri);
             if (document == null || !_frameResourceSecurity.TryGetValue(document, out var frameContext))
             {
                 return await _resources.FetchCssAsync(new FetchContext
@@ -6160,7 +6178,9 @@ pre {{
                     CredentialsMode = "include",
                     ReferrerPolicy = CurrentReferrerPolicy,
                     ContentSecurityPolicy = CurrentPolicy,
-                    Method = "GET"
+                    Method = "GET",
+                    FallbackEncoding = fallbackEncoding,
+                    LinkCharset = linkCharset
                 }).ConfigureAwait(false);
             }
 
@@ -6183,7 +6203,9 @@ pre {{
                 ContentSecurityPolicy = frameContext.Policy,
                 IsTopLevelNavigation = false,
                 IsUserInitiated = false,
-                Method = "GET"
+                Method = "GET",
+                FallbackEncoding = fallbackEncoding,
+                LinkCharset = linkCharset
             }).ConfigureAwait(false);
         }
 
