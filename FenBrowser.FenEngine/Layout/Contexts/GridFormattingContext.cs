@@ -61,6 +61,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
             var arrangedBoxes = new Dictionary<Node, BoxModel>();
             var measureCache = new Dictionary<GridMeasureKey, LayoutMetrics>();
+            var intrinsicTextWidths = new Dictionary<LayoutBox, float>();
+            var measuredIntrinsicWidths = new Dictionary<Node, float>();
+            var measuredAtInfiniteHeight = new HashSet<Node>();
             var activeMeasurements = new HashSet<GridMeasureKey>();
 
             LayoutMetrics MeasureNode(Node node, SKSize availableSize, int depth)
@@ -125,6 +128,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         state.Deadline);
 
                     FormattingContext.Resolve(childBox).Layout(childBox, childState);
+                    measuredIntrinsicWidths[node] = childWidth;
+                    if (hasDefiniteChildHeight)
+                    {
+                        measuredAtInfiniteHeight.Remove(node);
+                    }
+                    else
+                    {
+                        measuredAtInfiniteHeight.Add(node);
+                    }
 
                     float baseline = 0f;
                     if (LayoutBoxOps.TryResolveBaselineOffsetFromMarginTop(childBox, out float resolvedBaseline))
@@ -133,7 +145,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     float outerWidth = Math.Max(0f, childBox.Geometry.MarginBox.Width);
-                    float minContentWidth = ResolveMinContentWidth(childBox, state.ViewportWidth, outerWidth);
+                    float minContentWidth = ResolveMinContentWidth(childBox, state.ViewportWidth, outerWidth, intrinsicTextWidths);
                     float maxContentWidth = ResolveMaxContentWidth(childBox, state.ViewportWidth, outerWidth);
 
                     var metrics = new LayoutMetrics
@@ -177,10 +189,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 float width = Math.Max(0f, rect.Width);
                 float height = Math.Max(0f, rect.Height);
 
-                // Set content width; height will be resolved by the child's layout pass
-                // then clamped to the grid row height so all items in a row are equal.
-                LayoutBoxOps.ComputeBoxModelFromContent(childBox, width, Math.Max(0f, childBox.Geometry.ContentBox.Height));
-
                 float absoluteLeft = container.Geometry.ContentBox.Left + rect.Left;
                 float absoluteTop = container.Geometry.ContentBox.Top + rect.Top;
 
@@ -193,8 +201,43 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     state.Deadline);
                 childState.SubgridContext = subgridContext;
 
+                var childStyle = childBox.ComputedStyle;
+                var reuseMeasuredLayout =
+                    subgridContext == null &&
+                    childBox is BlockBox &&
+                    string.Equals(childStyle?.Display, "block", StringComparison.OrdinalIgnoreCase) &&
+                    childStyle?.Height is null &&
+                    childStyle?.HeightPercent is null &&
+                    string.IsNullOrEmpty(childStyle?.HeightExpression) &&
+                    childStyle?.Width is null &&
+                    childStyle?.WidthPercent is null &&
+                    string.IsNullOrEmpty(childStyle?.WidthExpression) &&
+                    (string.IsNullOrEmpty(childStyle?.AlignSelf) ||
+                     string.Equals(childStyle?.AlignSelf, "normal", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(childStyle?.AlignSelf, "auto", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(childStyle?.AlignSelf, "stretch", StringComparison.OrdinalIgnoreCase)) &&
+                    (string.IsNullOrEmpty(childStyle?.Float) ||
+                     string.Equals(childStyle?.Float, "none", StringComparison.OrdinalIgnoreCase)) &&
+                    !childBox.IsOutOfFlow &&
+                    measuredAtInfiniteHeight.Contains(node) &&
+                    measuredIntrinsicWidths.TryGetValue(node, out var measuredWidth) &&
+                    Math.Abs(measuredWidth - width) < 0.01f;
+
+                // A child measured at this exact width already holds the geometry a
+                // second layout would produce. Resetting its content box to the track
+                // width first would leave padding and border added on top of the track.
+                if (!reuseMeasuredLayout)
+                {
+                    // Set content width; height will be resolved by the child's layout pass
+                    // then clamped to the grid row height so all items in a row are equal.
+                    LayoutBoxOps.ComputeBoxModelFromContent(childBox, width, Math.Max(0f, childBox.Geometry.ContentBox.Height));
+                }
+
                 LayoutBoxOps.PositionSubtree(childBox, absoluteLeft, absoluteTop, childState);
-                FormattingContext.Resolve(childBox).Layout(childBox, childState);
+                if (!reuseMeasuredLayout)
+                {
+                    FormattingContext.Resolve(childBox).Layout(childBox, childState);
+                }
 
                 // CSS Grid spec §12.4: all items in the same row share the row height
                 // (the maximum of the row's track size).  The child's re-layout above
@@ -438,15 +481,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
         }
 
-        private static float ResolveMinContentWidth(LayoutBox box, float viewportWidth, float outerWidth)
+        private static float ResolveMinContentWidth(
+            LayoutBox box,
+            float viewportWidth,
+            float outerWidth,
+            Dictionary<LayoutBox, float> intrinsicTextWidths)
         {
             if (box?.ComputedStyle?.Width.HasValue == true)
             {
                 return outerWidth;
             }
 
-            float textMinContentWidth = 0f;
-            CollectTextMinContentWidth(box, viewportWidth, ref textMinContentWidth);
+            float textMinContentWidth = ResolveIntrinsicTextWidth(box, viewportWidth, intrinsicTextWidths);
             if (textMinContentWidth <= 0f)
             {
                 return outerWidth;
@@ -456,27 +502,41 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return Math.Min(outerWidth, textMinContentWidth + horizontalChrome);
         }
 
-        private static void CollectTextMinContentWidth(LayoutBox box, float viewportWidth, ref float minContentWidth)
+        private static float ResolveIntrinsicTextWidth(
+            LayoutBox box,
+            float viewportWidth,
+            Dictionary<LayoutBox, float> intrinsicTextWidths)
         {
-            if (box?.SourceNode is Text)
+            if (box == null)
+            {
+                return 0f;
+            }
+
+            if (intrinsicTextWidths.TryGetValue(box, out var cached))
+            {
+                return cached;
+            }
+
+            var textMinContentWidth = 0f;
+            if (box.SourceNode is Text)
             {
                 var textMetrics = TextLayoutComputer.ComputeTextLayout(
                     box.SourceNode,
                     box.ComputedStyle ?? new CssComputed(),
                     new SKSize(float.PositiveInfinity, float.PositiveInfinity),
                     viewportWidth).Metrics;
-                minContentWidth = Math.Max(minContentWidth, Math.Max(0f, textMetrics.MinContentWidth));
-            }
-
-            if (box == null)
-            {
-                return;
+                textMinContentWidth = Math.Max(0f, textMetrics.MinContentWidth);
             }
 
             foreach (var child in box.Children)
             {
-                CollectTextMinContentWidth(child, viewportWidth, ref minContentWidth);
+                textMinContentWidth = Math.Max(
+                    textMinContentWidth,
+                    ResolveIntrinsicTextWidth(child, viewportWidth, intrinsicTextWidths));
             }
+
+            intrinsicTextWidths[box] = textMinContentWidth;
+            return textMinContentWidth;
         }
 
         private static float ResolveMaxContentWidth(LayoutBox box, float viewportWidth, float measuredOuterWidth)
