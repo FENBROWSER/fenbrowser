@@ -1,6 +1,6 @@
 """Drive a running FenBrowser WebDriver server through one page and report what happened.
 
-Usage: python scripts/media/webdriver_probe.py <port> <url> [seconds] [script]
+Usage: python scripts/media/webdriver_probe.py <port> <url> [seconds] [script] [async-script]
 
 Opens a session, navigates to <url>, waits, optionally runs <script> (a function body
 that returns a value), and prints the title, the window handles and the result. Useful
@@ -32,6 +32,8 @@ def main():
     print("handles:", call(port, "GET", base + "/window/handles")["value"])
     if script:
         print("script:", call(port, "POST", base + "/execute/sync", {"script": script, "args": []})["value"])
+    if len(sys.argv) > 5:
+        print("async:", call(port, "POST", base + "/execute/async", {"script": sys.argv[5], "args": []})["value"])
     call(port, "DELETE", base)
 
 
