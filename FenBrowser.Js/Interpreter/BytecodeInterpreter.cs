@@ -402,11 +402,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _directEvalEnv?.Trace(tracer);
         _preResolvedEnv?.Trace(tracer);
 
-        foreach (var callback in _pendingMicrotasks)
-        {
-            TraceRootValue(tracer, callback, "interp.pendingMicrotask");
-        }
-
         foreach (var (callback, heldValues) in _finalizationCleanupJobs)
         {
             TraceRootValue(tracer, callback, "interp.finalizationCleanupJob.callback");
@@ -499,7 +494,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     JsValue IBuiltinContext.ConstructDate(IReadOnlyList<JsValue> args) => ConstructDate(args);
     void IBuiltinContext.InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto) => InstallPrototypeMethodsOnRegExpPrototype(protoHandle, proto);
     JsValue IBuiltinContext.Eval(IReadOnlyList<JsValue> args) => Eval(args);
-    void IBuiltinContext.EnqueueMicrotask(JsValue callback) => _pendingMicrotasks.Enqueue(callback);
+    void IBuiltinContext.EnqueueMicrotask(JsValue callback) => EnqueueHostCallback(callback);
     ObjectHandle IBuiltinContext.MaterializeObjectConstructor() => EnsureObjectConstructor();
     ObjectHandle IBuiltinContext.MaterializeArrayConstructor() => EnsureArrayConstructor();
     ObjectHandle IBuiltinContext.MaterializeFunctionConstructor() => EnsureFunctionConstructor();
@@ -584,14 +579,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private ObjectHandle? _aggregateErrorPrototypeHandle;
     private ObjectHandle? _structuredCloneHandle;
     private ObjectHandle? _queueMicrotaskHandle;
-
-    // Pending HostQueueMicrotask callbacks. Drained at the end of every top-level
-    // Execute() invocation as part of the unified microtask checkpoint (D.6) which
-    // also flushes the Promise JobQueue. The two queues live separately because
-    // queueMicrotask jobs carry a single JsValue callback while PromiseJobs carry
-    // structured reaction state - but they drain interleaved FIFO within the same
-    // checkpoint so ordering matches HTML's "perform a microtask checkpoint".
-    private readonly Queue<JsValue> _pendingMicrotasks = new();
 
     // FinalizationRegistry cleanup jobs. Per ECMA-262 26.2, cleanup callbacks
     // run as jobs at agent level; FenJS drains them as part of the unified
@@ -1548,6 +1535,34 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
     }
 
+    // HTML 8.1.7.3 "queue a microtask": one FIFO with the promise jobs.
+    private void EnqueueHostCallback(JsValue callback) =>
+        _jobQueue.Enqueue(new HostCallbackJob(callback, DefaultPromiseRealmId));
+
+    // A queueMicrotask callback. An exception is reported to the host (the
+    // observer, then the caller of the checkpoint) rather than swallowed the way
+    // a promise reaction's is; the jobs behind it wait for the next checkpoint.
+    private void RunHostCallbackJob(HostCallbackJob job, Action<JsValue, Exception>? onFailure)
+    {
+        try
+        {
+            _ = CallFunction(job.Callback, Array.Empty<JsValue>(), JsValue.Undefined);
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                onFailure?.Invoke(job.Callback, exception);
+            }
+            catch
+            {
+                // A diagnostic observer must never replace the JS exception.
+            }
+
+            throw;
+        }
+    }
+
     private void DrainPendingMicrotasksCore(Action<JsValue, Exception>? onQueueMicrotaskFailure)
     {
         var checkpointDeadlineTicks = WallClockTimeoutMs > 0
@@ -1566,7 +1581,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var checkpointPass = 0;
-        while (_pendingMicrotasks.Count > 0 || _jobQueue.Count > 0 || _finalizationCleanupJobs.Count > 0)
+        while (_jobQueue.Count > 0 || _finalizationCleanupJobs.Count > 0)
         {
             BeginMicrotaskTracePass(++checkpointPass);
             // FinalizationRegistry cleanup callbacks run first so collected
@@ -1613,62 +1628,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
             }
 
-            // Drain queueMicrotask first so an early host callback that resolves a
-            // promise gets its triggered reactions into the JobQueue before we
-            // start running jobs - keeping HTML's tail-call ordering intact.
-            while (_pendingMicrotasks.Count > 0)
-            {
-                CheckCheckpointBudget();
-                var callback = _pendingMicrotasks.Dequeue();
-                var traceJob = BeginMicrotaskTraceJob(
-                    "queue-microtask",
-                    "callback=" + DescribeMicrotaskCallbackForTrace(callback));
-                Exception? traceFailure = null;
-                // The dequeued callback leaves the traced root set here; pin it
-                // for the invocation so a safe-point collection inside the
-                // callback's own body cannot sweep the closure cell that is
-                // executing (top-level invocations hold it only in this local).
-                var microtaskRootMark = _heap.RootCount;
-                if (callback.Tag == JsValueTag.Object)
-                {
-                    _heap.PushRoot(callback.AsObjectHandle());
-                }
-                try
-                {
-                    _ = CallFunction(callback, Array.Empty<JsValue>(), JsValue.Undefined);
-                }
-                catch (Exception exception)
-                {
-                    traceFailure = exception;
-                    try
-                    {
-                        onQueueMicrotaskFailure?.Invoke(callback, exception);
-                    }
-                    catch
-                    {
-                        // A diagnostic observer must never replace the JS exception.
-                    }
-
-                    throw;
-                }
-                finally
-                {
-                    _heap.PopRootsTo(microtaskRootMark);
-                    EndMicrotaskTraceJob(traceJob, traceFailure);
-                }
-            }
-
             _ = _jobQueue.RunMicrotaskCheckpoint(job =>
             {
                 CheckCheckpointBudget();
                 var traceJob = BeginMicrotaskTraceJob(
-                    "promise-job",
+                    job is HostCallbackJob ? "queue-microtask" : "promise-job",
                     DescribePromiseJobForTrace(job));
                 Exception? traceFailure = null;
                 var jobStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 var jobInstructions = _instructionCount;
                 try
                 {
+                    if (job is HostCallbackJob callbackJob)
+                    {
+                        RunHostCallbackJob(callbackJob, onQueueMicrotaskFailure);
+                        return true;
+                    }
+
                     return RunPromiseJob(job);
                 }
                 catch (Exception exception)
@@ -21997,8 +21973,8 @@ fallbackArraySpecies:
         return ta;
     }
 
-    // HTML queueMicrotask(callback). The callback is appended to the pending
-    // microtask queue and drained when the current Execute returns. Non-callable
+    // HTML queueMicrotask(callback). The callback is appended to the microtask
+    // queue, behind any promise jobs already in it, and runs at the next checkpoint. Non-callable
     // argument raises TypeError per the HTML spec.
     private ObjectHandle EnsureQueueMicrotaskFunction()
     {
@@ -22013,7 +21989,7 @@ fallbackArraySpecies:
             {
                 throw new JsThrownException(CreateTypeError("queueMicrotask: argument must be callable."));
             }
-            _pendingMicrotasks.Enqueue(args[0]);
+            EnqueueHostCallback(args[0]);
             return JsValue.Undefined;
         }, length: 1);
         _queueMicrotaskHandle = _heap.AllocateObject(fn, AllocationSite.Current());
