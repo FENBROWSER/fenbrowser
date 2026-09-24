@@ -26559,7 +26559,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             : document.ReadyState.ToString().ToLowerInvariant());
                     return true;
                 case "compatMode":
-                    value = JsValue.FromString("CSS1Compat");
+                    // HTML 3.1.2 compatMode: "BackCompat" in quirks mode, else "CSS1Compat".
+                    value = JsValue.FromString(document.CompatMode ?? "CSS1Compat");
                     return true;
                 case "hasFocus":
                     value = _owner.GetOrCreateHostCallable(
