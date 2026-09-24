@@ -36,6 +36,7 @@ namespace FenBrowser.WebDriver
         private readonly CommandRouter _router;
         private readonly CommandHandler _handler;
         private readonly WebDriverCommandQueue _commandQueue;
+        internal static readonly TimeSpan ShutdownGracePeriod = TimeSpan.FromSeconds(5);
         private readonly ConcurrentDictionary<string, WebDriverCommandQueue> _sessionCommandQueues =
             new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<long, Task> _activeRequests = new();
@@ -154,12 +155,20 @@ namespace FenBrowser.WebDriver
             {
             }
 
+            // Commands waiting for their queue are cancelled by _cts. One already
+            // running inside the browser cannot be, so shutdown gives the running
+            // ones a bounded grace period and then leaves them rather than waiting
+            // on a wedged command forever.
             var requests = _activeRequests.Values.ToArray();
             if (requests.Length > 0)
             {
                 try
                 {
-                    await Task.WhenAll(requests).ConfigureAwait(false);
+                    await Task.WhenAll(requests).WaitAsync(ShutdownGracePeriod).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    Log($"WebDriver server stopping with {requests.Count(r => !r.IsCompleted)} command(s) still running");
                 }
                 catch
                 {
@@ -380,7 +389,10 @@ namespace FenBrowser.WebDriver
                     if (!string.IsNullOrEmpty(sessionId) &&
                         string.Equals(routeMatch.Command, "DeleteSession", StringComparison.Ordinal))
                     {
-                        _sessionCommandQueues.TryRemove(sessionId, out _);
+                        if (_sessionCommandQueues.TryRemove(sessionId, out var deletedQueue))
+                        {
+                            deletedQueue.Dispose();
+                        }
                     }
 
                     await SendResponseAsync(response, result, _cts.Token).ConfigureAwait(false);
@@ -652,6 +664,12 @@ namespace FenBrowser.WebDriver
             }
 
             await StopAsync().ConfigureAwait(false);
+            _commandQueue.Dispose();
+            foreach (var queue in _sessionCommandQueues.Values)
+            {
+                queue.Dispose();
+            }
+            _sessionCommandQueues.Clear();
             _sessionManager.Dispose();
             _requestAdmission.Dispose();
             _cts.Dispose();

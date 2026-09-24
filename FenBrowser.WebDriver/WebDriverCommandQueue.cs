@@ -24,7 +24,8 @@ namespace FenBrowser.WebDriver
             }
             finally
             {
-                _gate.Release();
+                // A command abandoned at shutdown can finish after the queue is disposed.
+                try { _gate.Release(); } catch (ObjectDisposedException) { }
             }
         }
 
