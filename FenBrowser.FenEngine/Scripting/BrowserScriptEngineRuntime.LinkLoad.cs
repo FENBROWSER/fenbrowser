@@ -116,7 +116,26 @@ public sealed partial class FenJsBrowserScriptEngine
                 return;
             }
 
-            if (!string.Equals(type, "childList", StringComparison.Ordinal) || addedNodes == null)
+            if (!string.Equals(type, "childList", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            // A link that leaves the document stops processing its resource: the
+            // request is forgotten, so its completion fires nothing, and inserting
+            // the link again starts a new one.
+            if (removedNodes != null)
+            {
+                for (var i = 0; i < removedNodes.Count; i++)
+                {
+                    if (removedNodes[i] is Element removed)
+                    {
+                        ForgetLinkRequests(removed);
+                    }
+                }
+            }
+
+            if (addedNodes == null)
             {
                 return;
             }
@@ -150,6 +169,25 @@ public sealed partial class FenJsBrowserScriptEngine
         }
     }
 
+    private void ForgetLinkRequests(Element root)
+    {
+        lock (_linkLoadSync)
+        {
+            if (IsLoadableLinkElement(root))
+            {
+                _linkRequests.Remove(root);
+            }
+
+            foreach (var descendant in root.Descendants())
+            {
+                if (descendant is Element element && IsLoadableLinkElement(element))
+                {
+                    _linkRequests.Remove(element);
+                }
+            }
+        }
+    }
+
     /// <summary>
     /// Fetches the link's resource and queues <c>load</c> or <c>error</c> at the
     /// element when it lands. The same href seen again is the same request.
@@ -169,6 +207,7 @@ public sealed partial class FenJsBrowserScriptEngine
             return;
         }
 
+        StrongBox<string> token;
         lock (_linkLoadSync)
         {
             if (_linkRequests.TryGetValue(link, out var current) &&
@@ -177,26 +216,91 @@ public sealed partial class FenJsBrowserScriptEngine
                 return;
             }
 
-            _linkRequests.AddOrUpdate(link, new StrongBox<string>(url));
+            token = new StrongBox<string>(url);
+            _linkRequests.AddOrUpdate(link, token);
         }
 
-        var handler = FetchHandler;
-        if (handler == null)
-        {
-            QueueLinkEvent(link, url, "error");
-            return;
-        }
-
-        var destination = ResolveLinkFetchDestination(link);
         _ = Task.Run(async () =>
         {
-            var succeeded = false;
+            var succeeded = await FetchLinkResourceAsync(link, requestUri).ConfigureAwait(false);
+            QueueLinkEvent(link, token, succeeded ? "load" : "error");
+        });
+    }
+
+    // A stylesheet link reports load only when the sheet and every sheet it
+    // imports arrived; nesting is capped the way a cascade would cap it.
+    private const int MaxLinkImportDepth = 8;
+
+    private Task<bool> FetchLinkResourceAsync(Element link, Uri requestUri)
+    {
+        var destination = ResolveLinkFetchDestination(link);
+        return FetchLinkedSheetAsync(
+            link, requestUri, destination, depth: 0,
+            new HashSet<string>(StringComparer.Ordinal));
+    }
+
+    private async Task<bool> FetchLinkedSheetAsync(
+        Element link, Uri uri, string destination, int depth, HashSet<string> seen)
+    {
+        var isStylesheet = string.Equals(destination, "style", StringComparison.Ordinal);
+        if (depth > MaxLinkImportDepth || !seen.Add(uri.AbsoluteUri))
+        {
+            // An import cycle or runaway nesting: the sheet is already accounted for.
+            return true;
+        }
+
+        string text;
+        string contentType;
+        bool nosniff = false;
+        bool sameOrigin;
+
+        if (string.Equals(uri.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+        {
+            // Fetch 4.2 "data: URL processor": no comma fails; the MIME type is what
+            // precedes the comma, and ";base64" marks a base64 body.
+            var body = uri.OriginalString.Substring(uri.Scheme.Length + 1);
+            var comma = body.IndexOf(',');
+            if (comma < 0)
+            {
+                return false;
+            }
+
+            var meta = Uri.UnescapeDataString(body.Substring(0, comma)).Trim();
+            var payload = body.Substring(comma + 1);
+            var isBase64 = meta.EndsWith(";base64", StringComparison.OrdinalIgnoreCase);
+            if (isBase64)
+            {
+                meta = meta.Substring(0, meta.Length - ";base64".Length);
+            }
+
+            contentType = meta.Length == 0 ? "text/plain" : meta;
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+                text = isBase64
+                    ? System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(Uri.UnescapeDataString(payload)))
+                    : Uri.UnescapeDataString(payload);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+
+            sameOrigin = true;
+        }
+        else
+        {
+            var handler = FetchHandler;
+            if (handler == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, uri);
                 request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", destination);
                 request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "no-cors");
-                if (string.Equals(destination, "style", StringComparison.Ordinal))
+                if (isStylesheet)
                 {
                     request.Headers.TryAddWithoutValidation("Accept", "text/css,*/*;q=0.1");
                 }
@@ -206,23 +310,233 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
 
                 using var response = await handler(request).ConfigureAwait(false);
-                succeeded = response.IsSuccessStatusCode;
-                if (succeeded && response.Content != null)
+                if (!response.IsSuccessStatusCode)
                 {
-                    // Drain the body so the response cache holds it for the
-                    // cascade's own fetch of the same stylesheet.
-                    _ = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                    return false;
                 }
+
+                // Drained either way, so the response cache holds the body for the
+                // cascade's own fetch of the same stylesheet.
+                text = response.Content == null
+                    ? string.Empty
+                    : await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                contentType = ReadRawHeader(response.Content?.Headers, "Content-Type") ??
+                              ReadRawHeader(response.Headers, "Content-Type");
+                var options = ReadRawHeader(response.Headers, "X-Content-Type-Options");
+                nosniff = options != null &&
+                          string.Equals(options.Split(',')[0].Trim(), "nosniff", StringComparison.OrdinalIgnoreCase);
+                var finalUri = response.RequestMessage?.RequestUri ?? uri;
+                sameOrigin = _currentBaseUri != null &&
+                    Uri.Compare(finalUri, _currentBaseUri, UriComponents.SchemeAndServer,
+                        UriFormat.SafeUnescaped, StringComparison.OrdinalIgnoreCase) == 0;
             }
             catch (Exception ex)
             {
                 FenBrowser.Core.EngineLogCompat.Warn(
-                    $"[FenJsBridge] link fetch failed for '{requestUri}': {ex.Message}",
+                    $"[FenJsBridge] link fetch failed for '{uri}': {ex.Message}",
                     LogCategory.JavaScript);
+                return false;
+            }
+        }
+
+        if (!isStylesheet)
+        {
+            return true;
+        }
+
+        if (!IsAcceptableStylesheetResponse(link, contentType, nosniff, sameOrigin))
+        {
+            return false;
+        }
+
+        // A data: sheet has no base of its own to resolve relative imports against,
+        // so they resolve against the document.
+        var importBase = string.Equals(uri.Scheme, "data", StringComparison.OrdinalIgnoreCase)
+            ? _currentBaseUri ?? uri
+            : uri;
+        var imports = new List<Task<bool>>();
+        foreach (var href in ReadImportUrls(text))
+        {
+            if (!Uri.TryCreate(importBase, href, out var importUri))
+            {
+                return false;
             }
 
-            QueueLinkEvent(link, url, succeeded ? "load" : "error");
-        });
+            imports.Add(FetchLinkedSheetAsync(link, importUri, "style", depth + 1, seen));
+        }
+
+        foreach (var import in imports)
+        {
+            if (!await import.ConfigureAwait(false))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string ReadRawHeader(System.Net.Http.Headers.HttpHeaders headers, string name) =>
+        headers != null && headers.TryGetValues(name, out var values)
+            ? string.Join(",", values)
+            : null;
+
+    // HTML 4.6.7 link type "stylesheet" and CSSOM "fetch a style resource":
+    // - X-Content-Type-Options: nosniff admits only text/css (Fetch 3.5);
+    // - a sheet with no parseable Content-Type takes the stylesheet default,
+    //   text/css;
+    // - any other type fails, unless the document is in quirks mode and the
+    //   response is same-origin.
+    private static bool IsAcceptableStylesheetResponse(
+        Element link, string contentType, bool nosniff, bool sameOrigin)
+    {
+        var essence = ReadMimeEssence(contentType);
+        if (string.Equals(essence, "text/css", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (nosniff)
+        {
+            return false;
+        }
+
+        if (essence == null)
+        {
+            return true;
+        }
+
+        return sameOrigin && link.OwnerDocument?.Mode == QuirksMode.Quirks;
+    }
+
+    // MIME Sniffing 4.4 "parse a MIME type", essence only: type "/" subtype, both
+    // HTTP tokens, lowercased; null when absent or unparseable.
+    private static string ReadMimeEssence(string contentType)
+    {
+        if (string.IsNullOrWhiteSpace(contentType))
+        {
+            return null;
+        }
+
+        var essence = contentType.Split(';')[0].Trim();
+        var slash = essence.IndexOf('/');
+        if (slash <= 0 || slash == essence.Length - 1)
+        {
+            return null;
+        }
+
+        foreach (var c in essence)
+        {
+            if (c != '/' && !(char.IsAsciiLetterOrDigit(c) || "!#$%&'*+-.^_`|~".IndexOf(c) >= 0))
+            {
+                return null;
+            }
+        }
+
+        return essence.IndexOf('/', slash + 1) >= 0 ? null : essence.ToLowerInvariant();
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex ImportRule = new(
+        @"@import\s+(?:url\(\s*(?:""([^""]*)""|'([^']*)'|([^)\s]*))\s*\)|""([^""]*)""|'([^']*)')",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex CssComment = new(
+        @"/\*.*?\*/", System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // The @import rules of a sheet. They may only precede its other rules
+    // (CSS Cascade 4 section 2), so only the part before the first block counts.
+    private static IEnumerable<string> ReadImportUrls(string css)
+    {
+        if (string.IsNullOrEmpty(css) || css.IndexOf("@import", StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            yield break;
+        }
+
+        var head = CssComment.Replace(css, " ");
+        var brace = head.IndexOf('{');
+        if (brace >= 0)
+        {
+            head = head.Substring(0, brace);
+        }
+
+        foreach (System.Text.RegularExpressions.Match match in ImportRule.Matches(head))
+        {
+            for (var group = 1; group <= 5; group++)
+            {
+                if (match.Groups[group].Success)
+                {
+                    yield return match.Groups[group].Value;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The links the parser inserted, and any a script inserted during parsing,
+    /// as the page's scripts finish. HTML 4.6.7: each one's load or error fires
+    /// once its resource is processed, and the window's load event waits for them
+    /// (a stylesheet delays the load event). Their fetches start here, before
+    /// DOMContentLoaded, and <see cref="FinishStartupLinkLoadsAsync"/> fires the
+    /// events before window load. A request already in flight for one of these
+    /// links is superseded, so each link reports once.
+    /// </summary>
+    private List<(Element Link, StrongBox<string> Token, Task<bool> Fetch)> StartStartupLinkLoads(Node root)
+    {
+        var loads = new List<(Element, StrongBox<string>, Task<bool>)>();
+        if (root == null || !ReferenceEquals(ImageLoadOwner, this) || _realmAbandoned)
+        {
+            return loads;
+        }
+
+        var start = root is Element rootElement ? rootElement.OwnerDocument ?? (Node)root : root;
+        foreach (var node in start.Descendants())
+        {
+            if (node is not Element link || !IsLoadableLinkElement(link) || !link.IsConnected ||
+                !OwnsDocumentForImageEvents(link.OwnerDocument))
+            {
+                continue;
+            }
+
+            var url = ResolveElementUrlProperty(link, "href");
+            if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var requestUri))
+            {
+                continue;
+            }
+
+            var token = new StrongBox<string>(url);
+            lock (_linkLoadSync)
+            {
+                _linkRequests.AddOrUpdate(link, token);
+            }
+
+            loads.Add((link, token, FetchLinkResourceAsync(link, requestUri)));
+        }
+
+        return loads;
+    }
+
+    private async Task FinishStartupLinkLoadsAsync(List<(Element Link, StrongBox<string> Token, Task<bool> Fetch)> loads)
+    {
+        foreach (var (link, token, fetch) in loads)
+        {
+            var succeeded = await fetch.ConfigureAwait(false);
+            if (IsCurrentLinkRequest(link, token) && link.IsConnected)
+            {
+                DispatchEventForElement(
+                    link,
+                    succeeded ? "load" : "error",
+                    new BrowserDomEventInit { Bubbles = false, Cancelable = false, Composed = false });
+            }
+        }
+    }
+
+    private bool IsCurrentLinkRequest(Element link, StrongBox<string> token)
+    {
+        lock (_linkLoadSync)
+        {
+            return _linkRequests.TryGetValue(link, out var current) && ReferenceEquals(current, token);
+        }
     }
 
     private static string ResolveLinkFetchDestination(Element link)
@@ -244,22 +558,25 @@ public sealed partial class FenJsBrowserScriptEngine
 
     // Always a queued task, never inline: the listener is attached in the same
     // job that inserted the link.
-    private void QueueLinkEvent(Element link, string url, string type)
+    private void QueueLinkEvent(Element link, StrongBox<string> token, string type)
     {
         if (_realmAbandoned)
         {
             return;
         }
 
-        lock (_linkLoadSync)
+        // The href moved on, the link was removed, or a later request for it took
+        // over while this fetch was in flight: that request reports for itself.
+        if (!IsCurrentLinkRequest(link, token))
         {
-            // The href moved on while this fetch was in flight: that request
-            // reports for itself.
-            if (!_linkRequests.TryGetValue(link, out var current) ||
-                !string.Equals(current.Value, url, StringComparison.Ordinal))
-            {
-                return;
-            }
+            return;
+        }
+
+        // HTML 4.6.7: a link that is no longer connected does not process its
+        // resource, so neither load nor error reaches it.
+        if (!link.IsConnected)
+        {
+            return;
         }
 
         _ = Task.Run(async () =>

@@ -1983,7 +1983,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             TrackImagesInSubtree(domRoot);
             TrackObjectsInSubtree(domRoot);
             ApplyScriptingEnabledSanitizer(domRoot);
-            DispatchStartupLifecycleEvents();
+            var startupLinkLoads = StartStartupLinkLoads(domRoot);
+            var loadingDocument = DispatchDomContentLoaded();
+            if (loadingDocument != null)
+            {
+                await FinishStartupLinkLoadsAsync(startupLinkLoads).ConfigureAwait(false);
+                DispatchWindowLoad(loadingDocument);
+            }
         }
         finally
         {
@@ -17845,7 +17851,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
     }
 
-    private void DispatchStartupLifecycleEvents()
+    // HTML 8.4 "the end": DOMContentLoaded, then - once everything that delays
+    // the load event is done - readyState complete and the window's load event.
+    // Returns the document when there is one to finish loading.
+    private Document DispatchDomContentLoaded()
     {
         var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
         if (document == null)
@@ -17857,7 +17866,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 snapshot.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
             });
             AddEventLoopRecord("DocumentReadyStateComplete", "no-document");
-            return;
+            return null;
         }
 
         SetDocumentReadyState("interactive");
@@ -17881,7 +17890,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _documentEventListeners,
             "DOMContentLoaded",
             ToHostOrNull(document, HostObjectKind.DomDocument));
+        return document;
+    }
 
+    private void DispatchWindowLoad(Document document)
+    {
         SetDocumentReadyState("complete");
         FireDocumentReadyStateChange(document);
         InvokeBodyOnloadAttribute(document);
