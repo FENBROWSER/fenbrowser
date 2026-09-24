@@ -83,7 +83,7 @@ namespace FenBrowser.Tooling
             }
 
             var rawAnalysis = AnalyzeRawLog(rawLogPath, result.TimedOut);
-            var infrastructureResultClass = DetermineInfrastructureResultClass(result.TimedOut, result.ExitCode, rawAnalysis.TestStart);
+            var infrastructureResultClass = DetermineInfrastructureResultClass(result.TimedOut, result.ExitCode, rawAnalysis.TestStart, rawAnalysis.TestEnd);
             WriteFailureManifest(failuresPath, rawAnalysis);
 
             var summary = new WptSummary
@@ -119,7 +119,7 @@ namespace FenBrowser.Tooling
                 ExitCode = result.ExitCode,
                 FailurePhase = result.Stalled
                     ? "wpt_stall"
-                    : DetermineFailurePhase(result.TimedOut, result.ExitCode, rawAnalysis.TestStart),
+                    : DetermineFailurePhase(result.TimedOut, result.ExitCode, rawAnalysis.TestStart, rawAnalysis.TestEnd),
                 InfrastructureResultClass = infrastructureResultClass,
                 StartedAtUtc = startedAt.ToString("o"),
                 FinishedAtUtc = endedAt.ToString("o"),
@@ -296,7 +296,46 @@ namespace FenBrowser.Tooling
                     .Count(line => !string.IsNullOrWhiteSpace(line));
             }
 
-            return Math.Max(1, options.Tests?.Count ?? 0);
+            if (options.Tests is not { Count: > 0 })
+            {
+                return 1;
+            }
+
+            // A directory selects every test in it; budgeting it as one test gave
+            // css/cssom (~290 files) a 330-second process limit.
+            var count = 0;
+            foreach (var test in options.Tests)
+            {
+                var path = Path.Combine(options.WptRoot ?? string.Empty, test.TrimStart('/', '\\'));
+                count += Directory.Exists(path) ? CountTestFiles(path) : 1;
+            }
+
+            return Math.Max(1, count);
+        }
+
+        private static readonly string[] TestFileSuffixes = { ".html", ".htm", ".xhtml", ".xht", ".svg", ".any.js", ".window.js", ".worker.js" };
+
+        internal static int CountTestFiles(string directory)
+        {
+            var count = 0;
+            foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(directory, file).Replace('\\', '/');
+                var name = Path.GetFileName(file);
+                if (relative.Split('/').Any(part => part is "support" or "resources" or "reference" or "tools") ||
+                    name.Contains("-ref.", StringComparison.OrdinalIgnoreCase) ||
+                    name.Contains("-notref.", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (TestFileSuffixes.Any(suffix => name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)))
+                {
+                    count++;
+                }
+            }
+
+            return Math.Max(1, count);
         }
 
         private static async Task<WptProcessResult> RunProcessAsync(
@@ -827,21 +866,39 @@ namespace FenBrowser.Tooling
             return string.Join(",", counts.OrderBy(kvp => kvp.Key, StringComparer.Ordinal).Select(kvp => $"{kvp.Key}:{kvp.Value}"));
         }
 
-        internal static string DetermineFailurePhase(bool timedOut, int exitCode, int testStart)
+        // A run that started tests can still fail as a whole: it hit its process
+        // budget, or wptrunner exited early with tests unfinished. Those runs are
+        // incomplete and must say so, not look like a clean run.
+        internal static string DetermineFailurePhase(bool timedOut, int exitCode, int testStart, int? testEnd = null)
         {
             if (testStart == 0 && (timedOut || exitCode != 0))
             {
                 return "wpt_startup";
             }
 
+            if (testStart != 0 && timedOut)
+            {
+                return "wpt_timeout";
+            }
+
+            if (testStart != 0 && exitCode != 0 && (testEnd ?? testStart) < testStart)
+            {
+                return "wpt_incomplete";
+            }
+
             return string.Empty;
         }
 
-        internal static string DetermineInfrastructureResultClass(bool timedOut, int exitCode, int testStart)
+        internal static string DetermineInfrastructureResultClass(bool timedOut, int exitCode, int testStart, int? testEnd = null)
         {
             if (testStart != 0)
             {
-                return string.Empty;
+                if (timedOut)
+                {
+                    return ResultClasses.Timeout;
+                }
+
+                return exitCode != 0 && (testEnd ?? testStart) < testStart ? ResultClasses.NotRun : string.Empty;
             }
 
             if (timedOut || exitCode != 0)

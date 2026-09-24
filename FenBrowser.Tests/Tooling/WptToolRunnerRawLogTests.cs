@@ -202,6 +202,40 @@ public sealed class WptToolRunnerRawLogTests
             WptToolRunner.DetermineInfrastructureResultClass(timedOut: false, exitCode: 64, testStart: 0));
     }
 
+    [Fact]
+    public void RunThatStartedTestsButTimedOutOrStoppedEarly_IsNotClean()
+    {
+        Assert.Equal("wpt_timeout", WptToolRunner.DetermineFailurePhase(timedOut: true, exitCode: 1, testStart: 133, testEnd: 132));
+        Assert.Equal(
+            WptToolRunner.ResultClasses.Timeout,
+            WptToolRunner.DetermineInfrastructureResultClass(timedOut: true, exitCode: 1, testStart: 133, testEnd: 132));
+        Assert.Equal("wpt_incomplete", WptToolRunner.DetermineFailurePhase(timedOut: false, exitCode: 1, testStart: 10, testEnd: 7));
+        Assert.Equal(string.Empty, WptToolRunner.DetermineFailurePhase(timedOut: false, exitCode: 0, testStart: 10, testEnd: 10));
+    }
+
+    [Fact]
+    public void CountTestFiles_CountsTestsInADirectoryButNotSupportFiles()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"fen-wpt-count-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(dir, "support"));
+        Directory.CreateDirectory(Path.Combine(dir, "sub"));
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "a.html"), "");
+            File.WriteAllText(Path.Combine(dir, "b.any.js"), "");
+            File.WriteAllText(Path.Combine(dir, "sub", "c.xhtml"), "");
+            File.WriteAllText(Path.Combine(dir, "a-ref.html"), "");
+            File.WriteAllText(Path.Combine(dir, "helper.js"), "");
+            File.WriteAllText(Path.Combine(dir, "support", "d.html"), "");
+
+            Assert.Equal(3, WptToolRunner.CountTestFiles(dir));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData(false, "Not run")]
     [InlineData(true, "Timeout")]
