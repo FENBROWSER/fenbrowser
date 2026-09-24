@@ -69,11 +69,24 @@ namespace FenBrowser.FenEngine.Media
             Document document,
             Action<Action> postToElementThread)
         {
+            return Start(request, client, document, postToElementThread, FetchDetailedAsync);
+        }
+
+        /// <summary>
+        /// Starts a load whose bytes come from <paramref name="fetcher"/> (a blob: URL's Blob,
+        /// read from the realm), or returns null when there is no fetcher.
+        /// </summary>
+        public static MediaFetchResource Start(
+            MediaFetchRequest request,
+            IMediaResourceClient client,
+            Document document,
+            Action<Action> postToElementThread,
+            Func<MediaFetchRequest, Document, Task<BinaryFetchResult>> fetcher)
+        {
             ArgumentNullException.ThrowIfNull(request);
             ArgumentNullException.ThrowIfNull(client);
             ArgumentNullException.ThrowIfNull(postToElementThread);
 
-            var fetcher = FetchDetailedAsync;
             if (fetcher == null)
             {
                 return null;

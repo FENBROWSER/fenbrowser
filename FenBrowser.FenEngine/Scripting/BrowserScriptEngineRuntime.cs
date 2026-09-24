@@ -12802,6 +12802,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 // The entry itself, for engine-side loaders that need the object (a media
                 // element whose src is a blob URL for a MediaSource).
                 globalThis.__fenResolveBlobUrlEntry = resolveBlobUrl;
+                // The bytes and type of a blob: URL's Blob, for engine-side loaders that
+                // fetch it (File API 8.3.2: the response's Content-Type is the blob's type);
+                // null when the URL names nothing or something that is not a Blob.
+                globalThis.__fenReadBlobUrlBytes = function (url) {
+                    var entry = resolveBlobUrl(url);
+                    if (!entry || !entry._parts) return null;
+                    return { bytes: blobBytes(entry), type: String(entry.type || '') };
+                };
                 globalThis.__fenReadBlobUrlText = function (url) {
                     var entry = resolveBlobUrl(url);
                     if (!entry || !entry._parts) return null;
@@ -15637,6 +15645,34 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         for (var i = 0; i < bytes.Length; i++)
             elements[i] = JsValue.FromInt32(bytes[i]);
         return _interpreter.AllocateArray(elements);
+    }
+
+    /// <summary>
+    /// The Blob a blob: URL of this realm names, as bytes and type; null when the URL names
+    /// nothing, or a MediaSource. Runs on the realm's thread.
+    /// </summary>
+    internal (byte[] Bytes, string Type)? ReadBlobUrlBytes(string url)
+    {
+        if (_interpreter == null || _realmAbandoned || string.IsNullOrEmpty(url))
+        {
+            return null;
+        }
+
+        var reader = ReadGlobalValueOrUndefined("__fenReadBlobUrlBytes");
+        if (!_interpreter.CanCallValue(reader))
+        {
+            return null;
+        }
+
+        var result = _interpreter.InvokeFunction(reader, new[] { JsValue.FromString(url) }, JsValue.Undefined);
+        if (result.Tag != JsValueTag.Object ||
+            !_interpreter.TryGetObjectProperty(result, "bytes", out var bytes) ||
+            !_interpreter.TryGetObjectProperty(result, "type", out var type))
+        {
+            return null;
+        }
+
+        return (ExtractBytesFromArrayLike(bytes), type.Tag == JsValueTag.String ? CoerceToHostString(type) : string.Empty);
     }
 
     private byte[] ExtractBytesFromArrayLike(JsValue value)

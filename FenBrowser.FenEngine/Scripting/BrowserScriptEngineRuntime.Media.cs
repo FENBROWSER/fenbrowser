@@ -1089,7 +1089,22 @@ public sealed partial class FenJsBrowserScriptEngine
             PinnedMediaSource = null;
             if (!_realm.TryStartMediaSourceResource(_element, request, client, QueueTask, pinned, out resource))
             {
-                resource = MediaFetchResource.Start(request, client, _element.OwnerDocument, QueueTask);
+                // A blob: URL for a Blob (srcObject = blob, or src = createObjectURL(blob)) is
+                // read from the realm's blob URL store; File API 8.3.2 gives the response the
+                // Blob's type.
+                var blob = request.Url != null && request.Url.StartsWith("blob:", StringComparison.OrdinalIgnoreCase)
+                    ? _realm.ReadBlobUrlBytes(request.Url)
+                    : null;
+                resource = blob is { } found
+                    ? MediaFetchResource.Start(request, client, _element.OwnerDocument, QueueTask,
+                        (_, _) => Task.FromResult(new BinaryFetchResult
+                        {
+                            Body = found.Bytes,
+                            StatusCode = 200,
+                            ContentType = found.Type,
+                            FinalUri = Uri.TryCreate(request.Url, UriKind.Absolute, out var blobUri) ? blobUri : null,
+                        }))
+                    : MediaFetchResource.Start(request, client, _element.OwnerDocument, QueueTask);
             }
 
             _resource = resource;
