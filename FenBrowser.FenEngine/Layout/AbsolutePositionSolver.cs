@@ -326,9 +326,10 @@ namespace FenBrowser.FenEngine.Layout
             else if (!width.HasValue && !left.HasValue && !right.HasValue)
             {
                 float availableWidth = Math.Max(0, cbWidth - fixedSpace - ml - mr);
+                // CSS 2.1 §10.3.7 rule 1: shrink-to-fit, which is 0 for a box with no content.
                 w = intrinsicWidth > 0
                     ? (preserveIntrinsicAutoSize ? intrinsicWidth : Math.Min(intrinsicWidth, availableWidth))
-                    : availableWidth;
+                    : 0f;
                 l = 0;
                 r = cbWidth - l - ml - fixedSpace - w - mr;
                 result.WidthWasAuto = true;

@@ -56,6 +56,19 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        [Trait("Category", "Layout")]
+        public void Solver_AllHorizontalAuto_EmptyBox_ShrinksToZero()
+        {
+            // CSS 2.1 §10.3.7 rule 1: left, width and right auto -> shrink-to-fit width.
+            var cb = new ContainingBlock { Width = 400, Height = 200 };
+            var style = new CssComputed { Position = "absolute" };
+
+            var result = AbsolutePositionSolver.Solve(style, cb);
+
+            Assert.Equal(0f, result.Width);
+        }
+
+        [Fact]
         public void Solver_RightConstraint_CalculatesWidth()
         {
             var cb = new ContainingBlock { Width = 100, Height = 100 };

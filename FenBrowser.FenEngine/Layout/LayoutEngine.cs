@@ -614,9 +614,11 @@ namespace FenBrowser.FenEngine.Layout
                 state.ViewportWidth,
                 state.ViewportHeight);
 
+            // CSS 2.1 §10.3.7 / §10.6.4: auto insets fall back to the static position
+            // for fixed boxes too; a fixed box only gets here with a transformed
+            // ancestor as its containing block, which lives in document space.
             SKPoint? staticPosition = null;
-            if (!forFixed &&
-                box.OutOfFlowStaticPosition.HasValue &&
+            if (box.OutOfFlowStaticPosition.HasValue &&
                 box.Parent?.Geometry != null)
             {
                 var contentOrigin = box.Parent.Geometry.ContentBox;
