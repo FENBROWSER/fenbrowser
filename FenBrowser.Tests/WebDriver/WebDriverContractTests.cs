@@ -637,6 +637,78 @@ namespace FenBrowser.Tests.WebDriver
             Assert.Equal(0, manager.ActiveSessionCount);
         }
 
+        [Fact]
+        public async Task CommandsFromTwoSessionsDoNotInterleaveOnTheSharedActiveTab()
+        {
+            var manager = new SessionManager();
+            var inner = new IsolatedWindowBrowserDriver();
+            var blocking = BlockingTitleDriver.Wrap(inner);
+            var handler = new CommandHandler(manager) { Browser = blocking };
+            var router = new CommandRouter();
+            var newSession = """{"capabilities":{"alwaysMatch":{}}}""";
+
+            var a = ((NewSessionResponse)(await handler.ExecuteAsync(router.Match("POST", "/session"), newSession)).Value).SessionId;
+            var b = ((NewSessionResponse)(await handler.ExecuteAsync(router.Match("POST", "/session"), newSession)).Value).SessionId;
+            var handleA = Assert.Single(manager.GetSession(a).WindowHandles);
+
+            var proxy = (BlockingTitleDriver)(object)blocking;
+            proxy.Block = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var titleA = handler.ExecuteAsync(router.Match("GET", $"/session/{a}/title"), null);
+            await proxy.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var handleSeenByA = proxy.HandleAtEntry;
+
+            proxy.Block2 = true;
+            var titleB = handler.ExecuteAsync(router.Match("GET", $"/session/{b}/title"), null);
+            await Task.Delay(200);
+            Assert.False(titleB.IsCompleted, "session B ran while session A's command held the browser");
+
+            proxy.Block.SetResult(true);
+            await Task.WhenAll(titleA, titleB).WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(handleA, handleSeenByA);
+        }
+
+        /// <summary>Forwards to a stub driver; the first title read blocks until released.</summary>
+        public class BlockingTitleDriver : System.Reflection.DispatchProxy
+        {
+            private IBrowserDriver _inner = null!;
+            public TaskCompletionSource<bool>? Block;
+            public bool Block2;
+            public TaskCompletionSource<bool> Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public string? HandleAtEntry;
+
+            public static IBrowserDriver Wrap(IBrowserDriver inner)
+            {
+                var proxy = Create<IBrowserDriver, BlockingTitleDriver>();
+                ((BlockingTitleDriver)(object)proxy)._inner = inner;
+                return proxy;
+            }
+
+            protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args)
+            {
+                if (targetMethod!.Name == nameof(IBrowserDriver.GetTitleAsync) && Block != null && !Block2)
+                {
+                    return BlockedTitleAsync();
+                }
+
+                try
+                {
+                    return targetMethod.Invoke(_inner, args);
+                }
+                catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException != null)
+                {
+                    throw ex.InnerException;
+                }
+            }
+
+            private async Task<string> BlockedTitleAsync()
+            {
+                HandleAtEntry = await _inner.GetWindowHandleAsync();
+                Entered.TrySetResult(true);
+                await Block!.Task;
+                return string.Empty;
+            }
+        }
+
         /// <summary>Forwards to a real stub driver but fails every window switch.</summary>
         public class FailingSwitchDriver : System.Reflection.DispatchProxy
         {

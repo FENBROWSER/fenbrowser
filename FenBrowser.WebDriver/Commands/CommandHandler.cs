@@ -191,7 +191,43 @@ namespace FenBrowser.WebDriver.Commands
             return await ExecuteParsedAsync(match, document.RootElement).ConfigureAwait(false);
         }
 
+        // The browser has one active tab, and every command first switches it to
+        // its session's tab. Commands are serialized per session, so two sessions
+        // could interleave: one switches, the other switches, the first runs in
+        // the wrong tab. The gate makes "switch, then run" one step across sessions.
+        private readonly SemaphoreSlim _browserGate = new(1, 1);
+        internal static readonly TimeSpan BrowserGateWait = TimeSpan.FromSeconds(60);
+
         internal async Task<WebDriverResponse> ExecuteParsedAsync(RouteMatch match, JsonElement? json)
+        {
+            var command = match.Command;
+            var sessionId = match.GetSessionId();
+            var usesBrowser = Browser != null &&
+                              !string.IsNullOrEmpty(sessionId) &&
+                              !(IsSessionUnresponsive(sessionId) &&
+                                command is "ReleaseActions" or "CloseWindow" or "DeleteSession" or
+                                    "SwitchToWindow" or "GetWindowHandles");
+            if (!usesBrowser)
+            {
+                return await ExecuteParsedCoreAsync(match, json).ConfigureAwait(false);
+            }
+
+            if (!await _browserGate.WaitAsync(BrowserGateWait).ConfigureAwait(false))
+            {
+                throw new WebDriverException(ErrorCodes.Timeout, "The browser is still busy with another session's command");
+            }
+
+            try
+            {
+                return await ExecuteParsedCoreAsync(match, json).ConfigureAwait(false);
+            }
+            finally
+            {
+                _browserGate.Release();
+            }
+        }
+
+        private async Task<WebDriverResponse> ExecuteParsedCoreAsync(RouteMatch match, JsonElement? json)
         {
             var command = match.Command;
             var sessionId = match.GetSessionId();
