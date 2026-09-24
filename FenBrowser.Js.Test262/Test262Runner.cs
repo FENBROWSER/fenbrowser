@@ -700,6 +700,10 @@ public sealed class Test262Runner
             "atomicsHelper.js",  // loaded for single-agent use; tests needing $262.agent cooperation
                                  // will fail gracefully with ReferenceError rather than crashing
             "temporalHelpers.js",
+            "testBigIntTypedArray.js",
+            "hidden-constructors.js",
+            "async-gc.js",    // needs $262.gc, which this host does not provide: those tests fail
+            "timer.js",
             // SpiderMonkey staging harness includes
             "nativeErrors.js",
             "sm/assertThrowsValue.js",
