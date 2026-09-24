@@ -45,7 +45,15 @@ public sealed class Test262Runner
     {
         var manifest = new Test262Manifest { RootPath = rootPath };
         var files = manifest.EnumerateTestFiles().OrderBy(p => p, StringComparer.Ordinal).ToList();
-        files = ApplyScopeFilter(rootPath, files, test262Path, test262File, test262Shallow);
+        var scoped = ApplyScopeFilter(rootPath, files, test262Path, test262File, test262Shallow);
+        if (scoped is null)
+        {
+            // A scope that names nothing must not fall back to the whole suite.
+            Console.Error.WriteLine($"test262 scope not found: {test262File ?? test262Path}");
+            return 7;
+        }
+
+        files = scoped;
         files = ApplyFeatureFilter(files, featuresCsv);
         Test262Expectations? expectations = null;
         if (!string.IsNullOrWhiteSpace(expectationsPath) && (parserSubset || runtimeSubset))
@@ -77,18 +85,21 @@ public sealed class Test262Runner
             _progressWriter = new Test262ProgressWriter(progressFilePath);
         }
 
+        // Exit 1 when any test in a run did not pass (and was not an expected
+        // failure); 0 only for a clean run. Result JSON carries the detail.
+        var allPassed = true;
         if (parserSubset)
         {
             var tag = DeriveBatchTag(outputPath, test262Path);
             _progressWriter?.WriteBatchStart(tag, "parser-subset", test262Path ?? rootPath, Math.Min(files.Count, max), timeoutMs);
-            RunParserSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv, skip);
+            allPassed &= RunParserSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv, skip);
         }
 
         if (runtimeSubset)
         {
             var tag = DeriveBatchTag(outputPath, test262Path);
             _progressWriter?.WriteBatchStart(tag, "runtime-subset", test262Path ?? rootPath, Math.Min(files.Count, max), timeoutMs);
-            RunRuntimeSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv, skip);
+            allPassed &= RunRuntimeSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv, skip);
         }
 
         if (dashboard)
@@ -127,15 +138,18 @@ public sealed class Test262Runner
             }
         }
 
-        return 0;
+        return allPassed ? 0 : 1;
     }
 
-    private static List<string> ApplyScopeFilter(string rootPath, List<string> files, string? test262Path, string? test262File, bool shallow = false)
+    // Null when the requested file or directory does not exist.
+    private static List<string>? ApplyScopeFilter(string rootPath, List<string> files, string? test262Path, string? test262File, bool shallow = false)
     {
         if (!string.IsNullOrWhiteSpace(test262File))
         {
             var full = Path.GetFullPath(test262File);
-            return files.Where(f => string.Equals(Path.GetFullPath(f), full, StringComparison.OrdinalIgnoreCase)).ToList();
+            return File.Exists(full)
+                ? files.Where(f => string.Equals(Path.GetFullPath(f), full, StringComparison.OrdinalIgnoreCase)).ToList()
+                : null;
         }
 
         if (string.IsNullOrWhiteSpace(test262Path))
@@ -181,7 +195,7 @@ public sealed class Test262Runner
             return files.Where(f => string.Equals(Path.GetFullPath(f), relativeCandidate, StringComparison.OrdinalIgnoreCase)).ToList();
         }
 
-        return files;
+        return null;
     }
 
     private static List<string> ApplyFeatureFilter(List<string> files, string? featuresCsv)
@@ -215,7 +229,7 @@ public sealed class Test262Runner
         return filtered;
     }
 
-    private void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, int timeoutMs, string engine, string? expectationsPath, Test262Expectations? expectations, string? supportedFeaturesCsv, int skip = 0)
+    private bool RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, int timeoutMs, string engine, string? expectationsPath, Test262Expectations? expectations, string? supportedFeaturesCsv, int skip = 0)
     {
         var startedAtUtc = DateTime.UtcNow;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -541,6 +555,7 @@ public sealed class Test262Runner
             tests,
             expectationsPath);
         Console.WriteLine($"Parser subset result written: {outputPath}");
+        return passed + expectedFailures >= subset.Count;
     }
 
     // Runtime-subset mode CAN execute, so a `negative: phase: runtime` test is valid
@@ -618,7 +633,7 @@ public sealed class Test262Runner
         return false;
     }
 
-    private void RunRuntimeSubset(
+    private bool RunRuntimeSubset(
         string rootPath,
         string outputPath,
         IReadOnlyList<string> files,
@@ -908,7 +923,7 @@ public sealed class Test262Runner
                                 break;
                         }
                     }
-                }, timeoutMs);
+                }, timeoutMs, () => Volatile.Read(ref interruptRequested) != 0);
                 interruptTimer.Change(Timeout.Infinite, Timeout.Infinite); // disarm
                 perTestInterpreter = null;
                 testSw.Stop();
@@ -1246,6 +1261,7 @@ public sealed class Test262Runner
             tests,
             expectationsPath);
         Console.WriteLine($"Runtime subset result written: {outputPath}");
+        return passed + expectedFailures >= subset.Count;
     }
 
     private static void WriteRuntimeProgress(
@@ -1306,25 +1322,49 @@ public sealed class Test262Runner
         return string.Equals(nameValue.AsString(), expectedType, StringComparison.Ordinal);
     }
 
-    private static bool RunWithPerTestTimeout(Action<CancellationToken> action, int timeoutMs)
+    /// <summary>Workers that were still running after their test timed out (see RunWithPerTestTimeout).</summary>
+    internal static int AbandonedWorkers;
+
+    /// <summary>
+    /// Runs one test's work with a hard deadline of <paramref name="timeoutMs"/>.
+    /// False means the test timed out: the deadline passed, or the interpreter was
+    /// interrupted by it (it then throws an uncatchable "Execution interrupted"
+    /// RangeError, which is a timeout, not a runtime error).
+    /// </summary>
+    /// <remarks>
+    /// A worker stuck in native code cannot be stopped in-process. It is given a
+    /// short grace period and then abandoned and counted; the batch driver's stall
+    /// watchdog kills a process whose workers keep it busy.
+    /// </remarks>
+    private static bool RunWithPerTestTimeout(Action<CancellationToken> action, int timeoutMs, Func<bool>? interrupted = null)
     {
-        using var cts = new CancellationTokenSource(timeoutMs + 500);
+        using var cts = new CancellationTokenSource(timeoutMs);
         ExceptionDispatchInfo? captured = null;
+        var cancelledInside = false;
         var task = Task.Run(() =>
         {
             try { action(cts.Token); }
-            catch (OperationCanceledException)
-            {
-                // Expected when the CTS fires after timeoutMs+500ms.
-                // The CancellationToken in the interpreter's InterruptCallback
-                // ensures the interpreter exits at the next opcode boundary.
-                // The task then completes cleanly — no abandoned thread leak.
-            }
+            catch (OperationCanceledException) { cancelledInside = true; }
             catch (Exception ex) { captured = ExceptionDispatchInfo.Capture(ex); }
         });
 
-        try { task.Wait(cts.Token); }
-        catch (OperationCanceledException) { return false; }
+        var finished = task.Wait(timeoutMs);
+        if (!finished)
+        {
+            cts.Cancel();
+            if (!task.Wait(1000))
+            {
+                Interlocked.Increment(ref AbandonedWorkers);
+                Console.Error.WriteLine("[test262] a timed-out test's worker did not stop; abandoning it.");
+            }
+
+            return false;
+        }
+
+        if (cancelledInside || interrupted?.Invoke() == true)
+        {
+            return false;
+        }
 
         captured?.Throw();
         return true;

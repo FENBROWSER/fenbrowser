@@ -16,7 +16,8 @@ var dashboard = false;
 var verifyGates = false;
 var max = 200;
 var skip = 0;
-var timeoutMs = 5000;
+var timeoutMs = 2000;
+var timeoutGiven = false;
 var engine = "FenJS";
 string? expectationsPath = null;
 string? inputPath = null;
@@ -81,6 +82,14 @@ for (var i = 0; i < args.Length; i++)
             i++;
             break;
         case "--timeout-ms" when i + 1 < args.Length && int.TryParse(args[i + 1], out var parsedTimeout):
+            // A second --timeout-ms would silently override the first (a driver's
+            // mandatory 2000 ms by a forwarded argument), so it is an error.
+            if (timeoutGiven)
+            {
+                Console.Error.WriteLine("--timeout-ms given more than once.");
+                return 2;
+            }
+            timeoutGiven = true;
             timeoutMs = parsedTimeout;
             i++;
             break;

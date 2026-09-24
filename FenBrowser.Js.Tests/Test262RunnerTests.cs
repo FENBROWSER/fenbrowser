@@ -11,6 +11,66 @@ namespace FenBrowser.Js.Tests;
 
 public sealed class Test262RunnerTests
 {
+    private static (int ExitCode, JsonElement Result) RunSingleRuntimeTest(string body, int timeoutMs, string? test262Path = null)
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        var testDir = Path.Combine(tempRoot, "test", "built-ins", "Probe");
+        Directory.CreateDirectory(testDir);
+        Directory.CreateDirectory(Path.Combine(tempRoot, "harness"));
+        var outputPath = Path.Combine(tempRoot, "probe.json");
+        try
+        {
+            File.WriteAllText(Path.Combine(testDir, "probe.js"), body);
+            var exitCode = new Test262Runner().Run(
+                rootPath: tempRoot, list: false, dryRun: false, parserSubset: false, runtimeSubset: true,
+                dashboard: false, verifyGates: false, outputPath: outputPath, max: 10, timeoutMs: timeoutMs,
+                engine: "FenJS", expectationsPath: null, inputPath: null, previousPath: null,
+                test262Path: test262Path, test262File: null, featuresCsv: null, supportedFeaturesCsv: null);
+            if (!File.Exists(outputPath))
+            {
+                return (exitCode, default);
+            }
+
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            return (exitCode, doc.RootElement.Clone());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    // The interpreter stops a test at its deadline by throwing an uncatchable
+    // "Execution interrupted" RangeError; that is a timeout, not a runtime error.
+    [Fact]
+    public void Run_RuntimeSubset_InterruptedByDeadlineIsTimeout()
+    {
+        var (exitCode, result) = RunSingleRuntimeTest("/*---\n---*/\nwhile (true) {}\n", timeoutMs: 300);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(1, result.GetProperty("timedOut").GetInt32());
+        Assert.Equal(0, result.GetProperty("failed").GetInt32());
+    }
+
+    [Fact]
+    public void Run_MissingScopeIsAnErrorNotTheWholeSuite()
+    {
+        var (exitCode, result) = RunSingleRuntimeTest("/*---\n---*/\n", timeoutMs: 2000, test262Path: "built-ins/NoSuchDirectory");
+
+        Assert.Equal(7, exitCode);
+        Assert.Equal(JsonValueKind.Undefined, result.ValueKind);
+    }
+
+    [Fact]
+    public void Run_CleanRunExitsZeroAndRecordsProvenance()
+    {
+        var (exitCode, result) = RunSingleRuntimeTest("/*---\n---*/\nassert.sameValue(1 + 1, 2);\n", timeoutMs: 2000);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(0, result.GetProperty("notRun").GetInt32());
+        Assert.NotEqual("unknown", result.GetProperty("fenbrowserCommit").GetString());
+    }
+
     [Fact]
     public void Run_RuntimeSubset_StrictDeleteInOnlyStrictTestPasses()
     {
@@ -475,7 +535,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -527,7 +587,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -600,7 +660,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -654,7 +714,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -781,7 +841,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -907,7 +967,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -1033,7 +1093,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -1723,7 +1783,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -1849,7 +1909,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -1979,7 +2039,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: "feature-y");
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -2108,7 +2168,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: "feature-y");
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -2233,7 +2293,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -2359,7 +2419,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -2503,7 +2563,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
@@ -2774,7 +2834,7 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
+            Assert.Equal(1, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(0, summary.GetProperty("passed").GetInt32());
@@ -3149,8 +3209,11 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            // Exit 0 only when every test passed (or was an expected failure).
+            var clean = doc.RootElement.GetProperty("passed").GetInt32() + doc.RootElement.GetProperty("expectedFailures").GetInt32()
+                >= doc.RootElement.GetProperty("total").GetInt32();
+            Assert.Equal(clean ? 0 : 1, exitCode);
             return doc.RootElement.Clone();
         }
         finally
@@ -3207,8 +3270,11 @@ public sealed class Test262RunnerTests
                 featuresCsv: null,
                 supportedFeaturesCsv: null);
 
-            Assert.Equal(0, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            // Exit 0 only when every test passed (or was an expected failure).
+            var clean = doc.RootElement.GetProperty("passed").GetInt32() + doc.RootElement.GetProperty("expectedFailures").GetInt32()
+                >= doc.RootElement.GetProperty("total").GetInt32();
+            Assert.Equal(clean ? 0 : 1, exitCode);
             return doc.RootElement.Clone();
         }
         finally

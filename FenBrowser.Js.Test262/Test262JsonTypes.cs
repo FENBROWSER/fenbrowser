@@ -30,6 +30,10 @@ public sealed class Test262RunResult
     public int UnexpectedPasses { get; set; }
     public int HarnessUnsupported { get; set; }
     public int InvalidTestConfiguration { get; set; }
+    /// <summary>Tests that never executed: unsupported features, harness includes or configurations.</summary>
+    public int NotRun { get; set; }
+    /// <summary>Timed-out tests whose worker could not be stopped and still ran when the batch ended.</summary>
+    public int AbandonedWorkers { get; set; }
     public Test262CategoryBreakdown Categories { get; set; } = new();
     public Test262RunSummary Summary { get; set; } = new();
     public List<Test262FailureEntry> Failures { get; set; } = new();

@@ -57,6 +57,7 @@ public static class Test262ResultWriter
             StartedAtUtc = startedAtUtc,
             DurationMs = durationMs,
             Test262Commit = test262Commit,
+            FenbrowserCommit = Test262Provenance.Commit,
             Expectations = expectationsPath,
             Total = total,
             Passed = passed,
@@ -69,6 +70,8 @@ public static class Test262ResultWriter
             UnexpectedPasses = unexpectedPasses,
             HarnessUnsupported = harnessUnsupported,
             InvalidTestConfiguration = invalidTestConfiguration,
+            NotRun = unsupported + harnessUnsupported + invalidTestConfiguration,
+            AbandonedWorkers = Test262Runner.AbandonedWorkers,
             Categories = new Test262CategoryBreakdown
             {
                 ParserMissing = unsupported,
@@ -129,6 +132,7 @@ public static class Test262ResultWriter
             StartedAtUtc = startedAtUtc,
             DurationMs = durationMs,
             Test262Commit = test262Commit,
+            FenbrowserCommit = Test262Provenance.Commit,
             Expectations = expectationsPath,
             Total = total,
             Passed = passed,
@@ -141,6 +145,8 @@ public static class Test262ResultWriter
             UnexpectedPasses = unexpectedPasses,
             HarnessUnsupported = harnessUnsupported,
             InvalidTestConfiguration = invalidTestConfiguration,
+            NotRun = unsupported + harnessUnsupported + invalidTestConfiguration,
+            AbandonedWorkers = Test262Runner.AbandonedWorkers,
             Categories = new Test262CategoryBreakdown
             {
                 ParserMissing = unsupported,
