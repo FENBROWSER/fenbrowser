@@ -274,6 +274,20 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             if (_currentToken.Type == CssTokenType.EOF) return null;
 
+            if (parentSelector == null)
+            {
+                int firstIdx = selectorTokens.FindIndex(t => t.Type != CssTokenType.Whitespace);
+                if (firstIdx >= 0 && selectorTokens[firstIdx].Type == CssTokenType.Ident && selectorTokens[firstIdx].Value != null && selectorTokens[firstIdx].Value.StartsWith("--"))
+                {
+                    int nextIdx = selectorTokens.FindIndex(firstIdx + 1, t => t.Type != CssTokenType.Whitespace);
+                    if (nextIdx >= 0 && selectorTokens[nextIdx].Type == CssTokenType.Colon)
+                    {
+                        ConsumeDeclarationBlock(null);
+                        return null;
+                    }
+                }
+            }
+
             rule.Selector = ParseSelector(selectorTokens, parentSelector);
             if (rule.Selector == null)
             {
@@ -668,9 +682,25 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             var valueTokens = new List<CssToken>();
             bool important = false;
+            int braceDepth = 0, parenDepth = 0, bracketDepth = 0;
             
-            while (_currentToken.Type != CssTokenType.Semicolon && _currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
+            while (_currentToken.Type != CssTokenType.EOF)
             {
+                if (braceDepth == 0 && parenDepth == 0 && bracketDepth == 0)
+                {
+                    if (_currentToken.Type == CssTokenType.Semicolon || _currentToken.Type == CssTokenType.RightBrace)
+                    {
+                        break;
+                    }
+                }
+
+                if (_currentToken.Type == CssTokenType.LeftBrace) braceDepth++;
+                else if (_currentToken.Type == CssTokenType.RightBrace && braceDepth > 0) braceDepth--;
+                else if (_currentToken.Type == CssTokenType.LeftParen || _currentToken.Type == CssTokenType.Function) parenDepth++;
+                else if (_currentToken.Type == CssTokenType.RightParen && parenDepth > 0) parenDepth--;
+                else if (_currentToken.Type == CssTokenType.LeftBracket) bracketDepth++;
+                else if (_currentToken.Type == CssTokenType.RightBracket && bracketDepth > 0) bracketDepth--;
+
                 valueTokens.Add(_currentToken);
                 ConsumeToken();
             }
@@ -695,6 +725,67 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (valueTokens.Any(t => t.Type == CssTokenType.Delim && t.Delimiter == '!'))
             {
                 return null;
+            }
+
+            if (!property.StartsWith("--", StringComparison.Ordinal) && valueTokens.Any(t => t.Type == CssTokenType.LeftBrace || t.Type == CssTokenType.RightBrace))
+            {
+                // Standard property with {} blocks: per CSS Values and Units 4,
+                // only allowed if it is a whole-value block containing var().
+                int firstNonWs = valueTokens.FindIndex(t => t.Type != CssTokenType.Whitespace);
+                int lastNonWs = valueTokens.FindLastIndex(t => t.Type != CssTokenType.Whitespace);
+                if (firstNonWs < 0 || lastNonWs <= firstNonWs ||
+                    valueTokens[firstNonWs].Type != CssTokenType.LeftBrace ||
+                    valueTokens[lastNonWs].Type != CssTokenType.RightBrace)
+                {
+                    return null;
+                }
+                int depth = 0;
+                bool validWholeBlock = true;
+                bool hasVar = false;
+                for (int k = firstNonWs; k <= lastNonWs; k++)
+                {
+                    var t = valueTokens[k];
+                    if (t.Type == CssTokenType.LeftBrace)
+                    {
+                        depth++;
+                    }
+                    else if (t.Type == CssTokenType.RightBrace)
+                    {
+                        depth--;
+                        if (depth == 0 && k < lastNonWs)
+                        {
+                            validWholeBlock = false;
+                            break;
+                        }
+                    }
+                    if (t.Type == CssTokenType.Function && string.Equals(t.Value, "var", StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasVar = true;
+                    }
+                }
+                if (!validWholeBlock || !hasVar || depth != 0)
+                {
+                    return null;
+                }
+            }
+
+            if (property.StartsWith("--", StringComparison.Ordinal))
+            {
+                int testBrace = 0, testParen = 0, testBracket = 0;
+                bool badTokens = false;
+                foreach (var t in valueTokens)
+                {
+                    if (t.Type == CssTokenType.LeftBrace) testBrace++;
+                    else if (t.Type == CssTokenType.RightBrace) { if (testBrace == 0) { badTokens = true; break; } testBrace--; }
+                    else if (t.Type == CssTokenType.LeftParen || t.Type == CssTokenType.Function) testParen++;
+                    else if (t.Type == CssTokenType.RightParen) { if (testParen == 0) { badTokens = true; break; } testParen--; }
+                    else if (t.Type == CssTokenType.LeftBracket) testBracket++;
+                    else if (t.Type == CssTokenType.RightBracket) { if (testBracket == 0) { badTokens = true; break; } testBracket--; }
+                }
+                if (badTokens || testBrace != 0 || testParen != 0 || testBracket != 0)
+                {
+                    return null;
+                }
             }
 
             string valueStr = string.Join("", valueTokens.Select(t => t.ToStringValue()));
