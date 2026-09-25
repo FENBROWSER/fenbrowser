@@ -46,6 +46,21 @@ public sealed class ModuleNamespaceSetTests
     }
 
     [Fact]
+    public void StrictAssignmentToANamespaceThrowsEvenForTheSameValue()
+    {
+        var interpreter = WithModules(("m", "export var a = 1;"));
+        Assert.Equal("TypeError,TypeError", Run(interpreter, @"
+            var outcome = 'pending';
+            import('m').then(function (ns) {
+                'use strict';
+                var seen = [];
+                try { ns.a = 1; seen.push('no error'); } catch (e) { seen.push(e.name); }
+                try { ns[Symbol.toStringTag] = 'Module'; seen.push('no error'); } catch (e) { seen.push(e.name); }
+                outcome = seen.join();
+            });"));
+    }
+
+    [Fact]
     public void AModuleThatDoesNotParseRejectsWithSyntaxError()
     {
         var interpreter = WithModules(("bad", "with ({}) {}"));

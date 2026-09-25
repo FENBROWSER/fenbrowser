@@ -6272,18 +6272,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // defaults to target. A Proxy target routes through its "set" trap so
             // the boolean trap result (and its invariants) are observed.
             var receiver = args.Count > 3 ? args[3] : args[0];
-            if (obj is ModuleNamespaceObject)
-            {
-                // ECMA-262 10.4.6.9: a module namespace's [[Set]] always returns
-                // false, whatever the key, value or receiver. ToPropertyKey still
-                // runs first (Reflect.set step 2).
-                if (keyArg.Tag != JsValueTag.Symbol)
-                {
-                    ToPropertyKey(keyArg);
-                }
-
-                return JsValue.FromBoolean(false);
-            }
             if (keyArg.Tag == JsValueTag.Symbol)
             {
                 return JsValue.FromBoolean(obj is ProxyObject reflectSetSymbolProxy
@@ -15996,6 +15984,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (obj is ProxyObject proxySet)
             return ProxySet(proxySet, receiver, key, value);
 
+        // ECMA-262 10.4.6.9: a module namespace's [[Set]] always returns false.
+        // The ordinary path would end in its [[DefineOwnProperty]], which
+        // accepts a write of an export's current value.
+        if (obj is ModuleNamespaceObject)
+            return false;
+
         // ECMA-262 10.4.5.5 Integer-Indexed Exotic Object [[Set]]: canonical integer
         // indices route through IntegerIndexedElementSet rather than the ordinary
         // property path. This is needed for Reflect.set / Proxy set-trap fallthrough.
@@ -16330,6 +16324,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (obj is ProxyObject symbolSetProxy)
         {
             return ProxySet(symbolSetProxy, receiver, ResolveSymbol(symbolId), value);
+        }
+
+        if (obj is ModuleNamespaceObject)
+        {
+            return false;
         }
 
         if (obj.TryGetOwnSymbolProperty(symbolId, out var ownDescriptor))
