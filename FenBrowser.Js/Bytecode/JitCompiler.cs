@@ -1,4 +1,4 @@
-﻿using System.Linq.Expressions;
+using System.Linq.Expressions;
 using System.Reflection;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
@@ -191,6 +191,51 @@ public static class JitCompiler
     private static int _compilerStarted;
 
     public static long BackgroundQueueDepth => PendingCompiles.Count;
+
+    // ---------------------------------------------------- register-window loop
+    //
+    // The register-window loop (Interp2) runs most code, and a compiled body is
+    // entered through the old loop's frame setup. That setup is what a call
+    // costs there - x_medium_calls runs 35% slower on v1+JIT than on Interp2 -
+    // while a compiled loop iteration saves ~80ns (x_simple_loop: 132ns an
+    // iteration interpreted, 53ns compiled). So compiled code only wins for a
+    // body that loops for a while each time it is called, and that is the only
+    // kind Interp2 asks to compile or hands over to. A loop that calls out is
+    // excluded too: compiled code makes each call through CallFunction, which
+    // cost x_medium_calls 33% and b_call_ladder 36% when such loops ran compiled.
+
+    /// <summary>Back-edges one Interp2 frame takes before its function is compiled.</summary>
+    internal const int LoopTierUpBackEdges = 4096;
+
+    /// <summary>
+    /// Back-edges per call, on average, above which a compiled body is worth
+    /// its entry cost. Break-even is ~15 at the costs above; 32 leaves margin.
+    /// </summary>
+    internal const int CompiledBackEdgesPerCall = 32;
+
+    /// <summary>
+    /// Compiles a loop-heavy function once, from the loop that found it hot -
+    /// unless its loops do what compiled code is slower at, in which case it would never
+    /// be preferred and the compile would be wasted.
+    /// </summary>
+    internal static void RequestLoopTierUp(BytecodeFunction function)
+    {
+        if (Enabled && !function.JitCompileAttempted && function.LoopsSuitCompiledCode)
+        {
+            function.JitCompileAttempted = true;
+            RequestCompile(function);
+        }
+    }
+
+    /// <summary>
+    /// Whether a call should run <paramref name="function"/>'s compiled body
+    /// instead of entering it on the register-window loop.
+    /// </summary>
+    internal static bool PrefersCompiled(BytecodeFunction function) =>
+        Enabled &&
+        function.JitDelegate is not null &&
+        function.LoopsSuitCompiledCode &&
+        (long)function.BackEdges >= (long)Math.Max(1, function.Invocations) * CompiledBackEdgesPerCall;
 
     /// <summary>
     /// Asks for <paramref name="function"/> to be compiled. The delegate is

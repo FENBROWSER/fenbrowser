@@ -1,4 +1,4 @@
-﻿using FenBrowser.Js.Runtime;
+using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Objects;
 
 namespace FenBrowser.Js.Bytecode;
@@ -323,6 +323,108 @@ public sealed class BytecodeFunction
     internal int BackEdges;
 #if !PUBLISH_AOT
     internal bool JitCompileAttempted;
+
+    // 0 = not yet computed, 1 = true, 2 = false. Derived from the immutable
+    // compiler output, so a race only computes the same answer twice.
+    private int _loopsSuitCompiledCode;
+
+    /// <summary>
+    /// True when the function has at least one loop and every loop stays on
+    /// the operations compiled code runs faster than the register-window loop:
+    /// locals, arithmetic, property and element access on values it holds.
+    /// Measured per iteration against Interp2, compiled code is ~2x faster on
+    /// those, and slower on the rest - a call goes out through the old loop's
+    /// CallFunction, a free variable is looked up by name through the scope
+    /// chain (171ns interpreted, 262ns compiled), an object literal costs 253ns
+    /// against 183ns, and a block scope - a `for (let ...)` loop or a const in
+    /// the body - makes each iteration 1.6-2x slower compiled.
+    /// </summary>
+    internal bool LoopsSuitCompiledCode
+    {
+        get
+        {
+            if (_loopsSuitCompiledCode == 0)
+            {
+                _loopsSuitCompiledCode = ComputeLoopsSuitCompiledCode() ? 1 : 2;
+            }
+
+            return _loopsSuitCompiledCode == 1;
+        }
+    }
+
+    private bool ComputeLoopsSuitCompiledCode()
+    {
+        var code = InstructionArray;
+        HashSet<string>? locals = null;
+        var sawLoop = false;
+        for (var ip = 0; ip < code.Length; ip++)
+        {
+            var target = code[ip].OpCode switch
+            {
+                OpCode.Jump => code[ip].A,
+                OpCode.JumpIfFalse => code[ip].B,
+                _ => int.MaxValue,
+            };
+            if (target > ip)
+            {
+                continue;
+            }
+
+            sawLoop = true;
+            for (var body = Math.Max(0, target); body <= ip; body++)
+            {
+                var ins = code[body];
+                if (IsSlowCompiled(ins.OpCode))
+                {
+                    return false;
+                }
+
+                if (ins.OpCode is OpCode.LoadVar or OpCode.StoreVar or OpCode.InitVar or
+                    OpCode.StoreVarTop or OpCode.PreResolveVar or OpCode.StoreResolvedVar)
+                {
+                    locals ??= LocalNames();
+                    var name = FenBrowser.Js.Interpreter.SlotNameTable.GetName(this, ins.B);
+                    if (name is null || !locals.Contains(name))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return sawLoop;
+    }
+
+    // The names this function binds itself; any other name it mentions is
+    // resolved in an enclosing scope.
+    private HashSet<string> LocalNames()
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        names.UnionWith(ParameterNames);
+        names.UnionWith(VarDeclarationNames);
+        names.UnionWith(LexicalDeclarationNames);
+        names.UnionWith(ConstDeclarationNames);
+        names.UnionWith(BodyVarNames);
+        names.UnionWith(BodyLexicalNames);
+        names.UnionWith(BodyConstNames);
+        if (BindsOwnNameInBody && Name is { Length: > 0 } ownName)
+        {
+            names.Add(ownName);
+        }
+
+        // A block's let/const lives in an environment record EnterScope makes,
+        // not in the function's own slots, so it is left out on purpose.
+        return names;
+    }
+
+    private static bool IsSlowCompiled(OpCode op) => op is
+        OpCode.Call0 or OpCode.Call1 or OpCode.CallN or
+        OpCode.CallMethod0 or OpCode.CallMethod1 or OpCode.CallMethodN or
+        OpCode.TailCall0 or OpCode.TailCall1 or OpCode.TailCallN or
+        OpCode.CallSpread or OpCode.Construct0 or OpCode.Construct1 or
+        OpCode.ConstructN or OpCode.ConstructSpread or
+        OpCode.NewObject or OpCode.NewArray or OpCode.NewRegExp or OpCode.CreateFunction or
+        OpCode.EnterScope or OpCode.LeaveScope or OpCode.NextIterationEnv or OpCode.PushWithEnvironment;
 
     /// <summary>
     /// Loop headers the JIT body can be entered at while a frame is already

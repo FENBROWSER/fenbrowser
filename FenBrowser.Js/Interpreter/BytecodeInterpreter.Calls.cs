@@ -404,8 +404,14 @@ public sealed partial class BytecodeInterpreter
             // Default TierUpThreshold=100 avoids over-compilation on complex
             // pages like reCAPTCHA (which compiled ~500 functions at the old
             // threshold of 10 and ran slower overall than with JIT disabled).
+            //
+            // On the register-window loop a call count alone never earns a
+            // compile: compiled code is entered through this loop's frame setup,
+            // which costs more than the call it replaces unless the body loops.
+            // Interp2 asks for loop-heavy bodies itself (JitCompiler.RequestLoopTierUp).
             const int BackEdgeScale = 100;
-            if (!bcFn.JitCompileAttempted &&
+            if (!Interpreter2.Interp2Options.Enabled &&
+                !bcFn.JitCompileAttempted &&
                 (long)bcFn.Invocations * BackEdgeScale + bcFn.BackEdges
                     >= (long)JitCompiler.TierUpThreshold * BackEdgeScale)
             {
@@ -418,7 +424,13 @@ public sealed partial class BytecodeInterpreter
             // heap, the builtins and the inline caches, so a call can cross
             // between them in either direction at any depth - which is what lets
             // test262 run on both and say exactly what the new one changes.
-            if (Interpreter2.Interp2Options.Enabled)
+            // A loop-heavy body that has been compiled runs compiled instead,
+            // through ExecuteInternal below.
+            if (Interpreter2.Interp2Options.Enabled
+#if !PUBLISH_AOT
+                && !JitCompiler.PrefersCompiled(bcFn)
+#endif
+                )
             {
                 var layout = Interpreter2.FrameLayout.For(bcFn);
                 if (layout.Eligible)

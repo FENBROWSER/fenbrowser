@@ -176,6 +176,12 @@ internal sealed class Interp2
         public int ReturnSlot;
 
         /// <summary>
+        /// <see cref="_backEdges"/> when this frame was entered; what the
+        /// counter has gained by its return is the back-edges it took itself.
+        /// </summary>
+        public int BackEdgeMark;
+
+        /// <summary>
         /// This frame's slice of the shared handler stack: where its innermost
         /// enclosing `try` entries begin, and how many are open. Handlers are
         /// pushed and popped far more often than they are used, so they are two
@@ -462,6 +468,7 @@ internal sealed class Interp2
         frame.Base = window;
         frame.Ip = context.InstructionPointer;
         frame.ReturnSlot = -1;
+        frame.BackEdgeMark = _backEdges;
         frame.HandlerBase = handlerBase;
         frame.HandlerCount = savedHandlers.Length / 2;
         frame.PendingException = context.PendingException ?? JsValue.Undefined;
@@ -574,6 +581,7 @@ internal sealed class Interp2
         frame.Base = window;
         frame.Ip = generator.InstructionPointer;
         frame.ReturnSlot = -1;
+        frame.BackEdgeMark = _backEdges;
         frame.HandlerBase = handlerBase;
         frame.HandlerCount = savedHandlers.Length / 2;
         frame.PendingException = generator.PendingException ?? JsValue.Undefined;
@@ -982,14 +990,24 @@ internal sealed class Interp2
 
                 // ------------------------------------------------ control flow
                 case OpCode.Jump:
-                    if (ins.A < ip - 1) heap.CollectAtSafePointIfRequested();
+                    if (ins.A < ip - 1)
+                    {
+                        heap.CollectAtSafePointIfRequested();
+                        _backEdges++;
+                    }
+
                     ip = ins.A;
                     break;
 
                 case OpCode.JumpIfFalse:
                     if (!_host.Interp2IsTruthy(stack[frameBase + ins.A]))
                     {
-                        if (ins.B < ip - 1) heap.CollectAtSafePointIfRequested();
+                        if (ins.B < ip - 1)
+                        {
+                            heap.CollectAtSafePointIfRequested();
+                            _backEdges++;
+                        }
+
                         ip = ins.B;
                     }
 
@@ -1097,6 +1115,11 @@ internal sealed class Interp2
                     var returnValue = stack[frameBase + ins.A];
                     ref var returning = ref _frames[_depth - 1];
                     var returnSlot = returning.ReturnSlot;
+                    if (_backEdges != returning.BackEdgeMark)
+                    {
+                        SettleBackEdges(ref returning);
+                    }
+
                     if (returning.HandlerCount > 0)
                     {
                         _handlerTop = returning.HandlerBase;
@@ -1630,9 +1653,18 @@ internal sealed class Interp2
             if (target is JsFunctionObject fn)
             {
                 var layout = FrameLayout.For(fn.Function);
-                if (layout.Eligible)
+                if (layout.Eligible
+#if !PUBLISH_AOT
+                    // A loop-heavy body that has been compiled runs compiled,
+                    // entered through the old loop's CallFunction below.
+                    && !JitCompiler.PrefersCompiled(fn.Function)
+#endif
+                    )
                 {
                     if (Interp2Options.Log) Interp2Stats.RecordCallInLoop();
+                    // Counted here only: a call handed to the old loop is
+                    // counted by CallFunction.
+                    fn.Function.Invocations++;
                     PushFrame(fn, layout, _stack, argStart, argCount, thisValue, returnSlot);
                     return true;
                 }
@@ -1873,6 +1905,7 @@ internal sealed class Interp2
         frame.This = thisValue;
         frame.Base = window;
         frame.Ip = 0;
+        frame.BackEdgeMark = _backEdges;
         frame.ReturnSlot = returnSlot;
         frame.HandlerBase = _handlerTop;
         frame.HandlerCount = 0;
@@ -2000,6 +2033,39 @@ internal sealed class Interp2
     /// frame stack while this runs (its finally has not reset the depth yet),
     /// but that entry's own filter has already found them without a handler.
     /// </remarks>
+    // Back-edges feed the same tier-up evidence the old loop gathers: a body
+    // that loops long enough is compiled (see JitCompiler.RequestLoopTierUp),
+    // and later calls to it run compiled when it loops enough per call.
+    //
+    // The jump itself only bumps this instance counter. Writing the function's
+    // own counter there cost b_call_direct 8%: keeping the function reference
+    // live across the dispatch loop's hottest case is dearer than the add.
+    // Each frame's share is credited when it returns, and the counter is wound
+    // back so the caller is not credited with its callee's loops. A frame left
+    // by a throw or a suspension leaves its count to the frame below.
+    private int _backEdges;
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private void SettleBackEdges(ref Frame frame)
+    {
+        var taken = unchecked(_backEdges - frame.BackEdgeMark);
+        _backEdges = frame.BackEdgeMark;
+        if (taken <= 0)
+        {
+            return;
+        }
+
+        var function = frame.Layout.Function;
+        var total = Math.Min((long)function.BackEdges + taken, int.MaxValue);
+        function.BackEdges = (int)total;
+#if !PUBLISH_AOT
+        if (total >= JitCompiler.LoopTierUpBackEdges)
+        {
+            JitCompiler.RequestLoopTierUp(function);
+        }
+#endif
+    }
+
     private bool HasHandlerAbove(int entryDepth)
     {
         for (var depth = _depth; depth > entryDepth; depth--)

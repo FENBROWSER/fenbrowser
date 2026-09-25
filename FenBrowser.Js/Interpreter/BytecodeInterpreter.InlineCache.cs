@@ -224,8 +224,14 @@ public sealed partial class BytecodeInterpreter
         // The monomorphic call cache is a second door into an ordinary function
         // body, so the register-window loop has to be reachable through it too -
         // otherwise a call site would run one loop before it warmed up and the
-        // other afterwards.
-        if (Interpreter2.Interp2Options.Enabled)
+        // other afterwards. The same rules as CallFunction decide between it
+        // and a compiled body.
+        bcFn.Invocations++;
+        if (Interpreter2.Interp2Options.Enabled
+#if !PUBLISH_AOT
+            && !JitCompiler.PrefersCompiled(bcFn)
+#endif
+            )
         {
             var layout = Interpreter2.FrameLayout.For(bcFn);
             if (layout.Eligible)
@@ -234,10 +240,10 @@ public sealed partial class BytecodeInterpreter
             }
         }
 
-        bcFn.Invocations++;
 #if !PUBLISH_AOT
         const int BackEdgeScale = 100;
-        if (!bcFn.JitCompileAttempted &&
+        if (!Interpreter2.Interp2Options.Enabled &&
+            !bcFn.JitCompileAttempted &&
             (long)bcFn.Invocations * BackEdgeScale + bcFn.BackEdges
                 >= (long)JitCompiler.TierUpThreshold * BackEdgeScale)
         {
