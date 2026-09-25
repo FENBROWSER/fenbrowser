@@ -789,6 +789,104 @@ public sealed partial class BytecodeInterpreter
         WritePrivateField(obj, receiver, name, value);
     }
 
+    /// <summary>
+    /// The write half of <see cref="Interp2LoadFreeCached"/>, sharing its site:
+    /// a store and a load of one name in one function are the same slot, so
+    /// whichever runs first records where the binding lives. A const or a
+    /// binding still in its dead zone is refused by
+    /// <see cref="DeclarativeEnvironmentRecord.TryWriteOwnSlot"/>, and a global
+    /// property that is not a plain writable data property by the store cache's
+    /// guard, and the walk reports them.
+    /// </summary>
+    /// <remarks>
+    /// Assignments to outer variables used to walk the chain by name every
+    /// time: a closure variable write cost ~35ns more than a local one, a
+    /// global ~110ns more.
+    /// </remarks>
+    internal void Interp2StoreFreeCached(
+        FrameLayout layout, int slot, int icOffset, EnvironmentRecord? outerEnvironment, JsValue value)
+    {
+        var sites = layout.FreeSites;
+        if ((uint)slot < (uint)sites.Length && sites[slot] is { } site)
+        {
+            var env = outerEnvironment;
+            for (var hop = site.Hops; hop > 0 && env is not null; hop--)
+            {
+                env = env.OuterEnv;
+            }
+
+            if (site.SlotOwner is { } owner)
+            {
+                if (env is DeclarativeEnvironmentRecord declarative &&
+                    declarative.TryWriteOwnSlot(owner, site.TargetSlot, value))
+                {
+                    return;
+                }
+            }
+            else if (env is GlobalEnvironmentRecord global &&
+                     global.LexicalVersion == site.LexicalVersion &&
+                     global.GlobalObjectHandle is { } globalHandle &&
+                     TryStoreIC(layout.Function, icOffset, globalHandle, JsValue.FromObject(globalHandle), layout.SlotNames[slot]!, value))
+            {
+                // A hit proves an own writable data property, where
+                // SetMutableBinding on the object record is exactly [[Set]].
+                return;
+            }
+        }
+
+        Interp2StoreFreeAndCache(layout, slot, icOffset, outerEnvironment, value);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private void Interp2StoreFreeAndCache(FrameLayout layout, int slot, int icOffset, EnvironmentRecord? outerEnvironment, JsValue value)
+    {
+        var name = slot < layout.SlotNames.Length ? layout.SlotNames[slot] : null;
+        if (name is null)
+        {
+            throw new JsThrownException(CreateReferenceError("Invalid variable slot."));
+        }
+
+        // Interp2StoreFree's walk, noting on the way where the binding lives:
+        // a record with slot numbering, or a property of the global object.
+        var hops = 0;
+        for (var env = outerEnvironment; env is not null; env = env.OuterEnv, hops++)
+        {
+            if (!env.HasBinding(name))
+            {
+                continue;
+            }
+
+            var status = env.SetMutableBinding(name, value, layout.IsStrict);
+            if (status != BindingOpResult.Ok)
+            {
+                throw Interp2BindingFailure(status, name, assignment: true);
+            }
+
+            if ((uint)slot >= (uint)layout.FreeSites.Length)
+            {
+                return;
+            }
+
+            if (env is DeclarativeEnvironmentRecord declarative &&
+                declarative.SlotOwner is { } owner &&
+                declarative.TryGetSlotIndex(name, out var targetSlot))
+            {
+                layout.FreeSites[slot] = FreeSlotSite.AtSlot(hops, owner, targetSlot);
+            }
+            else if (env is GlobalEnvironmentRecord global &&
+                     !global.HasLexicalDeclaration(name) &&
+                     global.GlobalObjectHandle is { } globalHandle)
+            {
+                PopulateStoreIC(layout.Function, icOffset, JsValue.FromObject(globalHandle), name);
+                layout.FreeSites[slot] = FreeSlotSite.OnGlobalObject(hops, global.LexicalVersion);
+            }
+
+            return;
+        }
+
+        Interp2StoreFree(outerEnvironment: null, name, value, layout.IsStrict);
+    }
+
     internal void Interp2StoreFree(EnvironmentRecord? outerEnvironment, string? name, JsValue value, bool strict)
     {
         if (name is null)

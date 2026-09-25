@@ -977,11 +977,8 @@ internal sealed class Interp2
                     }
                     else
                     {
-                        _host.Interp2StoreFree(
-                            OuterEnvironmentOf(_depth - 1),
-                            NameOfSlot(layout, slot),
-                            stack[frameBase + ins.A],
-                            layout.IsStrict);
+                        _host.Interp2StoreFreeCached(
+                            layout, slot, ip - 1, OuterEnvironmentOf(_depth - 1), stack[frameBase + ins.A]);
                     }
 
                     stack = _stack;
