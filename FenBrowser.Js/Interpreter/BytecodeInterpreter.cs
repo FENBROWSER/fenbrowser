@@ -3411,17 +3411,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         : registers[ins.C];
                     try
                     {
-                        // ECMA-262 13.3.2.1: GetValue requires RequireObjectCoercible
-                        // on the base before the property key is coerced, so
-                        // `null[obj]` throws a TypeError before obj's toString runs.
-                        if (receiver.Tag is JsValueTag.Null or JsValueTag.Undefined)
-                        {
-                            var kind = receiver.Tag == JsValueTag.Null ? "null" : "undefined";
-                            var msg = keyValue.Tag == JsValueTag.String
-                                ? $"Cannot read properties of {kind} (reading '{keyValue.AsString()}')."
-                                : $"Cannot read properties of {kind}.";
-                            throw new JsThrownException(CreateTypeError(msg));
-                        }
+                        ThrowIfNullishElementBase(receiver, keyValue);
 
                         if (keyValue.Tag == JsValueTag.Symbol)
                         {
@@ -24088,11 +24078,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     internal void GetElemForJit(InterpreterFrame frame, int destReg, int receiverReg, int keyReg, int icOffset)
         => GetElemWithKeyForJit(frame, destReg, receiverReg, frame.Registers[keyReg], icOffset);
 
+    /// <summary>
+    /// ECMA-262 13.3.2.1: GetValue requires RequireObjectCoercible on the base
+    /// before the property key is coerced, so `null[obj]` throws a TypeError
+    /// before obj's toString runs - in compiled code as in the dispatch loop.
+    /// </summary>
+    private void ThrowIfNullishElementBase(JsValue receiver, JsValue keyValue)
+    {
+        if (receiver.Tag is JsValueTag.Null or JsValueTag.Undefined)
+        {
+            var kind = receiver.Tag == JsValueTag.Null ? "null" : "undefined";
+            var msg = keyValue.Tag == JsValueTag.String
+                ? $"Cannot read properties of {kind} (reading '{keyValue.AsString()}')."
+                : $"Cannot read properties of {kind}.";
+            throw new JsThrownException(CreateTypeError(msg));
+        }
+    }
+
     private void GetElemWithKeyForJit(InterpreterFrame frame, int destReg, int receiverReg, JsValue keyValue, int icOffset)
     {
         var receiver = frame.Registers[receiverReg];
         try
         {
+            ThrowIfNullishElementBase(receiver, keyValue);
             if (keyValue.Tag == JsValueTag.Symbol)
             {
                 frame.Registers[destReg] = GetReceiverSymbolProperty(receiver, keyValue.AsSymbolId());

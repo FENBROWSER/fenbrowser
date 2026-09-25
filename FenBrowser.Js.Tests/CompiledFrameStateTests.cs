@@ -54,4 +54,17 @@ public sealed class CompiledFrameStateTests
 
         Assert.StartsWith("doc.createRange is not a function", message);
     }
+
+    [Fact]
+    public void ANullishBaseThrowsBeforeTheKeyIsConverted()
+    {
+        // ECMA-262 13.3.2.1: RequireObjectCoercible on the base comes first.
+        Assert.Equal("TypeError,false", RunWithCompiled("read", @"
+            function read(b, k) { return b[k]; }
+            var converted = false;
+            var key = { toString() { converted = true; return 'x'; } };
+            var r;
+            try { read(null, key); } catch (e) { r = e.constructor.name; }
+            r + ',' + converted;"));
+    }
 }
