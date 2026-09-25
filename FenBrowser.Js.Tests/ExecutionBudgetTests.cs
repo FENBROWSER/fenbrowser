@@ -148,6 +148,19 @@ public class ExecutionBudgetTests
     }
 
     [Fact]
+    public void MicrotaskCheckpoint_DefaultRunsLongAwaitLoopToCompletion()
+    {
+        // Each await is at least one job; well past the old fixed 10k cap.
+        var interp = new BytecodeInterpreter();
+        interp.Execute(Compile(@"
+            var n = 0;
+            (async function () { for (let i = 0; i < 30000; i++) { await 0; n++; } })();
+        "));
+
+        Assert.Equal(30000.0, interp.Execute(Compile("n;")).AsNumber());
+    }
+
+    [Fact]
     public void MicrotaskCheckpointJobBudget_StopsSelfReplenishingQueueWithoutTimeout()
     {
         var interp = new BytecodeInterpreter { MicrotaskCheckpointJobBudget = 100 };

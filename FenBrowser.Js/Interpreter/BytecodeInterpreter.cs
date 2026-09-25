@@ -735,7 +735,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // sub-millisecond precision. Increased from 1024 to 8192 to reduce
     // check overhead in tight loops (reCAPTCHA-like workloads).
     public long WallClockTimeoutMs { get; set; }
-    public int MicrotaskCheckpointJobBudget { get; set; } = 10_000;
+    // Optional cap on the jobs one microtask checkpoint may run; zero means no
+    // cap. HTML's "perform a microtask checkpoint" drains the queue until it is
+    // empty, so a fixed count is not a safe default: an async loop awaiting
+    // 10k times is ordinary code. A self-replenishing queue is still stopped,
+    // by the wall-clock deadline, the instruction budget and the interrupt
+    // callback that every job boundary checks.
+    public int MicrotaskCheckpointJobBudget { get; set; }
     private const int WallClockCheckInterval = 8192;
     private long _wallClockDeadlineTicks;
     private int _wallClockCheckCountdown;
