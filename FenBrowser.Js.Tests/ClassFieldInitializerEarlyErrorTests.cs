@@ -7,9 +7,10 @@ namespace FenBrowser.Js.Tests;
 
 /// <summary>
 /// ECMA-262 15.7.1 (Class Definitions, Static Semantics: Early Errors):
-/// a FieldDefinition Initializer may not contain <c>arguments</c>,
-/// <c>super</c> or <c>new.target</c> — but a nested non-arrow function
-/// introduces its own scope, where all three become legal again.
+/// a FieldDefinition Initializer may not contain <c>arguments</c> or
+/// <c>super()</c> — but a nested non-arrow function introduces its own scope,
+/// where both become legal again. <c>new.target</c> is not restricted: it is
+/// undefined in an initializer.
 /// </summary>
 public sealed class ClassFieldInitializerEarlyErrorTests
 {
@@ -21,7 +22,6 @@ public sealed class ClassFieldInitializerEarlyErrorTests
     [InlineData("class C { f = (0, arguments); }")]
     [InlineData("class C { f = () => arguments; }")]
     [InlineData("class C { f = x => y => arguments; }")]
-    [InlineData("class C extends Base { f = new.target; }")]
     [InlineData("class C extends Base { f = super(); }")]
     public void RejectsForbiddenSyntaxDirectlyInFieldInitializer(string source)
     {
@@ -57,6 +57,14 @@ public sealed class ClassFieldInitializerEarlyErrorTests
     [InlineData("class C { static m() { return arguments; } }")]
     [InlineData("class C extends Base { m() { return new.target; } }")]
     public void AllowsForbiddenSyntaxInsideMethods(string source)
+    {
+        Assert.NotNull(Compile(source));
+    }
+
+    [Theory]
+    [InlineData("class C extends Base { f = new.target; }")]
+    [InlineData("class C { f = () => new.target; }")]
+    public void AllowsNewTargetInFieldInitializer(string source)
     {
         Assert.NotNull(Compile(source));
     }

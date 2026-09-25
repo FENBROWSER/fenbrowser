@@ -226,6 +226,16 @@ public sealed class BytecodeFunction
     // 0 means "no separate prologue" (run the whole body lazily as before).
     public int PrologueEndIp { get; init; }
 
+    // A class's instance field initializers are compiled inline into its
+    // constructor, but ECMA-262 15.7.10 specifies each as a method of its own:
+    // new.target is undefined in them and in eval code they call. These bound
+    // the inlined instructions [start, end); an arrow compiled inside an
+    // initializer covers its whole body. -1 when there are none.
+    public int FieldInitializerStart { get; init; } = -1;
+    public int FieldInitializerEnd { get; init; } = -1;
+
+    internal bool IsInFieldInitializer(int ip) => ip >= FieldInitializerStart && ip < FieldInitializerEnd;
+
     // H.5: true if this function is the constructor of a class with `extends`.
     // Derived constructors must call super() before accessing `this`.
     public bool IsDerivedConstructor { get; init; }
@@ -382,6 +392,8 @@ public sealed class BytecodeFunction
             NestedFunctions = nested,
             RegisterCount = RegisterCount,
             PrologueEndIp = PrologueEndIp,
+            FieldInitializerStart = FieldInitializerStart,
+            FieldInitializerEnd = FieldInitializerEnd,
             IsDerivedConstructor = IsDerivedConstructor,
             IsClassConstructor = IsClassConstructor,
             ComputedFieldKeys = new List<JsValue>(ComputedFieldKeys),

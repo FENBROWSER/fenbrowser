@@ -25,6 +25,14 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     internal bool IsCatchScope { get; set; }
 
     /// <summary>
+    /// Set on the environment of a direct eval called from a class field
+    /// initializer. Initializers are compiled into the constructor, but new.target
+    /// is undefined in them (ECMA-262 7.3.34 DefineField calls the initializer
+    /// with no NewTarget), so a lexical new.target lookup stops here.
+    /// </summary>
+    internal bool HidesNewTarget { get; set; }
+
+    /// <summary>
     /// True when this record is a variable environment although its type does
     /// not say so: an arrow function's body, which has no `this` of its own and
     /// so cannot be a FunctionEnvironmentRecord, and a strict eval's fresh

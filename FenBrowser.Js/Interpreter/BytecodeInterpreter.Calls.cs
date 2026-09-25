@@ -1132,6 +1132,8 @@ public sealed partial class BytecodeInterpreter
         {
             _directEvalEnv = frame.Environment;
             _directEvalStrictMode = frame.Function.IsStrictMode;
+            // The pointer is already past the call instruction.
+            _directEvalInFieldInitializer = frame.Function.IsInFieldInitializer(frame.InstructionPointer - 1);
         }
 
         // ECMA-262 super(...): route through [[Construct]] with this frame's

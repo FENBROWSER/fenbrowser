@@ -74,6 +74,14 @@ public sealed class BytecodeCompiler
     private List<ExpressionNode>? _computedFieldNames;
     private int _computedFieldCount;
 
+    // The instance field initializer statements inlined into the constructor
+    // being compiled, and whether one is being compiled now (which an arrow
+    // inside it inherits). See BytecodeFunction.FieldInitializerStart.
+    private HashSet<StatementNode>? _fieldInitializerStatements;
+    private bool _inFieldInitializer;
+    private int _fieldInitializerStart = -1;
+    private int _fieldInitializerEnd = -1;
+
     private readonly List<Instruction> _instructions = new();
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
@@ -404,6 +412,8 @@ public sealed class BytecodeCompiler
             BrandTokens = _brandTokens.ToArray(),
             TemplateSites = _templateSites.ToArray(),
             PrologueEndIp = prologueEndIp,
+            FieldInitializerStart = _currentIsArrow && _inFieldInitializer ? 0 : _fieldInitializerStart,
+            FieldInitializerEnd = _currentIsArrow && _inFieldInitializer ? int.MaxValue : _fieldInitializerEnd,
         };
     }
 
@@ -471,8 +481,29 @@ public sealed class BytecodeCompiler
         // catch parameter, the completion register) was allocated before the
         // mark and sits below it, so it survives untouched.
         var statementMark = _nextRegister;
-        CompileStatementCore(stmt);
+        if (_fieldInitializerStatements is not null && _fieldInitializerStatements.Contains(stmt))
+        {
+            CompileFieldInitializerStatement(stmt);
+        }
+        else
+        {
+            CompileStatementCore(stmt);
+        }
         ReleaseRegistersTo(statementMark);
+    }
+
+    private void CompileFieldInitializerStatement(StatementNode stmt)
+    {
+        if (_fieldInitializerStart < 0)
+        {
+            _fieldInitializerStart = _instructions.Count;
+        }
+
+        var saved = _inFieldInitializer;
+        _inFieldInitializer = true;
+        CompileStatementCore(stmt);
+        _inFieldInitializer = saved;
+        _fieldInitializerEnd = _instructions.Count;
     }
 
     private void CompileStatementCore(StatementNode stmt)
@@ -1281,7 +1312,12 @@ public sealed class BytecodeCompiler
         _compilingClassConstructor = privateMangle.Count > 0;
         _isDerivedConstructor = isDerived;
         _isClassConstructor = true;
+        var savedFieldInitializers = _fieldInitializerStatements;
+        _fieldInitializerStatements = instanceFieldInits.Count > 0
+            ? new HashSet<StatementNode>(instanceFieldInits, ReferenceEqualityComparer.Instance)
+            : null;
         var classReg = CompileFunctionExpressionToRegister(constructorFn, FunctionKind.Constructor);
+        _fieldInitializerStatements = savedFieldInitializers;
         _compilingClassConstructor = savedConstructorContext;
         _isDerivedConstructor = savedIsDerived;
         _isClassConstructor = savedIsClassConstructor;
@@ -1490,7 +1526,7 @@ public sealed class BytecodeCompiler
         // a class expression or function expression in a field initializer).
         // Instead, the caller for the direct class constructor passes
         // FunctionKind.Constructor via explicitKind.
-        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _rawSource = _rawSource, _sourcePath = _sourcePath };
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _fieldInitializerStatements = this._fieldInitializerStatements, _rawSource = _rawSource, _sourcePath = _sourcePath };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
@@ -3450,6 +3486,12 @@ public sealed class BytecodeCompiler
             case NewTargetExpressionNode:
             {
                 var reg = AllocateRegister();
+                if (_inFieldInitializer)
+                {
+                    // An initializer is called with no new.target (ECMA-262 7.3.34 DefineField).
+                    _instructions.Add(new Instruction(OpCode.LoadConst, reg, AddConstant(JsValue.Undefined), 0));
+                    return reg;
+                }
                 _instructions.Add(new Instruction(OpCode.LoadNewTarget, reg, 0, 0));
                 return reg;
             }
@@ -4087,7 +4129,9 @@ public sealed class BytecodeCompiler
                 // ECMA-262 NamedEvaluation: arrows are always anonymous, so they take
                 // the binding/assignment name when one is in scope, else the empty name.
                 var arrowName = ConsumeNameHint() ?? string.Empty;
-                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource, _sourcePath = _sourcePath };
+                // An arrow has no new.target of its own, so one inside a field
+                // initializer sees the initializer's (undefined), not the constructor's.
+                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _inFieldInitializer = _inFieldInitializer, _rawSource = _rawSource, _sourcePath = _sourcePath };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     arrow.Parameters,

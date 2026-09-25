@@ -558,6 +558,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private ObjectHandle? _evalFunctionHandle;
     private EnvironmentRecord? _directEvalEnv;
     private bool _directEvalStrictMode;
+    private bool _directEvalInFieldInitializer;
     private ObjectHandle? _parseIntHandle;
     private ObjectHandle? _parseFloatHandle;
     private ObjectHandle? _isNaNHandle;
@@ -1992,22 +1993,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             frame.NewTarget = _pendingNewTarget;
             _pendingNewTarget = JsValue.Undefined;
+            // ECMA-262 10.2.1.1 PrepareForOrdinaryCall: the function environment
+            // carries [[NewTarget]], which is where an arrow inside reads it.
+            if (frameEnvironment is null && !function.IsArrow &&
+                frame.Environment is FunctionEnvironmentRecord ownFunctionEnv)
+            {
+                ownFunctionEnv.SetNewTarget(frame.NewTarget);
+            }
         }
 
-        // Arrow functions inherit new.target from the lexically enclosing
-        // non-arrow function (ECMA-262 10.2.1 — arrows have no own new.target).
-        if (function.IsArrow && frame.NewTarget.Tag == JsValueTag.Undefined)
+        // Arrow functions have no new.target of their own (ECMA-262 10.2.1):
+        // GetNewTarget reads it from GetThisEnvironment, the nearest enclosing
+        // function environment in the lexical chain - not from whoever called
+        // the arrow.
+        // Eval code resolves new.target the same way (ECMA-262 19.2.1.1
+        // PerformEval step 5 allows it wherever GetThisEnvironment is a function).
+        if (function.IsArrow || function.IsEvalCode)
         {
-            var foundSelf = false;
-            foreach (var callerFrame in _activeFrames)
-            {
-                if (!foundSelf) { foundSelf = true; continue; }
-                if (callerFrame.Function?.IsArrow != true)
-                {
-                    frame.NewTarget = callerFrame.NewTarget;
-                    break;
-                }
-            }
+            frame.NewTarget = ResolveLexicalNewTarget(frame.Environment);
         }
 
         // Generator resume: restore saved execution state instead of fresh init.
@@ -7563,8 +7566,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         var directEvalEnvironment = _directEvalEnv;
         var directEvalStrictMode = _directEvalStrictMode;
+        var directEvalInFieldInitializer = _directEvalInFieldInitializer;
         _directEvalEnv = null;
         _directEvalStrictMode = false;
+        _directEvalInFieldInitializer = false;
 
         // ECMA-262 19.2.1.1: parsing/early-error failures of the eval source must
         // throw a SyntaxError (a catchable JS error), not a raw host exception.
@@ -7626,6 +7631,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // whatever block or catch the call sat in rather than in the function.
         var env = StampEnvironment(new DeclarativeEnvironmentRecord(directEvalEnvironment ?? EnsureGlobalEnvironment()));
         env.IsVariableScope = compiled.IsStrictMode;
+        env.HidesNewTarget = directEvalInFieldInitializer;
 
         return ExecuteInternal(
             compiled,
@@ -19114,6 +19120,26 @@ fallbackArraySpecies:
     // that has a `this` binding. Preserve TDZ access so arrows enclosed by a
     // derived constructor cannot fall back to their call-site receiver before
     // super() initializes the constructor's binding.
+    // ECMA-262 9.4.5 GetNewTarget via 9.4.3 GetThisEnvironment. The global and
+    // module environments have a this binding but no [[NewTarget]].
+    private static JsValue ResolveLexicalNewTarget(EnvironmentRecord? environment)
+    {
+        for (var env = environment; env is not null; env = env.OuterEnv)
+        {
+            if (env is DeclarativeEnvironmentRecord { HidesNewTarget: true })
+            {
+                return JsValue.Undefined;
+            }
+
+            if (env.HasThisBinding)
+            {
+                return env is FunctionEnvironmentRecord function ? function.NewTarget : JsValue.Undefined;
+            }
+        }
+
+        return JsValue.Undefined;
+    }
+
     private static BindingOpResult ResolveThisBinding(EnvironmentRecord? environment, out JsValue value)
     {
         for (var env = environment; env is not null; env = env.OuterEnv)

@@ -286,12 +286,9 @@ public sealed class AstValidator
                         "arguments cannot be used in class field initializers.");
                 return inFieldInit;
 
-            // new.target cannot appear in class field initializers.
-            case NewTargetExpressionNode:
-                if (inFieldInit)
-                    throw new JsParserException(
-                        "new.target cannot be used in class field initializers.");
-                return inFieldInit;
+            // new.target is allowed in a field initializer and evaluates to
+            // undefined there: ECMA-262 15.7.1's early errors for FieldDefinition
+            // cover only ContainsArguments and SuperCall.
 
             // delete of a private field is always a SyntaxError (ECMA-262 13.5.1.2)
             case UnaryExpressionNode un when un.Operator == "delete":
