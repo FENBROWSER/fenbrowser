@@ -295,7 +295,34 @@ public sealed class FrameLayout
         return layout;
     }
 
-    private static FrameLayout Analyze(BytecodeFunction function)
+    /// <summary>
+    /// The layout [[Construct]] runs <paramref name="function"/> with. For a
+    /// base class constructor this is analysed without the ClassConstructor
+    /// refusal: constructing one is an ordinary activation with the new
+    /// instance as `this`, and its field initializers are compiled into the
+    /// body. Only [[Call]] must never reach it - calling a class constructor is
+    /// a TypeError - which is why it is kept apart from <see cref="For"/>, the
+    /// layout calls consult. A derived constructor, whose `this` only exists
+    /// once super() returns, is refused either way.
+    /// </summary>
+    public static FrameLayout ForConstruct(BytecodeFunction function)
+    {
+        if (!function.IsClassConstructor || function.IsDerivedConstructor)
+        {
+            return For(function);
+        }
+
+        if (function.Interp2ConstructLayout is { } cached)
+        {
+            return cached;
+        }
+
+        var layout = Analyze(function, asConstructor: true);
+        function.Interp2ConstructLayout = layout;
+        return layout;
+    }
+
+    private static FrameLayout Analyze(BytecodeFunction function, bool asConstructor = false)
     {
         // Anything whose activation outlives its call, or whose scope is
         // reachable by name from outside it, needs a real environment record.
@@ -321,12 +348,14 @@ public sealed class FrameLayout
         // one - and those are eval code, which the gate below refuses anyway.
         var isAsync = function.Kind == FunctionKind.Async && !function.IsEvalCode &&
             GeneratorBodySupported(function);
-        if (!isGenerator && !isAsync &&
+        var constructsClass = asConstructor && function.Kind == FunctionKind.Constructor &&
+            function.IsClassConstructor && !function.IsDerivedConstructor;
+        if (!isGenerator && !isAsync && !constructsClass &&
             function.Kind is not (FunctionKind.Ordinary or FunctionKind.Arrow or FunctionKind.Method))
             return new FrameLayout(function, Interp2Bailout.NotOrdinaryFunction);
         if (function.IsEvalCode)
             return new FrameLayout(function, Interp2Bailout.EvalCode);
-        if (function.IsDerivedConstructor || function.IsClassConstructor)
+        if (function.IsDerivedConstructor || (function.IsClassConstructor && !constructsClass))
             return new FrameLayout(function, Interp2Bailout.ClassConstructor);
         // An arrow reaching outwards for the enclosing `arguments` is refused;
         // a body's own arguments object is not, because this engine builds it as

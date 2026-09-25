@@ -1293,7 +1293,7 @@ public sealed partial class BytecodeInterpreter
         // an empty F cost four times a call.
         JsValue result;
         var layout = Interpreter2.Interp2Options.Enabled && !isDerived
-            ? Interpreter2.FrameLayout.For(callee.Function)
+            ? Interpreter2.FrameLayout.ForConstruct(callee.Function)
             : null;
         if (layout is { Eligible: true })
         {

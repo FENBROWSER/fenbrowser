@@ -72,4 +72,48 @@ public sealed class ConstructOnRegisterWindowTests
             try { new Boom(); } catch (e) { caught = e instanceof TypeError; }
             caught && After() === undefined;"));
     }
+
+    // A base class constructor is constructed on the same loop through a layout
+    // only [[Construct]] consults; [[Call]] must still refuse it.
+    [Fact]
+    public void ABaseClassConstructsWithItsFieldsAndPrivateState()
+    {
+        Assert.True(RunBool(@"
+            var key = 'computed';
+            class K {
+                #secret = 7;
+                plain = 1;
+                [key] = 2;
+                constructor(x) { this.x = x; }
+                get secret() { return this.#secret; }
+                sum() { return this.x + this.plain + this.computed; }
+            }
+            var ok = true;
+            for (var i = 0; i < 100; i++) {
+                var k = new K(i);
+                ok = ok && k.secret === 7 && k.sum() === i + 3 && k instanceof K && Object.getPrototypeOf(k) === K.prototype;
+            }
+            ok;"));
+    }
+
+    [Fact]
+    public void CallingAClassConstructorStillThrows()
+    {
+        Assert.True(RunBool(@"
+            class K { constructor() { this.x = 1; } }
+            for (var i = 0; i < 20; i++) new K();
+            var name;
+            try { K(); } catch (e) { name = e.constructor.name; }
+            name === 'TypeError';"));
+    }
+
+    [Fact]
+    public void ADerivedClassStillConstructsThroughSuper()
+    {
+        Assert.True(RunBool(@"
+            class Base { constructor(x) { this.x = x; } }
+            class Derived extends Base { constructor(x) { super(x * 2); this.y = x; } }
+            var d = new Derived(3);
+            d.x === 6 && d.y === 3 && d instanceof Base && d instanceof Derived;"));
+    }
 }

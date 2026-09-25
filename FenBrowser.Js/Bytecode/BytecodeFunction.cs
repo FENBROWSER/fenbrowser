@@ -108,6 +108,9 @@ public sealed class BytecodeFunction
     // computed by FrameLayout.For.
     internal FenBrowser.Js.Interpreter2.FrameLayout? Interp2Layout;
 
+    // A base class constructor's layout for [[Construct]] only; see FrameLayout.ForConstruct.
+    internal FenBrowser.Js.Interpreter2.FrameLayout? Interp2ConstructLayout;
+
 
     public IReadOnlyList<string> VarDeclarationNames { get; init; } = Array.Empty<string>();
 
