@@ -1855,6 +1855,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
     }
 
+    // Why a frame is running on the old loop rather than the register-window
+    // one, for Interp2Stats. Eval, script and module code are refused outright;
+    // any other body carries its layout's reason.
+    private static string OldLoopReason(BytecodeFunction function, GeneratorObject? ownerGenerator, AsyncContext? asyncContext)
+    {
+        if (function.IsEvalCode)
+            return function.Kind == FunctionKind.Async ? "ScriptOrModuleCode" : "EvalOrScriptCode";
+        var layout = function.IsClassConstructor ? Interpreter2.FrameLayout.ForConstruct(function) : Interpreter2.FrameLayout.For(function);
+        var reason = layout.Bailout == Interpreter2.Interp2Bailout.None ? "Eligible" : layout.Bailout.ToString();
+        if (layout.Bailout == Interpreter2.Interp2Bailout.UnsupportedOpCode && layout.BailoutOpCode is { } op)
+            reason += ":" + op;
+        if (ownerGenerator is not null)
+            return "Generator/" + reason;
+        return asyncContext is not null ? "Async/" + reason : reason;
+    }
+
     private JsValue ExecuteInternalCore(
         BytecodeFunction function,
         in CallArgs args,
@@ -2131,6 +2147,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return jitFn(this, frame, 0);
         }
 #endif
+
+        if (Interpreter2.Interp2Options.Log)
+        {
+            Interpreter2.Interp2Stats.RecordOldLoopFrame(OldLoopReason(function, ownerGenerator, asyncContext));
+        }
 
         try
         {

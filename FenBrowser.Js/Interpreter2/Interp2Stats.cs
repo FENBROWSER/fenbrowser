@@ -288,6 +288,19 @@ public static class Interp2Stats
     /// </summary>
     internal static void RecordDeclinedCall(Interp2Bailout reason) => DeclinedCallCounts[(int)reason]++;
 
+    // Frames the old loop interpreted, by why they were not this loop's: the
+    // number that has to reach zero before the old loop can go.
+    private static readonly Dictionary<string, long> OldLoopFrames = new(StringComparer.Ordinal);
+
+    /// <summary>A frame the old dispatch loop interpreted, and why it was not this loop's.</summary>
+    internal static void RecordOldLoopFrame(string reason)
+    {
+        lock (OldLoopFrames)
+        {
+            OldLoopFrames[reason] = OldLoopFrames.GetValueOrDefault(reason) + 1;
+        }
+    }
+
     internal static void RecordCallDelegated(bool calleeIsJavaScript)
     {
         _callsDelegated++;
@@ -298,6 +311,7 @@ public static class Interp2Stats
     {
         Array.Clear(BailoutCounts);
         Array.Clear(DeclinedCallCounts);
+        lock (OldLoopFrames) OldLoopFrames.Clear();
         UnsupportedOpCodes.Clear();
         NotOrdinaryKinds.Clear();
         _eligibleFunctions = 0;
@@ -501,6 +515,17 @@ public static class Interp2Stats
             foreach (var (kind, count) in NotOrdinaryKinds.OrderByDescending(static p => p.Value))
             {
                 report.Append(' ').Append(kind).Append('=').Append(count);
+            }
+
+            report.AppendLine();
+        }
+
+        lock (OldLoopFrames)
+        {
+            report.Append("[interp2] old-loop frames=").Append(OldLoopFrames.Values.Sum());
+            foreach (var (reason, count) in OldLoopFrames.OrderByDescending(static pair => pair.Value))
+            {
+                report.Append(' ').Append(reason).Append('=').Append(count);
             }
 
             report.AppendLine();
