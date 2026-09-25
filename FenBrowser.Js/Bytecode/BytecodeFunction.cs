@@ -295,6 +295,17 @@ public sealed class BytecodeFunction
     internal CallICEntry?[] EnsureCallICs() =>
         _callICs ?? PublishOnce(ref _callICs, new CallICEntry?[InstructionArray.Length]);
 
+    // Free-variable sites for the dispatch loop and compiled code, one per
+    // LoadVar/StoreVar instruction (see BytecodeInterpreter.FreeVariables.cs).
+    // Keyed by instruction rather than slot: a block scope can give one name a
+    // nearer binding at one instruction than at another.
+    private FenBrowser.Js.Interpreter2.FreeSlotSite?[]? _nameSites;
+
+    internal FenBrowser.Js.Interpreter2.FreeSlotSite?[]? NameSites => _nameSites;
+
+    internal FenBrowser.Js.Interpreter2.FreeSlotSite?[] EnsureNameSites() =>
+        _nameSites ?? PublishOnce(ref _nameSites, new FenBrowser.Js.Interpreter2.FreeSlotSite?[InstructionArray.Length]);
+
     /// <summary>The load site at <paramref name="ip"/>, created by whichever thread asks first.</summary>
     internal FenBrowser.Js.Jit.CacheIR.CacheIRSite EnsureLoadCacheSite(int ip) => EnsureSite(EnsureLoadCacheSites(), ip);
 

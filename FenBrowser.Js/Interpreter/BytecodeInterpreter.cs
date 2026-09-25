@@ -2234,7 +2234,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     registers[ins.A] = function.Constants[ins.B];
                     break;
                 case OpCode.LoadVar:
-                    registers[ins.A] = LoadName(frame, ins.B);
+                    registers[ins.A] = LoadName(frame, ins.B, frame.InstructionPointer - 1);
                     break;
                 case OpCode.LoadThis:
                     if (function.IsDerivedConstructor &&
@@ -2281,7 +2281,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     break;
                 case OpCode.StoreVar:
-                    StoreName(frame, ins.B, registers[ins.A]);
+                    StoreName(frame, ins.B, registers[ins.A], frame.InstructionPointer - 1);
                     break;
                 case OpCode.InitVar:
                     InitializeName(frame, ins.B, registers[ins.A]);
@@ -7112,7 +7112,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     /// Everything else defers to <see cref="LoadName"/>.
     /// </summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    internal JsValue LoadSlotFast(InterpreterFrame frame, int slot)
+    internal JsValue LoadSlotFast(InterpreterFrame frame, int slot, int ip)
     {
         if (frame.Environment is DeclarativeEnvironmentRecord own &&
             own.TryReadOwnSlot(frame.Function, slot, out var value))
@@ -7120,12 +7120,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return value;
         }
 
-        return LoadName(frame, slot);
+        return LoadName(frame, slot, ip);
     }
 
     /// <summary>The write half of <see cref="LoadSlotFast"/>.</summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    internal void StoreSlotFast(InterpreterFrame frame, int slot, JsValue value)
+    internal void StoreSlotFast(InterpreterFrame frame, int slot, JsValue value, int ip)
     {
         if (frame.Environment is DeclarativeEnvironmentRecord own &&
             own.TryWriteOwnSlot(frame.Function, slot, value))
@@ -7133,10 +7133,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return;
         }
 
-        StoreName(frame, slot, value);
+        StoreName(frame, slot, value, ip);
     }
 
-    internal JsValue LoadName(InterpreterFrame frame, int slot)
+    /// <param name="ip">
+    /// The LoadVar being executed, which keys the free-variable site; -1 for a
+    /// caller that has no instruction and walks every time.
+    /// </param>
+    internal JsValue LoadName(InterpreterFrame frame, int slot, int ip = -1)
     {
         // The frame's own environment numbers its variables exactly as this
         // function's bytecode does, so the slot answers directly. Taking the
@@ -7178,11 +7182,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is not null)
         {
+            var function = frame.Function;
+            if (ip >= 0 && function.NameSites is { } nameSites && (uint)ip < (uint)nameSites.Length &&
+                nameSites[ip] is { IsCurrent: true } site &&
+                TryReadThroughSite(site, frame.Environment, function, ip, name, out var cachedValue))
+            {
+                return cachedValue;
+            }
+
             // ECMA-262 9.1.2.1 GetIdentifierReference walks the env chain. Resolve
             // through the lexical chain so closures over parameters of an outer
             // function (whose params now live on FunctionEnvironmentRecord since
             // B.6.4) read the live outer binding rather than the stale snapshot.
             var probeDepth = 0;
+            var cacheable = ip >= 0;
             var walkStartTicks = FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled
                 ? FenBrowser.Js.Diagnostics.InterpreterProfiler.StartSample()
                 : 0L;
@@ -7192,6 +7205,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 if (status == BindingOpResult.NotFound)
                 {
                     probeDepth++;
+                    // A with-object passed over here could gain the name later.
+                    cacheable &= env is not ObjectEnvironmentRecord;
                     continue;
                 }
 
@@ -7203,6 +7218,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                 if (status == BindingOpResult.Ok)
                 {
+                    if (cacheable && (uint)ip < (uint)function.InstructionArray.Length &&
+                        CreateReadSite(function, ip, probeDepth, env, name) is { } created)
+                    {
+                        function.EnsureNameSites()[ip] = created;
+                    }
+
                     return envValue;
                 }
 
@@ -7215,7 +7236,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return JsValue.Undefined;
     }
 
-    internal void StoreName(InterpreterFrame frame, int slot, JsValue value)
+    internal void StoreName(InterpreterFrame frame, int slot, JsValue value, int ip = -1)
     {
         if (frame.Environment is DeclarativeEnvironmentRecord own && own.OwnsSlotsOf(frame.Function) &&
             own.TrySetAtSlot(slot, value, frame.Function.IsStrictMode, out var slotStatus))
@@ -7232,16 +7253,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is not null)
         {
-            for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
+            var function = frame.Function;
+            if (ip >= 0 && function.NameSites is { } nameSites && (uint)ip < (uint)nameSites.Length &&
+                nameSites[ip] is { IsCurrent: true } site &&
+                TryWriteThroughSite(site, frame.Environment, function, ip, name, value))
+            {
+                return;
+            }
+
+            var hops = 0;
+            var cacheable = ip >= 0;
+            for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv, hops++)
             {
                 if (!env.HasBinding(name))
                 {
+                    cacheable &= env is not ObjectEnvironmentRecord;
                     continue;
                 }
 
                 var status = env.SetMutableBinding(name, value, strict: frame.Function.IsStrictMode);
                 if (status == BindingOpResult.Ok)
                 {
+                    if (cacheable && (uint)ip < (uint)function.InstructionArray.Length &&
+                        CreateWriteSite(function, ip, hops, env, name) is { } created)
+                    {
+                        function.EnsureNameSites()[ip] = created;
+                    }
+
                     return;
                 }
 

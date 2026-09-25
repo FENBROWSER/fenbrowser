@@ -1107,7 +1107,7 @@ public static class JitCompiler
                     Expression.Condition(
                         usable,
                         Expression.Property(element, PiBindingValue),
-                        Expression.Call(interp, MiLoadSlotFast, frame, slotIndex))));
+                        Expression.Call(interp, MiLoadSlotFast, frame, slotIndex, Expression.Constant(ip)))));
                 return true;
             }
             case OpCode.StoreVar:
@@ -1145,7 +1145,7 @@ public static class JitCompiler
                                 Expression.Property(storeElement, PiBindingInitialized),
                                 Expression.Property(storeElement, PiBindingStrict),
                                 Expression.Property(storeElement, PiBindingDeletable))),
-                        Expression.Call(interp, MiStoreSlotFast, frame, storeSlot, storeValue))));
+                        Expression.Call(interp, MiStoreSlotFast, frame, storeSlot, storeValue, Expression.Constant(ip)))));
                 return true;
             }
             case OpCode.InitVar:

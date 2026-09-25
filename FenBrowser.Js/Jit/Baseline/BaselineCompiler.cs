@@ -1293,6 +1293,7 @@ internal static class BaselineCompiler
             il.Arg(0);
             il.Arg(1);
             il.Int(ins.B);
+            il.Int(ip);
             il.Call(MiLoadSlotFast);
             EndSetRegister(ins.A);
             il.Mark(done);
@@ -1342,6 +1343,7 @@ internal static class BaselineCompiler
             il.Arg(1);
             il.Int(ins.B);
             il.Load(_lhs);
+            il.Int(ip);
             il.Call(MiStoreSlotFast);
             il.Mark(done);
             return true;
