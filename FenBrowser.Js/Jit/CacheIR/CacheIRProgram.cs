@@ -59,6 +59,14 @@ internal sealed class CacheIRProgram
     private readonly JsObject? _holder;
     private Shape? _holderShape;
 
+    // Prototypes between the receiver's own prototype and the holder, for a
+    // name found more than one link up: each must still be the same object, in
+    // the same layout (which does not name the key), pointing at the next. Null
+    // when the holder is the immediate prototype.
+    private readonly JsObject[]? _chain;
+    private readonly Shape[]? _chainShapes;
+    private readonly ObjectHandle[]? _chainNext;
+
     /// <summary>Set when a guarded slot stopped being a plain data property.</summary>
     internal bool IsStale { get; private set; }
 
@@ -69,7 +77,10 @@ internal sealed class CacheIRProgram
         string[] keys,
         ObjectHandle protoHandle = default,
         JsObject? holder = null,
-        Shape? holderShape = null)
+        Shape? holderShape = null,
+        JsObject[]? chain = null,
+        Shape[]? chainShapes = null,
+        ObjectHandle[]? chainNext = null)
     {
         _ops = ops;
         _args = args;
@@ -79,6 +90,9 @@ internal sealed class CacheIRProgram
         _protoHandle = protoHandle;
         _holder = holder;
         _holderShape = holderShape;
+        _chain = chain;
+        _chainShapes = chainShapes;
+        _chainNext = chainNext;
 
         if (ops[0] == CacheOp.GuardStringReceiver)
         {
@@ -330,6 +344,7 @@ internal sealed class CacheIRProgram
                 (_guardedKey is not { } protoKey || string.Equals(key, protoKey, StringComparison.Ordinal)) &&
                 receiver.PrototypeHandle is { } proto &&
                 proto.Equals(_protoHandle) &&
+                ChainHolds() &&
                 ReferenceEquals(_holder!.CurrentShape, _holderShape) &&
                 _holder.TryReadDataSlot(_resultSlot, out result))
             {
@@ -356,6 +371,27 @@ internal sealed class CacheIRProgram
         MarkStale();
         result = JsValue.Undefined;
         return false;
+    }
+
+    // The links between the immediate prototype and the holder are unchanged.
+    private bool ChainHolds()
+    {
+        if (_chain is not { } chain)
+        {
+            return true;
+        }
+
+        for (var i = 0; i < chain.Length; i++)
+        {
+            if (!ReferenceEquals(chain[i].CurrentShape, _chainShapes![i]) ||
+                chain[i].PrototypeHandle is not { } next ||
+                !next.Equals(_chainNext![i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void MarkStale()
@@ -393,7 +429,8 @@ internal sealed class CacheIRProgram
 
                 case CacheOp.GuardProto:
                     if (receiver.PrototypeHandle is not { } runProto ||
-                        !runProto.Equals(_protoHandle)) goto miss;
+                        !runProto.Equals(_protoHandle) ||
+                        !ChainHolds()) goto miss;
                     break;
 
                 case CacheOp.GuardHolderShape:

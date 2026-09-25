@@ -14,6 +14,9 @@ namespace FenBrowser.Js.Jit.CacheIR.Attachers;
 /// </remarks>
 internal static class LoadPropertyAttacher
 {
+    // Prototypes a read may pass through before the one holding the name.
+    private const int MaxPrototypeLinks = 6;
+
     /// <param name="keyVariesAtSite">
     /// True for sites whose key is a runtime value (<c>obj[k]</c>), which must
     /// therefore guard it. A site reading a fixed name has the key baked into
@@ -54,10 +57,10 @@ internal static class LoadPropertyAttacher
             return writer.Build();
         }
 
-        // Not the receiver's own - so the immediate prototype, which is where a
+        // Not the receiver's own - so up the prototype chain, which is where a
         // method call on a class instance, an array or an object literal finds
-        // what it is calling. Everything deeper stays on the general path: one
-        // link is what covers the shapes real code has.
+        // what it is calling. A subclass's inherited method, or
+        // `hasOwnProperty` on a class instance, is two or three links up.
         return TryAttachPrototypeLoad(receiver, key, keyVariesAtSite, resolve);
     }
 
@@ -141,11 +144,30 @@ internal static class LoadPropertyAttacher
         if (receiver.MayGainOwnPropertyOutsideShape(key)) return null;
         if (receiver.TryGetOwnProperty(key, out _)) return null;
 
-        var holder = resolve(protoHandle);
-        if (holder is ProxyObject or ModuleNamespaceObject) return null;
+        // Every prototype the read passes on the way must not have the name
+        // either, and be one whose own properties its shape fully describes -
+        // otherwise nothing could guard against it gaining one later.
+        List<JsObject>? chain = null;
+        List<Shape>? chainShapes = null;
+        List<ObjectHandle>? chainNext = null;
+        var link = protoHandle;
+        JsObject holder;
+        int holderSlot;
+        while (true)
+        {
+            holder = resolve(link);
+            if (holder is ProxyObject or ModuleNamespaceObject) return null;
+            if (holder.CurrentShape.TryGetSlot(key, out holderSlot)) break;
+            if (holder.MayGainOwnPropertyOutsideShape(key) || holder.TryGetOwnProperty(key, out _)) return null;
+            if (holder.PrototypeHandle is not { } next || (chain?.Count ?? 0) == MaxPrototypeLinks) return null;
+
+            (chain ??= []).Add(holder);
+            (chainShapes ??= []).Add(holder.CurrentShape);
+            (chainNext ??= []).Add(next);
+            link = next;
+        }
 
         var holderShape = holder.CurrentShape;
-        if (!holderShape.TryGetSlot(key, out var holderSlot)) return null;
         if (!holder.TryReadDataSlot(holderSlot, out _)) return null;
 
         var writer = new CacheIRWriter();
@@ -153,6 +175,11 @@ internal static class LoadPropertyAttacher
         writer.GuardShape(receiver.CurrentShape);
         if (keyVariesAtSite) writer.GuardKey(key);
         writer.LoadFromPrototype(protoHandle, holder, holderShape, holderSlot);
+        if (chain is not null)
+        {
+            writer.ThroughPrototypes(chain.ToArray(), chainShapes!.ToArray(), chainNext!.ToArray());
+        }
+
         return writer.Build();
     }
 }

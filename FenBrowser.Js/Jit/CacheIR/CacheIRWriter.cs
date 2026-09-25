@@ -14,6 +14,21 @@ internal sealed class CacheIRWriter
     private ObjectHandle? _protoHandle;
     private JsObject? _holder;
     private Shape? _holderShape;
+    private JsObject[]? _chain;
+    private Shape[]? _chainShapes;
+    private ObjectHandle[]? _chainNext;
+
+    /// <summary>
+    /// Records the prototypes a <see cref="LoadFromPrototype"/> passes through
+    /// before the holder: each object, its layout, and the handle of the
+    /// prototype it must still point at.
+    /// </summary>
+    internal void ThroughPrototypes(JsObject[] chain, Shape[] shapes, ObjectHandle[] next)
+    {
+        _chain = chain;
+        _chainShapes = shapes;
+        _chainNext = next;
+    }
 
     internal void GuardNotExotic()
     {
@@ -143,5 +158,8 @@ internal sealed class CacheIRWriter
         _keys.Count == 0 ? Array.Empty<string>() : _keys.ToArray(),
         _protoHandle ?? default,
         _holder,
-        _holderShape);
+        _holderShape,
+        _chain,
+        _chainShapes,
+        _chainNext);
 }
