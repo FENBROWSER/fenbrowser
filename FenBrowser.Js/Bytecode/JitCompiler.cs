@@ -1764,25 +1764,9 @@ public static class JitCompiler
     // can embed the reference as a Constant. Returns the existing IC if
     // one was populated by prior interpreted runs.
     private static FenBrowser.Js.Jit.CacheIR.CacheIRSite EnsureLoadIC(BytecodeFunction function, int icOffset)
-    {
-        var sites = function.EnsureLoadCacheSites();
-        if ((uint)icOffset >= (uint)sites.Length)
-        {
-            return new FenBrowser.Js.Jit.CacheIR.CacheIRSite();
-        }
-
-        return sites[icOffset] ??= new FenBrowser.Js.Jit.CacheIR.CacheIRSite();
-    }
+        => function.EnsureLoadCacheSite(icOffset);
 
     private static FenBrowser.Js.Jit.CacheIR.CacheIRSite EnsureStoreIC(BytecodeFunction function, int icOffset)
-    {
-        var sites = function.EnsureStoreCacheSites();
-        if ((uint)icOffset >= (uint)sites.Length)
-        {
-            return new FenBrowser.Js.Jit.CacheIR.CacheIRSite();
-        }
-
-        return sites[icOffset] ??= new FenBrowser.Js.Jit.CacheIR.CacheIRSite();
-    }
+        => function.EnsureStoreCacheSite(icOffset);
 }
 #endif // !PUBLISH_AOT

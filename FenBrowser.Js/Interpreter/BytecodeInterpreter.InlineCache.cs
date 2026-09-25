@@ -40,10 +40,9 @@ public sealed partial class BytecodeInterpreter
     {
         if (receiver.Tag is not (JsValueTag.Object or JsValueTag.String)) return;
 
-        var sites = fn.EnsureLoadCacheSites();
-        if ((uint)offset >= (uint)sites.Length) return;
+        if ((uint)offset >= (uint)fn.InstructionArray.Length) return;
 
-        var site = sites[offset] ??= new CacheIRSite();
+        var site = fn.EnsureLoadCacheSite(offset);
         if (site.IsMegamorphic) return;
 
         CacheIRProgram? program;
@@ -138,10 +137,9 @@ public sealed partial class BytecodeInterpreter
     {
         if (receiver.Tag != JsValueTag.Object) return;
 
-        var sites = fn.EnsureStoreCacheSites();
-        if ((uint)offset >= (uint)sites.Length) return;
+        if ((uint)offset >= (uint)fn.InstructionArray.Length) return;
 
-        var site = sites[offset] ??= new CacheIRSite();
+        var site = fn.EnsureStoreCacheSite(offset);
         if (site.IsMegamorphic) return;
 
         var obj = _heap.GetObject(receiver.AsObjectHandle());

@@ -756,7 +756,7 @@ internal static class BaselineCompiler
                     EmitCachedLoad(
                         PoolPropertySite(
                             function.PropertyNames[ins.C],
-                            EnsureSite(function.EnsureLoadCacheSites(), ip)),
+                            function.EnsureLoadCacheSite(ip)),
                         ins.A,
                         ins.B,
                         ip);
@@ -774,7 +774,7 @@ internal static class BaselineCompiler
                     if ((uint)ins.B >= (uint)function.PropertyNames.Count) return false;
                     var name = function.PropertyNames[ins.B];
                     EmitCachedStore(
-                        PoolPropertySite(name, EnsureSite(function.EnsureStoreCacheSites(), ip)),
+                        PoolPropertySite(name, function.EnsureStoreCacheSite(ip)),
                         ins.A,
                         ins.C,
                         ip,
@@ -988,11 +988,6 @@ internal static class BaselineCompiler
                     return false;
             }
         }
-
-        private static CacheIRSite EnsureSite(CacheIRSite?[] sites, int ip) =>
-            (uint)ip < (uint)sites.Length
-                ? sites[ip] ??= new CacheIRSite()
-                : new CacheIRSite();
 
         private bool EmitVoidCall(MethodInfo target, params ReadOnlySpan<int> operands)
         {

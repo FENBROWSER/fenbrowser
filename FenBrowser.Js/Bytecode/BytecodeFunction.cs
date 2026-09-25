@@ -266,18 +266,50 @@ public sealed class BytecodeFunction
     // cost about as much as the cache saved. The offset is already a dense
     // index into this function's instructions, so an array is the natural
     // store: one bounds check and one load.
-    internal FenBrowser.Js.Jit.CacheIR.CacheIRSite?[]? LoadCacheSites { get; set; }
-    internal FenBrowser.Js.Jit.CacheIR.CacheIRSite?[]? StoreCacheSites { get; set; }
-    internal CallICEntry?[]? CallICs { get; set; }
+    //
+    // The background JIT compiler creates sites for the code it is compiling
+    // while the interpreter goes on filling them in on the main thread, so both
+    // the arrays and their slots are published with a compare-and-swap. With a
+    // plain `??=` each thread could install its own array or site, and the
+    // compiled code would then read one the interpreter never updates.
+    private FenBrowser.Js.Jit.CacheIR.CacheIRSite?[]? _loadCacheSites;
+    private FenBrowser.Js.Jit.CacheIR.CacheIRSite?[]? _storeCacheSites;
+    private CallICEntry?[]? _callICs;
+
+    internal FenBrowser.Js.Jit.CacheIR.CacheIRSite?[]? LoadCacheSites { get => _loadCacheSites; init => _loadCacheSites = value; }
+    internal FenBrowser.Js.Jit.CacheIR.CacheIRSite?[]? StoreCacheSites { get => _storeCacheSites; init => _storeCacheSites = value; }
+    internal CallICEntry?[]? CallICs { get => _callICs; init => _callICs = value; }
 
     internal FenBrowser.Js.Jit.CacheIR.CacheIRSite?[] EnsureLoadCacheSites() =>
-        LoadCacheSites ??= new FenBrowser.Js.Jit.CacheIR.CacheIRSite?[InstructionArray.Length];
+        _loadCacheSites ?? PublishOnce(ref _loadCacheSites, new FenBrowser.Js.Jit.CacheIR.CacheIRSite?[InstructionArray.Length]);
 
     internal FenBrowser.Js.Jit.CacheIR.CacheIRSite?[] EnsureStoreCacheSites() =>
-        StoreCacheSites ??= new FenBrowser.Js.Jit.CacheIR.CacheIRSite?[InstructionArray.Length];
+        _storeCacheSites ?? PublishOnce(ref _storeCacheSites, new FenBrowser.Js.Jit.CacheIR.CacheIRSite?[InstructionArray.Length]);
 
     internal CallICEntry?[] EnsureCallICs() =>
-        CallICs ??= new CallICEntry?[InstructionArray.Length];
+        _callICs ?? PublishOnce(ref _callICs, new CallICEntry?[InstructionArray.Length]);
+
+    /// <summary>The load site at <paramref name="ip"/>, created by whichever thread asks first.</summary>
+    internal FenBrowser.Js.Jit.CacheIR.CacheIRSite EnsureLoadCacheSite(int ip) => EnsureSite(EnsureLoadCacheSites(), ip);
+
+    /// <summary>The store site at <paramref name="ip"/>, created by whichever thread asks first.</summary>
+    internal FenBrowser.Js.Jit.CacheIR.CacheIRSite EnsureStoreCacheSite(int ip) => EnsureSite(EnsureStoreCacheSites(), ip);
+
+    private static FenBrowser.Js.Jit.CacheIR.CacheIRSite EnsureSite(FenBrowser.Js.Jit.CacheIR.CacheIRSite?[] sites, int ip)
+    {
+        if ((uint)ip >= (uint)sites.Length)
+        {
+            // Not an instruction of this function: a detached site keeps
+            // callers simple and is never shared.
+            return new FenBrowser.Js.Jit.CacheIR.CacheIRSite();
+        }
+
+        return System.Threading.Volatile.Read(ref sites[ip])
+            ?? PublishOnce(ref sites[ip], new FenBrowser.Js.Jit.CacheIR.CacheIRSite());
+    }
+
+    private static T PublishOnce<T>(ref T? slot, T created) where T : class
+        => System.Threading.Interlocked.CompareExchange(ref slot, created, null) ?? created;
 
     // Tier 4 #24 JIT bookkeeping. This is also execution-local feedback and must be
     // reset when a cached template is materialized for another compilation request.
