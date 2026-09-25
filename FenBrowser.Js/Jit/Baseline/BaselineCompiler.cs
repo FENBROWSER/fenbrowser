@@ -608,6 +608,7 @@ internal static class BaselineCompiler
                     il.Arg(0);
                     il.Arg(1);
                     il.Int(ins.B);
+                    il.Int(ip);
                     il.Call(MiPreResolveBinding);
                     return true;
 
@@ -617,6 +618,7 @@ internal static class BaselineCompiler
                     il.Arg(1);
                     il.Int(ins.B);
                     PushRegister(ins.A);
+                    il.Int(ip);
                     il.Call(MiStoreToResolvedBinding);
                     return true;
 

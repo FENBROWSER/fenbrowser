@@ -87,4 +87,17 @@ public sealed class DispatchLoopFreeVariableSiteTests
             o.y = 'obj';
             before + '|' + read();"));
     }
+    [Fact]
+    public void IncrementsOfOuterVariablesLandOnTheDispatchLoop()
+    {
+        Assert.Equal("300,300", Run($@"
+            var g = 0;
+            function make() {{
+                var c = 0;
+                return function (n) {{ {KeepOnDispatchLoop} for (var i = 0; i < n; i++) {{ c++; g++; }} return c + ',' + g; }};
+            }}
+            var f = make(), r;
+            for (var k = 0; k < 3; k++) r = f(100);
+            r;"));
+    }
 }

@@ -820,8 +820,7 @@ internal sealed class Interp2
                     // there can delete the property the name resolved to.
                     if (HomeOfSlot(layout, ins.B) == SlotHome.Free)
                     {
-                        _host.Interp2PreResolveFree(
-                            OuterEnvironmentOf(_depth - 1), NameOfSlot(layout, ins.B));
+                        _host.Interp2PreResolveFreeCached(layout, ins.B, OuterEnvironmentOf(_depth - 1));
                         stack = _stack;
                     }
 
@@ -930,10 +929,7 @@ internal sealed class Interp2
                         HomeOfSlot(layout, ins.B) == SlotHome.Free)
                     {
                         _host.Interp2StoreResolvedFree(
-                            OuterEnvironmentOf(_depth - 1),
-                            NameOfSlot(layout, ins.B),
-                            stack[frameBase + ins.A],
-                            layout.IsStrict);
+                            layout, ins.B, ip - 1, OuterEnvironmentOf(_depth - 1), stack[frameBase + ins.A]);
                         stack = _stack;
                         break;
                     }

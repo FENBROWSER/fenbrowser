@@ -1154,12 +1154,12 @@ public static class JitCompiler
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
                 return true;
             case OpCode.PreResolveVar:
-                body.Add(Expression.Call(interp, MiPreResolveBinding, frame, Expression.Constant(ins.B)));
+                body.Add(Expression.Call(interp, MiPreResolveBinding, frame, Expression.Constant(ins.B), Expression.Constant(ip)));
                 return true;
             case OpCode.StoreResolvedVar:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 body.Add(Expression.Call(interp, MiStoreToResolvedBinding, frame, Expression.Constant(ins.B),
-                    Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)), Expression.Constant(ip)));
                 return true;
             case OpCode.Return:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;

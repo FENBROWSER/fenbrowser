@@ -166,4 +166,52 @@ public sealed class FreeVariableStoreTests
             write('w');
             before + '|' + after + '|' + o.y + '|' + globalThis.y;").AsString());
     }
+    // `x++` and `x += e` resolve the binding before evaluating the operand
+    // (ECMA-262 13.4, 13.15.2) and go through the same sites.
+    [Fact]
+    public void IncrementsOfClosureAndGlobalVariablesLandAfterSitesAreCached()
+    {
+        Assert.Equal("300,300,300", Run(@"
+            var g = 0;
+            function make() {
+                var c = 0, d = 0;
+                return function (n) { for (var i = 0; i < n; i++) { c++; d += 1; g++; } return c + ',' + d + ',' + g; };
+            }
+            var f = make(), r;
+            for (var k = 0; k < 3; k++) r = f(100);
+            r;").AsString());
+    }
+
+    [Fact]
+    public void IncrementingAConstClosureVariableThrowsAfterReadsCachedIt()
+    {
+        Assert.Equal("TypeError", Run(@"
+            function make() {
+                const c = 1;
+                return function (bump) { var t = 0; for (var i = 0; i < 50; i++) t += c; if (bump) c++; return t; };
+            }
+            var f = make(), name;
+            for (var i = 0; i < 20; i++) f(false);
+            try { f(true); } catch (e) { name = e.constructor.name; }
+            name;").AsString());
+    }
+
+    [Fact]
+    public void AnIncrementWhoseOperandDeletesTheGlobalWritesTheResolvedReference()
+    {
+        // Sloppy: the write re-creates the property it resolved to. Strict: the
+        // resolved binding no longer exists, which is a ReferenceError.
+        Assert.Equal("sloppy:6,strict:ReferenceError", Run(@"
+            function sloppyInc() { counter++; }
+            function strictInc() { 'use strict'; counter++; }
+            counter = 0;
+            for (var i = 0; i < 50; i++) { sloppyInc(); strictInc(); }
+            var out = [];
+            counter = { valueOf: function () { delete globalThis.counter; return 5; } };
+            sloppyInc();
+            out.push('sloppy:' + counter);
+            counter = { valueOf: function () { delete globalThis.counter; return 5; } };
+            try { strictInc(); out.push('strict:no error'); } catch (e) { out.push('strict:' + e.constructor.name); }
+            out.join();").AsString());
+    }
 }

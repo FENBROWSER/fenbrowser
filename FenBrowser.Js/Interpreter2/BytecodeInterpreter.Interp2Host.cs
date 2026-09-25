@@ -485,10 +485,28 @@ public sealed partial class BytecodeInterpreter
     /// rather than the frame, and matched by name at the store, exactly as the
     /// old loop holds it, so both loops answer the same.
     /// </remarks>
+    /// <summary>
+    /// <see cref="Interp2PreResolveFree"/> through the slot's site, when the
+    /// LoadVar that `x++` also performs has recorded one.
+    /// </summary>
+    internal void Interp2PreResolveFreeCached(FrameLayout layout, int slot, EnvironmentRecord? outerEnvironment)
+    {
+        var name = (uint)slot < (uint)layout.SlotNames.Length ? layout.SlotNames[slot] : null;
+        var sites = layout.FreeSites;
+        if (name is not null && (uint)slot < (uint)sites.Length && sites[slot] is { IsCurrent: true } site &&
+            TryPreResolveThroughSite(site, outerEnvironment, name))
+        {
+            return;
+        }
+
+        Interp2PreResolveFree(outerEnvironment, name);
+    }
+
     internal void Interp2PreResolveFree(EnvironmentRecord? outerEnvironment, string? name)
     {
         _preResolvedEnv = null;
         _preResolvedName = name;
+        _preResolvedSite = null;
         if (name is null) return;
 
         for (var env = outerEnvironment; env is not null; env = env.OuterEnv)
@@ -507,18 +525,30 @@ public sealed partial class BytecodeInterpreter
     /// resolved a different name.
     /// </summary>
     internal void Interp2StoreResolvedFree(
-        EnvironmentRecord? outerEnvironment, string? name, JsValue value, bool strict)
+        FrameLayout layout, int slot, int icOffset, EnvironmentRecord? outerEnvironment, JsValue value)
     {
+        var name = (uint)slot < (uint)layout.SlotNames.Length ? layout.SlotNames[slot] : null;
+        if (name is not null && TryStoreResolvedThroughSite(layout.Function, icOffset, name, value))
+        {
+            return;
+        }
+
+        var strict = layout.IsStrict;
         var resolved = _preResolvedEnv;
         var resolvedName = _preResolvedName;
         _preResolvedEnv = null;
         _preResolvedName = null;
+        _preResolvedSite = null;
 
         if (resolved is not null && name is not null &&
             string.Equals(resolvedName, name, StringComparison.Ordinal))
         {
             var status = resolved.SetMutableBinding(name, value, strict);
-            if (status == BindingOpResult.Ok) return;
+            if (status == BindingOpResult.Ok)
+            {
+                NoteResolvedGlobalStore(layout.Function, icOffset, resolved, name);
+                return;
+            }
 
             throw Interp2BindingFailure(status, name, assignment: true);
         }

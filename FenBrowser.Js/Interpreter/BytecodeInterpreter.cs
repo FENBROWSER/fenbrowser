@@ -2290,10 +2290,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     StoreNameInVariableEnvironment(frame, ins.B, registers[ins.A]);
                     break;
                 case OpCode.PreResolveVar:
-                    PreResolveBinding(frame, ins.B);
+                    PreResolveBinding(frame, ins.B, frame.InstructionPointer - 1);
                     break;
                 case OpCode.StoreResolvedVar:
-                    StoreToResolvedBinding(frame, ins.B, registers[ins.A]);
+                    StoreToResolvedBinding(frame, ins.B, registers[ins.A], frame.InstructionPointer - 1);
                     break;
                 case OpCode.Move:
                     registers[ins.A] = registers[ins.B];
@@ -7370,8 +7370,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 #endif
 
-    internal void PreResolveBinding(InterpreterFrame frame, int slot)
+    /// <param name="ip">The PreResolveVar, which keys its free-variable site; -1 for none.</param>
+    internal void PreResolveBinding(InterpreterFrame frame, int slot, int ip = -1)
     {
+        _preResolvedSite = null;
+
         // Resolving is only needed to find which record holds the binding. When
         // this frame's own record holds it at this slot, there is nothing to walk.
         if (frame.Environment is DeclarativeEnvironmentRecord own && own.OwnsSlotsOf(frame.Function) &&
@@ -7385,14 +7388,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is null) return;
 
-        for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
+        var function = frame.Function;
+        if (ip >= 0 && function.NameSites is { } nameSites && (uint)ip < (uint)nameSites.Length &&
+            nameSites[ip] is { IsCurrent: true } site &&
+            TryPreResolveThroughSite(site, frame.Environment, name))
+        {
+            return;
+        }
+
+        var hops = 0;
+        var cacheable = ip >= 0;
+        for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv, hops++)
         {
             if (env.HasBinding(name))
             {
                 _preResolvedEnv = env;
                 _preResolvedName = name;
+                if (cacheable && (uint)ip < (uint)function.InstructionArray.Length &&
+                    CreateReadSite(function, ip, hops, env, name) is { } created)
+                {
+                    function.EnsureNameSites()[ip] = created;
+                }
+
                 return;
             }
+
+            cacheable &= env is not ObjectEnvironmentRecord;
         }
 
         _preResolvedEnv = null;
@@ -7402,7 +7423,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Writes through the pre-resolved binding captured by PreResolveBinding.
     // If no resolution was cached (PreResolveVar was not emitted or the binding
     // was not found), falls back to walking the environment chain.
-    internal void StoreToResolvedBinding(InterpreterFrame frame, int slot, JsValue value)
+    internal void StoreToResolvedBinding(InterpreterFrame frame, int slot, JsValue value, int ip = -1)
     {
         // Same slot, same environment: no need for the name or the resolution
         // the preceding PreResolveVar performed.
@@ -7427,15 +7448,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return;
         }
 
+        if (ip >= 0 && TryStoreResolvedThroughSite(frame.Function, ip, name, value))
+        {
+            return;
+        }
+
         var env = _preResolvedEnv;
         var cachedName = _preResolvedName;
         _preResolvedEnv = null;
         _preResolvedName = null;
+        _preResolvedSite = null;
 
         if (env is not null && cachedName == name)
         {
             var status = env.SetMutableBinding(name, value, strict: frame.Function.IsStrictMode);
-            if (status == BindingOpResult.Ok) return;
+            if (status == BindingOpResult.Ok)
+            {
+                if (ip >= 0)
+                {
+                    NoteResolvedGlobalStore(frame.Function, ip, env, name);
+                }
+
+                return;
+            }
             ThrowBindingFailure(frame, status, name, assignment: true);
             return;
         }
