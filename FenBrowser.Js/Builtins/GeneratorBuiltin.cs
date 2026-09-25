@@ -28,20 +28,21 @@ public sealed class GeneratorBuiltin : IBuiltinModule
             if (g.State == GeneratorState.Executing)
                 throw new JsThrownException(ctx.CreateTypeError("Generator.prototype.next: generator is already executing"));
             var sentValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var interpreter = ctx as BytecodeInterpreter;
+            if (interpreter is null) return CreateResult(ctx, heap, JsValue.Undefined, done: true);
             g.State = GeneratorState.Executing;
+            var finished = false;
             try
             {
-                var interpreter = ctx as BytecodeInterpreter;
-                if (interpreter is null) return CreateResult(ctx, heap, JsValue.Undefined, done: true);
                 var result = interpreter.ExecuteGenerator(g, sentValue);
                 // ExecuteGenerator already updated g.State (Suspended if yielded,
                 // Completed if returned). Don't override here.
+                finished = true;
                 return result;
             }
-            catch (JsThrownException)
+            finally
             {
-                g.State = GeneratorState.Completed;
-                throw;
+                CompleteIfThrown(g, finished);
             }
         }, length: 1);
 
@@ -65,6 +66,7 @@ public sealed class GeneratorBuiltin : IBuiltinModule
             if (interpreter is null) { g.State = GeneratorState.Completed; return CreateResult(ctx, heap, returnValue, done: true); }
             g.CompletionMode = GeneratorCompletionMode.Return;
             g.State = GeneratorState.Executing;
+            var finished = false;
             try
             {
                 // The interpreter injects the return completion at the suspended
@@ -72,12 +74,13 @@ public sealed class GeneratorBuiltin : IBuiltinModule
                 // and a yield inside such a finally (or a yield* forward) legitimately
                 // re-suspends the generator with that yield's result. Otherwise the
                 // generator completed and the result is already {value, done: true}.
-                return interpreter.ExecuteGenerator(g, returnValue);
+                var result = interpreter.ExecuteGenerator(g, returnValue);
+                finished = true;
+                return result;
             }
-            catch (JsThrownException)
+            finally
             {
-                g.State = GeneratorState.Completed;
-                throw;
+                CompleteIfThrown(g, finished);
             }
         }, length: 1);
 
@@ -94,16 +97,17 @@ public sealed class GeneratorBuiltin : IBuiltinModule
             if (interpreter is null) { g.State = GeneratorState.Completed; throw new JsThrownException(excValue); }
             g.CompletionMode = GeneratorCompletionMode.Throw;
             g.State = GeneratorState.Executing;
+            var finished = false;
             try
             {
                 var result = interpreter.ExecuteGenerator(g, excValue);
                 // Generator caught the exception and yielded — return the yield.
+                finished = true;
                 return result;
             }
-            catch (JsThrownException)
+            finally
             {
-                g.State = GeneratorState.Completed;
-                throw;
+                CompleteIfThrown(g, finished);
             }
         }, length: 1);
 
@@ -117,6 +121,19 @@ public sealed class GeneratorBuiltin : IBuiltinModule
             new JsPropertyDescriptor(JsValue.FromString("Generator"), Writable: false, Enumerable: false, Configurable: true));
 
         return new[] { BuiltinBinding.NonEnumerable("GeneratorPrototype", JsValue.FromObject(ph)) };
+    }
+
+    // A body that threw leaves the generator completed (ECMA-262 27.5.3.3 step
+    // 10). This runs from a finally rather than a catch-and-rethrow: a rethrow
+    // starts a new exception dispatch on top of the stack the first one still
+    // holds, and a stack overflow unwinding through a deep chain of generators
+    // would overflow a second time doing that at every level.
+    private static void CompleteIfThrown(GeneratorObject g, bool finished)
+    {
+        if (!finished)
+        {
+            g.State = GeneratorState.Completed;
+        }
     }
 
     private static JsValue CreateResult(IBuiltinContext ctx, JsHeap heap, JsValue value, bool done)

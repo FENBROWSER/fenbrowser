@@ -148,7 +148,7 @@ public sealed partial class BytecodeInterpreter
                 frame.Registers[ins.A], function.PropertyNames[ins.B], JsValue.Undefined,
                 frame.Registers[ins.C], ins.OpCode == OpCode.DefineGetter, enumerable: ins.D != 0);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }
@@ -166,7 +166,7 @@ public sealed partial class BytecodeInterpreter
                 frame.Registers[ins.A], name: null, frame.Registers[ins.B],
                 frame.Registers[ins.C], ins.OpCode == OpCode.DefineGetterByReg, enumerable: ins.D != 0);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }
@@ -182,7 +182,7 @@ public sealed partial class BytecodeInterpreter
             DefineMethodCore(
                 frame.Registers[ins.A], function.PropertyNames[ins.B], JsValue.Undefined, frame.Registers[ins.C]);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }
@@ -194,7 +194,7 @@ public sealed partial class BytecodeInterpreter
         {
             DefineMethodCore(frame.Registers[ins.A], name: null, frame.Registers[ins.B], frame.Registers[ins.C]);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }

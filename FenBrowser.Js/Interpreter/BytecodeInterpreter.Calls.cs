@@ -1149,9 +1149,8 @@ public sealed partial class BytecodeInterpreter
                     frame.ThisValue = superResult;
                 frame.Registers[destinationRegister] = superResult;
             }
-            catch (JsThrownException ex)
+            catch (JsThrownException ex) when (HasHandler(frame))
             {
-                if (frame.CatchHandlers.Count == 0) throw;
                 ThrowOrHandle(frame, ex.Value);
             }
             return;
@@ -1191,13 +1190,8 @@ public sealed partial class BytecodeInterpreter
                 PopulateCallIC(frame.Function, icOffset, callee);
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
-            if (frame.CatchHandlers.Count == 0)
-            {
-                throw;
-            }
-
             ThrowOrHandle(frame, ex.Value);
         }
     }
@@ -1226,13 +1220,8 @@ public sealed partial class BytecodeInterpreter
             var constructed = ConstructFunction(constructor, args, newTarget);
             frame.Registers[destinationRegister] = constructed;
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
-            if (frame.CatchHandlers.Count == 0)
-            {
-                throw;
-            }
-
             ThrowOrHandle(frame, ex.Value);
         }
     }

@@ -1701,11 +1701,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     // Bounds JS recursion so a runaway tail-less recursive function surfaces as a
     // catchable JS RangeError instead of crashing the host with a native
-    // StackOverflowException. ExecuteInternalCore is a large method and its native
-    // frame cost is meaningfully higher than a trivial function call. Keep the
-    // default below the measured native-stack failure point while reserving enough
-    // headroom to materialize and unwind the catchable RangeError.
-    private const int DefaultMaxCallDepth = 20;
+    // StackOverflowException. Two limits apply: this frame count, which is what
+    // scripts observe, and the native stack itself (EnsureNativeStack), which
+    // is what actually runs out when every JS call costs a CLR frame. The count
+    // is in the range engines use in practice (V8 manages roughly 10k frames);
+    // the native check trips first on a small thread stack.
+    private const int DefaultMaxCallDepth = 10_000;
     private const int MaxInternalRecursionDepth = 128;
     private int _callDepth;
     private int _proxyGetDepth;
@@ -1713,6 +1714,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     public int MaxCallDepth { get; set; } = DefaultMaxCallDepth;
 
     public int? ParserMaxRecursionDepth { get; set; }
+
+    /// <summary>
+    /// Throws the script-visible stack overflow RangeError when the native stack
+    /// is close to exhaustion. Every re-entry into a dispatch loop costs CLR
+    /// stack, and how much depends on the thread (a 1 MB pool thread versus the
+    /// browser's large-stack script thread) and on which natives sit between the
+    /// JS frames, so no fixed frame count is safe on its own. The runtime keeps
+    /// enough headroom below this check to build and throw the error.
+    /// </summary>
+    internal void EnsureNativeStack()
+    {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            throw new JsThrownException(CreateRangeError("Maximum call stack size exceeded."));
+        }
+    }
 
     [MayExecuteJs]
     private JsValue ExecuteInternal(
@@ -1730,6 +1747,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateRangeError("Maximum call stack size exceeded."));
         }
 
+        EnsureNativeStack();
         _callDepth++;
         if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
         {
@@ -2464,7 +2482,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         HandleLoadSuperProperty(frame, function, ins);
                     }
-                    catch (JsThrownException ex)
+                    catch (JsThrownException ex) when (HasHandler(frame))
                     {
                         ThrowOrHandle(frame, ex.Value);
                     }
@@ -2475,7 +2493,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         HandleLoadSuperElement(frame, ins);
                     }
-                    catch (JsThrownException ex)
+                    catch (JsThrownException ex) when (HasHandler(frame))
                     {
                         ThrowOrHandle(frame, ex.Value);
                     }
@@ -2588,7 +2606,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             gen.YieldStarIterator = iterHandle;
                             gen.BarrierInternalSlot(iterHandle);
                         }
-                        catch (JsThrownException ex)
+                        catch (JsThrownException ex) when (HasHandler(frame))
                         {
                             ThrowOrHandle(frame, ex.Value);
                             break;
@@ -2623,7 +2641,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                 retMethod = GetDescriptorValue(retPropDesc, iterValue);
                             }
                         }
-                        catch (JsThrownException ex)
+                        catch (JsThrownException ex) when (HasHandler(frame))
                         {
                             ThrowOrHandle(frame, ex.Value);
                             break;
@@ -2687,10 +2705,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             : new[] { methodArg };
                         innerResult = CallFunction(methodValue, callArgs, iterValue);
                     }
-                    catch (JsThrownException ex)
+                    catch (JsThrownException ex) when (HasHandler(frame))
                     {
                         // ECMA-262 15.5.5 step 5.c.iii — if .throw() throws,
-                        // clear delegation and propagate.
+                        // clear delegation and propagate. With no handler in the
+                        // frame the throw completes the generator, which ends the
+                        // delegation with it.
                         if (methodName == "throw")
                         {
                             gen.YieldStarIterator = null;
@@ -2715,7 +2735,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         doneValue = hasDone ? GetDescriptorValue(doneDesc, innerResult) : JsValue.Undefined;
                         done = hasDone && doneValue.AsBoolean();
                     }
-                    catch (JsThrownException ex)
+                    catch (JsThrownException ex) when (HasHandler(frame))
                     {
                         ThrowOrHandle(frame, ex.Value);
                         break;
@@ -2733,7 +2753,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                 ? GetDescriptorValue(vd, innerResult)
                                 : JsValue.Undefined;
                         }
-                        catch (JsThrownException ex)
+                        catch (JsThrownException ex) when (HasHandler(frame))
                         {
                             ThrowOrHandle(frame, ex.Value);
                             break;
@@ -2847,7 +2867,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             withEnv.IsUnscopable = name => IsBlockedByUnscopables(bindingHandle, unscopablesSymId, name);
                         frame.Environment = withEnv;
                     }
-                    catch (JsThrownException ex)
+                    catch (JsThrownException ex) when (HasHandler(frame))
                     {
                         ThrowOrHandle(frame, ex.Value);
                     }
@@ -2880,7 +2900,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         var result = AwaitValue(frame, registers[ins.B], ins.A);
                         registers[ins.A] = result;
                     }
-                    catch (JsThrownException ex)
+                    catch (JsThrownException ex) when (HasHandler(frame))
                     {
                         ThrowOrHandle(frame, ex.Value);
                         break;
@@ -2962,7 +2982,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             registers[ins.C],
                             function.IsStrictMode);
                     }
-                    catch (JsThrownException ex)
+                    catch (JsThrownException ex) when (HasHandler(frame))
                     {
                         ThrowOrHandle(frame, ex.Value);
                     }
@@ -2983,7 +3003,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         registers[ins.A] = GetReceiverProperty(receiver, prop);
                         PopulateLoadIC(function, icOffset, receiver, prop);
                     }
-                    catch (JsThrownException ex)
+                    catch (JsThrownException ex) when (HasHandler(frame))
                     {
                         ThrowOrHandle(frame, ex.Value);
                     }
@@ -3147,7 +3167,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         // without @@iterator throw instead of falling back.
                         registers[ins.A] = CreateForOfIteratorState(registers[ins.B], requireIterable: ins.C == 1);
                     }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.ForOfNext:
@@ -3166,7 +3186,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             registers[ins.A] = value;
                         }
                     }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.EnumerateValuesAsync:
@@ -3177,7 +3197,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         registers[ins.A] = CreateForAwaitIteratorState(registers[ins.B]);
                     }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.AsyncIterNext:
@@ -3206,7 +3226,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             registers[ins.A] = value;
                         }
                     }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.AsyncIterFinish:
@@ -3240,7 +3260,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         _ = TryGetPropertyValue(resultObj, awaited, "value", out var resultValue);
                         registers[ins.A] = resultValue;
                     }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.IteratorClose:
@@ -3293,7 +3313,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     if (target.Tag == JsValueTag.HostObject)
                     {
                         try { DefineHostPrivateField(target, name, value, brand); }
-                        catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                        catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                         break;
                     }
                     if (target.Tag != JsValueTag.Object)
@@ -3322,7 +3342,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             }
                             registers[ins.A] = hostPrivateValue;
                         }
-                        catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                        catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                         break;
                     }
                     if (objVal.Tag != JsValueTag.Object)
@@ -3359,7 +3379,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                 ThrowOrHandle(frame, CreateTypeError("Cannot write private field to an object whose class did not declare it."));
                             }
                         }
-                        catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                        catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                         break;
                     }
                     if (objVal.Tag != JsValueTag.Object)
@@ -3431,7 +3451,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             }
                         }
                     }
-                    catch (JsThrownException ex)
+                    catch (JsThrownException ex) when (HasHandler(frame))
                     {
                         ThrowOrHandle(frame, ex.Value);
                     }
@@ -3616,7 +3636,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         registers[ins.A] = JsValue.FromNumberCompact(ToNumber(registers[ins.B]));
                     }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Neg:
                     try
@@ -3627,7 +3647,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         else
                             registers[ins.A] = JsValue.FromNumberCompact(-numeric.AsNumber());
                     }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Void:
                     registers[ins.A] = JsValue.Undefined;
@@ -3640,7 +3660,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         registers[ins.A] = ToNumericValue(registers[ins.B]);
                     }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.ToStringCoerce:
                     // ToString runs user code (toString/valueOf via ToPrimitive) and may
@@ -3649,7 +3669,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         registers[ins.A] = JsValue.FromString(ToStringValue(registers[ins.B]));
                     }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Increment:
                     registers[ins.A] = StepNumeric(registers[ins.B], +1);
@@ -3677,7 +3697,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
 
                     try { registers[ins.A] = Add(addL, addR); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.Sub:
@@ -3691,7 +3711,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
 
                     try { registers[ins.A] = BigIntArith(subL, subR, "subtraction", (a, b) => a - b, (a, b) => a - b); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.Mul:
@@ -3705,28 +3725,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
 
                     try { registers[ins.A] = BigIntArith(mulL, mulR, "multiplication", (a, b) => a * b, (a, b) => a * b); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.Mod:
                     try { registers[ins.A] = BigIntArith(registers[ins.B], registers[ins.C], "modulo", (a, b) => a % b, (a, b) => a % b); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Div:
                     try { registers[ins.A] = BigIntArith(registers[ins.B], registers[ins.C], "division", (a, b) => a / b, (a, b) => a / b); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Exp:
                     try { registers[ins.A] = ExponentiationOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Eq:
                     try { registers[ins.A] = JsValue.FromBoolean(AreEqual(registers[ins.B], registers[ins.C])); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Neq:
                     try { registers[ins.A] = JsValue.FromBoolean(!AreEqual(registers[ins.B], registers[ins.C])); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.StrictEq:
                     registers[ins.A] = JsValue.FromBoolean(AreStrictlyEqual(registers[ins.B], registers[ins.C]));
@@ -3759,7 +3779,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             {
                                 has = HasHostObjectProperty(rhs, key);
                             }
-                            catch (JsThrownException ex)
+                            catch (JsThrownException ex) when (HasHandler(frame))
                             {
                                 ThrowOrHandle(frame, ex.Value);
                                 break;
@@ -3780,7 +3800,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                 ? HasSymbolProperty(obj, keyValue.AsSymbolId())
                                 : HasPropertyIncludingProxy(obj, ToPropertyKey(keyValue));
                         }
-                        catch (JsThrownException ex)
+                        catch (JsThrownException ex) when (HasHandler(frame))
                         {
                             ThrowOrHandle(frame, ex.Value);
                             break;
@@ -3809,20 +3829,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
 
                     try { registers[ins.A] = JsValue.FromBoolean(IsLessThan(ltL, ltR)); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.Gt:
                     try { registers[ins.A] = JsValue.FromBoolean(IsGreaterThan(registers[ins.B], registers[ins.C])); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Le:
                     try { registers[ins.A] = JsValue.FromBoolean(IsLessThanOrEqual(registers[ins.B], registers[ins.C])); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Ge:
                     try { registers[ins.A] = JsValue.FromBoolean(IsGreaterThanOrEqual(registers[ins.B], registers[ins.C])); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.And:
                     registers[ins.A] = IsTruthy(registers[ins.B]) ? registers[ins.C] : registers[ins.B];
@@ -3832,31 +3852,31 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 case OpCode.BitAnd:
                     try { registers[ins.A] = BitwiseAndOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.BitOr:
                     try { registers[ins.A] = BitwiseOrOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.BitXor:
                     try { registers[ins.A] = BitwiseXorOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.BitNot:
                     try { registers[ins.A] = BitwiseNotOp(registers[ins.B]); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.ShiftLeft:
                     try { registers[ins.A] = LeftShiftOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.ShiftRight:
                     try { registers[ins.A] = RightShiftOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.UnsignedShiftRight:
                     try { registers[ins.A] = UnsignedRightShiftOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Return:
                 {
@@ -23632,7 +23652,7 @@ fallbackArraySpecies:
             frame.Registers[destReg] = GetReceiverProperty(receiver, prop);
             PopulateLoadIC(frame.Function, icOffset, receiver, prop);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }
@@ -23698,7 +23718,7 @@ fallbackArraySpecies:
                 }
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }
@@ -23747,7 +23767,7 @@ fallbackArraySpecies:
         if (receiverValue.Tag == JsValueTag.HostObject)
         {
             try { SetHostObjectProperty(receiverValue, prop, value); }
-            catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+            catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
             return;
         }
 
@@ -23767,7 +23787,7 @@ fallbackArraySpecies:
         if (ownerObj is ProxyObject proxySet)
         {
             try { _ = ProxySet(proxySet, receiverValue, prop, value); }
-            catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+            catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
             return;
         }
         try
@@ -23784,7 +23804,7 @@ fallbackArraySpecies:
                 }
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }
@@ -23799,7 +23819,7 @@ fallbackArraySpecies:
         if (receiverValue.Tag == JsValueTag.HostObject)
         {
             try { SetHostObjectProperty(receiverValue, prop, value); }
-            catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+            catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
             return;
         }
 
@@ -23813,7 +23833,7 @@ fallbackArraySpecies:
         if (obj is ProxyObject proxySet)
         {
             try { _ = ProxySet(proxySet, receiverValue, prop, value); }
-            catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+            catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
             return;
         }
         try
@@ -23822,7 +23842,7 @@ fallbackArraySpecies:
             if (receiverValue.Tag == JsValueTag.Object)
                 PopulateStoreIC(frame.Function, icOffset, receiverValue, prop);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }
@@ -23861,7 +23881,7 @@ fallbackArraySpecies:
                 }
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }
@@ -24111,7 +24131,7 @@ fallbackArraySpecies:
         {
             SetElementCore(receiverValue, keyValue, value, strict);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }
@@ -24196,7 +24216,7 @@ fallbackArraySpecies:
         {
             SetElementByIndexCore(receiverValue, index, value, strict);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
         }
@@ -24384,35 +24404,35 @@ fallbackArraySpecies:
         {
             case OpCode.Add:
                 try { frame.Registers[a] = Add(frame.Registers[b], frame.Registers[c]); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Sub:
                 try { frame.Registers[a] = BigIntArith(frame.Registers[b], frame.Registers[c], "subtraction", (x, y) => x - y, (x, y) => x - y); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Mul:
                 try { frame.Registers[a] = BigIntArith(frame.Registers[b], frame.Registers[c], "multiplication", (x, y) => x * y, (x, y) => x * y); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Mod:
                 try { frame.Registers[a] = BigIntArith(frame.Registers[b], frame.Registers[c], "modulo", (x, y) => x % y, (x, y) => x % y); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Div:
                 try { frame.Registers[a] = BigIntArith(frame.Registers[b], frame.Registers[c], "division", (x, y) => x / y, (x, y) => x / y); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Exp:
                 try { frame.Registers[a] = ExponentiationOp(frame.Registers[b], frame.Registers[c]); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Eq:
                 try { frame.Registers[a] = JsValue.FromBoolean(AreEqual(frame.Registers[b], frame.Registers[c])); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Neq:
                 try { frame.Registers[a] = JsValue.FromBoolean(!AreEqual(frame.Registers[b], frame.Registers[c])); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.StrictEq:
                 frame.Registers[a] = JsValue.FromBoolean(AreStrictlyEqual(frame.Registers[b], frame.Registers[c]));
@@ -24422,19 +24442,19 @@ fallbackArraySpecies:
                 break;
             case OpCode.Lt:
                 try { frame.Registers[a] = JsValue.FromBoolean(IsLessThan(frame.Registers[b], frame.Registers[c])); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Gt:
                 try { frame.Registers[a] = JsValue.FromBoolean(IsGreaterThan(frame.Registers[b], frame.Registers[c])); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Le:
                 try { frame.Registers[a] = JsValue.FromBoolean(IsLessThanOrEqual(frame.Registers[b], frame.Registers[c])); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Ge:
                 try { frame.Registers[a] = JsValue.FromBoolean(IsGreaterThanOrEqual(frame.Registers[b], frame.Registers[c])); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.And:
                 frame.Registers[a] = IsTruthy(frame.Registers[b]) ? frame.Registers[c] : frame.Registers[b];
@@ -24444,27 +24464,27 @@ fallbackArraySpecies:
                 break;
             case OpCode.BitAnd:
                 try { frame.Registers[a] = BitwiseAndOp(frame.Registers[b], frame.Registers[c]); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.BitOr:
                 try { frame.Registers[a] = BitwiseOrOp(frame.Registers[b], frame.Registers[c]); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.BitXor:
                 try { frame.Registers[a] = BitwiseXorOp(frame.Registers[b], frame.Registers[c]); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.ShiftLeft:
                 try { frame.Registers[a] = LeftShiftOp(frame.Registers[b], frame.Registers[c]); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.ShiftRight:
                 try { frame.Registers[a] = RightShiftOp(frame.Registers[b], frame.Registers[c]); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.UnsignedShiftRight:
                 try { frame.Registers[a] = UnsignedRightShiftOp(frame.Registers[b], frame.Registers[c]); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             default:
                 throw new InvalidOperationException($"ApplyBinopForJit: unsupported opcode {op}.");
@@ -24484,7 +24504,7 @@ fallbackArraySpecies:
                 {
                     frame.Registers[a] = JsValue.FromNumberCompact(ToNumber(frame.Registers[b]));
                 }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Neg:
                 try
@@ -24495,7 +24515,7 @@ fallbackArraySpecies:
                     else
                         frame.Registers[a] = JsValue.FromNumberCompact(-numeric.AsNumber());
                 }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Void:
                 frame.Registers[a] = JsValue.Undefined;
@@ -24505,15 +24525,15 @@ fallbackArraySpecies:
                 break;
             case OpCode.BitNot:
                 try { frame.Registers[a] = BitwiseNotOp(frame.Registers[b]); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.ToNumeric:
                 try { frame.Registers[a] = ToNumericValue(frame.Registers[b]); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.ToStringCoerce:
                 try { frame.Registers[a] = JsValue.FromString(ToStringValue(frame.Registers[b])); }
-                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Increment:
                 frame.Registers[a] = StepNumeric(frame.Registers[b], +1);
@@ -25587,7 +25607,7 @@ fallbackArraySpecies:
             result = InstanceOfCore(left, right);
             return true;
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
             result = false;

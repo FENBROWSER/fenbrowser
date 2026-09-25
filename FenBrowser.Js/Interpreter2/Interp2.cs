@@ -224,7 +224,7 @@ internal sealed class Interp2
                 {
                     return Dispatch(entryDepth);
                 }
-                catch (JsThrownException thrown) when (!thrown.IsUncatchableByScript)
+                catch (JsThrownException thrown) when (!thrown.IsUncatchableByScript && HasHandlerAbove(entryDepth))
                 {
                     // Every throw arrives here as a CLR exception, whether it
                     // came from a `throw` in this loop, from a getter three
@@ -409,7 +409,7 @@ internal sealed class Interp2
 
                 return Dispatch(entryDepth);
             }
-            catch (JsThrownException thrown) when (!thrown.IsUncatchableByScript)
+            catch (JsThrownException thrown) when (!thrown.IsUncatchableByScript && HasHandlerAbove(entryDepth))
             {
                 if (!TryRouteThrow(entryDepth, thrown.Value))
                 {
@@ -1974,6 +1974,37 @@ internal sealed class Interp2
     /// which is a traced slot - so it is rooted from the moment it is stored
     /// with no separate pin to release.
     /// </remarks>
+    /// <summary>
+    /// Whether <see cref="TryRouteThrow"/> would find somewhere to send a throw,
+    /// without changing anything. It runs as an exception filter, so a throw no
+    /// frame of this entry handles passes by without being caught and rethrown.
+    /// </summary>
+    /// <remarks>
+    /// A rethrow from a catch block starts a fresh dispatch on top of the stack
+    /// the first one has not yet released, so a stack overflow unwinding through
+    /// a few hundred nested entries would overflow again on the way out if each
+    /// one caught and rethrew it. Frames above an inner entry still sit on the
+    /// frame stack while this runs (its finally has not reset the depth yet),
+    /// but that entry's own filter has already found them without a handler.
+    /// </remarks>
+    private bool HasHandlerAbove(int entryDepth)
+    {
+        for (var depth = _depth; depth > entryDepth; depth--)
+        {
+            ref var frame = ref _frames[depth - 1];
+            if (frame.HandlerCount > 0)
+            {
+                var entry = frame.HandlerBase + (frame.HandlerCount - 1) * 2;
+                if (_handlers[entry] >= 0 || _handlers[entry + 1] >= 0)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     private bool TryRouteThrow(int entryDepth, JsValue value)
     {
         for (var depth = _depth; depth > entryDepth; depth--)

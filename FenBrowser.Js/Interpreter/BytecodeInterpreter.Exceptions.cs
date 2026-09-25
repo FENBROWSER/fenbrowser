@@ -105,6 +105,16 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    /// <summary>
+    /// Exception filter for the catch sites that hand a throw to
+    /// <see cref="ThrowOrHandle"/>: with no try in the frame it would only throw
+    /// the value again, so leave the exception uncaught instead. A rethrow from
+    /// inside a catch block runs on top of the stack the first throw has not yet
+    /// released, and a stack overflow unwinding through hundreds of frames that
+    /// each did that would overflow a second time on the way out.
+    /// </summary>
+    private static bool HasHandler(InterpreterFrame frame) => frame.CatchHandlers.Count > 0;
+
     private void ThrowOrHandle(InterpreterFrame frame, JsValue value)
     {
         // Audit JSRT-005: pin the thrown value while routing it, then hand

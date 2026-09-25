@@ -44,7 +44,12 @@ public sealed partial class BytecodeInterpreter
     /// Entry from <c>CallFunctionCore</c>: run an eligible body on the new loop.
     /// </summary>
     internal JsValue Interp2Execute(JsFunctionObject callee, FrameLayout layout, in CallArgs args, JsValue thisValue)
-        => Interp2Loop.Execute(callee, layout, in args, thisValue);
+    {
+        // Calls inside the loop stay on its own frame stack; only a re-entry
+        // like this one, from a native or the old loop, spends CLR stack.
+        EnsureNativeStack();
+        return Interp2Loop.Execute(callee, layout, in args, thisValue);
+    }
 
     // ------------------------------------------------------------- guard rails
 
@@ -271,15 +276,26 @@ public sealed partial class BytecodeInterpreter
     /// <summary>Run an async function body on the register-window loop.</summary>
     internal JsValue Interp2RunAsync(
         Objects.AsyncContext context, JsFunctionObject callee, JsValue[] args, JsValue thisValue)
-        => Interp2Loop.RunAsync(context, callee, args, thisValue);
+    {
+        EnsureNativeStack();
+        return Interp2Loop.RunAsync(context, callee, args, thisValue);
+    }
 
     /// <summary>Resume one when the promise it awaited settles.</summary>
     internal JsValue Interp2ResumeAsync(Objects.AsyncContext context)
-        => Interp2Loop.ResumeAsync(context);
+    {
+        EnsureNativeStack();
+        return Interp2Loop.ResumeAsync(context);
+    }
 
     /// <summary>Start or resume a generator body on the register-window loop.</summary>
     internal JsValue Interp2RunGenerator(Objects.GeneratorObject generator)
-        => Interp2Loop.RunGenerator(generator);
+    {
+        // A chain of generators driving one another re-enters here without
+        // any call in between, so this entry needs its own native check.
+        EnsureNativeStack();
+        return Interp2Loop.RunGenerator(generator);
+    }
 
     internal static void Interp2DeclareContextSlot(
         DeclarativeEnvironmentRecord context, int slot, JsValue value)
