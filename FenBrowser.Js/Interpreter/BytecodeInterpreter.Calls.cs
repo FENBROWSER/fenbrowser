@@ -1065,7 +1065,7 @@ public sealed partial class BytecodeInterpreter
             // constructors (ECMA-262 15.4 — MethodDefinitions have no [[Construct]]).
             if (fn.Kind == FunctionKind.Method)
                 throw new JsThrownException(CreateTypeError("Function is not a constructor."));
-            return ExecuteConstruct(fn, args, newTarget);
+            return ExecuteConstruct(fn, new CallArgs(args), newTarget);
         }
 
         if (obj is NativeFunctionObject native)
@@ -1246,7 +1246,7 @@ public sealed partial class BytecodeInterpreter
     // comes from newTarget.prototype (not callee.prototype) when they differ.
     // OrdinaryCreateFromConstructor(newTarget, ...) calls GetPrototypeFromConstructor
     // which reads newTarget.prototype.
-    private JsValue ExecuteConstruct(JsFunctionObject callee, IReadOnlyList<JsValue> args, JsValue newTarget = default)
+    internal JsValue ExecuteConstruct(JsFunctionObject callee, in CallArgs args, JsValue newTarget = default)
     {
         // ECMA-262 9.2.2 [[Construct]]: derived constructors have [[ThisMode]] = "~uninitialized~"
         // and must NOT receive a pre-allocated instance. super() will create the instance and
@@ -1286,10 +1286,27 @@ public sealed partial class BytecodeInterpreter
             defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
         }
 
+        // A body the register-window loop runs cannot observe new.target: it
+        // refuses LoadNewTarget, and an arrow inside that reads it. So an
+        // ordinary constructor runs there, like any other call, instead of
+        // always paying the old loop's frame setup - which made `new F()` with
+        // an empty F cost four times a call.
+        JsValue result;
+        var layout = Interpreter2.Interp2Options.Enabled && !isDerived
+            ? Interpreter2.FrameLayout.For(callee.Function)
+            : null;
+        if (layout is { Eligible: true })
+        {
+            callee.Function.Invocations++;
+            result = Interp2Execute(callee, layout, args, defaultInstance);
+            ApplyDefaultHostObjectPrototypeIfUnset(result, newTarget);
+            return IsConstructorReturnObject(result) ? result : defaultInstance;
+        }
+
         _pendingNewTarget = newTarget.Tag == JsValueTag.Undefined
             ? JsValue.Undefined
             : newTarget;
-        var result = ExecuteInternal(callee.Function, new CallArgs(args), defaultInstance, ResolveFunctionOuterEnvironment(callee), callee: callee);
+        result = ExecuteInternal(callee.Function, args, defaultInstance, ResolveFunctionOuterEnvironment(callee), callee: callee);
         ApplyDefaultHostObjectPrototypeIfUnset(result, newTarget);
         return IsConstructorReturnObject(result) ? result : defaultInstance;
     }

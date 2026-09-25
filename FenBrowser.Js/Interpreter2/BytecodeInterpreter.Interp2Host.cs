@@ -1223,7 +1223,20 @@ public sealed partial class BytecodeInterpreter
     /// a different path and this loop declines the bodies that can reach it.
     /// </remarks>
     internal JsValue Interp2Construct(JsValue constructor, in CallArgs args)
-        => ConstructFunction(constructor, args, constructor);
+    {
+        // An ordinary function or a class goes straight to [[Construct]] with
+        // the arguments as they are; the general entry takes a list, and
+        // handing it this struct boxed it on every `new`.
+        if (constructor.Tag == JsValueTag.Object &&
+            _heap.GetObject(constructor.AsObjectHandle()) is JsFunctionObject fn &&
+            fn.Kind is FunctionKind.Ordinary or FunctionKind.Constructor &&
+            !fn.Function.IsArrow)
+        {
+            return ExecuteConstruct(fn, args, constructor);
+        }
+
+        return ConstructFunction(constructor, args, constructor);
+    }
 
     /// <summary>
     /// ECMA-262 10.2.3 OrdinaryFunctionCreate for a nested function.
