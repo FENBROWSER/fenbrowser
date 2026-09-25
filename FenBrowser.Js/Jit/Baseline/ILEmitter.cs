@@ -110,5 +110,7 @@ internal readonly struct ILEmitter(ILGenerator il)
             method);
 
     internal void Get(PropertyInfo property) => Call(property.GetMethod!);
+
+    internal void Set(PropertyInfo property) => Call(property.SetMethod!);
 }
 #endif

@@ -497,12 +497,25 @@ internal static class BaselineCompiler
         /// </summary>
         private void BeginColdBranch() => _localWrites.Clear();
 
+        /// <summary>
+        /// Brings the frame up to date before the runtime sees it: the registers
+        /// the tracer needs, and the instruction pointer, which the dispatch
+        /// loops leave just past the instruction running. An error created or
+        /// thrown from here reads its position off it - Error.stack's line and
+        /// column, and the callee a "is not a function" message names - and
+        /// compiled code never set it, so both described wherever the frame
+        /// happened to enter.
+        /// </summary>
         private void SpillLiveIn(int ip)
         {
             for (var r = 0; r < _registerLocals.Length; r++)
             {
                 if (_liveness.IsLiveIn(ip, r)) SpillRegister(r);
             }
+
+            il.Arg(1);
+            il.Int(ip + 1);
+            il.Set(PiFrameInstructionPointer);
         }
 
         private void ReloadLiveIn(int ip)
