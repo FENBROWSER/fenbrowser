@@ -298,6 +298,14 @@ public sealed class BytecodeFunction
     internal CallICEntry?[] EnsureCallICs() =>
         _callICs ?? PublishOnce(ref _callICs, new CallICEntry?[InstructionArray.Length]);
 
+    // Add-property stubs, one per SetPropByName instruction (see AddPropertyStub).
+    private FenBrowser.Js.Jit.CacheIR.AddPropertyStub?[]? _addPropertyStubs;
+
+    internal FenBrowser.Js.Jit.CacheIR.AddPropertyStub?[]? AddPropertyStubs => _addPropertyStubs;
+
+    internal FenBrowser.Js.Jit.CacheIR.AddPropertyStub?[] EnsureAddPropertyStubs() =>
+        _addPropertyStubs ?? PublishOnce(ref _addPropertyStubs, new FenBrowser.Js.Jit.CacheIR.AddPropertyStub?[InstructionArray.Length]);
+
     // Free-variable sites for the dispatch loop and compiled code, one per
     // LoadVar/StoreVar instruction (see BytecodeInterpreter.FreeVariables.cs).
     // Keyed by instruction rather than slot: a block scope can give one name a

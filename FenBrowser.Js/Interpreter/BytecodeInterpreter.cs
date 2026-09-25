@@ -24057,9 +24057,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         try
         {
+            var shapeBefore = obj.CurrentShape;
             _ = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
             if (receiverValue.Tag == JsValueTag.Object)
+            {
                 PopulateStoreIC(frame.Function, icOffset, receiverValue, prop);
+                NoteAddedProperty(frame.Function, icOffset, obj, shapeBefore, prop);
+            }
         }
         catch (JsThrownException ex) when (HasHandler(frame))
         {
@@ -24318,6 +24322,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return;
         }
 
+        var shapeBefore = obj.CurrentShape;
         var ok = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
 
         // ECMA-262 6.2.5.4 PutValue: strict-mode writes that return false
@@ -24332,6 +24337,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (receiverValue.Tag == JsValueTag.Object)
         {
             PopulateStoreIC(function, icOffset, receiverValue, prop);
+            if (ok)
+            {
+                NoteAddedProperty(function, icOffset, obj, shapeBefore, prop);
+            }
         }
     }
 

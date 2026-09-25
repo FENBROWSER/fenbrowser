@@ -414,6 +414,21 @@ public class JsObject : ITraceable
         return true;
     }
 
+    /// <summary>
+    /// The new-property path of <see cref="DefineOwnProperty"/> for a writable,
+    /// enumerable, configurable data property whose shape transition is already
+    /// known - an add-property cache replaying a [[Set]] it has proved safe.
+    /// </summary>
+    internal void AppendDataProperty(Shape next, JsValue value)
+    {
+        _shape = next;
+        var slot = next.PropertyCount - 1;
+        EnsurePropertyStorage(slot);
+        WriteSlot(slot, new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+        _slots[slot].InsertionSeq = _nextSeq++;
+        BarrierIfObject(value);
+    }
+
     // A property table that starts empty and doubles reaches four slots by way
     // of one, two and four, so an object with three properties allocated three
     // descriptor arrays and three sequence arrays and copied between them twice

@@ -74,16 +74,40 @@ public sealed partial class BytecodeInterpreter
     // invalidated (made non-writable, deleted, or turned into an accessor).
     private bool TryStoreIC(BytecodeFunction fn, int offset, ObjectHandle ownerHandle, JsValue receiver, string key, JsValue value)
     {
-        var sites = fn.StoreCacheSites;
-        if (receiver.Tag != JsValueTag.Object || sites is null ||
-            (uint)offset >= (uint)sites.Length || sites[offset] is not { } site)
+        if (receiver.Tag != JsValueTag.Object)
             return false;
 
-        var obj = _heap.GetObject(receiver.AsObjectHandle());
-        if (!site.TryResolveStore(obj, key, out var slot)) return false;
+        var sites = fn.StoreCacheSites;
+        if (sites is not null && (uint)offset < (uint)sites.Length && sites[offset] is { } site)
+        {
+            var obj = _heap.GetObject(receiver.AsObjectHandle());
+            if (site.TryResolveStore(obj, key, out var slot))
+            {
+                CommitCachedStore(obj, ownerHandle, slot, key, value);
+                return true;
+            }
+        }
 
-        CommitCachedStore(obj, ownerHandle, slot, key, value);
-        return true;
+        return fn.AddPropertyStubs is { } stubs && (uint)offset < (uint)stubs.Length &&
+               stubs[offset] is { } stub && stub.TryAdd(_heap.GetObject(receiver.AsObjectHandle()), value);
+    }
+
+    /// <summary>
+    /// After a store at <paramref name="offset"/> added a property - the
+    /// receiver's shape moved on from <paramref name="shapeBefore"/> - records
+    /// it so the next add from the same shape can skip the [[Set]] walk. The
+    /// first add a site sees is the one it keeps.
+    /// </summary>
+    private void NoteAddedProperty(BytecodeFunction fn, int offset, JsObject receiver, Objects.Shape shapeBefore, string key)
+    {
+        if (ReferenceEquals(receiver.CurrentShape, shapeBefore) || (uint)offset >= (uint)fn.InstructionArray.Length)
+            return;
+
+        var stubs = fn.EnsureAddPropertyStubs();
+        if (stubs[offset] is not null)
+            return;
+
+        stubs[offset] = Jit.CacheIR.AddPropertyStub.TryCreate(receiver, shapeBefore, key, ResolvePrototypeDelegate);
     }
 
     /// <summary>
