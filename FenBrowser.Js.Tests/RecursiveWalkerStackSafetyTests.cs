@@ -57,10 +57,21 @@ public sealed class RecursiveWalkerStackSafetyTests
     }
 
     [Fact]
-    public void DeepLeftNestedClassBodyFailsSafelyDuringCompilation()
+    public void DeepLeftNestedClassBodyCompilesOnALargeStack()
     {
+        // Deeper than a default thread can compile; the compiler retries on its
+        // large-stack thread.
         var source = "class C { #field; method(value) { return " + DeepLogicalChain(6_000) + "; } }";
-        var exception = Assert.Throws<InvalidOperationException>(() =>
+        Assert.NotNull(new BytecodeCompiler().CompileScript(new SourceText(source)));
+    }
+
+    [Fact]
+    public void NestingDeeperThanEvenTheLargeStackFailsSafely()
+    {
+        var source = "class C { #field; method(value) { return " + DeepLogicalChain(600_000) + "; } }";
+        // Too deep even for the compiler's large-stack thread: a catchable
+        // error rather than a process-ending stack overflow.
+        var exception = Assert.Throws<CompilerStackExhaustedException>(() =>
             new BytecodeCompiler().CompileScript(new SourceText(source)));
 
         Assert.Contains("insufficient stack", exception.Message, StringComparison.OrdinalIgnoreCase);

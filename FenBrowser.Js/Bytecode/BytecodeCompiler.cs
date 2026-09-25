@@ -162,7 +162,51 @@ public sealed class BytecodeCompiler
     // compiling the initializer and consumed by the function/arrow/class case.
     private string? _pendingNameHint;
 
+    // Minified bundles nest expressions deeply enough to need far more native
+    // stack than a default thread has - x.com's i18n compiles an ~8800-deep
+    // chain. The browser compiles on a 256MB script thread; any other embedder
+    // (the shell, the test262 runner, a test) gets its compile rerun on a
+    // thread of that size when its own stack runs out, instead of an error.
+    private const int LargeStackBytes = 256 * 1024 * 1024;
+    private bool _onLargeStack;
+
+    private static T RunOnLargeStack<T>(Func<T> work)
+    {
+        T result = default!;
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure = null;
+        var thread = new System.Threading.Thread(() =>
+        {
+            try { result = work(); }
+            catch (Exception ex) { failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex); }
+        }, LargeStackBytes) { IsBackground = true, Name = "FenJs-LargeStackCompile" };
+        thread.Start();
+        thread.Join();
+        failure?.Throw();
+        return result;
+    }
+
+    private BytecodeCompiler ForLargeStack() => new()
+    {
+        ParserMaxRecursionDepth = ParserMaxRecursionDepth,
+        _rawSource = _rawSource,
+        _sourcePath = _sourcePath,
+        _onLargeStack = true,
+    };
+
     public BytecodeFunction CompileScript(SourceText source)
+    {
+        try
+        {
+            return CompileScriptCore(source);
+        }
+        catch (CompilerStackExhaustedException) when (!_onLargeStack)
+        {
+            var retry = ForLargeStack();
+            return RunOnLargeStack(() => retry.CompileScript(source));
+        }
+    }
+
+    private BytecodeFunction CompileScriptCore(SourceText source)
     {
         // Ask the cache before parsing, not after. A source only reaches the
         // cache once it has parsed and passed early-error validation, so a hit
@@ -207,6 +251,19 @@ public sealed class BytecodeCompiler
     }
 
     public BytecodeFunction CompileProgram(ProgramNode program, bool inheritedStrictMode)
+    {
+        try
+        {
+            return CompileProgramEntry(program, inheritedStrictMode);
+        }
+        catch (CompilerStackExhaustedException) when (!_onLargeStack)
+        {
+            var retry = ForLargeStack();
+            return RunOnLargeStack(() => retry.CompileProgram(program, inheritedStrictMode));
+        }
+    }
+
+    private BytecodeFunction CompileProgramEntry(ProgramNode program, bool inheritedStrictMode)
     {
         // ECMA-262: modules always evaluate asynchronously; top-level await is
         // allowed, and even without it the module returns a Promise. Compile
@@ -3467,8 +3524,7 @@ public sealed class BytecodeCompiler
         if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
         {
             _compileExpressionDepth--;
-            throw new InvalidOperationException(
-                "Expression nesting too deep to compile (insufficient stack).");
+            throw new CompilerStackExhaustedException();
         }
 
         var outerPosition = _currentPosition;
