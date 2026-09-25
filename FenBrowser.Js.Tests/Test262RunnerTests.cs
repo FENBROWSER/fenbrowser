@@ -9,6 +9,17 @@ using Xunit;
 
 namespace FenBrowser.Js.Tests;
 
+// These tests drive the runner end to end, and several of them give it a
+// wall-clock budget of 300ms to 2s for work it starts on the thread pool. With
+// the rest of the suite running in parallel the pool can be saturated long
+// enough for that work to start late and be recorded as a timeout, which made
+// a different one of them fail on most full runs. They run on their own.
+[CollectionDefinition(nameof(Test262RunnerTests), DisableParallelization = true)]
+public sealed class Test262RunnerTestsCollection
+{
+}
+
+[Collection(nameof(Test262RunnerTests))]
 public sealed class Test262RunnerTests
 {
     private static (int ExitCode, JsonElement Result) RunSingleRuntimeTest(string body, int timeoutMs, string? test262Path = null)
