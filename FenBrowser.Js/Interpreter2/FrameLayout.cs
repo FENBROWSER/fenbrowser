@@ -82,6 +82,15 @@ public enum SlotHome : byte
 
     /// <summary>Declared somewhere else; resolved through the scope chain.</summary>
     Free = 2,
+
+    /// <summary>
+    /// A block's binding in a body whose blocks are records (see
+    /// <see cref="FrameLayout.ScopedBlocks"/>): whichever record the frame has
+    /// pushed holds the name, or, when none does, the slot's
+    /// <see cref="FrameLayout.ScopedFallback"/> home - the same name declared by
+    /// the body itself, or a free one.
+    /// </summary>
+    Scoped = 3,
 }
 
 public sealed class FrameLayout
@@ -195,6 +204,30 @@ public sealed class FrameLayout
 
     /// <summary>ECMA-262 10.2.11: the strict form throws on `callee`.</summary>
     public bool RestrictedArguments { get; private init; }
+
+    /// <summary>
+    /// Whether this body's blocks are environment records rather than window
+    /// slots: each EnterScope pushes one and each LeaveScope pops one, exactly
+    /// as the bytecode describes. Chosen when the blocks cannot be slots - they
+    /// do not nest in instruction order (an early exit leaves several), a slot
+    /// is named outside its block, or a closure captures a block binding, which
+    /// needs a fresh binding on every entry to the block, one per turn of a
+    /// `for (let ...)` loop.
+    /// </summary>
+    public bool ScopedBlocks { get; private init; }
+
+    /// <summary>
+    /// For a <see cref="SlotHome.Scoped"/> slot, where the name lives when no
+    /// block record the frame has pushed holds it.
+    /// </summary>
+    public SlotHome[] ScopedFallback { get; private init; } = Array.Empty<SlotHome>();
+
+    /// <summary>
+    /// Where each slot's function-level binding lives, which is what entering
+    /// the frame initialises: <see cref="SlotHomes"/> with every
+    /// <see cref="SlotHome.Scoped"/> slot replaced by its fallback.
+    /// </summary>
+    public SlotHome[] BindingHomes { get; private init; } = Array.Empty<SlotHome>();
 
     /// <summary>
     /// Slots holding a `const`, so an assignment to one is a TypeError rather
@@ -323,6 +356,18 @@ public sealed class FrameLayout
 
     private static FrameLayout Analyze(BytecodeFunction function, bool asConstructor = false)
     {
+        // Blocks kept as window slots are the fast shape and the usual one. A
+        // body whose blocks cannot be slots is analysed again with its blocks as
+        // records, which is how the bytecode describes them.
+        var layout = Analyze(function, asConstructor, scopedBlocks: false);
+        return layout.Bailout is Interp2Bailout.BlockScope or Interp2Bailout.BlockScopeEscapes
+                or Interp2Bailout.BlockScopeCaptured
+            ? Analyze(function, asConstructor, scopedBlocks: true)
+            : layout;
+    }
+
+    private static FrameLayout Analyze(BytecodeFunction function, bool asConstructor, bool scopedBlocks)
+    {
         // Anything whose activation outlives its call, or whose scope is
         // reachable by name from outside it, needs a real environment record.
         // An arrow qualifies alongside an ordinary function: it differs only in
@@ -379,11 +424,28 @@ public sealed class FrameLayout
         // A block introduces its binding with EnterScope, whose operand is the
         // slot. Those are declarations of this body as much as a `var` is, and
         // have to be classified before anything else looks at a slot.
-        var blockScopes = BlockScopeRegions(
-            function.InstructionArray, out var blockScopeSlots, out var constSlots, out var deadZoneSlots);
-        if (blockScopes is null)
+        List<(int Slot, int Start, int End)>? blockScopes;
+        HashSet<int> blockScopeSlots;
+        HashSet<int> constSlots;
+        HashSet<int> deadZoneSlots;
+        if (scopedBlocks)
         {
-            return new FrameLayout(function, Interp2Bailout.BlockScope);
+            // A block's bindings live in its record, so none of them is
+            // classified here, and their dead zones and constness are the
+            // record's to enforce.
+            blockScopes = null;
+            blockScopeSlots = BlockSlotsOf(function.InstructionArray);
+            constSlots = new HashSet<int>();
+            deadZoneSlots = new HashSet<int>();
+        }
+        else
+        {
+            blockScopes = BlockScopeRegions(
+                function.InstructionArray, out blockScopeSlots, out constSlots, out deadZoneSlots);
+            if (blockScopes is null)
+            {
+                return new FrameLayout(function, Interp2Bailout.BlockScope);
+            }
         }
 
         var declared = new HashSet<string>(StringComparer.Ordinal);
@@ -421,11 +483,21 @@ public sealed class FrameLayout
 
         var declaredNames = declared;
         var slotHomes = new SlotHome[slotCount];
+        var scopedFallback = scopedBlocks ? new SlotHome[slotCount] : Array.Empty<SlotHome>();
         var hasFreeVariables = false;
         for (var slot = 0; slot < slotCount; slot++)
         {
             var name = slotNames[slot];
-            var own = (name is not null && declared.Contains(name)) || blockScopeSlots.Contains(slot);
+            var declaredHere = name is not null && declared.Contains(name);
+            if (scopedBlocks && blockScopeSlots.Contains(slot))
+            {
+                slotHomes[slot] = SlotHome.Scoped;
+                scopedFallback[slot] = declaredHere ? SlotHome.Register : SlotHome.Free;
+                hasFreeVariables |= !declaredHere;
+                continue;
+            }
+
+            var own = declaredHere || blockScopeSlots.Contains(slot);
             slotHomes[slot] = own ? SlotHome.Register : SlotHome.Free;
             hasFreeVariables |= !own;
         }
@@ -466,7 +538,7 @@ public sealed class FrameLayout
         // declares it. Read outside one, the register would still hold that
         // block's value where the spec says the binding is gone and the name
         // resolves outwards.
-        if (!BlockScopeReferencesConfined(function.InstructionArray, blockScopes, blockScopeSlots))
+        if (!scopedBlocks && !BlockScopeReferencesConfined(function.InstructionArray, blockScopes!, blockScopeSlots))
         {
             return new FrameLayout(function, Interp2Bailout.BlockScopeEscapes);
         }
@@ -478,6 +550,10 @@ public sealed class FrameLayout
             ref readonly var ins = ref instructions[i];
             if (!Supported[(int)ins.OpCode])
                 return new FrameLayout(function, Interp2Bailout.UnsupportedOpCode, ins.OpCode);
+
+            // A fresh copy of the loop's bindings per turn only exists as records.
+            if (ins.OpCode == OpCode.NextIterationEnv && !scopedBlocks)
+                return new FrameLayout(function, Interp2Bailout.BlockScopeCaptured);
 
             // A method carries its home object on the function object, which is
             // this frame's callee, so `super` in one resolves without a walk.
@@ -525,7 +601,7 @@ public sealed class FrameLayout
             // ReferenceError, or worse to an unrelated binding of the same name
             // that answered with the wrong value.
             var captureScope = declaredNames;
-            if (blockScopeSlots.Count > 0)
+            if (!scopedBlocks && blockScopeSlots.Count > 0)
             {
                 var withBlocks = new HashSet<string>(declaredNames, StringComparer.Ordinal);
                 foreach (var blockSlot in blockScopeSlots)
@@ -569,6 +645,22 @@ public sealed class FrameLayout
 
             for (var slot = 0; slot < slotCount; slot++)
             {
+                // A block binding a closure captures is already in a record; the
+                // body's own variable of the same name, if there is one, moves
+                // into the shared record like any other captured variable.
+                if (slotHomes[slot] == SlotHome.Scoped)
+                {
+                    if (scopedFallback[slot] == SlotHome.Register &&
+                        slotNames[slot] is { } scopedName &&
+                        captured.Contains(scopedName))
+                    {
+                        scopedFallback[slot] = SlotHome.Context;
+                        hasContext = true;
+                    }
+
+                    continue;
+                }
+
                 if (slotHomes[slot] == SlotHome.Register &&
                     slotNames[slot] is { } name &&
                     captured.Contains(name))
@@ -588,6 +680,19 @@ public sealed class FrameLayout
             }
         }
 
+        var bindingHomes = slotHomes;
+        if (scopedBlocks)
+        {
+            bindingHomes = (SlotHome[])slotHomes.Clone();
+            for (var slot = 0; slot < slotCount; slot++)
+            {
+                if (bindingHomes[slot] == SlotHome.Scoped)
+                {
+                    bindingHomes[slot] = scopedFallback[slot];
+                }
+            }
+        }
+
         // Every parameter must have a slot of its own, or its binding would only
         // exist under a name this loop never creates a record for.
         var functionParameterSlots = function.ParameterSlots;
@@ -596,7 +701,7 @@ public sealed class FrameLayout
         for (var i = 0; i < parameterWindowIndex.Length; i++)
         {
             var slot = i < functionParameterSlots.Length ? functionParameterSlots[i] : -1;
-            if (slot < 0 || slot >= slotCount || slotHomes[slot] == SlotHome.Free)
+            if (slot < 0 || slot >= slotCount || bindingHomes[slot] == SlotHome.Free)
                 return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
             layoutParameterSlots[i] = slot;
             parameterWindowIndex[i] = registerCount + slot;
@@ -612,7 +717,7 @@ public sealed class FrameLayout
         var argumentsSlot = -1;
         if (ownsArguments && function.VariableSlots.TryGetValue("arguments", out var argumentsSlotIndex))
         {
-            if ((uint)argumentsSlotIndex >= (uint)slotCount || slotHomes[argumentsSlotIndex] == SlotHome.Free)
+            if ((uint)argumentsSlotIndex >= (uint)slotCount || bindingHomes[argumentsSlotIndex] == SlotHome.Free)
                 return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
             argumentsSlot = argumentsSlotIndex;
         }
@@ -620,7 +725,7 @@ public sealed class FrameLayout
         var selfNameSlot = -1;
         if (selfName is not null && function.VariableSlots.TryGetValue(selfName, out var selfSlotIndex))
         {
-            if ((uint)selfSlotIndex >= (uint)slotCount || slotHomes[selfSlotIndex] == SlotHome.Free)
+            if ((uint)selfSlotIndex >= (uint)slotCount || bindingHomes[selfSlotIndex] == SlotHome.Free)
                 return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
             selfNameSlot = selfSlotIndex;
         }
@@ -655,7 +760,25 @@ public sealed class FrameLayout
             SlotIsLexical = slotIsLexical,
             HasLexicalSlots = hasLexicalSlots,
             SelfNameSlot = selfNameSlot,
+            ScopedBlocks = scopedBlocks,
+            ScopedFallback = scopedFallback,
+            BindingHomes = bindingHomes,
         };
+    }
+
+    /// <summary>Every slot an EnterScope in the body declares.</summary>
+    private static HashSet<int> BlockSlotsOf(Instruction[] code)
+    {
+        var slots = new HashSet<int>();
+        foreach (var ins in code)
+        {
+            if (ins.OpCode == OpCode.EnterScope)
+            {
+                slots.Add(ins.A);
+            }
+        }
+
+        return slots;
     }
 
     /// <summary>
@@ -810,7 +933,8 @@ public sealed class FrameLayout
     {
         for (var i = 0; i < slotHomes.Length; i++)
         {
-            if (slotHomes[i] == SlotHome.Free) return true;
+            // A scoped slot may fall back to a free name.
+            if (slotHomes[i] is SlotHome.Free or SlotHome.Scoped) return true;
         }
 
         return false;
@@ -852,7 +976,7 @@ public sealed class FrameLayout
             OpCode.Move, OpCode.Jump, OpCode.JumpIfFalse,
             OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,
             OpCode.PushHandler, OpCode.PopHandler, OpCode.EndFinally,
-            OpCode.EnterScope, OpCode.LeaveScope,
+            OpCode.EnterScope, OpCode.LeaveScope, OpCode.NextIterationEnv,
             OpCode.CreateFunction, OpCode.Yield, OpCode.Await,
 
             // Arithmetic, coercion and comparison.

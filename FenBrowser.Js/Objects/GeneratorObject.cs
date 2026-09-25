@@ -49,6 +49,15 @@ public sealed class GeneratorObject : JsObject
     /// </summary>
     public byte[] SavedDeadZone { get; set; } = Array.Empty<byte>();
 
+    /// <summary>
+    /// The block records a register-window frame had pushed at the suspension,
+    /// innermost first, and how many: a body that keeps its blocks as records
+    /// can yield inside one.
+    /// </summary>
+    public EnvironmentRecord? BlockScope { get; set; }
+
+    public int BlockScopeDepth { get; set; }
+
     public ObjectHandle? YieldStarIterator { get; set; }
     public bool IsAsyncGenerator { get; set; }
 
@@ -103,6 +112,8 @@ public sealed class GeneratorObject : JsObject
 
             foreach (var handlerEnvironment in SavedHandlerEnvironments)
                 handlerEnvironment?.Trace(tracer);
+
+            BlockScope?.Trace(tracer);
         }
     }
 

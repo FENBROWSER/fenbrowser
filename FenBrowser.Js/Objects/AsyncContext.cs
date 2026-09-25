@@ -31,6 +31,15 @@ public sealed class AsyncContext : JsObject
 	public bool RunsOnRegisterWindow { get; set; }
 
 	/// <summary>
+	/// The block records a register-window frame had pushed at the await,
+	/// innermost first, and how many: a body that keeps its blocks as records
+	/// can await inside one.
+	/// </summary>
+	public EnvironmentRecord? BlockScope { get; set; }
+
+	public int BlockScopeDepth { get; set; }
+
+	/// <summary>
 	/// The frame's open try entries at the await, as the (catch ip, finally ip)
 	/// pairs the register-window loop keeps them in.
 	/// </summary>
@@ -80,6 +89,8 @@ public sealed class AsyncContext : JsObject
 
 			foreach (var handlerEnvironment in SavedHandlerEnvironments)
 				handlerEnvironment?.Trace(tracer);
+
+			BlockScope?.Trace(tracer);
 		}
 
 		Parent?.Trace(tracer);

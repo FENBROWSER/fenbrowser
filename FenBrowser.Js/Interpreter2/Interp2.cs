@@ -114,6 +114,11 @@ internal sealed class Interp2
     /// </summary>
     private int[] _handlers = new int[128];
 
+    // A try entry is (catch ip, finally ip, block depth): where a throw or a
+    // return goes, and how many block records the frame had pushed when the
+    // try began, so reaching the handler pops the blocks it leaves.
+    private const int HandlerStride = 3;
+
     private int _handlerTop;
 
     internal Interp2(BytecodeInterpreter host) => _host = host;
@@ -170,6 +175,16 @@ internal sealed class Interp2
         /// same variable.
         /// </summary>
         public DeclarativeEnvironmentRecord? Context;
+
+        /// <summary>
+        /// The innermost block record this frame has pushed, for a body that
+        /// keeps its blocks as records (FrameLayout.ScopedBlocks); null outside
+        /// every block. <see cref="ScopeDepth"/> counts them, which is what a
+        /// handler records so a throw can pop the blocks it leaves.
+        /// </summary>
+        public EnvironmentRecord? Scope;
+        public int ScopeDepth;
+
         public JsValue This;
         public bool OuterEnvResolved;
         public int Base;
@@ -471,13 +486,15 @@ internal sealed class Interp2
         frame.ReturnSlot = -1;
         frame.BackEdgeMark = _backEdges;
         frame.HandlerBase = handlerBase;
-        frame.HandlerCount = savedHandlers.Length / 2;
+        frame.HandlerCount = savedHandlers.Length / HandlerStride;
         frame.PendingException = context.PendingException ?? JsValue.Undefined;
         frame.HasPendingException = context.PendingException is not null;
         frame.PendingReturn = JsValue.Undefined;
         frame.HasPendingReturn = false;
         frame.Generator = null;
         frame.AsyncContext = context;
+        frame.Scope = context.BlockScope;
+        frame.ScopeDepth = context.BlockScopeDepth;
 
         // What the promise settled with is what the await expression evaluates to.
         if (context.AwaitDestReg >= 0)
@@ -512,7 +529,7 @@ internal sealed class Interp2
             Array.Copy(_tdz, window, context.SavedDeadZone, 0, size);
         }
 
-        var handlerCount = frame.HandlerCount * 2;
+        var handlerCount = frame.HandlerCount * HandlerStride;
         if (handlerCount == 0)
         {
             context.SavedWindowHandlers = Array.Empty<int>();
@@ -540,6 +557,8 @@ internal sealed class Interp2
         context.InstructionPointer = ip;
         context.AwaitDestReg = destinationRegister;
         context.Environment = frame.Context;
+        context.BlockScope = frame.Scope;
+        context.BlockScopeDepth = frame.ScopeDepth;
         context.IsSuspended = true;
     }
 
@@ -584,13 +603,15 @@ internal sealed class Interp2
         frame.ReturnSlot = -1;
         frame.BackEdgeMark = _backEdges;
         frame.HandlerBase = handlerBase;
-        frame.HandlerCount = savedHandlers.Length / 2;
+        frame.HandlerCount = savedHandlers.Length / HandlerStride;
         frame.PendingException = generator.PendingException ?? JsValue.Undefined;
         frame.HasPendingException = generator.PendingException is not null;
         frame.PendingReturn = JsValue.Undefined;
         frame.HasPendingReturn = false;
         frame.Generator = generator;
         frame.AsyncContext = null;
+        frame.Scope = generator.BlockScope;
+        frame.ScopeDepth = generator.BlockScopeDepth;
 
         // The value .next() was given is what the yield expression evaluates to.
         if (generator.YieldDestReg >= 0)
@@ -633,7 +654,7 @@ internal sealed class Interp2
 
         // The try blocks open around the yield, and an exception a finally is
         // still carrying, are as much of the frame as the registers are.
-        var handlerCount = frame.HandlerCount * 2;
+        var handlerCount = frame.HandlerCount * HandlerStride;
         if (handlerCount == 0)
         {
             generator.SavedWindowHandlers = Array.Empty<int>();
@@ -661,6 +682,8 @@ internal sealed class Interp2
         generator.InstructionPointer = ip;
         generator.YieldDestReg = destinationRegister;
         generator.Environment = frame.Context;
+        generator.BlockScope = frame.Scope;
+        generator.BlockScopeDepth = frame.ScopeDepth;
         generator.State = GeneratorState.Suspended;
     }
 
@@ -674,11 +697,12 @@ internal sealed class Interp2
         while (frame.HandlerCount > 0)
         {
             frame.HandlerCount--;
-            var entry = frame.HandlerBase + frame.HandlerCount * 2;
+            var entry = frame.HandlerBase + frame.HandlerCount * HandlerStride;
             var finallyIp = _handlers[entry + 1];
             _handlerTop = entry;
             if (finallyIp >= 0)
             {
+                UnwindScopes(ref frame, _handlers[entry + 2]);
                 frame.PendingReturn = value;
                 frame.HasPendingReturn = true;
                 frame.Ip = finallyIp;
@@ -799,6 +823,14 @@ internal sealed class Interp2
                         break;
                     }
 
+                    if (home == SlotHome.Scoped)
+                    {
+                        var scopedValue = LoadScoped(layout, slot, slotBase, ip - 1);
+                        stack = _stack;
+                        stack[frameBase + ins.A] = scopedValue;
+                        break;
+                    }
+
                     var loaded = home == SlotHome.Context
                         ? _host.Interp2LoadContext(
                             _frames[_depth - 1].Context!, function, slot, NameOfSlot(layout, slot), layout.IsStrict)
@@ -824,10 +856,36 @@ internal sealed class Interp2
                         _host.Interp2PreResolveFreeCached(layout, ins.B, OuterEnvironmentOf(_depth - 1));
                         stack = _stack;
                     }
+                    else if (HomeOfSlot(layout, ins.B) == SlotHome.Scoped)
+                    {
+                        PreResolveScoped(layout, ins.B);
+                        stack = _stack;
+                    }
 
                     break;
 
+                case OpCode.NextIterationEnv:
+                {
+                    // Only a body with scoped blocks has this opcode (the layout
+                    // refuses it otherwise): each turn of a `for (let ...)` loop
+                    // gets its own copy of the head's bindings.
+                    ref var turning = ref _frames[_depth - 1];
+                    turning.Scope = _host.CopyIterationScopes(turning.Scope, ins.A);
+                    break;
+                }
+
                 case OpCode.EnterScope:
+                    if (layout.ScopedBlocks)
+                    {
+                        // ECMA-262 14.2.2: a block gets a fresh declarative record
+                        // over the running one, holding its binding.
+                        var blockOuter = _frames[_depth - 1].Scope ?? BaseScopeOf(_depth - 1);
+                        ref var entering = ref _frames[_depth - 1];
+                        entering.Scope = _host.CreateBlockScope(blockOuter, function, ins);
+                        entering.ScopeDepth++;
+                        break;
+                    }
+
                     // The block's binding is a slot in this window, which the
                     // layout has already proved nothing outside the block can
                     // reach. C = 1 asks for it to start as undefined; otherwise
@@ -851,6 +909,11 @@ internal sealed class Interp2
                     break;
 
                 case OpCode.LeaveScope:
+                    if (layout.ScopedBlocks)
+                    {
+                        UnwindScopes(ref _frames[_depth - 1], _frames[_depth - 1].ScopeDepth - 1);
+                    }
+
                     break;
 
                 case OpCode.Await:
@@ -895,6 +958,17 @@ internal sealed class Interp2
                 case OpCode.StoreVar:
                 case OpCode.StoreResolvedVar:
                 {
+                    // A block's binding is found before anything the body
+                    // declares under the same slot - its own name included.
+                    if (HomeOfSlot(layout, ins.B) == SlotHome.Scoped)
+                    {
+                        StoreScoped(
+                            layout, ins.B, slotBase, ip - 1, stack[frameBase + ins.A],
+                            resolved: ins.OpCode == OpCode.StoreResolvedVar);
+                        stack = _stack;
+                        break;
+                    }
+
                     // A named function expression's own name is immutable, but
                     // only strict code is told: sloppy code drops the write.
                     if (ins.B == layout.SelfNameSlot)
@@ -942,6 +1016,13 @@ internal sealed class Interp2
                 {
                     var slot = ins.B;
                     var home = HomeOfSlot(layout, slot);
+                    if (home == SlotHome.Scoped)
+                    {
+                        InitScoped(layout, slot, slotBase, ip - 1, stack[frameBase + ins.A]);
+                        stack = _stack;
+                        break;
+                    }
+
                     var isLexicalSlot = layout.HasLexicalSlots &&
                         (uint)slot < (uint)layout.SlotIsLexical.Length && layout.SlotIsLexical[slot];
                     if (home == SlotHome.Register)
@@ -1038,14 +1119,15 @@ internal sealed class Interp2
                         entering.HandlerBase = _handlerTop;
                     }
 
-                    if (_handlerTop + 2 > _handlers.Length)
+                    if (_handlerTop + HandlerStride > _handlers.Length)
                     {
                         Array.Resize(ref _handlers, _handlers.Length * 2);
                     }
 
                     _handlers[_handlerTop] = ins.A;
                     _handlers[_handlerTop + 1] = ins.D;
-                    _handlerTop += 2;
+                    _handlers[_handlerTop + 2] = entering.ScopeDepth;
+                    _handlerTop += HandlerStride;
                     entering.HandlerCount++;
                     break;
                 }
@@ -1056,7 +1138,7 @@ internal sealed class Interp2
                     if (leaving.HandlerCount > 0)
                     {
                         leaving.HandlerCount--;
-                        _handlerTop = leaving.HandlerBase + leaving.HandlerCount * 2;
+                        _handlerTop = leaving.HandlerBase + leaving.HandlerCount * HandlerStride;
                     }
 
                     break;
@@ -1200,6 +1282,14 @@ internal sealed class Interp2
                 {
                     var slot = ins.B;
                     var home = HomeOfSlot(layout, slot);
+                    if (home == SlotHome.Scoped)
+                    {
+                        var scopedType = TypeOfScoped(layout, slot, slotBase);
+                        stack = _stack;
+                        stack[frameBase + ins.A] = scopedType;
+                        break;
+                    }
+
                     // `typeof` answers "undefined" for a name that is not
                     // declared, but not for one in the dead zone.
                     if (home == SlotHome.Register && layout.HasLexicalSlots && _tdz[slotBase + slot] != 0)
@@ -1305,9 +1395,11 @@ internal sealed class Interp2
 
                 case OpCode.CreateFunction:
                 {
+                    // Inside a block record the closure captures the block, so it
+                    // sees the block's bindings - its own copy of a loop's.
                     var closure = _host.Interp2CreateFunction(
                         function.NestedFunctions[ins.B],
-                        _frames[_depth - 1].Context ?? OuterEnvironmentOf(_depth - 1));
+                        _frames[_depth - 1].Scope ?? BaseScopeOf(_depth - 1));
                     stack = _stack;
                     stack[frameBase + ins.A] = closure;
                     break;
@@ -1865,7 +1957,7 @@ internal sealed class Interp2
         for (var i = 0; i < bind; i++)
         {
             var value = i < args.Count ? args[i] : JsValue.Undefined;
-            if (context is null || layout.SlotHomes[layout.ParameterSlots[i]] == SlotHome.Register)
+            if (context is null || layout.BindingHomes[layout.ParameterSlots[i]] == SlotHome.Register)
             {
                 stack[window + parameterIndex[i]] = value;
             }
@@ -1923,7 +2015,7 @@ internal sealed class Interp2
         else
         {
             var parameterSlots = layout.ParameterSlots;
-            var slotHomes = layout.SlotHomes;
+            var slotHomes = layout.BindingHomes;
             for (var i = 0; i < bind; i++)
             {
                 var value = i < argCount ? argSource[argStart + i] : JsValue.Undefined;
@@ -1959,7 +2051,7 @@ internal sealed class Interp2
     {
         var rest = _host.CreateRestArray(args, restIndex);
         var slot = layout.ParameterSlots[restIndex];
-        if (context is null || layout.SlotHomes[slot] == SlotHome.Register)
+        if (context is null || layout.BindingHomes[slot] == SlotHome.Register)
         {
             // Re-read: the allocation can collect, and the stack is the array
             // the collector traces, not a copy of it.
@@ -2008,7 +2100,7 @@ internal sealed class Interp2
         }
 
         var argumentsObject = _host.Interp2CreateArguments(args, layout.RestrictedArguments, callee);
-        if (context is not null && layout.SlotHomes[slot] == SlotHome.Context)
+        if (context is not null && layout.BindingHomes[slot] == SlotHome.Context)
         {
             BytecodeInterpreter.Interp2DeclareContextSlot(context, slot, argumentsObject);
             return;
@@ -2094,6 +2186,8 @@ internal sealed class Interp2
         frame.HasPendingReturn = false;
         frame.Generator = null;
         frame.AsyncContext = null;
+        frame.Scope = null;
+        frame.ScopeDepth = 0;
 
         DeclarativeEnvironmentRecord? context = null;
         if (layout.HasContext)
@@ -2102,7 +2196,7 @@ internal sealed class Interp2
             // the moment the body starts - the same state the window clear gives
             // the ones that stayed in registers.
             context = _host.Interp2CreateContext(layout.Function, callee, thisValue, frame.OuterEnv);
-            var homes = layout.SlotHomes;
+            var homes = layout.BindingHomes;
             for (var slot = 0; slot < homes.Length; slot++)
             {
                 if (homes[slot] == SlotHome.Context)
@@ -2116,7 +2210,7 @@ internal sealed class Interp2
         {
             var lexical = layout.SlotIsLexical;
             var constants = layout.SlotIsConst;
-            var lexicalHomes = layout.SlotHomes;
+            var lexicalHomes = layout.BindingHomes;
             for (var slot = 0; slot < lexical.Length; slot++)
             {
                 if (!lexical[slot])
@@ -2262,7 +2356,7 @@ internal sealed class Interp2
             ref var frame = ref _frames[depth - 1];
             if (frame.HandlerCount > 0)
             {
-                var entry = frame.HandlerBase + (frame.HandlerCount - 1) * 2;
+                var entry = frame.HandlerBase + (frame.HandlerCount - 1) * HandlerStride;
                 if (_handlers[entry] >= 0 || _handlers[entry + 1] >= 0)
                 {
                     return true;
@@ -2281,7 +2375,7 @@ internal sealed class Interp2
             while (frame.HandlerCount > 0)
             {
                 frame.HandlerCount--;
-                var entry = frame.HandlerBase + frame.HandlerCount * 2;
+                var entry = frame.HandlerBase + frame.HandlerCount * HandlerStride;
                 var catchIp = _handlers[entry];
                 var finallyIp = _handlers[entry + 1];
                 _handlerTop = entry;
@@ -2297,6 +2391,7 @@ internal sealed class Interp2
                 _depth = depth;
                 _stackTop = frame.Base + frame.Layout.WindowSize;
                 _stack[frame.Base] = value;
+                UnwindScopes(ref frame, _handlers[entry + 2]);
 
                 if (catchIp >= 0)
                 {
@@ -2314,6 +2409,229 @@ internal sealed class Interp2
         }
 
         return false;
+    }
+
+    // ---------------------------------------------------------- scoped blocks
+
+    /// <summary>
+    /// Where a block record of the frame at <paramref name="index"/> chains to:
+    /// the frame's own shared record when it has one, the closure's environment
+    /// otherwise.
+    /// </summary>
+    private EnvironmentRecord? BaseScopeOf(int index)
+        => (EnvironmentRecord?)_frames[index].Context ?? OuterEnvironmentOf(index);
+
+    /// <summary>
+    /// The block record holding <paramref name="name"/> among those the running
+    /// frame has pushed, innermost first, or null when none does. The walk
+    /// stops at the frame's own scope: its variables are not records here.
+    /// </summary>
+    private EnvironmentRecord? FindBlockBinding(string? name)
+    {
+        if (name is null)
+        {
+            return null;
+        }
+
+        ref var frame = ref _frames[_depth - 1];
+        var scope = frame.Scope;
+        for (var remaining = frame.ScopeDepth; remaining > 0 && scope is not null; remaining--)
+        {
+            if (scope.HasBinding(name))
+            {
+                return scope;
+            }
+
+            scope = scope.OuterEnv;
+        }
+
+        return null;
+    }
+
+    /// <summary>Pops block records until the frame has <paramref name="depth"/> of them.</summary>
+    private static void UnwindScopes(ref Frame frame, int depth)
+    {
+        while (frame.ScopeDepth > depth)
+        {
+            frame.Scope = frame.Scope?.OuterEnv;
+            frame.ScopeDepth--;
+        }
+
+        if (frame.ScopeDepth == 0)
+        {
+            frame.Scope = null;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private JsValue LoadScoped(FrameLayout layout, int slot, int slotBase, int icOffset)
+    {
+        var name = NameOfSlot(layout, slot);
+        if (FindBlockBinding(name) is { } block)
+        {
+            return _host.Interp2LoadFree(block, name, layout.IsStrict);
+        }
+
+        switch (layout.ScopedFallback[slot])
+        {
+            case SlotHome.Register:
+                if (layout.HasLexicalSlots && _tdz[slotBase + slot] != 0)
+                {
+                    _host.Interp2ThrowDeadZoneAccess(name);
+                }
+
+                return _stack[slotBase + slot];
+            case SlotHome.Context:
+                return _host.Interp2LoadContext(
+                    _frames[_depth - 1].Context!, layout.Function, slot, name, layout.IsStrict);
+            default:
+                return _host.Interp2LoadFreeCached(layout, slot, icOffset, OuterEnvironmentOf(_depth - 1));
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void StoreScoped(FrameLayout layout, int slot, int slotBase, int icOffset, JsValue value, bool resolved)
+    {
+        var name = NameOfSlot(layout, slot);
+        if (FindBlockBinding(name) is { } block)
+        {
+            // A block's binding is not deletable, so the one PreResolveVar
+            // found is still this one.
+            if (resolved)
+            {
+                _host.Interp2StoreResolvedFree(layout, slot, icOffset, block, value);
+            }
+            else
+            {
+                _host.Interp2StoreFree(block, name, value, layout.IsStrict);
+            }
+
+            return;
+        }
+
+        var fallback = layout.ScopedFallback[slot];
+        if (fallback == SlotHome.Free)
+        {
+            if (resolved)
+            {
+                _host.Interp2StoreResolvedFree(layout, slot, icOffset, OuterEnvironmentOf(_depth - 1), value);
+            }
+            else
+            {
+                _host.Interp2StoreFreeCached(layout, slot, icOffset, OuterEnvironmentOf(_depth - 1), value);
+            }
+
+            return;
+        }
+
+        // The body's own variable: the same checks StoreVar makes.
+        if (slot == layout.SelfNameSlot)
+        {
+            if (layout.IsStrict)
+            {
+                _host.Interp2ThrowSelfNameAssignment(name);
+            }
+
+            return;
+        }
+
+        if (fallback == SlotHome.Register && layout.HasLexicalSlots && _tdz[slotBase + slot] != 0)
+        {
+            _host.Interp2ThrowDeadZoneAccess(name);
+        }
+
+        if ((uint)slot < (uint)layout.SlotIsConst.Length && layout.SlotIsConst[slot])
+        {
+            _host.Interp2ThrowConstAssignment(name);
+        }
+
+        if (fallback == SlotHome.Register)
+        {
+            _stack[slotBase + slot] = value;
+        }
+        else
+        {
+            _host.Interp2StoreContext(
+                _frames[_depth - 1].Context!, layout.Function, slot, value, name, layout.IsStrict);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void InitScoped(FrameLayout layout, int slot, int slotBase, int icOffset, JsValue value)
+    {
+        var name = NameOfSlot(layout, slot);
+        if (FindBlockBinding(name) is { } block)
+        {
+            _host.Interp2InitializeBinding(block, name!, value);
+            return;
+        }
+
+        var isLexical = layout.HasLexicalSlots &&
+            (uint)slot < (uint)layout.SlotIsLexical.Length && layout.SlotIsLexical[slot];
+        switch (layout.ScopedFallback[slot])
+        {
+            case SlotHome.Register:
+                if (isLexical)
+                {
+                    _tdz[slotBase + slot] = 0;
+                }
+
+                _stack[slotBase + slot] = value;
+                return;
+            case SlotHome.Context when isLexical:
+                BytecodeInterpreter.Interp2InitializeContextSlot(
+                    _frames[_depth - 1].Context!, slot, value,
+                    (uint)slot < (uint)layout.SlotIsConst.Length && layout.SlotIsConst[slot]);
+                return;
+            case SlotHome.Context:
+                _host.Interp2StoreContext(
+                    _frames[_depth - 1].Context!, layout.Function, slot, value, name, layout.IsStrict);
+                return;
+            default:
+                _host.Interp2StoreFreeCached(layout, slot, icOffset, OuterEnvironmentOf(_depth - 1), value);
+                return;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private JsValue TypeOfScoped(FrameLayout layout, int slot, int slotBase)
+    {
+        var name = NameOfSlot(layout, slot);
+        if (FindBlockBinding(name) is { } block)
+        {
+            return JsValue.FromString(_host.Interp2TypeOfFree(block, name, layout.IsStrict));
+        }
+
+        switch (layout.ScopedFallback[slot])
+        {
+            case SlotHome.Register:
+                if (layout.HasLexicalSlots && _tdz[slotBase + slot] != 0)
+                {
+                    _host.Interp2ThrowDeadZoneAccess(name);
+                }
+
+                return JsValue.FromString(_host.Interp2TypeOfValue(_stack[slotBase + slot]));
+            case SlotHome.Context:
+                return JsValue.FromString(_host.Interp2TypeOfValue(_host.Interp2LoadContext(
+                    _frames[_depth - 1].Context!, layout.Function, slot, name, layout.IsStrict)));
+            default:
+                return JsValue.FromString(
+                    _host.Interp2TypeOfFree(OuterEnvironmentOf(_depth - 1), name, layout.IsStrict));
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void PreResolveScoped(FrameLayout layout, int slot)
+    {
+        var name = NameOfSlot(layout, slot);
+        if (FindBlockBinding(name) is { } block)
+        {
+            _host.Interp2PreResolveFree(block, name);
+        }
+        else if (layout.ScopedFallback[slot] == SlotHome.Free)
+        {
+            _host.Interp2PreResolveFreeCached(layout, slot, OuterEnvironmentOf(_depth - 1));
+        }
     }
 
     private static string? NameOfSlot(FrameLayout layout, int slot)
@@ -2366,6 +2684,7 @@ internal sealed class Interp2
             // reachable, the running frame is the only thing keeping the values
             // in it alive.
             frame.Context?.Trace(tracer);
+            frame.Scope?.Trace(tracer);
 
             // An exception travelling through a finally block is held nowhere
             // else while the block runs.

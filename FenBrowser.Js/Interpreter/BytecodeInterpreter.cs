@@ -911,28 +911,41 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     internal void CreatePerIterationEnvironment(InterpreterFrame frame, int scopeCount)
+        => frame.Environment = CopyIterationScopes(frame.Environment, scopeCount)!;
+
+    /// <summary>
+    /// The per-iteration copy of the <paramref name="scopeCount"/> innermost
+    /// records from <paramref name="innermost"/>, returning the new innermost;
+    /// <paramref name="innermost"/> itself when the chain is not the shape the
+    /// compiler emits. Shared by both loops and compiled code.
+    /// </summary>
+    internal EnvironmentRecord? CopyIterationScopes(EnvironmentRecord? innermost, int scopeCount)
     {
         if (scopeCount <= 0)
         {
-            return;
+            return innermost;
         }
 
         // chain[0] is innermost. Anything other than the shape the compiler
         // emits means the environment is not ours to rewrite, so leave it.
         var chain = new DeclarativeEnvironmentRecord[scopeCount];
-        var cursor = frame.Environment;
+        var cursor = innermost;
         for (var i = 0; i < scopeCount; i++)
         {
             if (cursor is not DeclarativeEnvironmentRecord decl || decl.OuterEnv is null)
             {
-                return;
+                return innermost;
             }
 
             chain[i] = decl;
             cursor = decl.OuterEnv;
         }
 
-        var outer = cursor;
+        if (cursor is not { } outer)
+        {
+            return innermost;
+        }
+
         for (var i = scopeCount - 1; i >= 0; i--)
         {
             var copy = StampEnvironment(chain[i].CloneForNextIteration(outer, out var holdsObject));
@@ -946,7 +959,39 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             outer = copy;
         }
 
-        frame.Environment = outer;
+        return outer;
+    }
+
+    /// <summary>
+    /// ECMA-262 14.2.2 / 14.2.3 BlockDeclarationInstantiation: a fresh
+    /// declarative record over <paramref name="outer"/> holding the block's
+    /// binding - the slot EnterScope's A names. B=1 makes it immutable (const);
+    /// C=1 starts it initialised to undefined (a for-loop head) rather than in
+    /// the dead zone; D=1 marks a catch clause's parameter scope (B.3.4).
+    /// </summary>
+    /// <remarks>
+    /// The binding is not deletable, as CreateMutableBinding(dn, false)
+    /// specifies. Creating it deletable let a sloppy `delete x` on a block's
+    /// let - or a catch parameter, which is bound the same way - remove it, so
+    /// the next read threw a ReferenceError.
+    /// </remarks>
+    internal DeclarativeEnvironmentRecord CreateBlockScope(
+        EnvironmentRecord? outer, BytecodeFunction function, in Instruction ins)
+    {
+        var scope = StampEnvironment(new DeclarativeEnvironmentRecord(outer));
+        var name = SlotNameTable.GetName(function, ins.A);
+        if (name != null)
+        {
+            if (ins.B == 1)
+                _ = scope.CreateImmutableBinding(name, strict: true);
+            else
+                _ = scope.CreateMutableBinding(name, deletable: false);
+            scope.IsCatchScope = ins.D == 1;
+            if (ins.C == 1)
+                _ = scope.InitializeBinding(name, JsValue.Undefined);
+        }
+
+        return scope;
     }
 
     private bool ProxyObjSet(ProxyObject proxy, JsValue receiver, string prop, JsValue value)
@@ -2876,35 +2921,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     return JsValue.FromObject(_heap.AllocateObject(yieldObj, AllocationSite.Current()));
                 }
                 case OpCode.EnterScope:
-                {
-                    var newScope = StampEnvironment(new DeclarativeEnvironmentRecord(frame.Environment));
-                    // ECMA-262 14.2: every block creates a fresh lexical env-record.
-                    // ins.A is the variable-slot index for the let/const name.
-                    var scopeName = SlotNameTable.GetName(function, ins.A);
-                    if (scopeName != null)
-                    {
-                        // B=0 -> mutable (let), B=1 -> immutable (const).
-                        // ECMA-262 14.2.3 BlockDeclarationInstantiation creates a
-                        // let binding with CreateMutableBinding(dn, false): it is
-                        // not deletable. Creating it deletable let a sloppy
-                        // `delete x` on a block's let - or a catch parameter,
-                        // which is bound the same way - return true and remove
-                        // the binding, so the next read threw a ReferenceError.
-                        if (ins.B == 1)
-                            _ = newScope.CreateImmutableBinding(scopeName, strict: true);
-                        else
-                            _ = newScope.CreateMutableBinding(scopeName, deletable: false);
-                        // D=1: a catch clause with an identifier parameter (B.3.4).
-                        newScope.IsCatchScope = ins.D == 1;
-                        // C=1: for-loop head binding — pre-initialize so StoreVar
-                        // (SetMutableBinding) works on each iteration. Regular block
-                        // bindings stay in TDZ (C=0).
-                        if (ins.C == 1)
-                            _ = newScope.InitializeBinding(scopeName, JsValue.Undefined);
-                    }
-                    frame.Environment = newScope;
+                    frame.Environment = CreateBlockScope(frame.Environment, function, ins);
                     break;
-                }
                 case OpCode.LeaveScope:
                 {
                     frame.Environment = frame.Environment.OuterEnv ?? frame.Environment;

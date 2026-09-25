@@ -311,6 +311,16 @@ public sealed partial class BytecodeInterpreter
         DeclarativeEnvironmentRecord context, int slot, JsValue value, bool isConst)
         => context.InitializeAtSlot(slot, value, immutable: isConst);
 
+    /// <summary>A block binding's declaration running, in the record that holds it.</summary>
+    internal void Interp2InitializeBinding(EnvironmentRecord record, string name, JsValue value)
+    {
+        var status = record.InitializeBinding(name, value);
+        if (status != BindingOpResult.Ok)
+        {
+            throw Interp2BindingFailure(status, name, assignment: true);
+        }
+    }
+
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     internal void Interp2ThrowDeadZoneAccess(string? name)
         => throw new JsThrownException(
