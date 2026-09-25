@@ -1723,6 +1723,12 @@ internal sealed class Interp2
         var bind = layout.HasDuplicateParameterSlots
             ? parameterIndex.Length
             : Math.Min(args.Count, parameterIndex.Length);
+        var restIndex = layout.Function.RestParameterIndex;
+        if (restIndex >= 0)
+        {
+            bind = Math.Min(bind, restIndex);
+        }
+
         for (var i = 0; i < bind; i++)
         {
             var value = i < args.Count ? args[i] : JsValue.Undefined;
@@ -1734,6 +1740,11 @@ internal sealed class Interp2
             {
                 BytecodeInterpreter.Interp2DeclareContextSlot(context, layout.ParameterSlots[i], value);
             }
+        }
+
+        if (restIndex >= 0)
+        {
+            BindRestParameter(layout, context, window, args, restIndex);
         }
 
         BindArgumentsObject(layout, callee, context, window, args);
@@ -1761,6 +1772,12 @@ internal sealed class Interp2
         var bind = layout.HasDuplicateParameterSlots
             ? parameterIndex.Length
             : Math.Min(argCount, parameterIndex.Length);
+        var restIndex = layout.Function.RestParameterIndex;
+        if (restIndex >= 0)
+        {
+            bind = Math.Min(bind, restIndex);
+        }
+
         if (context is null)
         {
             // The ordinary shape: nothing is captured, so every formal is a
@@ -1788,9 +1805,37 @@ internal sealed class Interp2
             }
         }
 
+        if (restIndex >= 0)
+        {
+            BindRestParameter(layout, context, window, CallArgs.FromRegisters(argSource, argStart, argCount), restIndex);
+        }
+
         BindArgumentsObject(
             layout, callee, context, window, CallArgs.FromRegisters(argSource, argStart, argCount));
         BindSelfName(layout, callee, window);
+    }
+
+    /// <summary>
+    /// A rest parameter collects every argument from its position on into a
+    /// new array, and is bound even when that array is empty (ECMA-262 10.2.11
+    /// FunctionDeclarationInstantiation, IteratorBindingInitialization of the
+    /// formals). The formals before it are bound as ordinary parameters.
+    /// </summary>
+    private void BindRestParameter(
+        FrameLayout layout, DeclarativeEnvironmentRecord? context, int window, in CallArgs args, int restIndex)
+    {
+        var rest = _host.CreateRestArray(args, restIndex);
+        var slot = layout.ParameterSlots[restIndex];
+        if (context is null || layout.SlotHomes[slot] == SlotHome.Register)
+        {
+            // Re-read: the allocation can collect, and the stack is the array
+            // the collector traces, not a copy of it.
+            _stack[window + layout.ParameterWindowIndex[restIndex]] = rest;
+        }
+        else
+        {
+            BytecodeInterpreter.Interp2DeclareContextSlot(context, slot, rest);
+        }
     }
 
     /// <summary>

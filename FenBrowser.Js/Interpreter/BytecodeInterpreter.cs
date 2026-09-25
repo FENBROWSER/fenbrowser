@@ -1871,6 +1871,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return asyncContext is not null ? "Async/" + reason : reason;
     }
 
+    /// <summary>
+    /// A rest parameter's value: a new array of every argument from
+    /// <paramref name="from"/> on, empty when there are none (ECMA-262 8.6.2
+    /// IteratorBindingInitialization, BindingRestElement).
+    /// </summary>
+    internal JsValue CreateRestArray(in CallArgs args, int from)
+    {
+        var count = Math.Max(0, args.Count - from);
+        var values = new JsValue[count];
+        for (var i = 0; i < count; i++)
+        {
+            values[i] = args[from + i];
+        }
+
+        return JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(values), AllocationSite.Current()));
+    }
+
     private JsValue ExecuteInternalCore(
         BytecodeFunction function,
         in CallArgs args,
@@ -2087,15 +2104,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 JsValue paramValue;
                 if (i == function.RestParameterIndex)
                 {
-                    var restCount = Math.Max(0, args.Count - i);
-                    var restValues = new JsValue[restCount];
-                    for (var restIndex = 0; restIndex < restCount; restIndex++)
-                    {
-                        restValues[restIndex] = args[i + restIndex];
-                    }
-
-                    var restArray = CreateArrayFromElements(restValues);
-                    paramValue = JsValue.FromObject(_heap.AllocateObject(restArray, AllocationSite.Current()));
+                    paramValue = CreateRestArray(args, i);
                 }
                 else if (function.RestParameterIndex >= 0 && i > function.RestParameterIndex)
                 {

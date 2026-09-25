@@ -12,7 +12,6 @@ public enum Interp2Bailout
     ClassConstructor,
     ArgumentsObject,
     BindsOwnName,
-    RestParameter,
     LexicalDeclarations,
     UnmappedSlot,
     UnsupportedOpCode,
@@ -363,8 +362,6 @@ public sealed class FrameLayout
         // parameter can still be a register.
         if (function.UsesOuterArguments)
             return new FrameLayout(function, Interp2Bailout.ArgumentsObject);
-        if (function.RestParameterIndex >= 0)
-            return new FrameLayout(function, Interp2Bailout.RestParameter);
         // let/const need a hole distinct from undefined to keep the temporal
         // dead zone observable. A register window has no such value yet, so the
         // bodies that declare them stay on the old loop for now.
