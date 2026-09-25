@@ -1089,7 +1089,8 @@ public sealed class BytecodeCompiler
             classDecl.Name,
             classDecl.BaseClass,
             classDecl.Members,
-            hasInnerNameBinding: true);
+            hasInnerNameBinding: true,
+            classSpan: classDecl.Span);
         // The outer lexical binding is initialized once that environment has
         // closed: while it is open, the class name resolves to the inner binding.
         _instructions.Add(new Instruction(OpCode.InitVar, classReg, slot, 0));
@@ -1145,7 +1146,8 @@ public sealed class BytecodeCompiler
         string? className,
         ExpressionNode? baseClass,
         IReadOnlyList<ClassMemberNode> members,
-        bool hasInnerNameBinding = false)
+        bool hasInnerNameBinding = false,
+        SourceSpan classSpan = default)
     {
         var savedClassStrictMode = _isStrictMode;
         _isStrictMode = true;
@@ -1378,7 +1380,15 @@ public sealed class BytecodeCompiler
         _isClassConstructor = true;
         var savedFieldInitializers = _fieldInitializerStatements;
         _fieldInitializerStatements = instanceFieldInits.Count > 0 ? fieldInitializers : null;
+        var constructorIndex = _nestedFunctions.Count;
         var classReg = CompileFunctionExpressionToRegister(constructorFn, FunctionKind.Constructor);
+        // ECMA-262 15.7.14 step 18: the class's [[SourceText]] is the whole
+        // ClassDeclaration or ClassExpression, so Function.prototype.toString on
+        // a class shows the class, not just its constructor method.
+        if (classSpan.Length > 0 && constructorIndex < _nestedFunctions.Count)
+        {
+            AttachSource(_nestedFunctions[constructorIndex], classSpan);
+        }
         _fieldInitializerStatements = savedFieldInitializers;
         _compilingClassConstructor = savedConstructorContext;
         _isDerivedConstructor = savedIsDerived;
@@ -4232,7 +4242,8 @@ public sealed class BytecodeCompiler
                     classExpr.Name ?? ConsumeNameHint(),
                     classExpr.BaseClass,
                     classExpr.Members,
-                    hasInnerNameBinding: classExpr.Name is { Length: > 0 });
+                    hasInnerNameBinding: classExpr.Name is { Length: > 0 },
+                    classSpan: classExpr.Span);
             case ArrowFunctionExpressionNode arrow:
             {
                 IReadOnlyList<StatementNode> statements;
