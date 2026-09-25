@@ -115,6 +115,9 @@ public sealed partial class BytecodeInterpreter
     /// </summary>
     private static bool HasHandler(InterpreterFrame frame) => frame.CatchHandlers.Count > 0;
 
+    /// <summary>The same filter for compiled code's handler block.</summary>
+    internal static bool HasHandlerForJit(InterpreterFrame frame) => HasHandler(frame);
+
     private void ThrowOrHandle(InterpreterFrame frame, JsValue value)
     {
         // Audit JSRT-005: pin the thrown value while routing it, then hand

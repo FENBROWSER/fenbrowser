@@ -181,6 +181,8 @@ internal static class JsRuntimeBindings
         .GetMethod(nameof(BytecodeInterpreter.IteratorCloseForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     internal static readonly MethodInfo MiForInNext = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.ForInNextForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    internal static readonly MethodInfo MiHasHandler = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.HasHandlerForJit), BindingFlags.Static | BindingFlags.NonPublic)!;
     internal static readonly MethodInfo MiDefinePrivateField = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.DefinePrivateFieldForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     internal static readonly MethodInfo MiGetPrivateField = typeof(BytecodeInterpreter)

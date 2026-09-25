@@ -397,16 +397,38 @@ internal static class BaselineCompiler
         /// as the dispatch loop offers it. An interrupt or an exhausted budget is
         /// not the script's to catch, so it leaves without being offered.
         /// </summary>
+        /// <remarks>
+        /// The decision is an exception filter, as in the dispatch loop's catch
+        /// sites (HasHandler): a throw no try in this frame wants passes by
+        /// uncaught. Catching and rethrowing it instead runs each rethrow on top
+        /// of the stack the first throw still holds, so a stack overflow
+        /// unwinding through a deep chain of compiled frames overflowed a second
+        /// time and took the process down.
+        /// </remarks>
         private void EmitCatch()
         {
-            il.BeginCatch(typeof(JsThrownException));
             var thrown = il.Local(typeof(JsThrownException));
             var rethrow = il.DefineLabel();
-            il.Store(thrown);
+            var decline = il.DefineLabel();
+            var decided = il.DefineLabel();
 
+            il.BeginFilter();
+            il.Cast(typeof(JsThrownException));
+            il.Store(thrown);
+            il.Load(thrown);
+            il.Branch(OpCodes.Brfalse, decline);
             il.Load(thrown);
             il.Get(PiThrownUncatchable);
-            il.Branch(OpCodes.Brtrue, rethrow);
+            il.Branch(OpCodes.Brtrue, decline);
+            il.Arg(1);
+            il.Call(MiHasHandler);
+            il.Branch(OpCodes.Br, decided);
+            il.Mark(decline);
+            il.Int(0);
+            il.Mark(decided);
+
+            il.BeginFilteredCatch();
+            il.Op(OpCodes.Pop);
 
             il.Arg(0);
             il.Arg(1);

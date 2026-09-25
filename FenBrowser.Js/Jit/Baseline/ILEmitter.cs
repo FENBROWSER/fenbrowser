@@ -23,6 +23,12 @@ internal readonly struct ILEmitter(ILGenerator il)
 
     internal void BeginCatch(Type exceptionType) => _il.BeginCatchBlock(exceptionType);
 
+    /// <summary>Starts an exception filter; the exception object is on the stack.</summary>
+    internal void BeginFilter() => _il.BeginExceptFilterBlock();
+
+    /// <summary>Ends the filter (it must leave an int) and starts the handler it guards.</summary>
+    internal void BeginFilteredCatch() => _il.BeginCatchBlock(null);
+
     internal void EndTry() => _il.EndExceptionBlock();
 
     /// <summary>The shortest encoding for a constant int.</summary>
