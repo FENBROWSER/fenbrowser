@@ -1876,6 +1876,36 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     /// <paramref name="from"/> on, empty when there are none (ECMA-262 8.6.2
     /// IteratorBindingInitialization, BindingRestElement).
     /// </summary>
+    /// <summary>
+    /// The argument list of a spread call or construct (ECMA-262 13.3.8.1
+    /// ArgumentListEvaluation): the compiler gathers every argument, spreads
+    /// included, into one fresh array, and this reads it back out.
+    /// </summary>
+    internal JsValue[] SpreadArguments(JsValue spreadArray)
+    {
+        if (spreadArray.Tag != JsValueTag.Object)
+        {
+            return Array.Empty<JsValue>();
+        }
+
+        var arrayObject = _heap.GetObject(spreadArray.AsObjectHandle());
+        if (!arrayObject.TryGetOwnProperty("length", out var lengthDescriptor))
+        {
+            return Array.Empty<JsValue>();
+        }
+
+        var length = (int)lengthDescriptor.Value.AsNumber();
+        var values = new JsValue[length];
+        for (var i = 0; i < length; i++)
+        {
+            values[i] = arrayObject.TryGetOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture), out var element)
+                ? element.Value
+                : JsValue.Undefined;
+        }
+
+        return values;
+    }
+
     internal JsValue CreateRestArray(in CallArgs args, int from)
     {
         var count = Math.Max(0, args.Count - from);
@@ -3580,25 +3610,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.CallSpread:
                 {
-                    // ECMA-262 13.3.7.1 — unpack a spread array into individual args.
-                    var spreadArray = registers[ins.C];
-                    var unpackedArgs = Array.Empty<JsValue>();
-                    if (spreadArray.Tag == JsValueTag.Object)
-                    {
-                        var arrObj = _heap.GetObject(spreadArray.AsObjectHandle());
-                        if (arrObj.TryGetOwnProperty("length", out var lenDesc))
-                        {
-                            var len = (int)lenDesc.Value.AsNumber();
-                            unpackedArgs = new JsValue[len];
-                            for (var i = 0; i < len; i++)
-                            {
-                                if (arrObj.TryGetOwnProperty(i.ToString(), out var elemDesc))
-                                    unpackedArgs[i] = elemDesc.Value;
-                                else
-                                    unpackedArgs[i] = JsValue.Undefined;
-                            }
-                        }
-                    }
+                    var unpackedArgs = SpreadArguments(registers[ins.C]);
                     var thisVal = ins.D != 0 ? registers[ins.D] : JsValue.Undefined;
                     StoreCallResult(
                         frame,
@@ -3611,26 +3623,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.ConstructSpread:
                 {
-                    // ECMA-262 13.3.5.1 — unpack a spread array into constructor args.
-                    var spreadArray = registers[ins.C];
-                    var unpackedArgs = Array.Empty<JsValue>();
-                    if (spreadArray.Tag == JsValueTag.Object)
-                    {
-                        var arrObj = _heap.GetObject(spreadArray.AsObjectHandle());
-                        if (arrObj.TryGetOwnProperty("length", out var lenDesc))
-                        {
-                            var len = (int)lenDesc.Value.AsNumber();
-                            unpackedArgs = new JsValue[len];
-                            for (var i = 0; i < len; i++)
-                            {
-                                unpackedArgs[i] = arrObj.TryGetOwnProperty(i.ToString(), out var elemDesc)
-                                    ? elemDesc.Value
-                                    : JsValue.Undefined;
-                            }
-                        }
-                    }
-
-                    StoreConstructResult(frame, ins.A, registers[ins.B], unpackedArgs);
+                    StoreConstructResult(frame, ins.A, registers[ins.B], SpreadArguments(registers[ins.C]));
                     break;
                 }
                 case OpCode.Construct0:

@@ -1,4 +1,5 @@
 ﻿using FenBrowser.Js.Bytecode;
+using System.Runtime.CompilerServices;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
@@ -1530,6 +1531,17 @@ internal sealed class Interp2
                     stack[frameBase + ins.A] = _host.Interp2NewArray(ins.B);
                     break;
 
+                case OpCode.ConstructSpread:
+                {
+                    var spreadArgs = _host.SpreadArguments(stack[frameBase + ins.C]);
+                    _frames[_depth - 1].Ip = ip;
+                    var constructed = _host.Interp2Construct(stack[frameBase + ins.B], new CallArgs(spreadArgs));
+                    stack = _stack;
+                    stack[frameBase + ins.A] = constructed;
+                    heap.CollectAtSafePointIfRequested();
+                    break;
+                }
+
                 case OpCode.Construct0:
                 case OpCode.Construct1:
                 case OpCode.ConstructN:
@@ -1576,6 +1588,87 @@ internal sealed class Interp2
                     stack = _stack;
                     heap.CollectAtSafePointIfRequested();
                     break;
+
+                case OpCode.CallSpread:
+                {
+                    // ECMA-262 13.3.8.1 ArgumentListEvaluation: the compiler has
+                    // already gathered every argument, spreads included, into the
+                    // array in C. It stays in this frame's register for the whole
+                    // call, so the values unpacked from it stay reachable.
+                    var spreadArgs = _host.SpreadArguments(stack[frameBase + ins.C]);
+                    var spreadThis = ins.D != 0 ? stack[frameBase + ins.D] : JsValue.Undefined;
+                    _frames[_depth - 1].Ip = ip;
+                    if (CallFrom(stack[frameBase + ins.B], spreadThis, spreadArgs, 0, spreadArgs.Length, frameBase + ins.A))
+                        goto reload;
+                    stack = _stack;
+                    heap.CollectAtSafePointIfRequested();
+                    break;
+                }
+
+                case OpCode.TailCall0:
+                case OpCode.TailCall1:
+                case OpCode.TailCallN:
+                {
+                    // ECMA-262 15.10.3 PrepareForTailCall: a strict `return f(...)`
+                    // finishes this frame before the callee starts, so tail
+                    // recursion runs in constant space. The arguments are copied
+                    // out of the window being released and pinned while the
+                    // callee's frame is set up, which can allocate - nothing else
+                    // holds them then.
+                    var tailArgCount = ins.OpCode switch
+                    {
+                        OpCode.TailCall0 => 0,
+                        OpCode.TailCall1 => 1,
+                        _ => ins.D,
+                    };
+                    var tailArgs = tailArgCount == 0 ? Array.Empty<JsValue>() : new JsValue[tailArgCount];
+                    Array.Copy(stack, frameBase + ins.C, tailArgs, 0, tailArgCount);
+                    var tailCallee = stack[frameBase + ins.B];
+
+                    ref var finishing = ref _frames[_depth - 1];
+                    var tailReturnSlot = finishing.ReturnSlot;
+                    if (_backEdges != finishing.BackEdgeMark)
+                    {
+                        SettleBackEdges(ref finishing);
+                    }
+
+                    if (finishing.HandlerCount > 0)
+                    {
+                        _handlerTop = finishing.HandlerBase;
+                        finishing.HandlerCount = 0;
+                    }
+
+                    _depth--;
+                    _stackTop = frameBase;
+
+                    var rootMark = heap.RootCount;
+                    if (tailCallee.Tag == JsValueTag.Object) heap.PushRoot(tailCallee.AsObjectHandle());
+                    foreach (var tailArg in tailArgs)
+                    {
+                        if (tailArg.Tag == JsValueTag.Object) heap.PushRoot(tailArg.AsObjectHandle());
+                    }
+
+                    bool pushed;
+                    JsValue tailResult;
+                    try
+                    {
+                        pushed = TryPushTailCallee(tailCallee, tailArgs, tailReturnSlot, out tailResult);
+                    }
+                    finally
+                    {
+                        heap.PopRootsTo(rootMark);
+                    }
+
+                    if (pushed)
+                        goto reload;
+
+                    // Delivered as the finished frame's return value would be.
+                    if (_depth == entryDepth)
+                        return tailResult;
+                    stack = _stack;
+                    stack[tailReturnSlot] = tailResult;
+                    goto reload;
+                }
 
                 case OpCode.CallMethod0:
                     _frames[_depth - 1].Ip = ip;
@@ -1645,7 +1738,16 @@ internal sealed class Interp2
     /// so a stack that is full would recurse instead of reporting that it is
     /// full.
     /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool Call(JsValue calleeValue, JsValue thisValue, int argStart, int argCount, int returnSlot)
+        => CallFrom(calleeValue, thisValue, _stack, argStart, argCount, returnSlot);
+
+    /// <summary>
+    /// <see cref="Call"/> with the arguments in <paramref name="argSource"/>
+    /// rather than in this frame's window - a spread call's unpacked list.
+    /// </summary>
+    private bool CallFrom(
+        JsValue calleeValue, JsValue thisValue, JsValue[] argSource, int argStart, int argCount, int returnSlot)
     {
         var calleeIsJavaScript = false;
         if (calleeValue.Tag == JsValueTag.Object)
@@ -1666,7 +1768,7 @@ internal sealed class Interp2
                     // Counted here only: a call handed to the old loop is
                     // counted by CallFunction.
                     fn.Function.Invocations++;
-                    PushFrame(fn, layout, _stack, argStart, argCount, thisValue, returnSlot);
+                    PushFrame(fn, layout, argSource, argStart, argCount, thisValue, returnSlot);
                     return true;
                 }
 
@@ -1686,7 +1788,7 @@ internal sealed class Interp2
                 // proxy/bound/generator ladder to arrive here anyway.
                 if (Interp2Options.Log) Interp2Stats.RecordCallDelegated(calleeIsJavaScript: false);
                 var nativeResult = _host.Interp2CallNative(
-                    native, CallArgs.FromRegisters(_stack, argStart, argCount), thisValue);
+                    native, CallArgs.FromRegisters(argSource, argStart, argCount), thisValue);
                 _stack[returnSlot] = nativeResult;
                 return false;
             }
@@ -1701,13 +1803,44 @@ internal sealed class Interp2
         // function this loop declined: the old loop knows all of them, and the
         // arguments it needs are already contiguous in this frame's window.
         var result = _host.Interp2Call(
-            calleeValue, CallArgs.FromRegisters(_stack, argStart, argCount), thisValue);
+            calleeValue, CallArgs.FromRegisters(argSource, argStart, argCount), thisValue);
 
         // _stack is re-read on the next line rather than reused from this one:
         // the callee may have re-entered this loop deeply enough to grow the
         // value stack, and the array the arguments were read out of is then the
         // one it replaced. Every host call in the dispatch follows the same rule.
         _stack[returnSlot] = result;
+        return false;
+    }
+
+    /// <summary>
+    /// The callee of a tail call, in the place of the frame that made it: a
+    /// JavaScript body this loop runs gets a frame returning to that frame's
+    /// return slot, and true. Anything else runs to completion here and its
+    /// result comes back in <paramref name="result"/>, for the caller to
+    /// deliver as that frame's return value.
+    /// </summary>
+    private bool TryPushTailCallee(JsValue calleeValue, JsValue[] args, int returnSlot, out JsValue result)
+    {
+        result = JsValue.Undefined;
+        if (calleeValue.Tag == JsValueTag.Object &&
+            _host.Heap.GetObject(calleeValue.AsObjectHandle()) is JsFunctionObject fn)
+        {
+            var layout = FrameLayout.For(fn.Function);
+            if (layout.Eligible
+#if !PUBLISH_AOT
+                && !JitCompiler.PrefersCompiled(fn.Function)
+#endif
+                )
+            {
+                if (Interp2Options.Log) Interp2Stats.RecordCallInLoop();
+                fn.Function.Invocations++;
+                PushFrame(fn, layout, args, 0, args.Length, JsValue.Undefined, returnSlot);
+                return true;
+            }
+        }
+
+        result = _host.Interp2Call(calleeValue, new CallArgs(args), JsValue.Undefined);
         return false;
     }
 

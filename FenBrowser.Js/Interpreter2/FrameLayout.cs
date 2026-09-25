@@ -501,7 +501,7 @@ public sealed class FrameLayout
 
             // Direct eval is flagged on the call site rather than by a distinct
             // opcode, and it can both read and add bindings in the caller's scope.
-            if (ins.E == 1 && ins.OpCode is OpCode.Call0 or OpCode.Call1 or OpCode.CallN)
+            if (ins.E == 1 && ins.OpCode is OpCode.Call0 or OpCode.Call1 or OpCode.CallN or OpCode.CallSpread)
                 return new FrameLayout(function, Interp2Bailout.DirectEval);
 
             makesClosures |= ins.OpCode == OpCode.CreateFunction;
@@ -883,9 +883,10 @@ public sealed class FrameLayout
             OpCode.NewObject, OpCode.NewArray, OpCode.NewRegExp,
 
             // Calls and construction.
-            OpCode.Construct0, OpCode.Construct1, OpCode.ConstructN,
-            OpCode.Call0, OpCode.Call1, OpCode.CallN,
+            OpCode.Construct0, OpCode.Construct1, OpCode.ConstructN, OpCode.ConstructSpread,
+            OpCode.Call0, OpCode.Call1, OpCode.CallN, OpCode.CallSpread,
             OpCode.CallMethod0, OpCode.CallMethod1, OpCode.CallMethodN,
+            OpCode.TailCall0, OpCode.TailCall1, OpCode.TailCallN,
         ];
 
         foreach (var op in supported)
