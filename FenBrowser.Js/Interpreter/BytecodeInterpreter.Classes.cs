@@ -11,6 +11,15 @@ namespace FenBrowser.Js.Interpreter;
 public sealed partial class BytecodeInterpreter
 {
 
+    // SetPropByName with D=1: an object literal's own property, created rather
+    // than assigned (ECMA-262 13.2.5.5), exactly as the dispatch loop does it.
+    // The operands come in as values: SetPropByName is not a safepoint, so the
+    // frame's registers may be behind the compiled code's locals.
+    internal void DefineLiteralPropertyForJit(InterpreterFrame frame, JsValue target, int nameIndex, JsValue value)
+    {
+        DefineOwnDataProperty(target, frame.Function.PropertyNames[nameIndex], value);
+    }
+
     internal void DefinePrivateFieldForJit(InterpreterFrame frame, int targetReg, int nameIndex, int valueReg)
     {
         var function = frame.Function;

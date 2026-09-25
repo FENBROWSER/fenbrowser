@@ -787,13 +787,22 @@ internal static class BaselineCompiler
 
                 case OpCode.SetPropByName:
                 {
-                    // D=1 is an object literal's create, not an assignment, and
-                    // the store cache below performs an assignment. Compiling it
-                    // as one would run an inherited setter the specification
-                    // says must not run - so decline the body instead.
-                    if (ins.D != 0) return false;
                     if (!Register(ins.A) || !Register(ins.C)) return false;
                     if ((uint)ins.B >= (uint)function.PropertyNames.Count) return false;
+                    // D=1 is an object literal's create, not an assignment, and
+                    // the store cache below performs an assignment - which would
+                    // run an inherited setter the specification says must not
+                    // run. It goes through the dispatch loop's define instead.
+                    if (ins.D != 0)
+                    {
+                        il.Arg(0);
+                        il.Arg(1);
+                        PushRegister(ins.A);
+                        il.Int(ins.B);
+                        PushRegister(ins.C);
+                        il.Call(MiDefineLiteralProperty);
+                        return true;
+                    }
                     var name = function.PropertyNames[ins.B];
                     EmitCachedStore(
                         PoolPropertySite(name, function.EnsureStoreCacheSite(ip)),
