@@ -357,11 +357,22 @@ public static class JitCompiler
     // used, and a total compile time cannot say whether it was: a run that
     // compiles 300 functions and then calls each twice is pure loss no matter
     // how quick each compile was.
+    // The log holds every function it names, so it is only kept when a report
+    // was asked for (FEN_JIT_REPORT=1): kept always, it held every compiled
+    // function - and through their caches every realm they ran in - for the
+    // life of the process.
     private static readonly object CompiledLogGate = new();
     private static readonly List<(string Name, double Ms, int InvocationsAtCompile, BytecodeFunction Function)> CompiledLog = new();
+    private static readonly bool KeepCompiledLog =
+        string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_REPORT"), "1", StringComparison.Ordinal);
 
     private static void NoteCompiled(BytecodeFunction function, double milliseconds)
     {
+        if (!KeepCompiledLog)
+        {
+            return;
+        }
+
         lock (CompiledLogGate)
         {
             CompiledLog.Add((function.Name is { Length: > 0 } n ? n : "<anon>", milliseconds, function.Invocations, function));
