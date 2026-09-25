@@ -17103,11 +17103,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // already has the materialised element list and just wants a fresh Array.
     private JsObject CreateArrayFromElements(IReadOnlyList<JsValue> elements)
     {
-        var obj = new ArrayObject();
+        return PopulateArrayWithElements(CreateEmptyArray(0), elements);
+    }
+
+    // ArrayCreate(0) from this realm's %Array.prototype%, with room for
+    // `capacity` elements appended densely.
+    private ArrayObject CreateEmptyArray(int capacity)
+    {
+        var obj = new ArrayObject(capacity);
         obj.SetPrototype(EnsureArrayPrototype());
         _ = obj.DefineOwnProperty("length", new JsPropertyDescriptor(
             JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
-        return PopulateArrayWithElements(obj, elements);
+        return obj;
     }
 
     private static JsObject PopulateArrayWithElements(ArrayObject obj, IReadOnlyList<JsValue> elements)
@@ -18527,6 +18534,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return true;
     }
 
+    // ECMA-262 23.1.3.21 Array.prototype.map. The result exists before the
+    // first callback (step 5), only indices present in O when they are visited
+    // are mapped (step 7.b HasProperty), and a hole stays a hole.
     private JsValue ArrayPrototypeMap(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var receiver = ToObjectValue(thisValue);
@@ -18536,41 +18546,59 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         RequireCallable(callback, "Array.prototype.map");
-        // ECMA-262 23.1.3.21 step 5: A = ArraySpeciesCreate(O, len) — RangeError for
-        // a length beyond the array-length limit, before the callback runs.
-        ThrowIfArrayLengthExceedsLimit(lengthD);
-        var items = new List<JsValue>(length);
 
-        // Dense arrays own every index below length. Reading their vector
-        // directly avoids formatting and parsing an index string plus walking
-        // the ordinary property path for every element. Exotic/sparse arrays
-        // retain the fully observable property lookup below.
-        if (obj is ArrayObject { IsDense: true } dense && dense.DenseCount == length)
+        var speciesCtor = ArraySpeciesConstructor(receiver);
+        JsValue result;
+        if (speciesCtor.Tag == JsValueTag.Undefined)
         {
+            // ArrayCreate(len): RangeError past the array-length limit.
+            ThrowIfArrayLengthExceedsLimit(lengthD);
+            result = JsValue.FromObject(_heap.AllocateObject(CreateEmptyArray(length), AllocationSite.Current()));
+        }
+        else
+        {
+            result = ConstructSpeciesResult(speciesCtor, lengthD);
+        }
+
+        var rootMark = _heap.RootCount;
+        _heap.PushRoot(result.AsObjectHandle());
+        try
+        {
+            var resultObj = _heap.GetObject(result.AsObjectHandle());
+            var denseResult = speciesCtor.Tag == JsValueTag.Undefined ? (ArrayObject)resultObj : null;
             for (var i = 0; i < length; i++)
             {
-                _ = dense.TryDenseGet((uint)i, out var value);
-                items.Add(InvokeArrayCallback(callback, value, i, receiver, thisArg));
+                if (!TryGetArrayMethodElement(obj, receiver, i, out var value))
+                {
+                    continue;
+                }
+
+                var mapped = InvokeArrayCallback(callback, value, i, receiver, thisArg);
+                // Appending keeps a hole-free result dense; after a hole, or on
+                // a species result, define the index the way the spec does.
+                if (denseResult is null || denseResult.DenseLength != (uint)i || !denseResult.TryDenseAppend(mapped))
+                {
+                    CreateDataPropertyOrThrow(resultObj, JsIndexKeys.For(i), mapped);
+                }
             }
 
-            return ArraySpeciesCreate(receiver, items);
-        }
-
-        for (var i = 0; i < length; i++)
-        {
-            var key = JsIndexKeys.For(i);
-            if (!TryGetPropertyValue(obj, receiver, key, out var v))
+            if (denseResult is not null && denseResult.DenseLength != (uint)length)
             {
-                items.Add(JsValue.Undefined);   // spec: preserves length, holes become undefined-ish
-                continue;
+                // Trailing holes still count towards the result's length.
+                denseResult.SetProperty("length", JsValue.FromNumber(length));
             }
 
-            items.Add(InvokeArrayCallback(callback, v, i, receiver, thisArg));
+            return result;
         }
-
-        return ArraySpeciesCreate(receiver, items);
+        finally
+        {
+            _heap.PopRootsTo(rootMark);
+        }
     }
 
+    // ECMA-262 23.1.3.8 Array.prototype.filter: ArraySpeciesCreate(O, 0) runs
+    // before the first callback, and each kept value is added with
+    // CreateDataPropertyOrThrow as it is found.
     private JsValue ArrayPrototypeFilter(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var receiver = ToObjectValue(thisValue);
@@ -18579,23 +18607,70 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         RequireCallable(callback, "Array.prototype.filter");
-        var items = new List<JsValue>();
-        for (var i = 0; i < length; i++)
+
+        var speciesCtor = ArraySpeciesConstructor(receiver);
+        var result = speciesCtor.Tag == JsValueTag.Undefined
+            ? JsValue.FromObject(_heap.AllocateObject(CreateEmptyArray(0), AllocationSite.Current()))
+            : ConstructSpeciesResult(speciesCtor, 0);
+
+        var rootMark = _heap.RootCount;
+        _heap.PushRoot(result.AsObjectHandle());
+        try
         {
-            var key = JsIndexKeys.For(i);
-            if (!TryGetPropertyValue(obj, receiver, key, out var v))
+            var resultObj = _heap.GetObject(result.AsObjectHandle());
+            var denseResult = speciesCtor.Tag == JsValueTag.Undefined ? (ArrayObject)resultObj : null;
+            var to = 0;
+            for (var i = 0; i < length; i++)
             {
-                continue;   // skip holes
+                if (!TryGetArrayMethodElement(obj, receiver, i, out var value))
+                {
+                    continue;
+                }
+
+                if (!IsTruthy(InvokeArrayCallback(callback, value, i, receiver, thisArg)))
+                {
+                    continue;
+                }
+
+                if (denseResult is null || !denseResult.TryDenseAppend(value))
+                {
+                    CreateDataPropertyOrThrow(resultObj, JsIndexKeys.For(to), value);
+                }
+
+                to++;
             }
 
-            var keep = InvokeArrayCallback(callback, v, i, receiver, thisArg);
-            if (IsTruthy(keep))
-            {
-                items.Add(v);
-            }
+            return result;
+        }
+        finally
+        {
+            _heap.PopRootsTo(rootMark);
+        }
+    }
+
+    // HasProperty(O, Pk) then Get(O, Pk) for one index of an iterating array
+    // method. Asked afresh at every index, because a callback can shrink or
+    // reshape O between two of them.
+    private bool TryGetArrayMethodElement(JsObject obj, JsValue receiver, int index, out JsValue value)
+    {
+        if (obj is ArrayObject array && array.TryDenseGet((uint)index, out value))
+        {
+            return true;
         }
 
-        return ArraySpeciesCreate(thisValue, items);
+        return TryGetPropertyValue(obj, receiver, JsIndexKeys.For(index), out value);
+    }
+
+    // ArraySpeciesCreate step 8: Construct(C, << length >>).
+    private JsValue ConstructSpeciesResult(JsValue speciesCtor, double length)
+    {
+        var result = ConstructFunction(speciesCtor, new[] { JsValue.FromNumber(length) });
+        if (result.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Array @@species constructor did not return an object."));
+        }
+
+        return result;
     }
 
     // ECMA-262 23.1.3.28 Array.prototype.slice(start, end). Returns a fresh
@@ -18756,80 +18831,91 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return Math.Min(truncated, MaxSafeInteger);
     }
 
-    // ECMA-262 23.1.3.2.2 ArraySpeciesCreate(originalArray, length).
-    // If the receiver has a constructor[@@species] that is a callable other than
-    // the default Array constructor, use it; otherwise return a plain Array.
+    // ECMA-262 10.4.2.3 ArraySpeciesCreate(originalArray, length), steps 1-7:
+    // the constructor to build the result with, or undefined when that is the
+    // default Array constructor (a non-array receiver, no `constructor`, a
+    // cross-realm %Array%, or a null/undefined @@species).
+    private JsValue ArraySpeciesConstructor(JsValue originalArray)
+    {
+        if (originalArray.Tag != JsValueTag.Object || !IsArrayValue(originalArray))
+        {
+            return JsValue.Undefined;
+        }
+
+        var obj = _heap.GetObject(originalArray.AsObjectHandle());
+        if (!TryGetPropertyValue(obj, originalArray, "constructor", out var ctor) ||
+            ctor.Tag == JsValueTag.Undefined)
+        {
+            return JsValue.Undefined;
+        }
+
+        if (ctor.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Array constructor must be a constructor function."));
+        }
+
+        if (IsMarkedCrossRealmArrayConstructor(ctor))
+        {
+            return JsValue.Undefined;
+        }
+
+        var speciesCtor = ctor;
+        var speciesSymbolId = GetWellKnownSymbolId("species");
+        if (speciesSymbolId != 0)
+        {
+            var species = GetReceiverSymbolProperty(ctor, speciesSymbolId);
+            if (species.Tag == JsValueTag.Null || species.Tag == JsValueTag.Undefined)
+            {
+                return JsValue.Undefined;
+            }
+
+            speciesCtor = species;
+        }
+
+        if (speciesCtor.Tag != JsValueTag.Object || !IsCallable(speciesCtor))
+        {
+            throw new JsThrownException(CreateTypeError("Array @@species is not a constructor."));
+        }
+
+        return speciesCtor;
+    }
+
+    // ArraySpeciesCreate(originalArray, items.Count) followed by
+    // CreateDataPropertyOrThrow for each item, for the methods that compute
+    // their whole result before any of it becomes observable.
     private JsValue ArraySpeciesCreate(JsValue originalArray, IReadOnlyList<JsValue> items)
     {
-        if (originalArray.Tag == JsValueTag.Object && IsArrayValue(originalArray))
+        var speciesCtor = ArraySpeciesConstructor(originalArray);
+        if (speciesCtor.Tag != JsValueTag.Undefined)
         {
-            var obj = _heap.GetObject(originalArray.AsObjectHandle());
-            if (TryGetPropertyValue(obj, originalArray, "constructor", out var ctor) &&
-                ctor.Tag != JsValueTag.Undefined)
+            var result = ConstructFunction(speciesCtor, new[] { JsValue.FromNumber(items.Count) });
+            if (result.Tag == JsValueTag.Object)
             {
-                if (ctor.Tag != JsValueTag.Object)
+                var resultObj = _heap.GetObject(result.AsObjectHandle());
+                for (var i = 0; i < items.Count; i++)
                 {
-                    throw new JsThrownException(CreateTypeError("Array constructor must be a constructor function."));
-                }
-
-                var speciesCtor = ctor;
-                if (IsMarkedCrossRealmArrayConstructor(ctor))
-                {
-                    goto fallbackArraySpecies;
-                }
-
-                var speciesSymbolId = GetWellKnownSymbolId("species");
-                if (speciesSymbolId != 0)
-                {
-                    var species = GetReceiverSymbolProperty(ctor, speciesSymbolId);
-                    if (species.Tag == JsValueTag.Null || species.Tag == JsValueTag.Undefined)
+                    var key = JsIndexKeys.For(i);
+                    // ECMA-262 7.3.7 CreateDataPropertyOrThrow:
+                    //   Let success be ? CreateDataProperty(O, P, V).
+                    //   If success is false, throw a TypeError exception.
+                    //
+                    // CreateDataProperty (7.3.5) uses [[DefineOwnProperty]] with
+                    // {Writable:true, Enumerable:true, Configurable:true}, which
+                    // overwrites non-writable configurable properties. SetProperty
+                    // alone fails for those, so we fall back to DefineOwnProperty.
+                    if (!resultObj.SetProperty(key, items[i]) &&
+                        !resultObj.DefineOwnProperty(key,
+                            new JsPropertyDescriptor(items[i], Writable: true, Enumerable: true, Configurable: true)))
                     {
-                        goto fallbackArraySpecies;
+                        throw new JsThrownException(CreateTypeError(
+                            "Cannot create property on species-constructed array."));
                     }
-
-                    if (species.Tag != JsValueTag.Object || !IsCallable(species))
-                    {
-                        throw new JsThrownException(CreateTypeError("Array @@species is not a constructor."));
-                    }
-
-                    speciesCtor = species;
                 }
-
-                if (speciesCtor.Tag != JsValueTag.Object || !IsCallable(speciesCtor))
-                {
-                    throw new JsThrownException(CreateTypeError("Array @@species is not a constructor."));
-                }
-
-                var result = ConstructFunction(speciesCtor, new[] { JsValue.FromNumber(items.Count) });
-                if (result.Tag == JsValueTag.Object)
-                {
-                    var resultObj = _heap.GetObject(result.AsObjectHandle());
-                    for (var i = 0; i < items.Count; i++)
-                    {
-                        var key = JsIndexKeys.For(i);
-                        // ECMA-262 7.3.7 CreateDataPropertyOrThrow:
-                        //   Let success be ? CreateDataProperty(O, P, V).
-                        //   If success is false, throw a TypeError exception.
-                        //
-                        // CreateDataProperty (7.3.5) uses [[DefineOwnProperty]] with
-                        // {Writable:true, Enumerable:true, Configurable:true}, which
-                        // overwrites non-writable configurable properties. SetProperty
-                        // alone fails for those, so we fall back to DefineOwnProperty.
-                        if (!resultObj.SetProperty(key, items[i]) &&
-                            !resultObj.DefineOwnProperty(key,
-                                new JsPropertyDescriptor(items[i], Writable: true, Enumerable: true, Configurable: true)))
-                        {
-                            throw new JsThrownException(CreateTypeError(
-                                "Cannot create property on species-constructed array."));
-                        }
-                    }
-                    if (resultObj is ArrayObject) resultObj.SetProperty("length", JsValue.FromNumber(items.Count));
-                    return result;
-                }
+                if (resultObj is ArrayObject) resultObj.SetProperty("length", JsValue.FromNumber(items.Count));
+                return result;
             }
         }
 
-fallbackArraySpecies:
         var arr = CreateArrayFromElements(items);
         return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
     }
