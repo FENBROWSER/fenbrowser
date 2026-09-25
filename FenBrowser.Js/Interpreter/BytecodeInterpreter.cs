@@ -24006,28 +24006,44 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return;
         }
 
-        var ownerHandle = ResolveObjectHandle(receiverValue);
-        if (receiverValue.Tag == JsValueTag.Object)
-        {
-            // The inlined guard tries one program; finish the site's scan here.
-            var receiverObject = _heap.GetObject(receiverValue.AsObjectHandle());
-            if (site.TryResolveStore(receiverObject, prop, out var slot))
-            {
-                CommitCachedStore(receiverObject, ownerHandle, slot, prop, value);
-                return;
-            }
-        }
-
-        var ownerObj = _heap.GetObject(ownerHandle);
-        if (ownerObj is ProxyObject proxySet)
-        {
-            try { _ = ProxySet(proxySet, receiverValue, prop, value); }
-            catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-            return;
-        }
         try
         {
-            _ = SetPropertyValue(ownerHandle, ownerObj, prop, value, receiverValue);
+            // ECMA-262 6.2.5.5 PutValue, as SetPropertyByNameCore does it: ToObject
+            // on the base is a TypeError for null and undefined, and a strict
+            // [[Set]] that returns false throws. Compiled code used to drop the
+            // result, so a write to a read-only property in a hot strict
+            // function was silently lost.
+            if (receiverValue.Tag is JsValueTag.Null or JsValueTag.Undefined)
+            {
+                var unsettableKind = receiverValue.Tag == JsValueTag.Null ? "null" : "undefined";
+                throw new JsThrownException(CreateTypeError(
+                    $"Cannot set properties of {unsettableKind} (setting '{prop}')."));
+            }
+
+            var ownerHandle = ResolveObjectHandle(receiverValue);
+            if (receiverValue.Tag == JsValueTag.Object)
+            {
+                // The inlined guard tries one program; finish the site's scan here.
+                var receiverObject = _heap.GetObject(receiverValue.AsObjectHandle());
+                if (site.TryResolveStore(receiverObject, prop, out var slot))
+                {
+                    CommitCachedStore(receiverObject, ownerHandle, slot, prop, value);
+                    return;
+                }
+            }
+
+            var strict = frame.Function.IsStrictMode;
+            var ownerObj = _heap.GetObject(ownerHandle);
+            if (ownerObj is ProxyObject proxySet)
+            {
+                if (!ProxySet(proxySet, receiverValue, prop, value) && strict)
+                    throw new JsThrownException(CreateTypeError($"Cannot assign to read-only property '{prop}'."));
+                return;
+            }
+
+            if (!SetPropertyValue(ownerHandle, ownerObj, prop, value, receiverValue) && strict)
+                throw new JsThrownException(CreateTypeError($"Cannot assign to read-only property '{prop}'."));
+
             if (receiverValue.Tag == JsValueTag.Object)
             {
                 var obj = _heap.GetObject(receiverValue.AsObjectHandle());
@@ -24047,39 +24063,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     internal void SetPropByNameForJit(InterpreterFrame frame, int receiverReg, int propNameIndex, int valueReg, int icOffset)
     {
-        var receiverValue = frame.Registers[receiverReg];
-        var prop = frame.Function.PropertyNames[propNameIndex];
-        var value = frame.Registers[valueReg];
-
-        if (receiverValue.Tag == JsValueTag.HostObject)
-        {
-            try { SetHostObjectProperty(receiverValue, prop, value); }
-            catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-            return;
-        }
-
-        var ownerHandle = ResolveObjectHandle(receiverValue);
-        if (receiverValue.Tag == JsValueTag.Object &&
-            TryStoreIC(frame.Function, icOffset, ownerHandle, receiverValue, prop, value))
-        {
-            return;
-        }
-        var obj = _heap.GetObject(ownerHandle);
-        if (obj is ProxyObject proxySet)
-        {
-            try { _ = ProxySet(proxySet, receiverValue, prop, value); }
-            catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-            return;
-        }
+        // The dispatch loop's own store, so compiled code gets the same
+        // PutValue errors: a strict write that [[Set]] refuses throws, and a
+        // null or undefined base says it was a set.
         try
         {
-            var shapeBefore = obj.CurrentShape;
-            _ = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
-            if (receiverValue.Tag == JsValueTag.Object)
-            {
-                PopulateStoreIC(frame.Function, icOffset, receiverValue, prop);
-                NoteAddedProperty(frame.Function, icOffset, obj, shapeBefore, prop);
-            }
+            SetPropertyByNameCore(
+                frame.Function,
+                icOffset,
+                frame.Registers[receiverReg],
+                frame.Function.PropertyNames[propNameIndex],
+                frame.Registers[valueReg],
+                frame.Function.IsStrictMode);
         }
         catch (JsThrownException ex) when (HasHandler(frame))
         {
