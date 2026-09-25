@@ -567,22 +567,52 @@ public sealed partial class BytecodeInterpreter
     /// <paramref name="namesFunction"/> carries the NamedEvaluation the compiler
     /// asked for on an anonymous method.
     /// </remarks>
-    internal void Interp2DefineElement(JsValue target, JsValue key, JsValue value, bool namesFunction)
+    // { value, writable: true, enumerable: true, configurable: true } as an
+    // object, for a proxy's defineProperty trap.
+    private JsValue CreateDataDescriptorObject(JsValue value)
     {
+        var descriptor = CreateOrdinaryObject();
+        descriptor.DefineOwnProperty("value", new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+        descriptor.DefineOwnProperty("writable", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+        descriptor.DefineOwnProperty("enumerable", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+        descriptor.DefineOwnProperty("configurable", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+        return JsValue.FromObject(_heap.AllocateObject(descriptor, AllocationSite.Current()));
+    }
+
+    /// <param name="flags">SetElemDefine's D: bit 0 names an anonymous function from the key, bit 1 throws when the define fails.</param>
+    internal void Interp2DefineElement(JsValue target, JsValue key, JsValue value, int flags)
+    {
+        var namesFunction = (flags & 1) != 0;
+        var orThrow = (flags & 2) != 0;
         var obj = _heap.GetObject(ResolveObjectHandle(target));
+        if (obj is ProxyObject proxy)
+        {
+            // A class field's `this` can be a proxy a base constructor returned;
+            // CreateDataProperty is its [[DefineOwnProperty]], so the trap runs.
+            var propertyKeyValue = key.Tag == JsValueTag.Symbol ? key : JsValue.FromString(ToPropertyKey(key));
+            if (!ProxyDefineProperty(proxy, propertyKeyValue, CreateDataDescriptorObject(value)) && orThrow)
+                throw new JsThrownException(CreateTypeError("Cannot define a class field on this object."));
+            if (namesFunction) ApplyFunctionName(value, propertyKeyValue, prefix: null);
+            return;
+        }
+
         if (key.Tag == JsValueTag.Symbol)
         {
-            obj.DefineOwnSymbolProperty(
+            var definedSymbol = obj.DefineOwnSymbolProperty(
                 key.AsSymbolId(),
                 new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+            if (!definedSymbol && orThrow)
+                throw new JsThrownException(CreateTypeError("Cannot define a class field over a non-configurable property."));
             if (namesFunction) ApplyFunctionName(value, key, prefix: null);
             return;
         }
 
         var propertyKey = ToPropertyKey(key);
-        obj.DefineOwnProperty(
+        var defined = obj.DefineOwnProperty(
             propertyKey,
             new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+        if (!defined && orThrow)
+            throw new JsThrownException(CreateTypeError("Cannot define class field '" + propertyKey + "' over a non-configurable property."));
         if (namesFunction) ApplyFunctionName(value, JsValue.FromString(propertyKey), prefix: null);
     }
 

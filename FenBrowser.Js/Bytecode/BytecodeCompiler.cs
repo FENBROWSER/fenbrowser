@@ -77,7 +77,11 @@ public sealed class BytecodeCompiler
     // The instance field initializer statements inlined into the constructor
     // being compiled, and whether one is being compiled now (which an arrow
     // inside it inherits). See BytecodeFunction.FieldInitializerStart.
-    private HashSet<StatementNode>? _fieldInitializerStatements;
+    private Dictionary<StatementNode, FieldInitializer>? _fieldInitializerStatements;
+
+    // One public or private instance field, as inlined into the constructor:
+    // its name, or the index its computed key was stored under (LoadFieldKey).
+    private sealed record FieldInitializer(string Name, int ComputedIndex, ExpressionNode Initializer);
     private bool _inFieldInitializer;
     private int _fieldInitializerStart = -1;
     private int _fieldInitializerEnd = -1;
@@ -502,7 +506,7 @@ public sealed class BytecodeCompiler
         MarkPosition(stmt.Span);
         try
         {
-            if (_fieldInitializerStatements is not null && _fieldInitializerStatements.Contains(stmt))
+            if (_fieldInitializerStatements is not null && _fieldInitializerStatements.ContainsKey(stmt))
             {
                 CompileFieldInitializerStatement(stmt);
             }
@@ -528,9 +532,37 @@ public sealed class BytecodeCompiler
 
         var saved = _inFieldInitializer;
         _inFieldInitializer = true;
-        CompileStatementCore(stmt);
+        CompileDefineField(_fieldInitializerStatements![stmt]);
+
         _inFieldInitializer = saved;
         _fieldInitializerEnd = _instructions.Count;
+    }
+
+    // ECMA-262 7.3.34 DefineField for a public instance field: the initializer's
+    // value is defined on `this` with CreateDataPropertyOrThrow. Assigning it
+    // instead ran a setter the prototype chain carried for that name, and missed
+    // NamedEvaluation, so `f = function () {}` produced a function named "".
+    private void CompileDefineField(FieldInitializer field)
+    {
+        var thisReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
+        if (IsPrivateMangled(field.Name))
+        {
+            // PrivateFieldAdd; an anonymous function takes the field's
+            // "#name" (the mangled form is "__priv<id>__<name>").
+            var privateValueReg = CompileNamedInitializer(
+                field.Initializer, "#" + field.Name.Substring(field.Name.IndexOf("__", 6, StringComparison.Ordinal) + 2));
+            _instructions.Add(new Instruction(OpCode.DefinePrivateField, thisReg, GetOrCreatePropertyName(field.Name), privateValueReg));
+            return;
+        }
+
+        var valueReg = CompileExpression(field.Initializer);
+        var keyReg = AllocateRegister();
+        _instructions.Add(field.ComputedIndex >= 0
+            ? new Instruction(OpCode.LoadFieldKey, keyReg, field.ComputedIndex, 0)
+            : new Instruction(OpCode.LoadConst, keyReg, AddConstant(JsValue.FromString(field.Name)), 0));
+        var flags = 2 | (IsAnonymousFunctionDefinition(field.Initializer) ? 1 : 0);
+        _instructions.Add(new Instruction(OpCode.SetElemDefine, thisReg, keyReg, valueReg, flags));
     }
 
     private void CompileStatementCore(StatementNode stmt)
@@ -1255,16 +1287,19 @@ public sealed class BytecodeCompiler
         _computedFieldNames = new List<ExpressionNode>();
         _computedFieldCount = 0;
         var instanceFieldInits = new List<StatementNode>();
+        var fieldInitializers = new Dictionary<StatementNode, FieldInitializer>(ReferenceEqualityComparer.Instance);
         foreach (var member in members)
         {
             if (member.Kind != ClassMemberKind.Field || member.IsStatic) continue;
             MemberExpressionNode lhs;
+            var computedIndex = -1;
             if (member.ComputedName is not null)
             {
                 // Record the computed name expression for evaluation at class
                 // definition time. The constructor will load the pre-computed
                 // key via LoadFieldKey instead of recomputing the expression.
                 var fieldIndex = _computedFieldNames.Count;
+                computedIndex = fieldIndex;
                 _computedFieldNames.Add(member.ComputedName);
                 lhs = new MemberExpressionNode(
                     new ThisExpressionNode(member.Span),
@@ -1283,7 +1318,9 @@ public sealed class BytecodeCompiler
                     member.Span);
             }
             var assign = new AssignmentExpressionNode(lhs, member.Function, member.Span);
-            instanceFieldInits.Add(new ExpressionStatementNode(assign, member.Span));
+            var fieldStatement = new ExpressionStatementNode(assign, member.Span);
+            instanceFieldInits.Add(fieldStatement);
+            fieldInitializers[fieldStatement] = new FieldInitializer(member.Name, computedIndex, member.Function);
         }
         if (instanceFieldInits.Count > 0)
         {
@@ -1340,9 +1377,7 @@ public sealed class BytecodeCompiler
         _isDerivedConstructor = isDerived;
         _isClassConstructor = true;
         var savedFieldInitializers = _fieldInitializerStatements;
-        _fieldInitializerStatements = instanceFieldInits.Count > 0
-            ? new HashSet<StatementNode>(instanceFieldInits, ReferenceEqualityComparer.Instance)
-            : null;
+        _fieldInitializerStatements = instanceFieldInits.Count > 0 ? fieldInitializers : null;
         var classReg = CompileFunctionExpressionToRegister(constructorFn, FunctionKind.Constructor);
         _fieldInitializerStatements = savedFieldInitializers;
         _compilingClassConstructor = savedConstructorContext;
@@ -1409,16 +1444,44 @@ public sealed class BytecodeCompiler
         var ctorNameIdx = GetOrCreatePropertyName("constructor");
         _instructions.Add(new Instruction(OpCode.DefineMethod, protoReg, ctorNameIdx, classReg));
 
-        // For each non-constructor member, compile its function and install it
-        // on either the prototype (instance methods) or the constructor (static).
-        // Getter/setter members get accessor descriptors; method members get
-        // plain data descriptors.
-        // H.5 - computed property names are handled by compiling the ComputedName
-        // expression and using the ByReg variants for accessors, or SetElem for methods.
+        // ECMA-262 15.7.14 ClassDefinitionEvaluation, steps 26-31. Every element
+        // is evaluated in source order first - a method is installed, a field's
+        // computed key is evaluated and converted with ToPropertyKey - and only
+        // then do the static fields and static blocks run, again in source
+        // order. Instance fields run later, from the constructor, which reads
+        // their keys back with LoadFieldKey.
+        var staticElements = new List<(ClassMemberNode Member, int KeyReg)>();
         foreach (var member in members)
         {
             if (member.Kind == ClassMemberKind.Constructor) continue;
-            if (member.Kind == ClassMemberKind.StaticBlock) continue;
+            if (member.Kind == ClassMemberKind.StaticBlock)
+            {
+                staticElements.Add((member, -1));
+                continue;
+            }
+
+            if (member.Kind == ClassMemberKind.Field)
+            {
+                var fieldKeyReg = -1;
+                if (member.ComputedName is not null)
+                {
+                    fieldKeyReg = EmitToPropertyKey(CompileExpression(member.ComputedName));
+                    if (!member.IsStatic)
+                    {
+                        // H.5 - the constructor loads it by index (LoadFieldKey).
+                        _instructions.Add(new Instruction(OpCode.StoreFieldKey, fieldKeyReg, classReg, 0));
+                        continue;
+                    }
+                }
+
+                if (member.IsStatic)
+                {
+                    staticElements.Add((member, fieldKeyReg));
+                }
+
+                continue;
+            }
+
             if (member.Function is not FunctionExpressionNode methodFn) continue;
 
             savedStrictMode = _isStrictMode;
@@ -1469,56 +1532,60 @@ public sealed class BytecodeCompiler
             }
         }
 
+        _computedFieldNames = null;
+
         // `prototype` is already the constructor's own (non-writable) slot — no
         // reassignment needed; methods above mutated the prototype object in place.
 
-        // H.5 - public static fields. Installed on the class itself, before
-        // static blocks so the blocks can see them.
-        foreach (var member in members)
+        // Static fields and static blocks, in source order (ECMA-262 15.7.14
+        // step 31). Each runs as a method of the class: `this` is the class,
+        // `super.x` resolves from its home object (the class), and new.target
+        // is undefined. A static field's initializer is exactly that - a
+        // method whose body returns the initial value (15.7.10
+        // ClassFieldDefinitionEvaluation) - and the value is then defined on
+        // the class with CreateDataPropertyOrThrow (7.3.34 DefineField).
+        foreach (var (member, fieldKeyReg) in staticElements)
         {
-            if (member.Kind != ClassMemberKind.Field || !member.IsStatic) continue;
-            var initReg = CompileExpression(member.Function);
-            if (member.ComputedName is not null)
-            {
-                var keyReg = CompileExpression(member.ComputedName);
-                _instructions.Add(new Instruction(OpCode.SetElem, classReg, keyReg, initReg));
-            }
-            else
-            {
-                var nameIdx = GetOrCreatePropertyName(member.Name);
-                _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, nameIdx, initReg));
-            }
-        }
+            var bodyFn = member.Kind == ClassMemberKind.StaticBlock
+                ? member.Function as FunctionExpressionNode
+                : new FunctionExpressionNode(
+                    Name: null,
+                    Parameters: Array.Empty<string>(),
+                    Body: new BlockStatementNode(
+                        new StatementNode[] { new ReturnStatementNode(member.Function, member.Span) },
+                        member.Span),
+                    member.Span,
+                    IsMethod: true);
+            if (bodyFn is null) continue;
 
-        // H.5 - static initialization blocks. ECMA-262 15.7.10. Run each block
-        // with this=class and HomeObject=class so `super.foo` walks the base
-        // class's static side. Result is discarded.
-        foreach (var member in members)
-        {
-            if (member.Kind != ClassMemberKind.StaticBlock) continue;
-            if (member.Function is not FunctionExpressionNode blockFn) continue;
             savedStrictMode = _isStrictMode;
             _isStrictMode = true;
-            var blockReg = CompileFunctionExpressionToRegister(blockFn);
+            var initReg = CompileFunctionExpressionToRegister(bodyFn);
             _isStrictMode = savedStrictMode;
-            _instructions.Add(new Instruction(OpCode.SetHomeObject, blockReg, classReg, 0));
-            var discard = AllocateRegister();
-            _instructions.Add(new Instruction(OpCode.CallMethod0, discard, blockReg, classReg));
-        }
+            _instructions.Add(new Instruction(OpCode.SetHomeObject, initReg, classReg, 0));
+            var valueReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.CallMethod0, valueReg, initReg, classReg));
+            if (member.Kind == ClassMemberKind.StaticBlock) continue;
 
-        // ECMA-262 15.7.10 step 27: evaluate computed field names at class
-        // definition time and store the property keys on the constructor
-        // function so the constructor can load them via LoadFieldKey.
-        if (_computedFieldNames is not null)
-        {
-            for (int i = 0; i < _computedFieldNames.Count; i++)
+            if (IsPrivateMangled(member.Name))
             {
-                var keyReg = CompileExpression(_computedFieldNames[i]);
-                // ToPropertyKey: convert the expression result to a string/symbol key
-                keyReg = EmitToPropertyKey(keyReg);
-                _instructions.Add(new Instruction(OpCode.StoreFieldKey, keyReg, classReg, 0));
+                // A private static field keeps the store it has always used.
+                _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, GetOrCreatePropertyName(member.Name), valueReg));
+                continue;
             }
-            _computedFieldNames = null;
+
+            var keyReg = fieldKeyReg;
+            if (keyReg < 0)
+            {
+                keyReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadConst, keyReg, AddConstant(JsValue.FromString(member.Name)), 0));
+            }
+
+            // D bit 0: SetFunctionName from the key for an anonymous function
+            // (NamedEvaluation of the initializer); bit 1: throw if the define
+            // fails, as it does for a static field named `prototype`.
+            var defineFlags = 2 | (IsAnonymousFunctionDefinition(member.Function) ? 1 : 0);
+            _instructions.Add(new Instruction(OpCode.SetElemDefine, classReg, keyReg, valueReg, defineFlags));
         }
 
         if (innerNameSlot >= 0)

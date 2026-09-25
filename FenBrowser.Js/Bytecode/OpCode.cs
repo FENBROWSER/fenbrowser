@@ -321,6 +321,9 @@ public enum OpCode : byte
 		// computed property name). A=function reg, B=key reg.
 		// Used by object literals: { [computedKey]: function() {} }.
 		SetFunctionName,
+		// CreateDataProperty(A, key B, value C). D bit 0: SetFunctionName from the
+		// key (an anonymous function initializer); bit 1: throw a TypeError when
+		// the define fails (CreateDataPropertyOrThrow - a class field).
 		SetElemDefine,
 		// ECMA-262 15.7.10: computed field name evaluation at class-definition time
 		StoreFieldKey,

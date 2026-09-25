@@ -2302,41 +2302,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     ApplyFunctionName(registers[ins.A], registers[ins.B], prefix: null);
                     break;
                 case OpCode.SetElemDefine:
-                {
-                    var obj = _heap.GetObject(ResolveObjectHandle(registers[ins.A]));
-                    var keyValue = registers[ins.B];
-                    var val = registers[ins.C];
-                    if (keyValue.Tag == JsValueTag.Symbol)
+                    // `{ [k]: v }`, a computed method name, and a class field (D bit 1),
+                    // defined the same way on both loops.
+                    try
                     {
-                        obj.DefineOwnSymbolProperty(keyValue.AsSymbolId(), new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
-                        if (ins.D != 0)
-                        {
-                            ApplyFunctionName(val, keyValue, prefix: null);
-                        }
+                        Interp2DefineElement(registers[ins.A], registers[ins.B], registers[ins.C], ins.D);
                     }
-                    else
+                    catch (JsThrownException ex) when (HasHandler(frame))
                     {
-                        var key = ToPropertyKey(keyValue);
-                        // ECMA-262 B.3.1: computed __proto__ must not trigger prototype setter.
-                        // Create a plain own data property instead of using SetPrototype.
-                        if (key == "__proto__")
-                        {
-                            // Remove any existing __proto__ accessor shadow, then set as own property.
-                            obj.DefineOwnProperty("__proto__", new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
-                        }
-                        else
-                        {
-                            obj.DefineOwnProperty(key, new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
-                        }
-                        // D=1 signals SetFunctionName for anonymous computed methods.
-                        // The key string is pre-computed above to avoid double ToPropertyKey.
-                        if (ins.D != 0)
-                        {
-                            ApplyFunctionName(val, JsValue.FromString(key), prefix: null);
-                        }
+                        ThrowOrHandle(frame, ex.Value);
                     }
+
                     break;
-                }
                 case OpCode.StoreFieldKey:
                 {
                     // Push the computed property key onto the constructor

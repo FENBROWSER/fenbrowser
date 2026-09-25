@@ -1383,7 +1383,7 @@ internal sealed class Interp2
                     // setter the prototype carries.
                     _host.Interp2DefineElement(
                         stack[frameBase + ins.A], stack[frameBase + ins.B],
-                        stack[frameBase + ins.C], ins.D != 0);
+                        stack[frameBase + ins.C], ins.D);
                     stack = _stack;
                     break;
 

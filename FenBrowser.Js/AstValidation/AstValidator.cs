@@ -272,12 +272,12 @@ public sealed class AstValidator
         if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) return false;
         switch (expression)
         {
-            // ECMA-262 15.7.10: super cannot appear in class field initializers.
+            // `super.x` and `super[x]` are allowed in a field initializer, which
+            // is a method of the class; only a super() call is not (ECMA-262
+            // 15.7.1: Initializer Contains SuperCall). The call form is caught
+            // at the CallExpression below.
             case SuperExpressionNode:
-                if (inFieldInit)
-                    throw new JsParserException(
-                        "super cannot be used in class field initializers.");
-                return inFieldInit;
+                return false;
 
             // arguments cannot appear in class field initializers.
             case IdentifierExpressionNode id when id.Name == "arguments":
@@ -331,6 +331,9 @@ public sealed class AstValidator
                        WalkExpression(assign.Right, inFieldInit);
 
             case CallExpressionNode call:
+                if (inFieldInit && call.Callee is SuperExpressionNode)
+                    throw new JsParserException(
+                        "super() cannot be called in class field initializers.");
                 if (WalkExpression(call.Callee, inFieldInit)) return true;
                 foreach (var arg in call.Arguments)
                     if (WalkExpression(arg, inFieldInit)) return true;
