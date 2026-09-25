@@ -133,6 +133,10 @@ public sealed class BytecodeCompiler
     // finally blocks nested between it and its target, innermost-first.
     private readonly Stack<FinallyFrame> _finallyStack = new();
     private int _nestingSeq;
+    // How many `try` blocks enclose the code being compiled. A call inside one
+    // is not in tail position (ECMA-262 15.10.2 HasCallInTailPosition): its
+    // catch or finally must still see what the call does.
+    private int _tryBlockDepth;
     // Tracks block-scoped let/const names so they are not added to
     // _lexicalDeclarationNames/_constDeclarationNames. EnterScope creates
     // their bindings instead.
@@ -350,6 +354,7 @@ public sealed class BytecodeCompiler
         _labelStack.Clear();
         _finallyStack.Clear();
         _nestingSeq = 0;
+        _tryBlockDepth = 0;
         _name = name;
         _nextRegister = 1;
         _highWaterRegister = 1;
@@ -1847,7 +1852,12 @@ public sealed class BytecodeCompiler
         if (returnStmt.Argument is not null)
         {
             var reg = CompileExpression(returnStmt.Argument);
-            if (_isStrictMode && !hasPendingFinally && TryConvertLastCallToTailCall(reg))
+            // ECMA-262 15.10.3 IsInTailPosition: strict code only, never inside a
+            // generator or async body, and not inside a try block or before a
+            // pending finally.
+            if (_isStrictMode && !hasPendingFinally && _tryBlockDepth == 0 &&
+                _currentFunctionKind is not (FunctionKind.Generator or FunctionKind.Async or FunctionKind.AsyncGenerator) &&
+                TryConvertLastCallToTailCall(reg))
             {
                 return;
             }
@@ -3077,7 +3087,7 @@ public sealed class BytecodeCompiler
     private void CompileTryCatchStatement(TryCatchStatementNode tryCatchStmt)
     {
         var pushHandlerIndex = EmitPlaceholder(OpCode.PushHandler);
-        CompileStatement(tryCatchStmt.TryBlock);
+        CompileTryBlock(tryCatchStmt.TryBlock);
         _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
         var jumpAfterCatch = EmitPlaceholder(OpCode.Jump);
 
@@ -3188,7 +3198,7 @@ public sealed class BytecodeCompiler
             Seq = _nestingSeq++,
             ScopeDepthAtEntry = _openScopeDepth
         });
-        CompileStatement(stmt.TryBlock);
+        CompileTryBlock(stmt.TryBlock);
         _ = _finallyStack.Pop();
 
         _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
@@ -3199,6 +3209,13 @@ public sealed class BytecodeCompiler
 
         var ins = _instructions[pushHandler];
         _instructions[pushHandler] = ins with { D = finallyStart };
+    }
+
+    private void CompileTryBlock(StatementNode tryBlock)
+    {
+        _tryBlockDepth++;
+        CompileStatement(tryBlock);
+        _tryBlockDepth--;
     }
 
     private void CompileTryCatchFinallyStatement(TryCatchFinallyStatementNode stmt)
