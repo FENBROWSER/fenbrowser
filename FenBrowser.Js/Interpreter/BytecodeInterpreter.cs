@@ -6814,7 +6814,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Build an object-binding adapter whose accessor reads run the getter with the
     // binding object as the receiver (ECMA-262 Get(O, N, O)) — needed so global and
     // `with` bindings that are accessor properties evaluate their getter instead of
-    // silently reading undefined.
+    // silently reading undefined — and whose writes are a full Set(O, N, V, false)
+    // (9.1.1.2.5 SetMutableBinding step 3), so a setter runs.
     private JsObjectBindingAdapter CreateBindingAdapter(ObjectHandle handle)
         => new(_heap, handle, (h, name) =>
         {
@@ -6828,7 +6829,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (obj is ProxyObject proxy)
                 return ProxyHas(proxy, name);
             return obj.TryGetProperty(name, ResolvePrototypeDelegate, out _);
-        });
+        }, (h, name, value) => SetPropertyValue(h, _heap.GetObject(h), name, value, JsValue.FromObject(h)));
 
     private GlobalEnvironmentRecord EnsureGlobalEnvironment()
     {

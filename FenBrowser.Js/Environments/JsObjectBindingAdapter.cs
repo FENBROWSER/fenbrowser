@@ -15,10 +15,9 @@ namespace FenBrowser.Js.Environments;
 //   * TryGet invokes accessor getters only when the interpreter supplies an
 //     `accessorGet` evaluator (used for the real global and `with` bindings); with
 //     no evaluator it falls back to the data-only path.
-//   * TrySet does not walk the prototype chain looking for a setter. ECMA-262 [[Set]]
-//     does walk, but for top-level globals the receiver is the global object itself
-//     and the data path covers it. Setter routing lands when accessor calls are
-//     wired through the interpreter.
+//   * TrySet runs the full ECMA-262 [[Set]] - setters, the prototype chain, a proxy's
+//     trap - when the interpreter supplies a `set` evaluator (it does for the global
+//     object and `with` bindings); with none it writes an own data property only.
 public sealed class JsObjectBindingAdapter : IGlobalObject
 {
     private readonly JsHeap _heap;
@@ -31,6 +30,10 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
     // delegates to the interpreter's ProxyHas so the `with` statement triggers
     // the proxy's "has" trap instead of silently walking own properties.
     private readonly Func<string, bool>? _proxyHas;
+    // Optional interpreter hook for Set(O, N, V, false) with this object as the
+    // receiver. Without it an identifier assignment to an accessor property,
+    // `onload = f` at the top level for one, wrote past the setter.
+    private readonly Func<ObjectHandle, string, JsValue, bool>? _set;
     // Held as a field rather than converted at each call site. Passing the
     // method group directly allocates a fresh delegate every time, because it
     // captures this adapter, and a global variable is read and written through
@@ -40,7 +43,7 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
 
     public JsObjectBindingAdapter(
         JsHeap heap, ObjectHandle handle, Func<ObjectHandle, string, JsValue>? accessorGet = null,
-        Func<string, bool>? proxyHas = null)
+        Func<string, bool>? proxyHas = null, Func<ObjectHandle, string, JsValue, bool>? set = null)
     {
         ArgumentNullException.ThrowIfNull(heap);
         _heap = heap;
@@ -48,6 +51,7 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
         _accessorGet = accessorGet;
         _resolvePrototype = ResolvePrototype;
         _proxyHas = proxyHas;
+        _set = set;
     }
 
     public ObjectHandle? AsObjectHandle => _handle;
@@ -93,6 +97,11 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
     public bool TrySet(string name, JsValue value)
     {
         ArgumentNullException.ThrowIfNull(name);
+        if (_set is not null)
+        {
+            return _set(_handle, name, value);
+        }
+
         var obj = _heap.GetObject(_handle);
         return obj.SetProperty(name, value);
     }
