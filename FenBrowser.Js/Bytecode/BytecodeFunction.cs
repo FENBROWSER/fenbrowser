@@ -368,6 +368,7 @@ public sealed class BytecodeFunction
     {
         var code = InstructionArray;
         HashSet<string>? locals = null;
+        HashSet<int>? blockSlots = null;
         var sawLoop = false;
         for (var ip = 0; ip < code.Length; ip++)
         {
@@ -391,12 +392,25 @@ public sealed class BytecodeFunction
                     return false;
                 }
 
-                // LoadVar, StoreVar and InitVar of an outer name go through the
-                // free-variable site cache in compiled code as well, so only
-                // the forms that still walk the chain by name - a resolved
-                // reference (`x++` on an outer x) and Annex B's StoreVarTop -
-                // need the name to be this function's own.
-                if (ins.OpCode is OpCode.StoreVarTop or OpCode.PreResolveVar or OpCode.StoreResolvedVar)
+                // A block's let/const lives in a record of its own - the loop
+                // variable of `for (let ...)` gets a fresh one per iteration -
+                // and compiled code reaches those 1.6-2x slower than Interp2,
+                // which keeps them in registers.
+                if (ins.OpCode is OpCode.LoadVar or OpCode.StoreVar or OpCode.InitVar or
+                    OpCode.PreResolveVar or OpCode.StoreResolvedVar)
+                {
+                    blockSlots ??= BlockScopedSlots(code);
+                    if (blockSlots.Contains(ins.B))
+                    {
+                        return false;
+                    }
+                }
+
+                // Every access to an outer name goes through the free-variable
+                // site cache in compiled code as well, except Annex B's
+                // StoreVarTop, which still walks the chain by name and so needs
+                // the name to be this function's own.
+                if (ins.OpCode is OpCode.StoreVarTop)
                 {
                     locals ??= LocalNames();
                     var name = FenBrowser.Js.Interpreter.SlotNameTable.GetName(this, ins.B);
@@ -431,6 +445,21 @@ public sealed class BytecodeFunction
         // A block's let/const lives in an environment record EnterScope makes,
         // not in the function's own slots, so it is left out on purpose.
         return names;
+    }
+
+    // Slots a block scope binds: EnterScope names its binding in operand A.
+    private static HashSet<int> BlockScopedSlots(Instruction[] code)
+    {
+        var slots = new HashSet<int>();
+        foreach (var ins in code)
+        {
+            if (ins.OpCode == OpCode.EnterScope)
+            {
+                slots.Add(ins.A);
+            }
+        }
+
+        return slots;
     }
 
     private static bool IsSlowCompiled(OpCode op) => op is
