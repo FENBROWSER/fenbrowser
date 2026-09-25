@@ -43,12 +43,14 @@ public sealed partial class BytecodeInterpreter
     /// <summary>
     /// Entry from <c>CallFunctionCore</c>: run an eligible body on the new loop.
     /// </summary>
-    internal JsValue Interp2Execute(JsFunctionObject callee, FrameLayout layout, in CallArgs args, JsValue thisValue)
+    /// <param name="newTarget">[[Construct]]'s newTarget; undefined for a call.</param>
+    internal JsValue Interp2Execute(
+        JsFunctionObject callee, FrameLayout layout, in CallArgs args, JsValue thisValue, JsValue newTarget = default)
     {
         // Calls inside the loop stay on its own frame stack; only a re-entry
         // like this one, from a native or the old loop, spends CLR stack.
         EnsureNativeStack();
-        return Interp2Loop.Execute(callee, layout, in args, thisValue);
+        return Interp2Loop.Execute(callee, layout, in args, thisValue, newTarget);
     }
 
     // ------------------------------------------------------------- guard rails
@@ -172,7 +174,8 @@ public sealed partial class BytecodeInterpreter
         BytecodeFunction function,
         JsFunctionObject callee,
         JsValue thisValue,
-        EnvironmentRecord? outerEnvironment)
+        EnvironmentRecord? outerEnvironment,
+        JsValue newTarget)
     {
         // ECMA-262 9.1.1.3: an arrow has no `this` of its own, so its record
         // must be one that `this` resolves straight through. Giving it a
@@ -190,7 +193,7 @@ public sealed partial class BytecodeInterpreter
         var context = StampEnvironment(new FunctionEnvironmentRecord(
             ThisBindingStatus.Uninitialized,
             callee.SelfHandle is { } selfHandle ? JsValue.FromObject(selfHandle) : JsValue.Undefined,
-            JsValue.Undefined,
+            newTarget,
             callee.HomeObject,
             outerEnvironment));
         context.AttachSlotStorage(function, function.VariableSlots, function.SlotNames.Length);
@@ -310,6 +313,48 @@ public sealed partial class BytecodeInterpreter
     internal static void Interp2InitializeContextSlot(
         DeclarativeEnvironmentRecord context, int slot, JsValue value, bool isConst)
         => context.InitializeAtSlot(slot, value, immutable: isConst);
+
+    /// <summary>ECMA-262 9.4.5 GetNewTarget for an arrow: the enclosing function's.</summary>
+    internal JsValue Interp2ResolveNewTarget(EnvironmentRecord? environment)
+        => ResolveLexicalNewTarget(environment);
+
+    /// <summary>
+    /// The [[HomeObject]] of the environment GetThisEnvironment finds, which is
+    /// where `super` in an arrow resolves (ECMA-262 9.1.2 GetSuperBase).
+    /// </summary>
+    private static Runtime.ObjectHandle? ResolveLexicalHomeObject(EnvironmentRecord? environment)
+    {
+        for (var env = environment; env is not null; env = env.OuterEnv)
+        {
+            if (env.HasThisBinding)
+            {
+                return (env as FunctionEnvironmentRecord)?.HomeObject;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A function's arguments object bound by name in its record, for an arrow
+    /// inside that reads it (the body's own bytecode gave it no slot).
+    /// </summary>
+    internal void Interp2BindArgumentsByName(DeclarativeEnvironmentRecord context, JsValue argumentsObject)
+        => _ = context.CreateAndInitializeBinding("arguments", argumentsObject, deletable: false);
+
+    /// <summary>
+    /// A named function expression's own name bound by name in its record
+    /// (ECMA-262 15.2.5: CreateImmutableBinding(name, false), then initialized).
+    /// </summary>
+    internal static void Interp2BindFunctionNameByName(DeclarativeEnvironmentRecord context, string name, JsValue value)
+    {
+        _ = context.CreateImmutableBinding(name, strict: false);
+        _ = context.InitializeBinding(name, value);
+    }
+
+    /// <summary>A named function expression's own name, captured by a closure.</summary>
+    internal static void Interp2DeclareFunctionNameSlot(DeclarativeEnvironmentRecord context, int slot, JsValue value)
+        => context.DeclareFunctionNameAtSlot(slot, value);
 
     /// <summary>A block binding's declaration running, in the record that holds it.</summary>
     internal void Interp2InitializeBinding(EnvironmentRecord record, string name, JsValue value)
@@ -688,10 +733,17 @@ public sealed partial class BytecodeInterpreter
     /// the first case can arise here: a body whose nested function reaches for
     /// the enclosing `super` is refused by the capture analysis before it runs.
     /// </remarks>
+    /// <summary>
+    /// ECMA-262 13.3.7.1 `super.x` / `super[k]`. A method carries its home
+    /// object; an arrow inside one has none of its own and reads the enclosing
+    /// method's through <paramref name="lexicalEnvironment"/> (9.1.2
+    /// GetSuperBase via GetThisEnvironment).
+    /// </summary>
     internal JsValue Interp2LoadSuper(
-        BytecodeFunction function, JsFunctionObject? callee, JsValue thisValue, JsValue key, bool keyIsName)
+        BytecodeFunction function, JsFunctionObject? callee, JsValue thisValue, EnvironmentRecord? lexicalEnvironment,
+        JsValue key, bool keyIsName)
     {
-        if (callee?.HomeObject is not { } home)
+        if ((callee?.HomeObject ?? ResolveLexicalHomeObject(lexicalEnvironment)) is not { } home)
         {
             throw new JsThrownException(CreateReferenceError(
                 "super reference requires a class method context."));

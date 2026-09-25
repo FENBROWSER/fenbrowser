@@ -118,44 +118,50 @@ public static class CaptureAnalysis
     /// read, at any depth. An empty set means every variable can stay in a
     /// register; the names in it are the ones that need a heap binding.
     /// </summary>
-    /// <param name="capturesReceiver">
-    /// Set when a nested function reads the enclosing <c>this</c>. That lives on
-    /// a function environment record rather than in the bindings, so the body
-    /// has to keep one - which it can, since a captured variable would have made
-    /// it keep one anyway.
+    /// <param name="needsFunctionRecord">
+    /// Set when a nested arrow reads the enclosing <c>this</c>,
+    /// <c>new.target</c> or <c>super</c>. Those live on a function environment
+    /// record rather than in its bindings, and the arrow finds them by walking
+    /// the chain (ECMA-262 9.1.2.5 GetThisEnvironment), so a body that binds
+    /// them has to keep one. An arrow does not bind them: the demand passes
+    /// through it to the function around it.
     /// </param>
-    /// <returns>
-    /// Null when a nested function reaches for <c>arguments</c>,
-    /// <c>new.target</c> or <c>super</c> from the enclosing scope. Those need
-    /// state this loop does not carry, so the body belongs on the old loop.
-    /// </returns>
-    public static HashSet<string>? CapturedNames(
-        BytecodeFunction function, IReadOnlySet<string> declaredNames, out bool capturesReceiver)
+    /// <param name="bindsArgumentsByName">
+    /// Set when a nested arrow reads the enclosing <c>arguments</c> and this
+    /// body owns an arguments object its own bytecode never names, so it has no
+    /// slot: the object is bound by name in the body's record, where the arrow's
+    /// walk finds it.
+    /// </param>
+    public static HashSet<string> CapturedNames(
+        BytecodeFunction function,
+        IReadOnlySet<string> declaredNames,
+        out bool needsFunctionRecord,
+        out bool bindsArgumentsByName)
     {
-        capturesReceiver = false;
+        needsFunctionRecord = false;
+        bindsArgumentsByName = false;
         var captured = new HashSet<string>(StringComparer.Ordinal);
+        var ownsUnnamedArguments =
+            function.HasOwnArgumentsObject && !function.VariableSlots.ContainsKey("arguments");
         var nested = function.NestedFunctions;
         for (var i = 0; i < nested.Count; i++)
         {
             var info = Compute(nested[i], depth: 1);
 
-            // A nested arrow reading `arguments` is asking for a binding, not
-            // for state the record cannot hold - so a body that has its own
-            // arguments object can satisfy it the same way it satisfies a
-            // captured variable, provided its own bytecode names it and so gave
-            // it a slot.
-            if (info.NeedsEnclosingArguments &&
-                !(function.HasOwnArgumentsObject && function.VariableSlots.ContainsKey("arguments")))
+            // Nesting too deep to analyse: assume the closure reads everything.
+            if (ReferenceEquals(info, DemandsEverything))
             {
-                return null;
+                captured.UnionWith(declaredNames);
+                needsFunctionRecord = true;
+                bindsArgumentsByName |= ownsUnnamedArguments;
+                continue;
             }
 
-            if (info.NeedsEnclosingNewTarget || info.NeedsEnclosingSuper)
-            {
-                return null;
-            }
-
-            capturesReceiver |= info.NeedsEnclosingThis;
+            // A body with a slot for `arguments` declares it like a variable,
+            // and a closure reading it captures it like one, below.
+            bindsArgumentsByName |= info.NeedsEnclosingArguments && ownsUnnamedArguments;
+            needsFunctionRecord |=
+                info.NeedsEnclosingThis || info.NeedsEnclosingNewTarget || info.NeedsEnclosingSuper;
 
             foreach (var name in info.FreeNames)
             {

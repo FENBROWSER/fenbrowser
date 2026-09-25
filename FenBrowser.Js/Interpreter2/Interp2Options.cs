@@ -42,14 +42,6 @@ public static class Interp2Options
     public static bool Log { get; set; } = ReadFlag(LogVariable);
 
     /// <summary>
-    /// Ceiling on a single frame's window (bytecode registers plus variable
-    /// slots). A function wider than this falls back to the old loop rather
-    /// than reserving an unbounded slice of the shared value stack — a bound on
-    /// what one hostile or generated function can claim from every other frame.
-    /// </summary>
-    public const int MaxFrameWindow = 4096;
-
-    /// <summary>
     /// Ceiling on the shared value stack, in <c>JsValue</c> slots. Reaching it
     /// raises a catchable RangeError, the same shape of failure a call-depth
     /// overflow already produces, rather than growing until the host dies.

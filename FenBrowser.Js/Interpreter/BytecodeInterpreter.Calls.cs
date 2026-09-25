@@ -1286,11 +1286,11 @@ public sealed partial class BytecodeInterpreter
             defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
         }
 
-        // A body the register-window loop runs cannot observe new.target: it
-        // refuses LoadNewTarget, and an arrow inside that reads it. So an
-        // ordinary constructor runs there, like any other call, instead of
-        // always paying the old loop's frame setup - which made `new F()` with
-        // an empty F cost four times a call.
+        // An ordinary constructor runs on the register-window loop like any
+        // other call, with newTarget carried on its frame (and on its record,
+        // for an arrow inside to read), instead of always paying the old loop's
+        // frame setup - which made `new F()` with an empty F cost four times a
+        // call.
         JsValue result;
         var layout = Interpreter2.Interp2Options.Enabled && !isDerived
             ? Interpreter2.FrameLayout.ForConstruct(callee.Function)
@@ -1298,7 +1298,7 @@ public sealed partial class BytecodeInterpreter
         if (layout is { Eligible: true })
         {
             callee.Function.Invocations++;
-            result = Interp2Execute(callee, layout, args, defaultInstance);
+            result = Interp2Execute(callee, layout, args, defaultInstance, newTarget);
             ApplyDefaultHostObjectPrototypeIfUnset(result, newTarget);
             return IsConstructorReturnObject(result) ? result : defaultInstance;
         }

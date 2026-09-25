@@ -19357,7 +19357,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // super() initializes the constructor's binding.
     // ECMA-262 9.4.5 GetNewTarget via 9.4.3 GetThisEnvironment. The global and
     // module environments have a this binding but no [[NewTarget]].
-    private static JsValue ResolveLexicalNewTarget(EnvironmentRecord? environment)
+    internal static JsValue ResolveLexicalNewTarget(EnvironmentRecord? environment)
     {
         for (var env = environment; env is not null; env = env.OuterEnv)
         {

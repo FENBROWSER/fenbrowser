@@ -186,6 +186,10 @@ internal sealed class Interp2
         public int ScopeDepth;
 
         public JsValue This;
+
+        /// <summary>[[Construct]]'s newTarget for this activation; undefined for a call.</summary>
+        public JsValue NewTarget;
+
         public bool OuterEnvResolved;
         public int Base;
         public int Ip;
@@ -242,14 +246,15 @@ internal sealed class Interp2
     /// Run one eligible function body to completion, together with every
     /// eligible call it makes.
     /// </summary>
-    internal JsValue Execute(JsFunctionObject callee, FrameLayout layout, in CallArgs args, JsValue thisValue)
+    internal JsValue Execute(
+        JsFunctionObject callee, FrameLayout layout, in CallArgs args, JsValue thisValue, JsValue newTarget)
     {
         var entryDepth = _depth;
         var entryTop = _stackTop;
         var entryHandlerTop = _handlerTop;
         try
         {
-            PushFrame(callee, layout, args, thisValue, returnSlot: -1);
+            PushFrame(callee, layout, args, thisValue, returnSlot: -1, newTarget);
             while (true)
             {
                 try
@@ -493,6 +498,7 @@ internal sealed class Interp2
         frame.HasPendingReturn = false;
         frame.Generator = null;
         frame.AsyncContext = context;
+        frame.NewTarget = JsValue.Undefined;
         frame.Scope = context.BlockScope;
         frame.ScopeDepth = context.BlockScopeDepth;
 
@@ -610,6 +616,7 @@ internal sealed class Interp2
         frame.HasPendingReturn = false;
         frame.Generator = generator;
         frame.AsyncContext = null;
+        frame.NewTarget = JsValue.Undefined;
         frame.Scope = generator.BlockScope;
         frame.ScopeDepth = generator.BlockScopeDepth;
 
@@ -802,6 +809,19 @@ internal sealed class Interp2
                     }
 
                     stack[frameBase + ins.A] = _frames[_depth - 1].This;
+                    break;
+
+                case OpCode.LoadNewTarget:
+                    // ECMA-262 13.3.12.1 GetNewTarget: the running function's, or
+                    // for an arrow the one GetThisEnvironment finds around it.
+                    if (layout.ResolvesThisOutwards)
+                    {
+                        var lexicalNewTarget = _host.Interp2ResolveNewTarget(OuterEnvironmentOf(_depth - 1));
+                        stack[frameBase + ins.A] = lexicalNewTarget;
+                        break;
+                    }
+
+                    stack[frameBase + ins.A] = _frames[_depth - 1].NewTarget;
                     break;
 
                 case OpCode.LoadVar:
@@ -1466,12 +1486,21 @@ internal sealed class Interp2
                 case OpCode.LoadSuperProperty:
                 case OpCode.LoadSuperElement:
                 {
-                    ref var superFrame = ref _frames[_depth - 1];
                     var superKey = ins.OpCode == OpCode.LoadSuperProperty
                         ? JsValue.FromString(function.PropertyNames[ins.B])
                         : stack[frameBase + ins.B];
+
+                    // An arrow's `super` and `this` are the enclosing method's.
+                    EnvironmentRecord? superEnvironment = null;
+                    var superThis = _frames[_depth - 1].This;
+                    if (layout.ResolvesThisOutwards)
+                    {
+                        superEnvironment = OuterEnvironmentOf(_depth - 1);
+                        superThis = _host.Interp2ResolveThis(superEnvironment, superThis);
+                    }
+
                     var superValue = _host.Interp2LoadSuper(
-                        function, superFrame.Callee, superFrame.This, superKey,
+                        function, _frames[_depth - 1].Callee, superThis, superEnvironment, superKey,
                         keyIsName: ins.OpCode == OpCode.LoadSuperProperty);
                     stack = _stack;
                     stack[frameBase + ins.A] = superValue;
@@ -1936,14 +1965,16 @@ internal sealed class Interp2
         return false;
     }
 
-    private void PushFrame(JsFunctionObject callee, FrameLayout layout, in CallArgs args, JsValue thisValue, int returnSlot)
+    private void PushFrame(
+        JsFunctionObject callee, FrameLayout layout, in CallArgs args, JsValue thisValue, int returnSlot,
+        JsValue newTarget = default)
     {
         // The entry path takes its arguments as a CallArgs because that is what
         // the old loop hands over. Copying them into the window through the
         // shared helper keeps one binding routine rather than two.
         var window = Reserve(layout);
         var stack = _stack;
-        var context = Activate(callee, layout, thisValue, window, returnSlot);
+        var context = Activate(callee, layout, thisValue, window, returnSlot, newTarget);
         var parameterIndex = layout.ParameterWindowIndex;
         var bind = layout.HasDuplicateParameterSlots
             ? parameterIndex.Length
@@ -2069,15 +2100,29 @@ internal sealed class Interp2
     /// </summary>
     private void BindSelfName(FrameLayout layout, JsFunctionObject callee, int window)
     {
+        if (layout.SelfNameByName is { } byName && callee.SelfHandle is { } namedHandle)
+        {
+            BytecodeInterpreter.Interp2BindFunctionNameByName(
+                _frames[_depth - 1].Context!, byName, JsValue.FromObject(namedHandle));
+            return;
+        }
+
         var slot = layout.SelfNameSlot;
         if (slot < 0 || callee.SelfHandle is not { } selfHandle)
         {
             return;
         }
 
-        // Always a register: the layout refuses a body whose own name a closure
-        // reads, because the record it would share has no immutable slot to put
-        // the binding in.
+        // A closure that reads the name finds it in the frame's record, as an
+        // immutable binding: a sloppy assignment from the closure is dropped,
+        // a strict one throws, as for the body's own assignments.
+        if (layout.BindingHomes[slot] == SlotHome.Context)
+        {
+            BytecodeInterpreter.Interp2DeclareFunctionNameSlot(
+                _frames[_depth - 1].Context!, slot, JsValue.FromObject(selfHandle));
+            return;
+        }
+
         _stack[window + layout.RegisterCount + slot] = JsValue.FromObject(selfHandle);
     }
 
@@ -2096,6 +2141,12 @@ internal sealed class Interp2
         var slot = layout.ArgumentsSlot;
         if (slot < 0)
         {
+            if (layout.ArgumentsByName)
+            {
+                _host.Interp2BindArgumentsByName(
+                    context!, _host.Interp2CreateArguments(args, layout.RestrictedArguments, callee));
+            }
+
             return;
         }
 
@@ -2152,7 +2203,8 @@ internal sealed class Interp2
     }
 
     private DeclarativeEnvironmentRecord? Activate(
-        JsFunctionObject callee, FrameLayout layout, JsValue thisValue, int window, int returnSlot)
+        JsFunctionObject callee, FrameLayout layout, JsValue thisValue, int window, int returnSlot,
+        JsValue newTarget = default)
     {
         // ECMA-262 10.2.1.3 OrdinaryCallBindThis: a strict body takes its
         // receiver as it comes, a sloppy one substitutes the global object for
@@ -2174,6 +2226,7 @@ internal sealed class Interp2
         frame.OuterEnv = needsOuterNow ? _host.Interp2OuterEnvironment(callee) : null;
         frame.OuterEnvResolved = needsOuterNow;
         frame.This = thisValue;
+        frame.NewTarget = newTarget;
         frame.Base = window;
         frame.Ip = 0;
         frame.BackEdgeMark = _backEdges;
@@ -2195,7 +2248,7 @@ internal sealed class Interp2
             // Hoisting: every captured variable exists, holding undefined, from
             // the moment the body starts - the same state the window clear gives
             // the ones that stayed in registers.
-            context = _host.Interp2CreateContext(layout.Function, callee, thisValue, frame.OuterEnv);
+            context = _host.Interp2CreateContext(layout.Function, callee, thisValue, frame.OuterEnv, newTarget);
             var homes = layout.BindingHomes;
             for (var slot = 0; slot < homes.Length; slot++)
             {

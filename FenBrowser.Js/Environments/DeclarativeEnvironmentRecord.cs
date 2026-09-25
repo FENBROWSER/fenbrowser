@@ -449,6 +449,28 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         }
     }
 
+    /// <summary>
+    /// A named function expression's own name (ECMA-262 15.2.5
+    /// InstantiateOrdinaryFunctionExpression: CreateImmutableBinding(name,
+    /// false)): immutable, but not strict, so a sloppy assignment to it is
+    /// dropped and only a strict one is a TypeError.
+    /// </summary>
+    internal void DeclareFunctionNameAtSlot(int slot, JsValue value)
+    {
+        if ((uint)slot >= (uint)(_slotBindings?.Length ?? 0))
+        {
+            return;
+        }
+
+        _slotBindings![slot] = new Binding(
+            Value: value, IsMutable: false, IsInitialized: true, IsStrict: false, IsDeletable: false);
+        _slotPresent![slot] = true;
+        if (value.Tag == JsValueTag.Object)
+        {
+            RememberBindingStore(value.AsObjectHandle());
+        }
+    }
+
     internal void DeclareAtSlot(int slot, JsValue value, bool deletable, bool overwrite)
     {
         if ((uint)slot >= (uint)(_slotBindings?.Length ?? 0))

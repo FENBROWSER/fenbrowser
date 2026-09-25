@@ -10,13 +10,10 @@ public enum Interp2Bailout
     NotOrdinaryFunction,
     EvalCode,
     ClassConstructor,
-    ArgumentsObject,
-    BindsOwnName,
     LexicalDeclarations,
     UnmappedSlot,
     UnsupportedOpCode,
     FreeVariableResolve,
-    CapturedReceiver,
 
     /// <summary>A block whose bytecode this layout cannot read as a nesting of scopes.</summary>
     BlockScope,
@@ -24,13 +21,6 @@ public enum Interp2Bailout
     /// <summary>A block-scoped slot named from outside every block that declares it.</summary>
     BlockScopeEscapes,
 
-    /// <summary>
-    /// `super` in a body that does not carry a home object of its own - an
-    /// arrow inside a method. Resolving it means finding the enclosing method's
-    /// home object on the environment chain, and a method running on this loop
-    /// may keep everything in registers and have no record on that chain at all.
-    /// </summary>
-    SuperOutsideMethod,
 
     /// <summary>
     /// A block-scoped binding a nested function captures, which needs a fresh
@@ -39,7 +29,6 @@ public enum Interp2Bailout
     BlockScopeCaptured,
 
     DirectEval,
-    FrameTooWide,
 }
 
 /// <summary>
@@ -204,6 +193,20 @@ public sealed class FrameLayout
 
     /// <summary>ECMA-262 10.2.11: the strict form throws on `callee`.</summary>
     public bool RestrictedArguments { get; private init; }
+
+    /// <summary>
+    /// Whether the arguments object is bound by name in the frame's record: a
+    /// nested arrow reads it, and the body's own bytecode never names it, so it
+    /// has no slot.
+    /// </summary>
+    public bool ArgumentsByName { get; private init; }
+
+    /// <summary>
+    /// A named function expression's own name, when a closure reads it and the
+    /// body's own bytecode never names it, so it has no slot: bound by name in
+    /// the frame's record. Null otherwise.
+    /// </summary>
+    public string? SelfNameByName { get; private init; }
 
     /// <summary>
     /// Whether this body's blocks are environment records rather than window
@@ -401,12 +404,11 @@ public sealed class FrameLayout
             return new FrameLayout(function, Interp2Bailout.EvalCode);
         if (function.IsDerivedConstructor || (function.IsClassConstructor && !constructsClass))
             return new FrameLayout(function, Interp2Bailout.ClassConstructor);
-        // An arrow reaching outwards for the enclosing `arguments` is refused;
-        // a body's own arguments object is not, because this engine builds it as
-        // a snapshot rather than as an alias of the parameter bindings, so a
-        // parameter can still be a register.
-        if (function.UsesOuterArguments)
-            return new FrameLayout(function, Interp2Bailout.ArgumentsObject);
+        // An arrow reaching outwards for the enclosing `arguments` resolves it by
+        // name, like any free identifier: the function around it keeps the
+        // object in its record. A body's own arguments object is a snapshot
+        // rather than an alias of the parameter bindings, so a parameter can
+        // still be a register.
         // let/const need a hole distinct from undefined to keep the temporal
         // dead zone observable. A register window has no such value yet, so the
         // bodies that declare them stay on the old loop for now.
@@ -415,8 +417,6 @@ public sealed class FrameLayout
         var slotNames = SlotNamesOf(function);
         var slotCount = slotNames.Length;
         var registerCount = function.RegisterCount;
-        if (registerCount + slotCount > Interp2Options.MaxFrameWindow)
-            return new FrameLayout(function, Interp2Bailout.FrameTooWide);
 
         // A slot this body declares lives in its own window; anything else is a
         // free identifier and resolves through the closure's environment chain,
@@ -555,16 +555,6 @@ public sealed class FrameLayout
             if (ins.OpCode == OpCode.NextIterationEnv && !scopedBlocks)
                 return new FrameLayout(function, Interp2Bailout.BlockScopeCaptured);
 
-            // A method carries its home object on the function object, which is
-            // this frame's callee, so `super` in one resolves without a walk.
-            // An arrow does not carry one - the old loop finds the enclosing
-            // method's by walking for a FunctionEnvironmentRecord, and a method
-            // on this loop need not have put one there.
-            if (ins.OpCode is OpCode.LoadSuperProperty or OpCode.LoadSuperElement &&
-                function.Kind != FunctionKind.Method)
-            {
-                return new FrameLayout(function, Interp2Bailout.SuperOutsideMethod);
-            }
 
             // A slot the layout never classified has no home to write to.
             // A free one does now: the loop carries the resolution between the
@@ -590,6 +580,8 @@ public sealed class FrameLayout
         // into a record the closures share. A body no closure reads from gets no
         // record at all, and is handed the environment it closed over itself.
         var hasContext = false;
+        var argumentsByName = false;
+        var selfNameByName = false;
         if (makesClosures)
         {
             // A block-scoped binding is this body's as much as a var is, but it
@@ -615,31 +607,28 @@ public sealed class FrameLayout
                 captureScope = withBlocks;
             }
 
-            var captured = CaptureAnalysis.CapturedNames(function, captureScope, out var capturesReceiver);
-            if (captured is null)
-                return new FrameLayout(function, Interp2Bailout.CapturedReceiver);
+            var captured = CaptureAnalysis.CapturedNames(
+                function, captureScope, out var needsFunctionRecord, out argumentsByName);
 
-            // A closure that reads the enclosing `this` needs a record to find
-            // it on, so this body keeps one even when none of its variables are
-            // captured. An arrow cannot supply it - its own record is one the
-            // walk passes straight through - so it is refused instead.
-            // ECMA-262 15.2.5 binds a function expression's own name
-            // immutably. Inside this body that is enforced at the store, which
-            // knows the slot; a closure that reads the name outwards resolves
-            // it through a record, and the record this loop would share holds
-            // slots that are all mutable - so an arrow assigning the name would
-            // succeed where the spec drops the write in sloppy code and throws
-            // in strict. Refuse the body rather than give the binding a home
-            // that cannot say no.
-            if (selfName is not null && captured.Contains(selfName))
+            // A closure that reads the enclosing `this`, `new.target` or `super`
+            // finds them on this body's function record, so the body keeps one
+            // even when none of its variables are captured. An arrow has none
+            // of its own to keep: its closures walk through to the function
+            // around it.
+            if (needsFunctionRecord && !function.IsArrow)
             {
-                return new FrameLayout(function, Interp2Bailout.BindsOwnName);
+                hasContext = true;
             }
 
-            if (capturesReceiver)
+            hasContext |= argumentsByName;
+
+            // The body's own bytecode may never name itself - only a closure
+            // does - and then it has no slot for the name. The binding still
+            // exists (ECMA-262 15.2.5), so it goes in the record by name.
+            if (selfName is not null && captured.Contains(selfName) &&
+                !function.VariableSlots.ContainsKey(selfName))
             {
-                if (function.IsArrow)
-                    return new FrameLayout(function, Interp2Bailout.CapturedReceiver);
+                selfNameByName = true;
                 hasContext = true;
             }
 
@@ -753,6 +742,8 @@ public sealed class FrameLayout
             HasDuplicateParameterSlots = duplicateParameters,
             HasContext = hasContext,
             ArgumentsSlot = argumentsSlot,
+            ArgumentsByName = argumentsByName,
+            SelfNameByName = selfNameByName ? selfName : null,
             RestrictedArguments = function.UsesRestrictedArgumentsObject,
             SlotIsConst = BuildConstMap(constSlots, slotCount),
             IsGenerator = isGenerator,
@@ -971,7 +962,7 @@ public sealed class FrameLayout
         ReadOnlySpan<OpCode> supported =
         [
             // Data movement and control flow.
-            OpCode.LoadConst, OpCode.LoadVar, OpCode.LoadThis, OpCode.StoreVar,
+            OpCode.LoadConst, OpCode.LoadVar, OpCode.LoadThis, OpCode.LoadNewTarget, OpCode.StoreVar,
             OpCode.InitVar, OpCode.PreResolveVar, OpCode.StoreResolvedVar,
             OpCode.Move, OpCode.Jump, OpCode.JumpIfFalse,
             OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,
