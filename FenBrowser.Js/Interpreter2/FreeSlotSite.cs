@@ -49,7 +49,25 @@ public sealed class FreeSlotSite
         SlotOwner = slotOwner;
         TargetSlot = targetSlot;
         LexicalVersion = lexicalVersion;
+        ScopeEpoch = s_scopeEpoch;
     }
+
+    // Static scoping is what makes a site safe to keep, and two things break it
+    // from outside the function that owns the site. A sloppy direct eval can
+    // declare a var in an enclosing function's scope, between this function and
+    // the binding the site found; every such eval moves the epoch, and a site
+    // from an older one is ignored. A `with` object can gain a property at any
+    // time, so a walk that crossed one is never recorded (see IsCacheableWalk).
+    private static int s_scopeEpoch;
+
+    /// <summary>Called for every sloppy direct eval, which may add bindings to an existing scope.</summary>
+    internal static void AdvanceScopeEpoch() => System.Threading.Interlocked.Increment(ref s_scopeEpoch);
+
+    /// <summary>Whether no scope has been able to change shape since this site was recorded.</summary>
+    public bool IsCurrent => ScopeEpoch == System.Threading.Volatile.Read(ref s_scopeEpoch);
+
+    /// <summary>The scope epoch this site was recorded in.</summary>
+    public int ScopeEpoch { get; }
 
     /// <summary>How many <c>OuterEnv</c> links out the binding was found.</summary>
     public int Hops { get; }

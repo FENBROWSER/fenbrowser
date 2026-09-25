@@ -7653,6 +7653,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // whatever block or catch the call sat in rather than in the function.
         var env = StampEnvironment(new DeclarativeEnvironmentRecord(directEvalEnvironment ?? EnsureGlobalEnvironment()));
         env.IsVariableScope = compiled.IsStrictMode;
+        if (directEvalEnvironment is not null && !compiled.IsStrictMode)
+        {
+            // Its vars land in the caller's variable environment, which may sit
+            // between a closure and a binding the closure has cached.
+            Interpreter2.FreeSlotSite.AdvanceScopeEpoch();
+        }
         env.HidesNewTarget = directEvalInFieldInitializer;
 
         return ExecuteInternal(

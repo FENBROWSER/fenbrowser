@@ -126,4 +126,44 @@ public sealed class FreeVariableStoreTests
             "through the let,99",
             result.Interpreter.EvaluateScript("shadowMe + ',' + globalThis.shadowMe;", "check.js").AsString());
     }
+
+    // A site is only safe while no scope between the function and the binding
+    // can change shape. A sloppy direct eval in an enclosing function can add a
+    // var there, and a `with` object can gain a property; reads and writes that
+    // cached the outer binding must see the new one.
+    [Fact]
+    public void AVarAddedByEvalInAnEnclosingFunctionShadowsCachedSites()
+    {
+        Assert.Equal("global|outer|w|g49", Run(@"
+            var x = 'global';
+            function outer() {
+                var read = function () { return x; };
+                var write = function (v) { x = v; };
+                var before = '';
+                for (var i = 0; i < 50; i++) before = read();
+                for (var j = 0; j < 50; j++) write('g' + j);
+                eval('var x = ""outer""');
+                var after = read();
+                write('w');
+                return before + '|' + after + '|' + x + '|' + globalThis.x;
+            }
+            outer();").AsString());
+    }
+
+    [Fact]
+    public void APropertyAddedToAWithObjectShadowsCachedSites()
+    {
+        Assert.Equal("global|obj|w|g49", Run(@"
+            var y = 'global';
+            var o = {};
+            var read, write;
+            with (o) { read = function () { return y; }; write = function (v) { y = v; }; }
+            var before = '';
+            for (var i = 0; i < 50; i++) before = read();
+            for (var j = 0; j < 50; j++) write('g' + j);
+            o.y = 'obj';
+            var after = read();
+            write('w');
+            before + '|' + after + '|' + o.y + '|' + globalThis.y;").AsString());
+    }
 }

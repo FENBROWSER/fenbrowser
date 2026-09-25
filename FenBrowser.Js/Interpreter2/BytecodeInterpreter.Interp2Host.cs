@@ -384,7 +384,7 @@ public sealed partial class BytecodeInterpreter
         }
 
         var sites = layout.FreeSites;
-        if (slot < sites.Length && sites[slot] is { } site)
+        if (slot < sites.Length && sites[slot] is { IsCurrent: true } site)
         {
             var env = outerEnvironment;
             for (var hop = site.Hops; hop > 0 && env is not null; hop--)
@@ -421,11 +421,13 @@ public sealed partial class BytecodeInterpreter
             ? FenBrowser.Js.Diagnostics.InterpreterProfiler.StartSample()
             : 0L;
         var hops = 0;
+        var cacheable = true;
         for (var env = outerEnvironment; env is not null; env = env.OuterEnv, hops++)
         {
             var status = env.TryLookupBinding(name, strict, out var value);
             if (status == BindingOpResult.NotFound)
             {
+                cacheable &= env is not ObjectEnvironmentRecord;
                 continue;
             }
 
@@ -444,7 +446,11 @@ public sealed partial class BytecodeInterpreter
                 FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordVarSlowPath(walkStartTicks);
             }
 
-            RecordFreeSlotSite(layout, slot, icOffset, hops, env, name);
+            if (cacheable)
+            {
+                RecordFreeSlotSite(layout, slot, icOffset, hops, env, name);
+            }
+
             return value;
         }
 
@@ -807,7 +813,7 @@ public sealed partial class BytecodeInterpreter
         FrameLayout layout, int slot, int icOffset, EnvironmentRecord? outerEnvironment, JsValue value)
     {
         var sites = layout.FreeSites;
-        if ((uint)slot < (uint)sites.Length && sites[slot] is { } site)
+        if ((uint)slot < (uint)sites.Length && sites[slot] is { IsCurrent: true } site)
         {
             var env = outerEnvironment;
             for (var hop = site.Hops; hop > 0 && env is not null; hop--)
@@ -849,10 +855,13 @@ public sealed partial class BytecodeInterpreter
         // Interp2StoreFree's walk, noting on the way where the binding lives:
         // a record with slot numbering, or a property of the global object.
         var hops = 0;
+        var cacheable = true;
         for (var env = outerEnvironment; env is not null; env = env.OuterEnv, hops++)
         {
             if (!env.HasBinding(name))
             {
+                // A `with` object passed over here could gain the name later.
+                cacheable &= env is not ObjectEnvironmentRecord;
                 continue;
             }
 
@@ -862,7 +871,7 @@ public sealed partial class BytecodeInterpreter
                 throw Interp2BindingFailure(status, name, assignment: true);
             }
 
-            if ((uint)slot >= (uint)layout.FreeSites.Length)
+            if (!cacheable || (uint)slot >= (uint)layout.FreeSites.Length)
             {
                 return;
             }
