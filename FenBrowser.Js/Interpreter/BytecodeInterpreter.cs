@@ -23932,7 +23932,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 if (!site.Covers(target.CurrentShape, prop))
                 {
                     var program = FenBrowser.Js.Jit.CacheIR.Attachers.LoadPropertyAttacher.TryAttach(
-                        target, prop, keyVariesAtSite: false);
+                        target, prop, keyVariesAtSite: false, _heap.GetObject);
                     if (program is not null) site.Attach(program);
                 }
             }
