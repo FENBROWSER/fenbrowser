@@ -1378,6 +1378,17 @@ public sealed class Test262Runner
             return false;
         }
 
+        // The interpreter enforces the same deadline itself (WallClockTimeoutMs)
+        // and ends the script with an uncatchable RangeError. The timer that sets
+        // the interrupt flag runs on the thread pool, so on a busy machine the
+        // interpreter's own stop can land first - and was then reported as the
+        // test throwing a runtime error. Any termination the script could not
+        // catch is the harness stopping it, which is a timeout.
+        if (captured?.SourceException is FenBrowser.Js.Interpreter.JsThrownException { IsUncatchableByScript: true })
+        {
+            return false;
+        }
+
         captured?.Throw();
         return true;
     }

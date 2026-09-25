@@ -154,7 +154,7 @@ internal static class JsRuntimeBindings
 
     internal static readonly PropertyInfo PiThrownUncatchable =
         typeof(JsThrownException).GetProperty(
-            "IsUncatchableByScript", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            nameof(JsThrownException.IsUncatchableByScript), BindingFlags.Instance | BindingFlags.Public)!;
 
     internal static readonly MethodInfo MiRouteThrow = typeof(BytecodeInterpreter)
         .GetMethod("TryRouteThrowForJit", BindingFlags.Instance | BindingFlags.NonPublic)!;

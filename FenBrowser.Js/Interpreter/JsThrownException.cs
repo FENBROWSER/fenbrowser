@@ -18,7 +18,11 @@ public class JsThrownException : Exception
     /// thing stopping a runaway script, and compiled bodies must leave them
     /// alone for the same reason.
     /// </summary>
-    internal bool IsUncatchableByScript { get; init; }
+    /// <remarks>
+    /// Readable by embedders - the test262 runner reports these as timeouts -
+    /// but only the engine may raise one.
+    /// </remarks>
+    public bool IsUncatchableByScript { get; internal init; }
 
     // Optional human-readable "Name: message" rendering of the thrown value, populated
     // by the catch site that still has the originating interpreter (and its heap) in
