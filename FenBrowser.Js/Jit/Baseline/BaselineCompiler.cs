@@ -129,7 +129,14 @@ internal static class BaselineCompiler
             // storage derived before a throw no longer describes the frame.
             EmitRefreshSlots();
 
-            _exit = il.BeginTry();
+            // Only a function with a try of its own needs an exception block: a
+            // throw can only be routed to a handler its own PushHandler set up,
+            // so anywhere else the filter would decline every exception. And
+            // the block is not free - a method with a filter costs the CLR's
+            // JIT about 60% more to compile, which on a large function is
+            // hundreds of milliseconds.
+            var guarded = _handlerTargets.Count > 0;
+            _exit = guarded ? il.BeginTry() : il.DefineLabel();
             EmitResumeDispatch(resumePoints);
 
             for (var ip = 0; ip < instructions.Length; ip++)
@@ -171,8 +178,15 @@ internal static class BaselineCompiler
             il.Store(_returnValue);
             il.Branch(OpCodes.Leave, _exit);
 
-            EmitCatch();
-            il.EndTry();
+            if (guarded)
+            {
+                EmitCatch();
+                il.EndTry();
+            }
+            else
+            {
+                il.Mark(_exit);
+            }
 
             il.Load(_returnValue);
             il.Op(OpCodes.Ret);
