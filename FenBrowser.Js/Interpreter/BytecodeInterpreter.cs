@@ -7801,6 +7801,41 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return false;
     }
 
+    // new.target in the eval code itself or in an arrow it creates - which reads
+    // the eval's own. A nested ordinary function has a new.target of its own.
+    private static bool ContainsNewTargetOutsideFunctions(BytecodeFunction fn)
+    {
+        foreach (var ins in fn.Instructions)
+        {
+            if (ins.OpCode == OpCode.LoadNewTarget)
+                return true;
+        }
+
+        foreach (var nested in fn.NestedFunctions)
+        {
+            if (nested.IsArrow && ContainsNewTargetOutsideFunctions(nested))
+                return true;
+        }
+
+        return false;
+    }
+
+    // PerformEval's inFunction: a direct eval whose GetThisEnvironment is a
+    // function environment. A field initializer's eval counts: an initializer
+    // is a method of the class.
+    private static bool EvalRunsInFunction(EnvironmentRecord? callingEnv)
+    {
+        for (var env = callingEnv; env is not null; env = env.OuterEnv)
+        {
+            if (env is DeclarativeEnvironmentRecord { HidesNewTarget: true })
+                return true;
+            if (env.HasThisBinding)
+                return env is FunctionEnvironmentRecord;
+        }
+
+        return false;
+    }
+
     private static bool ContainsArgumentsRecursive(BytecodeFunction fn)
     {
         foreach (var name in fn.PropertyNames)
@@ -7840,6 +7875,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (callerFrame?.Function?.Kind != FunctionKind.Constructor)
                 throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval inside a method."));
         }
+
+        // ECMA-262 19.2.1.1 PerformEval steps 5-6: new.target in eval code is a
+        // SyntaxError unless the eval is direct and runs in a function - so an
+        // eval at the top level of a script, or an indirect one, rejects it.
+        if (ContainsNewTargetOutsideFunctions(compiled) && !EvalRunsInFunction(callingEnv))
+            throw new JsThrownException(CreateSyntaxError("new.target expression is not allowed here."));
 
         // ECMA-262: Additional Early Error Rules for Eval Inside Initializer.
         // If the eval body (or any nested function/arrow) contains an 'arguments'
