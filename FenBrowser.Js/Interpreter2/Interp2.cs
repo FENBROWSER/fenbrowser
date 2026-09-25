@@ -1238,7 +1238,15 @@ internal sealed class Interp2
                 case OpCode.GetPropByName:
                 {
                     var read = _host.Interp2GetPropertyByName(
-                        function, ip - 1, stack[frameBase + ins.B], function.PropertyNames[ins.C]);
+                        function, ip - 1, stack[frameBase + ins.B], function.PropertyNames[ins.C], out var getter);
+                    if (getter.Tag == JsValueTag.Object)
+                    {
+                        if (CallGetter(getter, ip, frameBase + ins.B, frameBase + ins.A))
+                            goto reload;
+                        stack = _stack;
+                        break;
+                    }
+
                     stack = _stack;
                     stack[frameBase + ins.A] = read;
                     break;
@@ -2057,6 +2065,16 @@ internal sealed class Interp2
             JitCompiler.RequestLoopTierUp(function);
         }
 #endif
+    }
+
+    // A getter the read's accessor stub found: an ordinary call with no
+    // arguments and the receiver as `this`, its result landing in the read's
+    // destination. Kept out of the dispatch loop, whose hottest case this is.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private bool CallGetter(JsValue getter, int ip, int receiverSlot, int returnSlot)
+    {
+        _frames[_depth - 1].Ip = ip;
+        return Call(getter, _stack[receiverSlot], 0, 0, returnSlot);
     }
 
     private bool HasHandlerAbove(int entryDepth)

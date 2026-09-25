@@ -3007,8 +3007,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     try
                     {
-                        registers[ins.A] = GetReceiverProperty(receiver, prop);
-                        PopulateLoadIC(function, icOffset, receiver, prop);
+                        registers[ins.A] = GetPropertyByNameMiss(function, icOffset, receiver, prop);
                     }
                     catch (JsThrownException ex) when (HasHandler(frame))
                     {
@@ -23886,8 +23885,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         try
         {
-            frame.Registers[destReg] = GetReceiverProperty(receiver, prop);
-            PopulateLoadIC(frame.Function, icOffset, receiver, prop);
+            frame.Registers[destReg] = GetPropertyByNameMiss(frame.Function, icOffset, receiver, prop);
         }
         catch (JsThrownException ex) when (HasHandler(frame))
         {
@@ -24358,6 +24356,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (ok)
             {
                 NoteAddedProperty(function, icOffset, obj, shapeBefore, prop);
+            }
+
+            if (ReferenceEquals(obj.CurrentShape, shapeBefore))
+            {
+                NoteAccessor(function, icOffset, receiverValue, prop, forSetter: true);
             }
         }
     }

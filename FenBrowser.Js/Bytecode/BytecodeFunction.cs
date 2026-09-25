@@ -298,6 +298,14 @@ public sealed class BytecodeFunction
     internal CallICEntry?[] EnsureCallICs() =>
         _callICs ?? PublishOnce(ref _callICs, new CallICEntry?[InstructionArray.Length]);
 
+    // Accessor stubs, one per GetPropByName / SetPropByName instruction (see AccessorStub).
+    private FenBrowser.Js.Jit.CacheIR.AccessorStub?[]? _accessorStubs;
+
+    internal FenBrowser.Js.Jit.CacheIR.AccessorStub?[]? AccessorStubs => _accessorStubs;
+
+    internal FenBrowser.Js.Jit.CacheIR.AccessorStub?[] EnsureAccessorStubs() =>
+        _accessorStubs ?? PublishOnce(ref _accessorStubs, new FenBrowser.Js.Jit.CacheIR.AccessorStub?[InstructionArray.Length]);
+
     // Add-property stubs, one per SetPropByName instruction (see AddPropertyStub).
     private FenBrowser.Js.Jit.CacheIR.AddPropertyStub?[]? _addPropertyStubs;
 

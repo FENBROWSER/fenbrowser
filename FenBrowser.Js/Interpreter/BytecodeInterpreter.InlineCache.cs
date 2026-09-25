@@ -88,8 +88,72 @@ public sealed partial class BytecodeInterpreter
             }
         }
 
-        return fn.AddPropertyStubs is { } stubs && (uint)offset < (uint)stubs.Length &&
-               stubs[offset] is { } stub && stub.TryAdd(_heap.GetObject(receiver.AsObjectHandle()), value);
+        if (fn.AddPropertyStubs is { } stubs && (uint)offset < (uint)stubs.Length &&
+            stubs[offset] is { } stub && stub.TryAdd(_heap.GetObject(receiver.AsObjectHandle()), value))
+        {
+            return true;
+        }
+
+        // A setter on the receiver or its chain: call it without the [[Set]] walk.
+        if (TryAccessorStub(fn, offset, receiver, out var setter))
+        {
+            CallFunction(setter, new[] { value }, receiver);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The getter or setter the stub at <paramref name="offset"/> resolves to
+    /// for this receiver; which of the two is fixed by the instruction.
+    /// </summary>
+    internal bool TryAccessorStub(BytecodeFunction fn, int offset, JsValue receiver, out JsValue accessor)
+    {
+        if (receiver.Tag == JsValueTag.Object &&
+            fn.AccessorStubs is { } stubs && (uint)offset < (uint)stubs.Length &&
+            stubs[offset] is { } stub)
+        {
+            return stub.TryGetAccessor(_heap.GetObject(receiver.AsObjectHandle()), out accessor);
+        }
+
+        accessor = JsValue.Undefined;
+        return false;
+    }
+
+    /// <summary>
+    /// After a read or write at <paramref name="offset"/> took the general path,
+    /// records an accessor stub if the name resolved to a getter (or setter).
+    /// </summary>
+    private void NoteAccessor(BytecodeFunction fn, int offset, JsValue receiver, string key, bool forSetter)
+    {
+        if (receiver.Tag != JsValueTag.Object || (uint)offset >= (uint)fn.InstructionArray.Length)
+            return;
+
+        var stubs = fn.EnsureAccessorStubs();
+        if (stubs[offset] is not null)
+            return;
+
+        stubs[offset] = AccessorStub.TryCreate(
+            _heap.GetObject(receiver.AsObjectHandle()), key, forSetter, ResolvePrototypeDelegate);
+    }
+
+    /// <summary>
+    /// A property read that missed its cache site: through the accessor stub
+    /// when it names a getter, else the general [[Get]], after which the site
+    /// learns what it can.
+    /// </summary>
+    internal JsValue GetPropertyByNameMiss(BytecodeFunction fn, int offset, JsValue receiver, string key)
+    {
+        if (TryAccessorStub(fn, offset, receiver, out var getter))
+        {
+            return CallFunction(getter, Array.Empty<JsValue>(), receiver);
+        }
+
+        var value = GetReceiverProperty(receiver, key);
+        PopulateLoadIC(fn, offset, receiver, key);
+        NoteAccessor(fn, offset, receiver, key, forSetter: false);
+        return value;
     }
 
     /// <summary>

@@ -255,6 +255,22 @@ public class JsObject : ITraceable
     }
 
     /// <summary>Whether a slot holds a data property a store may write through.</summary>
+    /// <summary>The getter and setter of an accessor slot; false when the slot is not an accessor.</summary>
+    internal bool TryReadAccessorSlot(int slot, out JsValue getter, out JsValue setter)
+    {
+        if ((uint)slot < (uint)_slots.Length &&
+            (_slots[slot].Flags & (PropertyFlags.Present | PropertyFlags.Accessor)) == (PropertyFlags.Present | PropertyFlags.Accessor))
+        {
+            getter = _accessors![slot].Get;
+            setter = _accessors[slot].Set;
+            return true;
+        }
+
+        getter = JsValue.Undefined;
+        setter = JsValue.Undefined;
+        return false;
+    }
+
     internal bool IsWritableDataSlot(int slot) =>
         (uint)slot < (uint)_slots.Length &&
         (_slots[slot].Flags & (PropertyFlags.Present | PropertyFlags.Accessor | PropertyFlags.Writable)) ==

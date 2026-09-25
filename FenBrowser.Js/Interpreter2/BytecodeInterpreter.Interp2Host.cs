@@ -1039,12 +1039,24 @@ public sealed partial class BytecodeInterpreter
     /// execute the same bytecode - so a site warmed on one loop is warm on the
     /// other.
     /// </summary>
-    internal JsValue Interp2GetPropertyByName(BytecodeFunction function, int icOffset, JsValue receiver, string key)
+    /// <param name="getter">
+    /// Set, with the result undefined, when the read resolves through this
+    /// site's accessor stub to a getter: the loop calls it as it calls any
+    /// function - pushing a window when it can - rather than this re-entering
+    /// the loop from outside.
+    /// </param>
+    internal JsValue Interp2GetPropertyByName(BytecodeFunction function, int icOffset, JsValue receiver, string key, out JsValue getter)
     {
+        getter = JsValue.Undefined;
         if (TryGetLoadIC(function, icOffset, receiver, key, out var cached))
         {
             if (Interpreter2.Interp2Options.Log) Interpreter2.Interp2Stats.RecordPropertyRead(cached: true);
             return cached;
+        }
+
+        if (TryAccessorStub(function, icOffset, receiver, out getter))
+        {
+            return JsValue.Undefined;
         }
 
         if (Interpreter2.Interp2Options.Log)
@@ -1055,6 +1067,7 @@ public sealed partial class BytecodeInterpreter
 
         var value = GetReceiverProperty(receiver, key);
         PopulateLoadIC(function, icOffset, receiver, key);
+        NoteAccessor(function, icOffset, receiver, key, forSetter: false);
         return value;
     }
 
