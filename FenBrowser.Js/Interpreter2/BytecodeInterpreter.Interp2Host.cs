@@ -384,29 +384,10 @@ public sealed partial class BytecodeInterpreter
         }
 
         var sites = layout.FreeSites;
-        if (slot < sites.Length && sites[slot] is { IsCurrent: true } site)
+        if (slot < sites.Length && sites[slot] is { IsCurrent: true } site &&
+            TryReadThroughSite(site, outerEnvironment, layout.Function, icOffset, name, out var cached))
         {
-            var env = outerEnvironment;
-            for (var hop = site.Hops; hop > 0 && env is not null; hop--)
-            {
-                env = env.OuterEnv;
-            }
-
-            if (site.SlotOwner is { } owner)
-            {
-                if (env is DeclarativeEnvironmentRecord declarative &&
-                    declarative.TryReadOwnSlot(owner, site.TargetSlot, out var slotValue))
-                {
-                    return slotValue;
-                }
-            }
-            else if (env is GlobalEnvironmentRecord global &&
-                     global.LexicalVersion == site.LexicalVersion &&
-                     global.GlobalObjectHandle is { } globalHandle &&
-                     TryGetLoadIC(layout.Function, icOffset, JsValue.FromObject(globalHandle), name, out var cached))
-            {
-                return cached;
-            }
+            return cached;
         }
 
         return Interp2LoadFreeAndCache(layout, slot, icOffset, outerEnvironment, name);
@@ -446,53 +427,16 @@ public sealed partial class BytecodeInterpreter
                 FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordVarSlowPath(walkStartTicks);
             }
 
-            if (cacheable)
+            if (cacheable && (uint)slot < (uint)layout.FreeSites.Length &&
+                CreateReadSite(layout.Function, icOffset, hops, env, name) is { } created)
             {
-                RecordFreeSlotSite(layout, slot, icOffset, hops, env, name);
+                layout.FreeSites[slot] = created;
             }
 
             return value;
         }
 
         throw new JsThrownException(CreateReferenceError($"{name} is not defined."));
-    }
-
-    /// <summary>
-    /// Remember where a name resolved, when the answer is one of the two shapes
-    /// worth caching. Anything else - an object environment, a record with no
-    /// slot numbering - is left uncached and walks every time.
-    /// </summary>
-    private void RecordFreeSlotSite(
-        FrameLayout layout, int slot, int icOffset, int hops, EnvironmentRecord env, string name)
-    {
-        var sites = layout.FreeSites;
-        if ((uint)slot >= (uint)sites.Length)
-        {
-            return;
-        }
-
-        if (env is GlobalEnvironmentRecord global)
-        {
-            // Only a property of the global object is cacheable this way; a
-            // top-level let/const lives on the record's lexical half, which the
-            // load cache cannot see. HasLexicalDeclaration separates them.
-            if (global.HasLexicalDeclaration(name) || global.GlobalObjectHandle is not { } handle)
-            {
-                return;
-            }
-
-            var receiver = JsValue.FromObject(handle);
-            PopulateLoadIC(layout.Function, icOffset, receiver, name);
-            sites[slot] = FreeSlotSite.OnGlobalObject(hops, global.LexicalVersion);
-            return;
-        }
-
-        if (env is DeclarativeEnvironmentRecord declarative &&
-            declarative.SlotOwner is { } owner &&
-            declarative.TryGetSlotIndex(name, out var targetSlot))
-        {
-            sites[slot] = FreeSlotSite.AtSlot(hops, owner, targetSlot);
-        }
     }
 
     /// <summary>
@@ -813,31 +757,11 @@ public sealed partial class BytecodeInterpreter
         FrameLayout layout, int slot, int icOffset, EnvironmentRecord? outerEnvironment, JsValue value)
     {
         var sites = layout.FreeSites;
-        if ((uint)slot < (uint)sites.Length && sites[slot] is { IsCurrent: true } site)
+        if ((uint)slot < (uint)sites.Length && sites[slot] is { IsCurrent: true } site &&
+            layout.SlotNames[slot] is { } siteName &&
+            TryWriteThroughSite(site, outerEnvironment, layout.Function, icOffset, siteName, value))
         {
-            var env = outerEnvironment;
-            for (var hop = site.Hops; hop > 0 && env is not null; hop--)
-            {
-                env = env.OuterEnv;
-            }
-
-            if (site.SlotOwner is { } owner)
-            {
-                if (env is DeclarativeEnvironmentRecord declarative &&
-                    declarative.TryWriteOwnSlot(owner, site.TargetSlot, value))
-                {
-                    return;
-                }
-            }
-            else if (env is GlobalEnvironmentRecord global &&
-                     global.LexicalVersion == site.LexicalVersion &&
-                     global.GlobalObjectHandle is { } globalHandle &&
-                     TryStoreIC(layout.Function, icOffset, globalHandle, JsValue.FromObject(globalHandle), layout.SlotNames[slot]!, value))
-            {
-                // A hit proves an own writable data property, where
-                // SetMutableBinding on the object record is exactly [[Set]].
-                return;
-            }
+            return;
         }
 
         Interp2StoreFreeAndCache(layout, slot, icOffset, outerEnvironment, value);
@@ -871,23 +795,10 @@ public sealed partial class BytecodeInterpreter
                 throw Interp2BindingFailure(status, name, assignment: true);
             }
 
-            if (!cacheable || (uint)slot >= (uint)layout.FreeSites.Length)
+            if (cacheable && (uint)slot < (uint)layout.FreeSites.Length &&
+                CreateWriteSite(layout.Function, icOffset, hops, env, name) is { } created)
             {
-                return;
-            }
-
-            if (env is DeclarativeEnvironmentRecord declarative &&
-                declarative.SlotOwner is { } owner &&
-                declarative.TryGetSlotIndex(name, out var targetSlot))
-            {
-                layout.FreeSites[slot] = FreeSlotSite.AtSlot(hops, owner, targetSlot);
-            }
-            else if (env is GlobalEnvironmentRecord global &&
-                     !global.HasLexicalDeclaration(name) &&
-                     global.GlobalObjectHandle is { } globalHandle)
-            {
-                PopulateStoreIC(layout.Function, icOffset, JsValue.FromObject(globalHandle), name);
-                layout.FreeSites[slot] = FreeSlotSite.OnGlobalObject(hops, global.LexicalVersion);
+                layout.FreeSites[slot] = created;
             }
 
             return;
