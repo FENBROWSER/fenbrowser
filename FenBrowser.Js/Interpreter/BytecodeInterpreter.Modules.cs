@@ -71,6 +71,12 @@ public sealed partial class BytecodeInterpreter
         {
             return BuildRejectedPromise(ex.Value);
         }
+        catch (FenBrowser.Js.Parser.JsParserException ex)
+        {
+            // ParseModule failing inside HostLoadImportedModule is a SyntaxError
+            // (ECMA-262 16.2.1.7.1 ParseModule step 2), like any early error.
+            return BuildRejectedPromise(CreateSyntaxError(ex.Message));
+        }
         catch (Exception ex)
         {
             return BuildRejectedPromise(CreateTypeError(ex.Message));

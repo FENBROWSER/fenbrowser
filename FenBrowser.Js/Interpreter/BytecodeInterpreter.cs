@@ -6272,6 +6272,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // defaults to target. A Proxy target routes through its "set" trap so
             // the boolean trap result (and its invariants) are observed.
             var receiver = args.Count > 3 ? args[3] : args[0];
+            if (obj is ModuleNamespaceObject)
+            {
+                // ECMA-262 10.4.6.9: a module namespace's [[Set]] always returns
+                // false, whatever the key, value or receiver. ToPropertyKey still
+                // runs first (Reflect.set step 2).
+                if (keyArg.Tag != JsValueTag.Symbol)
+                {
+                    ToPropertyKey(keyArg);
+                }
+
+                return JsValue.FromBoolean(false);
+            }
             if (keyArg.Tag == JsValueTag.Symbol)
             {
                 return JsValue.FromBoolean(obj is ProxyObject reflectSetSymbolProxy
