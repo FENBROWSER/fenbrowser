@@ -51,6 +51,15 @@ internal sealed class CacheIRSite
         if (_p2 is { } p2 && p2.TryHit(receiver, shape, key, out result)) return true;
         if (_p3 is { } p3 && p3.TryHit(receiver, shape, key, out result)) return true;
 
+        // A megamorphic site keeps no programs, but most of what it sees is still
+        // an own data property the receiver's shape can locate directly: one
+        // table lookup instead of the general [[Get]]. An accessor, an inherited
+        // name or anything the shape does not describe still misses.
+        if (IsMegamorphic && shape.TryGetSlot(key, out var ownSlot) && receiver.TryReadDataSlot(ownSlot, out result))
+        {
+            return true;
+        }
+
         result = JsValue.Undefined;
         return false;
     }
@@ -85,6 +94,16 @@ internal sealed class CacheIRSite
         if (_p1 is { } p1 && p1.TryHitStore(receiver, shape, key, out slot)) return true;
         if (_p2 is { } p2 && p2.TryHitStore(receiver, shape, key, out slot)) return true;
         if (_p3 is { } p3 && p3.TryHitStore(receiver, shape, key, out slot)) return true;
+
+        // The store counterpart of the megamorphic load path: an existing,
+        // writable own data property, never an array's length.
+        if (IsMegamorphic &&
+            shape.TryGetSlot(key, out slot) &&
+            receiver.IsWritableDataSlot(slot) &&
+            !(receiver is ArrayObject && string.Equals(key, "length", StringComparison.Ordinal)))
+        {
+            return true;
+        }
 
         slot = -1;
         return false;
