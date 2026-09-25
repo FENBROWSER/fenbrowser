@@ -108,6 +108,7 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
         }
 
         LexicalVersion++;
+        _declarativeRecord.NumberNextSlot(this, name);
         return _declarativeRecord.CreateMutableBinding(name, deletable);
     }
 
@@ -122,6 +123,7 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
         }
 
         LexicalVersion++;
+        _declarativeRecord.NumberNextSlot(this, name);
         return _declarativeRecord.CreateImmutableBinding(name, strict);
     }
 
@@ -365,6 +367,13 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
     }
 
     public DeclarativeEnvironmentRecord DeclarativeRecordForTest => _declarativeRecord;
+
+    /// <summary>
+    /// The lexical half: top-level let, const and class. Its bindings are
+    /// numbered in declaration order (owned by this record), so a free-variable
+    /// site can read one by slot.
+    /// </summary>
+    internal DeclarativeEnvironmentRecord LexicalRecord => _declarativeRecord;
     public ObjectEnvironmentRecord ObjectRecordForTest => _objectRecord;
     public IReadOnlyCollection<string> VarNamesSnapshotForTest => _varNames;
 

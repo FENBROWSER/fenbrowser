@@ -30,7 +30,7 @@ public sealed partial class BytecodeInterpreter
 
         if (site.SlotOwner is { } owner)
         {
-            if (env is DeclarativeEnvironmentRecord declarative &&
+            if (SlotRecordAt(env) is { } declarative &&
                 declarative.TryReadOwnSlot(owner, site.TargetSlot, out value))
             {
                 return true;
@@ -64,7 +64,7 @@ public sealed partial class BytecodeInterpreter
 
         if (site.SlotOwner is { } owner)
         {
-            return env is DeclarativeEnvironmentRecord declarative &&
+            return SlotRecordAt(env) is { } declarative &&
                    declarative.TryWriteOwnSlot(owner, site.TargetSlot, value);
         }
 
@@ -79,15 +79,20 @@ public sealed partial class BytecodeInterpreter
     /// <summary>
     /// A site for a read that found <paramref name="name"/> in <paramref name="env"/>,
     /// <paramref name="hops"/> links out, or null when the binding is not one of
-    /// the two cacheable shapes: a record with slot numbering, or a property of
-    /// the global object (a top-level let or const lives on the global record's
-    /// lexical half, which the property cache cannot see).
+    /// the cacheable shapes: a record with slot numbering - which includes the
+    /// global record's lexical half, where a top-level let, const or class
+    /// lives - or a property of the global object.
     /// </summary>
     internal FreeSlotSite? CreateReadSite(BytecodeFunction function, int icOffset, int hops, EnvironmentRecord env, string name)
     {
         if (env is GlobalEnvironmentRecord global)
         {
-            if (global.HasLexicalDeclaration(name) || global.GlobalObjectHandle is not { } handle)
+            if (global.HasLexicalDeclaration(name))
+            {
+                return SlotSiteFor(hops, global.LexicalRecord, name);
+            }
+
+            if (global.GlobalObjectHandle is not { } handle)
             {
                 return null;
             }
@@ -104,7 +109,12 @@ public sealed partial class BytecodeInterpreter
     {
         if (env is GlobalEnvironmentRecord global)
         {
-            if (global.HasLexicalDeclaration(name) || global.GlobalObjectHandle is not { } handle)
+            if (global.HasLexicalDeclaration(name))
+            {
+                return SlotSiteFor(hops, global.LexicalRecord, name);
+            }
+
+            if (global.GlobalObjectHandle is not { } handle)
             {
                 return null;
             }
@@ -135,7 +145,7 @@ public sealed partial class BytecodeInterpreter
         }
 
         var found = site.SlotOwner is { } owner
-            ? env is DeclarativeEnvironmentRecord declarative && declarative.TryReadOwnSlot(owner, site.TargetSlot, out _)
+            ? SlotRecordAt(env) is { } declarative && declarative.TryReadOwnSlot(owner, site.TargetSlot, out _)
             : env is GlobalEnvironmentRecord global && global.LexicalVersion == site.LexicalVersion && global.HasBinding(name);
         if (!found)
         {
@@ -164,7 +174,7 @@ public sealed partial class BytecodeInterpreter
         }
 
         var written = site.SlotOwner is { } owner
-            ? env is DeclarativeEnvironmentRecord declarative && declarative.TryWriteOwnSlot(owner, site.TargetSlot, value)
+            ? SlotRecordAt(env) is { } declarative && declarative.TryWriteOwnSlot(owner, site.TargetSlot, value)
             : env is GlobalEnvironmentRecord global &&
               global.LexicalVersion == site.LexicalVersion &&
               global.GlobalObjectHandle is { } globalHandle &&
@@ -192,6 +202,11 @@ public sealed partial class BytecodeInterpreter
             PopulateStoreIC(function, icOffset, JsValue.FromObject(globalHandle), name);
         }
     }
+
+    // The record a slot site reads: a declarative record, or the global
+    // record's lexical half, whose numbering belongs to the global record.
+    private static DeclarativeEnvironmentRecord? SlotRecordAt(EnvironmentRecord? env) =>
+        env as DeclarativeEnvironmentRecord ?? (env as GlobalEnvironmentRecord)?.LexicalRecord;
 
     private static FreeSlotSite? SlotSiteFor(int hops, EnvironmentRecord env, string name) =>
         env is DeclarativeEnvironmentRecord declarative &&

@@ -187,6 +187,47 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     /// </summary>
     internal bool TryGetSlotIndex(string name, out int slot) => TryFindSlot(name, out slot);
 
+    // The numbering NumberNextSlot grows, when this record has one.
+    private Dictionary<string, int>? _appendedSlotMap;
+
+    /// <summary>
+    /// Gives <paramref name="name"/> the next slot of a numbering that grows one
+    /// declaration at a time, owned by <paramref name="owner"/>. The global
+    /// record's lexical half uses it: its names arrive script by script rather
+    /// than from one function's compile, and a slot is what lets a cache site
+    /// reach a top-level let, const or class by index. Indices never move, so
+    /// a site recorded before the arrays grow still finds its binding. Does
+    /// nothing when a function's numbering owns this record, or when the name
+    /// already has a binding.
+    /// </summary>
+    internal void NumberNextSlot(object owner, string name)
+    {
+        if (_slotOwner is null)
+        {
+            _appendedSlotMap = new Dictionary<string, int>(StringComparer.Ordinal);
+            _slotOwner = owner;
+            _slotMap = _appendedSlotMap;
+            _slotBindings = new Binding[8];
+            _slotPresent = new bool[8];
+        }
+
+        if (!ReferenceEquals(_slotOwner, owner) || _appendedSlotMap is null ||
+            !ReferenceEquals(_slotMap, _appendedSlotMap) ||
+            _appendedSlotMap.ContainsKey(name) || _bindings?.ContainsKey(name) == true)
+        {
+            return;
+        }
+
+        var index = _appendedSlotMap.Count;
+        if (index == _slotBindings!.Length)
+        {
+            Array.Resize(ref _slotBindings, index * 2);
+            Array.Resize(ref _slotPresent, index * 2);
+        }
+
+        _appendedSlotMap[name] = index;
+    }
+
     private bool TryFindSlot(string name, out int slot)
     {
         if (_slotMap is not null && _slotMap.TryGetValue(name, out slot) &&
