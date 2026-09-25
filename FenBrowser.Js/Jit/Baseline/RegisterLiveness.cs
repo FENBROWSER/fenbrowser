@@ -324,6 +324,22 @@ internal sealed class RegisterLiveness
                 Define(defs, ip, instruction.A);
                 return;
 
+            // The callee and arguments are read out of the frame when the call
+            // is recorded; A is not written, since the frame is replaced.
+            case OpCode.TailCall0:
+                Use(uses, ip, instruction.B);
+                return;
+
+            case OpCode.TailCall1:
+                Use(uses, ip, instruction.B);
+                Use(uses, ip, instruction.C);
+                return;
+
+            case OpCode.TailCallN:
+                Use(uses, ip, instruction.B);
+                UseRange(uses, ip, instruction.C, instruction.D);
+                return;
+
             default:
                 // Everything not modelled above -- element writes, deletes,
                 // prototype assignment, the super and accessor forms. Their

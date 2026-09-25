@@ -1784,6 +1784,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
     }
 
+    /// <summary>
+    /// TailCall0/1/N from compiled code: the same request the dispatch loop
+    /// records before it returns, which <see cref="ExecuteInternal"/> then
+    /// continues with <see cref="RunTailCallChain"/>. A tail call is a
+    /// safepoint, so the frame's registers are current here.
+    /// </summary>
+    internal void RequestTailCallForJit(InterpreterFrame frame, int calleeReg, int argStart, int argCount)
+    {
+        var registers = frame.Registers;
+        var args = argCount == 0 ? Array.Empty<JsValue>() : new JsValue[argCount];
+        for (var i = 0; i < argCount; i++)
+        {
+            args[i] = registers[argStart + i];
+        }
+
+        _tailCallRequested = true;
+        _tailCallee = registers[calleeReg];
+        _tailArgs = args;
+        _tailThis = JsValue.Undefined;
+    }
+
     [MayExecuteJs]
     /// <summary>
     /// Continues a proper tail call, and any tail call that one makes in turn.

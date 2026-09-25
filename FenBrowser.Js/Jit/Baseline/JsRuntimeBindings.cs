@@ -183,6 +183,8 @@ internal static class JsRuntimeBindings
         .GetMethod(nameof(BytecodeInterpreter.ForInNextForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     internal static readonly MethodInfo MiHasHandler = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.HasHandlerForJit), BindingFlags.Static | BindingFlags.NonPublic)!;
+    internal static readonly MethodInfo MiRequestTailCall = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.RequestTailCallForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     internal static readonly MethodInfo MiDefineLiteralProperty = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.DefineLiteralPropertyForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     internal static readonly MethodInfo MiDefinePrivateField = typeof(BytecodeInterpreter)

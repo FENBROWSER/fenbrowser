@@ -8,7 +8,7 @@ using Xunit;
 namespace FenBrowser.Js.Tests;
 
 // The baseline tier used to decline a whole body for an object literal's
-// property (SetPropByName D=1). Each case here compiles
+// property (SetPropByName D=1) or a strict tail call. Each case here compiles
 // the function up front and makes calls prefer the compiled body, so the
 // result is what compiled code produced.
 public sealed class BaselineLiteralAndTailCallTests
@@ -48,6 +48,48 @@ public sealed class BaselineLiteralAndTailCallTests
             var r = lit(10);
             delete Object.prototype.total;
             !hit && r.hasOwnProperty('total') && r.total === 45 && r.n === 10;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ATailRecursiveFunctionDoesNotGrowTheStack()
+    {
+        // Far past the 10,000-frame limit: only a proper tail call finishes.
+        var result = RunCompiled(@"
+            function down(k, acc) {
+                'use strict';
+                var t = 0;
+                for (var i = 0; i < 2; i++) t = (t + i) | 0;
+                if (k === 0) return acc + t;
+                return down(k - 1, acc + 1);
+            }
+            down(50000, 0);");
+        Assert.Equal(50001.0, result.AsNumber());
+    }
+
+    [Fact]
+    public void TailCallsWithNoneOrOneArgumentReachTheirTarget()
+    {
+        var result = RunCompiled(@"
+            'use strict';
+            var seen = 0;
+            function zero() { var t = 0; for (var i = 0; i < 3; i++) t += i; seen = t; return 7; }
+            function one(x) { var t = 0; for (var i = 0; i < 3; i++) t += i; return zero(); }
+            function start(n) { var t = 0; for (var i = 0; i < 3; i++) t += i; return one(n + t); }
+            start(1) === 7 && seen === 3;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ATailCallToANativeOrBoundFunctionStillCompletes()
+    {
+        var result = RunCompiled(@"
+            'use strict';
+            function viaNative(a, b) { var t = 0; for (var i = 0; i < 3; i++) t += i; return Math.max(a, b, t); }
+            function target(x) { return x * 2; }
+            var bound = target.bind(null, 21);
+            function viaBound() { var t = 0; for (var i = 0; i < 3; i++) t += i; return bound(); }
+            viaNative(1, 9) === 9 && viaBound() === 42;");
         Assert.True(result.AsBoolean());
     }
 }

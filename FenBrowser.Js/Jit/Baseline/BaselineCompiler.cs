@@ -627,6 +627,17 @@ internal static class BaselineCompiler
                     il.Branch(OpCodes.Leave, _exit);
                     return true;
 
+                // A strict `return f(...)`. Operands as for Call0/1/N; the frame
+                // is replaced rather than a result stored.
+                case OpCode.TailCall0:
+                    return EmitTailCall(ins.B, 0, 0);
+
+                case OpCode.TailCall1:
+                    return EmitTailCall(ins.B, ins.C, 1);
+
+                case OpCode.TailCallN:
+                    return EmitTailCall(ins.B, ins.C, ins.D);
+
                 case OpCode.Jump:
                     if (!Target(ins.A)) return false;
                     il.Branch(OpCodes.Br, _labels[ins.A]);
@@ -1018,6 +1029,22 @@ internal static class BaselineCompiler
                 default:
                     return false;
             }
+        }
+
+        // The dispatch loop records the call and returns, and ExecuteInternal
+        // makes it once this frame is gone, which is what keeps a tail-recursive
+        // function from growing the stack. Compiled code does the same.
+        private bool EmitTailCall(int callee, int argStart, int argCount)
+        {
+            var registerCount = (uint)function.RegisterCount;
+            if ((uint)callee >= registerCount || argCount < 0) return false;
+            if (argCount > 0 && ((uint)argStart >= registerCount || (uint)(argStart + argCount - 1) >= registerCount)) return false;
+
+            EmitVoidCall(MiRequestTailCall, callee, argStart, argCount);
+            il.Get(PiJsValueUndefined);
+            il.Store(_returnValue);
+            il.Branch(OpCodes.Leave, _exit);
+            return true;
         }
 
         private bool EmitVoidCall(MethodInfo target, params ReadOnlySpan<int> operands)
