@@ -874,6 +874,14 @@ public sealed class Test262Runner
                             "IsHTMLDDA", (_, _) => JsValue.Null);
                         perTestInterpreter.MarkAsHtmlDda(htmlDda);
                         perTestInterpreter.RegisterGlobalValue("__fenHtmlDda", htmlDda);
+                        // import() loads a test's _FIXTURE.js modules from disk: a
+                        // specifier resolves against the importing module, or the
+                        // test file when a script imports it.
+                        var testFile = file;
+                        _ = new FenBrowser.Js.Modules.ModuleEvaluator(
+                            perTestInterpreter,
+                            ReadFixtureModule,
+                            (specifier, referrer) => ResolveFixtureModule(specifier, referrer, testFile));
                         var buildString = perTestInterpreter.AllocateNativeFunction(
                             "__fenBuildString",
                             (_, buildArgs) => BuildStringForRegExpHarness((IBuiltinContext)perTestInterpreter, buildArgs),
@@ -1373,6 +1381,19 @@ public sealed class Test262Runner
         captured?.Throw();
         return true;
     }
+
+    private static string? ResolveFixtureModule(string specifier, string? referrer, string testFile)
+    {
+        var baseUri = referrer is not null && Uri.TryCreate(referrer, UriKind.Absolute, out var referrerUri) && referrerUri.IsFile
+            ? referrerUri
+            : new Uri(Path.GetFullPath(testFile));
+        return Uri.TryCreate(baseUri, specifier, out var resolved) && resolved.IsFile ? resolved.AbsoluteUri : null;
+    }
+
+    private static string? ReadFixtureModule(string key)
+        => Uri.TryCreate(key, UriKind.Absolute, out var uri) && uri.IsFile && File.Exists(uri.LocalPath)
+            ? File.ReadAllText(uri.LocalPath)
+            : null;
 
     private static JsValue BuildStringForRegExpHarness(IBuiltinContext context, IReadOnlyList<JsValue> args)
     {
