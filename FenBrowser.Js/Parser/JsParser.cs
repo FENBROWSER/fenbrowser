@@ -7704,13 +7704,20 @@ public sealed class JsParser
     // `++`/`--`, or a compound assignment. CallExpression, optional
     // chaining, arrow functions, and literal values are NOT valid
     // assignment targets — the spec says these are early SyntaxErrors.
+    // ECMA-262 13.13: a CoalesceExpression's operands cannot be an unparenthesized
+    // LogicalAND/LogicalOR expression, nor the reverse. Only the immediate operand
+    // needs looking at. `??` binds more loosely than every operator except the
+    // logical ones, so an unparenthesized `??` can only sit directly beneath a
+    // logical operator, never under `+` or `*`; and a chain is checked link by
+    // link as it is built, so anything deeper was checked when it joined. These
+    // used to walk the whole operand, which re-walked a long `a || b || ...`
+    // chain at every link (quadratic) and recursed once per link with no stack
+    // guard - enough terms crashed the process.
     private static bool ContainsLogicalAndOr(ExpressionNode? node) =>
-        node is BinaryExpressionNode bin &&
-        (bin.Operator is "&&" or "||" || ContainsLogicalAndOr(bin.Left) || ContainsLogicalAndOr(bin.Right));
+        node is BinaryExpressionNode { Operator: "&&" or "||" };
 
     private static bool ContainsCoalesce(ExpressionNode? node) =>
-        node is BinaryExpressionNode bin &&
-        (bin.Operator == "??" || ContainsCoalesce(bin.Left) || ContainsCoalesce(bin.Right));
+        node is BinaryExpressionNode { Operator: "??" };
 
     private bool IsValidAssignmentTarget(ExpressionNode node)
     {
