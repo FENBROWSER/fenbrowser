@@ -123,6 +123,16 @@ internal sealed class Interp2
     internal int Depth => _depth;
 
     /// <summary>
+    /// The function and instruction pointer of the frame at
+    /// <paramref name="index"/> (0 is the outermost), for a stack trace.
+    /// </summary>
+    internal (BytecodeFunction Function, int Ip) FrameForStackTrace(int index)
+    {
+        ref var frame = ref _frames[index];
+        return (frame.Layout.Function, frame.Ip);
+    }
+
+    /// <summary>
     /// The innermost window's function, its instruction pointer (the index
     /// just past the instruction being executed, as the old loop counts it)
     /// and its register span, for diagnostics that name the callee of a
@@ -1506,6 +1516,9 @@ internal sealed class Interp2
                         OpCode.Construct1 => 1,
                         _ => ins.D,
                     };
+                    // A constructor can capture the stack (`new Error()`), which
+                    // reads this frame's position from here.
+                    _frames[_depth - 1].Ip = ip;
                     var constructed = _host.Interp2Construct(
                         stack[frameBase + ins.B],
                         CallArgs.FromRegisters(stack, frameBase + ins.C, argumentCount));

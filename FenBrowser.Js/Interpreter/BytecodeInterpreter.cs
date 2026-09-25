@@ -14449,80 +14449,69 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
     }
 
+    // V8's default Error.stackTraceLimit.
+    private const int StackTraceFrameLimit = 10;
+
+    /// <summary>
+    /// The `stack` of an error created now: the header, then one line per
+    /// active JS frame, innermost first, in the format V8 uses
+    /// ("    at name (file:line:column)"). The frames of the two dispatch loops
+    /// are interleaved into call order: an old-loop frame entered while the
+    /// new loop held <c>d</c> frames sits above exactly those <c>d</c>.
+    /// </summary>
     private string FormatCallStack(string errorName, string message)
     {
         var header = string.IsNullOrEmpty(message) ? errorName : errorName + ": " + message;
-        if (_activeFrames.Count == 0)
+        var interp2Depth = _interp2?.Depth ?? 0;
+        if (_activeFrames.Count == 0 && interp2Depth == 0)
         {
             return header;
         }
 
-        var frames = _activeFrames
-            .Take(8)
-            .Select(frame =>
+        var builder = new System.Text.StringBuilder(header);
+        using var classic = _activeFrames.GetEnumerator();
+        var hasClassic = classic.MoveNext();
+        for (var written = 0; written < StackTraceFrameLimit && (hasClassic || interp2Depth > 0); written++)
+        {
+            BytecodeFunction function;
+            int ip;
+            if (hasClassic && classic.Current.Interp2DepthAtEntry >= interp2Depth)
             {
-                var functionName = string.IsNullOrWhiteSpace(frame.Function.Name)
-                    ? "<anonymous>"
-                    : frame.Function.Name;
-                var ip = Math.Clamp(frame.InstructionPointer - 1, 0, Math.Max(0, frame.Function.Instructions.Count - 1));
-                var opcode = frame.Function.Instructions.Count == 0
-                    ? "none"
-                    : frame.Function.Instructions[ip].OpCode.ToString();
-                var parameters = frame.Function.ParameterNames.Count == 0
-                    ? string.Empty
-                    : ", params=" + string.Join(",", frame.Function.ParameterNames);
-                // A minified bundle is nearly all anonymous functions sharing a
-                // small pool of parameter names, so name+params names thousands
-                // of distinct functions identically. The source text says which
-                // one, and is the only thing that makes a stack from a bundle
-                // readable at all.
-                var source = SummarizeFrameSource(frame.Function.SourceText);
-                var path = string.IsNullOrEmpty(frame.Function.SourcePath)
-                    ? string.Empty
-                    : " (" + frame.Function.SourcePath + ")";
-                return $"    at {functionName} [ip={ip}, op={opcode}{parameters}{source}]{path}";
-            });
-        return header + "\n" + string.Join("\n", frames);
+                function = classic.Current.Function;
+                ip = classic.Current.InstructionPointer;
+                hasClassic = classic.MoveNext();
+            }
+            else
+            {
+                (function, ip) = _interp2!.FrameForStackTrace(--interp2Depth);
+            }
+
+            // Both loops leave the pointer just past the instruction running.
+            AppendStackFrame(builder.Append('\n'), function, ip - 1);
+        }
+
+        return builder.ToString();
     }
 
-    /// <summary>
-    /// One line of a function's own source for a stack frame: whitespace
-    /// collapsed and clipped, so a minified frame is identifiable without the
-    /// trace turning into the bundle.
-    /// </summary>
-    private static string SummarizeFrameSource(string? sourceText)
+    private static void AppendStackFrame(System.Text.StringBuilder builder, BytecodeFunction function, int ip)
     {
-        if (string.IsNullOrWhiteSpace(sourceText))
+        builder.Append("    at ");
+        var hasName = !string.IsNullOrWhiteSpace(function.Name);
+        if (hasName)
         {
-            return string.Empty;
+            builder.Append(function.Name).Append(" (");
         }
 
-        const int MaxSourceChars = 120;
-        var builder = new System.Text.StringBuilder(MaxSourceChars + 4);
-        var lastWasSpace = false;
-        foreach (var ch in sourceText)
+        builder.Append(string.IsNullOrEmpty(function.SourcePath) ? "<anonymous>" : function.SourcePath);
+        if (function.SourcePositions is { } positions && positions.TryGetPosition(Math.Max(0, ip), out var line, out var column))
         {
-            if (builder.Length >= MaxSourceChars)
-            {
-                builder.Append('…');
-                break;
-            }
-
-            if (char.IsWhiteSpace(ch))
-            {
-                if (!lastWasSpace && builder.Length > 0)
-                {
-                    builder.Append(' ');
-                    lastWasSpace = true;
-                }
-                continue;
-            }
-
-            builder.Append(ch);
-            lastWasSpace = false;
+            builder.Append(':').Append(line).Append(':').Append(column);
         }
 
-        return builder.Length == 0 ? string.Empty : ", src=" + builder;
+        if (hasName)
+        {
+            builder.Append(')');
+        }
     }
 
     private JsValue CreateFunctionObject(

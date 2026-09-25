@@ -83,6 +83,15 @@ public sealed class BytecodeCompiler
     private int _fieldInitializerEnd = -1;
 
     private readonly List<Instruction> _instructions = new();
+
+    // Runs of instructions sharing one source position (see SourcePositionTable).
+    // Each instruction takes the position of the innermost expression or
+    // statement being compiled when it is emitted, so a call instruction emitted
+    // after its arguments is attributed to the call, not to its last argument.
+    private readonly List<int> _positionIps = new();
+    private readonly List<int> _positionLines = new();
+    private readonly List<int> _positionColumns = new();
+    private SourceSpan _currentPosition;
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
     private readonly HashSet<string> _varDeclarationNames = new(StringComparer.Ordinal);
@@ -258,6 +267,10 @@ public sealed class BytecodeCompiler
         bool isArrow = false)
     {
         _instructions.Clear();
+        _positionIps.Clear();
+        _positionLines.Clear();
+        _positionColumns.Clear();
+        _currentPosition = default;
         _constants.Clear();
         _variables.Clear();
         _varDeclarationNames.Clear();
@@ -391,6 +404,10 @@ public sealed class BytecodeCompiler
             IsDerivedConstructor = _isDerivedConstructor,
             IsClassConstructor = _isClassConstructor,
             Instructions = _instructions.ToArray(),
+            SourcePath = _sourcePath,
+            SourcePositions = _positionIps.Count == 0
+                ? null
+                : new SourcePositionTable(_positionIps.ToArray(), _positionLines.ToArray(), _positionColumns.ToArray()),
             Constants = _constants.ToArray(),
             VariableSlots = new Dictionary<string, int>(_variables),
             VarDeclarationNames = (_prologueVarNames ?? _varDeclarationNames).ToArray(),
@@ -481,14 +498,24 @@ public sealed class BytecodeCompiler
         // catch parameter, the completion register) was allocated before the
         // mark and sits below it, so it survives untouched.
         var statementMark = _nextRegister;
-        if (_fieldInitializerStatements is not null && _fieldInitializerStatements.Contains(stmt))
+        var outerPosition = _currentPosition;
+        MarkPosition(stmt.Span);
+        try
         {
-            CompileFieldInitializerStatement(stmt);
+            if (_fieldInitializerStatements is not null && _fieldInitializerStatements.Contains(stmt))
+            {
+                CompileFieldInitializerStatement(stmt);
+            }
+            else
+            {
+                CompileStatementCore(stmt);
+            }
         }
-        else
+        finally
         {
-            CompileStatementCore(stmt);
+            MarkPosition(outerPosition);
         }
+
         ReleaseRegistersTo(statementMark);
     }
 
@@ -3367,6 +3394,8 @@ public sealed class BytecodeCompiler
                 "Expression nesting too deep to compile (insufficient stack).");
         }
 
+        var outerPosition = _currentPosition;
+        MarkPosition(expr.Span);
         try
         {
             return CompileExpressionCore(expr);
@@ -3374,7 +3403,45 @@ public sealed class BytecodeCompiler
         finally
         {
             _compileExpressionDepth--;
+            MarkPosition(outerPosition);
         }
+    }
+
+    // Starts a new position run at the next instruction, unless the position is
+    // unknown or unchanged. A run that no instruction was emitted into is
+    // overwritten rather than kept.
+    private void MarkPosition(SourceSpan span)
+    {
+        if (span.Line <= 0)
+        {
+            return;
+        }
+
+        _currentPosition = span;
+        var ip = _instructions.Count;
+        var last = _positionIps.Count - 1;
+        if (last >= 0 && _positionIps[last] == ip)
+        {
+            _positionLines[last] = span.Line;
+            _positionColumns[last] = span.Column;
+            if (last > 0 && _positionLines[last - 1] == span.Line && _positionColumns[last - 1] == span.Column)
+            {
+                _positionIps.RemoveAt(last);
+                _positionLines.RemoveAt(last);
+                _positionColumns.RemoveAt(last);
+            }
+
+            return;
+        }
+
+        if (last >= 0 && _positionLines[last] == span.Line && _positionColumns[last] == span.Column)
+        {
+            return;
+        }
+
+        _positionIps.Add(ip);
+        _positionLines.Add(span.Line);
+        _positionColumns.Add(span.Column);
     }
 
     private bool TryCompileLeftAssociativePlusChain(BinaryExpressionNode root, out int resultReg)

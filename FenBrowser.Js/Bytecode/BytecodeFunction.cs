@@ -23,6 +23,12 @@ public sealed class BytecodeFunction
     // Null when the host gave the compiler no path.
     public string? SourcePath { get; internal set; }
 
+    /// <summary>
+    /// Line and column of the source behind each instruction, for the frames
+    /// of a stack trace. Null for code compiled without positions.
+    /// </summary>
+    public SourcePositionTable? SourcePositions { get; init; }
+
     public required IReadOnlyList<Instruction> Instructions { get; init; }
 
     // The dispatch loop reads an instruction for every step it takes, and
@@ -400,6 +406,7 @@ public sealed class BytecodeFunction
             Name = Name,
             SourceText = SourceText,
             SourcePath = SourcePath,
+            SourcePositions = SourcePositions,
             Instructions = Instructions,
             Constants = Constants,
             VariableSlots = VariableSlots,
