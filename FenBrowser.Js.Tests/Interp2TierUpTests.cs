@@ -24,6 +24,8 @@ public sealed class Interp2TierUpTests
     [InlineData("function f(a) { var t = 0; for (var i = 0; i < a.length; i++) t += a[i]; return t; }")]
     [InlineData("function f(o, n) { for (var i = 0; i < n; i++) o.x = i; return o.x; }")]
     [InlineData("function f(n) { var s = ''; while (n-- > 0) s = 'a' + n; return s; }")]
+    [InlineData("function f(n) { var t = 0; for (var i = 0; i < n; i++) t += outer; return t; }")]
+    [InlineData("function f(n) { for (var i = 0; i < n; i++) outer = i; }")]
     public void LocalOnlyLoopsSuitCompiledCode(string source)
     {
         Assert.True(Nested(source).LoopsSuitCompiledCode);
@@ -36,7 +38,6 @@ public sealed class Interp2TierUpTests
     [InlineData("function f(n) { var r; for (var i = 0; i < n; i++) r = { x: i }; return r; }")]
     [InlineData("function f(n) { var r; for (var i = 0; i < n; i++) r = [i]; return r; }")]
     [InlineData("function f(n) { var r; for (var i = 0; i < n; i++) r = function () {}; return r; }")]
-    [InlineData("function f(n) { var t = 0; for (var i = 0; i < n; i++) t += outer; return t; }")]
     [InlineData("function f(n) { var t = 0; for (let i = 0; i < n; i++) t += i; return t; }")]
     [InlineData("function f(n) { var t = 0; for (var i = 0; i < n; i++) { const k = i; t += k; } return t; }")]
     public void LoopsCompiledCodeIsSlowerAtDoNotSuitIt(string source)
@@ -90,6 +91,21 @@ public sealed class Interp2TierUpTests
             var ok = true;
             for (var r = 0; r < 40; r++) { if (sum(20000) !== 599970000) ok = false; }
             ok;"));
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void OuterVariableWritesStayCorrectOnceCallsMoveToCompiledCode()
+    {
+        var result = new BytecodeInterpreter().Execute(Compile(@"
+            var total = 0;
+            function make() {
+                var c = 0;
+                return function (n) { for (var i = 0; i < n; i++) { c = c + 1; total = total + 2; } return c; };
+            }
+            var add = make(), last = 0;
+            for (var r = 0; r < 40; r++) last = add(5000);
+            last === 200000 && total === 400000;"));
         Assert.True(result.AsBoolean());
     }
 }

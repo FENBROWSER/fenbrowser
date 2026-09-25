@@ -345,10 +345,11 @@ public sealed class BytecodeFunction
     /// locals, arithmetic, property and element access on values it holds.
     /// Measured per iteration against Interp2, compiled code is ~2x faster on
     /// those, and slower on the rest - a call goes out through the old loop's
-    /// CallFunction, a free variable is looked up by name through the scope
-    /// chain (171ns interpreted, 262ns compiled), an object literal costs 253ns
-    /// against 183ns, and a block scope - a `for (let ...)` loop or a const in
-    /// the body - makes each iteration 1.6-2x slower compiled.
+    /// CallFunction, an object literal costs 253ns against 183ns, and a block
+    /// scope - a `for (let ...)` loop or a const in the body - makes each
+    /// iteration 1.6-2x slower compiled. Reading or writing an outer variable
+    /// was on that list until compiled code got the same site cache as Interp2
+    /// (a closure read is now 68ns compiled against 130ns).
     /// </summary>
     internal bool LoopsSuitCompiledCode
     {
@@ -390,8 +391,12 @@ public sealed class BytecodeFunction
                     return false;
                 }
 
-                if (ins.OpCode is OpCode.LoadVar or OpCode.StoreVar or OpCode.InitVar or
-                    OpCode.StoreVarTop or OpCode.PreResolveVar or OpCode.StoreResolvedVar)
+                // LoadVar, StoreVar and InitVar of an outer name go through the
+                // free-variable site cache in compiled code as well, so only
+                // the forms that still walk the chain by name - a resolved
+                // reference (`x++` on an outer x) and Annex B's StoreVarTop -
+                // need the name to be this function's own.
+                if (ins.OpCode is OpCode.StoreVarTop or OpCode.PreResolveVar or OpCode.StoreResolvedVar)
                 {
                     locals ??= LocalNames();
                     var name = FenBrowser.Js.Interpreter.SlotNameTable.GetName(this, ins.B);
