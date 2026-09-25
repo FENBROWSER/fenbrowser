@@ -1,5 +1,6 @@
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Interpreter2;
 using FenBrowser.Js.Source;
 using Xunit;
 
@@ -8,8 +9,17 @@ namespace FenBrowser.Js.Tests;
 // The register-window loop gathers the same tier-up evidence as the old loop
 // and hands a call to compiled code only for a body whose loops stay on what
 // compiled code is faster at (BytecodeFunction.LoopsSuitCompiledCode).
-public sealed class Interp2TierUpTests
+// The policy is the register-window loop's, so these run on it even when the
+// environment selects the old loop (FEN_JS_INTERPRETER=v1).
+[Collection(nameof(Interpreter2ParityTests))]
+public sealed class Interp2TierUpTests : IDisposable
 {
+    private readonly bool _previousEngine = Interp2Options.Enabled;
+
+    public Interp2TierUpTests() => Interp2Options.Enabled = true;
+
+    public void Dispose() => Interp2Options.Enabled = _previousEngine;
+
     private static BytecodeFunction Compile(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));
