@@ -147,4 +147,64 @@ public class DynamicImportRuntimeTests
 
         Assert.Equal("./m.js", seenSpecifier);
     }
+
+    // With no hook there is nothing that could load a module; resolving to an
+    // empty namespace would make a missing module look like one with no exports.
+    [Theory]
+    [InlineData("import('./m.js')")]
+    [InlineData("import.defer('./m.js')")]
+    [InlineData("import.source('./m.js')")]
+    public void WithoutAHostLoaderEveryImportFormRejectsWithTypeError(string importExpression)
+    {
+        var interpreter = new BytecodeInterpreter();
+        Execute(interpreter, "var outcome = 'pending'; " + importExpression +
+            ".then(function () { outcome = 'fulfilled'; }, function (e) { outcome = e.constructor.name; });");
+
+        Assert.Equal("TypeError", Execute(interpreter, "outcome;").AsString());
+    }
+
+    [Fact]
+    public void ImportDeferGoesThroughTheHostLoader()
+    {
+        var interpreter = new BytecodeInterpreter();
+        string? seenSpecifier = null;
+        interpreter.DynamicImportResolver = (specifier, _) =>
+        {
+            seenSpecifier = specifier;
+            return JsValue.FromString("namespace");
+        };
+
+        Execute(interpreter, "var got; import.defer('./lazy.js').then(function (ns) { got = ns; });");
+
+        Assert.Equal("./lazy.js", seenSpecifier);
+        Assert.Equal("namespace", Execute(interpreter, "got;").AsString());
+    }
+
+    // ECMA-262 GetModuleSource: a JavaScript module has no source phase object.
+    [Fact]
+    public void ImportSourceOfALoadedJavaScriptModuleRejectsWithSyntaxError()
+    {
+        var interpreter = new BytecodeInterpreter();
+        interpreter.DynamicImportResolver = (_, _) => JsValue.FromString("namespace");
+
+        Execute(interpreter, @"
+            var outcome = 'pending';
+            import.source('./m.js').then(function () { outcome = 'fulfilled'; }, function (e) { outcome = e.constructor.name; });");
+
+        Assert.Equal("SyntaxError", Execute(interpreter, "outcome;").AsString());
+    }
+
+    [Fact]
+    public void ImportSourceOfAModuleThatFailsToLoadRejectsWithTheLoadError()
+    {
+        var interpreter = new BytecodeInterpreter();
+        var capability = PromiseCapability.Empty;
+        interpreter.DynamicImportLoader = (_, _, cap) => capability = cap;
+
+        Execute(interpreter, "var reason = 'none'; import.source('./missing.js').catch(function (e) { reason = e; });");
+        interpreter.InvokeFunction(capability.Reject, new[] { JsValue.FromString("404") }, JsValue.Undefined);
+        interpreter.PumpMicrotasks();
+
+        Assert.Equal("404", Execute(interpreter, "reason;").AsString());
+    }
 }

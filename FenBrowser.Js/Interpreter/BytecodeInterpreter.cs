@@ -2515,10 +2515,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     registers[ins.A] = HandleImportMeta(frame.Environment);
                     break;
                 case OpCode.ImportSource:
-                    registers[ins.A] = HandleImportSource(registers[ins.B], registers[ins.C]);
+                    registers[ins.A] = HandleImportSource(registers[ins.B], registers[ins.C], frame.Environment);
                     break;
                 case OpCode.ImportDefer:
-                    registers[ins.A] = HandleImportDefer(registers[ins.B], registers[ins.C]);
+                    registers[ins.A] = HandleImportDefer(registers[ins.B], registers[ins.C], frame.Environment);
                     break;
                 case OpCode.LoadSuperConstructor:
                     HandleLoadSuperConstructor(frame, ins);
