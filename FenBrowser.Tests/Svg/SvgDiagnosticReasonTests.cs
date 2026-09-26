@@ -6,41 +6,41 @@ namespace FenBrowser.Tests.Svg
     public sealed class SvgDiagnosticReasonTests
     {
         [Fact]
-        public void UnsupportedFeatures_ExposeStableReasonCodes()
+        public void UnsupportedFeatures_ExposeStableReasonCodesAndFailClosed()
         {
             using var result = new FenSvgRenderer().Render(
                 "<svg width='20' height='20'><text textLength='10'>x</text>" +
                 "<animate attributeName='opacity' dur='1s'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains("advanced-text-layout", result.FallbackReasonCodes);
             Assert.Contains("smil-animation", result.FallbackReasonCodes);
         }
 
         [Fact]
-        public void ResourceIsolation_ExposesStableReasonCode()
+        public void ResourceIsolation_ExposesStableReasonCodeAndFailsClosed()
         {
             using var result = new FenSvgRenderer().Render(
                 "<svg width='20' height='20'><style>@import url('https://example.test/a.css');</style>" +
                 "<rect width='20' height='20'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.HadResourceRejection);
             Assert.Contains("external-resource", result.ResourceRejectionReasonCodes);
         }
 
         [Fact]
-        public void HybridFallback_PreservesFirstPartyReasonCodes()
+        public void FallbackRequirement_IsTerminalAndCarriesNoSecondOpinion()
         {
-            var firstParty = new FenSvgRenderer();
-            var legacy = new SvgSkiaRenderer();
-            using var result = new HybridSvgRenderer(firstParty, legacy).Render(
+            using var result = new FenSvgRenderer().Render(
                 "<svg width='20' height='20'><animate attributeName='opacity' dur='1s'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
-            Assert.True(result.UsedLegacyFallback);
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
             Assert.Contains("smil-animation", result.FallbackReasonCodes);
+            Assert.False(string.IsNullOrWhiteSpace(
+                SvgRenderResult.DescribeRejection(result)));
         }
 
         [Fact]
@@ -50,9 +50,10 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(
                 $"<svg width='20' height='20'><rect width='20' height='20' style='mix-blend-mode:{value}'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.All(result.Warnings, warning => Assert.True(warning.Length <= 256));
+            Assert.InRange(result.ErrorMessage.Length, 1, 200);
         }
 
         [Fact]
@@ -71,14 +72,14 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void LookalikePrefixedMetadata_StillRequiresFallback()
+        public void LookalikePrefixedMetadata_StillRequiresFallbackAndFailsClosed()
         {
             using var result = new FenSvgRenderer().Render(
                 "<svg width='10' height='10'>" +
                 "<d:SVGTestCase xmlns:d='https://example.test/not-w3c'/>" +
                 "<rect width='10' height='10' fill='green'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains("unsupported-element", result.FallbackReasonCodes);
         }
@@ -98,6 +99,18 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.Success, result.ErrorMessage);
             Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
             Assert.Equal((byte)255, result.Bitmap.GetPixel(5, 5).Alpha);
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
     }
 }

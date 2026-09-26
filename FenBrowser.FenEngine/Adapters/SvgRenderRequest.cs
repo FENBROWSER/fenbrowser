@@ -4,7 +4,8 @@ namespace FenBrowser.FenEngine.Adapters
 {
     /// <summary>
     /// Immutable inputs for one SVG render. The renderer never performs ambient
-    /// file or network I/O; an explicitly supplied trusted resolver owns access.
+    /// file or network I/O. External references are rejected unless explicitly
+    /// enabled; an explicitly supplied trusted resolver then owns access.
     /// </summary>
     public sealed class SvgRenderRequest
     {

@@ -5,11 +5,11 @@ using SkiaSharp;
 namespace FenBrowser.FenEngine.Adapters
 {
     /// <summary>
-    /// SVG rendering interface implemented by first-party, compatibility, or
-    /// composite backends.
+    /// SVG rendering interface implemented by first-party backends.
     /// 
     /// RULE 3: SVG must be sandboxed. This adapter enforces limits.
-    /// RULE 5: If Svg.Skia disappears, we only replace this implementation.
+    /// RULE 5: SVG rendering is first-party only. The seam admits no
+    /// third-party or compatibility backend.
     /// </summary>
     public interface ISvgRenderer
     {
@@ -37,12 +37,13 @@ namespace FenBrowser.FenEngine.Adapters
     {
         /// <summary>
         /// The rendered picture (null if failed).
-        /// WARNING: May be invalid after SKSvg disposal - use Bitmap property instead.
+        /// WARNING: May be invalid after the renderer's parser state is released -
+        /// use Bitmap property instead.
         /// </summary>
         public SKPicture Picture { get; set; }
         
         /// <summary>
-        /// Pre-rendered bitmap (safe to use after SKSvg disposal).
+        /// Pre-rendered bitmap (safe to use after the renderer's parser state is released).
         /// This is the preferred way to access the rendered SVG.
         /// </summary>
         public SKBitmap Bitmap { get; set; }
@@ -76,27 +77,158 @@ namespace FenBrowser.FenEngine.Adapters
         /// <summary>Stable, bounded categories explaining compatibility routing.</summary>
         public IReadOnlyList<string> FallbackReasonCodes { get; set; } = Array.Empty<string>();
 
-        /// <summary>Stable, bounded categories explaining rejected embedded resources.</summary>
+        /// <summary>Stable, bounded categories explaining rejected resources.</summary>
         public IReadOnlyList<string> ResourceRejectionReasonCodes { get; set; } = Array.Empty<string>();
 
         /// <summary>Backend that produced the returned pixels.</summary>
-        public SvgRendererBackend Backend { get; set; }
+        public SvgRendererBackend Backend { get; internal set; }
 
         /// <summary>
         /// True when the first-party renderer encountered a declared unsupported
-        /// feature whose omission can change visible output.
+        /// feature whose omission can change visible output. The first-party
+        /// engine is the only backend, so this is terminal: no later stage can
+        /// complete the render and the pixels are never admissible.
         /// </summary>
         public bool RequiresFallback { get; set; }
 
         /// <summary>
-        /// True when an embedded resource was omitted because it was unsupported,
-        /// malformed, or exceeded an admission limit. Hybrid routing must not
-        /// bypass that decision through the less observable legacy parser.
+        /// True when a resource was omitted because it was disallowed, unsupported,
+        /// malformed, or exceeded an admission limit. The decision is final and
+        /// no alternative renderer may re-interpret the document to bypass it.
         /// </summary>
         public bool HadResourceRejection { get; set; }
 
-        /// <summary>True when a composite renderer returned legacy-rendered pixels.</summary>
-        public bool UsedLegacyFallback { get; set; }
+        /// <summary>Upper bound for reason codes echoed into a rejection reason.</summary>
+        public const int MaxRejectionDiagnosticCodes = 4;
+
+        /// <summary>Upper bound for characters retained in a rejection reason.</summary>
+        public const int MaxRejectionDiagnosticChars = 200;
+
+        /// <summary>
+        /// Fail-closed admission predicate for decoded SVG pixels, shared by every
+        /// consumer of <see cref="SvgRenderResult"/> (image loader, target-process
+        /// decode entry points, tooling).
+        /// <para>
+        /// Pixels are admissible only when the first-party engine produced them,
+        /// the render succeeded, and they carry no signal that makes them
+        /// non-authoritative. A backend value other than
+        /// <see cref="SvgRendererBackend.FirstParty"/> fails closed before any
+        /// other signal is consulted. Both a resource rejection (flag or reason
+        /// codes) and a fallback requirement reject the result: the first-party
+        /// engine is the only backend, so an unsupported feature can never be
+        /// completed later and its pixels are never admissible.
+        /// </para>
+        /// </summary>
+        public static bool IsAdmissible(SvgRenderResult result)
+        {
+            if (result == null)
+            {
+                return false;
+            }
+
+            if (!SvgRendererBackendPolicy.IsAdmissible(result.Backend))
+            {
+                return false;
+            }
+
+            if (!result.Success)
+            {
+                return false;
+            }
+
+            if (result.HadResourceRejection || HasReasonCodes(result.ResourceRejectionReasonCodes))
+            {
+                return false;
+            }
+
+            return !result.RequiresFallback;
+        }
+
+        /// <summary>
+        /// Bounded, source-free explanation of why <paramref name="result"/> is
+        /// inadmissible. Returns null when the result is admissible. Never
+        /// includes SVG source and is safe to place in IPC metadata and logs.
+        /// </summary>
+        public static string DescribeRejection(SvgRenderResult result)
+        {
+            if (result == null)
+            {
+                return Truncate("SVG render produced no result", MaxRejectionDiagnosticChars);
+            }
+
+            if (!SvgRendererBackendPolicy.IsAdmissible(result.Backend))
+            {
+                return Truncate(
+                    "SVG render backend is not the first-party engine: " +
+                        SvgRendererBackendPolicy.Describe(result.Backend),
+                    MaxRejectionDiagnosticChars);
+            }
+
+            if (result.HadResourceRejection || HasReasonCodes(result.ResourceRejectionReasonCodes))
+            {
+                return Truncate(
+                    "SVG render rejected a resource: " +
+                        JoinCodes(result.ResourceRejectionReasonCodes),
+                    MaxRejectionDiagnosticChars);
+            }
+
+            if (result.RequiresFallback)
+            {
+                var codes = JoinCodes(result.FallbackReasonCodes);
+                return Truncate(
+                    "SVG render requires fallback: " +
+                        (codes.Length == 0 ? "unsupported" : codes),
+                    MaxRejectionDiagnosticChars);
+            }
+
+            if (!result.Success)
+            {
+                return Truncate(
+                    string.IsNullOrWhiteSpace(result.ErrorMessage)
+                        ? "SVG render failed"
+                        : result.ErrorMessage,
+                    MaxRejectionDiagnosticChars);
+            }
+
+            return null;
+        }
+
+        private static bool HasReasonCodes(IReadOnlyList<string> codes) =>
+            codes != null && codes.Count > 0;
+
+        private static string JoinCodes(IReadOnlyList<string> codes)
+        {
+            if (codes == null || codes.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            int taken = Math.Min(codes.Count, MaxRejectionDiagnosticCodes);
+            var parts = new string[taken];
+            for (int i = 0; i < taken; i++)
+            {
+                var code = codes[i];
+                parts[i] = string.IsNullOrWhiteSpace(code) ? "unspecified" : code.Trim();
+            }
+
+            string joined = string.Join(", ", parts);
+            if (codes.Count > taken)
+            {
+                joined += $", +{codes.Count - taken} more";
+            }
+
+            return joined;
+        }
+
+        private static string Truncate(string value, int maxChars)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length <= maxChars)
+            {
+                return value ?? string.Empty;
+            }
+
+            return value.Substring(0, maxChars) + "...";
+        }
 
         /// <summary>
         /// Transfers bitmap ownership to the caller. The detached bitmap will not
@@ -159,7 +291,8 @@ namespace FenBrowser.FenEngine.Adapters
         public int MaxElementCount { get; set; }
 
         /// <summary>
-        /// Maximum SVG source length in UTF-16 code units admitted to Svg.Skia.
+        /// Maximum SVG source length in UTF-16 code units admitted to the
+        /// first-party renderer.
         /// </summary>
         public int MaxSourceChars { get; set; }
 
@@ -198,8 +331,9 @@ namespace FenBrowser.FenEngine.Adapters
         public int MaxReferenceDepth { get; set; }
 
         /// <summary>
-        /// Whether to allow external references (xlink:href to external URLs).
-        /// Default: false (DISABLED for security)
+        /// Whether explicitly supplied external references may be resolved.
+        /// False rejects them; true still requires a base URI, a trusted resolver,
+        /// and a same-origin target. Default: false (disabled for security).
         /// </summary>
         public bool AllowExternalReferences { get; set; }
         
