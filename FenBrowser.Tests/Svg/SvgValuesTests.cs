@@ -150,12 +150,15 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void LocalReference_TrimsSurroundingWhitespaceOnly()
+        public void LocalReference_TrimsWhitespaceAroundTheHashAndTheFragment()
         {
             Assert.True(SvgValues.TryParseLocalReference("  #green \t", out var fragment));
             Assert.Equal("green", fragment);
             Assert.True(SvgValues.TryParseLocalReference(" # red ", out fragment));
-            Assert.Equal(" red", fragment);
+            Assert.Equal("red", fragment);
+            Assert.True(SvgValues.TryParseLocalReference("#\tspacingAndGlyphs\n", out fragment));
+            Assert.Equal("spacingAndGlyphs", fragment);
+            Assert.False(SvgValues.TryParseLocalReference("#   ", out _));
             Assert.False(SvgValues.TryParseLocalReference("green", out _));
         }
 

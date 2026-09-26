@@ -222,7 +222,7 @@ namespace FenBrowser.FenEngine.Svg
             if (string.IsNullOrWhiteSpace(raw)) return false;
             ReadOnlySpan<char> value = raw.AsSpan().Trim();
             if (value.Length < 2 || value[0] != '#') return false;
-            fragment = value.Slice(1).ToString();
+            fragment = value.Slice(1).Trim().ToString();
             return true;
         }
 
