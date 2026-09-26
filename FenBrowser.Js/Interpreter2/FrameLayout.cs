@@ -947,7 +947,7 @@ public sealed class FrameLayout
             ref readonly var ins = ref code[ip];
             var named = ins.OpCode switch
             {
-                OpCode.LoadVar or OpCode.StoreVar or OpCode.InitVar or OpCode.TypeOfName or
+                OpCode.LoadVar or OpCode.LoadVarWithBase or OpCode.StoreVar or OpCode.InitVar or OpCode.TypeOfName or
                 OpCode.PreResolveVar or OpCode.StoreResolvedVar or OpCode.StoreVarTop => ins.B,
                 OpCode.EnterScope => ins.A,
                 _ => -1,
@@ -1027,7 +1027,7 @@ public sealed class FrameLayout
         ReadOnlySpan<OpCode> supported =
         [
             // Data movement and control flow.
-            OpCode.LoadConst, OpCode.LoadVar, OpCode.LoadThis, OpCode.LoadNewTarget, OpCode.StoreVar,
+            OpCode.LoadConst, OpCode.LoadVar, OpCode.LoadVarWithBase, OpCode.LoadThis, OpCode.LoadNewTarget, OpCode.StoreVar,
             OpCode.InitVar, OpCode.PreResolveVar, OpCode.StoreResolvedVar,
             OpCode.Move, OpCode.Jump, OpCode.JumpIfFalse,
             OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,

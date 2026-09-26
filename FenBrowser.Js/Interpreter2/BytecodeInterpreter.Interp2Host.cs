@@ -574,6 +574,44 @@ public sealed partial class BytecodeInterpreter
         throw new JsThrownException(CreateReferenceError($"{name} is not defined."));
     }
 
+    /// <summary>
+    /// <see cref="Interp2LoadFree"/> for a callee: also the with object the
+    /// name resolved on, which a call passes as `this` (ECMA-262 13.3.6.2 step
+    /// 1.b), or undefined when it resolved in any other record.
+    /// </summary>
+    internal JsValue Interp2LoadFreeWithBase(
+        EnvironmentRecord? environment, string? name, bool strict, out JsValue withBase)
+    {
+        withBase = JsValue.Undefined;
+        if (name is null)
+        {
+            throw new JsThrownException(CreateReferenceError("Invalid variable slot."));
+        }
+
+        for (var env = environment; env is not null; env = env.OuterEnv)
+        {
+            var status = env.TryLookupBinding(name, strict, out var value);
+            if (status == BindingOpResult.NotFound)
+            {
+                continue;
+            }
+
+            if (status != BindingOpResult.Ok)
+            {
+                throw Interp2BindingFailure(status, name, assignment: false);
+            }
+
+            if (env.WithBaseObject is { } baseObject)
+            {
+                withBase = JsValue.FromObject(baseObject);
+            }
+
+            return value;
+        }
+
+        throw new JsThrownException(CreateReferenceError($"{name} is not defined."));
+    }
+
     /// <summary>ECMA-262 9.1.1.1.5 SetMutableBinding through the closure chain.</summary>
     /// <summary>
     /// ECMA-262 13.4: an update expression resolves its reference once, then

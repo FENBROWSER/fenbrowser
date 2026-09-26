@@ -819,7 +819,7 @@ public sealed partial class BytecodeInterpreter
                         ?? ((uint)ins.B < (uint)registers.Length ? DescribeValueShort(registers.Span[ins.B]) : "<receiver>");
                     return receiverText + "." + fn.PropertyNames[ins.C];
                 }
-                if (ins.OpCode == OpCode.LoadVar && ins.A == calleeRegister)
+                if (ins.OpCode is OpCode.LoadVar or OpCode.LoadVarWithBase && ins.A == calleeRegister)
                 {
                     return SlotNameTable.GetName(fn, ins.B);
                 }

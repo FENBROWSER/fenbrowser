@@ -1,4 +1,4 @@
-using FenBrowser.Js.Runtime;
+﻿using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Objects;
 
 namespace FenBrowser.Js.Bytecode;
@@ -415,7 +415,7 @@ public sealed class BytecodeFunction
                 // variable of `for (let ...)` gets a fresh one per iteration -
                 // and compiled code reaches those 1.6-2x slower than Interp2,
                 // which keeps them in registers.
-                if (ins.OpCode is OpCode.LoadVar or OpCode.StoreVar or OpCode.InitVar or
+                if (ins.OpCode is OpCode.LoadVar or OpCode.LoadVarWithBase or OpCode.StoreVar or OpCode.InitVar or
                     OpCode.PreResolveVar or OpCode.StoreResolvedVar)
                 {
                     blockSlots ??= BlockScopedSlots(code);

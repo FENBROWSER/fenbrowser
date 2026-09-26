@@ -890,6 +890,15 @@ internal sealed class Interp2
                     break;
                 }
 
+                case OpCode.LoadVarWithBase:
+                {
+                    var callee = LoadWithBase(layout, ins.B, slotBase, ip - 1, out var withBase);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = callee;
+                    stack[frameBase + ins.C] = withBase;
+                    break;
+                }
+
                 case OpCode.PreResolveVar:
                     // ECMA-262 13.3.2.4 and 13.4 resolve the binding before the
                     // expression in between runs, so a visibility change it
@@ -2959,6 +2968,47 @@ internal sealed class Interp2
                 goto default;
             default:
                 return _host.DeleteBindingByName(OuterEnvironmentOf(_depth - 1), name);
+        }
+    }
+
+    /// <summary>
+    /// A callee named inside a `with`: its value, and the with object it
+    /// resolved on (ECMA-262 13.3.6.2 step 1.b). Only a name looked up through
+    /// the records can resolve on one; a slot the body keeps has no with in
+    /// front of it, the layout having made every body with one dynamic.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private JsValue LoadWithBase(FrameLayout layout, int slot, int slotBase, int icOffset, out JsValue withBase)
+    {
+        withBase = JsValue.Undefined;
+        var name = NameOfSlot(layout, slot);
+        switch (HomeOfSlot(layout, slot))
+        {
+            case SlotHome.Register:
+                if (layout.HasLexicalSlots && _tdz[slotBase + slot] != 0)
+                {
+                    _host.Interp2ThrowDeadZoneAccess(name);
+                }
+
+                return _stack[slotBase + slot];
+            case SlotHome.Context:
+                return _host.Interp2LoadContext(
+                    _frames[_depth - 1].Context!, layout.Function, slot, name, layout.IsStrict);
+            case SlotHome.Scoped:
+                if (layout.DynamicScope && !ReachesOwnSlot(layout, slot))
+                {
+                    return _host.Interp2LoadFreeWithBase(DynamicScopeOf(_depth - 1), name, layout.IsStrict, out withBase);
+                }
+
+                if (layout.DynamicScope || FindBlockBinding(name) is not null ||
+                    layout.ScopedFallback[slot] != SlotHome.Free)
+                {
+                    return LoadScoped(layout, slot, slotBase, icOffset);
+                }
+
+                goto default;
+            default:
+                return _host.Interp2LoadFreeWithBase(OuterEnvironmentOf(_depth - 1), name, layout.IsStrict, out withBase);
         }
     }
 

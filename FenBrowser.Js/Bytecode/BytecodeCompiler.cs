@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
@@ -83,6 +83,20 @@ public sealed class BytecodeCompiler
     // its name, or the index its computed key was stored under (LoadFieldKey).
     private sealed record FieldInitializer(string Name, int ComputedIndex, ExpressionNode Initializer);
     private bool _inFieldInitializer;
+
+    // ECMA-262 13.3.6.2 EvaluateCall step 1.b: a name inside a `with` - in this
+    // function, in one around it, or in eval code run under one - may resolve to
+    // a property of the with object, and a call through it passes the object as
+    // `this`. _withNesting counts the with bodies open in this function.
+    private int _withNesting;
+    private bool _enclosedByWith;
+
+    /// <summary>Whether this code runs inside some `with`, for eval code compiled under one.</summary>
+    internal bool EnclosedByWith
+    {
+        get => _enclosedByWith;
+        init => _enclosedByWith = value;
+    }
     private int _fieldInitializerStart = -1;
     private int _fieldInitializerEnd = -1;
 
@@ -910,7 +924,7 @@ public sealed class BytecodeCompiler
             functionDecl.ParameterBindings,
             out var prologueCount,
             functionDecl.ParameterDefaults);
-        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource, _sourcePath = _sourcePath };
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _brandTokens = this._brandTokens, _rawSource = _rawSource, _sourcePath = _sourcePath };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             functionDecl.Parameters,
@@ -1692,7 +1706,7 @@ public sealed class BytecodeCompiler
         // a class expression or function expression in a field initializer).
         // Instead, the caller for the direct class constructor passes
         // FunctionKind.Constructor via explicitKind.
-        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _fieldInitializerStatements = this._fieldInitializerStatements, _rawSource = _rawSource, _sourcePath = _sourcePath };
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _fieldInitializerStatements = this._fieldInitializerStatements, _rawSource = _rawSource, _sourcePath = _sourcePath };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
@@ -2280,7 +2294,9 @@ public sealed class BytecodeCompiler
         var objReg = CompileExpression(withStmt.Object);
         _instructions.Add(new Instruction(OpCode.PushWithEnvironment, objReg, 0, 0));
         _openScopeDepth++;
+        _withNesting++;
         CompileStatement(withStmt.Body);
+        _withNesting--;
         _instructions.Add(new Instruction(OpCode.LeaveScope));
         _openScopeDepth--;
     }
@@ -2773,7 +2789,7 @@ public sealed class BytecodeCompiler
 
             var named = instruction.OpCode switch
             {
-                OpCode.LoadVar or OpCode.StoreVar or OpCode.InitVar or OpCode.TypeOfName or
+                OpCode.LoadVar or OpCode.LoadVarWithBase or OpCode.StoreVar or OpCode.InitVar or OpCode.TypeOfName or
                 OpCode.PreResolveVar or OpCode.StoreResolvedVar or OpCode.StoreVarTop => instruction.B,
                 _ => -1,
             };
@@ -4090,6 +4106,12 @@ public sealed class BytecodeCompiler
                     PatchJump(jumpEndFromUndefined, endLabel);
                     return optionalDest;
                 }
+                else if (TryCompileWithBaseCallee(call.Callee, out var withCallee, out var withBase))
+                {
+                    calleeReg = withCallee;
+                    thisReg = withBase;
+                    isMethodCall = true;
+                }
                 else
                 {
                     calleeReg = CompileExpression(call.Callee);
@@ -4318,7 +4340,7 @@ public sealed class BytecodeCompiler
                 // ECMA-262 NamedEvaluation: an anonymous function expression adopts
                 // the binding/assignment name; a named expression keeps its own name.
                 var fnExprName = fnExpr.Name ?? ConsumeNameHint();
-                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _rawSource = _rawSource, _sourcePath = _sourcePath };
+                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _brandTokens = this._brandTokens, _rawSource = _rawSource, _sourcePath = _sourcePath };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     fnExpr.Parameters,
@@ -4381,7 +4403,7 @@ public sealed class BytecodeCompiler
                 var arrowName = ConsumeNameHint() ?? string.Empty;
                 // An arrow has no new.target of its own, so one inside a field
                 // initializer sees the initializer's (undefined), not the constructor's.
-                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens, _inFieldInitializer = _inFieldInitializer, _rawSource = _rawSource, _sourcePath = _sourcePath };
+                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _brandTokens = this._brandTokens, _inFieldInitializer = _inFieldInitializer, _rawSource = _rawSource, _sourcePath = _sourcePath };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     arrow.Parameters,
@@ -5390,6 +5412,11 @@ public sealed class BytecodeCompiler
             }
 
             default:
+                if (TryCompileWithBaseCallee(callee, out var withCallee, out thisReg))
+                {
+                    return withCallee;
+                }
+
                 thisReg = -1;
                 return CompileExpression(callee);
         }
@@ -5742,6 +5769,33 @@ public sealed class BytecodeCompiler
         return false;
     }
 
+    /// <summary>
+    /// A callee that is a name some `with` encloses: loaded together with the
+    /// object it resolves on, which the call passes as `this` (ECMA-262
+    /// 13.3.6.2 step 1.b). `eval` keeps its own path, which a direct eval needs.
+    /// </summary>
+    private bool TryCompileWithBaseCallee(ExpressionNode callee, out int calleeReg, out int thisReg)
+    {
+        while (callee is ParenthesizedExpressionNode parenthesized)
+        {
+            callee = parenthesized.Expression;
+        }
+
+        if ((!_enclosedByWith && _withNesting == 0) ||
+            callee is not IdentifierExpressionNode { Name: not "eval" } name)
+        {
+            calleeReg = -1;
+            thisReg = -1;
+            return false;
+        }
+
+        calleeReg = AllocateRegister();
+        thisReg = AllocateRegister();
+        _instructions.Add(new Instruction(
+            OpCode.LoadVarWithBase, calleeReg, GetOrCreateVariableSlot(name.Name), thisReg));
+        return true;
+    }
+
     private static bool IsDirectEvalCallCallee(ExpressionNode callee)
     {
         while (callee is ParenthesizedExpressionNode parenthesized)
@@ -5839,6 +5893,12 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(getOp, calleeReg, thisReg, nameIndex));
             }
 
+            isMethodCall = true;
+        }
+        else if (TryCompileWithBaseCallee(tagged.Tag, out var withCallee, out var withBase))
+        {
+            calleeReg = withCallee;
+            thisReg = withBase;
             isMethodCall = true;
         }
         else

@@ -371,4 +371,10 @@ public enum OpCode : byte
 
 		// SuperCall with a spread argument list: C holds the gathered array.
 		SuperCallSpread,
+
+		// The callee of a call through a name some `with` encloses: resolves slot
+		// B once into A, and puts the with object the name resolved on into C -
+		// undefined when it resolved anywhere else (ECMA-262 13.3.6.2
+		// EvaluateCall step 1.b, WithBaseObject). The call is a method call on C.
+		LoadVarWithBase,
 	}

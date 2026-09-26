@@ -2375,6 +2375,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.StoreVarTop:
                     StoreNameInVariableEnvironment(frame, ins.B, registers[ins.A]);
                     break;
+                case OpCode.LoadVarWithBase:
+                    try
+                    {
+                        registers[ins.A] = Interp2LoadFreeWithBase(
+                            frame.Environment, SlotNameTable.GetName(function, ins.B), function.IsStrictMode,
+                            out var withBase);
+                        registers[ins.C] = withBase;
+                    }
+                    catch (JsThrownException ex) when (HasHandler(frame))
+                    {
+                        ThrowOrHandle(frame, ex.Value);
+                    }
+
+                    break;
                 case OpCode.PreResolveVar:
                     PreResolveBinding(frame, ins.B, frame.InstructionPointer - 1);
                     break;
@@ -7384,6 +7398,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             compiled = new BytecodeCompiler
             {
                 ParserMaxRecursionDepth = ParserMaxRecursionDepth,
+                // Calls in eval code run under a `with` pass its object as `this`.
+                EnclosedByWith = IsInsideWith(directEvalEnvironment),
                 // ECMA-262 15.2.4: a function defined in eval code has
                 // [[SourceText]] like any other. Without the source here every
                 // function in an eval'd script reported itself as
@@ -7477,6 +7493,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             Array.Empty<JsValue>(),
             JsValue.FromObject(EnsureGlobalObject()),
             frameEnvironment: EnsureGlobalEnvironment());
+    }
+
+    private static bool IsInsideWith(EnvironmentRecord? environment)
+    {
+        for (var env = environment; env is not null; env = env.OuterEnv)
+        {
+            if (env is ObjectEnvironmentRecord { IsWithEnvironment: true })
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsSimpleAnnexBIdentityLiteral(string rawText)
