@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Target: **100% pass rate**. Refresh batched store: `python scripts/test262/run.py full --fresh`
 
 ```
-test262: 49936/53483 = 93.37% (3547 fail)
-Top clusters: staging(404) Temporal(260+138) Atomics(182) Iterator(166) TypedArray(147) class(147+87) NumberFormat(135) DateTimeFormat(122) Array(110) TypedArrayCtors(98) import-defer(91) for-of(78) ShadowRealm(64) Object(63) assignment(59) compound-assign(55)
+test262: 49385/53586 = 92.16% (4201 fail)  [suite: tc39/test262 main 35d5666045]
+Top clusters: intl402(681) staging(361) class(296+251) Temporal(260) module-code(188) Atomics(182) Iterator(166) Promise(151) TypedArray(145) import(120) Array(105) async-generator(103+54) TypedArrayCtors(98) dynamic-import(91) for-of(71) ShadowRealm(64)
 ```
 
 ## ⚠️ Current Reality (read first — the tree has diverged from older docs)
