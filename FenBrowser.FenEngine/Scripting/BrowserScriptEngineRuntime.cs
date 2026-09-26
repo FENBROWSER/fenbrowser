@@ -19434,6 +19434,25 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                string.Equals(element?.TagName, "textarea", StringComparison.OrdinalIgnoreCase);
     }
 
+    // HTML §6.8.1 isContentEditable: the nearest inclusive ancestor whose
+    // contenteditable attribute is in a valid state decides; an invalid value is
+    // the inherit state and defers to the parent.
+    private static bool IsEditingHostOrEditable(Element element)
+    {
+        for (var current = element; current != null; current = current.ParentElement)
+        {
+            switch (current.GetAttribute("contenteditable")?.ToLowerInvariant())
+            {
+                case "" or "true" or "plaintext-only":
+                    return true;
+                case "false":
+                    return false;
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsCheckableInputElement(Element element)
     {
         if (!string.Equals(element?.TagName, "input", StringComparison.OrdinalIgnoreCase))
@@ -27518,6 +27537,26 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case Element element when string.Equals(property, "title", StringComparison.Ordinal):
                     element.SetAttribute("title", CoerceToHostString(value));
                     return true;
+                case Element element when string.Equals(property, "contentEditable", StringComparison.Ordinal):
+                    // HTML §6.8.1 contentEditable setter: "inherit" removes the attribute,
+                    // the three states set it, anything else is a SyntaxError.
+                    switch (CoerceToHostString(value).ToLowerInvariant())
+                    {
+                        case "inherit":
+                            element.RemoveAttribute("contenteditable");
+                            break;
+                        case var state and ("true" or "false" or "plaintext-only"):
+                            element.SetAttribute("contenteditable", state);
+                            break;
+                        default:
+                            _owner.ThrowDomException("SyntaxError",
+                                "Failed to set the 'contentEditable' property on 'HTMLElement': The value provided is not one of 'true', 'false', 'plaintext-only', or 'inherit'.");
+                            break;
+                    }
+                    return true;
+                case Element element when string.Equals(property, "draggable", StringComparison.Ordinal):
+                    element.SetAttribute("draggable", CoerceToHostBoolean(value) ? "true" : "false");
+                    return true;
                 case Element element when string.Equals(property, "name", StringComparison.Ordinal):
                     element.SetAttribute("name", CoerceToHostString(value));
                     return true;
@@ -29541,6 +29580,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         element.GetAttribute("contenteditable") is { } editable
                             ? (editable.Length == 0 ? "true" : editable)
                             : "inherit");
+                    return true;
+                case "isContentEditable":
+                    value = JsValue.FromBoolean(IsEditingHostOrEditable(element));
+                    return true;
+                case "draggable":
+                    // HTML §6.11.7: an explicit true/false wins; otherwise images and
+                    // links with an href are draggable by default.
+                    value = JsValue.FromBoolean(element.GetAttribute("draggable")?.ToLowerInvariant() switch
+                    {
+                        "true" => true,
+                        "false" => false,
+                        _ => string.Equals(element.LocalName, "img", StringComparison.OrdinalIgnoreCase) ||
+                             (string.Equals(element.LocalName, "a", StringComparison.OrdinalIgnoreCase) && element.HasAttribute("href")),
+                    });
                     return true;
                 case "dataset":
                     value = _owner.ToHostOrNull(new FenJsDomStringMapHost(element), HostObjectKind.Other);
