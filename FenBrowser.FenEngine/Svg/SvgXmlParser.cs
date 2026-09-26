@@ -1336,7 +1336,7 @@ namespace FenBrowser.FenEngine.Svg
         /// their content is materialized under the same budget and rules.
         /// </summary>
         private static bool IsCharacterDataContainer(string name) =>
-            name is "text" or "tspan" or "textPath" or "a";
+            name is "text" or "tspan" or "textPath" or "a" or "foreignObject";
 
         private static bool SameIgnoredName(string first, string second)
         {

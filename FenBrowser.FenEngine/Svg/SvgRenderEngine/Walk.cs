@@ -157,6 +157,12 @@ namespace FenBrowser.FenEngine.Svg
                         DrawNestedSvg(el, canvas, viewport, inherited);
                         return;
                     }
+                case "foreignObject":
+                    {
+                        if (IsDisplayNone(el)) return;
+                        DrawForeignObject(el, canvas, viewport, inherited);
+                        return;
+                    }
                 case "defs":
                 case "style":
                 case "title":
@@ -255,7 +261,6 @@ namespace FenBrowser.FenEngine.Svg
                     }
                 case "tspan":
                 case "textPath":
-                case "foreignObject":
                 case "animation":
                     WarnUnsupportedOnce(el.Name);
                     return;
@@ -294,6 +299,11 @@ namespace FenBrowser.FenEngine.Svg
             string ns = el.NamespaceUri;
             return ns != null &&
                 string.Equals(ns, XhtmlNamespace, StringComparison.Ordinal);
+        }
+
+        private static bool IsTextContentElement(SvgElement el)
+        {
+            return el.Name is "tspan" or "textPath";
         }
 
         private void DrawNestedSvg(
@@ -467,6 +477,158 @@ namespace FenBrowser.FenEngine.Svg
             DrawChildren(el, canvas, userViewport, next);
         }
 
+        // ------------------------------------------------------- foreignObject
+
+        private const string SvgNamespaceUri = "http://www.w3.org/2000/svg";
+        private const int MaxForeignObjectSubtreeNodes = 4096;
+
+        /// <summary>
+        /// Element names a foreignObject subtree may contain. The set mirrors the
+        /// draw dispatch above: content the walk can already render unchanged, and
+        /// referenced-only or metadata content it never paints inline. Anything
+        /// outside it - XHTML, unknown SVG, 'animation' - is refused, so the
+        /// diagnostic names the actual blocker instead of a generic one.
+        /// </summary>
+        private static readonly HashSet<string> ForeignObjectKnownNames = new(StringComparer.Ordinal)
+        {
+            "g", "a", "view", "svg", "foreignObject", "switch", "use",
+            "path", "rect", "circle", "ellipse", "line", "polyline", "polygon",
+            "text", "tspan", "textPath", "image",
+            "defs", "style", "title", "desc", "metadata", "link", "meta",
+            "h:link", "h:meta", "html:link", "html:meta",
+            "script", "h:script", "html:script",
+            "symbol", "marker", "pattern", "linearGradient", "radialGradient", "stop",
+            "filter", "mask", "clipPath", "cursor", "color-profile",
+            "font", "font-face", "font-face-src", "font-face-uri", "font-face-name",
+            "font-face-format", "glyph", "missing-glyph", "hkern", "vkern",
+            "altGlyphDef", "altGlyphItem", "glyphRef", "altGlyphRef",
+            "mesh", "meshgradient", "meshrow", "meshpatch",
+            "animate", "animateColor", "animateMotion", "animateTransform", "set"
+        };
+
+        /// <summary>
+        /// Decides a foreignObject. A foreignObject establishes a viewport from its
+        /// x/y/width/height geometry, and the walk resolves that geometry here so the
+        /// only case it certifies is the one it can prove: a viewport with no area.
+        /// An empty clip admits nothing no matter what the subtree holds, so the
+        /// document needs no reason code.
+        ///
+        /// A viewport with area is refused, and the refusal is structural rather than
+        /// a missing feature. The bounded parse records character data only for
+        /// text/tspan/textPath/a (SvgXmlParser.IsCharacterDataContainer), so a
+        /// foreignObject's own text nodes are absent from the tree and cannot be
+        /// proven absent - the tree is not a faithful view of the content. A browser
+        /// lays a bare text node out as an anonymous HTML block inside the viewport,
+        /// so drawing the element children while that text is invisible would report
+        /// Success over a browser-different frame. Until the parse models the content,
+        /// the sound answer is to paint nothing.
+        /// The canvas and inherited style are part of the uniform draw-handler
+        /// contract the dispatch calls every case through; the certified case paints
+        /// nothing and the refused case never reaches the canvas.
+        /// </summary>
+        private void DrawForeignObject(
+            SvgElement el,
+            SKCanvas canvas,
+            ViewportContext outer,
+            InheritedStyle inherited)
+        {
+            ResolveGeometryFontContext(el, out float fontSize, out float rootFontSize);
+            if (!TryResolveForeignObjectExtent(
+                    el, "width", outer, fontSize, rootFontSize, out float w) ||
+                !TryResolveForeignObjectExtent(
+                    el, "height", outer, fontSize, rootFontSize, out float h))
+            {
+                return;
+            }
+            if (!(w > 0f) || !(h > 0f)) return;
+
+            if (!TryDescribeForeignObjectBlocker(el, out string blocker))
+            {
+                _report.RequireFallback(
+                    "SVG foreignObject viewport content is not modelled by the bounded parse");
+                return;
+            }
+            _report.RequireFallback($"SVG foreignObject content {blocker} requires compatibility fallback");
+        }
+
+        /// <summary>
+        /// Resolves a foreignObject width/height. An absent, 'auto' or 'none'
+        /// value is zero rather than an error, per the geometry property definition.
+        /// Every other value must resolve: an extent this engine cannot compute
+        /// would silently become a zero viewport, turning content the browser paints
+        /// into a certified non-rendering subtree, so it refuses the document instead.
+        /// </summary>
+        private bool TryResolveForeignObjectExtent(
+            SvgElement element,
+            string property,
+            ViewportContext viewport,
+            float fontSize,
+            float rootFontSize,
+            out float value)
+        {
+            value = 0f;
+            string raw = element.GetPresentationProperty(property);
+            if (string.IsNullOrWhiteSpace(raw)) return true;
+            string trimmed = raw.Trim();
+            if (trimmed.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            float percentReference = property == "width"
+                ? viewport.Width
+                : viewport.Height;
+            if (TryResolveGeometryLength(
+                    element, property, viewport, percentReference,
+                    fontSize, rootFontSize, out value))
+            {
+                return true;
+            }
+            _report.RequireFallback(
+                $"SVG foreignObject geometry property '{property}: {trimmed}' requires compatibility fallback");
+            return false;
+        }
+
+        /// <summary>
+        /// Names the first reason the subtree cannot be painted, so the refusal says
+        /// which feature is missing rather than reporting every case identically.
+        /// </summary>
+        private bool TryDescribeForeignObjectBlocker(SvgElement root, out string blocker)
+        {
+            blocker = null;
+            var pending = new Stack<SvgElement>();
+            pending.Push(root);
+            int inspected = 0;
+            while (pending.Count != 0)
+            {
+                CheckTime();
+                SvgElement current = pending.Pop();
+                if (++inspected > MaxForeignObjectSubtreeNodes)
+                {
+                    blocker = "exceeding the first-party render budget";
+                    return true;
+                }
+                if (IsSvgTestSuiteMetadata(current)) continue;
+                if (IsXhtmlForeignElement(current) ||
+                    (current.NamespaceUri != null &&
+                     !string.Equals(current.NamespaceUri, SvgNamespaceUri, StringComparison.Ordinal)))
+                {
+                    blocker =
+                        $"'{SvgDiagnosticText.Identifier(current.Name)}' needs XHTML box layout";
+                    return true;
+                }
+                if (!ForeignObjectKnownNames.Contains(current.Name))
+                {
+                    blocker =
+                        $"'{SvgDiagnosticText.Identifier(current.Name)}' is not renderable here";
+                    return true;
+                }
+                var children = current.Children;
+                for (int i = 0; i < children.Count; i++) pending.Push(children[i]);
+            }
+            return false;
+        }
+
         private void DrawSwitch(SvgElement el, SKCanvas canvas, ViewportContext viewport, InheritedStyle inherited)
         {
             SvgElement selected = null;
@@ -618,6 +780,14 @@ namespace FenBrowser.FenEngine.Svg
             if (!_doc.ElementsById.TryGetValue(id, out var target))
             {
                 return; // Dangling reference: silently nothing (browser behavior).
+            }
+
+            if (IsTextContentElement(target))
+            {
+                // A use instance rooted at text content is not a graphics element,
+                // so a browser instantiates nothing at all. Painting the tspan here
+                // would be the fail-open this engine exists to prevent.
+                return;
             }
 
             _activeUseIds ??= new HashSet<string>(System.StringComparer.Ordinal);
