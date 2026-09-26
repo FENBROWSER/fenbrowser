@@ -118,6 +118,221 @@ public sealed partial class BytecodeInterpreter
     // ECMA-262 7.4.6 IteratorComplete: ToBoolean(? Get(result, "done")).
     private bool IteratorResultDone(JsValue result) => IsTruthy(GetReceiverProperty(result, "done"));
 
+    /// <summary>What one step of a yield* delegation leaves the delegating body to do.</summary>
+    internal enum YieldStarOutcome
+    {
+        /// <summary>Suspend, handing the delegate's result object to the caller as it is.</summary>
+        Yield,
+
+        /// <summary>The delegation is over; the yield* expression's value is the step's value.</summary>
+        Done,
+
+        /// <summary>The body completes with a return of the step's value, through covering finally blocks.</summary>
+        Return,
+    }
+
+    /// <summary>
+    /// One step of ECMA-262 15.5.5 `yield*` for a generator: the first step
+    /// gets the iterator, and each resume forwards the generator's pending
+    /// completion - next, throw or return - to it. The delegate's result object
+    /// is yielded as it is, not rebuilt (27.5.3.7 GeneratorYield(innerResult)),
+    /// and its `done` and `value` are read with [[Get]]. Shared by both loops.
+    /// </summary>
+    internal YieldStarOutcome YieldStarStep(GeneratorObject generator, JsValue operand, out JsValue value)
+    {
+        if (generator.YieldStarIterator is not { } iteratorHandle)
+        {
+            // 7.4.1 GetIterator(value, sync).
+            var iteratorSymbol = GetWellKnownSymbolId("iterator");
+            var method = iteratorSymbol == 0 ? JsValue.Undefined : GetReceiverSymbolProperty(operand, iteratorSymbol);
+            if (!IsCallable(method))
+            {
+                throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
+            }
+
+            var created = CallFunction(method, Array.Empty<JsValue>(), operand);
+            if (created.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Result of the Symbol.iterator method is not an object."));
+            }
+
+            iteratorHandle = created.AsObjectHandle();
+            generator.YieldStarIterator = iteratorHandle;
+            generator.BarrierInternalSlot(iteratorHandle);
+            generator.YieldStarNextMethod = GetReceiverProperty(created, "next");
+            generator.BarrierInternalSlot(generator.YieldStarNextMethod);
+        }
+
+        var iterator = JsValue.FromObject(iteratorHandle);
+        var mode = generator.CompletionMode;
+        generator.CompletionMode = GeneratorCompletionMode.Normal;
+        var received = generator.SentValue;
+
+        JsValue innerResult;
+        switch (mode)
+        {
+            case GeneratorCompletionMode.Throw:
+            {
+                var throwMethod = GetIteratorMethod(iterator, "throw");
+                if (throwMethod.Tag == JsValueTag.Undefined)
+                {
+                    // Step 7.b.iii: no throw method - let the delegate clean up,
+                    // then report the protocol violation.
+                    EndYieldStar(generator);
+                    IteratorCloseOnAbrupt(iterator);
+                    throw new JsThrownException(CreateTypeError("The iterator does not provide a 'throw' method."));
+                }
+
+                innerResult = CallDelegate(generator, throwMethod, iterator, received);
+                break;
+            }
+
+            case GeneratorCompletionMode.Return:
+            {
+                var returnMethod = GetIteratorMethod(iterator, "return");
+                if (returnMethod.Tag == JsValueTag.Undefined)
+                {
+                    EndYieldStar(generator);
+                    value = received;
+                    return YieldStarOutcome.Return;
+                }
+
+                innerResult = CallDelegate(generator, returnMethod, iterator, received);
+                if (IteratorResultDone(innerResult))
+                {
+                    EndYieldStar(generator);
+                    value = GetReceiverProperty(innerResult, "value");
+                    return YieldStarOutcome.Return;
+                }
+
+                value = innerResult;
+                return YieldStarOutcome.Yield;
+            }
+
+            default:
+                innerResult = CallDelegate(generator, generator.YieldStarNextMethod, iterator, received);
+                break;
+        }
+
+        if (IteratorResultDone(innerResult))
+        {
+            EndYieldStar(generator);
+            value = GetReceiverProperty(innerResult, "value");
+            return YieldStarOutcome.Done;
+        }
+
+        value = innerResult;
+        return YieldStarOutcome.Yield;
+    }
+
+    // Call(method, iterator, << received >>), requiring an object result. A
+    // delegate that throws ends the delegation along with the step. The
+    // delegation is ended in a finally rather than a catch-and-rethrow: a
+    // generator delegating to itself fails with a stack overflow RangeError,
+    // and rethrowing it at every level would overflow again on the way out.
+    private JsValue CallDelegate(GeneratorObject generator, JsValue method, JsValue iterator, JsValue received)
+    {
+        JsValue result;
+        var returned = false;
+        try
+        {
+            result = CallFunction(method, new[] { received }, iterator);
+            returned = true;
+        }
+        finally
+        {
+            if (!returned)
+            {
+                EndYieldStar(generator);
+            }
+        }
+
+        if (result.Tag != JsValueTag.Object)
+        {
+            EndYieldStar(generator);
+            throw new JsThrownException(CreateTypeError("Iterator result is not an object."));
+        }
+
+        return result;
+    }
+
+    // ECMA-262 7.3.10 GetMethod: undefined or null is no method; anything else
+    // must be callable.
+    private JsValue GetIteratorMethod(JsValue iterator, string name)
+    {
+        var method = GetReceiverProperty(iterator, name);
+        if (method.Tag is JsValueTag.Undefined or JsValueTag.Null)
+        {
+            return JsValue.Undefined;
+        }
+
+        if (!IsCallable(method))
+        {
+            throw new JsThrownException(CreateTypeError($"The iterator's '{name}' is not a function."));
+        }
+
+        return method;
+    }
+
+    private static void EndYieldStar(GeneratorObject generator)
+    {
+        generator.YieldStarIterator = null;
+        generator.YieldStarNextMethod = JsValue.Undefined;
+    }
+
+    /// <summary>
+    /// One step of a for-await-of loop (the AsyncIterNext opcode): true when a
+    /// sync-backed iterator is exhausted; otherwise <paramref name="value"/> is
+    /// what the following Await settles - the promise next() returned for an
+    /// async iterator, the value itself for a sync one (27.1.4.3
+    /// async-from-sync).
+    /// </summary>
+    internal bool ForAwaitNext(JsValue state, out JsValue value)
+    {
+        var iterator = ResolveObject(state) as ForOfIteratorObject
+            ?? throw new InvalidOperationException("Invalid for-await-of iterator object.");
+        if (iterator.IsAsyncIterator)
+        {
+            value = CallFunction(iterator.NextMethod, Array.Empty<JsValue>(), iterator.IteratorObject);
+            return false;
+        }
+
+        return ForOfStepDone(iterator, out value);
+    }
+
+    /// <summary>
+    /// The step after the Await (the AsyncIterFinish opcode): true when an
+    /// async iterator's result says done; otherwise <paramref name="value"/> is
+    /// the loop's value.
+    /// </summary>
+    internal bool ForAwaitFinish(JsValue state, JsValue awaited, out JsValue value)
+    {
+        var iterator = ResolveObject(state) as ForOfIteratorObject
+            ?? throw new InvalidOperationException("Invalid for-await-of iterator object.");
+        if (!iterator.IsAsyncIterator)
+        {
+            value = awaited;
+            return false;
+        }
+
+        if (awaited.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Async iterator result is not an object."));
+        }
+
+        var resultObject = _heap.GetObject(awaited.AsObjectHandle());
+        _ = TryGetPropertyValue(resultObject, awaited, "done", out var doneValue);
+        if (IsTruthy(doneValue))
+        {
+            iterator.Done = true;
+            value = JsValue.Undefined;
+            return true;
+        }
+
+        _ = TryGetPropertyValue(resultObject, awaited, "value", out value);
+        return false;
+    }
+
     private JsValue CreateForOfIteratorState(JsValue source, bool requireIterable = false)
     {
         if (source.Tag == JsValueTag.HostObject &&
@@ -176,7 +391,7 @@ public sealed partial class BytecodeInterpreter
     /// which the for-await-of loop drives with async-from-sync semantics (27.1.4.3):
     /// done is read from the sync result and only the value is awaited.
     /// </summary>
-    private JsValue CreateForAwaitIteratorState(JsValue source)
+    internal JsValue CreateForAwaitIteratorState(JsValue source)
     {
         if (source.Tag == JsValueTag.Object)
         {

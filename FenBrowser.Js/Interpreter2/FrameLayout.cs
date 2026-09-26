@@ -393,15 +393,12 @@ public sealed class FrameLayout
         // the old loop that is all it does - the body runs as a plain generator
         // and its results are wrapped in resolved promises - so the two loops
         // agree by running the same machinery, not by this one doing less.
-        var isGenerator =
-            (function.Kind is FunctionKind.Generator or FunctionKind.AsyncGenerator) &&
-            GeneratorBodySupported(function);
+        var isGenerator = function.Kind is FunctionKind.Generator or FunctionKind.AsyncGenerator;
         // An async function suspends at an await and is resumed by a promise
         // job, which is the generator machinery pointed somewhere else. Module
         // and script bodies compile as async too - top-level await is legal in
         // one - and those are eval code, which the gate below refuses anyway.
-        var isAsync = function.Kind == FunctionKind.Async && !function.IsEvalCode &&
-            GeneratorBodySupported(function);
+        var isAsync = function.Kind == FunctionKind.Async && !function.IsEvalCode;
         var constructsClass = asConstructor && function.Kind == FunctionKind.Constructor &&
             function.IsClassConstructor;
         if (!isGenerator && !isAsync && !constructsClass &&
@@ -783,29 +780,6 @@ public sealed class FrameLayout
     }
 
     /// <summary>
-    /// Whether a generator body is one this loop can suspend and resume.
-    /// </summary>
-    /// <remarks>
-    /// Suspension is the window being copied out at the yield and back at the
-    /// resume, and the frame's open try entries travel with it. One shape needs
-    /// more than that and is left on the old loop: `yield*`, which resumes into
-    /// its own delegation protocol rather than at the instruction after it.
-    /// </remarks>
-    private static bool GeneratorBodySupported(BytecodeFunction function)
-    {
-        var code = function.InstructionArray;
-        for (var ip = 0; ip < code.Length; ip++)
-        {
-            if (code[ip].OpCode is OpCode.YieldStar)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /// <summary>
     /// The block scopes in a body, as (slot, first instruction, last
     /// instruction) triples, or null when they are shaped in a way this loop
     /// cannot keep in registers.
@@ -978,7 +952,7 @@ public sealed class FrameLayout
             OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,
             OpCode.PushHandler, OpCode.PopHandler, OpCode.EndFinally,
             OpCode.EnterScope, OpCode.LeaveScope, OpCode.NextIterationEnv,
-            OpCode.CreateFunction, OpCode.Yield, OpCode.Await,
+            OpCode.CreateFunction, OpCode.Yield, OpCode.YieldStar, OpCode.Await,
 
             // Arithmetic, coercion and comparison.
             OpCode.Add, OpCode.Sub, OpCode.Mul, OpCode.Div, OpCode.Mod, OpCode.Exp,
@@ -1008,6 +982,7 @@ public sealed class FrameLayout
             // for-in and for-of.
             OpCode.EnumerateKeys, OpCode.ForInNext,
             OpCode.EnumerateValues, OpCode.ForOfNext, OpCode.IteratorClose,
+            OpCode.EnumerateValuesAsync, OpCode.AsyncIterNext, OpCode.AsyncIterFinish,
             OpCode.NewObject, OpCode.NewArray, OpCode.NewRegExp,
 
             // Calls and construction.

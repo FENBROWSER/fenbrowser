@@ -323,11 +323,23 @@ internal sealed class Interp2
         var entryHandlerTop = _handlerTop;
         try
         {
+            // A body suspended inside yield* resumes at the yield* itself, which
+            // forwards a throw or return to the delegate rather than taking it
+            // here (ECMA-262 15.5.5).
+            var delegating = generator.YieldStarIterator is not null;
             var mode = generator.CompletionMode;
-            generator.CompletionMode = GeneratorCompletionMode.Normal;
+            if (!delegating)
+            {
+                generator.CompletionMode = GeneratorCompletionMode.Normal;
+            }
+
             var injectedThrow = false;
 
-            if (generator.InstructionPointer > 0)
+            if (generator.InstructionPointer > 0 && delegating)
+            {
+                ResumeGeneratorFrame(generator, layout);
+            }
+            else if (generator.InstructionPointer > 0)
             {
                 ResumeGeneratorFrame(generator, layout);
 
@@ -976,6 +988,87 @@ internal sealed class Interp2
                     _depth--;
                     _stackTop = frameBase;
                     return JsValue.Undefined;
+                }
+
+                case OpCode.YieldStar:
+                {
+                    // ECMA-262 15.5.5 yield*: one delegation step per entry. A
+                    // suspension leaves the IP on this instruction, so the resume
+                    // runs the next step with whatever completion it brought.
+                    var delegator = _frames[_depth - 1].Generator!;
+                    _frames[_depth - 1].Ip = ip;
+                    var outcome = _host.YieldStarStep(delegator, stack[frameBase + ins.B], out var stepValue);
+                    stack = _stack;
+                    if (outcome == BytecodeInterpreter.YieldStarOutcome.Done)
+                    {
+                        stack[frameBase + ins.A] = stepValue;
+                        break;
+                    }
+
+                    if (outcome == BytecodeInterpreter.YieldStarOutcome.Yield)
+                    {
+                        SaveGeneratorWindow(delegator, ins.A, ip - 1);
+                        _depth--;
+                        _stackTop = frameBase;
+                        return stepValue;
+                    }
+
+                    // The delegate finished a return: the body returns too, after
+                    // the finally blocks that cover the yield*.
+                    ref var returning = ref _frames[_depth - 1];
+                    if (TryRouteReturnThroughFinally(ref returning, stepValue))
+                    {
+                        goto reload;
+                    }
+
+                    var yieldStarReturnSlot = returning.ReturnSlot;
+                    _depth--;
+                    _stackTop = frameBase;
+                    if (_depth == entryDepth)
+                    {
+                        return stepValue;
+                    }
+
+                    stack[yieldStarReturnSlot] = stepValue;
+                    goto reload;
+                }
+
+                case OpCode.EnumerateValuesAsync:
+                {
+                    var asyncIterator = _host.CreateForAwaitIteratorState(stack[frameBase + ins.B]);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = asyncIterator;
+                    break;
+                }
+
+                case OpCode.AsyncIterNext:
+                {
+                    // A sync-backed iterator knows it is done before the Await.
+                    var exhausted = _host.ForAwaitNext(stack[frameBase + ins.B], out var awaitable);
+                    stack = _stack;
+                    if (exhausted)
+                    {
+                        ip = ins.C;
+                        break;
+                    }
+
+                    stack[frameBase + ins.A] = awaitable;
+                    break;
+                }
+
+                case OpCode.AsyncIterFinish:
+                {
+                    var finished = _host.ForAwaitFinish(
+                        stack[frameBase + ins.C], stack[frameBase + ins.B], out var loopValue);
+                    stack = _stack;
+                    if (finished)
+                    {
+                        ip = ins.D;
+                        break;
+                    }
+
+                    stack[frameBase + ins.A] = loopValue;
+                    break;
                 }
 
                 case OpCode.Yield:

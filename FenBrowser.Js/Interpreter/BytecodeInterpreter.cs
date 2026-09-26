@@ -2628,190 +2628,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.YieldStar:
                 {
-                    // ECMA-262 15.5.5 — yield* delegation.
-                    // The operand expression is already evaluated in register B.
-                    // This handler runs on every resume while yield* is active.
+                    // ECMA-262 15.5.5 yield*: each resume re-runs this instruction,
+                    // which forwards the pending completion to the delegate.
                     var gen = frame.OwnerGenerator!;
-                    ObjectHandle iterHandle;
-
-                    // Step 1: get or reuse the inner iterator.
-                    if (gen.YieldStarIterator is { } existing)
-                    {
-                        iterHandle = existing;
-                    }
-                    else
-                    {
-                        try
-                        {
-                            // GetIterator(operand) — ECMA-262 7.4.1.
-                            var operand = registers[ins.B];
-                            var iteratorSymId = GetWellKnownSymbolId("iterator");
-                            if (iteratorSymId == 0)
-                                throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
-
-                            JsPropertyDescriptor iterFnDesc;
-                            JsValue iteratorMethod;
-                            JsValue receiver;
-                            switch (operand.Tag)
-                            {
-                                case JsValueTag.Object:
-                                    var operandObj = _heap.GetObject(operand.AsObjectHandle());
-                                    if (!operandObj.TryGetSymbolProperty(iteratorSymId, ResolvePrototypeDelegate, out iterFnDesc))
-                                        throw new JsThrownException(CreateTypeError("yield* operand is not iterable (missing @@iterator)."));
-                                    receiver = operand;
-                                    iteratorMethod = GetDescriptorValue(iterFnDesc, operand);
-                                    break;
-                                case JsValueTag.String:
-                                {
-                                    var stringProto = _heap.GetObject(GetGlobalPrototype("String"));
-                                    if (!stringProto.TryGetSymbolProperty(iteratorSymId, ResolvePrototypeDelegate, out iterFnDesc))
-                                        throw new JsThrownException(CreateTypeError("yield* operand is not iterable (missing @@iterator)."));
-                                    receiver = operand;
-                                    iteratorMethod = GetDescriptorValue(iterFnDesc, operand);
-                                    break;
-                                }
-                                default:
-                                    throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
-                            }
-
-                            if (iteratorMethod.Tag != JsValueTag.Object)
-                                throw new JsThrownException(CreateTypeError("yield* operand is not iterable (missing @@iterator)."));
-
-                            var iterResult = CallFunction(iteratorMethod, Array.Empty<JsValue>(), receiver);
-                            if (iterResult.Tag != JsValueTag.Object)
-                                throw new JsThrownException(CreateTypeError("@@iterator did not return an object."));
-                            iterHandle = iterResult.AsObjectHandle();
-                            gen.YieldStarIterator = iterHandle;
-                            gen.BarrierInternalSlot(iterHandle);
-                        }
-                        catch (JsThrownException ex) when (HasHandler(frame))
-                        {
-                            ThrowOrHandle(frame, ex.Value);
-                            break;
-                        }
-                    }
-
-                    var iterObj = _heap.GetObject(iterHandle);
-                    var iterValue = JsValue.FromObject(iterHandle);
-
-                    // Step 2: determine method and argument based on CompletionMode.
-                    string methodName;
-                    JsValue methodArg;
-                    if (gen.CompletionMode == GeneratorCompletionMode.Return)
-                    {
-                        gen.CompletionMode = GeneratorCompletionMode.Normal;
-                        methodName = "return";
-                        methodArg = gen.SentValue;
-                        // If the inner iterator has no .return(), the outer
-                        // generator itself completes with a return completion
-                        // (ECMA-262 27.5.3.3 / yield* step 7.c.iii): run finally
-                        // blocks covering the yield*, then finish with the value.
-                        // GetMethod semantics: null is treated as undefined.
-                        JsValue retMethod;
-                        try
-                        {
-                            if (!iterObj.TryGetProperty(methodName, ResolvePrototypeDelegate, out var retPropDesc))
-                            {
-                                retMethod = JsValue.Undefined;
-                            }
-                            else
-                            {
-                                retMethod = GetDescriptorValue(retPropDesc, iterValue);
-                            }
-                        }
-                        catch (JsThrownException ex) when (HasHandler(frame))
-                        {
-                            ThrowOrHandle(frame, ex.Value);
-                            break;
-                        }
-
-                        if (retMethod.Tag != JsValueTag.Object)
-                        {
-                            gen.YieldStarIterator = null;
-                            if (!TryRouteReturnThroughFinally(frame, methodArg))
-                            {
-                                return methodArg;
-                            }
-
-                            break;
-                        }
-                    }
-                    else if (gen.CompletionMode == GeneratorCompletionMode.Throw)
-                    {
-                        gen.CompletionMode = GeneratorCompletionMode.Normal;
-                        methodName = "throw";
-                        methodArg = gen.SentValue;
-                    }
-                    else
-                    {
-                        methodName = "next";
-                        methodArg = gen.SentValue;
-                    }
-
-                    // Step 3: call the method on the inner iterator.
-                    JsValue innerResult;
+                    YieldStarOutcome outcome;
+                    JsValue stepValue;
                     try
                     {
-                        JsValue methodValue;
-                        if (!iterObj.TryGetProperty(methodName, ResolvePrototypeDelegate, out var methodPropDesc))
-                        {
-                            methodValue = JsValue.Undefined;
-                        }
-                        else
-                        {
-                            methodValue = GetDescriptorValue(methodPropDesc, iterValue);
-                        }
-
-                        if (methodValue.Tag != JsValueTag.Object)
-                        {
-                            // Method missing (GetMethod semantics: null/undefined treated as undefined).
-                            if (methodName == "throw")
-                            {
-                                // ECMA-262 15.5.5 step 7.b.iii — .throw() missing:
-                                // call IteratorClose, then throw TypeError.
-                                gen.YieldStarIterator = null;
-                                IteratorCloseOnAbrupt(iterValue);
-                                throw new JsThrownException(CreateTypeError(
-                                    "Iterator does not have a 'throw' method."));
-                            }
-                            throw new JsThrownException(CreateTypeError(
-                                $"Iterator does not have a '{methodName}' method."));
-                        }
-
-                        var callArgs = methodArg.Tag == JsValueTag.Undefined
-                            ? Array.Empty<JsValue>()
-                            : new[] { methodArg };
-                        innerResult = CallFunction(methodValue, callArgs, iterValue);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        // ECMA-262 15.5.5 step 5.c.iii — if .throw() throws,
-                        // clear delegation and propagate. With no handler in the
-                        // frame the throw completes the generator, which ends the
-                        // delegation with it.
-                        if (methodName == "throw")
-                        {
-                            gen.YieldStarIterator = null;
-                        }
-                        ThrowOrHandle(frame, ex.Value);
-                        break;
-                    }
-
-                    // Step 4: parse the result object.
-                    if (innerResult.Tag != JsValueTag.Object)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError("Iterator result is not an object."));
-                        break;
-                    }
-                    var resultObj = _heap.GetObject(innerResult.AsObjectHandle());
-
-                    bool done;
-                    JsValue doneValue;
-                    try
-                    {
-                        var hasDone = resultObj.TryGetOwnProperty("done", out var doneDesc);
-                        doneValue = hasDone ? GetDescriptorValue(doneDesc, innerResult) : JsValue.Undefined;
-                        done = hasDone && doneValue.AsBoolean();
+                        outcome = YieldStarStep(gen, registers[ins.B], out stepValue);
                     }
                     catch (JsThrownException ex) when (HasHandler(frame))
                     {
@@ -2819,72 +2643,43 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         break;
                     }
 
-                    if (done)
+                    if (outcome == YieldStarOutcome.Done)
                     {
-                        // Delegation complete (ECMA-262 15.5.5 step 5.d / 5.e).
-                        gen.YieldStarIterator = null;
-
-                        JsValue innerValue;
-                        try
-                        {
-                            innerValue = resultObj.TryGetOwnProperty("value", out var vd)
-                                ? GetDescriptorValue(vd, innerResult)
-                                : JsValue.Undefined;
-                        }
-                        catch (JsThrownException ex) when (HasHandler(frame))
-                        {
-                            ThrowOrHandle(frame, ex.Value);
-                            break;
-                        }
-
-                        // yield* step 7.c.viii: when the resume was a return
-                        // completion and the inner iterator finished, the OUTER
-                        // generator completes with a return completion of the
-                        // inner value — its body must not keep executing past
-                        // the yield* (only covering finally blocks run).
-                        if (methodName == "return")
-                        {
-                            if (!TryRouteReturnThroughFinally(frame, innerValue))
-                            {
-                                return innerValue;
-                            }
-
-                            break;
-                        }
-
-                        registers[ins.A] = innerValue;
+                        registers[ins.A] = stepValue;
                         break;
                     }
 
-                    // Step 5: yield the value, resuming back at this YieldStar instruction.
+                    if (outcome == YieldStarOutcome.Return)
+                    {
+                        if (!TryRouteReturnThroughFinally(frame, stepValue))
+                        {
+                            return stepValue;
+                        }
+
+                        break;
+                    }
+
+                    // Suspend with the IP back on this instruction.
                     gen.YieldDestReg = ins.A;
-                    // Point IP back to this YieldStar instruction so the next resume
-                    // re-enters this handler to call .next() again on the inner iterator.
                     gen.InstructionPointer = frame.InstructionPointer - 1;
                     Array.Copy(frame.Registers, gen.Registers, frame.Registers.Length);
                     foreach (var register in frame.Registers)
                     {
                         gen.BarrierInternalSlot(register);
                     }
+
                     gen.Environment = frame.Environment;
                     gen.State = GeneratorState.Suspended;
                     gen.SavedCatchHandlers = frame.CatchHandlers.ToArray();
-		gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
-		gen.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
-		gen.PendingException = frame.PendingException;
-		if (frame.PendingException is { } yieldStarPendingException)
-		{
-			gen.BarrierInternalSlot(yieldStarPendingException);
-		}
+                    gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
+                    gen.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
+                    gen.PendingException = frame.PendingException;
+                    if (frame.PendingException is { } yieldStarPendingException)
+                    {
+                        gen.BarrierInternalSlot(yieldStarPendingException);
+                    }
 
-                    var yieldObj = CreateOrdinaryObject();
-                    yieldObj.DefineOwnProperty("value", new JsPropertyDescriptor(
-                        resultObj.TryGetOwnProperty("value", out var yd) ? yd.Value : JsValue.Undefined,
-                        Writable: true, Enumerable: true, Configurable: true));
-                    yieldObj.DefineOwnProperty("done", new JsPropertyDescriptor(
-                        doneValue,
-                        Writable: true, Enumerable: true, Configurable: true));
-                    return JsValue.FromObject(_heap.AllocateObject(yieldObj, AllocationSite.Current()));
+                    return stepValue;
                 }
                 case OpCode.EnterScope:
                     frame.Environment = CreateBlockScope(frame.Environment, function, ins);
@@ -3213,68 +3008,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 }
                 case OpCode.AsyncIterNext:
-                {
                     try
                     {
-                        var iter = ResolveObject(registers[ins.B]) as ForOfIteratorObject
-                            ?? throw new InvalidOperationException("Invalid for-await-of iterator object.");
-                        if (iter.IsAsyncIterator)
-                        {
-                            // next() hands back a promise OF the result: done is not
-                            // knowable until the Await that follows this instruction.
-                            registers[ins.A] = CallFunction(
-                                iter.NextMethod,
-                                Array.Empty<JsValue>(),
-                                iter.IteratorObject);
-                        }
-                        else if (ForOfStepDone(iter, out var value))
-                        {
+                        if (ForAwaitNext(registers[ins.B], out var nextValue))
                             frame.InstructionPointer = ins.C;
-                        }
                         else
-                        {
-                            // Async-from-sync: done came from the sync result, and it
-                            // is the VALUE that the following Await unwraps.
-                            registers[ins.A] = value;
-                        }
+                            registers[ins.A] = nextValue;
                     }
                     catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
-                }
                 case OpCode.AsyncIterFinish:
-                {
                     try
                     {
-                        var iter = ResolveObject(registers[ins.C]) as ForOfIteratorObject
-                            ?? throw new InvalidOperationException("Invalid for-await-of iterator object.");
-                        if (!iter.IsAsyncIterator)
-                        {
-                            registers[ins.A] = registers[ins.B];
-                            break;
-                        }
-
-                        var awaited = registers[ins.B];
-                        if (awaited.Tag != JsValueTag.Object)
-                        {
-                            throw new JsThrownException(CreateTypeError(
-                                "Async iterator result is not an object."));
-                        }
-
-                        var resultObj = _heap.GetObject(awaited.AsObjectHandle());
-                        _ = TryGetPropertyValue(resultObj, awaited, "done", out var doneValue);
-                        if (IsTruthy(doneValue))
-                        {
-                            iter.Done = true;
+                        if (ForAwaitFinish(registers[ins.C], registers[ins.B], out var finishedValue))
                             frame.InstructionPointer = ins.D;
-                            break;
-                        }
-
-                        _ = TryGetPropertyValue(resultObj, awaited, "value", out var resultValue);
-                        registers[ins.A] = resultValue;
+                        else
+                            registers[ins.A] = finishedValue;
                     }
                     catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
-                }
                 case OpCode.IteratorClose:
                 {
                     // ECMA-262 7.4.11 — emitted on the for-of break exit path and by

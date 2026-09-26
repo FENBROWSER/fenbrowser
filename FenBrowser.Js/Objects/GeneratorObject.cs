@@ -59,6 +59,12 @@ public sealed class GeneratorObject : JsObject
     public int BlockScopeDepth { get; set; }
 
     public ObjectHandle? YieldStarIterator { get; set; }
+
+    /// <summary>
+    /// The delegate's `next`, read once when yield* began (ECMA-262 7.4.3
+    /// GetIteratorFromMethod keeps it in the iterator record).
+    /// </summary>
+    public JsValue YieldStarNextMethod { get; set; } = JsValue.Undefined;
     public bool IsAsyncGenerator { get; set; }
 
     // The full argument list passed when the generator function was called, so the
@@ -101,6 +107,7 @@ public sealed class GeneratorObject : JsObject
 
         if (YieldStarIterator is { } iter)
             tracer.Trace(iter);
+        TraceValue(tracer, YieldStarNextMethod);
         if (SelfHandle is { } self)
             tracer.Trace(self);
 
