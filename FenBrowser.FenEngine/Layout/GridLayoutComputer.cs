@@ -171,7 +171,10 @@ namespace FenBrowser.FenEngine.Layout
             foreach (var item in items)
             {
                 var style = styles.TryGetValue(item, out var s) ? s : null;
-                var rawPos = DetermineGridPosition(style, item, areas, columnLineNames, rowLineNames);
+                var rawPos = ResolvePlacementLines(
+                    DetermineGridPosition(style, item, areas, columnLineNames, rowLineNames),
+                    explicitColCount,
+                    explicitRowCount);
                 
                 // If fully explicit
                 if (rawPos.HasExplicitCol && rawPos.HasExplicitRow)
@@ -444,6 +447,7 @@ namespace FenBrowser.FenEngine.Layout
             // Row
             if (TryResolveGridLine(style.GridRowStart, rowLineNames, preferStart: true, out int rsNamed)) { p.RowStart = rsNamed; p.HasExplicitRow = true; }
             else if (int.TryParse(style.GridRowStart, out int rsProp)) { p.RowStart = rsProp; p.HasExplicitRow = true; }
+            else if (TryParseSpan(style.GridRowStart, out int rsSpan)) { p.RowStart = 1; p.RowSpan = rsSpan; }
             else p.RowStart = 1;
 
             if (TryResolveGridLine(style.GridRowEnd, rowLineNames, preferStart: false, out int reNamed)) { p.RowEnd = reNamed; }
@@ -454,6 +458,7 @@ namespace FenBrowser.FenEngine.Layout
             // Col
             if (TryResolveGridLine(style.GridColumnStart, columnLineNames, preferStart: true, out int csNamed)) { p.ColStart = csNamed; p.HasExplicitCol = true; }
             else if (int.TryParse(style.GridColumnStart, out int csProp)) { p.ColStart = csProp; p.HasExplicitCol = true; }
+            else if (TryParseSpan(style.GridColumnStart, out int csSpan)) { p.ColStart = 1; p.ColSpan = csSpan; }
             else p.ColStart = 1;
 
             if (TryResolveGridLine(style.GridColumnEnd, columnLineNames, preferStart: false, out int ceNamed)) { p.ColEnd = ceNamed; }
@@ -462,6 +467,77 @@ namespace FenBrowser.FenEngine.Layout
             else if (p.HasExplicitCol && TryResolveGridLine(style.GridColumnStart, columnLineNames, preferStart: false, out int ceFromStart)) { p.ColEnd = ceFromStart; }
             
             return p;
+        }
+
+        /// <summary>
+        /// Turns the lines an item was given into lines of this grid (CSS Grid 1
+        /// §8.3 line-based placement, §8.3.1 conflict handling). A negative line
+        /// counts back from the explicit grid's last line, so <c>-1</c> is that
+        /// line; <c>0</c> is not a line and is treated as auto. A definite end
+        /// with an auto or span start places the start that many tracks before
+        /// it. A start after its end swaps with it, and a start equal to its end
+        /// drops the end, leaving a span of one. The engine creates no implicit
+        /// tracks before the grid, so a line that would fall before line 1 is
+        /// line 1.
+        /// </summary>
+        private static RawGridPosition ResolvePlacementLines(RawGridPosition p, int explicitColCount, int explicitRowCount)
+        {
+            ResolveAxis(ref p.RowStart, ref p.RowEnd, ref p.RowSpan, ref p.HasExplicitRow, explicitRowCount);
+            ResolveAxis(ref p.ColStart, ref p.ColEnd, ref p.ColSpan, ref p.HasExplicitCol, explicitColCount);
+            return p;
+
+            static void ResolveAxis(ref int start, ref int? end, ref int span, ref bool hasStart, int explicitTracks)
+            {
+                int lastExplicitLine = explicitTracks + 1;
+                if (hasStart)
+                {
+                    int? resolved = ResolveLine(start, lastExplicitLine);
+                    if (resolved is { } line)
+                    {
+                        start = line;
+                    }
+                    else
+                    {
+                        hasStart = false;
+                        start = 1;
+                    }
+                }
+
+                if (end is { } rawEnd)
+                {
+                    end = ResolveLine(rawEnd, lastExplicitLine);
+                }
+
+                span = Math.Max(1, span);
+                if (!hasStart && end is { } definiteEnd)
+                {
+                    start = Math.Max(1, definiteEnd - span);
+                    hasStart = true;
+                }
+
+                if (hasStart && end is { } finalEnd)
+                {
+                    if (start > finalEnd)
+                    {
+                        (start, end) = (finalEnd, start);
+                    }
+                    else if (start == finalEnd)
+                    {
+                        end = null;
+                        span = 1;
+                    }
+                }
+            }
+
+            static int? ResolveLine(int line, int lastExplicitLine)
+            {
+                if (line == 0)
+                {
+                    return null;
+                }
+
+                return line > 0 ? line : Math.Max(1, lastExplicitLine + 1 + line);
+            }
         }
 
         private static bool TryResolveGridLine(
