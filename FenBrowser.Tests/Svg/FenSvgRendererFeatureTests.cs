@@ -303,19 +303,104 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void UseContextPaintServer_FailsClosedWithNoPixels()
+        public void UseContextPaintServer_ResolvesReferencedGradient()
         {
             using var result = _renderer.Render(
                 "<svg width='10' height='10'><defs>" +
-                "<linearGradient id='g'><stop stop-color='red'/></linearGradient>" +
+                "<linearGradient id='g'><stop offset='0' stop-color='red'/>" +
+                "<stop offset='1' stop-color='blue'/></linearGradient>" +
                 "<rect id='s' width='10' height='10' fill='context-fill'/>" +
                 "</defs><use href='#s' fill='url(#g)'/></svg>");
 
-            Assert.False(result.Success);
-            Assert.Null(result.Bitmap);
-            Assert.Null(result.Picture);
-            Assert.True(result.RequiresFallback);
-            Assert.Contains(result.Warnings, warning => warning.Contains("context paint"));
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            var left = result.Bitmap.GetPixel(1, 5);
+            var right = result.Bitmap.GetPixel(8, 5);
+            Assert.True(left.Red > 200 && left.Blue < 60, left.ToString());
+            Assert.True(right.Blue > 200 && right.Red < 60, right.ToString());
+        }
+
+        [Fact]
+        public void UseContextPaintServerFallback_UsesReferencedFallbackColor()
+        {
+            using var result = _renderer.Render(
+                "<svg width='10' height='10'><defs>" +
+                "<rect id='s' width='10' height='10' fill='context-fill'/>" +
+                "</defs><use href='#s' fill='url(#missing) green'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(5, 5));
+        }
+
+        [Fact]
+        public void UseContextPaintGradient_UsesReferencedObjectBoundingBox()
+        {
+            // WPT svg/painting/reftests/paint-context-007.svg, scaled to a
+            // 200x150 viewBox: the gradient belongs to the `use`, so it spans the
+            // referenced group box and stays horizontal across the rotated child.
+            using var result = _renderer.Render(
+                "<svg width='200' height='150' viewBox='0 0 200 150'>" +
+                "<defs><linearGradient id='lg'><stop offset='0' stop-color='red'/>" +
+                "<stop offset='1' stop-color='blue'/></linearGradient>" +
+                "<g id='shapes'><rect x='25' y='45' width='120' height='60' fill='context-fill'/>" +
+                "<path d='M 85 -15 l -60 120 l 120 0 Z' fill='context-fill' " +
+                "transform-origin='85 75' transform='rotate(90)'/></g></defs>" +
+                "<use href='#shapes' fill='url(#lg)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            var groupLeft = result.Bitmap.GetPixel(28, 50);
+            var groupRight = result.Bitmap.GetPixel(142, 50);
+            Assert.True(groupLeft.Red > 200 && groupLeft.Blue < 60, groupLeft.ToString());
+            Assert.True(groupRight.Blue > 150 && groupRight.Red < 90, groupRight.ToString());
+            var rotatedTop = result.Bitmap.GetPixel(100, 50);
+            var rotatedBottom = result.Bitmap.GetPixel(100, 100);
+            Assert.Equal(0, Math.Abs(rotatedTop.Red - rotatedBottom.Red));
+            Assert.Equal(0, Math.Abs(rotatedTop.Blue - rotatedBottom.Blue));
+            Assert.InRange(rotatedTop.Red, (byte)100, (byte)155);
+            Assert.Equal(0, result.Bitmap.GetPixel(160, 60).Alpha);
+        }
+
+        [Fact]
+        public void UseContextStrokeServer_ResolvesReferencedGradient()
+        {
+            using var result = _renderer.Render(
+                "<svg width='30' height='30'><defs>" +
+                "<linearGradient id='g'><stop offset='0' stop-color='red'/>" +
+                "<stop offset='1' stop-color='blue'/></linearGradient>" +
+                "<g id='ring'><rect x='2' y='2' width='26' height='26' fill='none' " +
+                "stroke='context-stroke' stroke-width='4'/></g></defs>" +
+                "<use href='#ring' fill='url(#g)' stroke='url(#g)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            var left = result.Bitmap.GetPixel(1, 15);
+            var right = result.Bitmap.GetPixel(28, 15);
+            Assert.True(left.Red > 200 && left.Blue < 60, left.ToString());
+            Assert.True(right.Blue > 200 && right.Red < 60, right.ToString());
+            Assert.Equal(result.Bitmap.GetPixel(15, 29), result.Bitmap.GetPixel(15, 1));
+        }
+
+        [Fact]
+        public void MarkerContextPaintServer_ResolvesSourceGradient()
+        {
+            using var result = _renderer.Render(
+                "<svg width='40' height='40'><defs>" +
+                "<linearGradient id='lg'><stop offset='0' stop-color='red'/>" +
+                "<stop offset='1' stop-color='blue'/></linearGradient>" +
+                "<marker id='m' refX='4' refY='4' markerWidth='8' markerHeight='8'>" +
+                "<rect width='8' height='8' fill='context-fill'/></marker></defs>" +
+                "<path d='M 4 20 H 36' fill='url(#lg)' stroke='none' " +
+                "marker-start='url(#m)' marker-end='url(#m)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            var left = result.Bitmap.GetPixel(1, 20);
+            var right = result.Bitmap.GetPixel(7, 20);
+            Assert.True(left.Red > 150 && left.Blue < 90, left.ToString());
+            Assert.True(right.Blue > 200 && right.Red < 60, right.ToString());
+            Assert.Equal(result.Bitmap.GetPixel(4, 20), result.Bitmap.GetPixel(4, 17));
         }
 
         [Fact]

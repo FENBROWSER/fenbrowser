@@ -21,11 +21,10 @@ namespace FenBrowser.Tests.Svg
     [Collection(SvgRendererBackendStateCollection.Name)]
     public class FenSvgRendererPartialResultTests
     {
-        private const string ContextPaintServerUse =
-            "<svg width='10' height='10'><defs>" +
-            "<linearGradient id='g'><stop stop-color='red'/></linearGradient>" +
-            "<rect id='s' width='10' height='10' fill='context-fill'/>" +
-            "</defs><use href='#s' fill='url(#g)'/></svg>";
+        private const string OversizedPatternTile =
+            "<svg width='100' height='100'><pattern id='p' width='100' height='100'>" +
+            "<rect width='100' height='100' fill='red'/></pattern>" +
+            "<rect width='100' height='100' fill='url(#p)'/></svg>";
 
         private const string UnsupportedElement =
             "<svg width='20' height='20'><foreignObject width='20' height='20'/></svg>";
@@ -50,7 +49,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void RequiresFallback_FailsClosedWithNoPixels()
         {
-            using var result = _renderer.Render(ContextPaintServerUse);
+            using var result = _renderer.Render(OversizedPatternTile);
 
             Assert.False(result.Success);
             Assert.Null(result.Bitmap);
@@ -142,7 +141,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData(ContextPaintServerUse)]
+        [InlineData(OversizedPatternTile)]
         [InlineData(UnsupportedElement)]
         [InlineData(ExternalImage)]
         [InlineData(MalformedDataUri)]
@@ -174,7 +173,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData(ContextPaintServerUse)]
+        [InlineData(OversizedPatternTile)]
         [InlineData(UnsupportedElement)]
         [InlineData(ExternalImage)]
         [InlineData(MalformedDataUri)]
@@ -189,7 +188,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData(ContextPaintServerUse)]
+        [InlineData(OversizedPatternTile)]
         [InlineData(ExternalImage)]
         public void FailClosedResult_ExplainsRejection(string svg)
         {
@@ -202,7 +201,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData(ContextPaintServerUse)]
+        [InlineData(OversizedPatternTile)]
         [InlineData(UnsupportedElement)]
         [InlineData(ExternalImage)]
         [InlineData(MalformedDataUri)]

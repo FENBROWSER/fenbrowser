@@ -10,6 +10,18 @@ namespace FenBrowser.FenEngine.Adapters
     /// RULE 3: SVG must be sandboxed. This adapter enforces limits.
     /// RULE 5: SVG rendering is first-party only. The seam admits no
     /// third-party or compatibility backend.
+    /// <para>
+    /// Raster contract: <see cref="SvgRenderLimits.MaxRasterWidth"/> and
+    /// <see cref="SvgRenderLimits.MaxRasterHeight"/> are hard and are never met
+    /// by rescaling; a document outside them is rejected. Only
+    /// <see cref="SvgRenderLimits.MaxRasterPixels"/> may be met by a bounded
+    /// proportional reduction, and never by allocating over the budget. A reduced
+    /// result still reports the natural size in
+    /// <see cref="SvgRenderResult.Width"/>/<see cref="SvgRenderResult.Height"/>,
+    /// so the caller must apply <see cref="SvgRenderResult.RasterScaleX"/> and
+    /// <see cref="SvgRenderResult.RasterScaleY"/> when compositing
+    /// <see cref="SvgRenderResult.Bitmap"/>.
+    /// </para>
     /// </summary>
     public interface ISvgRenderer
     {
@@ -49,14 +61,45 @@ namespace FenBrowser.FenEngine.Adapters
         public SKBitmap Bitmap { get; set; }
         
         /// <summary>
-        /// Natural width of the SVG.
+        /// Natural width of the SVG. This is the document's natural size and is
+        /// deliberately independent of the delivered <see cref="Bitmap"/>: a
+        /// raster that <see cref="SvgRenderLimits.MaxRasterPixels"/> reduced is
+        /// still reported at its natural width, with the reduction published on
+        /// <see cref="RasterScaleX"/>.
         /// </summary>
         public float Width { get; set; }
         
         /// <summary>
-        /// Natural height of the SVG.
+        /// Natural height of the SVG. Same natural-size contract as
+        /// <see cref="Width"/>; the reduction is published on <see cref="RasterScaleY"/>.
         /// </summary>
         public float Height { get; set; }
+
+        /// <summary>
+        /// Factor mapping the natural document width onto the delivered
+        /// <see cref="Bitmap"/> width. Exactly 1 when the bitmap is at natural
+        /// size; below 1 when the pixel budget forced a bounded reduction. A
+        /// caller that composites the bitmap into a <see cref="Width"/> x
+        /// <see cref="Height"/> box must scale it by this: the bitmap is a
+        /// reduced representation of the natural size, never a silently stretched
+        /// substitute for it.
+        /// </summary>
+        public float RasterScaleX { get; set; } = 1f;
+
+        /// <summary>
+        /// Vertical counterpart of <see cref="RasterScaleX"/>. It can differ
+        /// from the horizontal factor by the integer rounding of the reduced
+        /// surface, so callers must use both.
+        /// </summary>
+        public float RasterScaleY { get; set; } = 1f;
+
+        /// <summary>
+        /// True when the delivered bitmap is smaller than the reported natural
+        /// size. Derived from the scales, so it cannot disagree with them; use it
+        /// for telemetry and caller fast paths instead of comparing the bitmap
+        /// against <see cref="Width"/>/<see cref="Height"/>.
+        /// </summary>
+        public bool IsDownscaled => RasterScaleX != 1f || RasterScaleY != 1f;
         
         /// <summary>
         /// Whether rendering succeeded.
@@ -280,8 +323,10 @@ namespace FenBrowser.FenEngine.Adapters
         public int MaxFilterCount { get; set; }
         
         /// <summary>
-        /// Maximum render time in milliseconds. This is an elapsed-time guard after
-        /// parsing; source/raster admission limits provide the pre-allocation boundary.
+        /// Maximum render time in milliseconds. One clock covers the whole call:
+        /// parse, draw, effect construction, and the final rasterization performed by
+        /// the adapter, so a result is never admitted after the budget elapsed.
+        /// Source and raster admission limits provide the pre-allocation boundary.
         /// </summary>
         public int MaxRenderTimeMs { get; set; }
         
@@ -297,14 +342,40 @@ namespace FenBrowser.FenEngine.Adapters
         public int MaxSourceChars { get; set; }
 
         /// <summary>
-        /// Maximum decoded raster width/height used for the pre-rendered bitmap.
+        /// Hard maximum decoded raster width for the pre-rendered bitmap. A
+        /// document wider than this is rejected rather than rescaled: shrinking
+        /// it would silently reduce its resolution, so this cap is never met by
+        /// a reduction. Only <see cref="MaxRasterPixels"/> may be.
         /// </summary>
         public int MaxRasterWidth { get; set; }
+        /// <summary>
+        /// Hard maximum decoded raster height. Same hard-cap, never-rescaled
+        /// contract as <see cref="MaxRasterWidth"/>.
+        /// </summary>
         public int MaxRasterHeight { get; set; }
 
         /// <summary>
-        /// Maximum decoded raster pixel count. This is the primary memory-bomb guard;
-        /// BGRA32 consumes roughly four bytes per admitted pixel before native overhead.
+        /// Maximum decoded raster pixel count. This is the primary memory-bomb
+        /// guard; BGRA32 consumes roughly four bytes per admitted pixel before
+        /// native overhead, and no admitted surface ever exceeds it.
+        /// <para>
+        /// This is the only raster cap a reduction may satisfy. A document whose
+        /// natural raster is inside <see cref="MaxRasterWidth"/> and
+        /// <see cref="MaxRasterHeight"/> but over this budget is rendered into a
+        /// proportionally smaller surface that keeps at least half the natural
+        /// size on each axis; a document needing a larger reduction is rejected
+        /// with its own error message, distinct from a per-axis cap breach.
+        /// </para>
+        /// <para>
+        /// Because a reduced surface is still a valid render, the result keeps
+        /// the natural <see cref="SvgRenderResult.Width"/> and
+        /// <see cref="SvgRenderResult.Height"/> and reports the reduction on
+        /// <see cref="SvgRenderResult.RasterScaleX"/> and
+        /// <see cref="SvgRenderResult.RasterScaleY"/> (with
+        /// <see cref="SvgRenderResult.IsDownscaled"/> and a bounded warning). The
+        /// caller applies that scale when compositing the bitmap; the renderer
+        /// never stretches a reduced bitmap back to the natural size.
+        /// </para>
         /// </summary>
         public long MaxRasterPixels { get; set; }
         
@@ -323,6 +394,15 @@ namespace FenBrowser.FenEngine.Adapters
 
         /// <summary>Maximum number of admitted embedded or resolved resources.</summary>
         public int MaxResourceCount { get; set; }
+
+        /// <summary>
+        /// Maximum decoded pixel count retained by every embedded and resolved raster
+        /// resource of one render, nested documents included. The recorded picture
+        /// keeps each decoded surface resident until it is released, so encoded-byte
+        /// and resource-count budgets cannot bound this native memory. BGRA8888
+        /// consumes four bytes per charged pixel.
+        /// </summary>
+        public long MaxCumulativeDecodedImagePixels { get; set; }
 
         /// <summary>Maximum simultaneous full-surface opacity layers.</summary>
         public int MaxActiveLayers { get; set; }
@@ -354,6 +434,7 @@ namespace FenBrowser.FenEngine.Adapters
             MaxDecodedImageBytes = 8 * 1024 * 1024,
             MaxCumulativeResourceBytes = 32 * 1024 * 1024,
             MaxResourceCount = 64,
+            MaxCumulativeDecodedImagePixels = 32L * 1024 * 1024,
             MaxActiveLayers = 8,
             MaxReferenceDepth = 32,
             AllowExternalReferences = false
@@ -376,6 +457,7 @@ namespace FenBrowser.FenEngine.Adapters
             MaxDecodedImageBytes = 2 * 1024 * 1024,
             MaxCumulativeResourceBytes = 8 * 1024 * 1024,
             MaxResourceCount = 32,
+            MaxCumulativeDecodedImagePixels = 8L * 1024 * 1024,
             MaxActiveLayers = 4,
             MaxReferenceDepth = 16,
             AllowExternalReferences = false
@@ -402,6 +484,8 @@ namespace FenBrowser.FenEngine.Adapters
             if (limits.MaxCumulativeResourceBytes <= 0)
                 limits.MaxCumulativeResourceBytes = defaults.MaxCumulativeResourceBytes;
             if (limits.MaxResourceCount <= 0) limits.MaxResourceCount = defaults.MaxResourceCount;
+            if (limits.MaxCumulativeDecodedImagePixels <= 0)
+                limits.MaxCumulativeDecodedImagePixels = defaults.MaxCumulativeDecodedImagePixels;
             if (limits.MaxActiveLayers <= 0) limits.MaxActiveLayers = defaults.MaxActiveLayers;
             if (limits.MaxReferenceDepth <= 0) limits.MaxReferenceDepth = defaults.MaxReferenceDepth;
 
@@ -418,6 +502,8 @@ namespace FenBrowser.FenEngine.Adapters
             limits.MaxCumulativeResourceBytes = Math.Min(
                 limits.MaxCumulativeResourceBytes, 64 * 1024 * 1024);
             limits.MaxResourceCount = Math.Min(limits.MaxResourceCount, 512);
+            limits.MaxCumulativeDecodedImagePixels = Math.Min(
+                limits.MaxCumulativeDecodedImagePixels, 64L * 1024 * 1024);
             limits.MaxActiveLayers = Math.Min(limits.MaxActiveLayers, 16);
             limits.MaxReferenceDepth = Math.Min(limits.MaxReferenceDepth, 64);
             return limits;

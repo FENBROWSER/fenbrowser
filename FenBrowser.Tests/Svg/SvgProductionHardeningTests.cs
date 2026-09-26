@@ -96,6 +96,7 @@ namespace FenBrowser.Tests.Svg
                 MaxDecodedImageBytes = int.MaxValue,
                 MaxCumulativeResourceBytes = int.MaxValue,
                 MaxResourceCount = int.MaxValue,
+                MaxCumulativeDecodedImagePixels = long.MaxValue,
                 MaxActiveLayers = int.MaxValue,
                 MaxReferenceDepth = int.MaxValue,
                 AllowExternalReferences = true
@@ -113,9 +114,124 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(32 * 1024 * 1024, limits.MaxDecodedImageBytes);
             Assert.Equal(64 * 1024 * 1024, limits.MaxCumulativeResourceBytes);
             Assert.Equal(512, limits.MaxResourceCount);
+            Assert.Equal(64L * 1024 * 1024, limits.MaxCumulativeDecodedImagePixels);
             Assert.Equal(16, limits.MaxActiveLayers);
             Assert.Equal(64, limits.MaxReferenceDepth);
             Assert.True(limits.AllowExternalReferences);
+        }
+
+        [Fact]
+        public void RenderLimits_OmittedDecodedRasterBudgetFallsBackToDefault()
+        {
+            var limits = SvgRenderLimits.Normalize(new SvgRenderLimits
+            {
+                MaxCumulativeDecodedImagePixels = 0
+            });
+
+            Assert.Equal(
+                SvgRenderLimits.Default.MaxCumulativeDecodedImagePixels,
+                limits.MaxCumulativeDecodedImagePixels);
+        }
+
+        [Fact]
+        public void DecodedRasterScope_ChargesPixelsOnceAndReusesIdenticalPayloads()
+        {
+            var limits = SvgRenderLimits.Default;
+            limits.MaxCumulativeDecodedImagePixels = 64;
+            using var resources = new SvgRenderResources(limits);
+            byte[] payload = PngBytes(4, 4, SKColors.Red);
+            byte[] other = PngBytes(4, 4, SKColors.Blue);
+
+            Assert.False(resources.TryBorrowDecodedImage(payload, out _, out _));
+            Assert.True(resources.TryAdmitDecodedPixels(16));
+            using var first = SKImage.FromBitmap(DecodePng(payload));
+            resources.RetainDecodedImage(payload, first);
+
+            Assert.True(resources.TryBorrowDecodedImage(payload, out var reused, out _));
+            Assert.Same(first, reused);
+            Assert.Equal(1, resources.DecodedImageCount);
+            Assert.Equal(16, resources.CumulativeDecodedPixels);
+
+            Assert.False(resources.TryBorrowDecodedImage(other, out _, out _));
+            Assert.True(resources.TryAdmitDecodedPixels(16));
+            using var second = SKImage.FromBitmap(DecodePng(other));
+            resources.RetainDecodedImage(other, second);
+            Assert.Equal(2, resources.DecodedImageCount);
+            Assert.Equal(32, resources.CumulativeDecodedPixels);
+
+            Assert.False(resources.TryAdmitDecodedPixels(33));
+            Assert.Equal(32, resources.CumulativeDecodedPixels);
+            Assert.False(resources.TryAdmitDecodedPixels(0));
+            Assert.False(resources.TryAdmit(-1));
+        }
+
+        [Fact]
+        public void DecodedRasterScope_ReleasesEveryRetainedImageExactlyOnce()
+        {
+            var limits = SvgRenderLimits.Default;
+            var resources = new SvgRenderResources(limits);
+            byte[] payload = PngBytes(4, 4, SKColors.Green);
+            using var image = SKImage.FromBitmap(DecodePng(payload));
+            resources.RetainDecodedImage(payload, image);
+
+            Assert.Equal(1, resources.DecodedImageCount);
+
+            resources.Dispose();
+            resources.Dispose();
+
+            Assert.Equal(0, resources.DecodedImageCount);
+            Assert.False(resources.TryAdmitDecodedPixels(16));
+            Assert.False(resources.TryAdmit(1));
+            Assert.False(resources.TryBorrowDecodedImage(payload, out _, out _));
+        }
+
+        [Fact]
+        public void DecodedRasterScope_TracksOneDeadlineAcrossTheWholeCall()
+        {
+            var limits = SvgRenderLimits.Default;
+            limits.MaxRenderTimeMs = 20;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            Thread.Sleep(120);
+
+            using var resources = new SvgRenderResources(limits, clock);
+
+            Assert.Equal(20, resources.DeadlineMs);
+            Assert.Same(clock, resources.Clock);
+            Assert.True(resources.IsExpired);
+            Assert.True(resources.ElapsedMs >= resources.DeadlineMs);
+        }
+
+        [Fact]
+        public void BorrowedDecodedRaster_KeepsPixelsValidAfterTheScopeIsReleased()
+        {
+            byte[] payload = PngBytes(4, 4, SKColors.Magenta);
+            string uri = "data:image/png;base64," + Convert.ToBase64String(payload);
+            string source =
+                "<svg width='4' height='4'><image href='" + uri + "' width='4' height='4'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(source);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.HadResourceRejection);
+            Assert.Equal(SKColors.Magenta, result.Bitmap.GetPixel(2, 2));
+        }
+
+        private static byte[] PngBytes(int width, int height, SKColor color)
+        {
+            using var bitmap = new SKBitmap(width, height);
+            bitmap.Erase(color);
+            using var image = SKImage.FromBitmap(bitmap);
+            using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+            return data.ToArray();
+        }
+
+        private static SKBitmap DecodePng(byte[] payload)
+        {
+            Assert.True(
+                SvgRenderEngine.TryDecodeEmbeddedBitmap(
+                    payload, 1024, 1024, out var bitmap, out var error),
+                error);
+            return bitmap;
         }
 
         [Theory]
@@ -199,6 +315,19 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(
                 $"<svg width='160' height='40'><text x='4' y='30' font-size='24'>{text}</text></svg>");
 
+            if (text.Any(c => c is (>= '\u0590' and <= '\u08FF') or (>= '\uFB1D' and <= '\uFDFF') or
+                (>= '\uFE70' and <= '\uFEFE')))
+            {
+                // The first-party shaper produces left-to-right glyph runs only, so
+                // a paragraph that needs right-to-left ordering is reported instead
+                // of painted with its words reversed.
+                Assert.False(result.Success, result.ErrorMessage);
+                Assert.Null(result.Bitmap);
+                Assert.True(result.RequiresFallback);
+                Assert.Contains(result.Warnings, warning =>
+                    warning.Contains("bidirectional", StringComparison.Ordinal));
+                return;
+            }
             Assert.True(result.Success, result.ErrorMessage);
             Assert.False(result.RequiresFallback);
             Assert.True(HasForeground(result.Bitmap));
@@ -475,6 +604,222 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.Success, result.ErrorMessage);
             Assert.True(result.Bitmap.GetPixel(10, 10).Alpha > 0);
             Assert.True(result.Bitmap.GetPixel(100, 100).Alpha > 0);
+        }
+
+        private const string PercentageStrokeOpen =
+            "<svg width='310' height='170' viewBox='0 0 620 340'>";
+
+        private const string PercentageStrokeRect =
+            "<rect x='62' y='68' width='434' height='204'/>";
+
+        [Fact]
+        public void PercentageStrokeDimensions_ResolveAgainstTheNormalizedViewportDiagonal()
+        {
+            const string viaStyle =
+                PercentageStrokeOpen +
+                "<style>rect{fill:none;stroke:blue;stroke-width:10%;" +
+                "stroke-dasharray:20% 30%;stroke-dashoffset:-10%;}</style>" +
+                PercentageStrokeRect + "</svg>";
+            const string viaAttribute =
+                PercentageStrokeOpen +
+                "<style>rect{fill:none;stroke:blue;}</style>" +
+                "<rect x='62' y='68' width='434' height='204' stroke-width='10%' " +
+                "stroke-dasharray='20% 30%' stroke-dashoffset='-10%'/></svg>";
+            const string absolute =
+                PercentageStrokeOpen +
+                "<style>rect{fill:none;stroke:blue;stroke-width:50px;" +
+                "stroke-dasharray:100px 150px;stroke-dashoffset:-50px;}</style>" +
+                PercentageStrokeRect + "</svg>";
+
+            AssertIdenticalPixels(viaStyle, absolute);
+            AssertIdenticalPixels(viaAttribute, absolute);
+        }
+
+        [Fact]
+        public void PercentageStrokeDimensions_UseTheNearestEstablishingViewport()
+        {
+            const string nested =
+                "<svg width='200' height='100' viewBox='0 0 200 100'>" +
+                "<svg x='0' y='0' width='100' height='100' viewBox='0 0 50 50'>" +
+                "<rect x='5' y='5' width='40' height='40' fill='none' stroke='blue' " +
+                "stroke-width='10%'/></svg></svg>";
+            const string nestedAbsolute =
+                "<svg width='200' height='100' viewBox='0 0 200 100'>" +
+                "<svg x='0' y='0' width='100' height='100' viewBox='0 0 50 50'>" +
+                "<rect x='5' y='5' width='40' height='40' fill='none' stroke='blue' " +
+                "stroke-width='5'/></svg></svg>";
+
+            AssertIdenticalPixels(nested, nestedAbsolute);
+        }
+
+        [Fact]
+        public void NegativeStrokeDashOffset_AdvancesTheDashPhase()
+        {
+            const string open =
+                "<svg width='60' height='20'><path d='M0 10 H60' fill='none' stroke='black' " +
+                "stroke-width='10' stroke-dasharray='10 10' stroke-dashoffset='";
+
+            using var negative = new FenSvgRenderer().Render(open + "-5'/></svg>");
+            using var wrapped = new FenSvgRenderer().Render(open + "15'/></svg>");
+            using var clamped = new FenSvgRenderer().Render(open + "0'/></svg>");
+
+            foreach (var result in new[] { negative, wrapped, clamped })
+            {
+                Assert.True(result.Success, result.ErrorMessage);
+                Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            }
+
+            bool[] negativeMask = DashRowMask(negative.Bitmap, 10);
+            Assert.Equal(negativeMask, DashRowMask(wrapped.Bitmap, 10));
+            Assert.NotEqual(negativeMask, DashRowMask(clamped.Bitmap, 10));
+        }
+
+        [Fact]
+        public void RoundedRectDashPattern_StartsAtTheSvgCorner()
+        {
+            const string svg =
+                "<svg width='100' height='100'><rect x='0' y='0' width='100' height='100' " +
+                "rx='20' ry='20' fill='none' stroke='black' stroke-width='10' " +
+                "stroke-dasharray='30 30'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(
+                result.Bitmap.GetPixel(30, 2).Alpha > 0,
+                "the first dash must begin at the rounded rect's (x + rx, y) start point");
+            Assert.Equal(
+                0,
+                result.Bitmap.GetPixel(60, 2).Alpha);
+        }
+
+        [Fact]
+        public void ScriptedShapeGeometry_FailsClosedAsDynamicContent()
+        {
+            using var pathLength = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><rect width='20' height='20' pathLength='4'/>" +
+                "<script>document.querySelector('rect')" +
+                ".setAttribute('pathLength', '8');</script></svg>");
+            using var cssGeometry = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><style>circle{cx:20px;cy:20px;r:5px;fill:blue}" +
+                "</style><circle/><script>document.querySelector('circle')" +
+                ".style.r = '9px';</script></svg>");
+
+            AssertFailsClosed(pathLength);
+            AssertFailsClosed(cssGeometry);
+            Assert.Contains("dynamic-content", pathLength.FallbackReasonCodes);
+            Assert.Contains("dynamic-content", cssGeometry.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void ScriptedPathLengthCalibratedDashPattern_FailsClosedAsDynamicContent()
+        {
+            // WPT svg/shapes/reftests/pathlength-004b.svg: a shape with no
+            // pathLength attribute whose user-unit dash pattern is authored for a
+            // pathLength a script sets later is a script-observable rendering
+            // input, exactly like the geometry attributes are.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='80' height='80'><polygon points='5,5 75,5 75,75' " +
+                "style='fill:none;stroke:black;stroke-dasharray:0.25'/>" +
+                "<script>document.querySelector('polygon')" +
+                ".setAttribute('pathLength', '4');</script></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains("dynamic-content", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void ScriptElementCombinedWithEventHandler_FailsClosedAsDynamicContent()
+        {
+            // WPT svg/struct/reftests/currentScale.svg: an onload handler that
+            // drives a root transform (or any other render state) can only be
+            // resolved by running script, which this engine never does.
+            using var both = new FenSvgRenderer().Render(
+                "<svg width='40' height='40' onload='scaleDown()'>" +
+                "<rect width='40' height='40' fill='green'/>" +
+                "<script>function scaleDown(){" +
+                "document.documentElement.currentScale = 0.5;}</script></svg>");
+
+            AssertFailsClosed(both);
+            Assert.Contains("dynamic-content", both.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void EventHandlerWithoutScriptElement_RendersTheStaticTree()
+        {
+            // A handler content attribute is code, but the only thing that compiles
+            // it is a script engine, and this renderer has none. With exactly one
+            // frame there is no pre-event state to withhold, so the document is
+            // painted rather than condemned on a signal that can never fire.
+            foreach (string document in new[]
+            {
+                "<svg width='40' height='40' onload=\"document.fonts.ready.then(noop)\">" +
+                "<circle cx='20' cy='20' r='10' fill='blue'/></svg>",
+                "<svg width='40' height='40'><circle cx='20' cy='20' r='10' fill='blue' " +
+                "onmouseover='this.setAttribute(\"fill\", \"red\")'/></svg>"
+            })
+            {
+                using var result = new FenSvgRenderer().Render(document);
+
+                Assert.True(result.Success, document + ": " + result.ErrorMessage);
+                Assert.False(
+                    result.RequiresFallback,
+                    document + ": " + string.Join("; ", result.Warnings));
+                Assert.DoesNotContain("dynamic-content", result.FallbackReasonCodes);
+                Assert.Equal((byte)255, result.Bitmap.GetPixel(20, 20).Alpha);
+            }
+        }
+
+        [Fact]
+        public void ScriptElementWithoutScriptObservableState_FailsClosedAsDynamicContent()
+        {
+            // WPT svg/scripted/*.svg and svg/types/scripted/*.svg carry scripts that
+            // touch no geometry at all (getTotalLength, focus, DOM enumeration). The
+            // single-pass renderer still cannot know such a script is inert, so the
+            // document is refused at admission rather than admitted on a guess.
+            foreach (string script in new[]
+            {
+                "<script>window.test = 1;</script>",
+                "<script href='/common/reftest-wait.js'/>",
+                "<script>document.querySelector('circle').getTotalLength();</script>"
+            })
+            {
+                using var result = new FenSvgRenderer().Render(
+                    "<svg width='40' height='40'><circle cx='20' cy='20' r='10' fill='blue'/>" +
+                    script + "</svg>");
+
+                AssertFailsClosed(result);
+                Assert.Contains("dynamic-content", result.FallbackReasonCodes);
+            }
+        }
+
+        private static bool[] DashRowMask(SKBitmap bitmap, int y)
+        {
+            var mask = new bool[bitmap.Width];
+            for (int x = 0; x < bitmap.Width; x++) mask[x] = bitmap.GetPixel(x, y).Alpha > 0;
+            return mask;
+        }
+
+        private static void AssertIdenticalPixels(string actualSvg, string expectedSvg)
+        {
+            using var actual = new FenSvgRenderer().Render(actualSvg);
+            using var expected = new FenSvgRenderer().Render(expectedSvg);
+
+            Assert.True(actual.Success, actual.ErrorMessage);
+            Assert.False(actual.RequiresFallback, string.Join("; ", actual.Warnings));
+            Assert.True(expected.Success, expected.ErrorMessage);
+            Assert.Equal(expected.Bitmap.Width, actual.Bitmap.Width);
+            Assert.Equal(expected.Bitmap.Height, actual.Bitmap.Height);
+            for (int y = 0; y < actual.Bitmap.Height; y++)
+            for (int x = 0; x < actual.Bitmap.Width; x++)
+            {
+                var expectedPixel = expected.Bitmap.GetPixel(x, y);
+                var actualPixel = actual.Bitmap.GetPixel(x, y);
+                if (actualPixel == expectedPixel) continue;
+                Assert.Fail(
+                    $"pixel ({x},{y}) is {actualPixel} but {expectedPixel} was expected");
+            }
         }
 
         [Fact]
