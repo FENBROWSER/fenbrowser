@@ -119,7 +119,7 @@ public sealed class InterfacePrototypeMemberTests : IDisposable
 
         Assert.Equal(
             "False",
-            engine.Evaluate("'play' in HTMLMediaElement.prototype")?.ToString());
+            engine.Evaluate("'transferControlToOffscreen' in HTMLCanvasElement.prototype")?.ToString());
     }
 
     [Fact]
