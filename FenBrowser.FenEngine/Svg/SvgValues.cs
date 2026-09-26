@@ -18,6 +18,8 @@ namespace FenBrowser.FenEngine.Svg
     {
         public const float CoordClamp = 1e9f;
 
+        private const double QuarterTurnTolerance = 1e-9;
+
         public static bool IsFinite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
 
         public static bool IsFinite(SKMatrix matrix) =>
@@ -138,7 +140,7 @@ namespace FenBrowser.FenEngine.Svg
 
         // -------------------------------------------------------------- lengths
 
-        public enum SvgUnit { User, Px, Pt, Pc, Mm, Cm, In, Em, Ex, Percent }
+        public enum SvgUnit { User, Px, Pt, Pc, Mm, Cm, In, Em, Ex, Percent, Ch }
 
         public static bool TryParseLength(ReadOnlySpan<char> s, out float value, out SvgUnit unit)
         {
@@ -187,6 +189,7 @@ namespace FenBrowser.FenEngine.Svg
             if (c0 == 'i' && c1 == 'n') return SvgUnit.In;
             if (c0 == 'e' && c1 == 'm') return SvgUnit.Em;
             if (c0 == 'e' && c1 == 'x') return SvgUnit.Ex;
+            if (c0 == 'c' && c1 == 'h') return SvgUnit.Ch;
             return SvgUnit.User; // Unknown two-char suffix.
         }
 
@@ -202,6 +205,7 @@ namespace FenBrowser.FenEngine.Svg
                 case SvgUnit.In: return value * 96f;
                 case SvgUnit.Em:
                 case SvgUnit.Ex: return value * fontSize;
+                case SvgUnit.Ch: return value * (fontSize * 0.5f);
                 default: return value;
             }
         }
@@ -604,19 +608,11 @@ namespace FenBrowser.FenEngine.Svg
             else if (EqIgnoreCase(fn, "rotate"))
             {
                 if (n != 1 && n != 3) return false;
-                float radians = DegreesToRadians(nums[0]);
-                if (!IsFinite(radians)) return false;
-                if (n == 3)
-                {
-                    t = SKMatrix.CreateRotation(
-                        radians,
-                        ClampCoord(nums[1]),
-                        ClampCoord(nums[2]));
-                }
-                else
-                {
-                    t = SKMatrix.CreateRotation(radians);
-                }
+                if (!TryCreateRotation(
+                        nums[0],
+                        n == 3 ? ClampCoord(nums[1]) : 0f,
+                        n == 3 ? ClampCoord(nums[2]) : 0f,
+                        out t)) return false;
             }
             else if (EqIgnoreCase(fn, "skewx"))
             {
@@ -652,6 +648,43 @@ namespace FenBrowser.FenEngine.Svg
             float ty = (float)System.Math.Tan(radiansY);
             if (!IsFinite(tx) || !IsFinite(ty)) return false;
             matrix = new SKMatrix(1f, tx, 0f, ty, 1f, 0f, 0f, 0f, 1f);
+            return IsFinite(matrix);
+        }
+
+        private static bool TryCreateRotation(float degrees, float pivotX, float pivotY, out SKMatrix matrix)
+        {
+            matrix = SKMatrix.Identity;
+            double radians = degrees * (System.Math.PI / 180d);
+            if (!double.IsFinite(radians)) return false;
+
+            double quarterTurns = radians * (2d / System.Math.PI);
+            double nearestQuarter = System.Math.Round(quarterTurns);
+            float cos;
+            float sin;
+            if (double.IsFinite(nearestQuarter) &&
+                System.Math.Abs(quarterTurns - nearestQuarter) <= QuarterTurnTolerance)
+            {
+                double remainder = nearestQuarter % 4d;
+                if (remainder < 0d) remainder += 4d;
+                (cos, sin) = (int)remainder switch
+                {
+                    0 => (1f, 0f),
+                    1 => (0f, 1f),
+                    2 => (-1f, 0f),
+                    _ => (0f, -1f),
+                };
+            }
+            else
+            {
+                cos = (float)System.Math.Cos(radians);
+                sin = (float)System.Math.Sin(radians);
+            }
+            if (!IsFinite(cos) || !IsFinite(sin)) return false;
+
+            matrix = new SKMatrix(
+                cos, -sin, pivotX - cos * pivotX + sin * pivotY,
+                sin, cos, pivotY - sin * pivotX - cos * pivotY,
+                0f, 0f, 1f);
             return IsFinite(matrix);
         }
 

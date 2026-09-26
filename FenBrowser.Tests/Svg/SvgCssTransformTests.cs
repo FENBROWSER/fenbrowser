@@ -206,6 +206,20 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.Bitmap.GetPixel(50, 15).Alpha == 0);
         }
 
+        [Fact]
+        public void QuarterTurnRotation_RendersIdenticallyToTheEquivalentMatrix()
+        {
+            const string head = "<svg width='400' height='300'>" +
+                "<path d='M 170 -30 l -120 240 l 240 0 Z' fill='black' ";
+            using var rotated = RenderRaw(head +
+                "transform-origin='170 150' style='transform:rotate(90deg)'/></svg>");
+            using var matrix = RenderRaw(head +
+                "style='transform:matrix(0 1 -1 0 320 -20)'/></svg>");
+            Assert.False(rotated.RequiresFallback);
+            Assert.False(matrix.RequiresFallback);
+            AssertIdenticalPixels(matrix, rotated);
+        }
+
         private void AssertFailsClosed(string svg)
         {
             using var result = _r.Render(svg);
@@ -219,6 +233,15 @@ namespace FenBrowser.Tests.Svg
             Assert.False(SvgRenderResult.IsAdmissible(result));
             Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
             Assert.NotEmpty(result.FallbackReasonCodes);
+        }
+
+        private static void AssertIdenticalPixels(SvgRenderResult expected, SvgRenderResult actual)
+        {
+            Assert.Equal(expected.Bitmap.Width, actual.Bitmap.Width);
+            Assert.Equal(expected.Bitmap.Height, actual.Bitmap.Height);
+            for (int y = 0; y < expected.Bitmap.Height; y++)
+            for (int x = 0; x < expected.Bitmap.Width; x++)
+                Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
         }
     }
 }
@@ -314,6 +337,56 @@ namespace FenBrowser.Tests.Svg
             var s = SvgCssTransform.TryResolve("scale(2)", "left top 0%", null,
                 100, 50, 16, 16, null, out _, out _);
             Assert.Equal(SvgCssTransformStatus.Unsupported, s);
+        }
+
+        [Theory]
+        [InlineData("rotate(0)", 1f, 0f, 0f, 1f)]
+        [InlineData("rotate(90deg)", 0f, -1f, 1f, 0f)]
+        [InlineData("rotate(180deg)", -1f, 0f, 0f, -1f)]
+        [InlineData("rotate(270deg)", 0f, 1f, -1f, 0f)]
+        [InlineData("rotate(-90deg)", 0f, 1f, -1f, 0f)]
+        [InlineData("rotate(0.25turn)", 0f, -1f, 1f, 0f)]
+        [InlineData("rotate(100grad)", 0f, -1f, 1f, 0f)]
+        [InlineData("rotate(200grad)", -1f, 0f, 0f, -1f)]
+        public void QuarterTurnRotation_ResolvesToExactTrigonometry(
+            string transform, float scaleX, float skewX, float skewY, float scaleY)
+        {
+            var s = SvgCssTransform.TryResolve(transform, null, null,
+                400, 300, 16, 16, null, out var m, out _);
+            Assert.True(s is SvgCssTransformStatus.Matrix or SvgCssTransformStatus.Identity,
+                $"quarter turn must resolve, got {s}");
+            Assert.Equal(scaleX, m.ScaleX);
+            Assert.Equal(skewX, m.SkewX);
+            Assert.Equal(skewY, m.SkewY);
+            Assert.Equal(scaleY, m.ScaleY);
+            Assert.Equal(0f, m.TransX);
+            Assert.Equal(0f, m.TransY);
+        }
+
+        [Fact]
+        public void QuarterTurnRotationAboutOrigin_KeepsTranslationExact()
+        {
+            var s = SvgCssTransform.TryResolve("rotate(90deg)", "170 150", null,
+                400, 300, 16, 16, null, allowOriginUserUnits: true, out var m, out _);
+            Assert.Equal(SvgCssTransformStatus.Matrix, s);
+            Assert.Equal(0f, m.ScaleX);
+            Assert.Equal(-1f, m.SkewX);
+            Assert.Equal(1f, m.SkewY);
+            Assert.Equal(0f, m.ScaleY);
+            Assert.Equal(320f, m.TransX);
+            Assert.Equal(-20f, m.TransY);
+        }
+
+        [Fact]
+        public void NonQuarterTurnRotation_KeepsFullPrecisionTrigonometry()
+        {
+            var s = SvgCssTransform.TryResolve("rotate(45deg)", null, null,
+                400, 300, 16, 16, null, out var m, out _);
+            Assert.Equal(SvgCssTransformStatus.Matrix, s);
+            Assert.Equal(0.70710677f, m.ScaleX);
+            Assert.Equal(-0.70710677f, m.SkewX);
+            Assert.Equal(0.70710677f, m.SkewY);
+            Assert.Equal(0.70710677f, m.ScaleY);
         }
     }
 }

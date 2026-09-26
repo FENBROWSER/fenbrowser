@@ -46,6 +46,7 @@ namespace FenBrowser.FenEngine.Svg
         private const int MaxValueChars = 4096;
         private const int MaxFunctions = 32;
         private const int MaxArgsPerFunction = 8;
+        private const double QuarterTurnTolerance = 1e-9;
 
         /// <summary>
         /// Resolves a CSS transform declaration chain against explicit context.
@@ -513,7 +514,7 @@ namespace FenBrowser.FenEngine.Svg
                 case "rotate":
                     {
                         if (!TrySplitArgs(args, out var parts) || parts.Length != 1 ||
-                            !TryAngle(parts[0], out float radians))
+                            !TryAngle(parts[0], out double radians))
                             return false;
                         matrix = SKMatrix.Concat(matrix, RotationMatrix(radians));
                         return true;
@@ -522,22 +523,22 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         if (!TrySplitArgs(args, out var parts) ||
                             parts.Length is (< 1 or > 2)) return false;
-                        if (!TryAngle(parts[0], out float ax)) return false;
-                        float ay = 0f;
+                        if (!TryAngle(parts[0], out double ax)) return false;
+                        double ay = 0d;
                         if (parts.Length == 2 && !TryAngle(parts[1], out ay)) return false;
-                        matrix = SKMatrix.Concat(matrix, SkewMatrix(ax, ay));
+                        matrix = SKMatrix.Concat(matrix, SkewMatrix((float)ax, (float)ay));
                         return true;
                     }
                 case "skewx":
                 case "skewy":
                     {
                         if (!TrySplitArgs(args, out var parts) || parts.Length != 1 ||
-                            !TryAngle(parts[0], out float angle))
+                            !TryAngle(parts[0], out double angle))
                             return false;
                         matrix = SKMatrix.Concat(matrix,
                             name.Equals("skewx", StringComparison.OrdinalIgnoreCase)
-                                ? SkewMatrix(angle, 0f)
-                                : SkewMatrix(0f, angle));
+                                ? SkewMatrix((float)angle, 0f)
+                                : SkewMatrix(0f, (float)angle));
                         return true;
                     }
                 default:
@@ -547,10 +548,25 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
-        private static SKMatrix RotationMatrix(float radians)
+        private static SKMatrix RotationMatrix(double radians)
         {
-            float cos = MathF.Cos(radians);
-            float sin = MathF.Sin(radians);
+            double quarterTurns = radians * (2d / Math.PI);
+            double nearestQuarter = Math.Round(quarterTurns);
+            if (double.IsFinite(nearestQuarter) &&
+                Math.Abs(quarterTurns - nearestQuarter) <= QuarterTurnTolerance)
+            {
+                double remainder = nearestQuarter % 4d;
+                if (remainder < 0d) remainder += 4d;
+                return (int)remainder switch
+                {
+                    0 => new SKMatrix(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
+                    1 => new SKMatrix(0f, -1f, 0f, 1f, 0f, 0f, 0f, 0f, 1f),
+                    2 => new SKMatrix(-1f, 0f, 0f, 0f, -1f, 0f, 0f, 0f, 1f),
+                    _ => new SKMatrix(0f, 1f, 0f, -1f, 0f, 0f, 0f, 0f, 1f),
+                };
+            }
+            float cos = (float)Math.Cos(radians);
+            float sin = (float)Math.Sin(radians);
             return new SKMatrix(cos, -sin, 0f, sin, cos, 0f, 0f, 0f, 1f);
         }
 
@@ -597,9 +613,9 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
-        private static bool TryAngle(string raw, out float radians)
+        private static bool TryAngle(string raw, out double radians)
         {
-            radians = 0f;
+            radians = 0d;
             if (string.IsNullOrWhiteSpace(raw)) return false;
             string trimmed = raw.Trim();
 
@@ -609,7 +625,7 @@ namespace FenBrowser.FenEngine.Svg
             {
                 if (unitless == 0d)
                 {
-                    radians = 0f;
+                    radians = 0d;
                     return true;
                 }
                 return false;
@@ -633,9 +649,8 @@ namespace FenBrowser.FenEngine.Svg
                 _ => double.NaN
             };
             if (double.IsNaN(converted) || !double.IsFinite(converted)) return false;
-            float convertedRadians = (float)converted;
-            if (!float.IsFinite(convertedRadians)) return false;
-            radians = convertedRadians;
+            if (!float.IsFinite((float)converted)) return false;
+            radians = converted;
             return true;
         }
 

@@ -187,6 +187,70 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(5f, py, 3);
         }
 
+        [Theory]
+        [InlineData("rotate(0)", 1f, 0f, 0f, 0f, 1f, 0f)]
+        [InlineData("rotate(90)", 0f, -1f, 0f, 1f, 0f, 0f)]
+        [InlineData("rotate(180)", -1f, 0f, 0f, 0f, -1f, 0f)]
+        [InlineData("rotate(270)", 0f, 1f, 0f, -1f, 0f, 0f)]
+        [InlineData("rotate(-90)", 0f, 1f, 0f, -1f, 0f, 0f)]
+        [InlineData("rotate(360)", 1f, 0f, 0f, 0f, 1f, 0f)]
+        public void Transform_RotateQuarterTurn_HasExactCosAndSin(
+            string input, float sx, float kx, float tx, float ky, float sy, float ty)
+        {
+            Assert.True(SvgValues.TryParseTransformList(input.AsSpan(), out var m));
+            Assert.Equal(sx, m.ScaleX);
+            Assert.Equal(kx, m.SkewX);
+            Assert.Equal(tx, m.TransX);
+            Assert.Equal(ky, m.SkewY);
+            Assert.Equal(sy, m.ScaleY);
+            Assert.Equal(ty, m.TransY);
+        }
+
+        [Theory]
+        [InlineData("rotate(0 170 150)", 1f, 0f, 0f, 0f, 1f, 0f)]
+        [InlineData("rotate(90 170 150)", 0f, -1f, 320f, 1f, 0f, -20f)]
+        [InlineData("rotate(180 170 150)", -1f, 0f, 340f, 0f, -1f, 300f)]
+        [InlineData("rotate(270 170 150)", 0f, 1f, 20f, -1f, 0f, 320f)]
+        [InlineData("rotate(-90 170 150)", 0f, 1f, 20f, -1f, 0f, 320f)]
+        [InlineData("rotate(90 0 0)", 0f, -1f, 0f, 1f, 0f, 0f)]
+        public void Transform_RotateQuarterTurnAroundPivot_HasExactCosAndSin(
+            string input, float sx, float kx, float tx, float ky, float sy, float ty)
+        {
+            Assert.True(SvgValues.TryParseTransformList(input.AsSpan(), out var m));
+            Assert.Equal(sx, m.ScaleX);
+            Assert.Equal(kx, m.SkewX);
+            Assert.Equal(tx, m.TransX);
+            Assert.Equal(ky, m.SkewY);
+            Assert.Equal(sy, m.ScaleY);
+            Assert.Equal(ty, m.TransY);
+        }
+
+        [Fact]
+        public void Transform_RotateNonQuarterTurn_KeepsFullPrecision()
+        {
+            Assert.True(SvgValues.TryParseTransformList("rotate(45)".AsSpan(), out var m));
+            Assert.Equal(0.70710677f, m.ScaleX);
+            Assert.Equal(-0.70710677f, m.SkewX);
+            Assert.Equal(0.70710677f, m.SkewY);
+            Assert.Equal(0.70710677f, m.ScaleY);
+            Assert.Equal(0f, m.TransX);
+            Assert.Equal(0f, m.TransY);
+        }
+
+        [Fact]
+        public void Transform_RotateAttributeQuarterTurn_RendersIdenticalToEquivalentMatrix()
+        {
+            const string head = "<svg width='400' height='300' viewBox='0 0 400 300'>" +
+                "<path d='M 170 -30 l -120 240 l 240 0 Z' fill='black' ";
+            using var rotated = RenderRaw(
+                head + "transform-origin='170 150' transform='rotate(90)'/></svg>");
+            using var matrix = RenderRaw(
+                head + "transform='matrix(0 1 -1 0 320 -20)'/></svg>");
+            Assert.False(rotated.RequiresFallback);
+            Assert.False(matrix.RequiresFallback);
+            AssertIdenticalPixels(matrix, rotated);
+        }
+
         [Fact]
         public void Length_UnitsResolve()
         {
@@ -195,6 +259,56 @@ namespace FenBrowser.Tests.Svg
 
             Assert.True(SvgValues.TryParseLength("50%".AsSpan(), out float pct, out var uPct));
             Assert.Equal(16f, SvgValues.ResolveUnits(pct, uPct, 16f, 32f), 2);
+        }
+
+        [Theory]
+        [InlineData("2ch", 2f, 20f)]
+        [InlineData("2CH", 2f, 20f)]
+        [InlineData("0.5ch", 0.5f, 20f)]
+        public void ChUnit_ParsesAndResolvesAgainstHalfTheFontSize(
+            string input,
+            float expectedValue,
+            float fontSize)
+        {
+            Assert.True(SvgValues.TryParseLength(input.AsSpan(), out float value, out var unit));
+            Assert.Equal(expectedValue, value, 4);
+            Assert.Equal(SvgValues.SvgUnit.Ch, unit);
+            Assert.Equal(expectedValue * (fontSize * 0.5f),
+                SvgValues.ResolveUnits(value, unit, fontSize, 0f), 4);
+        }
+
+        [Theory]
+        [InlineData("1rem")]
+        [InlineData("1q")]
+        [InlineData("1ic")]
+        [InlineData("1cap")]
+        [InlineData("1lh")]
+        [InlineData("1rlh")]
+        [InlineData("1cqh")]
+        [InlineData("1vw")]
+        [InlineData("1px2")]
+        [InlineData("1c")]
+        public void UnitsOutsideTheAttributeVocabulary_StayUnparseable(string input)
+        {
+            Assert.False(SvgValues.TryParseLength(input.AsSpan(), out _, out _));
+        }
+
+        private readonly FenSvgRenderer _renderer = new();
+
+        private SvgRenderResult RenderRaw(string svg)
+        {
+            var res = _renderer.Render(svg);
+            Assert.True(res.Success, res.ErrorMessage ?? "(no error)");
+            return res;
+        }
+
+        private static void AssertIdenticalPixels(SvgRenderResult expected, SvgRenderResult actual)
+        {
+            Assert.Equal(expected.Bitmap.Width, actual.Bitmap.Width);
+            Assert.Equal(expected.Bitmap.Height, actual.Bitmap.Height);
+            for (int y = 0; y < expected.Bitmap.Height; y++)
+            for (int x = 0; x < expected.Bitmap.Width; x++)
+                Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
         }
 
         private static SvgValues.PaintKind ParsePaintKind(string raw)
