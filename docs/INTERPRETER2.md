@@ -1,9 +1,13 @@
 ﻿# The register-window interpreter (`FenBrowser.Js/Interpreter2/`)
 
-A second execution loop for FenJS, built beside the original rather than in
-place of it, selected by `FEN_JS_INTERPRETER=v2`. Off by default.
+FenJS's only interpreter. It was built beside the original dispatch loop
+rather than in place of it, the two compared test by test on test262 at every
+step, and the original was deleted once this loop ran every body (see "The old
+loop's removal" below). Compiled code is the other way a body runs: a
+loop-heavy function tiers up to the baseline JIT, and a long-running frame is
+handed to its compiled code at a loop header (on-stack replacement).
 
-## Why there are two
+## Why it replaced the original
 
 `docs/HANDOFF_PERF_2026-09-09.md` measured an empty JavaScript call on the
 original dispatch loop at ~400ns and found no single step in it worth more than
@@ -39,33 +43,28 @@ is traced, which is why a popped window needs no clearing and a pushed one does.
 
 ## The gate
 
-`FrameLayout` decides, once per `BytecodeFunction` and cached on it, whether a
-body can be represented that way. **The decision is total**: every opcode in the
-body must be one the loop implements, and there is deliberately no mid-body
-bailout. A loop that can abandon a half-executed frame has to rebuild the old
-loop's state out of its own, and that reconstruction is where an engine of this
-shape grows its subtlest bugs.
+`FrameLayout` works out, once per `BytecodeFunction` and cached on it, how a
+body is laid out on the loop. **The decision is total** and there is no
+mid-body bailout: every body the compiler emits has a layout, and a layout the
+loop declined would be an engine defect, reported as a `JsEngineFatalException`
+rather than run some other way.
 
-Refused, and run on the old loop unchanged: `yield*`, class constructors,
-`eval` code, rest parameters, `with`, direct `eval`, and any body that reaches
-for `super` or `new.target`. As of the last measurement that is **2.5% of the
-corpus**, and `yield*` is 1,924 of the 3,187 bodies in it - the whole of what is
-left of both generators and async generators.
-
-Methods are not refused, though the note above said they were for a long time
-and the numbers were read accordingly. A method differs from an ordinary
-function in having a `[[HomeObject]]` and no `[[Construct]]`, and neither shows
-up in the frame - what a home object is *for* is `super`, and the opcode gate
-refuses that on its own.
+The layout is tried in up to three shapes, cheapest first. Blocks as window
+slots is the usual one; a body whose blocks cannot be slots - a block binding a
+closure captures per iteration, a slot named outside its block - is laid out
+again with its blocks as records; and a body whose scope can change shape while
+it runs - direct `eval`, `with`, a separate body environment - is laid out with
+every name resolved through the records, which answers every question the
+slots could not.
 
 ## Semantics live in one place
 
 Nothing in `Interp2.cs` reimplements what an operator, coercion or property
-access means. Everything beyond a register move goes through the same helper the
-old loop calls, via the facade in `BytecodeInterpreter.Interp2Host.cs`. The two
-loops share the heap, the builtins, the inline caches and the bytecode format, so
-a call crosses between them in either direction at any depth, and they cannot
-drift apart on semantics however far the new loop is taken.
+access means. Everything beyond a register move goes through the helpers on
+`BytecodeInterpreter`, via the facade in `BytecodeInterpreter.Interp2Host.cs` -
+the same helpers compiled code calls. The loop and compiled code share the heap,
+the builtins, the inline caches and the bytecode format, so a call crosses
+between them in either direction at any depth.
 
 ## Closures without an environment record
 
@@ -92,12 +91,15 @@ it passes as a block. An arrow is the exception: its record must be one that
 `this` resolves straight through, so it gets a plain declarative one.
 
 `this`, `arguments`, `new.target` and `super` are the same question about the
-bindings that are not identifiers. A nested arrow that reads `this` makes the
-enclosing body keep a record so there is something to find it on, and so does one
-that reads `arguments` when the enclosing body has its own - this engine builds
-the arguments object as a snapshot rather than as an alias of the parameter
-bindings, so a parameter can still be a register in a body that has one.
-`new.target` and `super` from an enclosing scope are still refused.
+bindings that are not identifiers. A nested arrow that reads any of them makes
+the enclosing body keep a record so there is something to find it on.
+
+A sloppy function with a simple parameter list that uses `arguments` gets a
+**mapped** arguments object (ECMA-262 10.4.4.7), whose indices alias the
+parameters in both directions. The object reaches the parameters through the
+function's record, so such a body keeps its parameters there rather than in the
+window. A strict or non-simple body gets the unmapped snapshot, and its
+parameters stay registers.
 
 ## Where a free identifier lives
 
@@ -203,13 +205,9 @@ so the try blocks around it catch it as they would any other exception.
 next one out, and completes the body when there are none; a `catch` never sees
 it.
 
-Which loop a generator runs on is decided when it is created and never changes.
-The two lay a frame out differently, so a window one suspended is not one the
-other could resume.
-
-`yield*` is still refused: it resumes into its own delegation protocol rather
-than at the instruction after it, and that protocol is a state machine on the
-old loop which this one has no reason to own a second copy of.
+`yield*` resumes into its delegation protocol rather than at the instruction
+after it; the step that drives the inner iterator once (`YieldStarStep`) is
+shared rather than being a second state machine.
 
 ## The same frame, put away by a promise
 
@@ -232,12 +230,9 @@ catch it as they would any other exception - which is the whole of what
 ECMA-262 27.7.5.3 asks for.
 
 Nothing about the promise, the job queue or the capability is duplicated here.
-The call still goes through the old loop's `CallAsyncFunctionBody`, which makes
-the `AsyncContext` and hands back the pending promise; the only thing that
-changes is that the context's register array is sized to hold a whole window,
-and that the resume path asks the context which loop it belongs to. An async
-activation runs on the loop it was created for, for the same reason a generator
-does.
+The call goes through `CallAsyncFunctionBody`, which makes the `AsyncContext`
+with a register array sized to hold a whole window and hands back the pending
+promise.
 
 An **async generator** is both machines at once, and the old loop runs it as
 neither: the body runs as a plain generator and each result is wrapped in a
@@ -280,27 +275,49 @@ which replaces the array the loop was holding in a local.
 ## Running it
 
 ```bash
-FEN_JS_INTERPRETER=v2   # select the new loop
-FEN_JS_INTERP2_LOG=1    # print coverage and the ranked bailout table
+FEN_JS_INTERP2_LOG=1    # print frames, calls kept in the loop, cache hit rates, OSR entries
 
-# One test262 slice on both loops, diffed by test name (not by count).
-bash scripts/test262/interp2-ab.sh language/expressions/call
-bash scripts/test262/interp2-ab.sh language            # the whole language corpus
+# A change's effect on test262, compared test by test (not by count): run the
+# slice with the runner built before and after it, then diff the two.
+python scripts/test262/run.py category language/expressions/call --exe <before runner> --out <dir>/before --no-report
+python scripts/test262/run.py category language/expressions/call --out <dir>/after --no-report
+python scripts/test262/diff.py <dir>/before <dir>/after
 ```
 
-The A/B script exits non-zero when the new loop fails anything the old one
-passed, so it can gate a commit. Comparing pass totals is not enough: a loop can
-fix one test and break another and score the same.
+Comparing pass totals is not enough: a change can fix one test and break
+another and score the same.
 
-`FEN_JS_INTERP2_LOG=1` prints coverage, the bailout table ranked both by bodies
-and by the calls those bodies cost, and what the property caches could not answer - named misses by where the name actually
-lived, and `o[k]` misses by receiver and key together, because that pair is what
-a new cache form would have to guard. It works from the JS shell and from the
-test262 runner. The
-runner is the honest measurement - the benchmarks all reach 100% eligibility
-because each was written to isolate one cost and they avoid what is hard.
+`FEN_JS_INTERP2_LOG=1` prints how many calls the loop entered as windows of its
+own, and what the property caches could not answer - named misses by where the
+name actually lived, and `o[k]` misses by receiver and key together, because
+that pair is what a new cache form would have to guard. It works from the JS
+shell and from the test262 runner.
 
-## Where it stands
+## The old loop's removal
+
+Done in ten phases on `newinterpreter`, each moving one kind of body onto this
+loop and checked against the old loop on test262 before the next: rest
+parameters; spread and tail calls; blocks kept as records; an arrow's enclosing
+`this`, `arguments`, `new.target` and `super`; classes and derived constructors;
+`yield*` and `for await`; `with`, direct `eval` and body scopes; script, eval and
+module code; on-stack replacement into compiled code; and finally deleting the
+old dispatch loop, the `FEN_JS_INTERPRETER` switch and the scaffolding that
+compared the two.
+
+A full test262 run with the old loop made to throw on entry found two last
+paths into it, both compiler or runtime bugs rather than gaps in this loop:
+functions nested in a class body were marked as class constructors, and async
+functions accepted `new`. Both were fixed before the loop was deleted.
+
+Compiled code still runs on an `InterpreterFrame`, whose variables live in the
+function's environment record; `ExecuteInternalCore` builds one for a call that
+`JitCompiler.PrefersCompiled` sends to compiled code, and
+`Interp2RunCompiledFrom` builds one from a window for on-stack replacement.
+
+## Where it stood
+
+The rest of this document is the record of how the loop got here, measured
+against the old loop while both existed.
 
 Measured on `test/language` (118k function bodies, 23,730 tests):
 

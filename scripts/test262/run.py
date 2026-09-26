@@ -19,7 +19,7 @@ batched store Results/test262/batched/b_<tag>.json, which is what
 scripts/test262/report.py turns into docs/test262_results.md.
 
 Environment: TEST262_ROOT (checkout), TEST262_EXE (runner binary),
-STALL_TIMEOUT_SEC, FEN_JS_INTERPRETER etc. pass through to the runner.
+STALL_TIMEOUT_SEC, FEN_JIT_* etc. pass through to the runner.
 """
 import argparse
 import glob

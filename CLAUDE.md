@@ -183,7 +183,7 @@ python scripts/test262/run.py file D:/test262/test/built-ins/Object/keys/order.j
 python scripts/test262/run.py slice numeric --label before   # named directory slice for a before/after
 python scripts/test262/run.py status                     # per-category summary of the store
 python scripts/test262/triage.py built-ins/Temporal --by 1   # cluster failures[].details by message / subdir
-bash   scripts/test262/interp2-ab.sh language/expressions/call   # v1 vs v2 interpreter loop on one slice
+python scripts/test262/diff.py <before-dir> <after-dir>   # compare two --out result dirs test by test
 ```
 
 `--runner-args ...` forwards anything else to the runner (e.g. `--engine X`); `--out DIR` sends results somewhere other than the store (for comparisons).
