@@ -269,8 +269,19 @@ namespace FenBrowser.FenEngine.Svg
         private bool TryResolveViewportLength(string raw, float parentDim, out float value)
         {
             value = 0f;
-            if (string.IsNullOrWhiteSpace(raw) ||
-                !SvgValues.TryParseLength(raw.AsSpan(), out float parsed, out var unit) ||
+            if (string.IsNullOrWhiteSpace(raw))
+                return false;
+            // Viewport-relative units are sized against the host viewport, which a
+            // standalone SVG render does not have. Resolving them against this
+            // document's own viewport would invent an extent, so the document is
+            // routed to compatibility fallback instead.
+            if (SvgCssLengthEvaluator.HasViewportUnitDimension(raw))
+            {
+                _report.RequireFallback(
+                    $"SVG viewport geometry property '{raw.Trim()}' requires a host viewport");
+                return false;
+            }
+            if (!SvgValues.TryParseLength(raw.AsSpan(), out float parsed, out var unit) ||
                 !SvgValues.IsFinite(parsed) || parsed < 0f)
                 return false;
             if (unit == SvgValues.SvgUnit.Percent)

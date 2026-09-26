@@ -189,6 +189,13 @@ namespace FenBrowser.FenEngine.Svg
             return path;
         }
 
+        private bool RejectsScriptDrivenDocument(SvgElement element)
+        {
+            SvgElement root = element;
+            while (root.Parent != null) root = root.Parent;
+            return SvgFeatureSupport.InspectScriptAdmission(root, _report);
+        }
+
         private float Attr(
             SvgElement el,
             string name,
@@ -215,6 +222,17 @@ namespace FenBrowser.FenEngine.Svg
             value = 0f;
             string raw = element.GetPresentationProperty(name);
             if (string.IsNullOrWhiteSpace(raw)) return false;
+            // The outermost <svg> width/height IS the intrinsic size the host uses
+            // to lay this document out. A viewport-relative value there depends on a
+            // host viewport a standalone render does not have, so the document is
+            // routed to compatibility fallback rather than sized against itself.
+            if (element.Parent == null &&
+                SvgCssLengthEvaluator.HasViewportUnitDimension(raw))
+            {
+                _report.RequireFallback(
+                    $"SVG root geometry property '{name}: {raw.Trim()}' requires a host viewport");
+                return false;
+            }
             if (SvgValues.TryParseLength(raw.AsSpan(), out float parsed, out var unit))
             {
                 if (element.UsesCssPropertySyntax(name) &&
@@ -333,9 +351,34 @@ namespace FenBrowser.FenEngine.Svg
             }
             else
             {
-                path.AddRoundRect(new SKRoundRect(rect, rx, ry));
+                AppendSvgRoundRect(path, x, y, w, h, rx, ry);
             }
             return true;
+        }
+
+        private const float QuarterConicWeight = 0.70710678f;
+
+        private static void AppendSvgRoundRect(
+            SKPathBuilder path,
+            float x,
+            float y,
+            float width,
+            float height,
+            float rx,
+            float ry)
+        {
+            float right = x + width;
+            float bottom = y + height;
+            path.MoveTo(x + rx, y);
+            path.LineTo(right - rx, y);
+            path.ConicTo(right, y, right, y + ry, QuarterConicWeight);
+            path.LineTo(right, bottom - ry);
+            path.ConicTo(right, bottom, right - rx, bottom, QuarterConicWeight);
+            path.LineTo(x + rx, bottom);
+            path.ConicTo(x, bottom, x, bottom - ry, QuarterConicWeight);
+            path.LineTo(x, y + ry);
+            path.ConicTo(x, y, x + rx, y, QuarterConicWeight);
+            path.Close();
         }
 
         /// <summary>Parses once; true only for a specified positive value.</summary>
