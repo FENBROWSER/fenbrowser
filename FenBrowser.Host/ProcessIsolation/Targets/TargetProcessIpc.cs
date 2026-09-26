@@ -161,12 +161,26 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
     public sealed class ImageDecodeResponsePayload
     {
+        private string _errorMessage;
+        private string _format;
+
         public bool Success { get; set; }
-        public string ErrorMessage { get; set; }
+
+        public string ErrorMessage
+        {
+            get => _errorMessage;
+            set => _errorMessage = TargetIpc.BoundMetadata(value, TargetIpc.MaxResponseMetadataChars);
+        }
+
         public byte[] BitmapBytes { get; set; }
         public int Width { get; set; }
         public int Height { get; set; }
-        public string Format { get; set; }
+
+        public string Format
+        {
+            get => _format;
+            set => _format = TargetIpc.BoundMetadata(value, TargetIpc.MaxFormatMetadataChars);
+        }
     }
 
     public sealed class SvgDecodePayload
@@ -177,8 +191,16 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
     public sealed class SvgDecodeResponsePayload
     {
+        private string _errorMessage;
+
         public bool Success { get; set; }
-        public string ErrorMessage { get; set; }
+
+        public string ErrorMessage
+        {
+            get => _errorMessage;
+            set => _errorMessage = TargetIpc.BoundMetadata(value, TargetIpc.MaxResponseMetadataChars);
+        }
+
         public byte[] BitmapBytes { get; set; }
         public int Width { get; set; }
         public int Height { get; set; }
@@ -223,12 +245,16 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
     internal static class TargetIpc
     {
-        private const int MaxEnvelopeChars = 128 * 1024;
-        private const int MaxPayloadChars = 96 * 1024;
+        public const int MaxEnvelopeChars = 128 * 1024;
+        public const int MaxPayloadChars = 96 * 1024;
         private const int MaxTypeChars = 40;
         private const int MaxRequestIdChars = 96;
         private const int MaxCapabilityTokenChars = 512;
         private const long MaxClockSkewMs = 24L * 60L * 60L * 1000L;
+
+        public const int MaxResponseMetadataChars = 256;
+        public const int MaxFormatMetadataChars = 32;
+        public const int MaxLoggedErrorChars = 512;
 
         private static readonly JsonSerializerOptions JsonOpts = new()
         {
@@ -237,6 +263,71 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         };
 
         public static string Serialize(TargetIpcEnvelope envelope) => JsonSerializer.Serialize(envelope, JsonOpts);
+
+        public static string BoundMetadata(string value, int maxChars)
+        {
+            if (string.IsNullOrEmpty(value) || maxChars <= 0 || value.Length <= maxChars)
+            {
+                return value;
+            }
+
+            int cut = maxChars;
+            if (char.IsHighSurrogate(value[cut - 1]))
+            {
+                cut--;
+            }
+            return value.Substring(0, cut);
+        }
+
+        public static bool TrySerializeEnvelope(
+            TargetIpcEnvelope envelope,
+            out string line,
+            out string rejectionReason)
+        {
+            line = null;
+            rejectionReason = string.Empty;
+
+            if (envelope == null)
+            {
+                rejectionReason = "envelope-null";
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(envelope.Type) && envelope.Type.Length > MaxTypeChars)
+            {
+                rejectionReason = "type-invalid";
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(envelope.RequestId) && envelope.RequestId.Length > MaxRequestIdChars)
+            {
+                rejectionReason = "requestid-invalid";
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(envelope.CapabilityToken) &&
+                envelope.CapabilityToken.Length > MaxCapabilityTokenChars)
+            {
+                rejectionReason = "cap-token-too-large";
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(envelope.Payload) && envelope.Payload.Length > MaxPayloadChars)
+            {
+                rejectionReason = "payload-too-large";
+                return false;
+            }
+
+            string serialized = Serialize(envelope);
+            if (serialized.Length > MaxEnvelopeChars)
+            {
+                rejectionReason = "envelope-too-large";
+                return false;
+            }
+
+            line = serialized;
+            return true;
+        }
 
         public static bool TryDeserialize(string line, out TargetIpcEnvelope envelope)
         {
@@ -574,7 +665,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                     EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[{_targetKind}Process] Target process reported ready.");
                     break;
                 case TargetIpcMessageType.Error:
-                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{_targetKind}Process] Error from child: {envelope.Payload}");
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[{_targetKind}Process] Error from child: {TargetIpc.BoundMetadata(envelope.Payload, TargetIpc.MaxLoggedErrorChars)}");
                     break;
                 case TargetIpcMessageType.LogBatch:
                     var batch = TargetIpc.DeserializePayload<EngineLogBatchPayload>(envelope);
@@ -631,7 +722,16 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                         return;
                     }
 
-                    _writer.WriteLine(TargetIpc.Serialize(envelope));
+                    if (!TargetIpc.TrySerializeEnvelope(envelope, out var line, out var rejectionReason))
+                    {
+                        EngineLog.Write(
+                            LogSubsystem.ProcessIsolation,
+                            LogSeverity.Warn,
+                            $"[{_targetKind}Process] Rejected outbound IPC envelope: {rejectionReason}.");
+                        return;
+                    }
+
+                    _writer.WriteLine(line);
                     _writer.Flush();
                 }
             }

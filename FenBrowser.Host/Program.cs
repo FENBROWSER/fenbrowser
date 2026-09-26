@@ -1686,24 +1686,35 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                     return Task.CompletedTask;
                 }
 
-                var bitmap = DecodeImage(payload.Data, payload.TargetWidth, payload.TargetHeight, payload.Url);
+                using var bitmap = DecodeImage(payload.Data, payload.TargetWidth, payload.TargetHeight, payload.Url);
 
                 byte[] bitmapBytes = null;
                 int width = 0, height = 0;
+                string budgetReason = null;
                 if (bitmap != null && !bitmap.IsNull)
                 {
-                    width = bitmap.Width;
-                    height = bitmap.Height;
                     using var image = SKImage.FromBitmap(bitmap);
                     using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-                    bitmapBytes = data?.ToArray() ?? Array.Empty<byte>();
+                    var encoded = data?.ToArray() ?? Array.Empty<byte>();
+                    if (FitsTargetResponseBudget(encoded))
+                    {
+                        width = bitmap.Width;
+                        height = bitmap.Height;
+                        bitmapBytes = encoded;
+                    }
+                    else
+                    {
+                        budgetReason = OversizedResponseReason("Image decode");
+                    }
                     bitmap.Dispose();
                 }
 
                 var response = new ImageDecodeResponsePayload
                 {
                     Success = bitmapBytes != null && bitmapBytes.Length > 0,
-                    ErrorMessage = bitmapBytes == null || bitmapBytes.Length == 0 ? "Decode returned no bitmap" : null,
+                    ErrorMessage = bitmapBytes == null || bitmapBytes.Length == 0
+                        ? budgetReason ?? "Decode returned no bitmap"
+                        : null,
                     BitmapBytes = bitmapBytes ?? Array.Empty<byte>(),
                     Width = width,
                     Height = height,
@@ -1725,7 +1736,7 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
             return Task.CompletedTask;
         }
 
-        private static Task HandleSvgDecodeRequest(StreamWriter writer, TargetIpcEnvelope envelope)
+        internal static Task HandleSvgDecodeRequest(StreamWriter writer, TargetIpcEnvelope envelope)
         {
             if (envelope.Type != TargetIpcMessageType.SvgDecode.ToString())
                 return Task.CompletedTask;
@@ -1740,44 +1751,37 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                 }
 
                 var svgRenderer = SvgRendererFactory.GetConfiguredRenderer();
-                var limits = payload.Limits == null
-                    ? SvgRenderLimits.Default
-                    : new SvgRenderLimits
-                {
-                    MaxElementCount = payload.Limits.MaxElementCount,
-                    MaxFilterCount = payload.Limits.MaxFilterCount,
-                    MaxRecursionDepth = payload.Limits.MaxRecursionDepth,
-                    MaxRenderTimeMs = payload.Limits.MaxRenderTimeMs,
-                    MaxSourceChars = payload.Limits.MaxSourceChars,
-                    MaxRasterWidth = payload.Limits.MaxRasterWidth,
-                    MaxRasterHeight = payload.Limits.MaxRasterHeight,
-                    MaxRasterPixels = payload.Limits.MaxRasterPixels,
-                    MaxDecodedImagePixels = payload.Limits.MaxDecodedImagePixels,
-                    MaxDecodedImageBytes = payload.Limits.MaxDecodedImageBytes,
-                    MaxCumulativeResourceBytes = payload.Limits.MaxCumulativeResourceBytes,
-                    MaxResourceCount = payload.Limits.MaxResourceCount,
-                    MaxActiveLayers = payload.Limits.MaxActiveLayers,
-                    MaxReferenceDepth = payload.Limits.MaxReferenceDepth,
-                    AllowExternalReferences = payload.Limits.AllowExternalReferences
-                };
+                var limits = NormalizeSvgDecodeLimits(payload.Limits);
 
                 using var result = svgRenderer.Render(payload.SvgContent, limits);
 
                 byte[] bitmapBytes = null;
                 int width = 0, height = 0;
-                if (result.Success && result.Bitmap != null && !result.Bitmap.IsNull)
+                string failureReason = RejectSvgDecodeResult(result, "svg-decode");
+
+                if (failureReason == null && result.Bitmap != null && !result.Bitmap.IsNull)
                 {
-                    width = result.Bitmap.Width;
-                    height = result.Bitmap.Height;
                     using var image = SKImage.FromBitmap(result.Bitmap);
                     using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-                    bitmapBytes = data?.ToArray() ?? Array.Empty<byte>();
+                    var encoded = data?.ToArray() ?? Array.Empty<byte>();
+                    if (FitsTargetResponseBudget(encoded))
+                    {
+                        width = result.Bitmap.Width;
+                        height = result.Bitmap.Height;
+                        bitmapBytes = encoded;
+                    }
+                    else
+                    {
+                        failureReason = OversizedResponseReason("SVG decode");
+                    }
                 }
+
+                bool decodeOk = bitmapBytes != null && bitmapBytes.Length > 0;
 
                 var response = new SvgDecodeResponsePayload
                 {
-                    Success = bitmapBytes != null && bitmapBytes.Length > 0,
-                    ErrorMessage = bitmapBytes == null || bitmapBytes.Length == 0 ? result.ErrorMessage : null,
+                    Success = decodeOk,
+                    ErrorMessage = decodeOk ? null : failureReason ?? "SVG decode produced no bitmap",
                     BitmapBytes = bitmapBytes ?? Array.Empty<byte>(),
                     Width = width,
                     Height = height
@@ -1798,6 +1802,70 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
             return Task.CompletedTask;
         }
 
+        internal static SvgRenderLimits NormalizeSvgDecodeLimits(SvgRenderLimitsData limits)
+        {
+            if (limits == null)
+            {
+                return SvgRenderLimits.Normalize(SvgRenderLimits.Default);
+            }
+
+            return SvgRenderLimits.Normalize(new SvgRenderLimits
+            {
+                MaxElementCount = limits.MaxElementCount,
+                MaxFilterCount = limits.MaxFilterCount,
+                MaxRecursionDepth = limits.MaxRecursionDepth,
+                MaxRenderTimeMs = limits.MaxRenderTimeMs,
+                MaxSourceChars = limits.MaxSourceChars,
+                MaxRasterWidth = limits.MaxRasterWidth,
+                MaxRasterHeight = limits.MaxRasterHeight,
+                MaxRasterPixels = limits.MaxRasterPixels,
+                MaxDecodedImagePixels = limits.MaxDecodedImagePixels,
+                MaxDecodedImageBytes = limits.MaxDecodedImageBytes,
+                MaxCumulativeResourceBytes = limits.MaxCumulativeResourceBytes,
+                MaxResourceCount = limits.MaxResourceCount,
+                MaxActiveLayers = limits.MaxActiveLayers,
+                MaxReferenceDepth = limits.MaxReferenceDepth,
+                AllowExternalReferences = false
+            });
+        }
+
+        internal const int MaxTargetResponseBitmapBytes = ((TargetIpc.MaxPayloadChars - 1024) / 4) * 3;
+
+        internal static bool FitsTargetResponseBudget(byte[] bitmapBytes) =>
+            bitmapBytes == null || bitmapBytes.Length <= MaxTargetResponseBitmapBytes;
+
+        internal static string OversizedResponseReason(string entryPoint) =>
+            TargetIpc.BoundMetadata(
+                $"{entryPoint} response exceeds the target IPC payload budget " +
+                $"({MaxTargetResponseBitmapBytes} bytes)",
+                TargetIpc.MaxResponseMetadataChars);
+
+        /// <summary>
+        /// Fail-closed admission gate for target-process SVG decoding. Returns null
+        /// when the rendered pixels may be returned to the requester, otherwise the
+        /// bounded rejection reason. Rejected results must never yield a bitmap:
+        /// partially rendered or resource-stripped pixels are not authoritative.
+        /// The first-party engine is the only admissible backend.
+        /// </summary>
+        internal static string RejectSvgDecodeResult(SvgRenderResult result, string entryPoint)
+        {
+            bool admissible = SvgRenderResult.IsAdmissible(result);
+            if (admissible && result.Backend == SvgRendererBackend.FirstParty)
+            {
+                return null;
+            }
+
+            var reason = admissible
+                ? "SVG render produced pixels from an unsupported backend"
+                : SvgRenderResult.DescribeRejection(result) ?? "SVG render rejected";
+            EngineLog.Write(
+                LogSubsystem.ProcessIsolation,
+                LogSeverity.Warn,
+                $"[Target] SVG decode rejected ({entryPoint}): {reason}");
+
+            return TargetIpc.BoundMetadata(reason, TargetIpc.MaxResponseMetadataChars);
+        }
+
         private static SkiaFontService _fontService;
         private static readonly object _fontServiceLock = new();
 
@@ -1816,7 +1884,7 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
             }
         }
 
-        private static SKBitmap DecodeImage(byte[] data, int? targetWidth, int? targetHeight, string url)
+        internal static SKBitmap DecodeImage(byte[] data, int? targetWidth, int? targetHeight, string url)
         {
             if (data == null || data.Length == 0)
                 return null;
@@ -1831,6 +1899,10 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                     string svgContent = System.Text.Encoding.UTF8.GetString(data);
                     var svgRenderer = SvgRendererFactory.GetConfiguredRenderer();
                     using var result = svgRenderer.Render(svgContent);
+                    if (RejectSvgDecodeResult(result, "image-decode") != null)
+                    {
+                        return null;
+                    }
                     return result.DetachBitmap();
                 }
 
@@ -1885,20 +1957,33 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
             }
         }
 
-        private static void SendErrorResponse(StreamWriter writer, string requestId, TargetIpcMessageType responseType, string errorMessage)
+        internal static void SendErrorResponse(StreamWriter writer, string requestId, TargetIpcMessageType responseType, string errorMessage)
         {
             SendTargetEnvelope(writer, new TargetIpcEnvelope
             {
                 Type = responseType.ToString(),
                 RequestId = requestId,
-                Payload = TargetIpc.SerializePayload(new { Success = false, ErrorMessage = errorMessage })
+                Payload = TargetIpc.SerializePayload(new
+                {
+                    Success = false,
+                    ErrorMessage = TargetIpc.BoundMetadata(errorMessage, TargetIpc.MaxResponseMetadataChars)
+                })
             });
         }
 
-        private static void SendTargetEnvelope(StreamWriter writer, TargetIpcEnvelope envelope)
+        internal static void SendTargetEnvelope(StreamWriter writer, TargetIpcEnvelope envelope)
         {
             if (writer == null || envelope == null)
             {
+                return;
+            }
+
+            if (!TargetIpc.TrySerializeEnvelope(envelope, out var line, out var rejectionReason))
+            {
+                EngineLog.Write(
+                    LogSubsystem.ProcessIsolation,
+                    LogSeverity.Warn,
+                    $"[TargetChild] Rejected outbound IPC envelope: {rejectionReason}.");
                 return;
             }
 
@@ -1906,7 +1991,7 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
             {
                 lock (writer)
                 {
-                    writer.WriteLine(TargetIpc.Serialize(envelope));
+                    writer.WriteLine(line);
                     writer.Flush();
                 }
             }

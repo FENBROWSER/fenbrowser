@@ -4166,7 +4166,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Re-rasterize with resolved colors
-                var bitmap = RenderSvgToCachedBitmap(svgContent, (int)box.ContentBox.Width, (int)box.ContentBox.Height);
+                 var bitmap = RenderSvgToCachedBitmap(elem, svgContent, box.ContentBox.Width, box.ContentBox.Height);
 
                 return new ImagePaintNode
                 {
@@ -4267,22 +4267,35 @@ namespace FenBrowser.FenEngine.Rendering
             return Regex.Replace(value, "currentColor", hexColor, RegexOptions.IgnoreCase);
         }
 
-        private SKBitmap RenderSvgToCachedBitmap(string svgContent, int width, int height)
+        private SKBitmap RenderSvgToCachedBitmap(
+            Element source,
+            string svgContent,
+            float width,
+            float height)
         {
-
-
-                
-            if (width <= 0) width = 24;
-            if (height <= 0) height = 24;
-
-            string dataUri = "data:image/svg+xml;base64," + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(svgContent));
-            var tuple = ImageLoader.GetImageTuple(dataUri, false, null, width, height);
-            
-            if (tuple is (SKBitmap bitmap, bool _))
+            if (!LayoutValidator.IsNonNegativeNumber(width) ||
+                !LayoutValidator.IsNonNegativeNumber(height) ||
+                width >= int.MaxValue ||
+                height >= int.MaxValue)
             {
-                return bitmap;
+                return null;
             }
-            return null;
+
+            if (width <= 0f) width = 24f;
+            if (height <= 0f) height = 24f;
+
+            Uri baseUri = null;
+            if (Uri.TryCreate(_baseUri, UriKind.Absolute, out var parsedBaseUri))
+            {
+                baseUri = parsedBaseUri;
+            }
+
+            return ImageLoader.GetInlineSvgImage(
+                svgContent,
+                (int)Math.Ceiling(width),
+                (int)Math.Ceiling(height),
+                baseUri,
+                source?.OwnerDocument);
         }
 
         private static string ResolveSvgPresentationProperty(CssComputed style, string propertyName)

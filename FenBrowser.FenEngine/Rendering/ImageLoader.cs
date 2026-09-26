@@ -2,6 +2,8 @@ using SkiaSharp;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
 using System.IO;
 using System.Threading;
@@ -35,6 +37,9 @@ namespace FenBrowser.FenEngine.Rendering
         public string Url { get; set; }
         public string OwnerId { get; set; }
         public SKRect ElementBounds { get; set; }
+        public int? TargetWidth { get; set; }
+        public int? TargetHeight { get; set; }
+        public Uri SvgBaseUri { get; set; }
         public bool LoadStarted { get; set; }
     }
 
@@ -98,6 +103,7 @@ namespace FenBrowser.FenEngine.Rendering
     {
         private const int MaxSvgResourcePreloadConcurrency = 4;
         private const int MaxSvgResourcePreloadMilliseconds = 5_000;
+        private const int MaxAnimatedGifFrameCount = 512;
 
         private sealed class SvgResourceSnapshot : ISvgResourceResolver
         {
@@ -133,19 +139,33 @@ namespace FenBrowser.FenEngine.Rendering
 
         public sealed class ImageLoaderRequestContext
         {
+            internal sealed class OwnerLifetime
+            {
+                private int _isDisposed;
+
+                public bool IsDisposed
+                {
+                    get => Volatile.Read(ref _isDisposed) != 0;
+                    set => Volatile.Write(ref _isDisposed, value ? 1 : 0);
+                }
+            }
+
+            internal OwnerLifetime OwnerLifetimeState { get; set; } = new OwnerLifetime();
+
             public string OwnerId { get; set; }
+            public string OwnerRootId { get; set; }
             public Func<Uri, Task<byte[]>> FetchBytesAsync { get; set; }
             public Func<Uri, Task<BinaryFetchResult>> FetchDetailedAsync { get; set; }
             public Func<Uri, Document, Task<byte[]>> FetchBytesForDocumentAsync { get; set; }
             public Func<Uri, Document, Task<BinaryFetchResult>> FetchDetailedForDocumentAsync { get; set; }
             public Action RequestRepaint { get; set; }
             public Action RequestRelayout { get; set; }
-            /// <summary>
-            /// Phase 6: set to true when the owning browsing context (tab/document)
-            /// is navigated away or disposed. Callbacks belonging to disposed
-            /// contexts are silently skipped.
-            /// </summary>
             public bool IsDisposed { get; set; }
+            internal bool OwnerIsDisposed
+            {
+                get => OwnerLifetimeState.IsDisposed;
+                set => OwnerLifetimeState.IsDisposed = value;
+            }
         }
 
         private sealed class ContextScope : IDisposable
@@ -176,6 +196,8 @@ namespace FenBrowser.FenEngine.Rendering
             new ConcurrentDictionary<string, ConcurrentDictionary<string, ImageLoaderRequestContext>>(StringComparer.Ordinal);
         private static readonly ConcurrentDictionary<string, BinaryFetchResult> _lastLoadResults =
             new ConcurrentDictionary<string, BinaryFetchResult>(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, SvgRequestMetadata> _svgRequestMetadata =
+            new ConcurrentDictionary<string, SvgRequestMetadata>(StringComparer.Ordinal);
         private static readonly ConcurrentDictionary<string, byte> _failedDataUriCache =
             new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         private static readonly ConcurrentQueue<string> _failedDataUriOrder = new ConcurrentQueue<string>();
@@ -196,6 +218,7 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly object _pendingLock = new object();
         private static readonly ConcurrentDictionary<string, SKRect> _ownerViewports = new(StringComparer.Ordinal);
         private static readonly SemaphoreSlim _loadSemaphore = new SemaphoreSlim(4); // Max concurrent loads
+        private const int LoadAdmissionPollMilliseconds = 100;
         
         // ========== Memory Management ==========
         private static long _currentCacheBytes = 0;
@@ -203,9 +226,6 @@ namespace FenBrowser.FenEngine.Rendering
         private static long _cacheMissCount = 0;
         private static long _cacheEvictionCount = 0;
         private static readonly object _cacheLock = new object();
-        private static readonly ConcurrentQueue<SKBitmap> _pendingBitmapDisposals = new ConcurrentQueue<SKBitmap>();
-        private static int _disposeWorkerActive = 0;
-        private const int BITMAP_DISPOSAL_GRACE_MS = 1500;
         
         // Monotonic version counter incremented on each successful cache store.
         // The renderer reads this to detect when new images have arrived since the
@@ -243,6 +263,8 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly ConcurrentDictionary<string, long> _ownerCacheGenerations = new(StringComparer.Ordinal);
         private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _imageToOwners = new(StringComparer.Ordinal);
         private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _ownerToImages = new(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, string> _ownerAliases =
+            new(StringComparer.Ordinal);
 
         /// <summary>
         /// Phase 7: returns the cache generation for a specific owner. Used by
@@ -289,28 +311,267 @@ namespace FenBrowser.FenEngine.Rendering
             images[cacheKey] = 0;
         }
 
+        private static void RegisterRequestOwner(
+            string cacheKey,
+            ImageLoaderRequestContext context,
+            Document ownerDocument = null)
+        {
+            if (string.IsNullOrWhiteSpace(cacheKey) || context == null ||
+                IsContextUnavailable(context))
+            {
+                return;
+            }
+
+            string rootOwnerId = context.OwnerRootId;
+            if (string.IsNullOrWhiteSpace(rootOwnerId))
+            {
+                rootOwnerId = context.OwnerId;
+            }
+
+            if (string.IsNullOrWhiteSpace(rootOwnerId))
+            {
+                return;
+            }
+
+            RegisterImageOwner(cacheKey, rootOwnerId);
+            if (!string.Equals(context.OwnerId, rootOwnerId, StringComparison.Ordinal))
+            {
+                RegisterImageOwner(cacheKey, context.OwnerId);
+            }
+
+            RegisterOwnerAlias(rootOwnerId, rootOwnerId);
+            if (!string.Equals(context.OwnerId, rootOwnerId, StringComparison.Ordinal))
+            {
+                RegisterOwnerAlias(context.OwnerId, rootOwnerId);
+            }
+
+            Uri documentUri = ResolveDocumentBaseUri(ownerDocument);
+            if (documentUri != null && documentUri.IsAbsoluteUri)
+            {
+                string documentOwnerId = documentUri.AbsoluteUri;
+                RegisterImageOwner(cacheKey, documentOwnerId);
+                RegisterOwnerAlias(documentOwnerId, rootOwnerId);
+            }
+        }
+
+        private static void RegisterOwnerAlias(string alias, string rootOwnerId)
+        {
+            if (!string.IsNullOrWhiteSpace(alias) && !string.IsNullOrWhiteSpace(rootOwnerId))
+            {
+                _ownerAliases[alias] = rootOwnerId;
+            }
+        }
+
+        private static bool IsContextUnavailable(ImageLoaderRequestContext context) =>
+            context?.IsDisposed == true || context?.OwnerIsDisposed == true;
+
+        private static bool OwnerMatches(string candidate, string ownerId)
+        {
+            return !string.IsNullOrWhiteSpace(candidate) &&
+                !string.IsNullOrWhiteSpace(ownerId) &&
+                (string.Equals(candidate, ownerId, StringComparison.Ordinal) ||
+                 candidate.StartsWith(ownerId + ":", StringComparison.Ordinal));
+        }
+
+        private static bool IsOwnerScopedKey(string key, string ownerId)
+        {
+            return !string.IsNullOrWhiteSpace(key) &&
+                !string.IsNullOrWhiteSpace(ownerId) &&
+                key.StartsWith(ownerId + "\n", StringComparison.Ordinal);
+        }
+
         /// <summary>
         /// Phase 7: remove all image ownership registrations for a disposed owner.
         /// </summary>
         public static void ReleaseOwner(string ownerId)
         {
-            if (string.IsNullOrWhiteSpace(ownerId)) return;
-            _ownerCacheGenerations.TryRemove(ownerId, out _);
-            _animatedGifOwners.TryRemove(ownerId, out _);
-            _ownerViewports.TryRemove(ownerId, out _);
-
-            if (_ownerToImages.TryRemove(ownerId, out var images))
+            if (string.IsNullOrWhiteSpace(ownerId))
             {
-                foreach (var cacheKey in images.Keys)
+                return;
+            }
+
+            var ownerIds = new HashSet<string>(StringComparer.Ordinal)
+            {
+                ownerId
+            };
+            foreach (var alias in _ownerAliases)
+            {
+                if (OwnerMatches(alias.Key, ownerId))
                 {
-                    if (_imageToOwners.TryGetValue(cacheKey, out var owners))
+                    ownerIds.Add(alias.Key);
+                    if (!string.IsNullOrWhiteSpace(alias.Value))
                     {
-                        owners.TryRemove(ownerId, out _);
-                        if (owners.IsEmpty)
+                        ownerIds.Add(alias.Value);
+                    }
+                }
+                else if (OwnerMatches(alias.Value, ownerId))
+                {
+                    ownerIds.Add(alias.Key);
+                }
+            }
+            foreach (var registeredOwner in _ownerCacheGenerations.Keys)
+            {
+                if (OwnerMatches(registeredOwner, ownerId))
+                {
+                    ownerIds.Add(registeredOwner);
+                }
+            }
+            foreach (var registeredOwner in _ownerToImages.Keys)
+            {
+                if (OwnerMatches(registeredOwner, ownerId))
+                {
+                    ownerIds.Add(registeredOwner);
+                }
+            }
+            foreach (var registeredOwner in _ownerViewports.Keys)
+            {
+                if (OwnerMatches(registeredOwner, ownerId))
+                {
+                    ownerIds.Add(registeredOwner);
+                }
+            }
+            foreach (var registeredOwner in _animatedGifOwners.Keys)
+            {
+                if (OwnerMatches(registeredOwner, ownerId))
+                {
+                    ownerIds.Add(registeredOwner);
+                }
+            }
+
+            foreach (var registeredOwner in ownerIds)
+            {
+                _ownerCacheGenerations.TryRemove(registeredOwner, out _);
+                _animatedGifOwners.TryRemove(registeredOwner, out _);
+                _ownerViewports.TryRemove(registeredOwner, out _);
+            }
+
+            foreach (var entry in _ownerToImages)
+            {
+                if (!ownerIds.Contains(entry.Key) && !OwnerMatches(entry.Key, ownerId))
+                {
+                    continue;
+                }
+
+                if (_ownerToImages.TryRemove(entry.Key, out _))
+                {
+                    foreach (var cacheKey in entry.Value.Keys)
+                    {
+                        if (_imageToOwners.TryGetValue(cacheKey, out var owners))
                         {
-                            _imageToOwners.TryRemove(cacheKey, out _);
+                            owners.TryRemove(entry.Key, out _);
                         }
                     }
+                }
+            }
+
+            foreach (var entry in _imageToOwners)
+            {
+                foreach (var registeredOwner in entry.Value.Keys)
+                {
+                    if (ownerIds.Contains(registeredOwner) || OwnerMatches(registeredOwner, ownerId))
+                    {
+                        entry.Value.TryRemove(registeredOwner, out _);
+                    }
+                }
+
+                if (entry.Value.IsEmpty)
+                {
+                    _imageToOwners.TryRemove(entry.Key, out _);
+                }
+            }
+
+            foreach (var entry in _lazyRegistry)
+            {
+                if (entry.Value != null &&
+                    (ownerIds.Contains(entry.Value.OwnerId) || OwnerMatches(entry.Value.OwnerId, ownerId)))
+                {
+                    _lazyRegistry.TryRemove(entry.Key, out _);
+                }
+            }
+
+            var pendingKeys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var entry in _pendingLoadContexts)
+            {
+                bool owned = false;
+                foreach (var contextEntry in entry.Value)
+                {
+                    var context = contextEntry.Value;
+                    if (context != null &&
+                        (ownerIds.Contains(context.OwnerId) || OwnerMatches(context.OwnerId, ownerId)))
+                    {
+                        context.IsDisposed = true;
+                        owned = true;
+                    }
+                }
+
+                if (owned)
+                {
+                    pendingKeys.Add(entry.Key);
+                }
+
+                foreach (var contextEntry in entry.Value)
+                {
+                    var context = contextEntry.Value;
+                    if (context != null &&
+                        (ownerIds.Contains(context.OwnerId) || OwnerMatches(context.OwnerId, ownerId)))
+                    {
+                        entry.Value.TryRemove(contextEntry.Key, out _);
+                    }
+                }
+
+                if (entry.Value.IsEmpty)
+                {
+                    _pendingLoadContexts.TryRemove(entry.Key, out _);
+                }
+            }
+
+            bool pendingChanged = false;
+            lock (_pendingLock)
+            {
+                foreach (var pendingKey in pendingKeys)
+                {
+                    pendingChanged |= _pendingLoads.Remove(pendingKey);
+                }
+            }
+            if (pendingChanged)
+            {
+                NotifyPendingLoadCountChanged();
+            }
+
+            foreach (var registeredOwner in ownerIds)
+            {
+                foreach (var key in _lastLoadResults.Keys)
+                {
+                    if (IsOwnerScopedKey(key, registeredOwner))
+                    {
+                        _lastLoadResults.TryRemove(key, out _);
+                    }
+                }
+                foreach (var key in _svgRequestMetadata.Keys)
+                {
+                    if (IsOwnerScopedKey(key, registeredOwner))
+                    {
+                        _svgRequestMetadata.TryRemove(key, out _);
+                    }
+                }
+                foreach (var key in _failedDataUriCache.Keys)
+                {
+                    if (IsOwnerScopedKey(key, registeredOwner))
+                    {
+                        _failedDataUriCache.TryRemove(key, out _);
+                    }
+                }
+            }
+
+            DrainFailedDataUriOrder();
+
+            foreach (var alias in _ownerAliases)
+            {
+                if (ownerIds.Contains(alias.Key) ||
+                    OwnerMatches(alias.Key, ownerId) ||
+                    OwnerMatches(alias.Value, ownerId))
+                {
+                    _ownerAliases.TryRemove(alias.Key, out _);
                 }
             }
         }
@@ -336,9 +597,14 @@ namespace FenBrowser.FenEngine.Rendering
             _animatedGifOwners[ownerId] = context;
         }
         
+        /// <summary>
+        /// The image pipeline renders SVG with the first-party renderer only. The
+        /// ambient backend selection is deliberately not consulted here, so no
+        /// compatibility or hybrid backend can ever produce cached image pixels.
+        /// </summary>
         internal static ISvgRenderer CreateSvgRenderer()
         {
-            return SvgRendererFactory.GetConfiguredRenderer();
+            return SvgRendererFactory.GetRenderer(SvgRendererBackend.FirstParty);
         }
         
         /// <summary>
@@ -373,7 +639,8 @@ namespace FenBrowser.FenEngine.Rendering
                 var result = await detailedFetcher(uri).ConfigureAwait(false);
                 if (result != null)
                 {
-                    RecordLoadResult(uri.AbsoluteUri, CreateCacheKey(uri.AbsoluteUri, context), result);
+                    var cacheKey = CreateRequestCacheKey(uri.AbsoluteUri, context);
+                    RecordLoadResult(uri.AbsoluteUri, cacheKey, result, context);
                 }
                 return result?.Body;
             }
@@ -396,22 +663,48 @@ namespace FenBrowser.FenEngine.Rendering
 
         public static bool TryGetLastLoadResult(string url, out BinaryFetchResult result)
         {
-            if (string.IsNullOrWhiteSpace(url))
+            return TryGetLastLoadResult(url, _ambientContext.Value, out result);
+        }
+
+        private static bool TryGetLastLoadResult(
+            string url,
+            ImageLoaderRequestContext context,
+            out BinaryFetchResult result)
+        {
+            string normalizedUrl = NormalizeImageUrl(url);
+            if (string.IsNullOrEmpty(normalizedUrl))
             {
                 result = null;
                 return false;
             }
 
-            var context = _ambientContext.Value;
-            var resultKey = CreateCacheKey(url, context);
+            Uri svgBaseUri = ResolveSvgRequestBaseUri(normalizedUrl, null);
+            bool isSvgRequest = IsSvgRequest(normalizedUrl) ||
+                IsKnownSvgRequest(normalizedUrl, context);
+            string resultKey = CreateLoadResultKey(
+                normalizedUrl,
+                context,
+                svgBaseUri,
+                isSvgRequest);
             if (_lastLoadResults.TryGetValue(resultKey, out result))
             {
                 return true;
             }
 
-            // Unscoped callers retain the legacy URL-only lookup. Scoped callers must
-            // not observe another browsing context's in-flight or failed result.
-            return context == null && _lastLoadResults.TryGetValue(url, out result);
+            if (!isSvgRequest)
+            {
+                string svgResultKey = CreateLoadResultKey(
+                    normalizedUrl,
+                    context,
+                    svgBaseUri,
+                    true);
+                if (_lastLoadResults.TryGetValue(svgResultKey, out result))
+                {
+                    return true;
+                }
+            }
+
+            return context == null && _lastLoadResults.TryGetValue(normalizedUrl, out result);
         }
 
         // Emits authoritative pending network-image load count changes.
@@ -422,12 +715,21 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Current memory usage by cached images in bytes
         /// </summary>
-        public static long CurrentCacheBytes => _currentCacheBytes;
+        public static long CurrentCacheBytes => Volatile.Read(ref _currentCacheBytes);
         
         /// <summary>
         /// Number of images currently cached
         /// </summary>
-        public static int CacheCount => _memoryCache.Count + _animatedGifs.Count;
+        public static int CacheCount
+        {
+            get
+            {
+                lock (_cacheLock)
+                {
+                    return _memoryCache.Count + _animatedGifs.Count;
+                }
+            }
+        }
 
         public static bool ContainsCachedImage(string url)
         {
@@ -442,10 +744,26 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var context = CreateDocumentRequestContext(_ambientContext.Value, ownerDocument);
-            var cacheKey = CreateCacheKey(url, context);
-            return _memoryCache.ContainsKey(cacheKey) ||
-                _legacyCache.ContainsKey(cacheKey) ||
-                _animatedGifs.ContainsKey(cacheKey);
+            string normalizedUrl = NormalizeImageUrl(url);
+            if (string.IsNullOrEmpty(normalizedUrl))
+            {
+                return false;
+            }
+
+            string cacheKey = CreateRequestCacheKey(
+                normalizedUrl,
+                context,
+                svgBaseUri: ResolveSvgRequestBaseUri(normalizedUrl, ownerDocument));
+            RegisterRequestOwner(cacheKey, context, ownerDocument);
+            if (HasExactCacheKey(cacheKey))
+            {
+                return true;
+            }
+
+            return HasCacheEntryForRequest(
+                normalizedUrl,
+                context,
+                svgBaseUri: ResolveSvgRequestBaseUri(normalizedUrl, ownerDocument));
         }
 
         /// <summary>
@@ -472,23 +790,60 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Register an image for lazy loading. Will not load until visible in viewport.
         /// </summary>
-        public static void RegisterLazyImage(string url, SKRect elementBounds, string cacheKey = null, string ownerId = null)
+        public static void RegisterLazyImage(
+            string url,
+            SKRect elementBounds,
+            string cacheKey = null,
+            string ownerId = null,
+            int? targetWidth = null,
+            int? targetHeight = null,
+            Uri svgBaseUri = null)
         {
-            if (string.IsNullOrEmpty(url)) return;
-            cacheKey ??= url;
+            string normalizedUrl = NormalizeImageUrl(url);
+            if (string.IsNullOrEmpty(normalizedUrl))
+            {
+                return;
+            }
 
-            // Already cached? No need to register as lazy
-            if (_memoryCache.ContainsKey(cacheKey) || _legacyCache.ContainsKey(cacheKey) || _animatedGifs.ContainsKey(cacheKey)) return;
+            var limits = GetActiveSvgRenderLimits();
+            bool isDataUri = normalizedUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase);
+            bool? isSvgOverride = null;
+            if (isDataUri)
+            {
+                if (!TryClassifyDataUri(normalizedUrl, limits, out bool dataIsSvg, out _))
+                {
+                    return;
+                }
+
+                isSvgOverride = dataIsSvg;
+            }
+
+            var requestContext = new ImageLoaderRequestContext { OwnerId = ownerId };
+            cacheKey = CreateRequestCacheKey(
+                normalizedUrl,
+                requestContext,
+                targetWidth,
+                targetHeight,
+                svgBaseUri,
+                isSvgRequestOverride: isSvgOverride);
+            RegisterRequestOwner(cacheKey, requestContext);
+            if (string.IsNullOrEmpty(cacheKey) || HasExactCacheKey(cacheKey))
+            {
+                return;
+            }
 
             _lazyRegistry[cacheKey] = new LazyImageInfo
             {
-                Url = url,
+                Url = normalizedUrl,
                 OwnerId = ownerId,
                 ElementBounds = elementBounds,
+                TargetWidth = targetWidth,
+                TargetHeight = targetHeight,
+                SvgBaseUri = svgBaseUri,
                 LoadStarted = false
             };
-            
-            EngineLogCompat.Debug($"[ImageLoader] Registered lazy image: {url.Substring(0, Math.Min(50, url.Length))}...", 
+
+            EngineLogCompat.Debug($"[ImageLoader] Registered lazy image: {normalizedUrl.Substring(0, Math.Min(50, normalizedUrl.Length))}...",
                            LogCategory.Rendering);
         }
 
@@ -497,7 +852,13 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static void UpdateViewport(SKRect viewportBounds)
         {
-            var ownerId = _ambientContext.Value?.OwnerId ?? string.Empty;
+            var requestContext = _ambientContext.Value;
+            if (IsContextUnavailable(requestContext))
+            {
+                return;
+            }
+
+            var ownerId = requestContext?.OwnerId ?? string.Empty;
             _ownerViewports[ownerId] = viewportBounds;
 
             var config = NetworkConfiguration.Instance;
@@ -526,7 +887,10 @@ namespace FenBrowser.FenEngine.Rendering
                             kvp.Value.Url,
                             kvp.Key,
                             isLazy: true,
-                            context: GetPendingLoadContext(kvp.Key));
+                            targetWidth: kvp.Value.TargetWidth,
+                            targetHeight: kvp.Value.TargetHeight,
+                            context: GetPendingLoadContext(kvp.Key),
+                            svgBaseUri: kvp.Value.SvgBaseUri);
                     }
                 }
             }
@@ -535,9 +899,58 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Check if an image should be lazy loaded (not yet visible)
         /// </summary>
-        public static bool IsLazyPending(string url)
+        public static bool IsLazyPending(
+            string url,
+            int? targetWidth = null,
+            int? targetHeight = null,
+            Document ownerDocument = null)
         {
-            return _lazyRegistry.TryGetValue(url, out var info) && !info.LoadStarted;
+            string normalizedUrl = NormalizeImageUrl(url);
+            if (string.IsNullOrEmpty(normalizedUrl))
+            {
+                return false;
+            }
+
+            var context = CreateDocumentRequestContext(_ambientContext.Value, ownerDocument);
+            bool isSvgRequest = IsSvgRequest(normalizedUrl) ||
+                IsKnownSvgRequest(normalizedUrl, context);
+            Uri svgBaseUri = ResolveSvgRequestBaseUri(normalizedUrl, ownerDocument);
+            string requestPrefix = CreateRequestKeyPrefix(
+                normalizedUrl,
+                context,
+                isSvgRequest,
+                svgBaseUri);
+            string variantPrefix = requestPrefix + "\nsize:";
+            string ownerId = context?.OwnerId ?? string.Empty;
+
+            foreach (var entry in _lazyRegistry)
+            {
+                var info = entry.Value;
+                if (info == null ||
+                    !string.Equals(info.OwnerId ?? string.Empty, ownerId, StringComparison.Ordinal) ||
+                    (!string.Equals(entry.Key, requestPrefix, StringComparison.Ordinal) &&
+                     !entry.Key.StartsWith(variantPrefix, StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                if (targetWidth.HasValue && info.TargetWidth != targetWidth)
+                {
+                    continue;
+                }
+
+                if (targetHeight.HasValue && info.TargetHeight != targetHeight)
+                {
+                    continue;
+                }
+
+                if (!info.LoadStarted)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -574,38 +987,39 @@ namespace FenBrowser.FenEngine.Rendering
         {
             var disposalSet = new HashSet<SKBitmap>();
 
-            foreach (var entry in _memoryCache.Values)
-            {
-                if (entry?.Bitmap != null)
-                {
-                    disposalSet.Add(entry.Bitmap);
-                }
-            }
-            _memoryCache.Clear();
-
-            foreach (var bitmap in _legacyCache.Values)
-            {
-                if (bitmap != null)
-                {
-                    disposalSet.Add(bitmap);
-                }
-            }
-            _legacyCache.Clear();
-            _lastLoadResults.Clear();
-            _failedDataUriCache.Clear();
-            while (_failedDataUriOrder.TryDequeue(out _)) { }
-
-            foreach (var bitmap in disposalSet)
-            {
-                ScheduleBitmapDispose(bitmap);
-            }
-
             lock (_cacheLock)
             {
+                foreach (var entry in _memoryCache.Values)
+                {
+                    if (entry?.Bitmap != null)
+                    {
+                        disposalSet.Add(entry.Bitmap);
+                    }
+                }
+                _memoryCache.Clear();
+
+                foreach (var bitmap in _legacyCache.Values)
+                {
+                    if (bitmap != null)
+                    {
+                        disposalSet.Add(bitmap);
+                    }
+                }
+                _legacyCache.Clear();
                 _currentCacheBytes = 0;
                 _cacheHitCount = 0;
                 _cacheMissCount = 0;
                 _cacheEvictionCount = 0;
+            }
+
+            _lastLoadResults.Clear();
+            _svgRequestMetadata.Clear();
+            _failedDataUriCache.Clear();
+            DrainFailedDataUriOrder();
+
+            foreach (var bitmap in disposalSet)
+            {
+                ScheduleBitmapDispose(bitmap);
             }
 
             ClearLazyRegistry();
@@ -634,11 +1048,13 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             _animatedGifs.Clear();
-            _imageToOwners.Clear();
-            _ownerToImages.Clear();
-            _ownerViewports.Clear();
-            _ownerCacheGenerations.Clear();
-            _animatedGifOwners.Clear();
+             _imageToOwners.Clear();
+             _ownerToImages.Clear();
+             _ownerAliases.Clear();
+             _ownerViewports.Clear();
+             _ownerCacheGenerations.Clear();
+             _animatedGifOwners.Clear();
+
             StopGifAnimationTimer();
             
             EngineLogCompat.Info("[ImageLoader] Cache cleared", LogCategory.Rendering);
@@ -680,20 +1096,25 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (candidate.IsAnimated)
                 {
-                    if (_animatedGifs.TryRemove(candidate.Key, out var animated))
+                    AnimatedImage removedAnimated = null;
+                    lock (_cacheLock)
                     {
-                        if (animated?.Frames != null)
+                        if (_animatedGifs.TryRemove(candidate.Key, out var animated))
                         {
-                            foreach (var frame in animated.Frames)
+                            removedAnimated = animated;
+                            _currentCacheBytes -= animated.ByteSize;
+                            _cacheEvictionCount++;
+                        }
+                    }
+
+                    if (removedAnimated != null)
+                    {
+                        if (removedAnimated.Frames != null)
+                        {
+                            foreach (var frame in removedAnimated.Frames)
                             {
                                 ScheduleBitmapDispose(frame);
                             }
-                        }
-
-                        lock (_cacheLock)
-                        {
-                            _currentCacheBytes -= candidate.Bytes;
-                            _cacheEvictionCount++;
                         }
 
                         EngineLogCompat.Debug($"[ImageLoader] Evicted animated image: {candidate.Key.Substring(0, Math.Min(40, candidate.Key.Length))}...",
@@ -703,17 +1124,21 @@ namespace FenBrowser.FenEngine.Rendering
                     continue;
                 }
 
-                if (_memoryCache.TryRemove(candidate.Key, out var entry))
+                ImageCacheEntry removedEntry = null;
+                lock (_cacheLock)
                 {
-                    _legacyCache.TryRemove(candidate.Key, out _);
-
-                    lock (_cacheLock)
+                    if (_memoryCache.TryRemove(candidate.Key, out var entry))
                     {
+                        _legacyCache.TryRemove(candidate.Key, out _);
+                        removedEntry = entry;
                         _currentCacheBytes -= entry.ByteSize;
                         _cacheEvictionCount++;
                     }
+                }
 
-                    ScheduleBitmapDispose(entry.Bitmap);
+                if (removedEntry != null)
+                {
+                    ScheduleBitmapDispose(removedEntry.Bitmap);
                     EngineLogCompat.Debug($"[ImageLoader] Evicted: {candidate.Key.Substring(0, Math.Min(40, candidate.Key.Length))}...",
                         LogCategory.Rendering);
                 }
@@ -723,11 +1148,6 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static void ScheduleBitmapDispose(SKBitmap bitmap)
         {
-            if (bitmap == null || bitmap.IsNull)
-            {
-                return;
-            }
-
             // Image paint nodes hold raw SKBitmap references across immutable paint trees.
             // Disposing cache-owned bitmaps during eviction or cache clear can invalidate an
             // in-flight frame and crash native Skia access. Once cache ownership is dropped,
@@ -735,64 +1155,6 @@ namespace FenBrowser.FenEngine.Rendering
             // is gone instead of forcing eager disposal here.
         }
 
-
-        private static Task RunDetachedAsync(Func<Task> operation)
-        {
-            return Task.Factory.StartNew(async () =>
-            {
-                try
-                {
-                    await operation().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Warn($"[ImageLoader] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
-                }
-            }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
-        }
-        private static void EnsureDisposeWorker()
-        {
-            if (Interlocked.CompareExchange(ref _disposeWorkerActive, 1, 0) != 0)
-            {
-                return;
-            }
-
-            _ = RunDetachedAsync(async () =>
-            {
-                try
-                {
-                    while (true)
-                    {
-                        if (_pendingBitmapDisposals.IsEmpty)
-                        {
-                            return;
-                        }
-
-                        await Task.Delay(BITMAP_DISPOSAL_GRACE_MS).ConfigureAwait(false);
-
-                        while (_pendingBitmapDisposals.TryDequeue(out var deferredBitmap))
-                        {
-                            try
-                            {
-                                deferredBitmap.Dispose();
-                            }
-                            catch (Exception ex)
-                            {
-                                EngineLogCompat.Warn($"[ImageLoader] Deferred bitmap dispose failed: {ex.Message}", LogCategory.Rendering);
-                            }
-                        }
-                    }
-                }
-                finally
-                {
-                    Interlocked.Exchange(ref _disposeWorkerActive, 0);
-                    if (!_pendingBitmapDisposals.IsEmpty)
-                    {
-                        EnsureDisposeWorker();
-                    }
-                }
-            });
-        }
         /// <summary>
         /// Get cache statistics for debugging
         /// </summary>
@@ -810,18 +1172,23 @@ namespace FenBrowser.FenEngine.Rendering
             long hits;
             long misses;
             long evictions;
+            int staticImageCount;
+            int animatedImageCount;
+            int animatedFrameCount;
             lock (_cacheLock)
             {
                 bytes = _currentCacheBytes;
                 hits = _cacheHitCount;
                 misses = _cacheMissCount;
                 evictions = _cacheEvictionCount;
+                staticImageCount = _memoryCache.Count;
+                animatedImageCount = _animatedGifs.Count;
+                animatedFrameCount = _animatedGifs.Values.Sum(anim => anim?.Frames?.Length ?? 0);
             }
 
-            var animatedFrameCount = _animatedGifs.Values.Sum(anim => anim?.Frames?.Length ?? 0);
             return new ImageCacheSnapshot(
-                _memoryCache.Count,
-                _animatedGifs.Count,
+                staticImageCount,
+                animatedImageCount,
                 animatedFrameCount,
                 bytes,
                 PendingLoadCount,
@@ -832,6 +1199,16 @@ namespace FenBrowser.FenEngine.Rendering
         }
         
         /// <summary>
+        /// Single first-party admission invariant for decoded SVG pixels. Composes the
+        /// shared fail-closed predicate with the backend requirement: only a first-party
+        /// result that reports success, declares no fallback, and rejected no resource may
+        /// reach the image cache or a paint tree.
+        /// </summary>
+        internal static bool IsAdmissibleSvgPixels(SvgRenderResult result) =>
+            SvgRenderResult.IsAdmissible(result) &&
+            result.Backend == SvgRendererBackend.FirstParty;
+
+        /// <summary>
         /// RULE 3 & 5: Render SVG content to bitmap using adapter with safety limits
         /// </summary>
         private static SKBitmap RenderSvgToBitmap(
@@ -839,10 +1216,22 @@ namespace FenBrowser.FenEngine.Rendering
             int? targetWidth,
             int? targetHeight,
             Uri baseUri = null,
-            ISvgResourceResolver resourceResolver = null)
+            ISvgResourceResolver resourceResolver = null,
+            SvgRenderLimits? limits = null)
         {
-            // Ensure SVG Namespace (required for SkiaSharp.Svg)
-            if (!svgContent.Contains("xmlns=\"http://www.w3.org/2000/svg\"") && 
+            var activeLimits = SvgRenderLimits.Normalize(limits ?? SvgRenderLimits.Default);
+            if (resourceResolver != null)
+            {
+                activeLimits.AllowExternalReferences = true;
+            }
+            if (string.IsNullOrWhiteSpace(svgContent) ||
+                svgContent.Length > activeLimits.MaxSourceChars ||
+                !TryAdmitSvgTargetSize(targetWidth, targetHeight, activeLimits))
+            {
+                return null;
+            }
+
+            if (!svgContent.Contains("xmlns=\"http://www.w3.org/2000/svg\"") &&
                 !svgContent.Contains("xmlns='http://www.w3.org/2000/svg'"))
             {
                 if (svgContent.Contains("<svg "))
@@ -851,163 +1240,809 @@ namespace FenBrowser.FenEngine.Rendering
                     svgContent = svgContent.Replace("<svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\">");
             }
 
-            // Normalization: SkiaSharp.Svg is case-sensitive for certain attributes
             if (svgContent.Contains("viewbox="))
             {
                 svgContent = svgContent.Replace("viewbox=", "viewBox=");
             }
 
+            if (!TryAdmitSvgTargetSizeForContent(
+                    targetWidth,
+                    targetHeight,
+                    svgContent,
+                    baseUri,
+                    resourceResolver,
+                    activeLimits))
+            {
+                return null;
+            }
+
             using var result = CreateSvgRenderer().Render(new SvgRenderRequest(
-                svgContent, SvgRenderLimits.Default)
+                svgContent, activeLimits)
             {
                 BaseUri = baseUri,
                 ResourceResolver = resourceResolver
             });
-            
-            // CRITICAL FIX: Check for pre-rendered bitmap first (avoids SKSvg disposal issues)
-            if (!result.Success)
+
+            if (!IsAdmissibleSvgPixels(result))
             {
-                EngineLogCompat.Debug($"[ImageLoader] SVG render failed: {result.ErrorMessage}", LogCategory.Rendering);
+                EngineLogCompat.Debug(
+                    $"[ImageLoader] SVG render rejected: {SvgRenderResult.DescribeRejection(result) ?? "non-first-party backend"}",
+                    LogCategory.Rendering);
                 return null;
             }
-            
-            // Use the pre-rendered bitmap from SvgSkiaRenderer (safe after SKSvg disposal)
-            if (result.Bitmap != null)
+
+            if (result.Bitmap == null)
             {
-                int w = targetWidth ?? result.Bitmap.Width;
-                int h = targetHeight ?? result.Bitmap.Height;
-                if (w <= 0 || h <= 0) { w = 300; h = 150; }
-                
-                // If target size matches bitmap size, use directly
-                if (w == result.Bitmap.Width && h == result.Bitmap.Height)
-                {
-#if DEBUG
-                    // DEBUG: Save large SVG rasterizations to diagnostics root for visual inspection.
-                    if (w > 200 && h > 80)
-                    {
-                        try
-                        {
-                            using var stream = File.Open(
-                                DiagnosticPaths.GetRootArtifactPath("svg_debug_bitmap.png"),
-                                FileMode.Create,
-                                FileAccess.Write,
-                                FileShare.Read);
-                            result.Bitmap.Encode(stream, SKEncodedImageFormat.Png, 100);
-                            EngineLogCompat.Debug($"[ImageLoader] Saved SVG bitmap {w}x{h} to svg_debug_bitmap.png", LogCategory.Rendering);
-                        }
-                        catch (Exception ex)
-                        {
-                            EngineLogCompat.Debug($"[ImageLoader] Failed to save SVG bitmap: {ex.Message}", LogCategory.Rendering);
-                        }
-                    }
-#endif
-                    return result.DetachBitmap();
-                }
-                
-                // Scale the pre-rendered bitmap to target size while preserving aspect ratio
-                var scaledBitmap = new SKBitmap(w, h);
-                using (var canvas = new SKCanvas(scaledBitmap))
-                {
-                    canvas.Clear(SKColors.Transparent);
-
-                    // Calculate scale that preserves aspect ratio (contain mode)
-                    float srcW = result.Bitmap.Width;
-                    float srcH = result.Bitmap.Height;
-                    float srcAspect = srcW / srcH;
-                    float destAspect = (float)w / h;
-
-                    float destW, destH, destX, destY;
-                    if (srcAspect > destAspect)
-                    {
-                        // Source is wider - fit to width
-                        destW = w;
-                        destH = w / srcAspect;
-                        destX = 0;
-                        destY = (h - destH) / 2;
-                    }
-                    else
-                    {
-                        // Source is taller - fit to height
-                        destH = h;
-                        destW = h * srcAspect;
-                        destX = (w - destW) / 2;
-                        destY = 0;
-                    }
-
-                    var srcRect = new SKRect(0, 0, srcW, srcH);
-                    var destRect = new SKRect(destX, destY, destX + destW, destY + destH);
-                    canvas.DrawBitmap(result.Bitmap, srcRect, destRect, SKSamplingOptions.Default);
-                }
-                
-#if DEBUG
-                // DEBUG: Save large scaled SVG rasterizations for visual inspection.
-                if (w > 200 && h > 80)
-                {
-                    try
-                    {
-                        using var stream = File.Open(
-                            DiagnosticPaths.GetRootArtifactPath("svg_debug_bitmap.png"),
-                            FileMode.Create,
-                            FileAccess.Write,
-                            FileShare.Read);
-                        scaledBitmap.Encode(stream, SKEncodedImageFormat.Png, 100);
-                        EngineLogCompat.Debug($"[ImageLoader] Saved SCALED SVG bitmap {w}x{h} to svg_debug_bitmap.png", LogCategory.Rendering);
-                    }
-                    catch (Exception ex) { EngineLogCompat.Warn($"[ImageLoader] Failed writing svg_debug_bitmap.png: {ex.Message}", LogCategory.Rendering); }
-                }
-#endif
-                
-                return scaledBitmap;
-            }
-            
-            // Fallback to old Picture-based rendering (may produce empty bitmap due to SKSvg disposal)
-            if (result.Picture == null)
-            {
-                EngineLogCompat.Debug("[ImageLoader] SVG render failed: No bitmap or picture available", LogCategory.Rendering);
+                EngineLogCompat.Debug("[ImageLoader] SVG render failed: no bitmap produced", LogCategory.Rendering);
                 return null;
             }
-            
-            int wFallback = targetWidth ?? (int)result.Width;
-            int hFallback = targetHeight ?? (int)result.Height;
-            if (wFallback <= 0 || hFallback <= 0) { wFallback = 300; hFallback = 150; }
-            
-            var bitmap = new SKBitmap(wFallback, hFallback);
-            using (var canvas = new SKCanvas(bitmap))
+
+            if (!TryResolveSvgRasterSize(
+                    result.Bitmap.Width,
+                    result.Bitmap.Height,
+                    targetWidth,
+                    targetHeight,
+                    activeLimits,
+                    out int w,
+                    out int h))
+            {
+                return null;
+            }
+
+            if (w == result.Bitmap.Width && h == result.Bitmap.Height)
+            {
+                return result.DetachBitmap();
+            }
+
+            var scaledBitmap = new SKBitmap();
+            var scaledInfo = new SKImageInfo(
+                w,
+                h,
+                SKColorType.Bgra8888,
+                SKAlphaType.Premul);
+            if (!scaledBitmap.TryAllocPixels(scaledInfo))
+            {
+                scaledBitmap.Dispose();
+                return null;
+            }
+            using (var canvas = new SKCanvas(scaledBitmap))
             {
                 canvas.Clear(SKColors.Transparent);
 
-                // Scale picture to fit target while preserving aspect ratio
-                if (result.Width > 0 && result.Height > 0)
+                float srcW = result.Bitmap.Width;
+                float srcH = result.Bitmap.Height;
+                float srcAspect = srcW / srcH;
+                float destAspect = (float)w / h;
+
+                float destW, destH, destX, destY;
+                if (srcAspect > destAspect)
                 {
-                    float srcAspect = result.Width / result.Height;
-                    float destAspect = (float)wFallback / hFallback;
-
-                    float scale;
-                    float offsetX = 0, offsetY = 0;
-
-                    if (srcAspect > destAspect)
-                    {
-                        // Source is wider - fit to width
-                        scale = wFallback / result.Width;
-                        offsetY = (hFallback - result.Height * scale) / 2;
-                    }
-                    else
-                    {
-                        // Source is taller - fit to height
-                        scale = hFallback / result.Height;
-                        offsetX = (wFallback - result.Width * scale) / 2;
-                    }
-
-                    canvas.Translate(offsetX, offsetY);
-                    canvas.Scale(scale, scale);
+                    destW = w;
+                    destH = w / srcAspect;
+                    destX = 0;
+                    destY = (h - destH) / 2;
+                }
+                else
+                {
+                    destH = h;
+                    destW = h * srcAspect;
+                    destX = (w - destW) / 2;
+                    destY = 0;
                 }
 
-                canvas.DrawPicture(result.Picture);
+                var srcRect = new SKRect(0, 0, srcW, srcH);
+                var destRect = new SKRect(destX, destY, destX + destW, destY + destH);
+                canvas.DrawBitmap(result.Bitmap, srcRect, destRect, SKSamplingOptions.Default);
             }
 
-            return bitmap;
+            return scaledBitmap;
         }
-        
+
+        private static bool TryAdmitSvgTargetSize(
+            int? targetWidth,
+            int? targetHeight,
+            SvgRenderLimits limits)
+        {
+            if (targetWidth.HasValue &&
+                (targetWidth.Value <= 0 || targetWidth.Value > limits.MaxRasterWidth))
+            {
+                return false;
+            }
+
+            if (targetHeight.HasValue &&
+                (targetHeight.Value <= 0 || targetHeight.Value > limits.MaxRasterHeight))
+            {
+                return false;
+            }
+
+            if (targetWidth.HasValue && targetHeight.HasValue &&
+                (long)targetWidth.Value * targetHeight.Value > limits.MaxRasterPixels)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool TryAdmitSvgTargetSizeForContent(
+            int? targetWidth,
+            int? targetHeight,
+            string svgContent,
+            Uri baseUri,
+            ISvgResourceResolver resourceResolver,
+            SvgRenderLimits limits)
+        {
+            if (!TryAdmitSvgTargetSize(targetWidth, targetHeight, limits) ||
+                !TryGetSvgIntrinsicBounds(
+                    svgContent,
+                    baseUri,
+                    resourceResolver,
+                    limits,
+                    out double intrinsicWidth,
+                    out double intrinsicHeight))
+            {
+                return false;
+            }
+
+            if (!TryAdmitSvgRasterDimensions(intrinsicWidth, intrinsicHeight, limits))
+            {
+                return false;
+            }
+
+            double candidateWidth = targetWidth.HasValue ? targetWidth.Value : intrinsicWidth;
+            double candidateHeight = targetHeight.HasValue ? targetHeight.Value : intrinsicHeight;
+            return TryAdmitSvgRasterDimensions(candidateWidth, candidateHeight, limits);
+        }
+
+        private static bool TryAdmitSvgRasterDimensions(
+            double width,
+            double height,
+            SvgRenderLimits limits)
+        {
+            if (!double.IsFinite(width) || !double.IsFinite(height) ||
+                width <= 0 || height <= 0)
+            {
+                return false;
+            }
+
+            double rasterWidth = Math.Ceiling(width);
+            double rasterHeight = Math.Ceiling(height);
+            return rasterWidth <= limits.MaxRasterWidth &&
+                rasterHeight <= limits.MaxRasterHeight &&
+                rasterWidth * rasterHeight <= limits.MaxRasterPixels;
+        }
+
+        private static bool TryGetSvgIntrinsicBounds(
+            string svgContent,
+            Uri baseUri,
+            ISvgResourceResolver resourceResolver,
+            SvgRenderLimits limits,
+            out double width,
+            out double height)
+        {
+            width = 0;
+            height = 0;
+            try
+            {
+                if (SvgRenderEngine.TryRender(
+                        svgContent,
+                        limits,
+                        baseUri,
+                        resourceResolver,
+                        0d,
+                        out SKPicture picture,
+                        out float renderedWidth,
+                        out float renderedHeight,
+                        out _,
+                        out _,
+                        out _,
+                        out _,
+                        out _,
+                        out _))
+                {
+                    picture?.Dispose();
+                    if (double.IsFinite(renderedWidth) && double.IsFinite(renderedHeight) &&
+                        renderedWidth > 0 && renderedHeight > 0)
+                    {
+                        width = renderedWidth;
+                        height = renderedHeight;
+                        return true;
+                    }
+                }
+                else
+                {
+                    picture?.Dispose();
+                }
+            }
+            catch
+            {
+            }
+
+            return TryGetDeclaredSvgBounds(svgContent, limits, out width, out height);
+        }
+
+        private static bool TryGetDeclaredSvgBounds(
+            string svgContent,
+            SvgRenderLimits limits,
+            out double width,
+            out double height)
+        {
+            width = 0;
+            height = 0;
+            if (!SvgMarkupParser.TryParse(svgContent, limits, out var document, out _) ||
+                document?.Root == null)
+            {
+                return false;
+            }
+
+            double viewBoxWidth = 0;
+            double viewBoxHeight = 0;
+            string viewBox = document.Root.GetAttribute("viewBox");
+            if (!string.IsNullOrWhiteSpace(viewBox))
+            {
+                string[] parts = viewBox.Split(
+                    new[] { ',', ' ', '\t', '\r', '\n' },
+                    StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 4 &&
+                    TryParseFiniteNumber(parts[2], out viewBoxWidth) &&
+                    TryParseFiniteNumber(parts[3], out viewBoxHeight) &&
+                    viewBoxWidth > 0 && viewBoxHeight > 0)
+                {
+                }
+                else
+                {
+                    viewBoxWidth = 0;
+                    viewBoxHeight = 0;
+                }
+            }
+
+            double widthReference = viewBoxWidth > 0 ? viewBoxWidth : 300d;
+            double heightReference = viewBoxHeight > 0 ? viewBoxHeight : 150d;
+            if (!TryResolveSvgDeclaredLength(
+                    document.Root.GetAttribute("width"), widthReference, out width) ||
+                width <= 0)
+            {
+                width = widthReference;
+            }
+            if (!TryResolveSvgDeclaredLength(
+                    document.Root.GetAttribute("height"), heightReference, out height) ||
+                height <= 0)
+            {
+                height = heightReference;
+            }
+
+            return double.IsFinite(width) && double.IsFinite(height) &&
+                width > 0 && height > 0;
+        }
+
+        private static bool TryResolveSvgDeclaredLength(
+            string raw,
+            double reference,
+            out double value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(raw) ||
+                !SvgValues.TryParseLength(raw.AsSpan(), out float parsed, out var unit) ||
+                !double.IsFinite(parsed) || parsed < 0)
+            {
+                return false;
+            }
+
+            value = unit switch
+            {
+                SvgValues.SvgUnit.Percent => parsed * reference / 100d,
+                SvgValues.SvgUnit.Pt => parsed * 96d / 72d,
+                SvgValues.SvgUnit.Pc => parsed * 16d,
+                SvgValues.SvgUnit.Mm => parsed * 96d / 25.4d,
+                SvgValues.SvgUnit.Cm => parsed * 96d / 2.54d,
+                SvgValues.SvgUnit.In => parsed * 96d,
+                SvgValues.SvgUnit.Em => parsed * 16d,
+                SvgValues.SvgUnit.Ex => parsed * 8d,
+                _ => parsed
+            };
+            return double.IsFinite(value) && value > 0;
+        }
+
+        private static bool TryParseFiniteNumber(string value, out double result)
+        {
+            result = 0;
+            return SvgValues.TryParseNumber(value.AsSpan(), out float parsed) &&
+                double.IsFinite(parsed) && (result = parsed) > 0;
+        }
+
+        private static bool TryResolveSvgRasterSize(
+            double naturalWidth,
+            double naturalHeight,
+            int? requestedWidth,
+            int? requestedHeight,
+            SvgRenderLimits limits,
+            out int width,
+            out int height)
+        {
+            width = 0;
+            height = 0;
+
+            double candidateWidth = requestedWidth.HasValue && requestedWidth.Value > 0
+                ? requestedWidth.Value
+                : naturalWidth;
+            double candidateHeight = requestedHeight.HasValue && requestedHeight.Value > 0
+                ? requestedHeight.Value
+                : naturalHeight;
+
+            if (!double.IsFinite(candidateWidth) || !double.IsFinite(candidateHeight) ||
+                candidateWidth <= 0 || candidateHeight <= 0)
+            {
+                return false;
+            }
+
+            double rasterWidth = Math.Ceiling(candidateWidth);
+            double rasterHeight = Math.Ceiling(candidateHeight);
+            if (rasterWidth > limits.MaxRasterWidth || rasterHeight > limits.MaxRasterHeight ||
+                rasterWidth * rasterHeight > limits.MaxRasterPixels)
+            {
+                return false;
+            }
+
+            width = (int)rasterWidth;
+            height = (int)rasterHeight;
+            return width > 0 && height > 0;
+        }
+
+        private static SvgRenderLimits GetActiveSvgRenderLimits() =>
+            SvgRenderLimits.Normalize(SvgRenderLimits.Default);
+
+        private const int MaxImageUrlChars = 8_192;
+        private const int MaxDataUriUrlChars = 12 * 1024 * 1024;
+
+        private static int GetMaxImageUrlChars(string url) =>
+            url.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+                ? MaxDataUriUrlChars
+                : MaxImageUrlChars;
+
+        private static string NormalizeImageUrl(string url)
+        {
+            if (url == null)
+            {
+                return string.Empty;
+            }
+
+            int first = 0;
+            while (first < url.Length && char.IsWhiteSpace(url[first]))
+            {
+                first++;
+            }
+
+            int last = url.Length - 1;
+            while (last >= first && char.IsWhiteSpace(url[last]))
+            {
+                last--;
+            }
+
+            if (last < first)
+            {
+                return string.Empty;
+            }
+
+            string normalized = (first == 0 && last == url.Length - 1)
+                ? url
+                : url.Substring(first, last - first + 1);
+
+            return normalized.Length <= GetMaxImageUrlChars(normalized)
+                ? normalized
+                : string.Empty;
+        }
+
+        private const int MaxDataUriHeaderChars = 4096;
+        private const int MaxDataUriPreviewBytes = 2048;
+
+        private readonly record struct DataUriInfo(
+            string MimeType,
+            bool IsBase64,
+            int PayloadStart,
+            int PayloadLength);
+
+        private static bool IsSvgRequest(
+            string url,
+            string contentType = null,
+            byte[] data = null,
+            Uri responseUri = null)
+        {
+            if (IsSvgContentType(contentType))
+            {
+                return true;
+            }
+
+            if (TryParseDataUri(url, out DataUriInfo dataUri))
+            {
+                return IsSvgContentType(dataUri.MimeType) || LooksLikeSvgPayload(data);
+            }
+
+            if (HasSvgUriPath(url) ||
+                (responseUri != null && responseUri.IsAbsoluteUri && HasSvgUriPath(responseUri.AbsoluteUri)))
+            {
+                return true;
+            }
+
+            return LooksLikeSvgPayload(data);
+        }
+
+        private static bool IsSvgContentType(string contentType)
+        {
+            if (string.IsNullOrWhiteSpace(contentType))
+            {
+                return false;
+            }
+
+            contentType = contentType.Trim();
+            int separator = contentType.IndexOf(';');
+            string mimeType = separator >= 0
+                ? contentType.Substring(0, separator)
+                : contentType;
+            return mimeType.Trim().Equals("image/svg+xml", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryGetDataUriMimeType(string url, out string mimeType)
+        {
+            mimeType = null;
+            return TryParseDataUri(url, out DataUriInfo info) &&
+                (mimeType = info.MimeType) != null;
+        }
+
+        private static bool TryParseDataUri(string url, out DataUriInfo info)
+        {
+            info = default;
+            if (string.IsNullOrEmpty(url))
+            {
+                return false;
+            }
+
+            ReadOnlySpan<char> value = url.AsSpan().TrimStart();
+            if (!value.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            int leadingWhitespace = url.Length - value.Length;
+            int comma = value.IndexOf(',');
+            if (comma < 5 || comma - 5 > MaxDataUriHeaderChars)
+            {
+                return false;
+            }
+
+            ReadOnlySpan<char> header = value.Slice(5, comma - 5);
+            int separator = header.IndexOf(';');
+            ReadOnlySpan<char> media = (separator >= 0 ? header.Slice(0, separator) : header).Trim();
+            if (media.Length == 0)
+            {
+                return false;
+            }
+
+            bool isBase64 = false;
+            int parameterStart = separator >= 0 ? separator + 1 : header.Length;
+            while (parameterStart <= header.Length)
+            {
+                int next = header.Slice(parameterStart).IndexOf(';');
+                int end = next < 0 ? header.Length : parameterStart + next;
+                ReadOnlySpan<char> parameter = header.Slice(parameterStart, end - parameterStart).Trim();
+                if (parameter.Length > 0 && parameter.Equals("base64", StringComparison.OrdinalIgnoreCase))
+                {
+                    isBase64 = next < 0;
+                }
+
+                if (next < 0)
+                {
+                    break;
+                }
+                parameterStart = end + 1;
+            }
+
+            int payloadStart = leadingWhitespace + comma + 1;
+            info = new DataUriInfo(
+                media.ToString(),
+                isBase64,
+                payloadStart,
+                value.Length - payloadStart);
+            return true;
+        }
+
+        private static bool IsImageMimeType(string mimeType) =>
+            !string.IsNullOrWhiteSpace(mimeType) &&
+            mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+
+        private static bool HasSvgUriPath(string value)
+        {
+            return !string.IsNullOrWhiteSpace(value) &&
+                Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+                uri.AbsolutePath.EndsWith(".svg", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool LooksLikeSvgPayload(byte[] data)
+        {
+            if (data == null || data.Length == 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                string prefix = System.Text.Encoding.UTF8.GetString(
+                    data,
+                    0,
+                    Math.Min(data.Length, MaxDataUriPreviewBytes));
+                return prefix.IndexOf("<svg", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryAdmitSvgDataUriPayload(
+            string url,
+            DataUriInfo info,
+            SvgRenderLimits limits)
+        {
+            int maxBytes = GetMaxSvgDataBytes(limits);
+            if (info.PayloadLength < 0)
+            {
+                return false;
+            }
+
+            if (info.IsBase64)
+            {
+                return TryValidateBase64PayloadLength(
+                    url,
+                    info.PayloadStart,
+                    maxBytes,
+                    out _);
+            }
+
+            return TryValidatePercentPayloadLength(
+                url,
+                info.PayloadStart,
+                maxBytes);
+        }
+
+        private static bool TryAdmitDataUriPayload(
+            string url,
+            DataUriInfo info,
+            SvgRenderLimits limits,
+            int maxBytes)
+        {
+            if (info.PayloadLength < 0)
+            {
+                return false;
+            }
+
+            return info.IsBase64
+                ? TryValidateBase64PayloadLength(url, info.PayloadStart, maxBytes, out _)
+                : TryValidatePercentPayloadLength(url, info.PayloadStart, maxBytes);
+        }
+
+        private static bool TryValidateBase64PayloadLength(
+            string url,
+            int payloadStart,
+            int maxBytes,
+            out int decodedLength)
+        {
+            decodedLength = 0;
+            if (maxBytes <= 0 || payloadStart < 0 || payloadStart > url.Length)
+            {
+                return false;
+            }
+
+            long maxEncodedChars = ((long)maxBytes + 2L) / 3L * 4L;
+            long effectiveChars = 0;
+            int padding = 0;
+            bool sawPadding = false;
+            for (int i = payloadStart; i < url.Length;)
+            {
+                if (!TryReadDataUriCharacter(url, ref i, out char value))
+                {
+                    return false;
+                }
+                if (IsSvgBase64Whitespace(value))
+                {
+                    continue;
+                }
+
+                if (value == '=')
+                {
+                    sawPadding = true;
+                    padding++;
+                    if (padding > 2)
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (sawPadding || !IsBase64Character(value))
+                    {
+                        return false;
+                    }
+                }
+
+                effectiveChars++;
+                if (effectiveChars > maxEncodedChars)
+                {
+                    return false;
+                }
+            }
+
+            if (effectiveChars == 0 || effectiveChars % 4 == 1 ||
+                (padding > 0 && effectiveChars % 4 != 0))
+            {
+                return false;
+            }
+
+            long length = effectiveChars / 4L * 3L;
+            if (padding > 0)
+            {
+                length -= padding;
+            }
+            else if (effectiveChars % 4L == 2)
+            {
+                length += 1L;
+            }
+            else if (effectiveChars % 4L == 3)
+            {
+                length += 2L;
+            }
+
+            if (length <= 0 || length > maxBytes)
+            {
+                return false;
+            }
+
+            decodedLength = (int)length;
+            return true;
+        }
+
+        private static bool TryValidatePercentPayloadLength(
+            string url,
+            int payloadStart,
+            int maxBytes)
+        {
+            if (maxBytes <= 0 || payloadStart < 0 || payloadStart > url.Length)
+            {
+                return false;
+            }
+
+            long decodedLength = 0;
+            for (int i = payloadStart; i < url.Length;)
+            {
+                if (url[i] == '%')
+                {
+                    if (i + 2 >= url.Length ||
+                        !TryHex(url[i + 1], out int high) ||
+                        !TryHex(url[i + 2], out int low))
+                    {
+                        return false;
+                    }
+                    decodedLength++;
+                    i += 3;
+                }
+                else if (url[i] <= 0x7f)
+                {
+                    decodedLength++;
+                    i++;
+                }
+                else
+                {
+                    decodedLength += 4;
+                    i++;
+                }
+
+                if (decodedLength > maxBytes)
+                {
+                    return false;
+                }
+            }
+
+            return decodedLength > 0;
+        }
+
+        private static bool TryReadDataUriCharacter(
+            string url,
+            ref int index,
+            out char value)
+        {
+            value = '\0';
+            if (index < 0 || index >= url.Length)
+            {
+                return false;
+            }
+
+            if (url[index] != '%')
+            {
+                if (url[index] > 0x7f)
+                {
+                    return false;
+                }
+                value = url[index++];
+                return true;
+            }
+
+            if (index + 2 >= url.Length ||
+                !TryHex(url[index + 1], out int high) ||
+                !TryHex(url[index + 2], out int low))
+            {
+                return false;
+            }
+
+            int decoded = (high << 4) | low;
+            if (decoded > 0x7f)
+            {
+                return false;
+            }
+
+            value = (char)decoded;
+            index += 3;
+            return true;
+        }
+
+        private static bool IsBase64Character(char value) =>
+            value is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or
+            >= '0' and <= '9' or '+' or '/' or '=';
+
+        private static bool TryClassifyDataUri(
+            string url,
+            SvgRenderLimits limits,
+            out bool isSvg,
+            out DataUriInfo info)
+        {
+            isSvg = false;
+            if (!TryParseDataUri(url, out info))
+            {
+                return false;
+            }
+
+            if (IsSvgContentType(info.MimeType))
+            {
+                isSvg = true;
+                return TryAdmitSvgDataUriPayload(url, info, limits);
+            }
+
+            if (!IsImageMimeType(info.MimeType))
+            {
+                return false;
+            }
+
+            if (TryDataUriPayloadLooksLikeSvg(url, info))
+            {
+                return false;
+            }
+
+            return TryAdmitDataUriPayload(
+                url,
+                info,
+                limits,
+                GetMaxDataUriBytes(limits));
+        }
+
+        private static bool TryDataUriPayloadLooksLikeSvg(string url, DataUriInfo info)
+        {
+            if (info.PayloadLength <= 0)
+            {
+                return false;
+            }
+
+            byte[] preview;
+            bool decoded = info.IsBase64
+                ? TryDecodeBase64Prefix(url, info.PayloadStart, MaxDataUriPreviewBytes, out preview)
+                : TryDecodePercentPayload(
+                    url,
+                    info.PayloadStart,
+                    MaxDataUriPreviewBytes,
+                    out preview,
+                    stopAtLimit: true);
+            return decoded && LooksLikeSvgPayload(preview);
+        }
+
+        private static int GetMaxDataUriBytes(SvgRenderLimits limits) =>
+            Math.Max(1, Math.Min(limits.MaxDecodedImageBytes, limits.MaxSourceChars));
+
         /// <summary>
         /// Request a debounced repaint. Multiple calls within DEBOUNCE_DELAY_MS
         /// will result in only a single repaint after the delay.
@@ -1018,7 +2053,7 @@ namespace FenBrowser.FenEngine.Rendering
             lock (_timerLock)
             {
                 _repaintPending = true;
-                
+
                 // Dispose existing timer and create new one to reset the delay
                 _repaintDebounceTimer?.Dispose();
                 _repaintDebounceTimer = new Timer(_ =>
@@ -1071,7 +2106,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
 
                     // Phase 6: skip contexts belonging to navigated-away documents.
-                    if (context.IsDisposed)
+                    if (IsContextUnavailable(context))
                     {
                         continue;
                     }
@@ -1081,7 +2116,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            if (fallbackContext != null && !fallbackContext.IsDisposed)
+            if (fallbackContext != null && !IsContextUnavailable(fallbackContext))
             {
                 var ownerId = string.IsNullOrWhiteSpace(fallbackContext.OwnerId) ? "_default" : fallbackContext.OwnerId;
                 contexts[ownerId] = fallbackContext;
@@ -1112,7 +2147,7 @@ namespace FenBrowser.FenEngine.Rendering
                         continue;
                     }
 
-                    if (context.IsDisposed)
+                    if (IsContextUnavailable(context))
                     {
                         contexts.RemoveAt(i);
                         continue;
@@ -1158,7 +2193,7 @@ namespace FenBrowser.FenEngine.Rendering
                         continue;
                     }
 
-                    if (context.IsDisposed)
+                    if (IsContextUnavailable(context))
                     {
                         contexts.RemoveAt(i);
                         continue;
@@ -1203,9 +2238,37 @@ namespace FenBrowser.FenEngine.Rendering
             Document ownerDocument = null)
         {
             if (string.IsNullOrEmpty(url)) return null;
-            url = url.Trim();
+            url = NormalizeImageUrl(url);
+            if (string.IsNullOrEmpty(url)) return null;
             var loadContext = CreateDocumentRequestContext(_ambientContext.Value, ownerDocument);
-            var cacheKey = CreateCacheKey(url, loadContext);
+            if (IsContextUnavailable(loadContext))
+            {
+                return null;
+            }
+
+            var svgBaseUri = ResolveSvgRequestBaseUri(url, ownerDocument);
+            bool isDataUri = url.StartsWith("data:", StringComparison.OrdinalIgnoreCase);
+            bool isSvgRequest = IsSvgRequest(url) || IsKnownSvgRequest(url, loadContext);
+            var activeSvgLimits = GetActiveSvgRenderLimits();
+            if (isDataUri)
+            {
+                if (!TryClassifyDataUri(
+                        url,
+                        activeSvgLimits,
+                        out bool dataIsSvg,
+                        out _))
+                {
+                    return null;
+                }
+                isSvgRequest = dataIsSvg;
+            }
+            if (isSvgRequest && !TryAdmitSvgTargetSize(targetWidth, targetHeight, activeSvgLimits))
+            {
+                return null;
+            }
+
+            var cacheKey = CreateRequestCacheKey(
+                url, loadContext, targetWidth, targetHeight, svgBaseUri);
 
             if (IsCssImageFunction(url))
             {
@@ -1213,27 +2276,15 @@ namespace FenBrowser.FenEngine.Rendering
                 return null;
             }
 
-            // Animated GIF: return the current frame based on elapsed time
-            if (_animatedGifs.TryGetValue(cacheKey, out var anim))
+            RegisterRequestOwner(cacheKey, loadContext, ownerDocument);
+            if (TryGetCachedBitmap(cacheKey, out var cachedBitmap))
             {
                 RegisterCacheHit();
-                NoteAnimatedImageOwner(loadContext);
-                return anim.GetCurrentFrame();
-            }
-
-            // Check new cache first
-            if (_memoryCache.TryGetValue(cacheKey, out var entry))
-            {
-                entry.LastAccessed = DateTime.UtcNow;
-                RegisterCacheHit();
-                return entry.Bitmap;
-            }
-            
-            // Check legacy cache
-            if (_legacyCache.TryGetValue(cacheKey, out var bitmap))
-            {
-                RegisterCacheHit();
-                return bitmap;
+                if (_animatedGifs.ContainsKey(cacheKey))
+                {
+                    NoteAnimatedImageOwner(loadContext);
+                }
+                return cachedBitmap;
             }
 
             if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
@@ -1263,31 +2314,66 @@ namespace FenBrowser.FenEngine.Rendering
                     EngineLogCompat.Debug($"[ImageLoader] Lazy defer: {url}", LogCategory.Rendering);
                     // Not in viewport - register for lazy loading
                     CapturePendingLoadContext(cacheKey, loadContext);
-                    RegisterLazyImage(url, elementBounds.Value, cacheKey, loadContext?.OwnerId);
+                    RegisterLazyImage(
+                        url,
+                        elementBounds.Value,
+                        cacheKey,
+                        loadContext?.OwnerId,
+                        targetWidth,
+                        targetHeight,
+                        svgBaseUri);
                     return null; // Renderer should show placeholder
                 }
             }
 
             // Handle Data URIs synchronously to prevent recursion
-            if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            if (isDataUri)
             {
                  EngineLogCompat.Debug($"[ImageLoader] Decoding Data URI: {url.Substring(0, Math.Min(20, url.Length))}...", LogCategory.Rendering);
-                var dataBitmap = DecodeDataUri(url, targetWidth, targetHeight);
+                var dataBitmap = DecodeDataUri(
+                    url,
+                    targetWidth,
+                    targetHeight,
+                    ownerDocument,
+                    svgBaseUri,
+                    out bool dataIsSvg);
                 if (dataBitmap != null)
                 {
-                    var dataEntry = new ImageCacheEntry
+                    string dataCacheKey = CreateCacheKey(
+                        url,
+                        loadContext,
+                        targetWidth,
+                        targetHeight,
+                        svgBaseUri,
+                        dataIsSvg);
+                    RegisterRequestOwner(dataCacheKey, loadContext, ownerDocument);
+                    RecordSvgRequestMetadata(
+                        url,
+                        loadContext,
+                        dataIsSvg,
+                        null,
+                        svgBaseUri);
+                    string previousDataCacheKey = string.Equals(dataCacheKey, cacheKey, StringComparison.Ordinal)
+                        ? null
+                        : cacheKey;
+                    if (TryStoreDecodedBitmap(
+                        dataCacheKey,
+                        url,
+                        dataBitmap,
+                        isLazy,
+                        previousDataCacheKey))
                     {
-                        Bitmap = dataBitmap,
-                        ByteSize = dataBitmap.ByteCount,
-                        LastAccessed = DateTime.UtcNow,
-                        IsLazy = isLazy
-                    };
-                    _memoryCache[cacheKey] = dataEntry;
-                    _legacyCache[cacheKey] = dataBitmap;
-                    lock (_cacheLock) { _currentCacheBytes += dataBitmap.ByteCount; }
-                    EvictIfNeeded();
-                    
-                    return dataBitmap;
+                        return dataBitmap;
+                    }
+
+                    if (TryGetCachedBitmap(dataCacheKey, out var existingBitmap))
+                    {
+                        RegisterCacheHit();
+                        DisposeBitmap(dataBitmap);
+                        return existingBitmap;
+                    }
+
+                    DisposeBitmap(dataBitmap);
                 }
                 RememberFailedDataUri(cacheKey);
                 return null;
@@ -1306,7 +2392,8 @@ namespace FenBrowser.FenEngine.Rendering
                 isLazy,
                 targetWidth,
                 targetHeight,
-                loadContext ?? GetPendingLoadContext(cacheKey));
+                loadContext ?? GetPendingLoadContext(cacheKey),
+                svgBaseUri);
             return null;
         }
 
@@ -1348,17 +2435,78 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var context = CreateDocumentRequestContext(_ambientContext.Value, ownerDocument);
-            var cacheKey = CreateCacheKey(url, context);
-            if (_memoryCache.ContainsKey(cacheKey) || _legacyCache.ContainsKey(cacheKey) || _animatedGifs.ContainsKey(cacheKey))
+            if (IsContextUnavailable(context))
+            {
+                return false;
+            }
+
+            url = NormalizeImageUrl(url);
+            if (string.IsNullOrEmpty(url))
+            {
+                return false;
+            }
+
+            var svgBaseUri = ResolveSvgRequestBaseUri(url, ownerDocument);
+            bool isSvgRequest = IsSvgRequest(url) || IsKnownSvgRequest(url, context);
+            var activeSvgLimits = GetActiveSvgRenderLimits();
+            if (isSvgRequest && !TryAdmitSvgTargetSize(targetWidth, targetHeight, activeSvgLimits))
+            {
+                return false;
+            }
+            if (isSvgRequest && url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
+                !TryAdmitSvgDataUriEnvelope(url, activeSvgLimits))
+            {
+                return false;
+            }
+
+            var cacheKey = CreateRequestCacheKey(
+                url, context, targetWidth, targetHeight, svgBaseUri);
+            RegisterRequestOwner(cacheKey, context, ownerDocument);
+            string requestCacheKey = cacheKey;
+            if (TryGetCachedBitmap(cacheKey, out _))
             {
                 return true;
             }
 
             byte[] data;
-            using (var ms = new MemoryStream())
+            if (isSvgRequest)
             {
-                await stream.CopyToAsync(ms).ConfigureAwait(false);
-                data = ms.ToArray();
+                data = await ReadBoundedSvgStreamAsync(
+                    stream, GetMaxSvgDataBytes(activeSvgLimits)).ConfigureAwait(false);
+                if (data == null)
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                int maxBytes = GetMaxDataUriBytes(activeSvgLimits);
+                byte[] prefix = await ReadBoundedPrefixAsync(
+                    stream,
+                    Math.Min(maxBytes, MaxDataUriPreviewBytes)).ConfigureAwait(false);
+                if (prefix == null)
+                {
+                    return false;
+                }
+
+                if (LooksLikeSvgPayload(prefix))
+                {
+                    isSvgRequest = true;
+                    data = await ReadBoundedStreamAsync(
+                        stream,
+                        GetMaxSvgDataBytes(activeSvgLimits),
+                        prefix).ConfigureAwait(false);
+                }
+                else
+                {
+                    data = await ReadBoundedStreamAsync(stream, maxBytes, prefix)
+                        .ConfigureAwait(false);
+                }
+            }
+
+            if (data == null)
+            {
+                return false;
             }
 
             if (data == null || data.Length == 0)
@@ -1366,11 +2514,30 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
+            isSvgRequest = isSvgRequest || IsSvgRequest(url, null, data, svgBaseUri);
+            if (isSvgRequest &&
+                (!TryAdmitSvgTargetSize(targetWidth, targetHeight, activeSvgLimits) ||
+                 !IsSvgPayloadAdmitted(data, activeSvgLimits)))
+            {
+                return false;
+            }
+
+            cacheKey = CreateCacheKey(
+                url,
+                context,
+                targetWidth,
+                targetHeight,
+                svgBaseUri,
+                isSvgRequest);
+            RegisterRequestOwner(cacheKey, context, ownerDocument);
+            RecordSvgRequestMetadata(
+                url,
+                context,
+                isSvgRequest,
+                isSvgRequest ? "image/svg+xml" : null,
+                svgBaseUri);
             SvgResourceSnapshot svgResources = null;
-            Uri svgBaseUri = Uri.TryCreate(url, UriKind.Absolute, out var prewarmUri)
-                ? prewarmUri
-                : null;
-            if (svgBaseUri != null && LooksLikeSvgResource(svgBaseUri, string.Empty, data))
+            if (isSvgRequest && svgBaseUri != null)
             {
                 svgResources = await BuildSvgResourceSnapshotAsync(
                     System.Text.Encoding.UTF8.GetString(data),
@@ -1379,29 +2546,31 @@ namespace FenBrowser.FenEngine.Rendering
                     context?.FetchBytesAsync ?? FetchBytesAsync,
                     context).ConfigureAwait(false);
             }
+            string previousCacheKey = string.Equals(cacheKey, requestCacheKey, StringComparison.Ordinal)
+                ? null
+                : requestCacheKey;
             var bitmap = DecodeBitmapFromBytes(
-                url, data, targetWidth, targetHeight, cacheKey, svgBaseUri, svgResources);
+                url,
+                data,
+                targetWidth,
+                targetHeight,
+                out bool isCached,
+                cacheKey,
+                svgBaseUri,
+                svgResources,
+                isSvgRequest,
+                previousCacheKey: previousCacheKey);
             if (bitmap == null)
             {
                 return false;
             }
 
-            if (!TryStoreDecodedBitmap(cacheKey, url, bitmap, isLazy))
+            if (!isCached &&
+                !TryStoreDecodedBitmap(cacheKey, url, bitmap, isLazy, previousCacheKey))
             {
-                try
-                {
-                    if (!bitmap.IsNull)
-                    {
-                        bitmap.Dispose();
-                    }
-                }
-                catch
-                {
-                }
-
-                return _memoryCache.ContainsKey(cacheKey) ||
-                    _legacyCache.ContainsKey(cacheKey) ||
-                    _animatedGifs.ContainsKey(cacheKey);
+                bool cached = TryGetCachedBitmap(cacheKey, out _);
+                DisposeBitmap(bitmap);
+                return cached;
             }
 
             RequestDebouncedRepaint();
@@ -1409,98 +2578,896 @@ namespace FenBrowser.FenEngine.Rendering
             return true;
         }
 
-        private static SKBitmap DecodeDataUri(string url, int? targetWidth, int? targetHeight)
+        private static SKBitmap DecodeDataUri(
+            string url,
+            int? targetWidth,
+            int? targetHeight,
+            Document ownerDocument,
+            out bool isSvg) =>
+            DecodeDataUri(url, targetWidth, targetHeight, ownerDocument, null, out isSvg);
+
+        private static SKBitmap DecodeDataUri(
+            string url,
+            int? targetWidth,
+            int? targetHeight,
+            Document ownerDocument,
+            Uri svgBaseUri,
+            out bool isSvg)
         {
-             try
-             {
-                 int commaIndex = url.IndexOf(',');
-                 if (commaIndex < 0) return null;
+            isSvg = false;
+            try
+            {
+                var limits = GetActiveSvgRenderLimits();
+                if (!TryClassifyDataUri(url, limits, out isSvg, out DataUriInfo info))
+                {
+                    return null;
+                }
 
-                 string metadata = url.Substring(5, commaIndex - 5);
-                 string dataStr = url.Substring(commaIndex + 1);
+                if (isSvg && !TryAdmitSvgTargetSize(targetWidth, targetHeight, limits))
+                {
+                    return null;
+                }
 
-                 bool isBase64 = metadata.IndexOf(";base64", StringComparison.OrdinalIgnoreCase) >= 0;
-                 string mimeType = metadata.Split(';')[0];
-                 
-                 if (!string.IsNullOrEmpty(mimeType) && !mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-                     return null;
+                int maxBytes = isSvg
+                    ? GetMaxSvgDataBytes(limits)
+                    : GetMaxDataUriBytes(limits);
+                if (!TryAdmitDataUriPayload(url, info, limits, maxBytes))
+                {
+                    return null;
+                }
 
-                 byte[] bytes = null;
-         if (isBase64)
-         {
-             // For base64, we should NOT unescape the entire string if it contains '+' or '/'
-             // But we do need to remove whitespace
-             string cleanData = dataStr.Replace("\r", "").Replace("\n", "").Replace(" ", "").Replace("\t", "");
-             
-             // If the string contains '%', it's likely URI encoded base64
-             if (cleanData.Contains('%'))
-             {
-                 cleanData = Uri.UnescapeDataString(cleanData);
-                 cleanData = cleanData.Replace("\r", "").Replace("\n", "").Replace(" ", "").Replace("\t", "").Replace("\f", "");
-             }
+                byte[] bytes;
+                if (info.IsBase64)
+                {
+                    if (!TryDecodeBase64Payload(url, info.PayloadStart, maxBytes, out bytes))
+                    {
+                        return null;
+                    }
+                }
+                else if (!TryDecodePercentPayload(
+                             url,
+                             info.PayloadStart,
+                             maxBytes,
+                             out bytes,
+                             stopAtLimit: false))
+                {
+                    return null;
+                }
 
-             int remainder = cleanData.Length % 4;
-             if (remainder == 2)
-             {
-                 cleanData += "==";
-             }
-             else if (remainder == 3)
-             {
-                 cleanData += "=";
-             }
-             
-             try { bytes = Convert.FromBase64String(cleanData); }
-             catch (FormatException fe)
-             {
-                 var preview = cleanData.Length > 60 ? cleanData.Substring(0, 60) + "..." : cleanData;
-                 EngineLogCompat.Warn($"[ImageLoader] Base64 decode failed (len={cleanData.Length}, preview={preview}): {fe.Message}", LogCategory.Rendering);
-                 return null;
-             }
-         }
-         else
-         {
-             dataStr = Uri.UnescapeDataString(dataStr);
-             bytes = System.Text.Encoding.UTF8.GetBytes(dataStr);
-         }
+                if (bytes == null || bytes.Length == 0)
+                {
+                    return null;
+                }
 
-                 if (bytes != null && bytes.Length > 0)
-                 {
-                     if (mimeType.Contains("svg"))
-                     {
-                         string svgContent = System.Text.Encoding.UTF8.GetString(bytes);
-                         return RenderSvgToBitmap(svgContent, targetWidth, targetHeight);
-                     }
-                     else
-                     {
-                         var bmp = SKBitmap.Decode(bytes);
-                        // Fallback for SkiaSharp 4.x compatibility (see DecodeBitmapFromBytes)
-                        if (bmp == null)
-                        {
-                            try
-                            {
-                                using var skData = SKData.CreateCopy(bytes);
-                                if (skData != null && !skData.IsEmpty)
-                                {
-                                    using var image = SKImage.FromEncodedData(skData);
-                                    if (image != null)
-                                    {
-                                        bmp = SKBitmap.FromImage(image);
-                                    }
-                                }
-                            }
-                            catch { }
-                        }
-                        return bmp;
-                     }
-                 }
-                 return null;
-             }
-             catch (Exception ex)
-             {
-                 EngineLogCompat.Error($"[ImageLoader] Data URI Decode Error: {ex.Message}", LogCategory.Rendering);
-                 return null;
-             }
+                if (isSvg)
+                {
+                    if (!IsSvgPayloadAdmitted(bytes, limits))
+                    {
+                        return null;
+                    }
+
+                    string svgContent;
+                    try
+                    {
+                        svgContent = new System.Text.UTF8Encoding(false, true).GetString(bytes);
+                    }
+                    catch (System.Text.DecoderFallbackException)
+                    {
+                        return null;
+                    }
+
+                    if (svgContent.Length > limits.MaxSourceChars)
+                    {
+                        return null;
+                    }
+
+                    return RenderSvgToBitmap(
+                        svgContent,
+                        targetWidth,
+                        targetHeight,
+                        svgBaseUri ?? ResolveSvgRequestBaseUri(url, ownerDocument),
+                        null,
+                        limits);
+                }
+
+                if (LooksLikeSvgPayload(bytes))
+                {
+                    return null;
+                }
+
+                return DecodeBoundedRasterDataUri(bytes, targetWidth, targetHeight, limits);
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Error($"[ImageLoader] Data URI Decode Error: {ex.Message}", LogCategory.Rendering);
+                return null;
+            }
         }
+
+        private static SKBitmap DecodeBoundedRasterDataUri(
+            byte[] bytes,
+            int? targetWidth,
+            int? targetHeight,
+            SvgRenderLimits limits) =>
+            DecodeBoundedRasterPayload(
+                bytes,
+                targetWidth,
+                targetHeight,
+                limits,
+                cacheKey: null,
+                previousCacheKey: null,
+                out _);
+
+        private static SKBitmap DecodeBoundedRasterPayload(
+            byte[] data,
+            int? targetWidth,
+            int? targetHeight,
+            SvgRenderLimits limits,
+            string cacheKey,
+            string previousCacheKey,
+            out bool isCached)
+        {
+            isCached = false;
+            if (data == null || data.Length == 0 ||
+                data.Length > limits.MaxDecodedImageBytes ||
+                data.Length > limits.MaxCumulativeResourceBytes)
+            {
+                return null;
+            }
+
+            try
+            {
+                using var skData = SKData.CreateCopy(data);
+                using var codec = SKCodec.Create(skData);
+                if (codec == null ||
+                    !TryResolveRasterDecodeInfo(
+                        codec,
+                        targetWidth,
+                        targetHeight,
+                        limits,
+                        out SKImageInfo imageInfo,
+                        out bool canDecodeIntrinsic))
+                {
+                    return null;
+                }
+
+                if (!string.IsNullOrEmpty(cacheKey) && codec.FrameCount > 1)
+                {
+                    AnimatedImage animated = DecodeAnimatedGif(
+                        codec,
+                        imageInfo,
+                        canDecodeIntrinsic,
+                        limits);
+                    if (animated == null)
+                    {
+                        return null;
+                    }
+
+                    if (TryStoreAnimatedImage(cacheKey, animated, previousCacheKey))
+                    {
+                        isCached = true;
+                        return animated.Frames[0];
+                    }
+
+                    DisposeAnimatedImage(animated);
+                    if (TryGetCachedBitmap(cacheKey, out SKBitmap cachedBitmap))
+                    {
+                        isCached = true;
+                        return cachedBitmap;
+                    }
+                    return null;
+                }
+
+                int requiredFrame = -1;
+                if (codec.FrameCount > 1 &&
+                    codec.GetFrameInfo(0, out var firstFrameInfo))
+                {
+                    requiredFrame = firstFrameInfo.RequiredFrame;
+                }
+                return DecodeCodecFrame(
+                    codec,
+                    0,
+                    requiredFrame,
+                    imageInfo,
+                    canDecodeIntrinsic,
+                    useCodecOptions: false) ??
+                    DecodeEncodedImageAtIntrinsicSize(skData, imageInfo);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static SKBitmap DecodeEncodedImageAtIntrinsicSize(
+            SKData encoded,
+            SKImageInfo imageInfo)
+        {
+            if (encoded == null || encoded.IsEmpty ||
+                imageInfo.Width <= 0 || imageInfo.Height <= 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                using var image = SKImage.FromEncodedData(encoded);
+                if (image == null ||
+                    image.Width != imageInfo.Width ||
+                    image.Height != imageInfo.Height)
+                {
+                    return null;
+                }
+
+                var decoded = SKBitmap.FromImage(image);
+                if (decoded == null ||
+                    decoded.Width != imageInfo.Width ||
+                    decoded.Height != imageInfo.Height)
+                {
+                    DisposeBitmap(decoded);
+                    return null;
+                }
+
+                return decoded;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static bool TryResolveRasterDecodeInfo(
+            SKCodec codec,
+            int? requestedWidth,
+            int? requestedHeight,
+            SvgRenderLimits limits,
+            out SKImageInfo imageInfo,
+            out bool canDecodeIntrinsic)
+        {
+            imageInfo = default;
+            canDecodeIntrinsic = false;
+            if (codec == null)
+            {
+                return false;
+            }
+
+            SKImageInfo intrinsicInfo = codec.Info;
+            if (intrinsicInfo.Width <= 0 || intrinsicInfo.Height <= 0)
+            {
+                return false;
+            }
+
+            double width;
+            double height;
+            if (requestedWidth.HasValue && requestedHeight.HasValue)
+            {
+                width = requestedWidth.Value;
+                height = requestedHeight.Value;
+            }
+            else if (requestedWidth.HasValue)
+            {
+                width = requestedWidth.Value;
+                height = Math.Ceiling(
+                    width * intrinsicInfo.Height / (double)intrinsicInfo.Width);
+            }
+            else if (requestedHeight.HasValue)
+            {
+                height = requestedHeight.Value;
+                width = Math.Ceiling(
+                    height * intrinsicInfo.Width / (double)intrinsicInfo.Height);
+            }
+            else
+            {
+                width = intrinsicInfo.Width;
+                height = intrinsicInfo.Height;
+            }
+
+            if (!TryAdmitSvgRasterDimensions(width, height, limits))
+            {
+                return false;
+            }
+
+            canDecodeIntrinsic = TryAdmitSvgRasterDimensions(
+                intrinsicInfo.Width,
+                intrinsicInfo.Height,
+                limits);
+            imageInfo = new SKImageInfo(
+                (int)Math.Ceiling(width),
+                (int)Math.Ceiling(height),
+                SKColorType.Bgra8888,
+                SKAlphaType.Premul);
+            return true;
+        }
+
+        private static SKBitmap DecodeCodecFrame(
+            SKCodec codec,
+            int frameIndex,
+            int requiredFrame,
+            SKImageInfo imageInfo,
+            bool canDecodeIntrinsic,
+            bool useCodecOptions = true)
+        {
+            if (useCodecOptions &&
+                (imageInfo.Width != codec.Info.Width || imageInfo.Height != codec.Info.Height))
+            {
+                if (!canDecodeIntrinsic)
+                {
+                    return null;
+                }
+
+                SKImageInfo intrinsicInput = codec.Info;
+                SKImageInfo intrinsicOutput = new(
+                    intrinsicInput.Width,
+                    intrinsicInput.Height,
+                    SKColorType.Bgra8888,
+                    SKAlphaType.Premul);
+                SKBitmap intrinsicBitmap = DecodeCodecFrame(
+                    codec,
+                    frameIndex,
+                    requiredFrame,
+                    intrinsicOutput,
+                    canDecodeIntrinsic: false,
+                    useCodecOptions: true);
+                if (intrinsicBitmap == null)
+                {
+                    return null;
+                }
+
+                try
+                {
+                    SKBitmap resizedBitmap = intrinsicBitmap.Resize(
+                        new SKSizeI(imageInfo.Width, imageInfo.Height),
+                        SKSamplingOptions.Default);
+                    DisposeBitmap(intrinsicBitmap);
+                    return resizedBitmap;
+                }
+                catch
+                {
+                    DisposeBitmap(intrinsicBitmap);
+                    return null;
+                }
+            }
+
+            var bitmap = new SKBitmap();
+            if (!bitmap.TryAllocPixels(imageInfo))
+            {
+                bitmap.Dispose();
+                return null;
+            }
+
+            try
+            {
+                SKCodecResult result = useCodecOptions
+                    ? codec.GetPixels(
+                        imageInfo,
+                        bitmap.GetPixels(),
+                        new SKCodecOptions(frameIndex, requiredFrame))
+                    : codec.GetPixels(imageInfo, bitmap.GetPixels());
+                if (result == SKCodecResult.InvalidScale && canDecodeIntrinsic)
+                {
+                    bitmap.Dispose();
+                    SKImageInfo intrinsicInfo = codec.Info;
+                    SKImageInfo intrinsicOutput = new(
+                        intrinsicInfo.Width,
+                        intrinsicInfo.Height,
+                        SKColorType.Bgra8888,
+                        SKAlphaType.Premul);
+                    bitmap = DecodeCodecFrame(
+                        codec,
+                        frameIndex,
+                        requiredFrame,
+                        intrinsicOutput,
+                        canDecodeIntrinsic: false,
+                        useCodecOptions: useCodecOptions);
+                    if (bitmap == null)
+                    {
+                        return null;
+                    }
+
+                    if (bitmap.Width == imageInfo.Width && bitmap.Height == imageInfo.Height)
+                    {
+                        return bitmap;
+                    }
+
+                    SKBitmap resized = bitmap.Resize(
+                        new SKSizeI(imageInfo.Width, imageInfo.Height),
+                        SKSamplingOptions.Default);
+                    DisposeBitmap(bitmap);
+                    return resized;
+                }
+
+                if (result != SKCodecResult.Success &&
+                    result != SKCodecResult.IncompleteInput)
+                {
+                    bitmap.Dispose();
+                    return null;
+                }
+
+                return bitmap;
+            }
+            catch
+            {
+                bitmap.Dispose();
+                return null;
+            }
+        }
+
+        internal static SKBitmap GetInlineSvgImage(
+            string svgContent,
+            int targetWidth,
+            int targetHeight,
+            Uri baseUri = null,
+            Document ownerDocument = null)
+        {
+            var limits = GetActiveSvgRenderLimits();
+            if (string.IsNullOrWhiteSpace(svgContent) ||
+                svgContent.Length > limits.MaxSourceChars ||
+                !TryAdmitSvgTargetSize(targetWidth, targetHeight, limits))
+            {
+                return null;
+            }
+
+            var context = CreateDocumentRequestContext(_ambientContext.Value, ownerDocument);
+            if (IsContextUnavailable(context))
+            {
+                return null;
+            }
+
+            baseUri ??= ResolveDocumentBaseUri(ownerDocument);
+            string cacheKey = CreateInlineSvgCacheKey(
+                svgContent, context, baseUri, targetWidth, targetHeight, limits);
+            if (cacheKey == null)
+            {
+                return null;
+            }
+
+            RegisterRequestOwner(cacheKey, context, ownerDocument);
+            if (TryGetCachedBitmap(cacheKey, out var cachedBitmap))
+            {
+                RegisterCacheHit();
+                return cachedBitmap;
+            }
+
+            RegisterCacheMiss();
+            var bitmap = RenderSvgToBitmap(
+                svgContent,
+                targetWidth,
+                targetHeight,
+                baseUri,
+                null,
+                limits);
+            if (bitmap == null)
+            {
+                return null;
+            }
+
+            if (TryStoreDecodedBitmap(cacheKey, "inline SVG", bitmap, isLazy: false))
+            {
+                return bitmap;
+            }
+
+            if (TryGetCachedBitmap(cacheKey, out cachedBitmap))
+            {
+                RegisterCacheHit();
+                DisposeBitmap(bitmap);
+                return cachedBitmap;
+            }
+
+            DisposeBitmap(bitmap);
+            return null;
+        }
+
+        private static string CreateInlineSvgCacheKey(
+            string svgContent,
+            ImageLoaderRequestContext context,
+            Uri baseUri,
+            int targetWidth,
+            int targetHeight,
+            SvgRenderLimits limits)
+        {
+            int byteCount;
+            try
+            {
+                byteCount = System.Text.Encoding.UTF8.GetByteCount(svgContent);
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (byteCount > limits.MaxDecodedImageBytes)
+            {
+                return null;
+            }
+
+            byte[] contentBytes;
+            byte[] hash;
+            try
+            {
+                contentBytes = System.Text.Encoding.UTF8.GetBytes(svgContent);
+                using var sha256 = SHA256.Create();
+                hash = sha256.ComputeHash(contentBytes);
+            }
+            catch
+            {
+                return null;
+            }
+
+            string identity = "inline-svg:" + Convert.ToHexString(hash);
+            return CreateCacheKey(
+                identity,
+                context,
+                targetWidth,
+                targetHeight,
+                baseUri,
+                isSvgRequest: true);
+        }
+
+        private static Task<byte[]> ReadBoundedSvgStreamAsync(Stream stream, int maxBytes) =>
+            ReadBoundedStreamAsync(stream, maxBytes);
+
+        private static async Task<byte[]> ReadBoundedPrefixAsync(Stream stream, int maxBytes)
+        {
+            if (stream == null || maxBytes <= 0)
+            {
+                return null;
+            }
+
+            int capacity = Math.Min(maxBytes, MaxDataUriPreviewBytes);
+            var prefix = new byte[capacity];
+            int count = 0;
+            while (count < capacity)
+            {
+                int read = await stream.ReadAsync(
+                    prefix,
+                    count,
+                    capacity - count).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                count += read;
+            }
+
+            if (count == 0)
+            {
+                return null;
+            }
+
+            if (count != prefix.Length)
+            {
+                Array.Resize(ref prefix, count);
+            }
+
+            return prefix;
+        }
+
+        private static async Task<byte[]> ReadBoundedStreamAsync(
+            Stream stream,
+            int maxBytes,
+            byte[] prefix = null)
+        {
+            if (stream == null || maxBytes <= 0)
+            {
+                return null;
+            }
+
+            using var output = new MemoryStream(Math.Min(maxBytes, 81920));
+            if (prefix != null)
+            {
+                if (prefix.Length > maxBytes)
+                {
+                    return null;
+                }
+
+                output.Write(prefix, 0, prefix.Length);
+            }
+
+            var buffer = new byte[81920];
+            while (true)
+            {
+                int read = await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                if (output.Length > maxBytes - read)
+                {
+                    return null;
+                }
+
+                output.Write(buffer, 0, read);
+            }
+
+            return output.ToArray();
+        }
+
+        private static bool TryAdmitSvgDataUriEnvelope(string url, SvgRenderLimits limits)
+        {
+            return TryClassifyDataUri(url, limits, out bool isSvg, out _) && isSvg;
+        }
+
+        private static int GetMaxSvgDataBytes(SvgRenderLimits limits) =>
+            Math.Max(1, Math.Min(limits.MaxSourceChars, limits.MaxDecodedImageBytes));
+
+        private static bool TryDecodeBase64Payload(
+            string url,
+            int payloadStart,
+            int maxBytes,
+            out byte[] bytes)
+        {
+            bytes = null;
+            if (!TryValidateBase64PayloadLength(url, payloadStart, maxBytes, out int decodedLength))
+            {
+                return false;
+            }
+
+            long maxEncodedChars = ((long)maxBytes + 2L) / 3L * 4L;
+            int capacity = (int)Math.Min(
+                maxEncodedChars,
+                Math.Max(4L, (long)url.Length - payloadStart + 4L));
+            var clean = new char[capacity];
+            int effectiveChars = 0;
+            int existingPadding = 0;
+            for (int i = payloadStart; i < url.Length && effectiveChars < clean.Length;)
+            {
+                if (!TryReadDataUriCharacter(url, ref i, out char value) ||
+                    IsSvgBase64Whitespace(value))
+                {
+                    if (value == '\0')
+                    {
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (value == '=')
+                {
+                    existingPadding++;
+                }
+                clean[effectiveChars++] = value;
+            }
+
+            if (effectiveChars == 0)
+            {
+                return false;
+            }
+
+            int totalChars = effectiveChars;
+            if (existingPadding == 0)
+            {
+                int remainder = effectiveChars % 4;
+                if (remainder == 1)
+                {
+                    return false;
+                }
+                if (remainder != 0)
+                {
+                    if (totalChars + (4 - remainder) > clean.Length)
+                    {
+                        return false;
+                    }
+                    while (totalChars % 4 != 0)
+                    {
+                        clean[totalChars++] = '=';
+                    }
+                }
+            }
+
+            try
+            {
+                bytes = Convert.FromBase64CharArray(clean, 0, totalChars);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+
+            return bytes != null && bytes.Length == decodedLength && bytes.Length <= maxBytes;
+        }
+
+        private static bool TryDecodeBase64Prefix(
+            string url,
+            int payloadStart,
+            int maxBytes,
+            out byte[] bytes)
+        {
+            bytes = null;
+            if (maxBytes <= 0 || payloadStart < 0 || payloadStart > url.Length)
+            {
+                return false;
+            }
+
+            int capacity = ((maxBytes + 2) / 3) * 4;
+            var clean = new char[capacity];
+            int effectiveChars = 0;
+            for (int i = payloadStart; i < url.Length && effectiveChars < clean.Length;)
+            {
+                if (!TryReadDataUriCharacter(url, ref i, out char value))
+                {
+                    return false;
+                }
+                if (IsSvgBase64Whitespace(value))
+                {
+                    continue;
+                }
+                if (value == '=')
+                {
+                    clean[effectiveChars++] = value;
+                    break;
+                }
+                if (!IsBase64Character(value) || value == '=')
+                {
+                    return false;
+                }
+                clean[effectiveChars++] = value;
+            }
+
+            if (effectiveChars == 0)
+            {
+                return false;
+            }
+
+            int remainder = effectiveChars % 4;
+            if (remainder == 1)
+            {
+                return false;
+            }
+            if (remainder != 0)
+            {
+                while (effectiveChars % 4 != 0)
+                {
+                    clean[effectiveChars++] = '=';
+                }
+            }
+
+            try
+            {
+                bytes = Convert.FromBase64CharArray(clean, 0, effectiveChars);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+
+            return bytes != null && bytes.Length > 0;
+        }
+
+        private static bool TryDecodePercentPayload(
+            string url,
+            int payloadStart,
+            int maxBytes,
+            out byte[] bytes,
+            bool stopAtLimit)
+        {
+            bytes = null;
+            if (maxBytes <= 0 || payloadStart < 0 || payloadStart > url.Length)
+            {
+                return false;
+            }
+
+            long upperBound = Math.Min(
+                (long)maxBytes,
+                Math.Max(1L, (long)(url.Length - payloadStart) * 4L));
+            var output = new byte[(int)upperBound];
+            int count = 0;
+            for (int i = payloadStart; i < url.Length;)
+            {
+                if (url[i] == '%')
+                {
+                    if (i + 2 >= url.Length ||
+                        !TryHex(url[i + 1], out int high) ||
+                        !TryHex(url[i + 2], out int low))
+                    {
+                        return false;
+                    }
+                    if (count >= output.Length)
+                    {
+                        return false;
+                    }
+                    output[count++] = (byte)((high << 4) | low);
+                    i += 3;
+                }
+                else if (url[i] <= 0x7f)
+                {
+                    if (count >= output.Length)
+                    {
+                        return false;
+                    }
+                    output[count++] = (byte)url[i++];
+                }
+                else
+                {
+                    int scalar;
+                    if (char.IsHighSurrogate(url[i]))
+                    {
+                        if (i + 1 >= url.Length || !char.IsLowSurrogate(url[i + 1]))
+                        {
+                            return false;
+                        }
+                        scalar = char.ConvertToUtf32(url[i], url[i + 1]);
+                        i += 2;
+                    }
+                    else if (char.IsLowSurrogate(url[i]))
+                    {
+                        return false;
+                    }
+                    else
+                    {
+                        scalar = url[i++];
+                    }
+
+                    int encodedLength = scalar <= 0x7f ? 1 :
+                        scalar <= 0x7ff ? 2 :
+                        scalar <= 0xffff ? 3 : 4;
+                    if (count > output.Length - encodedLength)
+                    {
+                        return false;
+                    }
+                    if (encodedLength == 2)
+                    {
+                        output[count++] = (byte)(0xc0 | (scalar >> 6));
+                        output[count++] = (byte)(0x80 | (scalar & 0x3f));
+                    }
+                    else if (encodedLength == 3)
+                    {
+                        output[count++] = (byte)(0xe0 | (scalar >> 12));
+                        output[count++] = (byte)(0x80 | ((scalar >> 6) & 0x3f));
+                        output[count++] = (byte)(0x80 | (scalar & 0x3f));
+                    }
+                    else
+                    {
+                        output[count++] = (byte)(0xf0 | (scalar >> 18));
+                        output[count++] = (byte)(0x80 | ((scalar >> 12) & 0x3f));
+                        output[count++] = (byte)(0x80 | ((scalar >> 6) & 0x3f));
+                        output[count++] = (byte)(0x80 | (scalar & 0x3f));
+                    }
+                }
+
+                if (stopAtLimit && count >= maxBytes)
+                {
+                    break;
+                }
+            }
+
+            if (count == 0)
+            {
+                return false;
+            }
+            if (count != output.Length)
+            {
+                Array.Resize(ref output, count);
+            }
+            bytes = output;
+            return true;
+        }
+
+        private static bool IsSvgBase64Whitespace(char value) =>
+            value is '\r' or '\n' or ' ' or '\t' or '\f' or '\v';
+
+        private static bool TryHex(char value, out int result)
+        {
+            if (value is >= '0' and <= '9')
+            {
+                result = value - '0';
+                return true;
+            }
+            if (value is >= 'a' and <= 'f')
+            {
+                result = value - 'a' + 10;
+                return true;
+            }
+            if (value is >= 'A' and <= 'F')
+            {
+                result = value - 'A' + 10;
+                return true;
+            }
+            result = 0;
+            return false;
+        }
+
 
         private static void RememberFailedDataUri(string cacheKey)
         {
@@ -1510,13 +3477,37 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             _failedDataUriOrder.Enqueue(cacheKey);
-            while (_failedDataUriCache.Count > MAX_FAILED_DATA_URI_CACHE_ENTRIES &&
-                   _failedDataUriOrder.TryDequeue(out var oldestKey))
+            while (_failedDataUriCache.Count > MAX_FAILED_DATA_URI_CACHE_ENTRIES)
             {
-                _failedDataUriCache.TryRemove(oldestKey, out _);
+                if (_failedDataUriOrder.TryDequeue(out var oldestKey))
+                {
+                    _failedDataUriCache.TryRemove(oldestKey, out _);
+                    continue;
+                }
+
+                foreach (var staleKey in _failedDataUriCache.Keys)
+                {
+                    if (_failedDataUriCache.TryRemove(staleKey, out _))
+                    {
+                        break;
+                    }
+                }
             }
         }
 
+        private static void DrainFailedDataUriOrder()
+        {
+            while (_failedDataUriOrder.TryDequeue(out _))
+            {
+            }
+
+            foreach (var key in _failedDataUriCache.Keys)
+            {
+                _failedDataUriOrder.Enqueue(key);
+            }
+        }
+
+        private readonly record struct SvgRequestMetadata(string ContentType, Uri ResponseUri);
         private readonly record struct PendingSvgResource(Uri Uri, int Depth);
         private readonly record struct FetchedSvgResource(
             PendingSvgResource Pending,
@@ -1534,6 +3525,9 @@ namespace FenBrowser.FenEngine.Rendering
                 return snapshot;
 
             var limits = SvgRenderLimits.Normalize(SvgRenderLimits.Default);
+            if (string.IsNullOrWhiteSpace(source) || source.Length > limits.MaxSourceChars)
+                return snapshot;
+
             int maxDepth = Math.Min(16, limits.MaxReferenceDepth);
             int maxCount = limits.MaxResourceCount;
             long remainingBytes = limits.MaxCumulativeResourceBytes;
@@ -1546,7 +3540,8 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             while (pending.Count > 0 && snapshot.Count < maxCount &&
-                   context?.IsDisposed != true &&
+                    !IsContextUnavailable(context) &&
+
                    preloadClock.ElapsedMilliseconds < MaxSvgResourcePreloadMilliseconds)
             {
                 var batch = new List<PendingSvgResource>(MaxSvgResourcePreloadConcurrency);
@@ -1625,6 +3620,8 @@ namespace FenBrowser.FenEngine.Rendering
                         continue;
                     try
                     {
+                        if (body.Length > limits.MaxSourceChars)
+                            continue;
                         string nestedSource = new System.Text.UTF8Encoding(false, true).GetString(body);
                         foreach (Uri nestedUri in SvgResourceDiscovery.DiscoverImages(
                                      nestedSource, item.Pending.Uri, limits))
@@ -1643,20 +3640,21 @@ namespace FenBrowser.FenEngine.Rendering
             return snapshot;
         }
 
+        private static bool IsSvgPayloadAdmitted(byte[] data, SvgRenderLimits limits)
+        {
+            return data != null && data.Length > 0 &&
+                data.Length <= limits.MaxDecodedImageBytes &&
+                data.Length <= limits.MaxSourceChars &&
+                data.Length <= limits.MaxCumulativeResourceBytes;
+        }
+
         private static bool LooksLikeSvgResource(Uri uri, string contentType, byte[] body)
         {
-            if (contentType?.StartsWith("image/svg+xml", StringComparison.OrdinalIgnoreCase) == true ||
-                uri.AbsolutePath.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
-                return true;
-            try
-            {
-                string prefix = System.Text.Encoding.UTF8.GetString(body, 0, Math.Min(body.Length, 512));
-                return prefix.IndexOf("<svg", StringComparison.OrdinalIgnoreCase) >= 0;
-            }
-            catch
-            {
-                return false;
-            }
+            return IsSvgRequest(
+                uri != null && uri.IsAbsoluteUri ? uri.AbsoluteUri : null,
+                contentType,
+                body,
+                uri);
         }
 
         public static object GetImageTuple(string url, bool isLazy = false, SKRect? elementBounds = null, int? targetWidth = null, int? targetHeight = null)
@@ -1671,28 +3669,145 @@ namespace FenBrowser.FenEngine.Rendering
             bool isLazy = false,
             int? targetWidth = null,
             int? targetHeight = null,
-            ImageLoaderRequestContext context = null)
+            ImageLoaderRequestContext context = null,
+            Uri svgBaseUri = null)
         {
+            string requestKey = cacheKey;
+            string storageKey = null;
+            bool semaphoreHeld = false;
             try
             {
-                // Check caches before loading
-                if (_animatedGifs.ContainsKey(cacheKey)) return;
-                if (_memoryCache.ContainsKey(cacheKey) || _legacyCache.ContainsKey(cacheKey)) return;
-
-                // Only allow http/https for now — data URIs are handled synchronously above.
-                if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                url = NormalizeImageUrl(url);
+                if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(requestKey))
                 {
-                     EngineLogCompat.Warn($"[ImageLoader] Skipped non-HTTP URL: {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
-                     return;
+                    return;
                 }
 
-                if (!Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
+                if (TryGetCachedBitmap(requestKey, out _))
                 {
-                    EngineLogCompat.Warn($"[ImageLoader] Invalid absolute URI, skipping: {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
                     return;
                 }
 
                 var effectiveContext = context ?? _ambientContext.Value;
+                if (IsContextUnavailable(effectiveContext))
+                {
+                    return;
+                }
+
+                if (!await WaitForLoadSlotAsync(GetLoadAdmissionTimeout()).ConfigureAwait(false))
+                {
+                    EngineLogCompat.Warn(
+                        $"[ImageLoader] Load admission timed out; dropping {(url.Length > 80 ? url.Substring(0, 80) + "..." : url)}",
+                        LogCategory.Rendering);
+                    return;
+                }
+
+                semaphoreHeld = true;
+                if (TryGetCachedBitmap(requestKey, out _))
+                {
+                    return;
+                }
+
+                if (IsContextUnavailable(effectiveContext))
+                {
+                    return;
+                }
+
+                if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var limits = GetActiveSvgRenderLimits();
+                    if (!TryClassifyDataUri(
+                            url,
+                            limits,
+                            out bool dataIsSvg,
+                            out DataUriInfo dataUri))
+                    {
+                        RememberFailedDataUri(requestKey);
+                        return;
+                    }
+
+                    if (dataIsSvg &&
+                        !TryAdmitSvgTargetSize(targetWidth, targetHeight, limits))
+                    {
+                        RememberFailedDataUri(requestKey);
+                        return;
+                    }
+
+                    Uri dataBaseUri = svgBaseUri ?? ResolveSvgRequestBaseUri(url, null);
+                    storageKey = CreateCacheKey(
+                        url,
+                        effectiveContext,
+                        targetWidth,
+                        targetHeight,
+                        dataBaseUri,
+                        dataIsSvg);
+                    RegisterRequestOwner(storageKey, effectiveContext);
+                    RekeyRequestState(requestKey, storageKey);
+                    var dataResult = new BinaryFetchResult
+                    {
+                        Body = null,
+                        ContentType = dataUri.MimeType,
+                        FinalUri = dataBaseUri,
+                        FailureReason = BinaryFetchFailureReason.None,
+                        DecodeFormat = dataIsSvg ? "image/svg+xml" : dataUri.MimeType
+                    };
+                    RecordLoadResult(url, storageKey, dataResult, effectiveContext, dataBaseUri);
+                    SKBitmap dataBitmap = DecodeDataUri(
+                        url,
+                        targetWidth,
+                        targetHeight,
+                        null,
+                        dataBaseUri,
+                        out dataIsSvg);
+                    if (dataBitmap == null)
+                    {
+                        RecordLoadResult(
+                            url,
+                            storageKey,
+                            dataResult with { DecodeFailureReason = "Data URI decode failed" },
+                            effectiveContext,
+                            dataBaseUri);
+                        RememberFailedDataUri(storageKey);
+                        return;
+                    }
+
+                    if (IsContextUnavailable(effectiveContext))
+                    {
+                        DisposeBitmap(dataBitmap);
+                        return;
+                    }
+
+                    if (TryStoreDecodedBitmap(
+                            storageKey,
+                            url,
+                            dataBitmap,
+                            isLazy,
+                            string.Equals(storageKey, requestKey, StringComparison.Ordinal)
+                                ? null
+                                : requestKey))
+                    {
+                        RequestDebouncedRepaint(storageKey, effectiveContext);
+                        RequestDebouncedRelayout(storageKey, effectiveContext);
+                    }
+                    else
+                    {
+                        DisposeBitmap(dataBitmap);
+                    }
+                    return;
+                }
+
+                if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                {
+                    EngineLogCompat.Warn($"[ImageLoader] Skipped non-HTTP URL: {(url.Length > 80 ? url.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
+                    return;
+                }
+
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
+                {
+                    EngineLogCompat.Warn($"[ImageLoader] Invalid absolute URI, skipping: {(url.Length > 80 ? url.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
+                    return;
+                }
+
                 var hasScopedFetcher = effectiveContext?.FetchDetailedAsync != null || effectiveContext?.FetchBytesAsync != null;
                 var detailedFetcher = hasScopedFetcher ? effectiveContext.FetchDetailedAsync : FetchDetailedAsync;
                 var fetcher = hasScopedFetcher ? effectiveContext.FetchBytesAsync : FetchBytesAsync;
@@ -1730,7 +3845,18 @@ namespace FenBrowser.FenEngine.Rendering
                         FailureDetail = "Image fetch returned no result"
                     };
                 }
-                RecordLoadResult(url, cacheKey, fetchResult);
+
+                if (IsContextUnavailable(effectiveContext))
+                {
+                    return;
+                }
+
+                RecordLoadResult(
+                    url,
+                    requestKey,
+                    fetchResult,
+                    effectiveContext,
+                    svgBaseUri ?? ResolveSvgRequestBaseUri(url, null));
 
                 if (!fetchResult.Succeeded)
                 {
@@ -1744,65 +3870,135 @@ namespace FenBrowser.FenEngine.Rendering
                     EngineLogCompat.Warn($"[ImageLoader] Empty image response for: {url}", LogCategory.Rendering);
                     return;
                 }
-                var decodeFormat = DetectDecodeFormat(url, data, fetchResult.ContentType);
+
+                var activeSvgLimits = GetActiveSvgRenderLimits();
+                var requestedSvgUri = fetchResult.FinalUri != null && fetchResult.FinalUri.IsAbsoluteUri
+                    ? fetchResult.FinalUri
+                    : absoluteUri;
+                bool isSvgRequest = IsSvgRequest(
+                    url,
+                    fetchResult.ContentType,
+                    data,
+                    requestedSvgUri);
+                var cacheBaseUri = svgBaseUri ?? ResolveSvgRequestBaseUri(url, null);
+                storageKey = CreateCacheKey(
+                    url,
+                    effectiveContext,
+                    targetWidth,
+                    targetHeight,
+                    cacheBaseUri,
+                    isSvgRequest);
+                RegisterRequestOwner(storageKey, effectiveContext);
+                RecordSvgRequestMetadata(
+                    url,
+                    effectiveContext,
+                    isSvgRequest,
+                    fetchResult.ContentType,
+                    requestedSvgUri,
+                    cacheBaseUri);
+                RekeyRequestState(requestKey, storageKey);
+                if (!string.Equals(requestKey, storageKey, StringComparison.Ordinal))
+                {
+                    RecordLoadResult(
+                        url,
+                        storageKey,
+                        fetchResult,
+                        effectiveContext,
+                        cacheBaseUri);
+                    RemoveStaleLoadResultKey(
+                        requestKey,
+                        url,
+                        effectiveContext,
+                        cacheBaseUri);
+                }
+
+                if (isSvgRequest &&
+                    (!TryAdmitSvgTargetSize(targetWidth, targetHeight, activeSvgLimits) ||
+                     !IsSvgPayloadAdmitted(data, activeSvgLimits)))
+                {
+                    RecordLoadResult(url, storageKey, fetchResult with
+                    {
+                        DecodeFailureReason = "SVG payload exceeds admission budget"
+                    }, effectiveContext, cacheBaseUri);
+                    return;
+                }
+
+                var decodeFormat = DetectDecodeFormat(
+                    url,
+                    data,
+                    fetchResult.ContentType,
+                    requestedSvgUri);
                 SKBitmap bitmap;
+                bool bitmapIsCached = false;
                 try
                 {
-                    Uri svgBaseUri = fetchResult.FinalUri ?? absoluteUri;
                     SvgResourceSnapshot svgResources = null;
-                    if (LooksLikeSvgResource(svgBaseUri, fetchResult.ContentType, data))
+                    if (isSvgRequest)
                     {
                         svgResources = await BuildSvgResourceSnapshotAsync(
                             System.Text.Encoding.UTF8.GetString(data),
-                            svgBaseUri,
+                            requestedSvgUri,
                             detailedFetcher,
                             fetcher,
                             effectiveContext).ConfigureAwait(false);
                     }
                     bitmap = DecodeBitmapFromBytes(
-                        url, data, targetWidth, targetHeight, cacheKey,
-                        svgBaseUri, svgResources);
+                        url,
+                        data,
+                        targetWidth,
+                        targetHeight,
+                        out bitmapIsCached,
+                        storageKey,
+                        requestedSvgUri,
+                        svgResources,
+                        isSvgRequest,
+                        fetchResult.ContentType,
+                        requestedSvgUri,
+                        previousCacheKey: requestKey);
                 }
                 catch (Exception ex)
                 {
-                    RecordLoadResult(url, cacheKey, fetchResult with
+                    RecordLoadResult(url, storageKey, fetchResult with
                     {
                         DecodeFormat = decodeFormat,
                         DecodeFailureReason = ex.Message
-                    });
+                    }, effectiveContext, cacheBaseUri);
                     EngineLogCompat.Warn($"[ImageLoader] Decode failed: url={url} format={decodeFormat ?? "unknown"}", LogCategory.Rendering);
                     return;
                 }
-                
+
                 if (bitmap != null)
                 {
-                    if (TryStoreDecodedBitmap(cacheKey, url, bitmap, isLazy))
+                    if (IsContextUnavailable(effectiveContext))
                     {
-                        RecordLoadResult(url, cacheKey, fetchResult with { DecodeFormat = decodeFormat });
-                        RequestDebouncedRepaint(cacheKey, context);
-                        RequestDebouncedRelayout(cacheKey, context);
+                        DisposeBitmap(bitmap);
+                        return;
+                    }
+
+                    if (bitmapIsCached ||
+                        TryStoreDecodedBitmap(storageKey, url, bitmap, isLazy, requestKey))
+                    {
+                        RecordLoadResult(
+                            url,
+                            storageKey,
+                            fetchResult with { DecodeFormat = decodeFormat },
+                            effectiveContext,
+                            cacheBaseUri);
+                        RequestDebouncedRepaint(storageKey ?? requestKey, effectiveContext);
+                        RequestDebouncedRelayout(storageKey ?? requestKey, effectiveContext);
                     }
                     else
                     {
-                        try
-                        {
-                            if (!bitmap.IsNull)
-                            {
-                                bitmap.Dispose();
-                            }
-                        }
-                        catch
-                        {
-                        }
+                        DisposeBitmap(bitmap);
                     }
                 }
                 else
                 {
-                    RecordLoadResult(url, cacheKey, fetchResult with
+                    RecordLoadResult(url, storageKey, fetchResult with
                     {
                         DecodeFormat = decodeFormat,
                         DecodeFailureReason = "Decoder returned no bitmap"
-                    });
+                    }, effectiveContext, cacheBaseUri);
                     EngineLogCompat.Warn($"[ImageLoader] Decode Failed: {url}", LogCategory.Rendering);
                 }
             }
@@ -1812,20 +4008,64 @@ namespace FenBrowser.FenEngine.Rendering
             }
             finally
             {
-                CompletePendingLoad(cacheKey);
+                if (semaphoreHeld)
+                {
+                    _loadSemaphore.Release();
+                }
+
+                CompletePendingLoad(requestKey);
+                if (!string.Equals(storageKey, requestKey, StringComparison.Ordinal))
+                {
+                    CompletePendingLoad(storageKey);
+                }
             }
         }
 
-        private static string DetectDecodeFormat(string url, byte[] data, string contentType)
+        private static TimeSpan GetLoadAdmissionTimeout()
         {
+            int resourceTimeoutSeconds =
+                Math.Max(1, NetworkConfiguration.Instance.ResourceTimeoutSeconds);
+            return TimeSpan.FromSeconds(Math.Min(resourceTimeoutSeconds, 60) * 4);
+        }
+
+        private static async Task<bool> WaitForLoadSlotAsync(TimeSpan timeout)
+        {
+            if (_loadSemaphore.CurrentCount > 0 &&
+                await _loadSemaphore.WaitAsync(0).ConfigureAwait(false))
+            {
+                return true;
+            }
+
+            var deadlineTicks = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
+            while (true)
+            {
+                if (await _loadSemaphore
+                        .WaitAsync(LoadAdmissionPollMilliseconds)
+                        .ConfigureAwait(false))
+                {
+                    return true;
+                }
+
+                if (Environment.TickCount64 >= deadlineTicks)
+                {
+                    return false;
+                }
+            }
+        }
+
+        private static string DetectDecodeFormat(
+            string url,
+            byte[] data,
+            string contentType,
+            Uri responseUri = null)
+        {
+            if (IsSvgRequest(url, contentType, data, responseUri))
+            {
+                return string.IsNullOrWhiteSpace(contentType) ? "image/svg+xml" : contentType;
+            }
             if (!string.IsNullOrWhiteSpace(contentType))
             {
                 return contentType;
-            }
-            if (url.EndsWith(".svg", StringComparison.OrdinalIgnoreCase) ||
-                url.StartsWith("data:image/svg+xml", StringComparison.OrdinalIgnoreCase))
-            {
-                return "image/svg+xml";
             }
             try
             {
@@ -1843,171 +4083,103 @@ namespace FenBrowser.FenEngine.Rendering
             byte[] data,
             int? targetWidth,
             int? targetHeight,
+            out bool isCached,
             string cacheKey = null,
             Uri svgBaseUri = null,
-            ISvgResourceResolver svgResourceResolver = null)
+            ISvgResourceResolver svgResourceResolver = null,
+            bool? isSvgRequest = null,
+            string contentType = null,
+            Uri responseUri = null,
+            string previousCacheKey = null)
         {
             SKBitmap bitmap = null;
+            isCached = false;
             cacheKey ??= url;
-
-            bool isSvg = url.EndsWith(".svg", StringComparison.OrdinalIgnoreCase);
-            if (!isSvg && url.StartsWith("data:image/svg+xml", StringComparison.OrdinalIgnoreCase))
-            {
-                isSvg = true;
-            }
-
-            if (!isSvg)
-            {
-                try
-                {
-                    string header = System.Text.Encoding.UTF8.GetString(data, 0, Math.Min(data.Length, 100)).Trim();
-                    if (header.StartsWith("<svg") || header.StartsWith("<?xml") || header.Contains("<svg"))
-                    {
-                        isSvg = true;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Warn($"[ImageLoader] SVG header sniff failed: {ex.Message}", LogCategory.Rendering);
-                }
-            }
+            var activeSvgLimits = GetActiveSvgRenderLimits();
+            bool isSvg = isSvgRequest ?? IsSvgRequest(url, contentType, data, responseUri);
 
             if (isSvg)
             {
+                if (!IsSvgPayloadAdmitted(data, activeSvgLimits))
+                {
+                    return null;
+                }
+
                 string svgContent = System.Text.Encoding.UTF8.GetString(data);
+                if (svgContent.Length > activeSvgLimits.MaxSourceChars)
+                {
+                    return null;
+                }
+
                 bitmap = RenderSvgToBitmap(
                     svgContent, targetWidth, targetHeight,
-                    svgBaseUri, svgResourceResolver);
+                    svgBaseUri, svgResourceResolver, activeSvgLimits);
 
                 if (bitmap == null)
                 {
                     EngineLogCompat.Warn($"[ImageLoader] SVG Render Failed for: {url}", LogCategory.Rendering);
                 }
+
+                return bitmap;
             }
 
-            if (bitmap == null)
-            {
-                bool isAnimatedGif = false;
-                try
-                {
-                    using var codec = SKCodec.Create(new MemoryStream(data));
-                    if (codec != null && codec.FrameCount > 1)
-                    {
-                        isAnimatedGif = true;
-                        var animated = DecodeAnimatedGif(codec, data);
-                        if (animated != null && animated.Frames?.Length > 0)
-                        {
-                            animated.LastAccessed = DateTime.UtcNow;
-                            _animatedGifs[cacheKey] = animated;
-                            lock (_cacheLock)
-                            {
-                                _currentCacheBytes += animated.ByteSize;
-                            }
-                            bitmap = animated.Frames[0];
-                            EvictIfNeeded();
-                            EnsureGifAnimationTimer();
-                            EngineLogCompat.Log(
-                                LogCategory.Rendering,
-                                LogLevel.Debug,
-                                $"[ImageLoader] Animated GIF: {url} ({animated.Frames.Length} frames, {animated.TotalDuration}ms total)");
-                        }
-                        else
-                        {
-                            isAnimatedGif = false;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Debug($"[ImageLoader] SKCodec check failed: {ex.Message}", LogCategory.Rendering);
-                }
-
-                if (!isAnimatedGif && bitmap == null)
-                {
-                    bitmap = SKBitmap.Decode(data);
-
-                    // Fallback: SkiaSharp 4.x may return null from SKBitmap.Decode for some
-                    // formats that the older overload handled.  Try the modern two-step path
-                    // (SKImage.FromEncodedData → SKBitmap.FromImage) as a safety net.
-                    if (bitmap == null)
-                    {
-                        try
-                        {
-                            using var skData = SKData.CreateCopy(data);
-                            if (skData != null && !skData.IsEmpty)
-                            {
-                                using var image = SKImage.FromEncodedData(skData);
-                                if (image != null)
-                                {
-                                    bitmap = SKBitmap.FromImage(image);
-                                }
-                            }
-                        }
-                        catch (Exception fallbackEx)
-                        {
-                            EngineLogCompat.Debug($"[ImageLoader] SKImage.FromEncodedData fallback also failed: {fallbackEx.Message}", LogCategory.Rendering);
-                        }
-                    }
-                }
-            }
-
-            // Downscale to target display size to save GPU memory. A 4000×3000
-            // image displayed at 200×150 wastes ~400× memory if stored at native
-            // resolution. Only downscale when both dimensions are specified and
-            // the decoded bitmap is meaningfully larger.
-            if (bitmap != null &&
-                !bitmap.IsNull &&
-                targetWidth.HasValue &&
-                targetHeight.HasValue &&
-                targetWidth.Value > 0 &&
-                targetHeight.Value > 0)
-            {
-                int tw = targetWidth.Value;
-                int th = targetHeight.Value;
-                if (bitmap.Width > tw * 2 || bitmap.Height > th * 2)
-                {
-                    try
-                    {
-                        float scaleX = (float)tw / bitmap.Width;
-                        float scaleY = (float)th / bitmap.Height;
-                        float scale = Math.Min(scaleX, scaleY);
-                        int newW = Math.Max(1, (int)(bitmap.Width * scale));
-                        int newH = Math.Max(1, (int)(bitmap.Height * scale));
-
-                        var resized = bitmap.Resize(new SKSizeI(newW, newH), new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
-                        if (resized != null && !resized.IsNull)
-                        {
-                            bitmap.Dispose();
-                            bitmap = resized;
-                        }
-                    }
-                    catch (Exception resizeEx)
-                    {
-                        EngineLogCompat.Debug(
-                            $"[ImageLoader] Resize-to-target failed for {url}: {resizeEx.Message}",
-                            LogCategory.Rendering);
-                        // Keep the original bitmap on resize failure
-                    }
-                }
-            }
-
-            return bitmap;
+            return DecodeBoundedRasterPayload(
+                data,
+                targetWidth,
+                targetHeight,
+                activeSvgLimits,
+                cacheKey,
+                previousCacheKey,
+                out isCached);
         }
 
-        private static bool TryStoreDecodedBitmap(string cacheKey, string url, SKBitmap bitmap, bool isLazy)
+        private static bool TryStoreAnimatedImage(
+            string cacheKey,
+            AnimatedImage animated,
+            string previousCacheKey = null)
         {
-            if (string.IsNullOrWhiteSpace(cacheKey) || bitmap == null || bitmap.IsNull || bitmap.Width <= 0 || bitmap.Height <= 0)
+            if (string.IsNullOrWhiteSpace(cacheKey) ||
+                animated?.Frames == null ||
+                animated.Frames.Length == 0)
             {
                 return false;
             }
 
-            if (_animatedGifs.ContainsKey(cacheKey))
+            animated.LastAccessed = DateTime.UtcNow;
+            lock (_cacheLock)
             {
-                _lazyRegistry.TryRemove(cacheKey, out _);
-                return true;
+                if (_memoryCache.ContainsKey(cacheKey) ||
+                    _legacyCache.ContainsKey(cacheKey) ||
+                    _animatedGifs.ContainsKey(cacheKey) ||
+                    !_animatedGifs.TryAdd(cacheKey, animated))
+                {
+                    return false;
+                }
+
+                _currentCacheBytes += animated.ByteSize;
+                RemovePreviousCacheEntryLocked(previousCacheKey, cacheKey);
             }
 
-            if (_memoryCache.ContainsKey(cacheKey) || _legacyCache.ContainsKey(cacheKey))
+            EvictIfNeeded();
+            _lazyRegistry.TryRemove(cacheKey, out _);
+            Interlocked.Increment(ref _cacheVersion);
+            BumpOwnerGenerations(cacheKey);
+            EnsureGifAnimationTimer();
+            return true;
+        }
+
+        private static bool TryStoreDecodedBitmap(
+            string cacheKey,
+            string url,
+            SKBitmap bitmap,
+            bool isLazy,
+            string previousCacheKey = null)
+        {
+            if (string.IsNullOrWhiteSpace(cacheKey) ||
+                bitmap == null ||
+                bitmap.IsNull ||
+                bitmap.Width <= 0 ||
+                bitmap.Height <= 0)
             {
                 return false;
             }
@@ -2020,29 +4192,58 @@ namespace FenBrowser.FenEngine.Rendering
                 IsLazy = isLazy
             };
 
-            if (!_memoryCache.TryAdd(cacheKey, entry))
-            {
-                return false;
-            }
-
-            _legacyCache[cacheKey] = bitmap;
-
             lock (_cacheLock)
             {
+                if (_memoryCache.ContainsKey(cacheKey) ||
+                    _legacyCache.ContainsKey(cacheKey) ||
+                    _animatedGifs.ContainsKey(cacheKey))
+                {
+                    return false;
+                }
+
+                if (!_memoryCache.TryAdd(cacheKey, entry) ||
+                    !_legacyCache.TryAdd(cacheKey, bitmap))
+                {
+                    _memoryCache.TryRemove(cacheKey, out _);
+                    _legacyCache.TryRemove(cacheKey, out _);
+                    return false;
+                }
+
                 _currentCacheBytes += bitmap.ByteCount;
+                RemovePreviousCacheEntryLocked(previousCacheKey, cacheKey);
             }
 
             EvictIfNeeded();
             _lazyRegistry.TryRemove(cacheKey, out _);
             Interlocked.Increment(ref _cacheVersion);
-            // Phase 7: bump per-owner generations so only affected documents
-            // see the image change, not every tab in the process.
             BumpOwnerGenerations(cacheKey);
             EngineLogCompat.Log(
                 LogCategory.Rendering,
                 LogLevel.Debug,
                 $"[ImageLoader] SUCCESS: {url} ({bitmap.Width}x{bitmap.Height})");
             return true;
+        }
+
+        private static void RemovePreviousCacheEntryLocked(
+            string previousCacheKey,
+            string currentCacheKey)
+        {
+            if (string.IsNullOrEmpty(previousCacheKey) ||
+                string.Equals(previousCacheKey, currentCacheKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (_memoryCache.TryRemove(previousCacheKey, out var previousEntry))
+            {
+                _legacyCache.TryRemove(previousCacheKey, out _);
+                _currentCacheBytes -= previousEntry?.ByteSize ?? 0;
+            }
+            if (_animatedGifs.TryRemove(previousCacheKey, out var previousAnimated))
+            {
+                _currentCacheBytes -= previousAnimated?.ByteSize ?? 0;
+            }
+            _lazyRegistry.TryRemove(previousCacheKey, out _);
         }
 
         private static void CapturePendingLoadContext(
@@ -2080,6 +4281,8 @@ namespace FenBrowser.FenEngine.Rendering
             return new ImageLoaderRequestContext
             {
                 OwnerId = $"{context.OwnerId}:{RuntimeHelpers.GetHashCode(ownerDocument)}",
+                OwnerRootId = context.OwnerRootId ?? context.OwnerId,
+                OwnerLifetimeState = context.OwnerLifetimeState,
                 FetchDetailedAsync = context.FetchDetailedForDocumentAsync == null
                     ? context.FetchDetailedAsync
                     : uri => context.FetchDetailedForDocumentAsync(uri, ownerDocument),
@@ -2094,23 +4297,425 @@ namespace FenBrowser.FenEngine.Rendering
         private static void RecordLoadResult(
             string url,
             string cacheKey,
-            BinaryFetchResult result)
+            BinaryFetchResult result,
+            ImageLoaderRequestContext context = null,
+            Uri svgBaseUri = null)
         {
-            _lastLoadResults[cacheKey] = result;
-            if (!string.Equals(cacheKey, url, StringComparison.Ordinal))
+            if (result == null)
             {
-                _lastLoadResults[url] = result;
+                return;
+            }
+
+            string normalizedUrl = NormalizeImageUrl(url);
+            bool isSvgRequest = IsSvgRequest(
+                normalizedUrl,
+                result.ContentType,
+                result.Body,
+                result.FinalUri);
+            svgBaseUri ??= ResolveSvgRequestBaseUri(normalizedUrl, null);
+            if (!string.IsNullOrEmpty(cacheKey))
+            {
+                _lastLoadResults[cacheKey] = result;
+            }
+
+            string resultKey = CreateLoadResultKey(
+                normalizedUrl,
+                context,
+                svgBaseUri,
+                isSvgRequest);
+            if (!string.IsNullOrEmpty(resultKey))
+            {
+                _lastLoadResults[resultKey] = result;
+            }
+
+            if (!string.IsNullOrEmpty(normalizedUrl) &&
+                !string.Equals(resultKey, normalizedUrl, StringComparison.Ordinal))
+            {
+                _lastLoadResults[normalizedUrl] = result;
+            }
+
+            RecordSvgRequestMetadata(
+                normalizedUrl,
+                context,
+                isSvgRequest,
+                result.ContentType,
+                result.FinalUri,
+                svgBaseUri);
+        }
+
+        private static string CreateRequestCacheKey(
+            string url,
+            ImageLoaderRequestContext context,
+            int? targetWidth = null,
+            int? targetHeight = null,
+            Uri svgBaseUri = null,
+            Document ownerDocument = null,
+            bool? isSvgRequestOverride = null)
+        {
+            string normalizedUrl = NormalizeImageUrl(url);
+            if (string.IsNullOrEmpty(normalizedUrl))
+            {
+                return string.Empty;
+            }
+
+            bool isSvgRequest = isSvgRequestOverride ??
+                (IsSvgRequest(normalizedUrl) || IsKnownSvgRequest(normalizedUrl, context));
+            svgBaseUri ??= ResolveSvgRequestBaseUri(normalizedUrl, ownerDocument);
+            return CreateCacheKey(
+                normalizedUrl,
+                context,
+                targetWidth,
+                targetHeight,
+                svgBaseUri,
+                isSvgRequest);
+        }
+
+        private static string CreateCacheKey(
+            string url,
+            ImageLoaderRequestContext context,
+            int? targetWidth = null,
+            int? targetHeight = null,
+            Uri svgBaseUri = null,
+            bool? isSvgRequest = null)
+        {
+            string normalizedUrl = NormalizeImageUrl(url);
+            if (string.IsNullOrEmpty(normalizedUrl))
+            {
+                return string.Empty;
+            }
+
+            bool svg = isSvgRequest ?? IsSvgRequest(normalizedUrl);
+            return CreateCanonicalKey(
+                normalizedUrl,
+                context,
+                targetWidth,
+                targetHeight,
+                svgBaseUri,
+                svg,
+                includeSize: true);
+        }
+
+        private static string CreateCanonicalKey(
+            string url,
+            ImageLoaderRequestContext context,
+            int? targetWidth,
+            int? targetHeight,
+            Uri svgBaseUri,
+            bool isSvgRequest,
+            bool includeSize)
+        {
+            string normalizedUrl = NormalizeImageUrl(url);
+            if (string.IsNullOrEmpty(normalizedUrl))
+            {
+                return string.Empty;
+            }
+
+            string key = string.IsNullOrWhiteSpace(context?.OwnerId)
+                ? normalizedUrl
+                : $"{context.OwnerId}\n{normalizedUrl}";
+            if (isSvgRequest && svgBaseUri != null && svgBaseUri.IsAbsoluteUri)
+            {
+                key += $"\nbase:{svgBaseUri.AbsoluteUri}";
+            }
+
+            if (includeSize && (targetWidth.HasValue || targetHeight.HasValue))
+            {
+                string width = targetWidth.HasValue
+                    ? targetWidth.Value.ToString(CultureInfo.InvariantCulture)
+                    : "-";
+                string height = targetHeight.HasValue
+                    ? targetHeight.Value.ToString(CultureInfo.InvariantCulture)
+                    : "-";
+                key += $"\nsize:{width}:{height}";
+            }
+
+            return key;
+        }
+
+        private static string CreateRequestKeyPrefix(
+            string url,
+            ImageLoaderRequestContext context,
+            bool? isSvgRequest = null,
+            Uri svgBaseUri = null)
+        {
+            string normalizedUrl = NormalizeImageUrl(url);
+            bool svg = isSvgRequest ??
+                (IsSvgRequest(normalizedUrl) || IsKnownSvgRequest(normalizedUrl, context));
+            svgBaseUri ??= ResolveSvgRequestBaseUri(normalizedUrl, null);
+            return CreateCanonicalKey(
+                normalizedUrl,
+                context,
+                null,
+                null,
+                svgBaseUri,
+                svg,
+                includeSize: false);
+        }
+
+        private static string CreateLoadResultKey(
+            string url,
+            ImageLoaderRequestContext context,
+            Uri svgBaseUri = null,
+            bool? isSvgRequest = null)
+        {
+            string normalizedUrl = NormalizeImageUrl(url);
+            bool svg = isSvgRequest ??
+                (IsSvgRequest(normalizedUrl) || IsKnownSvgRequest(normalizedUrl, context));
+            svgBaseUri ??= ResolveSvgRequestBaseUri(normalizedUrl, null);
+            return CreateCanonicalKey(
+                normalizedUrl,
+                context,
+                null,
+                null,
+                svgBaseUri,
+                svg,
+                includeSize: false);
+        }
+
+        private static bool IsKnownSvgRequest(
+            string url,
+            ImageLoaderRequestContext context)
+        {
+            return TryGetKnownSvgRequestMetadata(
+                       url,
+                       context,
+                       out string contentType,
+                       out Uri responseUri) &&
+                   IsSvgRequest(url, contentType, null, responseUri);
+        }
+
+        private static void RecordSvgRequestMetadata(
+            string url,
+            ImageLoaderRequestContext context,
+            bool isSvgRequest,
+            string contentType,
+            Uri responseUri,
+            Uri svgBaseUri = null)
+        {
+            svgBaseUri ??= ResolveSvgRequestBaseUri(url, null);
+            string key = CreateLoadResultKey(url, context, svgBaseUri, isSvgRequest);
+            if (string.IsNullOrEmpty(key))
+            {
+                return;
+            }
+
+            if (isSvgRequest)
+            {
+                _svgRequestMetadata[key] = new SvgRequestMetadata(contentType, responseUri);
+            }
+            else
+            {
+                _svgRequestMetadata.TryRemove(key, out _);
             }
         }
 
-        private static string CreateCacheKey(string url, ImageLoaderRequestContext context)
+        private static bool TryGetKnownSvgRequestMetadata(
+            string url,
+            ImageLoaderRequestContext context,
+            out string contentType,
+            out Uri responseUri,
+            Uri svgBaseUri = null,
+            bool? isSvgRequest = null)
         {
-            if (string.IsNullOrWhiteSpace(context?.OwnerId))
+            contentType = null;
+            responseUri = null;
+            string normalizedUrl = NormalizeImageUrl(url);
+            bool svg = isSvgRequest ?? IsSvgRequest(normalizedUrl);
+            string key = CreateLoadResultKey(normalizedUrl, context, svgBaseUri, svg);
+            if (!_svgRequestMetadata.TryGetValue(key, out var metadata))
             {
-                return url;
+                if (svg)
+                {
+                    return false;
+                }
+                key = CreateLoadResultKey(normalizedUrl, context, svgBaseUri, true);
+                if (!_svgRequestMetadata.TryGetValue(key, out metadata))
+                {
+                    return false;
+                }
             }
 
-            return $"{context.OwnerId}\n{url}";
+            contentType = metadata.ContentType;
+            responseUri = metadata.ResponseUri;
+            return true;
+        }
+
+        private static bool HasExactCacheKey(string cacheKey)
+        {
+            return !string.IsNullOrEmpty(cacheKey) &&
+                (_memoryCache.ContainsKey(cacheKey) ||
+                 _legacyCache.ContainsKey(cacheKey) ||
+                 _animatedGifs.ContainsKey(cacheKey));
+        }
+
+        private static bool HasCacheEntryForRequest(
+            string url,
+            ImageLoaderRequestContext context,
+            Uri svgBaseUri = null)
+        {
+            string normalizedUrl = NormalizeImageUrl(url);
+            string requestPrefix = CreateRequestKeyPrefix(
+                normalizedUrl,
+                context,
+                IsSvgRequest(normalizedUrl) || IsKnownSvgRequest(normalizedUrl, context),
+                svgBaseUri ?? ResolveSvgRequestBaseUri(normalizedUrl, null));
+            if (HasExactCacheKey(requestPrefix))
+            {
+                return true;
+            }
+
+            string variantPrefix = requestPrefix + "\nsize:";
+            return _memoryCache.Keys.Any(key => key.StartsWith(variantPrefix, StringComparison.Ordinal)) ||
+                _legacyCache.Keys.Any(key => key.StartsWith(variantPrefix, StringComparison.Ordinal)) ||
+                _animatedGifs.Keys.Any(key => key.StartsWith(variantPrefix, StringComparison.Ordinal));
+        }
+
+        private static void RekeyRequestState(string previousKey, string currentKey)
+        {
+            if (string.IsNullOrEmpty(previousKey) ||
+                string.IsNullOrEmpty(currentKey) ||
+                string.Equals(previousKey, currentKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (_lazyRegistry.TryRemove(previousKey, out var info))
+            {
+                _lazyRegistry[currentKey] = info;
+            }
+
+            bool pendingMoved = false;
+            lock (_pendingLock)
+            {
+                if (_pendingLoads.Contains(previousKey) &&
+                    !_pendingLoads.Contains(currentKey))
+                {
+                    _pendingLoads.Remove(previousKey);
+                    _pendingLoads.Add(currentKey);
+                    pendingMoved = true;
+                }
+            }
+
+            if (pendingMoved &&
+                _pendingLoadContexts.TryRemove(previousKey, out var contexts))
+            {
+                if (_pendingLoadContexts.TryGetValue(currentKey, out var existing))
+                {
+                    foreach (var entry in contexts)
+                    {
+                        existing[entry.Key] = entry.Value;
+                    }
+                }
+                else
+                {
+                    _pendingLoadContexts[currentKey] = contexts;
+                }
+            }
+        }
+
+        private static void RemoveStaleLoadResultKey(
+            string cacheKey,
+            string url,
+            ImageLoaderRequestContext context,
+            Uri svgBaseUri = null)
+        {
+            string normalizedUrl = NormalizeImageUrl(url);
+            string stableKey = CreateLoadResultKey(
+                normalizedUrl,
+                context,
+                svgBaseUri ?? ResolveSvgRequestBaseUri(normalizedUrl, null),
+                IsSvgRequest(normalizedUrl));
+            string svgStableKey = CreateLoadResultKey(
+                normalizedUrl,
+                context,
+                svgBaseUri ?? ResolveSvgRequestBaseUri(normalizedUrl, null),
+                true);
+            if (!string.IsNullOrEmpty(cacheKey) &&
+                !string.Equals(cacheKey, stableKey, StringComparison.Ordinal) &&
+                !string.Equals(cacheKey, svgStableKey, StringComparison.Ordinal) &&
+                !string.Equals(cacheKey, normalizedUrl, StringComparison.Ordinal))
+            {
+                _lastLoadResults.TryRemove(cacheKey, out _);
+            }
+        }
+
+        private static Uri ResolveSvgRequestBaseUri(string url, Document ownerDocument)
+        {
+            if (url != null && url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                return ResolveDocumentBaseUri(ownerDocument);
+            }
+
+            return Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri : null;
+        }
+
+        private static Uri ResolveDocumentBaseUri(Document ownerDocument)
+        {
+            string value = ownerDocument?.BaseURI;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                value = ownerDocument?.DocumentURI;
+            }
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                value = ownerDocument?.URL;
+            }
+
+            return Uri.TryCreate(value, UriKind.Absolute, out var uri) ? uri : null;
+        }
+
+        private static bool TryGetCachedBitmap(string cacheKey, out SKBitmap bitmap)
+        {
+            lock (_cacheLock)
+            {
+                if (_memoryCache.TryGetValue(cacheKey, out var entry) && entry?.Bitmap != null)
+                {
+                    entry.LastAccessed = DateTime.UtcNow;
+                    bitmap = entry.Bitmap;
+                    return true;
+                }
+
+                if (_legacyCache.TryGetValue(cacheKey, out bitmap) && bitmap != null)
+                {
+                    return true;
+                }
+            }
+
+            if (_animatedGifs.TryGetValue(cacheKey, out var animated))
+            {
+                bitmap = animated.GetCurrentFrame();
+                return bitmap != null;
+            }
+
+            bitmap = null;
+            return false;
+        }
+
+        private static void DisposeBitmap(SKBitmap bitmap)
+        {
+            try
+            {
+                if (bitmap != null && !bitmap.IsNull)
+                {
+                    bitmap.Dispose();
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static void DisposeAnimatedImage(AnimatedImage animated)
+        {
+            if (animated?.Frames == null)
+            {
+                return;
+            }
+
+            foreach (SKBitmap frame in animated.Frames)
+            {
+                DisposeBitmap(frame);
+            }
         }
 
         private static ImageLoaderRequestContext GetPendingLoadContext(string url)
@@ -2211,60 +4816,124 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static AnimatedImage DecodeAnimatedGif(SKCodec codec, byte[] data)
+        private static bool TryAdmitAnimatedGif(
+            int frameCount,
+            SKImageInfo imageInfo,
+            SvgRenderLimits limits)
+        {
+            if (IsInvalidCodecFrameCount(frameCount) ||
+                imageInfo.Width <= 0 || imageInfo.Height <= 0)
+            {
+                return false;
+            }
+
+            long pixelsPerFrame = (long)imageInfo.Width * imageInfo.Height;
+            long maxAggregatePixels = Math.Min(
+                limits.MaxRasterPixels,
+                limits.MaxCumulativeResourceBytes / 4L);
+            if (maxAggregatePixels <= 0 ||
+                pixelsPerFrame > maxAggregatePixels / frameCount)
+            {
+                return false;
+            }
+
+            long bytesPerPixel = Math.Max(1L, imageInfo.BytesPerPixel);
+            long bytesPerFrame;
+            try
+            {
+                bytesPerFrame = checked(pixelsPerFrame * bytesPerPixel);
+            }
+            catch (OverflowException)
+            {
+                return false;
+            }
+
+            return bytesPerFrame <= limits.MaxCumulativeResourceBytes / frameCount;
+        }
+
+        private static bool IsInvalidCodecFrameCount(int frameCount) =>
+            frameCount <= 1 || frameCount > MaxAnimatedGifFrameCount;
+
+        private static AnimatedImage DecodeAnimatedGif(
+            SKCodec codec,
+            SKImageInfo imageInfo,
+            bool canDecodeIntrinsic,
+            SvgRenderLimits limits)
         {
             int frameCount = codec.FrameCount;
+            if (!TryAdmitAnimatedGif(frameCount, imageInfo, limits))
+            {
+                return null;
+            }
+
             var frames = new SKBitmap[frameCount];
             var durations = new int[frameCount];
-            var info = codec.Info;
+            int decodedCount = 0;
+            long byteSize = 0;
 
             for (int i = 0; i < frameCount; i++)
             {
-                var frameInfo = codec.FrameInfo[i];
-                var bitmap = new SKBitmap(info);
-                bitmap.Erase(SKColors.Transparent);
-
-                // If this frame depends on a previous one, copy it first
-                if (frameInfo.RequiredFrame >= 0 && frameInfo.RequiredFrame < frames.Length && frames[frameInfo.RequiredFrame] != null)
+                if (!codec.GetFrameInfo(i, out SKCodecFrameInfo frameInfo))
                 {
-                    frames[frameInfo.RequiredFrame].CopyTo(bitmap);
-                }
-
-                using var pixmap = bitmap.PeekPixels();
-                var options = new SKCodecOptions(i, frameInfo.RequiredFrame);
-                var result = codec.GetPixels(info, pixmap.GetPixels(), options);
-
-                if (result != SKCodecResult.Success && result != SKCodecResult.IncompleteInput)
-                {
-                    EngineLogCompat.Warn($"[ImageLoader] GIF frame {i} decode failed: {result}", LogCategory.Rendering);
-                    bitmap.Dispose();
                     continue;
                 }
 
-                frames[i] = bitmap;
-                durations[i] = Math.Max(frameInfo.Duration, 50); // Fallback to 50ms if missing/0
+                SKBitmap bitmap = DecodeCodecFrame(
+                    codec,
+                    i,
+                    frameInfo.RequiredFrame,
+                    imageInfo,
+                    canDecodeIntrinsic);
+                if (bitmap == null)
+                {
+                    EngineLogCompat.Warn($"[ImageLoader] GIF frame {i} decode failed", LogCategory.Rendering);
+                    continue;
+                }
+
+                if (byteSize > limits.MaxCumulativeResourceBytes - bitmap.ByteCount)
+                {
+                    DisposeBitmap(bitmap);
+                    for (int frameIndex = 0; frameIndex < decodedCount; frameIndex++)
+                    {
+                        DisposeBitmap(frames[frameIndex]);
+                    }
+                    return null;
+                }
+
+                frames[decodedCount] = bitmap;
+                durations[decodedCount] = Math.Max(frameInfo.Duration, 50);
+                decodedCount++;
+                byteSize += bitmap.ByteCount;
             }
 
-            // Drop null frames if decode failed
-            frames = frames.Where(f => f != null).ToArray();
-            durations = durations.Take(frames.Length).ToArray();
+            if (decodedCount == 0)
+            {
+                return null;
+            }
 
-            if (frames.Length == 0) return null;
+            if (decodedCount != frames.Length)
+            {
+                Array.Resize(ref frames, decodedCount);
+                Array.Resize(ref durations, decodedCount);
+            }
 
-            int totalDuration = durations.Sum();
-            if (totalDuration <= 0) totalDuration = frames.Length * 100; // fallback 100ms each
+            long totalDuration = 0;
+            for (int i = 0; i < durations.Length; i++)
+            {
+                totalDuration += durations[i];
+            }
+            if (totalDuration <= 0)
+            {
+                totalDuration = frames.Length * 100L;
+            }
+
+            int boundedDuration = (int)Math.Min(int.MaxValue, totalDuration);
             var frameEndOffsets = new int[durations.Length];
-            var frameEnd = 0;
-            for (var i = 0; i < durations.Length; i++)
+            long frameEnd = 0;
+            for (int i = 0; i < durations.Length; i++)
             {
-                frameEnd += durations[i];
-                frameEndOffsets[i] = frameEnd;
-            }
-
-            long byteSize = 0;
-            foreach (var frame in frames)
-            {
-                byteSize += frame?.ByteCount ?? 0;
+                frameEnd = Math.Min(boundedDuration, frameEnd + durations[i]);
+                frameEndOffsets[i] = (int)frameEnd;
             }
 
             return new AnimatedImage
@@ -2272,7 +4941,7 @@ namespace FenBrowser.FenEngine.Rendering
                 Frames = frames,
                 Durations = durations,
                 FrameEndOffsets = frameEndOffsets,
-                TotalDuration = totalDuration,
+                TotalDuration = boundedDuration,
                 StartTick = Environment.TickCount64,
                 ByteSize = byteSize,
                 LastAccessed = DateTime.UtcNow
