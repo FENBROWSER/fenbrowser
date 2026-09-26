@@ -81,7 +81,7 @@ namespace FenBrowser.FenEngine.Svg
 
             double beginSeconds = 0d;
             string begin = motion.GetAttribute("begin")?.Trim();
-            if (!string.IsNullOrEmpty(begin) &&
+            if (!string.IsNullOrEmpty(begin) && begin.IndexOf(';') < 0 &&
                 !TryParseClockSeconds(begin, out beginSeconds))
             {
                 RequireMotionFallback("event-based animateMotion begin");
@@ -97,26 +97,42 @@ namespace FenBrowser.FenEngine.Svg
                 return false;
             }
 
+            if (!TryBuildSmilClockList(motion, out double[] begins, out double[] ends))
+                return false;
+            if (begins == null || begins.Length == 0) begins = new[] { beginSeconds };
+            if ((long)begins.Length * (ends?.Length ?? 1) > MaxSmilTimingPairs)
+            {
+                RequireMotionFallback("animateMotion begin timing");
+                return false;
+            }
+
             string calcMode = motion.GetAttribute("calcMode")?.Trim();
-            if (calcMode?.Equals("paced", StringComparison.OrdinalIgnoreCase) == true)
+            bool linear = calcMode == null || calcMode.Length == 0 ||
+                calcMode.Equals("linear", StringComparison.OrdinalIgnoreCase);
+            bool paced = calcMode?.Equals("paced", StringComparison.OrdinalIgnoreCase) == true;
+            bool discrete = calcMode?.Equals("discrete", StringComparison.OrdinalIgnoreCase) == true;
+            bool spline = calcMode?.Equals("spline", StringComparison.OrdinalIgnoreCase) == true;
+            if (!linear && !paced && !discrete && !spline)
             {
-                RequireMotionFallback("animateMotion calcMode='paced'");
+                RequireMotionFallback("animateMotion calculation mode");
                 return false;
             }
 
-            string keyTimes = motion.GetAttribute("keyTimes")?.Trim();
             float[] parsedKeyTimes = null;
-            if (!string.IsNullOrEmpty(keyTimes) &&
-                (!TryParseSemicolonNumbers(keyTimes, out parsedKeyTimes) ||
-                 parsedKeyTimes.Length < 2 || parsedKeyTimes[0] != 0f ||
-                 parsedKeyTimes[^1] != 1f || !IsOrderedUnitInterval(parsedKeyTimes)))
+            string keyTimes = motion.GetAttribute("keyTimes")?.Trim();
+            if (!string.IsNullOrEmpty(keyTimes))
             {
-                RequireMotionFallback("animateMotion keyTimes");
-                return false;
+                if (!TryParseSemicolonNumbers(keyTimes, out parsedKeyTimes) ||
+                    parsedKeyTimes.Length < 2 || parsedKeyTimes[0] != 0f ||
+                    parsedKeyTimes[^1] != 1f || !IsOrderedUnitInterval(parsedKeyTimes))
+                {
+                    RequireMotionFallback("animateMotion keyTimes");
+                    return false;
+                }
             }
 
-            string keyPoints = motion.GetAttribute("keyPoints")?.Trim();
             float[] parsedKeyPoints = null;
+            string keyPoints = motion.GetAttribute("keyPoints")?.Trim();
             if (!string.IsNullOrEmpty(keyPoints))
             {
                 if (parsedKeyTimes == null ||
@@ -128,13 +144,36 @@ namespace FenBrowser.FenEngine.Svg
                     return false;
                 }
             }
-
-            bool discrete = calcMode?.Equals("discrete", StringComparison.OrdinalIgnoreCase) == true;
-            if (!string.IsNullOrEmpty(calcMode) &&
-                !calcMode.Equals("linear", StringComparison.OrdinalIgnoreCase) &&
-                !discrete)
+            else if (discrete && parsedKeyTimes == null && MotionValueCount(motion) > 1)
             {
-                RequireMotionFallback("animateMotion calculation mode");
+                int steps = MotionValueCount(motion);
+                parsedKeyTimes = new float[steps];
+                parsedKeyPoints = new float[steps];
+                for (int i = 0; i < steps; i++)
+                {
+                    parsedKeyTimes[i] = (float)i / steps;
+                    parsedKeyPoints[i] = steps == 1 ? 0f : (float)i / (steps - 1);
+                }
+            }
+
+            float[] parsedSplines = null;
+            if (spline)
+            {
+                int segments = MotionValueCount(motion) - 1;
+                if (segments < 1)
+                {
+                    RequireMotionFallback("animateMotion keySplines");
+                    return false;
+                }
+                if (!TryParseMotionKeySplines(motion, segments, out parsedSplines))
+                {
+                    RequireMotionFallback("animateMotion keySplines");
+                    return false;
+                }
+            }
+            if (paced && (parsedKeyPoints != null || parsedKeyTimes != null))
+            {
+                RequireMotionFallback("animateMotion calcMode='paced' with key points");
                 return false;
             }
 
@@ -181,29 +220,85 @@ namespace FenBrowser.FenEngine.Svg
                 RequireMotionFallback("animateMotion total duration");
                 return false;
             }
-            double elapsed = _documentTimeSeconds - beginSeconds;
+            bool indefiniteActive = double.IsPositiveInfinity(totalDuration);
+
+            double chosenBegin = 0d;
+            double chosenEnd = 0d;
+            bool foundInside = false;
+            bool foundFrozen = false;
+            for (int i = 0; i < begins.Length; i++)
+            {
+                double instanceBegin = begins[i];
+                if (instanceBegin > _documentTimeSeconds) continue;
+                double instanceEnd = indefiniteActive
+                    ? double.PositiveInfinity
+                    : instanceBegin + totalDuration;
+                if (!double.IsPositiveInfinity(instanceEnd) && ends != null)
+                {
+                    for (int j = 0; j < ends.Length; j++)
+                        if (ends[j] > instanceBegin && ends[j] < instanceEnd)
+                            instanceEnd = ends[j];
+                }
+                bool inside = double.IsPositiveInfinity(instanceEnd) ||
+                    _documentTimeSeconds < instanceEnd;
+                if (inside)
+                {
+                    if (!foundInside || instanceBegin >= chosenBegin)
+                    {
+                        chosenBegin = instanceBegin;
+                        chosenEnd = instanceEnd;
+                        foundInside = true;
+                    }
+                    continue;
+                }
+                if (freeze && (!foundFrozen || instanceBegin > chosenBegin))
+                {
+                    chosenBegin = instanceBegin;
+                    chosenEnd = instanceEnd;
+                    foundFrozen = true;
+                }
+            }
+
+            bool contributing = foundInside || foundFrozen;
+            if (!contributing) return true;
+            double elapsed = foundInside
+                ? _documentTimeSeconds - chosenBegin
+                : Math.Max(0d, chosenEnd - chosenBegin);
             if (!double.IsFinite(elapsed))
             {
                 RequireMotionFallback("animateMotion elapsed time");
                 return false;
             }
-            if (elapsed < 0d) return true;
-            bool finished = double.IsFinite(totalDuration) && elapsed >= totalDuration;
-            if (finished && !freeze) return true;
-
-            double cycleProgress = finished ? 1d : elapsed / durationSeconds;
+            double cycleProgress = elapsed / durationSeconds;
             if (!double.IsFinite(cycleProgress))
             {
                 RequireMotionFallback("animateMotion progress");
                 return false;
             }
-            double progress = finished ? 1d : cycleProgress % 1d;
+            double progress = foundInside ? cycleProgress % 1d : 1d;
             if (progress < 0d) progress += 1d;
             progress = Math.Clamp(progress, 0d, 1d);
             if (!double.IsFinite(progress))
             {
                 RequireMotionFallback("animateMotion progress");
                 return false;
+            }
+
+            if (parsedSplines != null)
+            {
+                double segments = parsedSplines.Length / 4d;
+                int index = (int)Math.Floor(progress * segments);
+                if (index < 0) index = 0;
+                if (index >= (int)segments) index = (int)segments - 1;
+                float eased = EaseSplineSegment((float)(progress - index / segments) * (float)segments,
+                    parsedSplines[index * 4], parsedSplines[index * 4 + 1],
+                    parsedSplines[index * 4 + 2], parsedSplines[index * 4 + 3]);
+                progress = (index + eased) / segments;
+                if (!double.IsFinite(progress))
+                {
+                    RequireMotionFallback("animateMotion progress");
+                    return false;
+                }
             }
 
             if (parsedKeyPoints == null)
@@ -258,6 +353,74 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
+        private static int MotionValueCount(SvgElement motion)
+        {
+            string values = motion.GetAttribute("values");
+            if (values != null)
+            {
+                if (values.Length > MaxSmilRawTimingChars * 8) return 0;
+                string[] parts = values.Split(';', StringSplitOptions.TrimEntries);
+                int count = 0;
+                for (int i = 0; i < parts.Length; i++)
+                    if (parts[i].Length != 0) count++;
+                return count;
+            }
+            if (motion.GetAttribute("from") != null && motion.GetAttribute("to") != null) return 2;
+            return 1;
+        }
+
+        private bool TryBuildSmilClockList(
+            SvgElement animation,
+            out double[] begins,
+            out double[] ends)
+        {
+            begins = null;
+            ends = null;
+            string beginRaw = animation.GetAttribute("begin");
+            if (!string.IsNullOrWhiteSpace(beginRaw) &&
+                !TryParseSmilClockList(beginRaw, out begins))
+            {
+                RequireMotionFallback("event-based animateMotion begin");
+                return false;
+            }
+            string endRaw = animation.GetAttribute("end");
+            if (!string.IsNullOrWhiteSpace(endRaw) &&
+                !TryParseSmilClockList(endRaw, out ends))
+            {
+                RequireMotionFallback("animateMotion end timing");
+                return false;
+            }
+            return true;
+        }
+
+        private static bool TryParseMotionKeySplines(
+            SvgElement motion,
+            int segmentCount,
+            out float[] splines)
+        {
+            splines = null;
+            string raw = motion.GetAttribute("keySplines")?.Trim();
+            if (string.IsNullOrEmpty(raw) || raw.Length > MaxSmilRawTimingChars) return false;
+            string[] groups = raw.Split(';');
+            if (groups.Length != segmentCount) return false;
+            var parsed = new float[groups.Length * 4];
+            for (int i = 0; i < groups.Length; i++)
+            {
+                var tokenizer = SvgValues.CreateTokenizer(groups[i].AsSpan());
+                for (int c = 0; c < 4; c++)
+                {
+                    if (!tokenizer.Next(out var token) ||
+                        !SvgValues.TryParseNumber(token, out float control) ||
+                        !float.IsFinite(control) || control < 0f || control > 1f)
+                        return false;
+                    parsed[i * 4 + c] = control;
+                }
+                if (tokenizer.Next(out _)) return false;
+            }
+            splines = parsed;
+            return true;
+        }
+
         private SKPath ResolveMotionPath(SvgElement motion, ViewportContext viewport)
         {
             string inlinePath = motion.GetAttribute("path");
@@ -289,8 +452,7 @@ namespace FenBrowser.FenEngine.Svg
             }
             if (mpath == null)
             {
-                RequireMotionFallback("animateMotion without a path");
-                return null;
+                return BuildMotionValuePath(motion);
             }
 
             string href = mpath.GetAttribute("href") ?? mpath.GetLookup("xlink:href");
@@ -321,6 +483,87 @@ namespace FenBrowser.FenEngine.Svg
                 return null;
             }
             return BuildGeometry(referenced, viewport);
+        }
+
+        private SKPath BuildMotionValuePath(SvgElement motion)
+        {
+            float[] points;
+            string valuesRaw = motion.GetAttribute("values");
+            if (valuesRaw != null)
+            {
+                if (valuesRaw.Length > MaxSmilRawTimingChars * 8)
+                {
+                    RequireMotionFallback("animateMotion values");
+                    return null;
+                }
+                string[] parts = valuesRaw.Split(';', StringSplitOptions.TrimEntries);
+                int count = 0;
+                for (int i = 0; i < parts.Length; i++)
+                    if (parts[i].Length != 0) count++;
+                if (count < 2 || count > MaxSmilValueListEntries)
+                {
+                    RequireMotionFallback("animateMotion without a path");
+                    return null;
+                }
+                points = new float[count * 2];
+                int cursor = 0;
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    if (parts[i].Length == 0) continue;
+                    if (!TryParseMotionPoint(parts[i], out float x, out float y))
+                    {
+                        RequireMotionFallback("animateMotion values");
+                        return null;
+                    }
+                    points[cursor++] = x;
+                    points[cursor++] = y;
+                }
+            }
+            else
+            {
+                string from = motion.GetAttribute("from");
+                string to = motion.GetAttribute("to");
+                if (from == null || to == null ||
+                    !TryParseMotionPoint(from, out float startX, out float startY) ||
+                    !TryParseMotionPoint(to, out float endX, out float endY))
+                {
+                    RequireMotionFallback("animateMotion without a path");
+                    return null;
+                }
+                points = new[] { startX, startY, endX, endY };
+            }
+
+            using var builder = new SKPathBuilder();
+            builder.MoveTo(points[0], points[1]);
+            for (int i = 2; i + 1 < points.Length; i += 2)
+                builder.LineTo(points[i], points[i + 1]);
+            SKPath path = builder.Detach();
+            SKRect bounds = path.Bounds;
+            if (!float.IsFinite(bounds.Left) || !float.IsFinite(bounds.Top) ||
+                !float.IsFinite(bounds.Right) || !float.IsFinite(bounds.Bottom))
+            {
+                path.Dispose();
+                RequireMotionFallback("animateMotion values");
+                return null;
+            }
+            return path;
+        }
+
+        private static bool TryParseMotionPoint(string raw, out float x, out float y)
+        {
+            x = 0f;
+            y = 0f;
+            var tokenizer = SvgValues.CreateTokenizer(raw.AsSpan());
+            if (!tokenizer.Next(out var first) || !tokenizer.Next(out var second))
+                return false;
+            if (tokenizer.Next(out _)) return false;
+            if (!SvgValues.TryParseNumber(first, out x) ||
+                !SvgValues.TryParseNumber(second, out y))
+                return false;
+            if (!float.IsFinite(x) || !float.IsFinite(y)) return false;
+            x = SvgValues.ClampCoord(x);
+            y = SvgValues.ClampCoord(y);
+            return true;
         }
 
         private bool TryMeasureMotionPoint(

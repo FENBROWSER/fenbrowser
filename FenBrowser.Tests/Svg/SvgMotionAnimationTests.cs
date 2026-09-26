@@ -83,19 +83,213 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void PacedMotion_FailsClosedInsteadOfUsingLinearTiming()
+        public void PacedMotion_OnAPlainPath_IsUniformArcLengthProgress()
+        {
+            const string svg = "<svg width='120' height='40'>" +
+                "<rect x='-4' y='-4' width='8' height='8' fill='black'>" +
+                "<animateMotion dur='10s' calcMode='paced' path='M0 20H100'/>" +
+                "</rect></svg>";
+
+            using var paced = new FenSvgRenderer().Render(new SvgRenderRequest(
+                svg, SvgRenderLimits.Default) { DocumentTimeSeconds = 2.5d });
+            const string reference =
+                "<svg width='120' height='40'><rect x='21' y='16' width='8' height='8' fill='black'/></svg>";
+            using var expected = new FenSvgRenderer().Render(reference);
+
+            Assert.True(paced.Success, paced.ErrorMessage);
+            Assert.False(paced.RequiresFallback, string.Join("; ", paced.Warnings));
+            Assert.True(expected.Success, expected.ErrorMessage);
+            AssertIdenticalPixels(paced.Bitmap, expected.Bitmap);
+        }
+
+        [Fact]
+        public void PacedMotion_WithKeyPoints_FailsClosedBecauseTheRateIsKeyTimeDependent()
         {
             const string svg = "<svg width='120' height='40'>" +
                 "<circle r='5'><animateMotion dur='10s' calcMode='paced' " +
-                "path='M0 20H100'/></circle></svg>";
+                "keyTimes='0;.5;1' keyPoints='0;1;0' path='M0 20H100'/></circle></svg>";
 
             using var result = new FenSvgRenderer().Render(new SvgRenderRequest(
-                svg, SvgRenderLimits.Default) { DocumentTimeSeconds = 5d });
+                svg, SvgRenderLimits.Default) { DocumentTimeSeconds = 2.5d });
 
             AssertFailsClosed(result);
-            Assert.True(result.RequiresFallback);
+            Assert.True(result.RequiresFallback, string.Join("; ", result.Warnings));
             Assert.Contains("smil-animation", result.FallbackReasonCodes);
             Assert.Contains(result.Warnings, warning => warning.Contains("paced"));
+        }
+
+        [Fact]
+        public void MotionPath_FromToDefinesThePath()
+        {
+            const string svg = "<svg width='120' height='40'>" +
+                "<rect x='-4' y='-4' width='8' height='8' fill='black'>" +
+                "<animateMotion from='10,20' to='110,20' begin='0s' dur='3s' fill='freeze'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, 1.5d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            AssertBlockAt(result.Bitmap, 60d, 20d);
+        }
+
+        [Fact]
+        public void MotionPath_ValuesDefineThePath()
+        {
+            const string svg = "<svg width='120' height='40'>" +
+                "<rect x='-4' y='-4' width='8' height='8' fill='black'>" +
+                "<animateMotion values='10,20;60,20;110,20' begin='0s' dur='6s' " +
+                "calcMode='linear' fill='freeze'/></rect></svg>";
+
+            using var early = RenderAt(svg, 1.5d);
+            using var late = RenderAt(svg, 4.5d);
+
+            Assert.True(early.Success, early.ErrorMessage);
+            Assert.True(late.Success, late.ErrorMessage);
+            Assert.False(early.RequiresFallback, string.Join("; ", early.Warnings));
+            Assert.False(late.RequiresFallback, string.Join("; ", late.Warnings));
+            AssertBlockAt(early.Bitmap, 35d, 20d);
+            AssertBlockAt(late.Bitmap, 85d, 20d);
+        }
+
+        [Fact]
+        public void DiscreteValueList_StepsBetweenTheDeclaredPositions()
+        {
+            const string svg = "<svg width='120' height='40'>" +
+                "<rect x='-4' y='-4' width='8' height='8' fill='black'>" +
+                "<animateMotion values='10,20;60,20;110,20' begin='0s' dur='8s' " +
+                "calcMode='discrete' fill='freeze'/></rect></svg>";
+
+            using var firstHold = RenderAt(svg, 2.5d);
+            using var secondHold = RenderAt(svg, 3.5d);
+
+            AssertBlockAt(firstHold.Bitmap, 10d, 20d);
+            AssertBlockAt(secondHold.Bitmap, 60d, 20d);
+        }
+
+        [Fact]
+        public void PacedValueList_HoldsAConstantRateAcrossTheWholePath()
+        {
+            const string svg = "<svg width='120' height='40'>" +
+                "<rect x='-4' y='-4' width='8' height='8' fill='black'>" +
+                "<animateMotion values='10,20;60,20;110,20' begin='0s' dur='9s' " +
+                "calcMode='paced' fill='freeze'/></rect></svg>";
+
+            using var middle = RenderAt(svg, 4.5d);
+
+            AssertBlockAt(middle.Bitmap, 60d, 20d);
+        }
+
+        [Fact]
+        public void SplineMotion_EasesThePathProgressWithinItsSegment()
+        {
+            const string svg = "<svg width='120' height='40'>" +
+                "<rect x='-4' y='-4' width='8' height='8' fill='black'>" +
+                "<animateMotion from='10,20' to='110,20' begin='0s' dur='10s' " +
+                "calcMode='spline' keySplines='0 0 0 1' fill='freeze'/></rect></svg>";
+
+            using var eased = RenderAt(svg, 2.5d);
+
+            AssertBlockAt(eased.Bitmap, 79d, 20d);
+            Assert.Equal(0, eased.Bitmap.GetPixel(35, 20).Alpha);
+        }
+
+        [Fact]
+        public void SplineMotion_LinearControlPointsMatchLinearProgress()
+        {
+            const string svg = "<svg width='120' height='40'>" +
+                "<rect x='-4' y='-4' width='8' height='8' fill='black'>" +
+                "<animateMotion from='10,20' to='110,20' begin='0s' dur='10s' " +
+                "calcMode='spline' keySplines='0 0 1 1' fill='freeze'/></rect></svg>";
+
+            using var eased = RenderAt(svg, 2.5d);
+
+            AssertBlockAt(eased.Bitmap, 35d, 20d);
+        }
+
+        [Fact]
+        public void KeyPoints_InterpolateOnAValueDerivedMotionPath()
+        {
+            const string svg = "<svg width='320' height='40'>" +
+                "<rect x='-4' y='-4' width='8' height='8' fill='black'>" +
+                "<animateMotion dur='4' from='20,22' to='220,22' calcMode='linear' " +
+                "fill='freeze' keyPoints='0.8; 1; 0; 0.2' keyTimes='0; 0.25; 0.75; 1'/>" +
+                "</rect></svg>";
+
+            using var firstKeyPoint = RenderAt(svg, 0d);
+            using var secondKeyTime = RenderAt(svg, 1.5d);
+            using var thirdKeyTime = RenderAt(svg, 3d);
+
+            AssertBlockAt(firstKeyPoint.Bitmap, 180d, 22d);
+            AssertBlockAt(secondKeyTime.Bitmap, 170d, 22d);
+            AssertBlockAt(thirdKeyTime.Bitmap, 20d, 22d);
+        }
+
+        [Fact]
+        public void MotionBeginClockList_RepeatsThePathSnapshot()
+        {
+            const string svg = "<svg width='120' height='40'>" +
+                "<rect x='-4' y='-4' width='8' height='8' fill='black'>" +
+                "<animateMotion from='10,20' to='110,20' begin='0s;4s' dur='3s' " +
+                "fill='freeze'/></rect></svg>";
+
+            using var firstRun = RenderAt(svg, 1.5d);
+            using var betweenRuns = RenderAt(svg, 3.5d);
+            using var secondRun = RenderAt(svg, 5.5d);
+
+            AssertBlockAt(firstRun.Bitmap, 60d, 20d);
+            AssertBlockAt(betweenRuns.Bitmap, 110d, 20d);
+            AssertBlockAt(secondRun.Bitmap, 60d, 20d);
+        }
+
+        [Fact]
+        public void MotionValuePath_WithoutValuesOrFromTo_FailsClosed()
+        {
+            const string svg = "<svg width='120' height='40'>" +
+                "<circle r='5'><animateMotion dur='1s'/></circle></svg>";
+
+            using var result = RenderAt(svg, .5d);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Contains("smil-animation", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void MotionValuePath_RejectsAValueListThatIsNotAPositionPair()
+        {
+            const string svg = "<svg width='120' height='40'>" +
+                "<circle r='5'><animateMotion dur='1s' values='0,0;10;20,0'/></circle></svg>";
+
+            using var result = RenderAt(svg, .5d);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Contains("smil-animation", result.FallbackReasonCodes);
+        }
+
+        private static SvgRenderResult RenderAt(string svg, double seconds) =>
+            new FenSvgRenderer().Render(new SvgRenderRequest(svg, SvgRenderLimits.Default)
+            {
+                DocumentTimeSeconds = seconds
+            });
+
+        private static void AssertBlockAt(SkiaSharp.SKBitmap bitmap, double centerX, double centerY)
+        {
+            int x = (int)Math.Round(centerX);
+            int y = (int)Math.Round(centerY);
+            Assert.InRange(x, 0, bitmap.Width - 1);
+            Assert.InRange(y, 0, bitmap.Height - 1);
+            Assert.Equal((byte)255, bitmap.GetPixel(x, y).Alpha);
+        }
+
+        private static void AssertIdenticalPixels(SkiaSharp.SKBitmap actual, SkiaSharp.SKBitmap expected)
+        {
+            Assert.Equal(expected.Width, actual.Width);
+            Assert.Equal(expected.Height, actual.Height);
+            for (int y = 0; y < actual.Height; y++)
+            for (int x = 0; x < actual.Width; x++)
+                Assert.Equal(expected.GetPixel(x, y), actual.GetPixel(x, y));
         }
 
         [Theory]
