@@ -61,6 +61,7 @@ namespace FenBrowser.FenEngine.Svg
             // ServerRef
             var shader = BuildServerShader(
                 spec.Fragment, path, fallbackText: spec.Fallback, style, viewport,
+                ResolveContextPaintFrame(spec.ContextSource, el, viewport),
                 out var fallbackColor, out bool disposeShaderAfterAssignment);
             if (fallbackColor.HasValue)
             {
@@ -173,6 +174,7 @@ namespace FenBrowser.FenEngine.Svg
 
             var shader = BuildServerShader(
                 spec.Fragment, geometry, fallbackText: spec.Fallback, style, viewport,
+                ResolveContextPaintFrame(spec.ContextSource, el, viewport),
                 out var fallbackColor, out bool disposeShaderAfterAssignment);
             if (fallbackColor.HasValue)
             {
@@ -245,6 +247,7 @@ namespace FenBrowser.FenEngine.Svg
             public SKPoint P1, P2;
             public SKPoint Center, Focus;
             public float Radius;
+            public float FocalRadius;
             public SKMatrix Transform;
         }
 
@@ -259,9 +262,11 @@ namespace FenBrowser.FenEngine.Svg
             public string R;
             public string Fx;
             public string Fy;
+            public string Fr;
             public string GradientUnits;
-            public string GradientTransform;
             public string SpreadMethod;
+            public SvgElement TransformOwner;
+            public string TransformRaw;
         }
 
         private readonly Dictionary<GradientCacheKey, CachedGradient> _gradientCache = new();
@@ -319,10 +324,12 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             SKMatrix transform = SKMatrix.Identity;
-            if (!string.IsNullOrWhiteSpace(definition.GradientTransform) &&
-                !SvgValues.TryParseTransformList(definition.GradientTransform.AsSpan(), out transform))
+            if (!TryResolveGradientTransform(definition, out transform))
             {
-                _report.RequireFallback("SVG gradientTransform requires compatibility fallback");
+                return entry;
+            }
+            if (!transform.TryInvert(out _))
+            {
                 return entry;
             }
             entry.Transform = transform;
@@ -361,7 +368,9 @@ namespace FenBrowser.FenEngine.Svg
                     !TryGradientLength(definition.R, radiusDefault, radiusReference, style.FontSize, out float radius) ||
                     !TryGradientLength(definition.Fx, cx, xReference, style.FontSize, out float fx) ||
                     !TryGradientLength(definition.Fy, cy, yReference, style.FontSize, out float fy) ||
-                    radius <= 0f || !SvgValues.IsFinite(radius))
+                    !TryGradientLength(definition.Fr, 0f, radiusReference, style.FontSize, out float focalRadius) ||
+                    radius <= 0f || !SvgValues.IsFinite(radius) ||
+                    !(focalRadius >= 0f) || !SvgValues.IsFinite(focalRadius))
                 {
                     return entry;
                 }
@@ -370,6 +379,7 @@ namespace FenBrowser.FenEngine.Svg
                     ? new SKPoint(fx, fy)
                     : ClampObjectBoundingBoxFocus(fx, fy, hasFx, hasFy);
                 entry.Radius = radius;
+                entry.FocalRadius = focalRadius;
             }
             else if (!TryGradientLength(definition.X1, x1Default, xReference, style.FontSize, out float x1) ||
                      !TryGradientLength(definition.Y1, y1Default, yReference, style.FontSize, out float y1) ||
@@ -405,18 +415,36 @@ namespace FenBrowser.FenEngine.Svg
                     return false;
                 }
 
-                definition.X1 ??= current.GetAttribute("x1");
-                definition.Y1 ??= current.GetAttribute("y1");
-                definition.X2 ??= current.GetAttribute("x2");
-                definition.Y2 ??= current.GetAttribute("y2");
-                definition.Cx ??= current.GetAttribute("cx");
-                definition.Cy ??= current.GetAttribute("cy");
-                definition.R ??= current.GetAttribute("r");
-                definition.Fx ??= current.GetAttribute("fx");
-                definition.Fy ??= current.GetAttribute("fy");
-                definition.GradientUnits ??= current.GetAttribute("gradientUnits");
-                definition.GradientTransform ??= current.GetAttribute("gradientTransform");
-                definition.SpreadMethod ??= current.GetAttribute("spreadMethod");
+                definition.X1 ??= InheritedAttribute(current, "x1");
+                definition.Y1 ??= InheritedAttribute(current, "y1");
+                definition.X2 ??= InheritedAttribute(current, "x2");
+                definition.Y2 ??= InheritedAttribute(current, "y2");
+                definition.Cx ??= InheritedAttribute(current, "cx");
+                definition.Cy ??= InheritedAttribute(current, "cy");
+                definition.R ??= InheritedAttribute(current, "r");
+                definition.Fx ??= InheritedAttribute(current, "fx");
+                definition.Fy ??= InheritedAttribute(current, "fy");
+                definition.Fr ??= InheritedAttribute(current, "fr");
+                definition.GradientUnits ??= InheritedAttribute(current, "gradientUnits");
+                definition.SpreadMethod ??= InheritedAttribute(current, "spreadMethod");
+                if (definition.TransformOwner == null)
+                {
+                    if (current.CascadedDeclarations != null &&
+                        current.CascadedDeclarations.ContainsKey("transform"))
+                    {
+                        definition.TransformOwner = current;
+                        definition.TransformRaw = current.GetPresentationProperty("transform");
+                    }
+                    else
+                    {
+                        string gradientTransform = InheritedAttribute(current, "gradientTransform");
+                        if (gradientTransform != null)
+                        {
+                            definition.TransformOwner = current;
+                            definition.TransformRaw = gradientTransform;
+                        }
+                    }
+                }
 
                 string href = current.GetAttribute("href") ?? current.GetLookup("xlink:href");
                 if (string.IsNullOrWhiteSpace(href))
@@ -437,6 +465,29 @@ namespace FenBrowser.FenEngine.Svg
                 current = template;
             }
             return true;
+        }
+
+        private static string InheritedAttribute(SvgElement element, string name)
+        {
+            string value = element.GetAttribute(name);
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+
+        private bool TryResolveGradientTransform(GradientDefinition definition, out SKMatrix transform)
+        {
+            transform = SKMatrix.Identity;
+            string raw = definition.TransformRaw;
+            if (string.IsNullOrWhiteSpace(raw) ||
+                string.Equals(raw.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (SvgValues.TryParseTransformList(raw.AsSpan(), out transform))
+            {
+                return true;
+            }
+            _report.RequireFallback("SVG gradientTransform requires compatibility fallback");
+            return false;
         }
 
         private bool TryGradientLength(
@@ -483,6 +534,7 @@ namespace FenBrowser.FenEngine.Svg
             string fallbackText,
             InheritedStyle style,
             ViewportContext viewport,
+            ContextPaintFrame context,
             out SKColor? fallbackColor,
             out bool disposeShaderAfterAssignment)
         {
@@ -497,7 +549,8 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 else if (server.Name == "pattern")
                 {
-                    var patternShader = BuildPatternShader(server, path, style, viewport);
+                    var patternShader = BuildPatternShader(
+                        server, path, context, style, viewport);
                     if (patternShader != null)
                     {
                         disposeShaderAfterAssignment = true;
@@ -526,13 +579,14 @@ namespace FenBrowser.FenEngine.Svg
             {
                 baseShader = g.IsRadial
                     ? SKShader.CreateTwoPointConicalGradient(
-                        g.Focus, 0f, g.Center, g.Radius, g.Colors, g.Positions, g.Mode)
+                        g.Focus, FocalRadiusOf(g), g.Center, g.Radius, g.Colors, g.Positions, g.Mode)
                     : SKShader.CreateLinearGradient(
                         g.P1, g.P2, g.Colors, g.Positions, g.Mode);
             }
             else
             {
-                var (matrix, degenerate) = ObjectBoundingBoxMatrix(path, SKMatrix.Identity);
+                var (matrix, degenerate) = ObjectBoundingBoxMatrix(
+                    ResolveObjectBoundingBox(context, path), SKMatrix.Identity);
                 if (degenerate)
                 {
                     if (TryResolvePaintFallbackColor(fallbackText, style, out var color))
@@ -543,11 +597,11 @@ namespace FenBrowser.FenEngine.Svg
                 }
 
                 baseShader = g.IsRadial
-                    ? (g.Focus == g.Center
+                    ? (g.Focus == g.Center && FocalRadiusOf(g) == 0f
                         ? SKShader.CreateRadialGradient(
                             g.Center, g.Radius, g.Colors, g.Positions, g.Mode)
                         : SKShader.CreateTwoPointConicalGradient(
-                            g.Focus, 0f, g.Center, g.Radius,
+                            g.Focus, FocalRadiusOf(g), g.Center, g.Radius,
                             g.Colors, g.Positions, g.Mode))
                     : SKShader.CreateLinearGradient(
                         g.P1, g.P2, g.Colors, g.Positions, g.Mode);
@@ -555,7 +609,10 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     return null;
                 }
-                var finalMatrix = SKMatrix.Concat(matrix, g.Transform);
+                var finalMatrix = context == null
+                    ? SKMatrix.Concat(matrix, g.Transform)
+                    : SKMatrix.Concat(
+                        SKMatrix.Concat(context.ToElementSpace, matrix), g.Transform);
                 var shader = baseShader.WithLocalMatrix(finalMatrix);
                 if (!ReferenceEquals(shader, baseShader))
                 {
@@ -569,9 +626,10 @@ namespace FenBrowser.FenEngine.Svg
             {
                 return null;
             }
-            if (!g.Transform.IsIdentity)
+            var userSpaceMatrix = ServerSpaceMatrix(g.Transform, context);
+            if (!userSpaceMatrix.IsIdentity)
             {
-                var transformed = baseShader.WithLocalMatrix(g.Transform);
+                var transformed = baseShader.WithLocalMatrix(userSpaceMatrix);
                 if (!ReferenceEquals(transformed, baseShader))
                 {
                     baseShader.Dispose();
@@ -581,6 +639,12 @@ namespace FenBrowser.FenEngine.Svg
             disposeShaderAfterAssignment = baseShader != null;
             return baseShader;
         }
+
+        private static SKMatrix ServerSpaceMatrix(SKMatrix transform, ContextPaintFrame context) =>
+            context == null ? transform : SKMatrix.Concat(transform, context.ToElementSpace);
+
+        private static float FocalRadiusOf(CachedGradient g) =>
+            g.FocalRadius > 0f && g.FocalRadius < g.Radius ? g.FocalRadius : 0f;
 
         private static bool TryResolvePaintFallbackColor(
             string fallbackText,
@@ -597,27 +661,134 @@ namespace FenBrowser.FenEngine.Svg
                    SvgValues.TryParseColor(fallbackText.AsSpan(), out color);
         }
 
-        private (SKMatrix matrix, bool degenerate) ObjectBoundingBoxMatrix(SKPath path, SKMatrix extra)
+        private (SKMatrix matrix, bool degenerate) ObjectBoundingBoxMatrix(SKRect? bounds, SKMatrix extra)
         {
-            if (path == null)
+            if (!bounds.HasValue)
             {
-                // Stroked server refs without geometry cannot resolve oBB space.
+                // Server refs without resolvable geometry cannot resolve oBB space.
                 return (SKMatrix.Identity, true);
             }
 
-            var bbox = path.TightBounds;
-            if (bbox.Width <= 0f || bbox.Height <= 0f ||
-                !SvgValues.IsFinite(bbox.Width) || !SvgValues.IsFinite(bbox.Height))
+            var box = bounds.Value;
+            if (!IsPaintableBounds(box))
             {
                 return (SKMatrix.Identity, true);
             }
 
             // unit square -> bbox: translate(bx,by) * scale(bw,bh)
             var m = SKMatrix.Concat(
-                SKMatrix.CreateTranslation(bbox.Left, bbox.Top),
-                SKMatrix.CreateScale(bbox.Width, bbox.Height));
+                SKMatrix.CreateTranslation(box.Left, box.Top),
+                SKMatrix.CreateScale(box.Width, box.Height));
             m = SKMatrix.Concat(m, extra);
             return (m, false);
+        }
+
+        private static bool IsPaintableBounds(SKRect bounds) =>
+            bounds.Width > 0f && bounds.Height > 0f && IsFinite(bounds);
+
+        private static SKRect? ResolveObjectBoundingBox(
+            ContextPaintFrame context,
+            SKPath geometry)
+        {
+            if (context != null && IsPaintableBounds(context.Bounds))
+            {
+                return context.Bounds;
+            }
+            SKRect local = geometry?.TightBounds ?? default;
+            return geometry != null && IsPaintableBounds(local) ? local : null;
+        }
+
+        private const int MaxContextPaintFrames = 128;
+
+        private sealed class ContextPaintFrame
+        {
+            public SKRect Bounds;
+            public SKMatrix ToElementSpace;
+        }
+
+        private readonly record struct ContextPaintKey(
+            SvgElement Target,
+            SvgElement Element,
+            float ViewportWidth,
+            float ViewportHeight);
+
+        private readonly Dictionary<ContextPaintKey, ContextPaintFrame> _contextPaintFrames = new();
+
+        /// <summary>
+        /// Coordinate frame a context paint server is resolved in. A `use`
+        /// context paints on the instantiated content, so the server belongs to
+        /// the referenced element's object bounding box, not to the box of the
+        /// single element being painted, and that box has to be mapped into the
+        /// painted element's own user space - the space the element's transform
+        /// is applied on top of, exactly as for a directly referenced server.
+        /// A context source that is not a `use`, a nested viewport target, or an
+        /// unresolvable frame yields null, and the caller falls back to the
+        /// painted geometry exactly like a direct paint server.
+        /// </summary>
+        private ContextPaintFrame ResolveContextPaintFrame(
+            SvgElement source,
+            SvgElement el,
+            ViewportContext viewport)
+        {
+            SvgElement target = ContextPaintTarget(source);
+            if (target == null || el == null) return null;
+            if (target.Name is "svg" or "symbol") return null;
+
+            var key = new ContextPaintKey(target, el, viewport.Width, viewport.Height);
+            if (_contextPaintFrames.TryGetValue(key, out var memoized)) return memoized;
+
+            ContextPaintFrame frame = null;
+            if (TryResolveObjectBounds(target, viewport, out var bounds) &&
+                TryResolveContextToElementSpace(el, target, viewport, out var toElementSpace))
+            {
+                frame = new ContextPaintFrame
+                {
+                    Bounds = bounds,
+                    ToElementSpace = toElementSpace
+                };
+            }
+            if (_contextPaintFrames.Count < MaxContextPaintFrames)
+            {
+                _contextPaintFrames[key] = frame;
+            }
+            return frame;
+        }
+
+        private SvgElement ContextPaintTarget(SvgElement source)
+        {
+            if (source == null || source.Name != "use") return null;
+            string href = source.GetAttribute("href") ?? source.GetLookup("xlink:href");
+            if (!SvgValues.TryParseLocalReference(href, out string id)) return null;
+            return _doc.ElementsById.TryGetValue(id, out var target) ? target : null;
+        }
+
+        private bool TryResolveContextToElementSpace(
+            SvgElement el,
+            SvgElement target,
+            ViewportContext viewport,
+            out SKMatrix toElementSpace)
+        {
+            toElementSpace = SKMatrix.Identity;
+            SKMatrix toTargetSpace = SKMatrix.Identity;
+            SvgElement current = el;
+            for (int hops = 0; current != null; hops++)
+            {
+                if (hops > _maxReferenceDepth) return false;
+                CheckDeadline();
+                if (!TryResolveObjectBoundsTransform(current, viewport, out var step))
+                {
+                    return false;
+                }
+                toTargetSpace = toTargetSpace.IsIdentity
+                    ? step
+                    : SKMatrix.Concat(step, toTargetSpace);
+                if (ReferenceEquals(current, target)) break;
+                current = current.Parent;
+            }
+            if (!ReferenceEquals(current, target)) return false;
+            if (toTargetSpace.IsIdentity) return true;
+            return toTargetSpace.TryInvert(out toElementSpace) &&
+                SvgValues.IsFinite(toElementSpace);
         }
 
         private static SKShaderTileMode TileModeOf(string spread)

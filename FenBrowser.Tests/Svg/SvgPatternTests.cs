@@ -117,6 +117,55 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void WptPatternTransformEmptyAttribute_DoesNotBlockTemplateInheritance()
+        {
+            using var result = _renderer.Render(
+                "<svg width='100' height='100' xmlns='http://www.w3.org/2000/svg'>" +
+                "<pattern id='p1' patternTransform='scale(2)'/>" +
+                "<pattern id='p' href='#p1' viewBox='0 0 50 50' patternTransform='' " +
+                "width='100%' height='100%'>" +
+                "<rect fill='red' width='50' height='50'/>" +
+                "<rect fill='green' width='25' height='25'/></pattern>" +
+                "<rect fill='url(#p)' width='100' height='100'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            for (int y = 0; y < 100; y += 7)
+            {
+                for (int x = 0; x < 100; x += 7)
+                {
+                    SKColor pixel = result.Bitmap.GetPixel(x, y);
+                    Assert.True(
+                        pixel == SKColors.Green,
+                        $"an empty patternTransform must not hide the template transform at " +
+                        $"{x},{y}: rendered {pixel}");
+                }
+            }
+        }
+
+        [Fact]
+        public void WptPatternTemplateRemoved_HasNoInheritedContentToPaint()
+        {
+            using var inherited = _renderer.Render(
+                "<svg width='100' height='100' xmlns='http://www.w3.org/2000/svg'>" +
+                "<pattern id='pattern' width='1' height='1'>" +
+                "<rect width='100' height='100' fill='orange'/></pattern>" +
+                "<pattern id='inheritedPattern' href='#pattern'/>" +
+                "<rect width='100' height='100' fill='url(#inheritedPattern) green'/></svg>");
+
+            Assert.True(inherited.Success, inherited.ErrorMessage);
+            Assert.Equal(SKColors.Orange, inherited.Bitmap.GetPixel(50, 50));
+
+            using var noTemplate = _renderer.Render(
+                "<svg width='100' height='100' xmlns='http://www.w3.org/2000/svg'>" +
+                "<pattern id='inheritedPattern' href='#missing' width='1' height='1'/>" +
+                "<rect width='100' height='100' fill='url(#inheritedPattern) green'/></svg>");
+
+            Assert.True(noTemplate.Success, noTemplate.ErrorMessage);
+            Assert.Equal(SKColors.Green, noTemplate.Bitmap.GetPixel(50, 50));
+        }
+
+        [Fact]
         public void NonInvertiblePatternTransform_UsesPaintFallback()
         {
             using var result = _renderer.Render(
@@ -168,6 +217,51 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.Success, result.ErrorMessage);
             Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
             Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(5, 5));
+        }
+
+        [Fact]
+        public void ContextFillPattern_UsesReferencedObjectBoundingBox()
+        {
+            // WPT svg/painting/reftests/paint-context-004.svg: the pattern belongs
+            // to the `use`, so its objectBoundingBox tile is sized from the
+            // referenced 64x64 group box, not from either 32-wide rectangle.
+            using var result = _renderer.Render(
+                "<svg width='120' height='90' viewBox='0 0 120 90'><defs>" +
+                "<pattern id='grid' x='0' y='0' width='0.125' height='0.125' stroke='blue' " +
+                "stroke-width='0.03125' patternContentUnits='objectBoundingBox'>" +
+                "<path d='M 0,0.0625 h 0.125'/><path d='M 0.0625,0 v 0.125'/></pattern>" +
+                "<g id='rects'><rect width='32' height='64' fill='context-fill'/>" +
+                "<rect x='32' y='6' width='32' height='58' fill='context-fill'/></g></defs>" +
+                "<use x='18' y='18' fill='url(#grid)' href='#rects'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(22, 26));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(30, 26));
+            Assert.Equal(0, result.Bitmap.GetPixel(26, 26).Alpha);
+        }
+
+        [Fact]
+        public void ContextFillPattern_UsesNearestUseAncestorPaint()
+        {
+            // WPT svg/painting/reftests/paint-context-008.svg: the inner `use`
+            // supplies the context paint, so the tile is sized from the content
+            // box the inner `use` instantiates at its own offset.
+            using var result = _renderer.Render(
+                "<svg width='400' height='300' viewBox='0 0 400 300'><defs>" +
+                "<pattern id='grid' x='0' y='0' width='0.125' height='0.25' stroke='blue' " +
+                "stroke-width='0.03125' patternContentUnits='objectBoundingBox'>" +
+                "<path fill='none' d='M 0.0625 0 l 0.0625 0.125 l -0.0625 0.125 l " +
+                "-0.0625 -0.125 Z'/></pattern>" +
+                "<g id='shapes'><rect x='50' y='90' width='256' height='128' fill='context-fill'/></g>" +
+                "<g id='intermediate'><use x='19' y='23' fill='url(#grid)' href='#shapes'/></g>" +
+                "</defs><use href='#intermediate'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(80, 120));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(85, 113));
+            Assert.Equal(0, result.Bitmap.GetPixel(100, 140).Alpha);
         }
 
         [Fact]

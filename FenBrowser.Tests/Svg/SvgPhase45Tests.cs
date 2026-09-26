@@ -181,14 +181,16 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void LowercaseScriptTag_IsIgnoredSafely()
+        public void LowercaseScriptTag_FailsClosedAsDynamicContent()
         {
             using var result = _renderer().Render(
                 "<svg width='12' height='12'><script>alert(1)</script><rect width='12' height='12' fill='red'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
-            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
-            Assert.Equal((byte)255, result.Bitmap.GetPixel(6, 6).Red);
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("dynamic-content", result.FallbackReasonCodes);
         }
 
         private FenSvgRenderer _renderer() => new();

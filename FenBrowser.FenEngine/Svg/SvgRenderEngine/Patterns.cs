@@ -23,6 +23,7 @@ namespace FenBrowser.FenEngine.Svg
         private SKShader BuildPatternShader(
             SvgElement server,
             SKPath geometry,
+            ContextPaintFrame context,
             InheritedStyle referencingStyle,
             ViewportContext viewport)
         {
@@ -37,7 +38,8 @@ namespace FenBrowser.FenEngine.Svg
             _activePatterns.Add(server);
             try
             {
-                return BuildPatternShaderCore(server, geometry, referencingStyle, viewport);
+                return BuildPatternShaderCore(
+                    server, geometry, context, referencingStyle, viewport);
             }
             finally
             {
@@ -50,6 +52,7 @@ namespace FenBrowser.FenEngine.Svg
         private SKShader BuildPatternShaderCore(
             SvgElement server,
             SKPath geometry,
+            ContextPaintFrame context,
             InheritedStyle referencingStyle,
             ViewportContext viewport)
         {
@@ -64,7 +67,7 @@ namespace FenBrowser.FenEngine.Svg
                 pattern.ContentUnits, "objectBoundingBox", StringComparison.Ordinal);
 
             SKRect bounds = default;
-            bool hasBounds = TryGetPatternBounds(geometry, out bounds);
+            bool hasBounds = TryGetPatternBounds(context, geometry, out bounds);
             if ((objectBoundingBox || objectBoundingBoxContent) && !hasBounds)
             {
                 return null;
@@ -102,7 +105,10 @@ namespace FenBrowser.FenEngine.Svg
                 return null;
             }
 
-            var localMatrix = SKMatrix.Concat(unitsMatrix, patternTransform);
+            var localMatrix = context == null
+                ? SKMatrix.Concat(unitsMatrix, patternTransform)
+                : SKMatrix.Concat(
+                    SKMatrix.Concat(unitsMatrix, patternTransform), context.ToElementSpace);
             if (!SvgValues.IsFinite(localMatrix))
             {
                 _report.RequireFallback("SVG pattern transform is not finite and bounded");
@@ -225,15 +231,15 @@ namespace FenBrowser.FenEngine.Svg
                     return false;
                 }
 
-                resolved.X ??= current.GetAttribute("x");
-                resolved.Y ??= current.GetAttribute("y");
-                resolved.Width ??= current.GetAttribute("width");
-                resolved.Height ??= current.GetAttribute("height");
-                resolved.Units ??= current.GetAttribute("patternUnits");
-                resolved.ContentUnits ??= current.GetAttribute("patternContentUnits");
-                resolved.Transform ??= current.GetAttribute("patternTransform");
-                resolved.ViewBox ??= current.GetAttribute("viewBox");
-                resolved.PreserveAspectRatio ??= current.GetAttribute("preserveAspectRatio");
+                resolved.X ??= InheritedAttribute(current, "x");
+                resolved.Y ??= InheritedAttribute(current, "y");
+                resolved.Width ??= InheritedAttribute(current, "width");
+                resolved.Height ??= InheritedAttribute(current, "height");
+                resolved.Units ??= InheritedAttribute(current, "patternUnits");
+                resolved.ContentUnits ??= InheritedAttribute(current, "patternContentUnits");
+                resolved.Transform ??= InheritedAttribute(current, "patternTransform");
+                resolved.ViewBox ??= InheritedAttribute(current, "viewBox");
+                resolved.PreserveAspectRatio ??= InheritedAttribute(current, "preserveAspectRatio");
 
                 if (resolved.ContentOwner == null && HasRenderablePatternContent(current))
                 {
@@ -345,12 +351,13 @@ namespace FenBrowser.FenEngine.Svg
             return false;
         }
 
-        private static bool TryGetPatternBounds(SKPath geometry, out SKRect bounds)
+        private static bool TryGetPatternBounds(
+            ContextPaintFrame context,
+            SKPath geometry,
+            out SKRect bounds)
         {
-            bounds = geometry?.TightBounds ?? default;
-            return geometry != null &&
-                bounds.Width > 0f && bounds.Height > 0f &&
-                IsFinite(bounds);
+            bounds = ResolveObjectBoundingBox(context, geometry) ?? default;
+            return IsPaintableBounds(bounds);
         }
 
         private static bool TryResolvePatternLength(
