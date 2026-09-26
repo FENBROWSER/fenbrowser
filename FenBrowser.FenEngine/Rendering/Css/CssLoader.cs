@@ -3296,6 +3296,20 @@ private static bool EvaluateMediaQueryInternal(string query, double? viewportWid
     if (mh.HasValue && vpH < mh.Value) conditionMatches = false;
     if (xh.HasValue && vpH > xh.Value) conditionMatches = false;
 
+    // Media Queries 4 §4.4 (deprecated, still widely authored): device-width/height are
+    // the output device's rendering surface, which is the window here (screen.width
+    // reports the same). Unhandled, they read as matching: every desktop page applied
+    // its `(max-device-width: 480px)` phone rules, e.g. w3schools' CodeMirror font.
+    var mdw = ExtractPx(query, "min-device-width");
+    var xdw = ExtractPx(query, "max-device-width");
+    var mdh = ExtractPx(query, "min-device-height");
+    var xdh = ExtractPx(query, "max-device-height");
+
+    if (mdw.HasValue && vpW < mdw.Value) conditionMatches = false;
+    if (xdw.HasValue && vpW > xdw.Value) conditionMatches = false;
+    if (mdh.HasValue && vpH < mdh.Value) conditionMatches = false;
+    if (xdh.HasValue && vpH > xdh.Value) conditionMatches = false;
+
     // Range syntax support (width > 600px, width >= 600px, etc.)
     conditionMatches = conditionMatches && EvaluateRangeSyntax(query, "width", vpW);
     conditionMatches = conditionMatches && EvaluateRangeSyntax(query, "height", vpH);
