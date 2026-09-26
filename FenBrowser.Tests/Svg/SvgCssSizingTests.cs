@@ -85,18 +85,51 @@ namespace FenBrowser.Tests.Svg
                 "<rect x='20' width='30' height='10' fill='green'/></svg>");
         }
 
+        [Fact]
+        public void RootViewportUnitSizing_FailsClosedBecauseThereIsNoHostViewport()
+        {
+            // WPT svg/styling/outermost-svg-sizing-viewport-units.svg: the
+            // outermost width/height IS the intrinsic size the host lays the
+            // document out with, so a viewport-relative value there cannot be
+            // resolved by a standalone render.
+            using var root = new FenSvgRenderer().Render(
+                "<svg xmlns='http://www.w3.org/2000/svg' style='width:10vw;height:10vh;'>" +
+                "<rect width='100%' height='100%' fill='green'/></svg>");
+
+            AssertFailsClosed(root);
+            Assert.Contains("unsupported-property", root.FallbackReasonCodes);
+
+            using var attribute = new FenSvgRenderer().Render(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='10vw' height='10vh'>" +
+                "<rect width='100%' height='100%' fill='green'/></svg>");
+
+            AssertFailsClosed(attribute);
+            Assert.Contains("unsupported-property", attribute.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void DescendantViewportUnitSizing_StillResolvesAgainstTheSvgViewport()
+        {
+            AssertIdenticalRender(
+                "<svg width='300' height='150'><rect style='width:10vw;height:10vh' fill='red'/></svg>",
+                "<svg width='300' height='150'><rect width='10%' height='10%' fill='red'/></svg>");
+        }
+
         [Theory]
         [InlineData("stretch")]
         [InlineData("fit-content")]
         [InlineData("min-content")]
         [InlineData("max-content")]
-        public void NestedSvgSizingKeywords_ResolveToContainingViewportExtent(string keyword)
+        public void NestedSvgSizingKeywords_DoNotApplyAndKeepAttributeSizing(string keyword)
         {
+            // An SVG viewport has no intrinsic size, so the fill-available sizing
+            // keywords do not apply to a nested <svg> and the geometry attributes
+            // stay in charge (svgwg#1059).
             AssertIdenticalRender(
                 $"<svg width='100' height='100'><svg width='50' height='50' " +
                 $"style='width:{keyword};height:{keyword}'>" +
                 "<circle cx='50' cy='50' r='40' fill='green'/></svg></svg>",
-                "<svg width='100' height='100'><svg width='100' height='100'>" +
+                "<svg width='100' height='100'><svg width='50' height='50'>" +
                 "<circle cx='50' cy='50' r='40' fill='green'/></svg></svg>");
         }
 
@@ -111,26 +144,31 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void NestedSvgCalcSize_ResolvesKeywordBaseAndSizeArithmetic()
+        public void NestedSvgCalcSize_DoesNotApplyAndKeepsAttributeSizing()
         {
+            // calc-size() is fill-available sizing over a keyword base, so it does
+            // not apply to a nested <svg> either; the attributes win.
             AssertIdenticalRender(
                 "<svg width='100' height='100'><svg width='50' height='50' " +
                 "style='width:calc-size(fit-content, size);height:calc-size(fit-content, size)'>" +
                 "<circle cx='50' cy='50' r='40' fill='green'/></svg></svg>",
-                "<svg width='100' height='100'><svg width='100' height='100'>" +
+                "<svg width='100' height='100'><svg width='50' height='50'>" +
                 "<circle cx='50' cy='50' r='40' fill='green'/></svg></svg>");
 
             AssertIdenticalRender(
                 "<svg width='100' height='100'><svg width='50' height='50' " +
                 "style='width:calc-size(stretch, size - 20px);height:calc-size(auto, size - 20px)'>" +
                 "<circle cx='50' cy='50' r='40' fill='green'/></svg></svg>",
-                "<svg width='100' height='100'><svg width='80' height='80'>" +
+                "<svg width='100' height='100'><svg width='50' height='50'>" +
                 "<circle cx='50' cy='50' r='40' fill='green'/></svg></svg>");
 
+            // A calc-size() whose base is a plain length is not fill-available, but
+            // CSS sizing still does not override XML geometry on a nested <svg>,
+            // so the omitted dimension keeps its 100% default.
             AssertIdenticalRender(
                 "<svg width='100' height='100'><svg style='width:calc-size(30%, size + 10px)'>" +
                 "<circle cx='20' cy='20' r='15' fill='purple'/></svg></svg>",
-                "<svg width='100' height='100'><svg width='40'>" +
+                "<svg width='100' height='100'><svg width='100'>" +
                 "<circle cx='20' cy='20' r='15' fill='purple'/></svg></svg>");
         }
 

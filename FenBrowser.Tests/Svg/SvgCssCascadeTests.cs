@@ -86,6 +86,142 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(20, 5));
         }
 
+        [Theory]
+        [InlineData("rect:nth-child(2)", 1, "red")]
+        [InlineData("rect:nth-child(2)", 2, "green")]
+        [InlineData("rect:nth-child(odd)", 1, "green")]
+        [InlineData("rect:nth-child(odd)", 2, "red")]
+        [InlineData("rect:nth-child(odd)", 3, "green")]
+        [InlineData("rect:nth-child(even)", 1, "red")]
+        [InlineData("rect:nth-child(even)", 2, "green")]
+        [InlineData("rect:nth-child(2n)", 1, "red")]
+        [InlineData("rect:nth-child(2n)", 4, "green")]
+        [InlineData("rect:nth-child(2n + 1)", 1, "green")]
+        [InlineData("rect:nth-child(2n + 1)", 2, "red")]
+        [InlineData("rect:nth-child( -n + 2 )", 1, "green")]
+        [InlineData("rect:nth-child( -n + 2 )", 2, "green")]
+        [InlineData("rect:nth-child( -n + 2 )", 3, "red")]
+        [InlineData("rect:nth-child(N)", 3, "green")]
+        [InlineData("rect:nth-last-child(1)", 3, "red")]
+        [InlineData("rect:nth-last-child(1)", 4, "green")]
+        [InlineData("rect:nth-last-child(2)", 3, "green")]
+        [InlineData("rect:nth-last-child(2)", 4, "red")]
+        [InlineData("rect:nth-of-type(1)", 1, "green")]
+        [InlineData("rect:nth-of-type(1)", 2, "red")]
+        [InlineData("rect:nth-of-type(2)", 2, "green")]
+        [InlineData("rect:nth-last-of-type(1n)", 2, "green")]
+        [InlineData("rect:not(:nth-child(2))", 1, "green")]
+        [InlineData("rect:not(:nth-child(2))", 2, "red")]
+        [InlineData("g > rect:nth-child(2)", 1, "red")]
+        [InlineData("g > rect:nth-child(2)", 2, "green")]
+        public void NthChildSelectors_CountSvgElementSiblings(string rule, int ordinal, string expected)
+        {
+            const string source =
+                "<svg width='40' height='10'><style>{0} {{ fill: green }} rect {{ fill: red }}" +
+                "</style><g>" +
+                "<rect width='10' height='10'/><rect x='10' width='10' height='10'/>" +
+                "<rect x='20' width='10' height='10'/><rect x='30' width='10' height='10'/>" +
+                "</g></svg>";
+
+            using var result = new FenSvgRenderer().Render(string.Format(source, rule));
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Empty(result.FallbackReasonCodes);
+            Assert.Equal(ExpectedColor(expected), result.Bitmap.GetPixel((ordinal - 1) * 10 + 5, 5));
+        }
+
+        [Fact]
+        public void NthOfTypeSelectors_IgnoreSiblingsOfOtherElementNames()
+        {
+            const string source =
+                "<svg width='20' height='10'><style>{0} {{ fill: green }} rect {{ fill: red }}" +
+                "</style><g>" +
+                "<rect width='10' height='10'/>" +
+                "<circle cx='5' cy='5' r='2' fill='none'/>" +
+                "<rect x='10' width='10' height='10'/>" +
+                "</g></svg>";
+
+            using var child = new FenSvgRenderer().Render(
+                string.Format(source, "rect:nth-child(2)"));
+            using var ofType = new FenSvgRenderer().Render(
+                string.Format(source, "rect:nth-of-type(2)"));
+
+            Assert.False(child.RequiresFallback, string.Join("; ", child.Warnings));
+            Assert.False(ofType.RequiresFallback, string.Join("; ", ofType.Warnings));
+            Assert.Equal(SKColors.Red, child.Bitmap.GetPixel(5, 5));
+            Assert.Equal(SKColors.Red, child.Bitmap.GetPixel(15, 5));
+            Assert.Equal(SKColors.Red, ofType.Bitmap.GetPixel(5, 5));
+            Assert.Equal(SKColors.Green, ofType.Bitmap.GetPixel(15, 5));
+        }
+
+        [Fact]
+        public void NthChildOfSelector_FiltersSiblingsBeforeIndexing()
+        {
+            const string source =
+                "<svg width='30' height='10'><style>{0} {{ fill: green }} rect {{ fill: red }}" +
+                "</style><g><rect class='hit' x='0' width='10' height='10'/>" +
+                "<rect class='miss' x='10' width='10' height='10'/>" +
+                "<rect class='hit' x='20' width='10' height='10'/></g></svg>";
+
+            using var filtered = new FenSvgRenderer().Render(
+                string.Format(source, "rect:nth-child(2 of .hit)"));
+            using var unfiltered = new FenSvgRenderer().Render(
+                string.Format(source, "rect:nth-child(2)"));
+
+            Assert.False(filtered.RequiresFallback, string.Join("; ", filtered.Warnings));
+            Assert.False(unfiltered.RequiresFallback, string.Join("; ", unfiltered.Warnings));
+            Assert.Equal(SKColors.Red, filtered.Bitmap.GetPixel(5, 5));
+            Assert.Equal(SKColors.Red, filtered.Bitmap.GetPixel(15, 5));
+            Assert.Equal(SKColors.Green, filtered.Bitmap.GetPixel(25, 5));
+            Assert.Equal(SKColors.Red, unfiltered.Bitmap.GetPixel(5, 5));
+            Assert.Equal(SKColors.Green, unfiltered.Bitmap.GetPixel(15, 5));
+            Assert.Equal(SKColors.Red, unfiltered.Bitmap.GetPixel(25, 5));
+        }
+
+        [Fact]
+        public void NthChildOfSelector_AcceptsAComplexOfList()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "rect { fill: red } :nth-child(1 of g > rect) { fill: green }" +
+                "</style><g>" +
+                "<rect width='10' height='10'/><rect x='10' width='10' height='10'/>" +
+                "</g><g><rect y='10' width='10' height='10'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(5, 5));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(15, 5));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(5, 15));
+        }
+
+        [Fact]
+        public void NthLastChildOfSelector_CountsFromTheEndOfTheFilteredList()
+        {
+            const string source =
+                "<svg width='30' height='10'><style>{0} {{ fill: green }} rect {{ fill: red }}" +
+                "</style><g><rect class='hit' x='0' width='10' height='10'/>" +
+                "<rect class='miss' x='10' width='10' height='10'/>" +
+                "<rect class='hit' x='20' width='10' height='10'/></g></svg>";
+
+            using var filtered = new FenSvgRenderer().Render(
+                string.Format(source, "rect:nth-last-child(2 of .hit)"));
+            using var unfiltered = new FenSvgRenderer().Render(
+                string.Format(source, "rect:nth-last-child(2)"));
+
+            Assert.False(filtered.RequiresFallback, string.Join("; ", filtered.Warnings));
+            Assert.False(unfiltered.RequiresFallback, string.Join("; ", unfiltered.Warnings));
+            Assert.Equal(SKColors.Green, filtered.Bitmap.GetPixel(5, 5));
+            Assert.Equal(SKColors.Red, filtered.Bitmap.GetPixel(15, 5));
+            Assert.Equal(SKColors.Red, filtered.Bitmap.GetPixel(25, 5));
+            Assert.Equal(SKColors.Red, unfiltered.Bitmap.GetPixel(5, 5));
+            Assert.Equal(SKColors.Green, unfiltered.Bitmap.GetPixel(15, 5));
+            Assert.Equal(SKColors.Red, unfiltered.Bitmap.GetPixel(25, 5));
+        }
+
         [Fact]
         public void StylesheetDisplayNone_SuppressesMatchingSubtree()
         {
@@ -466,6 +602,860 @@ namespace FenBrowser.Tests.Svg
 
             Assert.Equal(SKColors.Blue, narrow.Bitmap.GetPixel(20, 5));
             Assert.Equal(SKColors.Red, wide.Bitmap.GetPixel(20, 5));
+        }
+
+        [Fact]
+        public void ScreenAndWidthMediaQuery_IsLocalToSvgViewport()
+        {
+            const string source =
+                "<svg width='{0}' height='10'><style>" +
+                "@media screen and (min-width: 50px) {{ rect {{ fill: red }} }}" +
+                "@media only all and (max-width: 50px) {{ rect {{ fill: lime }} }}" +
+                "</style><rect width='100%' height='10' fill='blue'/></svg>";
+
+            using var narrow = new FenSvgRenderer().Render(string.Format(source, 40));
+            using var wide = new FenSvgRenderer().Render(string.Format(source, 60));
+
+            Assert.False(narrow.RequiresFallback, string.Join("; ", narrow.Warnings));
+            Assert.False(wide.RequiresFallback, string.Join("; ", wide.Warnings));
+            Assert.Equal(SKColors.Lime, narrow.Bitmap.GetPixel(20, 5));
+            Assert.Equal(SKColors.Red, wide.Bitmap.GetPixel(20, 5));
+        }
+
+        [Theory]
+        [InlineData("not (min-width: 50px)", 40, "lime")]
+        [InlineData("not (min-width: 50px)", 60, "blue")]
+        [InlineData("not all and (max-width: 50px)", 40, "blue")]
+        [InlineData("not all and (max-width: 50px)", 60, "lime")]
+        [InlineData("not screen", 40, "blue")]
+        [InlineData("screen", 40, "lime")]
+        [InlineData("(max-width: 50px), (min-width: 50px)", 40, "lime")]
+        [InlineData("(max-width: 50px), (min-width: 50px)", 60, "lime")]
+        [InlineData("(min-width: 30px) and (max-width: 50px)", 40, "lime")]
+        [InlineData("(min-width: 30px) and (max-width: 50px)", 60, "blue")]
+        [InlineData("(min-width: 70px) or (max-width: 50px)", 40, "lime")]
+        [InlineData("(min-width: 70px) or (max-width: 50px)", 60, "blue")]
+        [InlineData("not ((min-width: 30px) and (max-width: 50px))", 40, "blue")]
+        [InlineData("not ((min-width: 30px) and (max-width: 50px))", 60, "blue")]
+        [InlineData("screen and (min-width: 30px) and (max-width: 50px)", 40, "lime")]
+        [InlineData("only screen and (min-width: 30px) and (max-width: 50px)", 60, "blue")]
+        [InlineData("(width: 40px)", 40, "lime")]
+        [InlineData("(width: 40px)", 60, "blue")]
+        public void MediaConditionKeywords_AreEvaluatedAgainstTheSvgViewport(
+            string condition, int width, string expected)
+        {
+            const string source =
+                "<svg width='{0}' height='10'><style>" +
+                "rect {{ fill: blue }}" +
+                "@media {1} {{ rect {{ fill: lime }} }}" +
+                "</style><rect width='100%' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(
+                string.Format(source, width, condition));
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(ExpectedColor(expected), result.Bitmap.GetPixel(20, 5));
+        }
+
+        [Theory]
+        [InlineData("(min-resolution: 1dppx)", "lime")]
+        [InlineData("(min-resolution: 96dpi)", "lime")]
+        [InlineData("(max-resolution: 1dppx)", "lime")]
+        [InlineData("(resolution: 1x)", "lime")]
+        [InlineData("(min-resolution: 2dppx)", "blue")]
+        [InlineData("(min-device-pixel-ratio: 3)", "blue")]
+        [InlineData("(max-device-pixel-ratio: 2)", "lime")]
+        [InlineData("(color)", "lime")]
+        [InlineData("(min-color: 0)", "lime")]
+        [InlineData("(min-color: 24)", "blue")]
+        [InlineData("(max-monochrome: 0)", "lime")]
+        [InlineData("(monochrome)", "blue")]
+        [InlineData("(min-monochrome: 1)", "blue")]
+        [InlineData("(min-device-width: 30px)", "lime")]
+        [InlineData("(max-device-width: 30px)", "blue")]
+        public void PictureScopedMediaFeatures_AnswerOnlyForTheStaticRaster(
+            string condition, string expected)
+        {
+            string svg =
+                "<svg width='40' height='10'><style>" +
+                "rect { fill: blue }" +
+                $"@media {condition} {{ rect {{ fill: lime }} }}" +
+                "</style><rect width='40' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(ExpectedColor(expected), result.Bitmap.GetPixel(20, 5));
+        }
+
+        [Theory]
+        [InlineData("(orientation: portrait)")]
+        [InlineData("(orientation: landscape)")]
+        [InlineData("(aspect-ratio: 16/9)")]
+        [InlineData("(prefers-color-scheme: dark)")]
+        [InlineData("(hover)")]
+        [InlineData("(hover: hover)")]
+        [InlineData("(any-hover: hover)")]
+        [InlineData("(pointer: fine)")]
+        [InlineData("(any-pointer: coarse)")]
+        [InlineData("(prefers-reduced-motion: reduce)")]
+        [InlineData("(prefers-contrast: more)")]
+        [InlineData("(forced-colors: active)")]
+        [InlineData("(dynamic-range: high)")]
+        [InlineData("(video-dynamic-range: high)")]
+        [InlineData("(color-gamut: p3)")]
+        [InlineData("(color-index: 256)")]
+        [InlineData("(grid: 0)")]
+        [InlineData("(update: fast)")]
+        [InlineData("(scripting: enabled)")]
+        [InlineData("(inverted-colors: inverted)")]
+        [InlineData("(overflow-block: scroll)")]
+        [InlineData("(overflow-inline: scroll)")]
+        [InlineData("(prefers-reduced-data: reduce)")]
+        [InlineData("(prefers-reduced-transparency: reduce)")]
+        [InlineData("(min-height: 1px)")]
+        [InlineData("(max-device-height: 1px)")]
+        [InlineData("(device-aspect-ratio: 1/1)")]
+        public void RealMediaFeaturesTheRendererCannotAnswer_FailClosed(string condition)
+        {
+            string svg =
+                "<svg width='40' height='10'><style>" +
+                "rect { fill: blue }" +
+                $"@media {condition} {{ rect {{ fill: lime }} }}" +
+                "</style><rect width='40' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+            Assert.Contains(
+                result.Warnings,
+                warning => warning.Contains("media query feature", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("print")]
+        [InlineData("speech")]
+        [InlineData("not all")]
+        public void UndeterminableMediaTypes_FailClosed(string condition)
+        {
+            string svg =
+                "<svg width='40' height='10'><style>" +
+                "rect { fill: blue }" +
+                $"@media {condition} {{ rect {{ fill: lime }} }}" +
+                "</style><rect width='40' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            if (condition == "not all")
+            {
+                Assert.True(result.Success, result.ErrorMessage);
+                Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+                Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(20, 5));
+                return;
+            }
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+            Assert.Contains(
+                result.Warnings,
+                warning => warning.Contains("media query type", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("(unknown-feature: 1)")]
+        [InlineData("(totally-made-up: yes)")]
+        [InlineData("(min-width: 50%)")]
+        [InlineData("(max-width: 50)")]
+        [InlineData("(min-width: bogus)")]
+        [InlineData("(prefers-color-scheme:)")]
+        public void InertMediaConditions_StayNonApplicableWithoutFailingClosed(string condition)
+        {
+            string svg =
+                "<svg width='40' height='10'><style>" +
+                "rect { fill: blue }" +
+                $"@media {condition} {{ rect {{ fill: lime }} }}" +
+                "</style><rect width='40' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Empty(result.FallbackReasonCodes);
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(20, 5));
+        }
+
+        [Theory]
+        [InlineData("screen, (prefers-color-scheme: dark)", "lime")]
+        [InlineData("(prefers-color-scheme: dark), screen", "lime")]
+        [InlineData("(prefers-color-scheme: dark) or (min-width: 10px)", "lime")]
+        [InlineData("(min-width: 10px) or (prefers-color-scheme: dark)", "lime")]
+        [InlineData("(prefers-color-scheme: dark) and (min-width: 500px)", "blue")]
+        [InlineData("(min-width: 500px) and (prefers-color-scheme: dark)", "blue")]
+        public void UndeterminedMediaFeature_OnlyFailsClosedWhenItDecidesTheCondition(
+            string condition, string expected)
+        {
+            string svg =
+                "<svg width='40' height='10'><style>" +
+                "rect { fill: blue }" +
+                $"@media {condition} {{ rect {{ fill: lime }} }}" +
+                "</style><rect width='40' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Empty(result.FallbackReasonCodes);
+            Assert.Equal(ExpectedColor(expected), result.Bitmap.GetPixel(20, 5));
+        }
+
+        [Fact]
+        public void NegatedUndeterminedMediaFeature_FailsClosed()
+        {
+            const string svg =
+                "<svg width='40' height='10'><style>" +
+                "rect { fill: blue }" +
+                "@media not (prefers-color-scheme: dark) { rect { fill: lime } }" +
+                "</style><rect width='40' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void StyleMediaAttribute_UndeterminedFeature_FailsClosed()
+        {
+            const string svg =
+                "<svg width='40' height='10'>" +
+                "<style media='(prefers-color-scheme: dark)'>rect { fill: lime }</style>" +
+                "<rect width='40' height='10' fill='blue'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void StyleMediaAttribute_AcceptsNotAndOrConditions()
+        {
+            const string svg =
+                "<svg width='40' height='10'>" +
+                "<style>rect { fill: blue }</style>" +
+                "<style media='not (min-width: 50px)'>rect { fill: lime }</style>" +
+                "<style media='(min-width: 30px) and (max-width: 50px)'>rect { stroke: red }</style>" +
+                "<rect width='40' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(20, 5));
+        }
+
+        [Fact]
+        public void NotAllMediaCondition_StaysNonApplicable()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "@media not all { rect { fill: orange } }" +
+                "rect { fill: red }" +
+                "</style><rect width='20' height='20'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Empty(result.FallbackReasonCodes);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Theory]
+        [InlineData("(min-width: 50%)")]
+        [InlineData("(max-width: 50%)")]
+        [InlineData("(min-width: 50)")]
+        [InlineData("(min-device-width: 50%)")]
+        [InlineData("(min-width: bogus)")]
+        public void InvalidMediaFeatureLengths_StayNonApplicable(string condition)
+        {
+            string svg =
+                "<svg width='40' height='10'><style>" +
+                "rect { fill: blue }" +
+                $"@media {condition} {{ rect {{ fill: lime }} }}" +
+                "</style><rect width='40' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Empty(result.FallbackReasonCodes);
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(20, 5));
+        }
+
+        [Fact]
+        public void EmptyMediaQueryList_IsDroppedLikeEveryEngineDropsIt()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "@media { rect { fill: lime } }" +
+                "rect { fill: red }" +
+                "</style><rect width='20' height='20'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void StyleMediaAttributePrint_FailsClosed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style media='print'>rect { fill: lime }</style>" +
+                "<rect width='20' height='20' fill='red'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("@scope (.a) { rect { fill: lime } }")]
+        [InlineData("@scope (.a) to (.b) { rect { fill: lime } }")]
+        [InlineData("@scope { rect { fill: lime } }")]
+        [InlineData("@scope (.a) { @media screen { rect { fill: lime } } }")]
+        public void ScopeRule_FailsClosedBecauseEveryEngineAppliesIt(string rule)
+        {
+            string svg =
+                "<svg width='20' height='20'><style>" +
+                rule +
+                "</style><rect class='a' width='20' height='20'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void DynamicPseudoClassRules_StayNonMatchingInsteadOfDiscardingTheDocument()
+        {
+            const string svg =
+                "<svg width='60' height='20'><style>" +
+                "text { fill: black }" +
+                ":link { fill: rgb(51, 0, 255) }" +
+                ":visited { fill: purple }" +
+                ":hover { fill: rgb(255, 140, 0) }" +
+                "rect:hover { fill: none }" +
+                "#act:focus { stroke: red }" +
+                "text:active { text-decoration: underline; fill: red }" +
+                "</style><text id='act' x='2' y='14' font-size='12'>act</text>" +
+                "<rect x='30' y='2' width='16' height='16' fill='red'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Empty(result.FallbackReasonCodes);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(38, 10));
+        }
+
+        [Fact]
+        public void TargetRule_LeavesTheBaseStateUntouched()
+        {
+            const string svg =
+                "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'>" +
+                "<style>:target { fill: green }</style>" +
+                "<rect id='rect' width='20' height='20'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Black, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void DynamicPseudoClassRule_DoesNotSuppressBaseStateDeclarations()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                ":hover { text-decoration: underline } rect { fill: red }" +
+                "</style><rect width='20' height='20'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void NotDynamicPseudoClass_MatchesInTheStaticBaseState()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>rect:not(:hover) { fill: lime }</style>" +
+                "<rect width='20' height='20'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Theory]
+        [InlineData("rect:has(circle) { fill: lime }")]
+        [InlineData("rect:dir(rtl) { fill: lime }")]
+        [InlineData("rect:nth-child(2n of circle:dir(rtl)) { fill: lime }")]
+        [InlineData("rect:nth-child(nonsense) { fill: lime }")]
+        [InlineData("rect:nth-of-type(2n of circle) { fill: lime }")]
+        public void UnsupportedPseudoClasses_StillFailClosed(string rule)
+        {
+            string svg =
+                "<svg width='20' height='20'><style>" + rule +
+                "</style><rect width='20' height='20' fill='blue'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void PseudoElementRule_IsNotApplicableWithoutDiscardingTheDocument()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "rect { fill: black } rect::first-letter { fill: green }" +
+                "circle::before { fill: green }" +
+                "</style><rect width='20' height='20'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Black, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void LangRule_MatchesXmlLangRangesInTheStaticTree()
+        {
+            const string svg =
+                "<svg width='50' height='10'><style>" +
+                ":lang(en) { fill: green }" +
+                ":lang(fr) { fill: blue }" +
+                ":lang(fr-ca) { fill: purple }" +
+                "</style><rect width='10' height='10' xml:lang='en'/>" +
+                "<rect x='10' width='10' height='10' xml:lang='fr'/>" +
+                "<rect x='20' width='10' height='10' xml:lang='fr-CA'/>" +
+                "<rect x='30' width='10' height='10' xml:lang='de'/>" +
+                "<rect x='40' width='10' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(5, 5));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(15, 5));
+            Assert.Equal(SKColors.Purple, result.Bitmap.GetPixel(25, 5));
+            Assert.Equal(SKColors.Black, result.Bitmap.GetPixel(35, 5));
+            Assert.Equal(SKColors.Black, result.Bitmap.GetPixel(45, 5));
+        }
+
+        [Fact]
+        public void LangRule_WithoutMatchingLanguage_LeavesTheDocumentRenderable()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>tspan:lang(ja) { fill: lime }</style>" +
+                "<text><tspan x='2' y='16' font-size='12'>Quick</tspan></text>" +
+                "<rect width='20' height='20' fill='blue'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void ScopePseudoClass_MatchesTheDocumentRootInADocumentStylesheet()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "g rect { fill: red } :scope { fill: lime }" +
+                "</style><g><rect width='10' height='20'/><circle cx='15' cy='10' r='4'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Empty(result.FallbackReasonCodes);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(5, 10));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(15, 10));
+        }
+
+        [Fact]
+        public void ScopePseudoClass_DoesNotMatchDescendants()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                ":scope { fill: lime } g { fill: red }" +
+                "</style><g><rect width='20' height='20'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void ScopePseudoClass_ComposesWithADescendantCombinator()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "g { fill: red } :scope g { fill: lime }" +
+                "</style><g><rect width='20' height='20'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Theory]
+        [InlineData("#target", "lime")]
+        [InlineData(":where(.hit)", "red")]
+        [InlineData(":where(#target)", "red")]
+        [InlineData(":is(.hit)", "red")]
+        [InlineData(":not(.miss)", "red")]
+        [InlineData(":is(.hit, #target)", "lime")]
+        [InlineData("rect", "red")]
+        public void FunctionalPseudoClassSpecificity_FollowsSelectors4(string rule, string expected)
+        {
+            // The competing rule is always the last declaration in the sheet, so each
+            // case is decided by specificity alone and never by source order.
+            const string source =
+                "<svg width='20' height='10'><style>{0} {{ fill: lime }} .hit {{ fill: red }}</style>" +
+                "<rect id='target' class='hit' width='20' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(string.Format(source, rule));
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(ExpectedColor(expected), result.Bitmap.GetPixel(10, 5));
+        }
+
+        [Fact]
+        public void UseShadowDescendantMatching_StopsAtTheClonedUseRoot()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "g rect { fill: lime } rect { fill: red }" +
+                "</style><g><defs><rect id='shape' width='20' height='20'/></defs>" +
+                "<use href='#shape'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void UseShadowDescendantMatching_StillAppliesBelowTheClonedUseRoot()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "g rect { fill: lime }" +
+                "</style><g><defs><g id='shape'><rect width='20' height='20'/></g></defs>" +
+                "<use href='#shape'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void UseShadowCascade_StaysCompleteUpToTheRootBudget()
+        {
+            string svg = BuildUseShadowDocument(64);
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Empty(result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void UseShadowCascadeRootBudgetOverflow_FailsClosed()
+        {
+            string svg = BuildUseShadowDocument(65);
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("admission-budget", result.FallbackReasonCodes);
+            Assert.Contains(
+                result.Warnings,
+                warning => warning.Contains("root budget (64) exceeded", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void UseShadowCascadeElementBudgetOverflow_FailsClosed()
+        {
+            const int perTarget = 17000;
+            var builder = new StringBuilder();
+            builder.Append(
+                "<svg width='20' height='20'><style>defs > g > rect { fill: blue }</style><defs>");
+            for (int group = 0; group < 2; group++)
+            {
+                builder.Append($"<g id='t{group}'>");
+                for (int i = 0; i < perTarget; i++) builder.Append("<rect width='1' height='1'/>");
+                builder.Append("</g>");
+            }
+            builder.Append("</defs><use href='#t0' display='none'/><use href='#t1'/></svg>");
+
+            var limits = SvgRenderLimits.Default;
+            limits.MaxRenderTimeMs = 8000;
+
+            using var result = new FenSvgRenderer().Render(builder.ToString(), limits);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("admission-budget", result.FallbackReasonCodes);
+            Assert.Contains(
+                result.Warnings,
+                warning => warning.Contains("element budget (32768) exceeded", StringComparison.Ordinal));
+        }
+
+        private static string BuildUseShadowDocument(int targets)
+        {
+            var builder = new StringBuilder();
+            builder.Append(
+                "<svg width='20' height='20'><style>defs > g > rect { fill: blue }</style><defs>");
+            for (int i = 0; i < targets; i++)
+            {
+                builder.Append($"<g id='t{i}'><rect width='2' height='2'/></g>");
+            }
+            builder.Append("</defs>");
+            for (int i = 0; i < targets; i++)
+            {
+                builder.Append($"<use href='#t{i}'/>");
+            }
+            builder.Append("</svg>");
+            return builder.ToString();
+        }
+
+        [Fact]
+        public void NoEffectHintProperties_AreAcceptedWithoutDiscardingTheDocument()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>rect {" +
+                "shape-rendering: geometricPrecision; image-rendering: smooth; " +
+                "text-rendering: optimizeLegibility; color-interpolation-filters: sRGB; " +
+                "enable-background: new; overflow: visible; fill: red }" +
+                "</style><rect width='20' height='20'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Empty(result.FallbackReasonCodes);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Theory]
+        [InlineData("rect { shape-rendering: crispEdges }")]
+        [InlineData("rect { image-rendering: pixelated }")]
+        [InlineData("svg { overflow: bogus }")]
+        [InlineData("marker { overflow: bogus }")]
+        public void HintPropertiesThatChangePixels_StillFailClosed(string rule)
+        {
+            string svg =
+                "<svg width='20' height='20'><defs>" +
+                "<marker id='m' markerWidth='2' markerHeight='2'><rect width='2' height='2'/></marker>" +
+                "</defs><style>" + rule +
+                "</style><rect width='20' height='20' fill='red'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+        }
+
+        [Fact]
+        public void OverflowOutsideViewportElements_IsANoOp()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "rect { overflow: hidden } circle { overflow: scroll }" +
+                "</style><rect width='20' height='20' fill='red'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void BackgroundOnNonViewportElements_IsInert()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "g { background: red } rect { background-color: lime } " +
+                "tspan { background-image: url(#paint) } text { content: 'x' }" +
+                "</style><g><rect width='20' height='20' fill='red'/>" +
+                "<text x='0' y='10'><tspan>plain</tspan></text></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Empty(result.FallbackReasonCodes);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void BackgroundOnAViewportElement_StillFailsClosed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>svg { background-color: red }</style>" +
+                "<rect width='20' height='20' fill='blue'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+            Assert.Contains(result.Warnings, w => w.Contains("background-color", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void BackgroundOnANestedViewport_StillFailsClosed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><svg width='10' height='10' style='background: red'>" +
+                "<rect width='10' height='10' fill='blue'/></svg></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void InertBackgroundWithAnExternalUrl_IsStillRejectedAsAResource()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "rect { background-image: url(https://example.invalid/bg.png) }" +
+                "</style><rect width='20' height='20' fill='blue'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.HadResourceRejection);
+            Assert.Contains("external-resource", result.ResourceRejectionReasonCodes);
+        }
+
+        [Fact]
+        public void ContentOnlyPaintsThroughPseudoElements_SoItStaysInert()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>" +
+                "rect { content: counters(c, '.', decimal); fill: red }" +
+                "rect::before { content: 'x' }" +
+                "</style><rect width='20' height='20'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Theory]
+        [InlineData("font: 18px")]
+        [InlineData("text-decoration: underline")]
+        [InlineData("text-decoration-color: red")]
+        [InlineData("direction: rtl")]
+        [InlineData("writing-mode: tb-rl")]
+        [InlineData("unicode-bidi: bidi-override")]
+        [InlineData("line-spacing: 1.25")]
+        [InlineData("white-space: pre-line")]
+        [InlineData("text-align: center")]
+        [InlineData("inline-size: 320px")]
+        [InlineData("text-orientation: sideways")]
+        [InlineData("shape-inside: url(#s)")]
+        [InlineData("shape-margin: 20px")]
+        [InlineData("shape-padding: 5px")]
+        [InlineData("shape-subtract: circle()")]
+        [InlineData("font-size-adjust: 1")]
+        [InlineData("z-index: 1")]
+        public void VisiblyRenderedProperties_StillFailClosed(string declaration)
+        {
+            string svg =
+                "<svg width='20' height='20'><style>text {" + declaration +
+                "} rect { fill: red }</style><text x='0' y='12' font-size='8'>hi</text>" +
+                "<rect width='20' height='20' fill='blue'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void ClipOverflowOnNestedSvg_KeepsClippingTheViewport()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>svg { overflow: clip }</style>" +
+                "<svg width='10' height='10'><rect width='20' height='20' fill='red'/></svg></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(5, 5));
+            Assert.Equal(0, result.Bitmap.GetPixel(15, 15).Alpha);
+        }
+
+        [Fact]
+        public void CascadePrecedence_SurvivesNonApplicableChains()
+        {
+            const string svg =
+                "<svg width='40' height='10'><style>" +
+                "rect { fill: red }" +
+                ".winner { fill: green }" +
+                "#target:hover { fill: purple }" +
+                "#target::first-letter { fill: purple }" +
+                "</style><rect id='target' class='winner' width='40' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(20, 5));
         }
 
         [Fact]
@@ -939,6 +1929,350 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
         }
 
+        [Theory]
+        [InlineData("bold 24px/1.5 Arial, sans-serif",
+            "font-style: normal; font-weight: bold; font-size: 24px; font-family: Arial, sans-serif")]
+        [InlineData("italic 500 18px serif",
+            "font-style: italic; font-weight: 500; font-size: 18px; font-family: serif")]
+        [InlineData("oblique 20px monospace",
+            "font-style: oblique; font-weight: normal; font-size: 20px; font-family: monospace")]
+        [InlineData("24px serif",
+            "font-style: normal; font-weight: normal; font-size: 24px; font-family: serif")]
+        [InlineData("20px 'My Font', serif",
+            "font-style: normal; font-weight: normal; font-size: 20px; font-family: 'My Font', serif")]
+        [InlineData("normal normal 400 normal 16px/2 sans-serif",
+            "font-style: normal; font-weight: 400; font-size: 16px; font-family: sans-serif")]
+        [InlineData("16PX SERIF",
+            "font-style: normal; font-weight: normal; font-size: 16PX; font-family: SERIF")]
+        public void FontShorthand_PaintsTheSameRunAsTheEquivalentLonghands(
+            string shorthand,
+            string longhands)
+        {
+            AssertSamePixels(
+                TextDocument($"text {{ font: {shorthand} }}"),
+                TextDocument($"text {{ {longhands} }}"));
+        }
+
+        [Theory]
+        [InlineData("12px serif",
+            "font-style: normal; font-weight: normal; font-size: 12px; font-family: serif")]
+        [InlineData("12px/1.4 serif",
+            "font-style: normal; font-weight: normal; font-size: 12px; font-family: serif")]
+        [InlineData("italic 12px serif",
+            "font-style: italic; font-weight: normal; font-size: 12px; font-family: serif")]
+        public void FontShorthand_ResetsOmittedFontSubpropertiesToInitial(
+            string shorthand,
+            string longhands)
+        {
+            AssertSamePixels(
+                TextDocument($"text {{ font-weight: 700; font: {shorthand} }}"),
+                TextDocument($"text {{ {longhands} }}"));
+            AssertDifferentPixels(
+                TextDocument($"text {{ font-weight: 700; font: {shorthand} }}"),
+                TextDocument("text { font-weight: 700; font-size: 12px; font-family: serif }"));
+        }
+
+        [Fact]
+        public void FontShorthand_KeepsDeclarationOrderAgainstLaterLonghands()
+        {
+            AssertSamePixels(
+                TextDocument("text { font: bold 12px serif; font-weight: 300 }"),
+                TextDocument("text { font-size: 12px; font-family: serif; font-weight: 300 }"));
+            AssertSamePixels(
+                TextDocument("text { font-weight: 300; font: bold 12px serif }"),
+                TextDocument("text { font-size: 12px; font-family: serif; font-weight: 700 }"));
+        }
+
+        [Fact]
+        public void FontShorthand_LosesToAHigherSpecificityLonghand()
+        {
+            AssertSamePixels(
+                "<svg width='220' height='40'><style>#lead { font-weight: 300 } " +
+                "text { font: bold 12px serif }</style>" +
+                "<text id='lead' x='4' y='28' fill='lime'>Ag</text></svg>",
+                "<svg width='220' height='40'><style>text { font-size: 12px; " +
+                "font-family: serif; font-weight: 300 }</style>" +
+                "<text id='lead' x='4' y='28' fill='lime'>Ag</text></svg>");
+        }
+
+        [Fact]
+        public void FontShorthand_OverridesAPresentationAttributeOnTheSameElement()
+        {
+            AssertSamePixels(
+                "<svg width='220' height='40'><style>text { font: 12px serif }</style>" +
+                "<text x='4' y='28' fill='lime' font-weight='bold' font-style='italic'>Ag</text></svg>",
+                TextDocument("text { font-size: 12px; font-family: serif; " +
+                             "font-weight: normal; font-style: normal }"));
+        }
+
+        [Theory]
+        [InlineData("18px")]
+        [InlineData("caption")]
+        [InlineData("menu")]
+        [InlineData("small-caps 18px serif")]
+        [InlineData("expanded 18px serif")]
+        [InlineData("condensed 18px serif")]
+        [InlineData("75% 18px serif")]
+        [InlineData("0.5 18px serif")]
+        [InlineData("oblique 20deg 18px serif")]
+        [InlineData("oblique from-font 18px serif")]
+        [InlineData("calc(10px + 8px) serif")]
+        [InlineData("var(--stack)")]
+        [InlineData("inherit")]
+        [InlineData("italic 18px")]
+        public void FontShorthand_ThatCannotPaintFaithfully_FailsClosed(string shorthand)
+        {
+            using var result = new FenSvgRenderer().Render(TextDocument($"text {{ font: {shorthand} }}"));
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("12foo serif")]
+        [InlineData("12px/ serif")]
+        [InlineData("italic italic 18px serif")]
+        [InlineData("18px Arial sans-serif")]
+        [InlineData("18px 2px serif")]
+        [InlineData("bold bold 18px serif")]
+        [InlineData("18px Arial, , serif")]
+        public void FontShorthand_ThatIsNotValidCss_IsDroppedLikeCssDropsIt(string shorthand)
+        {
+            AssertSamePixels(
+                TextDocument($"text {{ font: {shorthand} }}"),
+                TextDocument("text { fill: lime }"));
+        }
+
+        [Theory]
+        [InlineData("line-height: 2")]
+        [InlineData("line-height: 1.5")]
+        [InlineData("line-height: normal")]
+        [InlineData("line-height: 120%")]
+        [InlineData("line-height: inherit")]
+        [InlineData("font-variant: normal")]
+        [InlineData("font-variant: inherit")]
+        [InlineData("font-stretch: normal")]
+        [InlineData("font-stretch: 100%")]
+        [InlineData("font-size-adjust: none")]
+        public void FontLonghandsWithNoRenderedEffect_KeepTheDocumentRenderable(string declaration)
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='220' height='40'><style>text {" + declaration +
+                "} text { fill: lime }</style><text x='4' y='28'>Ag</text></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(HasPaintedInk(result.Bitmap));
+        }
+
+        [Theory]
+        [InlineData("font-variant: small-caps")]
+        [InlineData("font-stretch: condensed")]
+        [InlineData("font-stretch: 75%")]
+        [InlineData("font-size-adjust: 0.5")]
+        [InlineData("font-size-adjust: from-font")]
+        [InlineData("font-style: oblique 20deg")]
+        [InlineData("font-style: oblique from-font")]
+        [InlineData("font-style: oblique 0.5turn")]
+        [InlineData("font-size: 3ic")]
+        [InlineData("font-size: 2cap")]
+        [InlineData("font-size: 2lh")]
+        [InlineData("letter-spacing: 2lh")]
+        public void FontLonghandsWithAVisibleEffect_FailClosedInsteadOfPaintingTheInheritedValue(
+            string declaration)
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='220' height='40'><style>text {" + declaration +
+                "}</style><text x='4' y='28' font-size='20'>Ag</text></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("700")]
+        [InlineData("normal")]
+        [InlineData("bold")]
+        [InlineData("lighter")]
+        public void FontWeightLonghand_AcceptsTheSpecRangeAndKeywords(string value)
+        {
+            Assert.False(SvgCssCascade.IsDefinitelyInvalid("font-weight", value));
+        }
+
+        [Theory]
+        [InlineData("0")]
+        [InlineData("1001")]
+        [InlineData("-400")]
+        [InlineData("semibold")]
+        [InlineData("bolderer")]
+        public void FontWeightLonghand_RejectsValuesOutsideTheSpecRange(string value)
+        {
+            Assert.True(SvgCssCascade.IsDefinitelyInvalid("font-weight", value));
+        }
+
+        [Theory]
+        [InlineData("text::first-letter")]
+        [InlineData("text::first-line")]
+        [InlineData("text:FIRST-LETTER")]
+        public void PseudoElementOnPaintedText_FailsClosedInsteadOfDroppingTheRule(string selector)
+        {
+            string svg =
+                "<svg width='220' height='40'><style>" + selector +
+                " { fill: lime } rect { fill: red }</style>" +
+                "<text x='4' y='28' font-size='20'>Ag</text>" +
+                "<rect width='220' height='40'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("tspan::first-letter")]
+        [InlineData("tspan::first-line")]
+        public void PseudoElementOnAPaintedTspan_FailsClosed(string selector)
+        {
+            string svg =
+                "<svg width='220' height='40'><style>" + selector +
+                " { fill: lime }</style><text x='4' y='28' font-size='20'>" +
+                "<tspan>Ag</tspan></text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void PseudoElementOnAPaintedTextPath_FailsClosed()
+        {
+            const string svg =
+                "<svg width='220' height='60'><style>textPath::first-letter { fill: lime }" +
+                "</style><defs><path id='p' d='M4 40 H200'/></defs>" +
+                "<text font-size='20'><textPath href='#p'>Ag</textPath></text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("rect::first-letter")]
+        [InlineData("circle::first-line")]
+        [InlineData("g::first-letter")]
+        [InlineData("text::before")]
+        [InlineData("text::after")]
+        public void PseudoElementWithoutPaintedText_StaysInert(string selector)
+        {
+            string svg =
+                "<svg width='40' height='40'><style>" + selector +
+                " { fill: lime }</style><rect width='40' height='40' fill='red'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(20, 20));
+        }
+
+        [Theory]
+        [InlineData("text { letter-spacing: 2ch }", "text { font-size: 20px; letter-spacing: 1em }")]
+        [InlineData("text { font-size: 4ch }", "text { font-size: 2em }")]
+        [InlineData("text { stroke-width: 4ch }", "text { stroke-width: 2em }")]
+        [InlineData("text { stroke-dasharray: 4ch 8ch }", "text { stroke-dasharray: 2em 4em }")]
+        public void ChUnit_ResolvesLikeTheEquivalentEmLength(string chRule, string emRule)
+        {
+            string Template(string rule) =>
+                "<svg width='220' height='40'><style>text { fill: lime; " + rule +
+                "}</style><path d='M4 30 H160' stroke='black' stroke-width='2'/>" +
+                "<text x='4' y='28' font-size='20'>Ag</text></svg>";
+
+            AssertSamePixels(Template(chRule), Template(emRule));
+        }
+
+        [Fact]
+        public void ChUnit_PositionsTextLikeTheEquivalentEmOffset()
+        {
+            string Template(string x) =>
+                "<svg width='220' height='40'><text x='" + x +
+                "' y='28' font-size='20' fill='lime'>Ag</text></svg>";
+
+            AssertSamePixels(Template("2ch"), Template("1em"));
+        }
+
+        [Fact]
+        public void RemUnit_StaysCssOnlyBecauseTheTextModelHasNoRootFontContext()
+        {
+            using var shorthand = new FenSvgRenderer().Render(
+                "<svg width='220' height='40'><style>text { font: 1rem serif }</style>" +
+                "<text x='4' y='28'>Ag</text></svg>");
+
+            AssertFailsClosed(shorthand);
+
+            using var longhand = new FenSvgRenderer().Render(
+                "<svg width='220' height='40'><style>text { font-size: 1rem }</style>" +
+                "<text x='4' y='28'>Ag</text></svg>");
+
+            AssertFailsClosed(longhand);
+
+            using var geometry = new FenSvgRenderer().Render(
+                "<svg width='220' height='40'><style>rect { width: 2rem; height: 1rem }" +
+                "</style><rect width='10' height='10' fill='lime'/></svg>");
+
+            Assert.True(geometry.Success, geometry.ErrorMessage);
+            Assert.False(geometry.RequiresFallback, string.Join("; ", geometry.Warnings));
+        }
+
+        private static string TextDocument(string rule) =>
+            "<svg width='220' height='40'><style>" + rule +
+            "</style><text x='4' y='28' font-size='20' fill='lime'>Ag</text></svg>";
+
+        private static bool HasPaintedInk(SKBitmap bitmap)
+        {
+            for (int y = 0; y < bitmap.Height; y++)
+            for (int x = 0; x < bitmap.Width; x++)
+            {
+                if (bitmap.GetPixel(x, y).Alpha > 0) return true;
+            }
+            return false;
+        }
+
+        private static void AssertSamePixels(string firstSvg, string secondSvg)
+        {
+            using var first = new FenSvgRenderer().Render(firstSvg);
+            using var second = new FenSvgRenderer().Render(secondSvg);
+            Assert.True(first.Success, first.ErrorMessage);
+            Assert.False(first.RequiresFallback, string.Join("; ", first.Warnings));
+            Assert.True(second.Success, second.ErrorMessage);
+            Assert.False(second.RequiresFallback, string.Join("; ", second.Warnings));
+            Assert.Equal(second.Bitmap.Width, first.Bitmap.Width);
+            Assert.Equal(second.Bitmap.Height, first.Bitmap.Height);
+            for (int y = 0; y < first.Bitmap.Height; y++)
+            for (int x = 0; x < first.Bitmap.Width; x++)
+                Assert.Equal(second.Bitmap.GetPixel(x, y), first.Bitmap.GetPixel(x, y));
+        }
+
+        private static void AssertDifferentPixels(string firstSvg, string secondSvg)
+        {
+            using var first = new FenSvgRenderer().Render(firstSvg);
+            using var second = new FenSvgRenderer().Render(secondSvg);
+            Assert.True(first.Success, first.ErrorMessage);
+            Assert.False(first.RequiresFallback, string.Join("; ", first.Warnings));
+            Assert.True(second.Success, second.ErrorMessage);
+            bool identical = first.Bitmap.Width == second.Bitmap.Width &&
+                             first.Bitmap.Height == second.Bitmap.Height;
+            for (int y = 0; y < first.Bitmap.Height && identical; y++)
+            for (int x = 0; x < first.Bitmap.Width; x++)
+            {
+                if (first.Bitmap.GetPixel(x, y) == second.Bitmap.GetPixel(x, y)) continue;
+                identical = false;
+                break;
+            }
+            Assert.False(identical, "expected the two documents to paint different pixels");
+        }
+
         private static void AssertFailsClosed(SvgRenderResult result)
         {
             Assert.False(result.Success, result.ErrorMessage);
@@ -950,5 +2284,15 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
             Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
+
+        private static SKColor ExpectedColor(string name) => name switch
+        {
+            "lime" => SKColors.Lime,
+            "blue" => SKColors.Blue,
+            "red" => SKColors.Red,
+            "green" => SKColors.Green,
+            _ => throw new ArgumentOutOfRangeException(nameof(name), name, null)
+        };
     }
 }
+

@@ -152,6 +152,11 @@ namespace FenBrowser.Tests.Svg
                 .Probe(27, 25, SKColors.Purple)
                 .Probe(1, 1, SKColors.Transparent);
 
+            foreach (Case useCase in UseInheritanceCases())
+            {
+                yield return useCase;
+            }
+
             yield return new Case("clip-path",
                 "<svg width='30' height='20'><clipPath id='c'><rect width='15' height='20'/></clipPath>" +
                 "<rect width='30' height='20' fill='red' clip-path='url(#c)'/></svg>",
@@ -190,6 +195,72 @@ namespace FenBrowser.Tests.Svg
                 "<svg width='40' height='20'><text x='2' y='14' font-size='12'>Hi</text></svg>",
                 40, 20);
         }
+
+        private static IEnumerable<Case> UseInheritanceCases()
+        {
+            yield return UseInheritanceCase(
+                "use-inheritance-ancestor-selectors",
+                "use rect", ".container rect");
+
+            yield return UseInheritanceCase(
+                "use-inheritance-nth-child-of",
+                ":nth-child(n of use rect)", ":nth-child(n of .container rect)");
+
+            yield return UseInheritanceCase(
+                "use-inheritance-nth-last-child-of",
+                ":nth-last-child(n of use rect)", ":nth-last-child(n of .container rect)");
+
+            yield return new Case("use-inheritance-source-tree-instance-kept",
+                "<svg width='90' height='30'><style>" +
+                ".container rect { fill: red; stroke: red } " +
+                "rect { stroke-width: 4px; stroke: green } " +
+                "</style><g class='container'>" +
+                "<rect id='r' width='20' height='20'/>" +
+                "</g><use href='#r' x='40' style='fill: green'/>" +
+                "<use href='#r' x='60' style='fill: green'/></svg>",
+                90, 30)
+                .Probe(10, 10, SKColors.Red)
+                .Probe(1, 10, SKColors.Red)
+                .Probe(50, 10, SvgNamedGreen)
+                .Probe(41, 10, SvgNamedGreen)
+                .Probe(70, 10, SvgNamedGreen)
+                .Probe(61, 10, SvgNamedGreen)
+                .Probe(30, 10, SKColors.Transparent);
+
+            yield return new Case("use-inheritance-nested-use",
+                "<svg width='40' height='40'><style>" +
+                ".container rect { fill: red } rect { fill: green }" +
+                "</style><defs><g class='container'>" +
+                "<rect id='inner' width='10' height='10'/>" +
+                "<g id='mid'><use href='#inner' x='10' y='10'/></g>" +
+                "</g></defs><use href='#mid'/></svg>",
+                40, 40)
+                .Probe(15, 15, SvgNamedGreen)
+                .Probe(5, 5, SKColors.Transparent);
+        }
+
+        private static Case UseInheritanceCase(string name, string hostRule, string containerRule)
+        {
+            string svg =
+                "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'>" +
+                "<style>" +
+                hostRule + " { stroke: red } " +
+                containerRule + " { fill: red; stroke: red } " +
+                "rect { stroke-width: 40px; stroke: green } " +
+                "rect:root { opacity: 0 } " +
+                "</style><defs><g class='container'>" +
+                "<rect id='r' x='20' y='20' width='60' height='60' style='fill-opacity:1'/>" +
+                "</g></defs>" +
+                "<g><use href='#r' style='fill: green; fill-opacity:0'/></g></svg>";
+
+            return new Case(name, svg, 100, 100, minCoverage: 0.99)
+                .Probe(50, 50, SvgNamedGreen)
+                .Probe(10, 50, SvgNamedGreen)
+                .Probe(50, 10, SvgNamedGreen)
+                .Probe(1, 1, SvgNamedGreen);
+        }
+
+        private static readonly SKColor SvgNamedGreen = new(0x00, 0x80, 0x00);
 
         private static string ImageCase()
         {
