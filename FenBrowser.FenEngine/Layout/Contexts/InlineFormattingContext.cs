@@ -72,6 +72,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CssComputed, StyleFontInfo> s_styleFontCache = new();
 
+        // Line height and baseline come from the resolved face, which changes when an
+        // @font-face file finishes loading.
+        static InlineFormattingContext()
+        {
+            FenBrowser.FenEngine.Rendering.FontRegistry.FontLoaded += _ => s_styleFontCache.Clear();
+        }
+
         // Flatten inline tree to get all text boxes and atomic inlines in document order
         private void FlattenInlineChildren(LayoutBox box, List<LayoutBox> result)
         {
