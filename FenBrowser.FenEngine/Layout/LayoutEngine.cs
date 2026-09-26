@@ -628,7 +628,23 @@ namespace FenBrowser.FenEngine.Layout
                     contentOrigin.Top + relativeStatic.Y);
             }
 
-            LayoutPositioningLogic.ResolvePositionedBox(
+            var laidOutSize = box.Geometry.ContentBox.Size;
+            ResolveFinal();
+
+            // The flow pass solved this box against its parent, which is not its containing
+            // block unless the parent is positioned. When the real containing block changes
+            // the box's size, its contents were laid out at the wrong one: #container on
+            // w3schools' tryit page (absolute under a static body, top:44px; bottom:0) kept
+            // its panes at the height the flow pass derived from body's.
+            var solvedSize = box.Geometry.ContentBox.Size;
+            if (Math.Abs(solvedSize.Width - laidOutSize.Width) > 0.5f ||
+                Math.Abs(solvedSize.Height - laidOutSize.Height) > 0.5f)
+            {
+                LayoutPositioningLogic.LayoutAtSolvedSize(box, cbRect, state);
+                ResolveFinal();
+            }
+
+            void ResolveFinal() => LayoutPositioningLogic.ResolvePositionedBox(
                 box,
                 cbBox ?? box.Parent,
                 cbBox?.Geometry ?? box.Parent?.Geometry,

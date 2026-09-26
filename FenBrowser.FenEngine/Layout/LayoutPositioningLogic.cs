@@ -130,6 +130,84 @@ namespace FenBrowser.FenEngine.Layout
             }
         }
 
+        /// <summary>
+        /// Lays an out-of-flow box's contents out at the size <see cref="ResolvePositionedBox"/>
+        /// solved for it (CSS 2.2 §10.3.7 / §10.6.4), against its real containing block.
+        /// </summary>
+        /// <remarks>
+        /// The solved width is always the used width, so it is imposed on the box; the solved
+        /// height only when it is definite (a specified height, or both top and bottom set),
+        /// because an auto height that follows the content leaves descendants' percentage
+        /// heights behaving as auto (§10.5). Handing the box its own size as the containing
+        /// block instead applied a percentage or calc() size twice: w3schools' tryit
+        /// container, `width: calc(100% - 250px)` on a 1280px viewport, came out 1030px wide
+        /// with its two 50% panes laid out in 780px.
+        /// </remarks>
+        internal static void LayoutAtSolvedSize(LayoutBox box, SKRect containingBlockRect, LayoutState outer)
+        {
+            var style = box?.ComputedStyle;
+            if (style == null || box.Geometry == null)
+            {
+                return;
+            }
+
+            var geometry = box.Geometry;
+            float width = Math.Max(0f, geometry.ContentBox.Width);
+            float height = Math.Max(0f, geometry.ContentBox.Height);
+            var state = new LayoutState(
+                new SKSize(Math.Max(width, geometry.MarginBox.Width), Math.Max(height, geometry.MarginBox.Height)),
+                Math.Max(0f, containingBlockRect.Width),
+                Math.Max(0f, containingBlockRect.Height),
+                outer.ViewportWidth,
+                outer.ViewportHeight,
+                outer.Deadline);
+            state.IsForced = true;
+
+            bool borderBox = string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase);
+            float horizontalExtras = borderBox
+                ? (float)(style.Padding.Left + style.Padding.Right + style.BorderThickness.Left + style.BorderThickness.Right)
+                : 0f;
+            float verticalExtras = borderBox
+                ? (float)(style.Padding.Top + style.Padding.Bottom + style.BorderThickness.Top + style.BorderThickness.Bottom)
+                : 0f;
+            bool heightIsDefinite = style.Height.HasValue || style.HeightPercent.HasValue ||
+                                    !string.IsNullOrEmpty(style.HeightExpression) ||
+                                    (!IsAutoInset(style, "top") && !IsAutoInset(style, "bottom"));
+
+            var oldWidth = style.Width;
+            var oldWidthPercent = style.WidthPercent;
+            var oldWidthExpression = style.WidthExpression;
+            var oldHeight = style.Height;
+            var oldHeightPercent = style.HeightPercent;
+            var oldHeightExpression = style.HeightExpression;
+
+            state.ForcedWidth = width;
+            style.Width = width + horizontalExtras;
+            style.WidthPercent = null;
+            style.WidthExpression = null;
+            if (heightIsDefinite)
+            {
+                state.ForcedHeight = height;
+                style.Height = height + verticalExtras;
+                style.HeightPercent = null;
+                style.HeightExpression = null;
+            }
+
+            try
+            {
+                FormattingContext.Resolve(box).Layout(box, state);
+            }
+            finally
+            {
+                style.Width = oldWidth;
+                style.WidthPercent = oldWidthPercent;
+                style.WidthExpression = oldWidthExpression;
+                style.Height = oldHeight;
+                style.HeightPercent = oldHeightPercent;
+                style.HeightExpression = oldHeightExpression;
+            }
+        }
+
         private static AbsoluteLayoutResult SolvePositioned(
             LayoutBox box,
             CssComputed style,

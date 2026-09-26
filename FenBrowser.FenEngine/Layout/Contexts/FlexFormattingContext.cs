@@ -1153,13 +1153,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry, state);
 
-                float resolvedWidth = Math.Max(0f, oof.Geometry.ContentBox.Width);
-                float resolvedHeight = Math.Max(0f, oof.Geometry.ContentBox.Height);
-                var childState = state.Clone();
-                childState.AvailableSize = new SKSize(resolvedWidth, resolvedHeight);
-                childState.ContainingBlockWidth = resolvedWidth;
-                childState.ContainingBlockHeight = resolvedHeight;
-                context.Layout(oof, childState);
+                LayoutPositioningLogic.LayoutAtSolvedSize(oof, container.Geometry.PaddingBox, state);
 
                 LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry, state);
             }
