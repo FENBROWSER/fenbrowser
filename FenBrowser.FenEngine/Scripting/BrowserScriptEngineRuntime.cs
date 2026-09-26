@@ -2097,6 +2097,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return ConvertFenJsValue(rawResult);
     }
 
+    private sealed class FenJsSessionResetException(string message) : InvalidOperationException(message);
+
     private JsValue EvaluateWithFenJsRaw(string script)
     {
         // Snapshot the session generation at dispatch time. If a navigation
@@ -2115,7 +2117,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     if (dispatchGeneration != _fenJsSessionGeneration ||
                         _compiler == null || _interpreter == null)
                     {
-                        throw new InvalidOperationException(
+                        throw new FenJsSessionResetException(
                             "[FenJsBridge] JS session was reset during evaluation dispatch " +
                             $"(dispatchGen={dispatchGeneration} currentGen={_fenJsSessionGeneration} " +
                             $"_compiler={_compiler != null} _interpreter={_interpreter != null}). " +
@@ -2157,10 +2159,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 }
             });
         }
-        catch (InvalidOperationException ex)
+        catch (FenJsSessionResetException ex)
         {
-            // Session-reset InvalidOperationException is expected after async
-            // navigation â€” surface it cleanly without a stack trace.
+            // Expected after async navigation: surface it cleanly without a stack trace.
             LogScriptLoading(
                 "ScriptEvaluationSkipped",
                 LogSeverity.Warn,
@@ -2168,6 +2169,24 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 new Dictionary<string, object>
                 {
                     ["scriptSample"] = TruncateForLog(script, 160),
+                    ["error"] = ex.Message
+                });
+            return JsValue.Undefined;
+        }
+        catch (InvalidOperationException ex)
+        {
+            // A script the compiler or verifier rejected. The page carries on with its
+            // next script as before, but this is an engine fault, not a navigation: it
+            // used to share the session-reset message above, which hid a compiler bug
+            // that dropped w3schools' resize-handler script.
+            LogScriptLoading(
+                "ScriptEvaluationInfrastructureFailed",
+                LogSeverity.Error,
+                $"[FenJsBridge] EvaluateWithFenJsRaw rejected script: {ex.Message}",
+                new Dictionary<string, object>
+                {
+                    ["scriptSample"] = TruncateForLog(script, 160),
+                    ["errorType"] = ex.GetType().Name,
                     ["error"] = ex.Message
                 });
             return JsValue.Undefined;
