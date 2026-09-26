@@ -16336,6 +16336,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         ResolveComputedInsets(element, cs, props);
+        ResolveComputedSizes(element, props);
 
         // CSSOM §6.7.3: every property is readable both as its dashed name
         // (getPropertyValue / bracket access) and as the camel-cased IDL
