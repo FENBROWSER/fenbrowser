@@ -483,11 +483,14 @@ namespace FenBrowser.FenEngine.Svg
         private const int MaxForeignObjectSubtreeNodes = 4096;
 
         /// <summary>
-        /// Element names a foreignObject subtree may contain. The set mirrors the
-        /// draw dispatch above: content the walk can already render unchanged, and
-        /// referenced-only or metadata content it never paints inline. Anything
-        /// outside it - XHTML, unknown SVG, 'animation' - is refused, so the
-        /// diagnostic names the actual blocker instead of a generic one.
+        /// Element names a foreignObject subtree may contain without naming a
+        /// specific blocker. The set mirrors the draw dispatch above - graphics
+        /// elements, containers, and referenced-only or metadata content - but it is
+        /// a diagnostic whitelist, not a renderable set: none of it is painted inside
+        /// a foreignObject, because the whole viewport is refused for want of box
+        /// layout. Anything outside it - XHTML, a foreign namespace, unknown SVG,
+        /// 'animation' - lets the refusal name the actual element rather than
+        /// falling back to the generic reason.
         /// </summary>
         private static readonly HashSet<string> ForeignObjectKnownNames = new(StringComparer.Ordinal)
         {
@@ -514,17 +517,30 @@ namespace FenBrowser.FenEngine.Svg
         /// document needs no reason code.
         ///
         /// A viewport with area is refused, and the refusal is structural rather than
-        /// a missing feature. The bounded parse records character data only for
-        /// text/tspan/textPath/a (SvgXmlParser.IsCharacterDataContainer), so a
-        /// foreignObject's own text nodes are absent from the tree and cannot be
-        /// proven absent - the tree is not a faithful view of the content. A browser
-        /// lays a bare text node out as an anonymous HTML block inside the viewport,
-        /// so drawing the element children while that text is invisible would report
-        /// Success over a browser-different frame. Until the parse models the content,
-        /// the sound answer is to paint nothing.
+        /// a missing feature. A foreignObject's content is laid out as a foreign
+        /// namespace: element content needs XHTML box layout, and a bare text node
+        /// becomes an anonymous block inside the viewport. This engine has no box
+        /// layout for either, so no subtree can be painted and Success would report a
+        /// frame a browser does not produce. The refusal therefore does not rest on
+        /// what the bounded parse happened to record: it holds for a viewport with
+        /// area whether or not the tree faithfully carries the content.
+        ///
+        /// TryDescribeForeignObjectBlocker only refines the diagnostic by naming the
+        /// first missing capability it can see. A clean scan is not a licence to
+        /// paint, and a named blocker is not what makes the refusal sound.
         /// The canvas and inherited style are part of the uniform draw-handler
         /// contract the dispatch calls every case through; the certified case paints
         /// nothing and the refused case never reaches the canvas.
+        ///
+        /// This decision governs only the foreignObjects the walk is reached for, so
+        /// it is not a substitute for the parse-time gate in
+        /// SvgFeatureSupport.FallbackElements. A paintable foreignObject can be
+        /// skipped before it gets here - DrawSwitch does not offer 'foreignObject' as
+        /// a selectable branch, a requiredExtensions branch is dropped without a
+        /// reason, and the render-depth and use-chain budgets warn rather than
+        /// refuse. Any removal of that gate has to close those paths first, or
+        /// struct/reftests/requiredextensions-xhtml.tentative.svg paints a red
+        /// fallback rect where a browser paints green.
         /// </summary>
         private void DrawForeignObject(
             SvgElement el,
@@ -545,7 +561,7 @@ namespace FenBrowser.FenEngine.Svg
             if (!TryDescribeForeignObjectBlocker(el, out string blocker))
             {
                 _report.RequireFallback(
-                    "SVG foreignObject viewport content is not modelled by the bounded parse");
+                    "SVG foreignObject content requires XHTML box layout");
                 return;
             }
             _report.RequireFallback($"SVG foreignObject content {blocker} requires compatibility fallback");

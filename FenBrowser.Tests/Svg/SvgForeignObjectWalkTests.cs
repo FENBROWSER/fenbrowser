@@ -11,8 +11,14 @@ namespace FenBrowser.Tests.Svg
     /// <summary>
     /// The foreignObject decision in the draw walk. A foreignObject establishes a
     /// viewport from its x/y/width/height geometry; the walk certifies the one case
-    /// it can prove paints nothing and refuses every viewport with area, because the
-    /// bounded parse does not record a foreignObject's character data.
+    /// it can prove paints nothing - a viewport with no area - and refuses every
+    /// viewport with area, because a foreignObject's content is laid out as a
+    /// foreign namespace and this engine has no box layout for it.
+    ///
+    /// These tests also pin the coupling to the parse-time gate. The walk only
+    /// governs the foreignObjects it is reached for, and several skip paths can pass
+    /// a paintable one by, so a non-rendering foreignObject is still condemned at
+    /// parse time. The gate must not be removed on the strength of the walk alone.
     /// </summary>
     public sealed class SvgForeignObjectWalkTests
     {
@@ -22,7 +28,7 @@ namespace FenBrowser.Tests.Svg
         private const string ParseGateReason =
             "SVG feature 'foreignObject' requires compatibility fallback";
         private const string UnmodelledReason =
-            "SVG foreignObject viewport content is not modelled by the bounded parse";
+            "SVG foreignObject content requires XHTML box layout";
 
         private static WalkRender Walk(string source)
         {
@@ -370,6 +376,49 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.Success, result.ErrorMessage);
             Assert.True(SvgRenderResult.IsAdmissible(result));
             Assert.True(IsGreen(result.Bitmap.GetPixel(50, 50)));
+        }
+
+        [Fact]
+        public void ForeignObject_TextContentWithNoAreaOnEitherAxisIsCertifiedInvisible()
+        {
+            using var rendered = Walk(
+                "<svg width='200' height='100' " + XhtmlDeclarations + ">" +
+                "<foreignObject>Some content</foreignObject>" +
+                "<foreignObject height='200'>Some content</foreignObject>" +
+                "<foreignObject style='height: 75px'>Some content</foreignObject>" +
+                "<foreignObject style='height: 50%'>Some content</foreignObject>" +
+                "<foreignObject style='height: auto; display: none'>Some content</foreignObject>" +
+                "<rect width='100' height='100' fill='red'/></svg>");
+
+            Assert.True(IsRed(rendered.Bitmap.GetPixel(50, 50)), "siblings still paint");
+            AssertParseGateOnly(rendered);
+        }
+
+        [Fact]
+        public void ForeignObject_AProvablyNonRenderingSubtreeIsStillCondemnedByTheParseGate()
+        {
+            using var rendered = Walk(
+                "<svg width='100' height='100' " + XhtmlDeclarations + ">" +
+                "<defs><foreignObject><svg><text id='hello'>Hello</text></svg></foreignObject></defs>" +
+                "<rect width='100' height='100' fill='green'/></svg>");
+
+            Assert.True(IsGreen(rendered.Bitmap.GetPixel(50, 50)));
+            AssertParseGateOnly(rendered);
+        }
+
+        [Fact]
+        public void Switch_DoesNotOfferForeignObjectAsASelectableBranch()
+        {
+            using var rendered = Walk(
+                "<svg width='100' height='100' " + XhtmlDeclarations + ">" +
+                "<switch>" +
+                "<foreignObject width='100' height='100'>" +
+                "<h:body><h:div style='width: 100px; height: 100px; background-color: green'/></h:body>" +
+                "</foreignObject>" +
+                "<rect width='100' height='100' fill='red'/></switch></svg>");
+
+            Assert.True(IsRed(rendered.Bitmap.GetPixel(50, 50)), "the false branch is selected");
+            AssertParseGateOnly(rendered);
         }
 
         private static void AssertInvisible(WalkRender rendered)
