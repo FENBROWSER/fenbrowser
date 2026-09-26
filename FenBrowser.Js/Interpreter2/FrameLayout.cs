@@ -8,7 +8,9 @@ public enum Interp2Bailout
 {
     None = 0,
     NotOrdinaryFunction,
-    EvalCode,
+
+    /// <summary>Module code, which may suspend at a top-level await.</summary>
+    ModuleCode,
     ClassConstructor,
     LexicalDeclarations,
     UnmappedSlot,
@@ -449,14 +451,18 @@ public sealed class FrameLayout
         // job, which is the generator machinery pointed somewhere else. Module
         // and script bodies compile as async too - top-level await is legal in
         // one - and those are eval code, which the gate below refuses anyway.
-        var isAsync = function.Kind == FunctionKind.Async && !function.IsEvalCode;
+        var isAsync = function.Kind == FunctionKind.Async && !function.IsProgramCode;
+        // Script and eval code run in an environment their caller supplies,
+        // where their declarations were instantiated by name: every name they
+        // use resolves through it, as a free name does in a function.
+        var isProgram = function.IsProgramCode;
         var constructsClass = asConstructor && function.Kind == FunctionKind.Constructor &&
             function.IsClassConstructor;
         if (!isGenerator && !isAsync && !constructsClass &&
             function.Kind is not (FunctionKind.Ordinary or FunctionKind.Arrow or FunctionKind.Method))
             return new FrameLayout(function, Interp2Bailout.NotOrdinaryFunction);
-        if (function.IsEvalCode)
-            return new FrameLayout(function, Interp2Bailout.EvalCode);
+        if (isProgram && function.Kind != FunctionKind.Ordinary)
+            return new FrameLayout(function, Interp2Bailout.ModuleCode);
         // [[Call]] on a class constructor is a TypeError, raised before any frame
         // exists; only [[Construct]] (ForConstruct) runs one.
         if (function.IsClassConstructor && !constructsClass)
@@ -510,28 +516,31 @@ public sealed class FrameLayout
         var declared = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < function.ParameterNames.Count; i++)
             declared.Add(function.ParameterNames[i]);
-        for (var i = 0; i < function.VarDeclarationNames.Count; i++)
-            declared.Add(function.VarDeclarationNames[i]);
-        // ECMA-262 10.2.11 step 34: a function-level let or const is a variable
-        // of this body like a var, and lives in the window like one. What sets
-        // it apart is that it does not exist until its declaration runs, which
-        // the window says with the byte beside each slot rather than with a
-        // value - see SlotIsLexical.
-        for (var i = 0; i < function.LexicalDeclarationNames.Count; i++)
-            declared.Add(function.LexicalDeclarationNames[i]);
-        for (var i = 0; i < function.ConstDeclarationNames.Count; i++)
-            declared.Add(function.ConstDeclarationNames[i]);
+        if (!isProgram)
+        {
+            for (var i = 0; i < function.VarDeclarationNames.Count; i++)
+                declared.Add(function.VarDeclarationNames[i]);
+            // ECMA-262 10.2.11 step 34: a function-level let or const is a
+            // variable of this body like a var, and lives in the window like
+            // one. What sets it apart is that it does not exist until its
+            // declaration runs, which the window says with the byte beside each
+            // slot rather than with a value - see SlotIsLexical.
+            for (var i = 0; i < function.LexicalDeclarationNames.Count; i++)
+                declared.Add(function.LexicalDeclarationNames[i]);
+            for (var i = 0; i < function.ConstDeclarationNames.Count; i++)
+                declared.Add(function.ConstDeclarationNames[i]);
+        }
 
         // `arguments` is declared by the body having one, not by a declaration
         // in it, so nothing above names it - but it is a variable of this frame
         // like any other and has to be classified as one.
-        var ownsArguments = function.HasOwnArgumentsObject && !function.ArgumentsShadowedByParameter;
+        var ownsArguments = !isProgram && function.HasOwnArgumentsObject && !function.ArgumentsShadowedByParameter;
         if (ownsArguments)
             declared.Add("arguments");
 
         // ECMA-262 15.2.5: a named function expression can see its own name,
         // unless something in the body declares that name itself.
-        var selfName = function.BindsOwnNameInBody && function.Name is { Length: > 0 } candidate &&
+        var selfName = !isProgram && function.BindsOwnNameInBody && function.Name is { Length: > 0 } candidate &&
                        !declared.Contains(candidate) &&
                        !function.LexicalDeclarationNames.Contains(candidate) &&
                        !function.ConstDeclarationNames.Contains(candidate)
@@ -582,7 +591,8 @@ public sealed class FrameLayout
             }
         }
 
-        for (var kind = 0; kind < 2; kind++)
+        // Program code's lexical declarations are bindings of its environment.
+        for (var kind = 0; kind < (isProgram ? 0 : 2); kind++)
         {
             var lexicalNames = kind == 0 ? function.LexicalDeclarationNames : function.ConstDeclarationNames;
             for (var i = 0; i < lexicalNames.Count; i++)
@@ -664,7 +674,8 @@ public sealed class FrameLayout
             // Everything the body declares is already in the record, where eval
             // code and closures alike find it by name - the arguments object and
             // the body's own name too, when the bytecode gave them no slot.
-            hasContext = true;
+            // Program code has a record already: the one it runs in.
+            hasContext = !isProgram;
             argumentsByName = ownsArguments && !function.VariableSlots.ContainsKey("arguments");
             selfNameByName = selfName is not null && !function.VariableSlots.ContainsKey(selfName);
         }
@@ -784,7 +795,7 @@ public sealed class FrameLayout
 
         // Same for hoisted vars: the old loop's declaration instantiation would
         // have created a binding by name for one the compiler gave no slot.
-        if (!function.AllVarSlotsMapped)
+        if (!isProgram && !function.AllVarSlotsMapped)
             return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
 
         // A body that has an arguments object but never names it needs no slot;
@@ -822,8 +833,10 @@ public sealed class FrameLayout
             function, registerCount, slotCount, slotHomes, slotNames, layoutParameterSlots, parameterWindowIndex)
         {
             IsStrict = function.IsStrictMode,
-            ResolvesThisOutwards = function.IsArrow,
-            BindsThisLoosely = !function.IsStrictMode && !function.IsArrow,
+            // Program code's `this` and new.target are the environment's, as
+            // an arrow's are.
+            ResolvesThisOutwards = function.IsArrow || isProgram,
+            BindsThisLoosely = !function.IsStrictMode && !function.IsArrow && !isProgram,
             HasFreeVariables = hasFreeVariables,
             HasDuplicateParameterSlots = duplicateParameters,
             HasContext = hasContext,

@@ -305,6 +305,58 @@ internal sealed class Interp2
     }
 
     /// <summary>
+    /// Run script or eval code (ECMA-262 16.1.6 ScriptEvaluation, 19.2.1.1
+    /// PerformEval): a frame with no callee and no record of its own, whose
+    /// names all resolve through <paramref name="environment"/> - where the
+    /// host has already instantiated its declarations.
+    /// </summary>
+    internal JsValue ExecuteProgram(FrameLayout layout, EnvironmentRecord environment, JsValue thisValue)
+    {
+        var entryDepth = _depth;
+        var entryTop = _stackTop;
+        var entryHandlerTop = _handlerTop;
+        try
+        {
+            var window = Reserve(layout);
+            ref var frame = ref _frames[_depth++];
+            frame.Layout = layout;
+            frame.Callee = null;
+            frame.OuterEnv = environment;
+            frame.OuterEnvResolved = true;
+            frame.Context = null;
+            frame.This = thisValue;
+            frame.NewTarget = JsValue.Undefined;
+            frame.ThisUninitialized = false;
+            frame.Base = window;
+            frame.Ip = 0;
+            frame.BackEdgeMark = _backEdges;
+            frame.ReturnSlot = -1;
+            frame.HandlerBase = _handlerTop;
+            frame.HandlerCount = 0;
+            frame.PendingException = JsValue.Undefined;
+            frame.HasPendingException = false;
+            frame.PendingReturn = JsValue.Undefined;
+            frame.HasPendingReturn = false;
+            frame.Generator = null;
+            frame.AsyncContext = null;
+            frame.Scope = null;
+            frame.ScopeDepth = 0;
+            if (Interp2Options.Log)
+            {
+                Interp2Stats.RecordFrameEntered(_depth, _stackTop);
+            }
+
+            return DispatchRouted(entryDepth, injectedThrow: false, injected: JsValue.Undefined);
+        }
+        finally
+        {
+            _depth = entryDepth;
+            _stackTop = entryTop;
+            _handlerTop = entryHandlerTop;
+        }
+    }
+
+    /// <summary>
     /// Start or resume a generator body. ECMA-262 27.5.3.2 GeneratorResume and
     /// 27.5.3.3/27.5.3.4 GeneratorResumeAbrupt, for the bodies this loop runs.
     /// </summary>
@@ -1228,6 +1280,13 @@ internal sealed class Interp2
                         _host.Interp2StoreContext(
                             _frames[_depth - 1].Context!, function, slot, stack[frameBase + ins.A],
                             NameOfSlot(layout, slot), layout.IsStrict);
+                    }
+                    else if (ins.OpCode == OpCode.InitVar)
+                    {
+                        // A declaration of program code: its binding was
+                        // instantiated by name, uninitialized if lexical.
+                        _host.Interp2InitializeName(
+                            OuterEnvironmentOf(_depth - 1), NameOfSlot(layout, slot), stack[frameBase + ins.A]);
                     }
                     else
                     {
@@ -2871,7 +2930,7 @@ internal sealed class Interp2
     /// the innermost record the frame has pushed, or its own.
     /// </summary>
     private EnvironmentRecord DynamicScopeOf(int index)
-        => (EnvironmentRecord?)_frames[index].Scope ?? _frames[index].Context!;
+        => _frames[index].Scope ?? BaseScopeOf(index)!;
 
     /// <summary>
     /// Whether a slot of a dynamic-scope body can go straight to the frame's
@@ -3171,7 +3230,7 @@ internal sealed class Interp2
                     _frames[_depth - 1].Context!, layout.Function, slot, value, name, layout.IsStrict);
                 return;
             default:
-                _host.Interp2StoreFreeCached(layout, slot, icOffset, OuterEnvironmentOf(_depth - 1), value);
+                _host.Interp2InitializeName(OuterEnvironmentOf(_depth - 1), name, value);
                 return;
         }
     }

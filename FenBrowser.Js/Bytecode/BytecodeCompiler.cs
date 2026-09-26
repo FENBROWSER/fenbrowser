@@ -84,6 +84,9 @@ public sealed class BytecodeCompiler
     private sealed record FieldInitializer(string Name, int ComputedIndex, ExpressionNode Initializer);
     private bool _inFieldInitializer;
 
+    // Script, module or eval code (see BytecodeFunction.IsProgramCode).
+    private bool _isProgramCode;
+
     // ECMA-262 13.3.6.2 EvaluateCall step 1.b: a name inside a `with` - in this
     // function, in one around it, or in eval code run under one - may resolve to
     // a property of the with object, and a call through it passes the object as
@@ -289,6 +292,7 @@ public sealed class BytecodeCompiler
         var kind = program.Kind == ProgramKind.Module
             ? FunctionKind.Async
             : FunctionKind.Ordinary;
+        _isProgramCode = true;
         return CompileProgramCore(
             program,
             parameters: Array.Empty<string>(),
@@ -483,6 +487,7 @@ public sealed class BytecodeCompiler
             IsStrictMode = _isStrictMode,
             IsDerivedConstructor = _isDerivedConstructor,
             IsClassConstructor = _isClassConstructor,
+            IsProgramCode = _isProgramCode,
             Instructions = _instructions.ToArray(),
             SourcePath = _sourcePath,
             SourcePositions = _positionIps.Count == 0

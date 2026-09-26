@@ -1158,11 +1158,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 return capability.Promise;
             }
 
-            result = ExecuteInternal(
-                function,
-                Array.Empty<JsValue>(),
-                JsValue.FromObject(globalHandle),
-                frameEnvironment: EnsureGlobalEnvironment());
+            result = ExecuteProgram(function, JsValue.FromObject(globalHandle), EnsureGlobalEnvironment());
         }
         catch (FenBrowser.Js.Heap.JsEngineFatalException)
         {
@@ -1429,11 +1425,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return capability.Promise;
         }
 
-        var result = ExecuteInternal(
-            function,
-            Array.Empty<JsValue>(),
-            JsValue.FromObject(globalHandle),
-            frameEnvironment: environment);
+        var result = ExecuteProgram(function, JsValue.FromObject(globalHandle), environment);
         DrainPendingMicrotasks();
         return result;
     }
@@ -1907,8 +1899,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // any other body carries its layout's reason.
     private static string OldLoopReason(BytecodeFunction function, GeneratorObject? ownerGenerator, AsyncContext? asyncContext)
     {
-        if (function.IsEvalCode)
-            return function.Kind == FunctionKind.Async ? "ScriptOrModuleCode" : "EvalOrScriptCode";
+        if (function.IsProgramCode)
+            return function.Kind == FunctionKind.Async ? "ModuleCode" : "ProgramCode";
         var layout = function.IsClassConstructor ? Interpreter2.FrameLayout.ForConstruct(function) : Interpreter2.FrameLayout.For(function);
         var reason = layout.Bailout == Interpreter2.Interp2Bailout.None ? "Eligible" : layout.Bailout.ToString();
         if (layout.Bailout == Interpreter2.Interp2Bailout.UnsupportedOpCode && layout.BailoutOpCode is { } op)
@@ -2215,9 +2207,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.ParameterBinding, paramSample);
 
             var declSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-            ValidateDeclarationInstantiation(function, frame);
-            InstantiateVarDeclarations(function, frame);
-            InstantiateLexicalDeclarations(function, frame);
+            ValidateDeclarationInstantiation(function, frame.Environment);
+            InstantiateVarDeclarations(function, frame.Environment);
+            InstantiateLexicalDeclarations(function, frame.Environment);
             if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.Declarations, declSample);
         }
 
@@ -7448,11 +7440,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         env.HidesNewTarget = directEvalInFieldInitializer;
 
-        return ExecuteInternal(
-            compiled,
-            Array.Empty<JsValue>(),
-            JsValue.FromObject(globalHandle),
-            frameEnvironment: env);
+        return ExecuteProgram(compiled, JsValue.FromObject(globalHandle), env);
     }
 
     // ECMA-262 16.1.6 ScriptEvaluation, for an embedder running one more classic
@@ -7488,11 +7476,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
 
-        return ExecuteInternal(
-            compiled,
-            Array.Empty<JsValue>(),
-            JsValue.FromObject(EnsureGlobalObject()),
-            frameEnvironment: EnsureGlobalEnvironment());
+        return ExecuteProgram(compiled, JsValue.FromObject(EnsureGlobalObject()), EnsureGlobalEnvironment());
     }
 
     private static bool IsInsideWith(EnvironmentRecord? environment)

@@ -16,8 +16,8 @@ public sealed partial class BytecodeInterpreter
     // frame environment is the fresh lexical environment PerformEval made for it
     // (ECMA-262 19.2.1.1); its variable environment is that record when the eval
     // is strict, and otherwise the caller's - the nearest one outward.
-    private static EnvironmentRecord VariableEnvironmentFor(BytecodeFunction function, InterpreterFrame frame)
-        => function.IsEvalCode ? NearestVariableScope(frame.Environment) : frame.Environment;
+    private static EnvironmentRecord VariableEnvironmentFor(BytecodeFunction function, EnvironmentRecord environment)
+        => function.IsEvalCode ? NearestVariableScope(environment) : environment;
 
     private static EnvironmentRecord NearestVariableScope(EnvironmentRecord environment)
     {
@@ -33,12 +33,12 @@ public sealed partial class BytecodeInterpreter
         return environment;
     }
 
-    private void ValidateDeclarationInstantiation(BytecodeFunction function, InterpreterFrame frame)
+    private void ValidateDeclarationInstantiation(BytecodeFunction function, EnvironmentRecord environment)
     {
         // Lexical declarations live in the frame's own environment - for eval
         // code, the fresh one PerformEval made - so only a script's reach the
         // global record at all.
-        if (frame.Environment is GlobalEnvironmentRecord lexicalGlobal)
+        if (environment is GlobalEnvironmentRecord lexicalGlobal)
         {
             foreach (var name in function.LexicalDeclarationNames.Concat(function.ConstDeclarationNames))
             {
@@ -54,7 +54,7 @@ public sealed partial class BytecodeInterpreter
         // global level is the global record even though the eval's frame is not
         // (EvalDeclarationInstantiation step 3.a) - so `let x; eval('var x')`
         // there is still a SyntaxError.
-        if (VariableEnvironmentFor(function, frame) is GlobalEnvironmentRecord varGlobal)
+        if (VariableEnvironmentFor(function, environment) is GlobalEnvironmentRecord varGlobal)
         {
             foreach (var name in function.VarDeclarationNames)
             {
@@ -67,17 +67,17 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
-    private void InstantiateVarDeclarations(BytecodeFunction function, InterpreterFrame frame)
+    private void InstantiateVarDeclarations(BytecodeFunction function, EnvironmentRecord environment)
     {
         // For eval code, Annex B B.3.3.3 requires var/function bindings to be
         // configurable (deletable) on the global scope so tests verifyProperty
         // with { configurable: true }.
         var isEval = function.IsEvalCode;
-        var varEnv = VariableEnvironmentFor(function, frame);
+        var varEnv = VariableEnvironmentFor(function, environment);
 
         // A function body's own vars, hoisted into its own environment: the
         // slots are already known, so nothing here needs to touch a name.
-        if (!isEval && frame.Environment is DeclarativeEnvironmentRecord slotted &&
+        if (!isEval && environment is DeclarativeEnvironmentRecord slotted &&
             slotted.OwnsSlotsOf(function))
         {
             var slots = function.VarSlots;
@@ -98,7 +98,7 @@ public sealed partial class BytecodeInterpreter
                 }
                 else
                 {
-                    _ = frame.Environment.EnsureVarBinding(function.VarDeclarationNames[i], deletable: false);
+                    _ = environment.EnsureVarBinding(function.VarDeclarationNames[i], deletable: false);
                 }
             }
 
@@ -112,8 +112,7 @@ public sealed partial class BytecodeInterpreter
                 var result = global.CreateGlobalVarBinding(name, deletable: isEval);
                 if (result != BindingOpResult.Ok)
                 {
-                    ThrowTypeError(frame, $"Cannot declare global var binding '{name}'.");
-                    return;
+                    throw new JsThrownException(CreateTypeError($"Cannot declare global var binding '{name}'."));
                 }
 
                 continue;
@@ -126,11 +125,10 @@ public sealed partial class BytecodeInterpreter
             if (!isEval)
             {
 
-                var ensured = frame.Environment.EnsureVarBinding(name, deletable: false);
+                var ensured = environment.EnsureVarBinding(name, deletable: false);
                 if (ensured != BindingOpResult.Ok)
                 {
-                    ThrowTypeError(frame, $"Cannot declare var binding '{name}'.");
-                    return;
+                    throw new JsThrownException(CreateTypeError($"Cannot declare var binding '{name}'."));
                 }
 
                 continue;
@@ -154,44 +152,60 @@ public sealed partial class BytecodeInterpreter
                 if (isEval)
                     throw new JsThrownException(CreateSyntaxError(
                         $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
-                ThrowTypeError(frame, $"Cannot declare var binding '{name}'.");
-                return;
+                throw new JsThrownException(CreateTypeError($"Cannot declare var binding '{name}'."));
             }
 
             var init = varEnv.InitializeBinding(name, JsValue.Undefined);
             if (init != BindingOpResult.Ok)
             {
-                ThrowTypeError(frame, $"Cannot initialize var binding '{name}'.");
-                return;
+                throw new JsThrownException(CreateTypeError($"Cannot initialize var binding '{name}'."));
             }
         }
     }
 
 
-    private void InstantiateLexicalDeclarations(BytecodeFunction function, InterpreterFrame frame)
+    private void InstantiateLexicalDeclarations(BytecodeFunction function, EnvironmentRecord environment)
     {
         foreach (var name in function.LexicalDeclarationNames)
         {
-            var create = frame.Environment.CreateMutableBinding(name, deletable: false);
+            var create = environment.CreateMutableBinding(name, deletable: false);
             if (create != BindingOpResult.Ok)
             {
                 // Duplicate lexical declarations are early errors (SyntaxError),
                 // not TypeError. This path is hit when eval-introduced var
                 // declarations shadow a body-level let/const.
-                ThrowSyntaxError(frame, $"Cannot declare lexical binding '{name}'.");
-                return;
+                throw new JsThrownException(CreateSyntaxError($"Cannot declare lexical binding '{name}'."));
             }
         }
 
         foreach (var name in function.ConstDeclarationNames)
         {
-            var create = frame.Environment.CreateImmutableBinding(name, strict: true);
+            var create = environment.CreateImmutableBinding(name, strict: true);
             if (create != BindingOpResult.Ok)
             {
-                ThrowSyntaxError(frame, $"Cannot declare const binding '{name}'.");
-                return;
+                throw new JsThrownException(CreateSyntaxError($"Cannot declare const binding '{name}'."));
             }
         }
+    }
+
+    /// <summary>
+    /// Script, eval or synchronous module code: its declarations instantiated
+    /// into <paramref name="environment"/> (ECMA-262 16.1.7, 19.2.1.3), then its
+    /// body run on the register-window loop.
+    /// </summary>
+    private JsValue ExecuteProgram(BytecodeFunction function, JsValue thisValue, EnvironmentRecord environment)
+    {
+        var layout = Interpreter2.FrameLayout.For(function);
+        if (!Interpreter2.Interp2Options.Enabled || !layout.Eligible)
+        {
+            return ExecuteInternal(function, Array.Empty<JsValue>(), thisValue, frameEnvironment: environment);
+        }
+
+        EnsureNativeStack();
+        ValidateDeclarationInstantiation(function, environment);
+        InstantiateVarDeclarations(function, environment);
+        InstantiateLexicalDeclarations(function, environment);
+        return Interp2Loop.ExecuteProgram(layout, environment, thisValue);
     }
 
 

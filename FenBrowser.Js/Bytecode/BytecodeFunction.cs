@@ -223,6 +223,15 @@ public sealed class BytecodeFunction
     // declarations use deletable bindings per Annex B B.3.3.3.
     public bool IsEvalCode { get; set; }
 
+    /// <summary>
+    /// Script, module or eval code rather than a function body: it runs in an
+    /// environment its caller supplies, has no parameters or receiver of its
+    /// own, and its declarations are instantiated into records by name
+    /// (ECMA-262 16.1.7 GlobalDeclarationInstantiation, 19.2.1.3
+    /// EvalDeclarationInstantiation) rather than being variables of a frame.
+    /// </summary>
+    public bool IsProgramCode { get; init; }
+
     public bool IsStrictMode { get; init; }
 
     public required IReadOnlyList<BytecodeFunction> NestedFunctions { get; init; }
@@ -593,6 +602,7 @@ public sealed class BytecodeFunction
             IsArrow = IsArrow,
             Kind = Kind,
             IsEvalCode = IsEvalCode,
+            IsProgramCode = IsProgramCode,
             IsStrictMode = IsStrictMode,
             NestedFunctions = nested,
             RegisterCount = RegisterCount,
