@@ -125,6 +125,7 @@ internal static class SvgCorpusRunner
         WptManifestIndex? wptIndex = options.CorpusKind == "wpt"
             ? WptManifestIndex.LoadRequired(options.CorpusDirectory)
             : null;
+        if (wptIndex != null) manifestValidated = true;
         string[] allFiles;
         if (options.ManifestPath != null)
         {
@@ -146,6 +147,21 @@ internal static class SvgCorpusRunner
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToArray();
         }
+        int excludedReferenceFiles = 0;
+        if (wptIndex != null)
+        {
+            var denominator = new List<string>(allFiles.Length);
+            foreach (string file in allFiles)
+            {
+                if (wptIndex.Classify(file).IsExcludedFromTestDenominator)
+                {
+                    excludedReferenceFiles++;
+                    continue;
+                }
+                denominator.Add(file);
+            }
+            allFiles = denominator.ToArray();
+        }
         allFiles = allFiles.Where(options.Includes).ToArray();
         var selected = allFiles.Take(options.MaxFiles + 1).ToArray();
         bool selectionTruncated = selected.Length > options.MaxFiles;
@@ -162,6 +178,8 @@ internal static class SvgCorpusRunner
             string file = files[fileIndex];
             string relative = Path.GetRelativePath(options.CorpusDirectory, file)
                 .Replace(Path.DirectorySeparatorChar, '/');
+            WptDocumentClassification wptDocument = wptIndex?.Classify(file) ??
+                                                   WptDocumentClassification.Unclassified;
             var info = new FileInfo(file);
             if (info.Length > options.MaxFileBytes)
             {
@@ -170,7 +188,7 @@ internal static class SvgCorpusRunner
                     Path = relative,
                     Bytes = info.Length,
                     Classification = "skipped-oversize",
-                    WptType = wptIndex?.Classify(file)
+                    WptType = wptIndex == null ? null : wptDocument.Type
                 });
                 continue;
             }
@@ -190,7 +208,7 @@ internal static class SvgCorpusRunner
                     Classification = "read-failure",
                     FailureReasonCode = "source-read-failure",
                     Error = Bound(ex.Message),
-                    WptType = wptIndex?.Classify(file)
+                    WptType = wptIndex == null ? null : wptDocument.Type
                 });
                 continue;
             }
@@ -207,7 +225,7 @@ internal static class SvgCorpusRunner
                 entry = EvaluateIsolated(
                     relative, info.Length, file, options.PerFileTimeoutMs,
                     wptIndex?.RootDirectory,
-                    wptIndex?.GetReferences(file) ?? Array.Empty<WptReference>());
+                    wptDocument.References);
                 entry.SourceSha256 = sourceSha256;
                 if (IsReusable(entry)) checkpointWriter.WriteLine(JsonSerializer.Serialize(new SvgCorpusCheckpoint
                 {
@@ -216,7 +234,7 @@ internal static class SvgCorpusRunner
                     Entry = entry
                 }));
             }
-            entry.WptType = wptIndex?.Classify(file);
+            entry.WptType = wptIndex == null ? null : wptDocument.Type;
             entries.Add(entry);
             int completed = fileIndex + 1;
             if (completed == files.Length || completed % 25 == 0)
@@ -234,7 +252,7 @@ internal static class SvgCorpusRunner
 
         var summary = new SvgCorpusSummary
         {
-            SchemaVersion = 4,
+            SchemaVersion = 5,
             CorpusRoot = options.CorpusDirectory,
             CorpusKind = options.CorpusKind,
             SelectionPrefixes = options.IncludePrefixes.ToList(),
@@ -242,6 +260,10 @@ internal static class SvgCorpusRunner
             ReusedEntries = reusedEntries,
             RendererBuildId = rendererBuildId,
             ManifestValidated = manifestValidated,
+            WptManifestPath = wptIndex?.ManifestPath ?? string.Empty,
+            WptManifestVersion = wptIndex?.ManifestVersion ?? 0,
+            WptManifestItems = wptIndex?.IndexedItemCount ?? 0,
+            WptExcludedReferenceFiles = excludedReferenceFiles,
             SelectedFiles = files.Length,
             SelectionTruncated = selectionTruncated,
             EvaluatedFiles = entries.Count(entry => entry.Classification != "skipped-oversize" && entry.Classification != "read-failure"),
@@ -263,6 +285,9 @@ internal static class SvgCorpusRunner
             WptReferenceBlocked = entries.Count(entry => entry.WptReferenceApplicable &&
                                                        !entry.WptReferenceComparable),
             WptUnresolvedTargets = entries.Sum(entry => entry.WptUnresolvedReferenceCount),
+            WptUnclassifiedFiles = wptIndex == null
+                ? 0
+                : entries.Count(entry => entry.WptType == WptManifestIndex.UnclassifiedType),
             Entries = entries,
             ReasonCounts = BuildReasonCounts(entries),
             WptTypeCounts = entries
@@ -271,7 +296,27 @@ internal static class SvgCorpusRunner
                 .Select(group => new SvgTypeCount { Type = group.Key, Count = group.Count() })
                 .OrderByDescending(item => item.Count)
                 .ThenBy(item => item.Type, StringComparer.Ordinal)
-                .ToList()
+                .ToList(),
+            WptReferenceTypeCounts = entries
+                .Where(entry => entry.WptType != null)
+                .GroupBy(entry => entry.WptType!, StringComparer.Ordinal)
+                .Select(group => new SvgWptReferenceTypeCount
+                {
+                    Type = group.Key,
+                    Tests = group.Count(entry => entry.WptReferenceApplicable),
+                    Comparable = group.Count(entry => entry.WptReferenceComparable),
+                    Passes = group.Count(entry => entry.WptReferenceApplicable && entry.WptReferencePass),
+                    Failures = group.Count(entry => entry.WptReferenceApplicable &&
+                                                  entry.WptReferenceComparable && !entry.WptReferencePass),
+                    Blocked = group.Count(entry => entry.WptReferenceApplicable &&
+                                                  !entry.WptReferenceComparable),
+                    UnresolvedTargets = group.Sum(entry => entry.WptUnresolvedReferenceCount)
+                })
+                .Where(item => item.Tests > 0 || item.UnresolvedTargets > 0)
+                .OrderByDescending(item => item.Tests)
+                .ThenBy(item => item.Type, StringComparer.Ordinal)
+                .ToList(),
+            WptUnresolvedReferenceSamples = CollectUnresolvedReferenceSamples(entries)
         };
 
         Directory.CreateDirectory(options.OutputDirectory);
@@ -290,9 +335,11 @@ internal static class SvgCorpusRunner
               summary.WptReferenceComparable == summary.WptReferenceTests
             : true;
         bool admissibilityOk = options.CorpusKind == "wpt" || summary.InadmissibleDocuments == 0;
-        bool gateOk = routingOk && referenceOk && admissibilityOk && summary.SkippedOversize == 0 &&
-                      !summary.SelectionTruncated &&
-                      (options.CorpusKind != "captured-site" || summary.ManifestValidated);
+        bool manifestOk = options.CorpusKind is "wpt" or "captured-site"
+            ? summary.ManifestValidated
+            : true;
+        bool gateOk = routingOk && referenceOk && admissibilityOk && manifestOk &&
+                      summary.SkippedOversize == 0 && !summary.SelectionTruncated;
         Console.WriteLine(JsonSerializer.Serialize(new
         {
             probe = "svg-corpus",
@@ -300,6 +347,10 @@ internal static class SvgCorpusRunner
             selected = summary.SelectedFiles,
             corpusKind = summary.CorpusKind,
             manifestValidated = summary.ManifestValidated,
+            wptManifestVersion = summary.WptManifestVersion,
+            wptManifestItems = summary.WptManifestItems,
+            wptExcludedReferenceFiles = summary.WptExcludedReferenceFiles,
+            wptUnclassifiedFiles = summary.WptUnclassifiedFiles,
             truncated = summary.SelectionTruncated,
             prefixes = summary.SelectionPrefixes,
             resumed = summary.Resumed,
@@ -313,13 +364,31 @@ internal static class SvgCorpusRunner
             workerTimeouts = summary.WorkerTimeouts,
             workerFailures = summary.WorkerFailures,
             wptReferences = $"{summary.WptReferencePasses}/{summary.WptReferenceTests}",
+            wptReferenceComparable = summary.WptReferenceComparable,
+            wptReferenceFailures = summary.WptReferenceFailures,
             wptReferenceBlocked = summary.WptReferenceBlocked,
             wptUnresolvedTargets = summary.WptUnresolvedTargets,
+            wptReferenceTypes = summary.WptReferenceTypeCounts.Count,
             reasons = summary.ReasonCounts.Count,
             report = Path.Combine(options.OutputDirectory, "corpus-report.json")
         }));
 
         return options.Gate && !gateOk ? 1 : 0;
+    }
+
+    private static List<string> CollectUnresolvedReferenceSamples(IReadOnlyList<SvgCorpusEntry> entries)
+    {
+        var samples = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var entry in entries)
+        {
+            if (entry.WptUnresolvedReferenceCount == 0) continue;
+            foreach (var outcome in entry.WptReferenceOutcomes)
+            {
+                if (outcome.Error == null) continue;
+                samples.Add($"{outcome.Relation} {outcome.Reference} :: {Bound(outcome.Error)}");
+            }
+        }
+        return samples.Take(32).ToList();
     }
 
     private static bool IsReusable(SvgCorpusEntry entry) =>
@@ -930,6 +999,10 @@ internal static class SvgCorpusRunner
             "",
             $"- Corpus kind: {summary.CorpusKind}",
             $"- Manifest validated: {(summary.ManifestValidated ? "yes" : "no")}",
+            $"- WPT manifest: {(summary.WptManifestPath.Length == 0 ? "-" : summary.WptManifestPath)}" +
+            $" (version {summary.WptManifestVersion}, {summary.WptManifestItems} indexed SVG items)",
+            $"- WPT support/reference-only files excluded from the test denominator: {summary.WptExcludedReferenceFiles}",
+            $"- WPT files absent from the manifest: {summary.WptUnclassifiedFiles}",
             $"- Selected: {summary.SelectedFiles}",
             $"- Selection truncated by --max-files: {(summary.SelectionTruncated ? "yes" : "no")}",
             $"- Selection prefixes: {(summary.SelectionPrefixes.Count == 0 ? "all" : string.Join(", ", summary.SelectionPrefixes))}",
@@ -959,6 +1032,24 @@ internal static class SvgCorpusRunner
             lines.AddRange(new[] { "", "## WPT item types", "", "| type | count |", "|---|---:|" });
             foreach (var type in summary.WptTypeCounts)
                 lines.Add($"| {Escape(type.Type)} | {type.Count} |");
+        }
+        if (summary.WptReferenceTypeCounts.Count != 0)
+        {
+            lines.AddRange(new[]
+            {
+                "", "## WPT reference tests by type", "",
+                "| type | tests | comparable | pass | fail | blocked | unresolved |",
+                "|---|---:|---:|---:|---:|---:|---:|"
+            });
+            foreach (var type in summary.WptReferenceTypeCounts)
+                lines.Add($"| {Escape(type.Type)} | {type.Tests} | {type.Comparable} | {type.Passes} | " +
+                          $"{type.Failures} | {type.Blocked} | {type.UnresolvedTargets} |");
+        }
+        if (summary.WptUnresolvedReferenceSamples.Count != 0)
+        {
+            lines.AddRange(new[] { "", "## Unresolved WPT reference targets (fail-closed)", "" });
+            foreach (string sample in summary.WptUnresolvedReferenceSamples)
+                lines.Add($"- {Escape(sample)}");
         }
         lines.AddRange(new[]
         {
@@ -1035,6 +1126,11 @@ internal sealed class SvgCorpusSummary
     public int ReusedEntries { get; set; }
     public string RendererBuildId { get; set; } = string.Empty;
     public bool ManifestValidated { get; set; }
+    public string WptManifestPath { get; set; } = string.Empty;
+    public int WptManifestVersion { get; set; }
+    public int WptManifestItems { get; set; }
+    public int WptExcludedReferenceFiles { get; set; }
+    public int WptUnclassifiedFiles { get; set; }
     public int SelectedFiles { get; set; }
     public bool SelectionTruncated { get; set; }
     public int EvaluatedFiles { get; set; }
@@ -1055,7 +1151,20 @@ internal sealed class SvgCorpusSummary
     public int WptUnresolvedTargets { get; set; }
     public List<SvgReasonCount> ReasonCounts { get; set; } = new();
     public List<SvgTypeCount> WptTypeCounts { get; set; } = new();
+    public List<SvgWptReferenceTypeCount> WptReferenceTypeCounts { get; set; } = new();
+    public List<string> WptUnresolvedReferenceSamples { get; set; } = new();
     public List<SvgCorpusEntry> Entries { get; set; } = new();
+}
+
+internal sealed class SvgWptReferenceTypeCount
+{
+    public string Type { get; set; } = string.Empty;
+    public int Tests { get; set; }
+    public int Comparable { get; set; }
+    public int Passes { get; set; }
+    public int Failures { get; set; }
+    public int Blocked { get; set; }
+    public int UnresolvedTargets { get; set; }
 }
 
 internal sealed class SvgReasonCount
