@@ -887,6 +887,11 @@ namespace FenBrowser.FenEngine.Svg
             if (spec.Kind == SvgValues.PaintKind.None)
             {
                 input = BuildFlatPaintFilter(SKColors.Transparent, 1f, region);
+                if (input == null)
+                {
+                    _report.RequireFallback(
+                        $"SVG {primitiveName} '{keyword}' input could not be created");
+                }
                 return input != null;
             }
             if (stroke && !(style.StrokeWidth > 0f))
@@ -1004,10 +1009,10 @@ namespace FenBrowser.FenEngine.Svg
                 0,0,0,alpha / 255f,0
             };
             using var colorFilter = SKColorFilter.CreateColorMatrix(matrix);
-            SKImageFilter scaled = SKImageFilter.CreateColorFilter(colorFilter, paint);
-            if (scaled == null) return null;
-            paint.Dispose();
-            return scaled;
+            using (paint)
+            {
+                return SKImageFilter.CreateColorFilter(colorFilter, paint);
+            }
         }
 
         private static SKImageFilter BuildSourceAlpha()
