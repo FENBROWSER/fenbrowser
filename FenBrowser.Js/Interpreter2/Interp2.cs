@@ -965,6 +965,43 @@ internal sealed class Interp2
 
                     break;
 
+                case OpCode.PushWithEnvironment:
+                {
+                    // ECMA-262 14.11.2: the body resolves names against the
+                    // object first. Popped by the LeaveScope that closes the
+                    // statement, like a block's record.
+                    var withScope = _host.CreateWithEnvironment(
+                        stack[frameBase + ins.A], _frames[_depth - 1].Scope ?? BaseScopeOf(_depth - 1));
+                    PushScope(withScope);
+                    stack = _stack;
+                    break;
+                }
+
+                case OpCode.EnterFunctionBodyScope:
+                {
+                    // ECMA-262 10.2.11 steps 28 and 30: once the parameters are
+                    // bound, the body gets a variable environment of its own, so
+                    // a closure made in a default value never sees the body's vars.
+                    var bodyScope = _host.CreateFunctionBodyScope(
+                        function, _frames[_depth - 1].Scope ?? BaseScopeOf(_depth - 1)!);
+                    PushScope(bodyScope);
+                    stack = _stack;
+                    break;
+                }
+
+                case OpCode.StoreVarTop:
+                    StoreVarTop(layout, ins.B, slotBase, stack[frameBase + ins.A]);
+                    stack = _stack;
+                    break;
+
+                case OpCode.Delete:
+                {
+                    var deleted = DeleteName(layout, ins.B);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = deleted;
+                    break;
+                }
+
                 case OpCode.Await:
                 {
                     // ECMA-262 27.7.5.2 Await. Resolving the value can run user
@@ -1879,6 +1916,13 @@ internal sealed class Interp2
                 // -------------------------------------------------------- calls
                 case OpCode.Call0:
                     _frames[_depth - 1].Ip = ip;
+                    if (ins.E != 0 && TryCallDirectEval(
+                            layout, ip, stack[frameBase + ins.B], JsValue.Undefined, _stack, 0, 0, frameBase + ins.A))
+                    {
+                        stack = _stack;
+                        break;
+                    }
+
                     if (Call(stack[frameBase + ins.B], JsValue.Undefined, 0, 0, frameBase + ins.A))
                         goto reload;
                     stack = _stack;
@@ -1887,6 +1931,13 @@ internal sealed class Interp2
 
                 case OpCode.Call1:
                     _frames[_depth - 1].Ip = ip;
+                    if (ins.E != 0 && TryCallDirectEval(
+                            layout, ip, stack[frameBase + ins.B], JsValue.Undefined, _stack, frameBase + ins.C, 1, frameBase + ins.A))
+                    {
+                        stack = _stack;
+                        break;
+                    }
+
                     if (Call(stack[frameBase + ins.B], JsValue.Undefined, frameBase + ins.C, 1, frameBase + ins.A))
                         goto reload;
                     stack = _stack;
@@ -1895,6 +1946,13 @@ internal sealed class Interp2
 
                 case OpCode.CallN:
                     _frames[_depth - 1].Ip = ip;
+                    if (ins.E != 0 && TryCallDirectEval(
+                            layout, ip, stack[frameBase + ins.B], JsValue.Undefined, _stack, frameBase + ins.C, ins.D, frameBase + ins.A))
+                    {
+                        stack = _stack;
+                        break;
+                    }
+
                     if (Call(stack[frameBase + ins.B], JsValue.Undefined, frameBase + ins.C, ins.D, frameBase + ins.A))
                         goto reload;
                     stack = _stack;
@@ -1910,6 +1968,14 @@ internal sealed class Interp2
                     var spreadArgs = _host.SpreadArguments(stack[frameBase + ins.C]);
                     var spreadThis = ins.D != 0 ? stack[frameBase + ins.D] : JsValue.Undefined;
                     _frames[_depth - 1].Ip = ip;
+                    if (ins.E != 0 && TryCallDirectEval(
+                            layout, ip, stack[frameBase + ins.B], spreadThis, spreadArgs, 0, spreadArgs.Length,
+                            frameBase + ins.A))
+                    {
+                        stack = _stack;
+                        break;
+                    }
+
                     if (CallFrom(stack[frameBase + ins.B], spreadThis, spreadArgs, 0, spreadArgs.Length, frameBase + ins.A))
                         goto reload;
                     stack = _stack;
@@ -2781,10 +2847,132 @@ internal sealed class Interp2
         }
     }
 
+    /// <summary>Makes <paramref name="scope"/> the running frame's innermost record.</summary>
+    private void PushScope(EnvironmentRecord scope)
+    {
+        ref var frame = ref _frames[_depth - 1];
+        frame.Scope = scope;
+        frame.ScopeDepth++;
+    }
+
+    // ------------------------------------------------------- dynamic scopes
+
+    /// <summary>
+    /// Where a lookup in a <see cref="FrameLayout.DynamicScope"/> body starts:
+    /// the innermost record the frame has pushed, or its own.
+    /// </summary>
+    private EnvironmentRecord DynamicScopeOf(int index)
+        => (EnvironmentRecord?)_frames[index].Scope ?? _frames[index].Context!;
+
+    /// <summary>
+    /// Whether a slot of a dynamic-scope body can go straight to the frame's
+    /// record: the body declares it, and no `with`, block or body record has
+    /// been pushed in front of it. Eval code declares its vars into this same
+    /// record, never in front of it, so it cannot shadow one either.
+    /// </summary>
+    private bool ReachesOwnSlot(FrameLayout layout, int slot)
+        => _frames[_depth - 1].Scope is null && layout.ScopedFallback[slot] == SlotHome.Context;
+
+    /// <summary>
+    /// ECMA-262 13.3.6.1 step 6: a call the compiler flagged as a possible
+    /// direct eval is one when the callee is %eval%, which then runs in this
+    /// frame's innermost scope. False, having done nothing, when it is not.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryCallDirectEval(
+        FrameLayout layout, int ip, JsValue callee, JsValue thisValue,
+        JsValue[] argSource, int argStart, int argCount, int returnSlot)
+    {
+        if ((_frames[_depth - 1].Scope ?? BaseScopeOf(_depth - 1)) is not { } evalScope ||
+            !_host.ArmDirectEval(callee, evalScope, layout.Function, ip))
+        {
+            return false;
+        }
+
+        try
+        {
+            // %eval% is native: this returns without pushing a frame.
+            CallFrom(callee, thisValue, argSource, argStart, argCount, returnSlot);
+        }
+        finally
+        {
+            _host.DisarmDirectEval();
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Annex B.3.3.1: a block function's value assigned to the var of the same
+    /// name, in the body's variable environment rather than the block's record.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void StoreVarTop(FrameLayout layout, int slot, int slotBase, JsValue value)
+    {
+        var name = NameOfSlot(layout, slot);
+        if (layout.DynamicScope)
+        {
+            _host.StoreInVariableEnvironment(DynamicScopeOf(_depth - 1), name, value);
+            return;
+        }
+
+        // The layout has placed the var in this body (blocks as records).
+        if (layout.BindingHomes[slot] == SlotHome.Register)
+        {
+            _stack[slotBase + slot] = value;
+            return;
+        }
+
+        _host.Interp2StoreContext(_frames[_depth - 1].Context!, layout.Function, slot, value, name, strict: false);
+    }
+
+    /// <summary>
+    /// ECMA-262 13.5.1.2 `delete identifier`. A binding the body declares is
+    /// never deletable (10.2.11 creates them with CreateMutableBinding(n, false)),
+    /// so only a name found in a record answers otherwise.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private JsValue DeleteName(FrameLayout layout, int slot)
+    {
+        var name = NameOfSlot(layout, slot);
+        switch (HomeOfSlot(layout, slot))
+        {
+            case SlotHome.Register:
+            case SlotHome.Context:
+                return JsValue.FromBoolean(false);
+            case SlotHome.Scoped:
+                if (layout.DynamicScope)
+                {
+                    return _host.DeleteBindingByName(DynamicScopeOf(_depth - 1), name);
+                }
+
+                if (FindBlockBinding(name) is { } block)
+                {
+                    return _host.DeleteBindingByName(block, name);
+                }
+
+                if (layout.ScopedFallback[slot] != SlotHome.Free)
+                {
+                    return JsValue.FromBoolean(false);
+                }
+
+                goto default;
+            default:
+                return _host.DeleteBindingByName(OuterEnvironmentOf(_depth - 1), name);
+        }
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private JsValue LoadScoped(FrameLayout layout, int slot, int slotBase, int icOffset)
     {
         var name = NameOfSlot(layout, slot);
+        if (layout.DynamicScope)
+        {
+            return ReachesOwnSlot(layout, slot)
+                ? _host.Interp2LoadContext(_frames[_depth - 1].Context!, layout.Function, slot, name, layout.IsStrict)
+                : _host.Interp2LoadFree(DynamicScopeOf(_depth - 1), name, layout.IsStrict);
+        }
+
         if (FindBlockBinding(name) is { } block)
         {
             return _host.Interp2LoadFree(block, name, layout.IsStrict);
@@ -2811,6 +2999,27 @@ internal sealed class Interp2
     private void StoreScoped(FrameLayout layout, int slot, int slotBase, int icOffset, JsValue value, bool resolved)
     {
         var name = NameOfSlot(layout, slot);
+        if (layout.DynamicScope)
+        {
+            // The record answers for const, the dead zone and the immutable
+            // self name, as it does for every other store through it.
+            if (resolved)
+            {
+                _host.Interp2StoreResolvedFree(layout, slot, icOffset, DynamicScopeOf(_depth - 1), value);
+            }
+            else if (ReachesOwnSlot(layout, slot))
+            {
+                _host.Interp2StoreContext(
+                    _frames[_depth - 1].Context!, layout.Function, slot, value, name, layout.IsStrict);
+            }
+            else
+            {
+                _host.Interp2StoreFree(DynamicScopeOf(_depth - 1), name, value, layout.IsStrict);
+            }
+
+            return;
+        }
+
         if (FindBlockBinding(name) is { } block)
         {
             // A block's binding is not deletable, so the one PreResolveVar
@@ -2878,7 +3087,13 @@ internal sealed class Interp2
     private void InitScoped(FrameLayout layout, int slot, int slotBase, int icOffset, JsValue value)
     {
         var name = NameOfSlot(layout, slot);
-        if (FindBlockBinding(name) is { } block)
+        if (layout.DynamicScope && !ReachesOwnSlot(layout, slot))
+        {
+            _host.Interp2InitializeName(DynamicScopeOf(_depth - 1), name, value);
+            return;
+        }
+
+        if (!layout.DynamicScope && FindBlockBinding(name) is { } block)
         {
             _host.Interp2InitializeBinding(block, name!, value);
             return;
@@ -2915,6 +3130,14 @@ internal sealed class Interp2
     private JsValue TypeOfScoped(FrameLayout layout, int slot, int slotBase)
     {
         var name = NameOfSlot(layout, slot);
+        if (layout.DynamicScope)
+        {
+            return JsValue.FromString(ReachesOwnSlot(layout, slot)
+                ? _host.Interp2TypeOfValue(_host.Interp2LoadContext(
+                    _frames[_depth - 1].Context!, layout.Function, slot, name, layout.IsStrict))
+                : _host.Interp2TypeOfFree(DynamicScopeOf(_depth - 1), name, layout.IsStrict));
+        }
+
         if (FindBlockBinding(name) is { } block)
         {
             return JsValue.FromString(_host.Interp2TypeOfFree(block, name, layout.IsStrict));
@@ -2942,6 +3165,12 @@ internal sealed class Interp2
     private void PreResolveScoped(FrameLayout layout, int slot)
     {
         var name = NameOfSlot(layout, slot);
+        if (layout.DynamicScope)
+        {
+            _host.Interp2PreResolveFree(DynamicScopeOf(_depth - 1), name);
+            return;
+        }
+
         if (FindBlockBinding(name) is { } block)
         {
             _host.Interp2PreResolveFree(block, name);

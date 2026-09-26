@@ -391,6 +391,29 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    /// <summary>
+    /// ECMA-262 9.1.1.1.4 InitializeBinding on the record
+    /// <paramref name="name"/> resolves to from <paramref name="environment"/>:
+    /// a declaration running in a body whose scope is only known by walking it.
+    /// </summary>
+    internal void Interp2InitializeName(EnvironmentRecord? environment, string? name, JsValue value)
+    {
+        if (name is not null)
+        {
+            for (var env = environment; env is not null; env = env.OuterEnv)
+            {
+                if (env.HasBinding(name))
+                {
+                    Interp2InitializeBinding(env, name, value);
+                    return;
+                }
+            }
+        }
+
+        throw new JsThrownException(CreateReferenceError(
+            name is null ? "Invalid variable slot." : $"{name} is not defined."));
+    }
+
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     internal void Interp2ThrowDeadZoneAccess(string? name)
         => throw new JsThrownException(

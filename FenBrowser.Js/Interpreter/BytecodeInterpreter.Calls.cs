@@ -1137,12 +1137,8 @@ public sealed partial class BytecodeInterpreter
         int icOffset = -1)
     {
         // ECMA-262 19.2.1.1 - direct eval uses the calling frame's lexical environment.
-        // The pointer is already past the call instruction.
-        var armedDirectEval = allowDirectEval && ArmDirectEval(
-            callee,
-            frame.Environment,
-            frame.Function.IsStrictMode,
-            frame.Function.IsInFieldInitializer(frame.InstructionPointer - 1));
+        var armedDirectEval = allowDirectEval &&
+            ArmDirectEval(callee, frame.Environment, frame.Function, frame.InstructionPointer);
 
         try
         {
@@ -1198,7 +1194,9 @@ public sealed partial class BytecodeInterpreter
     /// however it returns: Eval consumes it on entry, but a call that never
     /// reaches Eval must not leave it for the next, indirect one.
     /// </summary>
-    internal bool ArmDirectEval(JsValue callee, EnvironmentRecord environment, bool strict, bool inFieldInitializer)
+    /// <param name="caller">The function making the call, whichever loop runs it.</param>
+    /// <param name="resumeIp">The instruction after the call.</param>
+    internal bool ArmDirectEval(JsValue callee, EnvironmentRecord environment, BytecodeFunction caller, int resumeIp)
     {
         if (callee.Tag != JsValueTag.Object ||
             _heap.GetObject(callee.AsObjectHandle()) is not NativeFunctionObject native ||
@@ -1208,16 +1206,22 @@ public sealed partial class BytecodeInterpreter
         }
 
         _directEvalEnv = environment;
-        _directEvalStrictMode = strict;
-        _directEvalInFieldInitializer = inFieldInitializer;
+        _directEvalCaller = caller;
+        _directEvalStrictMode = caller.IsStrictMode;
+        _directEvalInFieldInitializer = caller.IsInFieldInitializer(resumeIp - 1);
+        // A default value runs before the prologue ends, and the scope rules for
+        // what an eval there may declare differ (ECMA-262 19.2.1.3 step 8).
+        _directEvalInParameterList = caller.PrologueEndIp > 0 && resumeIp <= caller.PrologueEndIp;
         return true;
     }
 
     internal void DisarmDirectEval()
     {
         _directEvalEnv = null;
+        _directEvalCaller = null;
         _directEvalStrictMode = false;
         _directEvalInFieldInitializer = false;
+        _directEvalInParameterList = false;
     }
 
     private void StoreCallResult(

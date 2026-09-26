@@ -229,8 +229,11 @@ public sealed partial class BytecodeInterpreter
     // body's variable environment, where a sloppy eval in the body puts its vars
     // and an Annex B block function its binding.
     private void EnterFunctionBodyScope(InterpreterFrame frame, BytecodeFunction function)
+        => frame.Environment = CreateFunctionBodyScope(function, frame.Environment);
+
+    internal DeclarativeEnvironmentRecord CreateFunctionBodyScope(
+        BytecodeFunction function, EnvironmentRecord parameterEnvironment)
     {
-        var parameterEnvironment = frame.Environment;
         var bodyEnvironment = StampEnvironment(new DeclarativeEnvironmentRecord(parameterEnvironment));
         bodyEnvironment.IsVariableScope = true;
 
@@ -262,7 +265,26 @@ public sealed partial class BytecodeInterpreter
             _ = bodyEnvironment.CreateImmutableBinding(name, strict: true);
         }
 
-        frame.Environment = bodyEnvironment;
+        return bodyEnvironment;
+    }
+
+    /// <summary>
+    /// ECMA-262 14.11.2 `with (value)`: ToObject(value), then an object record
+    /// over <paramref name="outer"/> whose names are the object's properties,
+    /// less those its @@unscopables blocks.
+    /// </summary>
+    internal ObjectEnvironmentRecord CreateWithEnvironment(JsValue value, EnvironmentRecord? outer)
+    {
+        var bindingHandle = ToObjectValue(value).AsObjectHandle();
+        var adapter = CreateBindingAdapter(bindingHandle);
+        var withEnv = StampEnvironment(new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, outer));
+        var unscopablesSymId = GetWellKnownSymbolId("unscopables");
+        if (unscopablesSymId != 0)
+        {
+            withEnv.IsUnscopable = name => IsBlockedByUnscopables(bindingHandle, unscopablesSymId, name);
+        }
+
+        return withEnv;
     }
 
     internal void EnterScopeForJit(InterpreterFrame frame, int slotNameIndex, int isConst, int isCatch)

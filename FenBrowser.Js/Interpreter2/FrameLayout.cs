@@ -28,7 +28,14 @@ public enum Interp2Bailout
     /// </summary>
     BlockScopeCaptured,
 
-    DirectEval,
+    /// <summary>
+    /// A body whose scope can change shape while it runs - it calls eval
+    /// directly, has a `with`, gives its body its own variable environment, or
+    /// assigns an Annex B function to a var this layout cannot place. Analysed
+    /// again with every name resolved through the records (see
+    /// <see cref="FrameLayout.DynamicScope"/>).
+    /// </summary>
+    DynamicScope,
 }
 
 /// <summary>
@@ -227,6 +234,23 @@ public sealed class FrameLayout
     public bool ScopedBlocks { get; private init; }
 
     /// <summary>
+    /// Whether every name in this body is resolved through its records, as the
+    /// specification describes, rather than through slots worked out here.
+    /// </summary>
+    /// <remarks>
+    /// A direct eval can declare a var in this body's scope, a `with` puts an
+    /// object in front of it, and a body with its own variable environment
+    /// (ECMA-262 10.2.11 step 28) has two bindings under one slot - so where a
+    /// name lives is only known when it is looked up. Every slot is then
+    /// <see cref="SlotHome.Scoped"/>, every variable the body declares is in its
+    /// record, and a lookup walks from the innermost record the frame has
+    /// pushed. Only a slot the body declares, reached while nothing is pushed,
+    /// still goes straight to the record's slot: nothing else can be in front
+    /// of it then.
+    /// </remarks>
+    public bool DynamicScope { get; private init; }
+
+    /// <summary>
     /// For a <see cref="SlotHome.Scoped"/> slot, where the name lives when no
     /// block record the frame has pushed holds it.
     /// </summary>
@@ -369,14 +393,41 @@ public sealed class FrameLayout
         // Blocks kept as window slots are the fast shape and the usual one. A
         // body whose blocks cannot be slots is analysed again with its blocks as
         // records, which is how the bytecode describes them.
-        var layout = Analyze(function, asConstructor, scopedBlocks: false);
-        return layout.Bailout is Interp2Bailout.BlockScope or Interp2Bailout.BlockScopeEscapes
-                or Interp2Bailout.BlockScopeCaptured
-            ? Analyze(function, asConstructor, scopedBlocks: true)
+        var layout = Analyze(function, asConstructor, scopedBlocks: false, dynamicScope: false);
+        if (layout.Bailout is Interp2Bailout.BlockScope or Interp2Bailout.BlockScopeEscapes
+            or Interp2Bailout.BlockScopeCaptured)
+        {
+            layout = Analyze(function, asConstructor, scopedBlocks: true, dynamicScope: false);
+        }
+
+        // The last resort, and a complete one: the records answer every
+        // question the slots could not.
+        return layout.Bailout == Interp2Bailout.DynamicScope
+            ? Analyze(function, asConstructor, scopedBlocks: true, dynamicScope: true)
             : layout;
     }
 
-    private static FrameLayout Analyze(BytecodeFunction function, bool asConstructor, bool scopedBlocks)
+    /// <summary>
+    /// Whether some instruction makes this body's scope shape a runtime
+    /// question: a direct eval (a call flagged E = 1), a `with`, or a body
+    /// environment separate from the parameters'.
+    /// </summary>
+    private static bool ChangesScopeShape(Instruction[] code)
+    {
+        foreach (var ins in code)
+        {
+            if (ins.OpCode is OpCode.PushWithEnvironment or OpCode.EnterFunctionBodyScope ||
+                (ins.E == 1 && ins.OpCode is OpCode.Call0 or OpCode.Call1 or OpCode.CallN or OpCode.CallSpread))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static FrameLayout Analyze(
+        BytecodeFunction function, bool asConstructor, bool scopedBlocks, bool dynamicScope)
     {
         // Anything whose activation outlives its call, or whose scope is
         // reachable by name from outside it, needs a real environment record.
@@ -410,6 +461,8 @@ public sealed class FrameLayout
         // exists; only [[Construct]] (ForConstruct) runs one.
         if (function.IsClassConstructor && !constructsClass)
             return new FrameLayout(function, Interp2Bailout.ClassConstructor);
+        if (!dynamicScope && ChangesScopeShape(function.InstructionArray))
+            return new FrameLayout(function, Interp2Bailout.DynamicScope);
         // An arrow reaching outwards for the enclosing `arguments` resolves it by
         // name, like any free identifier: the function around it keeps the
         // object in its record. A body's own arguments object is a snapshot
@@ -495,6 +548,16 @@ public sealed class FrameLayout
         {
             var name = slotNames[slot];
             var declaredHere = name is not null && declared.Contains(name);
+            if (dynamicScope)
+            {
+                // Declared or not, the name is looked up; a declared one is in
+                // the frame's record for the lookup to find.
+                slotHomes[slot] = SlotHome.Scoped;
+                scopedFallback[slot] = declaredHere ? SlotHome.Context : SlotHome.Free;
+                hasFreeVariables |= !declaredHere;
+                continue;
+            }
+
             if (scopedBlocks && blockScopeSlots.Contains(slot))
             {
                 slotHomes[slot] = SlotHome.Scoped;
@@ -526,7 +589,8 @@ public sealed class FrameLayout
             {
                 if (!function.VariableSlots.TryGetValue(lexicalNames[i], out var lexicalSlot) ||
                     (uint)lexicalSlot >= (uint)slotCount ||
-                    slotHomes[lexicalSlot] == SlotHome.Free)
+                    slotHomes[lexicalSlot] == SlotHome.Free ||
+                    (dynamicScope && scopedFallback[lexicalSlot] == SlotHome.Free))
                 {
                     return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
                 }
@@ -571,10 +635,17 @@ public sealed class FrameLayout
                 return new FrameLayout(function, Interp2Bailout.FreeVariableResolve);
             }
 
-            // Direct eval is flagged on the call site rather than by a distinct
-            // opcode, and it can both read and add bindings in the caller's scope.
-            if (ins.E == 1 && ins.OpCode is OpCode.Call0 or OpCode.Call1 or OpCode.CallN or OpCode.CallSpread)
-                return new FrameLayout(function, Interp2Bailout.DirectEval);
+            // Annex B.3.3.1 assigns a block function to the var of the same
+            // name. Blocks as slots share one slot between the two; blocks as
+            // records tell them apart, as long as the var is this body's.
+            if (ins.OpCode == OpCode.StoreVarTop && !dynamicScope)
+            {
+                if (!scopedBlocks)
+                    return new FrameLayout(function, Interp2Bailout.BlockScope);
+                if ((uint)ins.B >= (uint)slotCount || slotHomes[ins.B] == SlotHome.Free ||
+                    (slotHomes[ins.B] == SlotHome.Scoped && scopedFallback[ins.B] == SlotHome.Free))
+                    return new FrameLayout(function, Interp2Bailout.DynamicScope);
+            }
 
             makesClosures |= ins.OpCode == OpCode.CreateFunction;
         }
@@ -588,7 +659,16 @@ public sealed class FrameLayout
         var hasContext = false;
         var argumentsByName = false;
         var selfNameByName = false;
-        if (makesClosures)
+        if (dynamicScope)
+        {
+            // Everything the body declares is already in the record, where eval
+            // code and closures alike find it by name - the arguments object and
+            // the body's own name too, when the bytecode gave them no slot.
+            hasContext = true;
+            argumentsByName = ownsArguments && !function.VariableSlots.ContainsKey("arguments");
+            selfNameByName = selfName is not null && !function.VariableSlots.ContainsKey(selfName);
+        }
+        else if (makesClosures)
         {
             // A block-scoped binding is this body's as much as a var is, but it
             // is not in `declared` - that set is parameters, vars, `arguments`
@@ -759,6 +839,7 @@ public sealed class FrameLayout
             SelfNameSlot = selfNameSlot,
             IsDerivedConstructor = constructsClass && function.IsDerivedConstructor,
             ScopedBlocks = scopedBlocks,
+            DynamicScope = dynamicScope,
             ScopedFallback = scopedFallback,
             BindingHomes = bindingHomes,
         };
@@ -952,6 +1033,7 @@ public sealed class FrameLayout
             OpCode.Return, OpCode.Nop, OpCode.PrologueEnd, OpCode.Throw,
             OpCode.PushHandler, OpCode.PopHandler, OpCode.EndFinally,
             OpCode.EnterScope, OpCode.LeaveScope, OpCode.NextIterationEnv,
+            OpCode.PushWithEnvironment, OpCode.EnterFunctionBodyScope, OpCode.StoreVarTop, OpCode.Delete,
             OpCode.CreateFunction, OpCode.Yield, OpCode.YieldStar, OpCode.Await,
 
             // Arithmetic, coercion and comparison.

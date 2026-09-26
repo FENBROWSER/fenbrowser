@@ -557,8 +557,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private ObjectHandle? _functionCallMethodHandle;
     private ObjectHandle? _evalFunctionHandle;
     private EnvironmentRecord? _directEvalEnv;
+    private BytecodeFunction? _directEvalCaller;
     private bool _directEvalStrictMode;
     private bool _directEvalInFieldInitializer;
+    private bool _directEvalInParameterList;
     private ObjectHandle? _parseIntHandle;
     private ObjectHandle? _parseFloatHandle;
     private ObjectHandle? _isNaNHandle;
@@ -2704,14 +2706,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // so the JS try/catch mechanism can intercept it.
                     try
                     {
-                        var bindingValue = ToObjectValue(registers[ins.A]);
-                        var bindingHandle = bindingValue.AsObjectHandle();
-                        var adapter = CreateBindingAdapter(bindingHandle);
-                        var withEnv = StampEnvironment(new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, frame.Environment));
-                        var unscopablesSymId = GetWellKnownSymbolId("unscopables");
-                        if (unscopablesSymId != 0)
-                            withEnv.IsUnscopable = name => IsBlockedByUnscopables(bindingHandle, unscopablesSymId, name);
-                        frame.Environment = withEnv;
+                        frame.Environment = CreateWithEnvironment(registers[ins.A], frame.Environment);
                     }
                     catch (JsThrownException ex) when (HasHandler(frame))
                     {
@@ -7165,8 +7160,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // matching var binding was pre-created by InstantiateVarDeclarations; this
     // assignment runs when the containing block's declarations are instantiated.
     private void StoreNameInVariableEnvironment(InterpreterFrame frame, int slot, JsValue value)
+        => StoreInVariableEnvironment(frame.Environment, SlotNameTable.GetName(frame.Function, slot), value);
+
+    /// <summary>
+    /// Annex B.3.3.1: a block function's value assigned to the var of the same
+    /// name in the variable environment around <paramref name="environment"/>.
+    /// </summary>
+    internal void StoreInVariableEnvironment(EnvironmentRecord environment, string? name, JsValue value)
     {
-        var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is null)
         {
             return;
@@ -7176,7 +7177,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // environment - an arrow's own, which is a declarative record rather than
         // a function one. Walking out to the nearest function record skipped it,
         // so a block function inside an arrow landed in the enclosing function.
-        var env = NearestVariableScope(frame.Environment);
+        var env = NearestVariableScope(environment);
         if (!env.HasBinding(name))
         {
             _ = env.CreateAndInitializeBinding(name, value, deletable: true);
@@ -7218,14 +7219,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     private JsValue DeleteName(InterpreterFrame frame, int slot)
+        => DeleteBindingByName(frame.Environment, SlotNameTable.GetName(frame.Function, slot));
+
+    /// <summary>
+    /// ECMA-262 13.5.1.2 `delete identifier` (sloppy code only): DeleteBinding
+    /// on the record the name resolves to, or true when it resolves nowhere.
+    /// </summary>
+    internal JsValue DeleteBindingByName(EnvironmentRecord? environment, string? name)
     {
-        var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is null)
         {
             return JsValue.FromBoolean(true);
         }
 
-        for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
+        for (var env = environment; env is not null; env = env.OuterEnv)
         {
             if (!env.HasBinding(name))
             {
@@ -7233,6 +7240,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             var status = env.DeleteBinding(name);
+            if (status == BindingOpResult.Ok && env is not GlobalEnvironmentRecord)
+            {
+                // A binding an eval declared has gone from a scope a closure's
+                // free-name site may have walked through.
+                Interpreter2.FreeSlotSite.AdvanceScopeEpoch();
+            }
+
             return JsValue.FromBoolean(status == BindingOpResult.Ok || status == BindingOpResult.NotFound);
         }
 
@@ -7325,8 +7339,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // eval(1) cannot leave it behind for a later indirect eval to run in
         // the caller's scope.
         var directEvalEnvironment = _directEvalEnv;
+        var directEvalCaller = _directEvalCaller;
         var directEvalStrictMode = _directEvalStrictMode;
         var directEvalInFieldInitializer = _directEvalInFieldInitializer;
+        var directEvalInParameterList = _directEvalInParameterList;
         DisarmDirectEval();
 
         if (args.Count == 0)
@@ -7394,7 +7410,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // caller alone ran the sloppy var-conflict checks on a strict source -
         // which throw once a block's let is correctly non-deletable - and ran a
         // strict source in the caller's scope, so its vars leaked out of it.
-        ValidateEvalDeclarations(compiled, directEvalEnvironment, compiled.IsStrictMode);
+        ValidateEvalDeclarations(
+            compiled, directEvalEnvironment, compiled.IsStrictMode, directEvalCaller, directEvalInParameterList);
 
         var globalHandle = EnsureGlobalObject();
         // ECMA-262 19.2.1.1 PerformEval steps 12-17: every eval gets a fresh
@@ -7549,7 +7566,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return false;
     }
 
-    private void ValidateEvalDeclarations(BytecodeFunction compiled, EnvironmentRecord? callingEnv, bool strict)
+    /// <param name="caller">The function a direct eval was called from; null for an indirect one.</param>
+    /// <param name="inParameterList">Whether that call sits in the caller's parameter list.</param>
+    private void ValidateEvalDeclarations(
+        BytecodeFunction compiled, EnvironmentRecord? callingEnv, bool strict, BytecodeFunction? caller,
+        bool inParameterList)
     {
         // ECMA-262 19.2.1.3: super references in eval are allowed when the
         // calling context has a super binding (direct eval inside a class
@@ -7575,8 +7596,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (fenv!.ThisBindingStatus == ThisBindingStatus.Uninitialized)
                 throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval before super() is called."));
             // In a method (not a constructor), super() as a call is never valid.
-            var callerFrame = _activeFrames.Count > 0 ? _activeFrames.Peek() : null;
-            if (callerFrame?.Function?.Kind != FunctionKind.Constructor)
+            if (caller?.Kind != FunctionKind.Constructor)
                 throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval inside a method."));
         }
 
@@ -7590,7 +7610,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // If the eval body (or any nested function/arrow) contains an 'arguments'
         // reference, it is a SyntaxError when direct eval is called inside a class
         // field initializer. Recursively scan all nested functions.
-        if (callingEnv is not null && _activeFrames.Count > 0 && _activeFrames.Peek().Function?.Kind == FunctionKind.Constructor)
+        if (callingEnv is not null && caller?.Kind == FunctionKind.Constructor)
         {
             if (ContainsArgumentsRecursive(compiled))
                 throw new JsThrownException(CreateSyntaxError(
@@ -7616,10 +7636,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // the eval in a default value. In the body, `eval('var arguments = 1')`
         // simply assigns the binding, as V8 does; rejecting it everywhere in a
         // function made that a SyntaxError.
-        var callerFrameForArguments = _activeFrames.Count > 0 ? _activeFrames.Peek() : null;
-        var evalInParameterList = callerFrameForArguments?.Function is { PrologueEndIp: > 0 } callerForArguments &&
-            callerFrameForArguments.InstructionPointer <= callerForArguments.PrologueEndIp;
-        if (!strict && callingEnv is FunctionEnvironmentRecord && evalInParameterList &&
+        if (!strict && callingEnv is FunctionEnvironmentRecord && inParameterList &&
             varNames.Contains("arguments"))
         {
             throw new JsThrownException(CreateSyntaxError(
@@ -7630,9 +7647,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // conflict with existing lexical bindings in any outer scope.
         if (!strict && callingEnv is not null)
         {
-            var callingFunction = _activeFrames.Count > 0
-                ? _activeFrames.Peek().Function
-                : null;
+            var callingFunction = caller;
             // Step 3.d walks from the eval's lexical environment out to the
             // caller's variable environment and stops there. A lexical binding
             // further out is shadowed by the var the eval creates, not in
@@ -7649,8 +7664,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // lets are not in scope yet and only a parameter can conflict.
             var inParameterScope = varEnvFunction is not null &&
                 ReferenceEquals(callingFunction, varEnvFunction) &&
-                varEnvFunction.PrologueEndIp > 0 &&
-                _activeFrames.Peek().InstructionPointer <= varEnvFunction.PrologueEndIp;
+                inParameterList;
             var env = callingEnv;
             while (env is not null)
             {
