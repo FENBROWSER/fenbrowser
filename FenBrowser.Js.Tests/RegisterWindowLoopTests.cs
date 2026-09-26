@@ -111,7 +111,7 @@ public sealed class RegisterWindowLoopTests
     [InlineData("var o = { m() { var f = () => this; return f() === o; } }; String(o.m());", "true")]
     [InlineData("var o = { m() { return arguments.length + ':' + arguments[1]; } }; o.m(7, 8, 9);", "3:8")]
     [InlineData("class C { static m() { return this === C; } } String(C.m());", "true")]
-    // A method that reaches for super stays on the old loop, and still works.
+    // A method that reaches for super.
     [InlineData("class A { m() { return 'a'; } } class B extends A { m() { return super.m() + 'b'; } }" +
                 "new B().m();", "ab")]
     // Computed keys, spread and tagged templates.
@@ -147,12 +147,12 @@ public sealed class RegisterWindowLoopTests
     [InlineData("class A { who() { return this.name; } }" +
                 "class B extends A { constructor() { super(); this.name = 'b'; } m() { return super.who(); } }" +
                 "new B().m();", "b")]
-    // An arrow carries no home object of its own; it is refused here and has
-    // to keep working on the old loop.
+    // An arrow carries no home object of its own; it finds the enclosing
+    // method's.
     [InlineData("class A { m() { return 'a'; } }" +
                 "class B extends A { m() { var f = () => super.m(); return f() + 'b'; } } new B().m();", "ab")]
     // A throw from `super[k]` - its ToPropertyKey, or a getter on the base -
-    // has to reach the `try` around it rather than leave the dispatch loop.
+    // has to reach the `try` around it rather than leave the loop.
     [InlineData("var bad = { toString: function () { throw new RangeError('key'); } };" +
                 "var o = { m() { try { return super[bad]; } catch (e) { return 'caught:' + e.message; } } };" +
                 "o.m();", "caught:key")]
@@ -161,7 +161,7 @@ public sealed class RegisterWindowLoopTests
                 "new B().m();", "caught:getter")]
 
     // Accessors and methods, defined by the body that evaluates the class or the
-    // literal - so each case runs inside f(), which is what the new loop runs.
+    // literal - so each case runs inside f().
     [InlineData("function f() { var o = { get v() { return this._v; }, set v(x) { this._v = x * 2; } };" +
                 "o.v = 4; return o.v + ':' + Object.getOwnPropertyDescriptor(o, 'v').get.name; } f();", "8:get v")]
     [InlineData("function f() { class C { get a() { return 1; } } var o = { get b() { return 2; } };" +
@@ -261,7 +261,7 @@ public sealed class RegisterWindowLoopTests
                 "inner,outer")]
     [InlineData("function* g() { try { yield 1; } finally { return 9; } }" +
                 "var it = g(); it.next(); var r = it.next(); String(r.value) + ':' + String(r.done);", "9:true")]
-    // yield* stays on the old loop for now.
+    // yield* over an array.
     [InlineData("function* g() { yield* [1, 2]; } [...g()].join(',');", "1,2")]
     public void RunsAsTheOldLoopDid(string source, string expected)
         => Assert.Equal(expected, Run(source));
@@ -270,7 +270,7 @@ public sealed class RegisterWindowLoopTests
     /// The same comparison for a body that suspends at an await. An async
     /// function's effects land after the script's completion value has been
     /// taken, so each case runs its program, lets the job queue drain, and then
-    /// reads what the program left behind - on both loops, in the same process.
+    /// reads what the program left behind.
     /// </summary>
     /// <remarks>
     /// Every expectation here was taken from node before it was written down.
@@ -350,7 +350,7 @@ public sealed class RegisterWindowLoopTests
     [InlineData("var log = []; Promise.resolve().then(function () { log.push('p'); });" +
                 "(async function () { log.push('a'); await 0; log.push('b'); })();", "log.join(',');", "a,p,b")]
     // An async generator is both machines at once - it suspends at a yield like
-    // a generator and its results are promises - and on both loops it is run as
+    // a generator and its results are promises - and it is run as
     // a generator whose results are wrapped in resolved promises. So an await
     // inside one has no activation to suspend into, and stays inline.
     [InlineData("var out; async function* g() { yield 1; yield 2; }" +

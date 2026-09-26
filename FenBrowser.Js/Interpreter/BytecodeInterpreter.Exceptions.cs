@@ -55,7 +55,7 @@ public sealed partial class BytecodeInterpreter
     // Route a return completion (generator .return() injected at a yield) to the
     // innermost finally block. Catch-only handlers are skipped — a return
     // completion is not catchable. Returns true when a finally was entered (the
-    // dispatch loop continues there); false when no finally covers the position
+    // caller continues there); false when no finally covers the position
     // and the caller should complete the function with the value.
     private static bool TryRouteReturnThroughFinally(InterpreterFrame frame, JsValue value)
     {
@@ -86,7 +86,7 @@ public sealed partial class BytecodeInterpreter
     }
 
     /// <summary>
-    /// Routes a throw the way the dispatch loop does and reports whether this
+    /// Routes a throw to this frame's handlers and reports whether this
     /// frame took it. Compiled bodies have no instruction pointer of their own
     /// to redirect, so they need to know whether to resume at the handler
     /// ThrowOrHandle selected or let the exception leave the frame.
@@ -146,11 +146,10 @@ public sealed partial class BytecodeInterpreter
             if (catchIp >= 0)
             {
                 frame.InstructionPointer = catchIp;
-                // The dispatch loop reads the instruction pointer every step and
-                // so needs no telling. Compiled code does not: it would carry on
-                // with the instruction after the one that threw, running the rest
-                // of the try block as though nothing had happened. Say that the
-                // pointer moved.
+                // Compiled code does not read the pointer between instructions:
+                // untold, it would carry on with the instruction after the one
+                // that threw, running the rest of the try block as though nothing
+                // had happened. Say that the pointer moved.
                 frame.ThrowRoutedToHandler = true;
                 _heap.PopRootsTo(rootMark);
                 return;

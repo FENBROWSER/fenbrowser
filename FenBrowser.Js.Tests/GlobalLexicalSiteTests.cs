@@ -9,8 +9,8 @@ namespace FenBrowser.Js.Tests;
 // A top-level let, const or class lives in the global record's lexical half
 // (ECMA-262 9.1.1.4), which numbers its names in declaration order so a
 // free-variable site can reach one by slot. Each case runs twice: once in a
-// function the register-window loop takes, once in one it declines (a block
-// binding captured by a closure), which puts it on the dispatch loop. The loops
+// function the register-window loop takes, once in one it lays out with its blocks
+// as records (a block binding captured by a closure). The loops
 // run long enough to be handed to compiled code as well.
 public sealed class GlobalLexicalSiteTests
 {

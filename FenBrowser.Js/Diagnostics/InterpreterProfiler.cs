@@ -6,7 +6,7 @@ namespace FenBrowser.Js.Diagnostics;
 
 // Opt-in bytecode profiler for triaging pathologically slow real-world
 // bundles. Enabled by FEN_FENJS_PROFILE=1; when disabled every hook is a
-// single static bool test that the JIT folds away, so the dispatch loop pays
+// single static bool test that the JIT folds away, so the interpreter pays
 // nothing on the normal path.
 //
 // Counts are per-opcode and per-function so a report answers both "which

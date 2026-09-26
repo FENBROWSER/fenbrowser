@@ -31,7 +31,7 @@ namespace FenBrowser.Js.Bytecode;
 public static class JitCompiler
 {
     /// <summary>
-    /// Set FEN_JIT_DISABLE=1 to keep everything on the dispatch loop. Having a
+    /// Set FEN_JIT_DISABLE=1 to keep everything on the register-window loop. Having a
     /// switch makes a JIT change measurable against the interpreter it is
     /// supposed to beat, rather than against the last build.
     /// </summary>
@@ -159,7 +159,7 @@ public static class JitCompiler
     // ---------------------------------------------------- register-window loop
     //
     // The register-window loop (Interp2) runs most code, and a compiled body is
-    // entered through the old loop's frame setup. That setup is what a call
+    // entered through an InterpreterFrame's setup (ExecuteInternalCore). That setup is what a call
     // costs there - x_medium_calls runs 35% slower on v1+JIT than on Interp2 -
     // while a compiled loop iteration saves ~80ns (x_simple_loop: 132ns an
     // iteration interpreted, 53ns compiled). So compiled code only wins for a
@@ -629,7 +629,7 @@ public static class JitCompiler
         var body = new List<Expression>();
         var dispatchLabel = Expression.Label("dispatch");
         body.Add(Expression.Label(dispatchLabel));
-        // A frame that entered compiled code after the dispatch loop routed a
+        // A frame that entered compiled code after a helper routed a
         // throw would otherwise see a flag left over from that.
         body.Add(Expression.Assign(
             Expression.Field(frameParam, FiThrowRouted), Expression.Constant(false)));
@@ -720,11 +720,11 @@ public static class JitCompiler
         }
 
         // Falling off the end without a Return yields undefined, same as the
-        // dispatch loop. Leaving the try lands on the label below it.
+        // interpreter. Leaving the try lands on the label below it.
         body.Add(Expression.Goto(returnLabel, Expression.Constant(JsValue.Undefined)));
 
         // Anything the body throws is offered to this frame's handlers exactly
-        // as the dispatch loop offers it. If one takes it, ThrowOrHandle has
+        // as the interpreter offers it. If one takes it, ThrowOrHandle has
         // already set the instruction pointer and restored the environment, so
         // resuming is a matter of dispatching to that offset; if none does, the
         // exception carries on out of the frame.

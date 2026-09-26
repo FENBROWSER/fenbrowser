@@ -8,7 +8,7 @@ using Xunit;
 namespace FenBrowser.Js.Tests;
 
 // Runaway recursion through compiled frames must end in the catchable
-// RangeError the dispatch loop gives, not a process-ending StackOverflow. It
+// RangeError the interpreter gives, not a process-ending StackOverflow. It
 // used to overflow a second time while unwinding: every compiled frame caught
 // the error and rethrew it on top of the stack the first throw still held.
 public sealed class BaselineStackOverflowTests

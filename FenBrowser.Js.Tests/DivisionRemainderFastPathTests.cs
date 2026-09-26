@@ -53,7 +53,7 @@ public class DivisionRemainderFastPathTests
     [Fact]
     public void TheSameAnswersComeBackAfterTierUp()
     {
-        // Long enough that the compiled body answers, not the dispatch loop.
+        // Long enough that the compiled body answers, not the interpreter.
         var v = Run($@"
             function work(i) {{ return (i % 7) + (i / 4) + (i % 0.5); }}
             var last = 0;

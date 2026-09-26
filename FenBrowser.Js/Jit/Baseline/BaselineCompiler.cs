@@ -17,7 +17,7 @@ namespace FenBrowser.Js.Jit.Baseline;
 /// </summary>
 /// <remarks>
 /// The compiled body shares the interpreter's frame: registers, environment and
-/// instruction pointer all stay where the dispatch loop keeps them. A running
+/// instruction pointer all stay where the frame keeps them. A running
 /// frame can therefore hand over at a loop header and a routed throw can hand
 /// back, with no state to reconcile in either direction.
 /// </remarks>
@@ -120,7 +120,7 @@ internal static class BaselineCompiler
 
             _dispatch = il.DefineLabel();
             il.Mark(_dispatch);
-            // A frame entering compiled code after the dispatch loop routed a
+            // A frame entering compiled code after a helper routed a
             // throw would otherwise see the flag left over from that.
             il.Arg(1);
             il.Int(0);
@@ -173,7 +173,7 @@ internal static class BaselineCompiler
                 EmitRoutedThrowCheck(instruction.OpCode);
             }
 
-            // Falling off the end yields undefined, as the dispatch loop does.
+            // Falling off the end yields undefined, as the interpreter does.
             il.Get(PiJsValueUndefined);
             il.Store(_returnValue);
             il.Branch(OpCodes.Leave, _exit);
@@ -408,11 +408,11 @@ internal static class BaselineCompiler
 
         /// <summary>
         /// Anything the body throws is offered to this frame's handlers exactly
-        /// as the dispatch loop offers it. An interrupt or an exhausted budget is
+        /// as the interpreter offers it. An interrupt or an exhausted budget is
         /// not the script's to catch, so it leaves without being offered.
         /// </summary>
         /// <remarks>
-        /// The decision is an exception filter, as in the dispatch loop's catch
+        /// The decision is an exception filter, as in the interpreter's catch
         /// sites (HasHandler): a throw no try in this frame wants passes by
         /// uncaught. Catching and rethrowing it instead runs each rethrow on top
         /// of the stack the first throw still holds, so a stack overflow
@@ -837,7 +837,7 @@ internal static class BaselineCompiler
                     // D=1 is an object literal's create, not an assignment, and
                     // the store cache below performs an assignment - which would
                     // run an inherited setter the specification says must not
-                    // run. It goes through the dispatch loop's define instead.
+                    // run. It goes through the interpreter's define instead.
                     if (ins.D != 0)
                     {
                         il.Arg(0);
@@ -1065,9 +1065,9 @@ internal static class BaselineCompiler
             }
         }
 
-        // The dispatch loop records the call and returns, and ExecuteInternal
+        // The call is recorded and this body returns, and ExecuteInternal
         // makes it once this frame is gone, which is what keeps a tail-recursive
-        // function from growing the stack. Compiled code does the same.
+        // function from growing the stack.
         private bool EmitTailCall(int callee, int argStart, int argCount)
         {
             var registerCount = (uint)function.RegisterCount;
@@ -1650,7 +1650,7 @@ internal static class BaselineCompiler
         }
 
         /// <summary>
-        /// Tagging matches the dispatch loop's: an integral result keeps the
+        /// Tagging matches the interpreter's: an integral result keeps the
         /// Int32 tag, because the tag decides which fast paths the operators
         /// downstream can take, and a loop counter feeds the bitwise operators a
         /// minified bundle is built out of.

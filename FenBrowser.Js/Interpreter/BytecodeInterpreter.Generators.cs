@@ -16,7 +16,7 @@ public sealed partial class BytecodeInterpreter
     // async generator is here: the body runs as a plain generator and each
     // result is wrapped in a resolved promise, so there is no context to put the
     // frame away in. Keep the historical inline behaviour rather than failing
-    // the whole evaluation. Both loops come here, so there is one copy of it.
+    // the whole evaluation.
     internal JsValue AwaitWithNothingToSuspendInto(PromiseInstance instance)
     {
         if (instance.Promise.State == PromiseState.Fulfilled)

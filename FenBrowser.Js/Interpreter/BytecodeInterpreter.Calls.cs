@@ -696,8 +696,9 @@ public sealed partial class BytecodeInterpreter
             BytecodeFunction fn;
             int callIp;
             ReadOnlyMemory<JsValue> registers;
-            // The two loops nest in either order; the innermost activation is
-            // the classic frame unless a register window was pushed after it.
+            // Compiled frames and register windows nest in either order; the
+            // innermost activation is the compiled frame unless a window was
+            // pushed after it.
             var classic = _activeFrames.Count > 0 ? _activeFrames.Peek() : null;
             var windowIsInnermost = _interp2 != null &&
                                     _interp2.Depth > (classic?.Interp2DepthAtEntry ?? 0);

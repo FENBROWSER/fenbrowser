@@ -13,7 +13,7 @@ public class JsThrownException : Exception
 
     /// <summary>
     /// An abort the script is not allowed to observe: an exhausted instruction
-    /// budget, an interrupt, a wall-clock deadline. The dispatch loop raises
+    /// budget, an interrupt, a wall-clock deadline. The register-window loop raises
     /// these outside its handler routing so no try/catch can swallow the very
     /// thing stopping a runaway script, and compiled bodies must leave them
     /// alone for the same reason.

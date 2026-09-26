@@ -14,7 +14,7 @@ namespace FenBrowser.Js.Interpreter2;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The old loop costs about 400ns to enter an empty function, and the handoff
+/// The original dispatch loop cost about 400ns to enter an empty function, and the handoff
 /// that measured it found no single step worth more than about 30ns: the cost is
 /// the sequence itself. Each call rents a register array from a size-keyed pool,
 /// allocates or rents an environment record, attaches slot storage to it, binds
@@ -43,7 +43,7 @@ namespace FenBrowser.Js.Interpreter2;
 /// </para>
 /// <para>
 /// Semantics are not reimplemented here. Every operation that is more than a
-/// register move calls the same helper the old loop calls, through the facade in
+/// register move calls the same helper compiled code calls, through the facade in
 /// <c>BytecodeInterpreter.Interp2Host.cs</c>. This file decides where values live
 /// and how a frame is entered; it does not decide what <c>+</c> means.
 /// </para>
@@ -53,7 +53,7 @@ internal sealed class Interp2
     /// <summary>
     /// Dispatched instructions between guard checks. The wall-clock deadline and
     /// the interrupt callback are sampled rather than tested per instruction,
-    /// for the same reason the old loop samples them: a delegate invocation and
+    /// because a delegate invocation and
     /// a clock read on every step are measurable on a tight loop. The engine's
     /// promise is that a runaway script stops, not that it stops on an exact
     /// instruction.
@@ -159,7 +159,7 @@ internal sealed class Interp2
 
     /// <summary>
     /// The innermost window's function, its instruction pointer (the index
-    /// just past the instruction being executed, as the old loop counts it)
+    /// just past the instruction being executed, as compiled frames count it)
     /// and its register span, for diagnostics that name the callee of a
     /// failing call. Null when no window is live.
     /// </summary>
@@ -291,8 +291,8 @@ internal sealed class Interp2
                 {
                     // Every throw arrives here as a CLR exception, whether it
                     // came from a `throw` in this loop, from a getter three
-                    // frames down, or from the old loop running a callee this
-                    // one declined. One place to unwind from means the dispatch
+                    // frames down, or from compiled code this one
+                    // called. One place to unwind from means the dispatch
                     // itself carries no exception handling at all - and the
                     // handler region is around the outermost entry rather than
                     // around the loop, which is worth about 5% of it.
@@ -474,7 +474,7 @@ internal sealed class Interp2
     /// Run an async function body from its start. It returns when the body
     /// finishes, or when an await suspends it - the caller settles the promise
     /// in the first case and hands back the pending one in the second, exactly
-    /// as it does for a body on the old loop.
+    /// as it does for any async body.
     /// </summary>
     internal JsValue RunAsync(
         AsyncContext context, JsFunctionObject callee, JsValue[] args, JsValue thisValue)
@@ -828,8 +828,7 @@ internal sealed class Interp2
         // and are written back only when a call or a return changes which frame
         // is running. Reaching through the frame array on every operand access
         // is a load the dispatch cannot afford at two or three accesses per
-        // instruction - which is the same reason the old loop hoists its
-        // register array.
+        // instruction.
         var stack = _stack;
         BytecodeFunction function;
         FrameLayout layout;
@@ -850,8 +849,7 @@ internal sealed class Interp2
         {
             ref readonly var ins = ref code[ip++];
 
-            // The opcode histogram, on the same switch the dispatch loop uses, so
-            // a page can be profiled on either loop. Enabled is a static
+            // The opcode histogram. Enabled is a static
             // readonly bool, so with the switch off the JIT drops all of this.
             if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
             {
@@ -1121,7 +1119,7 @@ internal sealed class Interp2
                     // code - a thenable's `then` getter - so the window is saved
                     // after that and before the reactions are attached.
                     // An async generator's frame has no activation to suspend
-                    // into, here or on the old loop, so its awaits stay inline.
+                    // into, so its awaits stay inline.
                     var awaiting = _frames[_depth - 1].AsyncContext;
                     var suspends = _host.Interp2AwaitPrepare(
                         stack[frameBase + ins.B], awaiting is not null,
@@ -2353,7 +2351,7 @@ internal sealed class Interp2
         JsValue newTarget = default)
     {
         // The entry path takes its arguments as a CallArgs because that is what
-        // the old loop hands over. Copying them into the window through the
+        // a host call hands over. Copying them into the window through the
         // shared helper keeps one binding routine rather than two.
         var window = Reserve(layout);
         var stack = _stack;
@@ -2749,7 +2747,7 @@ internal sealed class Interp2
     /// frame stack while this runs (its finally has not reset the depth yet),
     /// but that entry's own filter has already found them without a handler.
     /// </remarks>
-    // Back-edges feed the same tier-up evidence the old loop gathers: a body
+    // Back-edges are the tier-up evidence: a body
     // that loops long enough is compiled (see JitCompiler.RequestLoopTierUp),
     // and later calls to it run compiled when it loops enough per call.
     //
@@ -2913,8 +2911,8 @@ internal sealed class Interp2
                 if (catchIp < 0 && finallyIp < 0)
                 {
                     // A handler with neither half is not one the compiler emits.
-                    // The dispatch loop abandons the frame in that case rather
-                    // than trying its outer entries, so this does the same.
+                    // The frame is abandoned in that case rather than trying
+                    // its outer entries.
                     break;
                 }
 
@@ -3446,8 +3444,8 @@ internal sealed class Interp2
 
     /// <summary>
     /// Where a slot lives. An index the layout does not cover is treated as
-    /// free, which sends it to the scope chain - the answer the old loop gives
-    /// for a slot with no local binding.
+    /// free, which sends it to the scope chain - the answer for a slot with no
+    /// local binding.
     /// </summary>
     private static SlotHome HomeOfSlot(FrameLayout layout, int slot)
         => (uint)slot < (uint)layout.SlotHomes.Length ? layout.SlotHomes[slot] : SlotHome.Free;

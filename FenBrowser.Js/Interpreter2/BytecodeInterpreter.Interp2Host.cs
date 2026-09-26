@@ -12,19 +12,18 @@ namespace FenBrowser.Js.Interpreter;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The new loop decides where a value lives and how a frame is entered. It does
+/// The loop decides where a value lives and how a frame is entered. It does
 /// not decide what any operator, coercion or property lookup means: every one of
-/// those goes back through the method the old loop already calls, so the two
-/// cannot disagree about semantics no matter how far the new one is taken. This
-/// file is that boundary, and it is the only place the two loops touch.
+/// those goes through a helper on the interpreter - the same one compiled code
+/// calls - so the two cannot disagree about semantics. This file is that
+/// boundary.
 /// </para>
 /// <para>
 /// It is a partial of <see cref="BytecodeInterpreter"/> rather than an interface
 /// because most of what it forwards to is private, and widening thirty members
-/// to expose them would make the old loop's internals part of the engine's API.
-/// Keeping the file beside the new loop instead means all of the new loop's
-/// surface is in one folder and can be deleted in one commit if the direction
-/// does not pay.
+/// to expose them would make the interpreter's internals part of the engine's
+/// API. Keeping the file beside the loop instead means all of the loop's
+/// surface is in one folder.
 /// </para>
 /// </remarks>
 public sealed partial class BytecodeInterpreter
@@ -79,10 +78,10 @@ public sealed partial class BytecodeInterpreter
     /// code, from the loop header it was about to run.
     /// </summary>
     /// <remarks>
-    /// Compiled code runs on an old-loop frame, so one is built holding what
+    /// Compiled code runs on an InterpreterFrame, so one is built holding what
     /// the window holds: the registers as they are, and every variable the body
     /// declares in the frame's record - the one closures already share when
-    /// there is one, a fresh one shaped as the old loop's prologue shapes it
+    /// there is one, a fresh one shaped as a compiled call's prologue shapes it
     /// otherwise. The caller has checked there is nothing else to carry over:
     /// no handler, no block record, no suspension.
     /// </remarks>
@@ -140,7 +139,7 @@ public sealed partial class BytecodeInterpreter
 
         var frame = RentFrame(function, thisValue, environment, RentRegisterFile(function.RegisterCount));
         frame.CalleeFunctionObject = callee;
-        // As the old loop's prologue: an arrow's and eval code's new.target is
+        // As a compiled call's prologue: an arrow's and eval code's new.target is
         // the enclosing function's.
         frame.NewTarget = function.IsArrow || function.IsProgramCode
             ? ResolveLexicalNewTarget(environment)
@@ -185,11 +184,10 @@ public sealed partial class BytecodeInterpreter
     /// the deadline and the interrupt.
     /// </summary>
     /// <remarks>
-    /// The old loop tests the budget on every instruction and samples the clock
-    /// every 8192. The new loop charges in blocks, so a script overruns its
+    /// The loop charges the budget in blocks, so a script overruns its
     /// budget by at most one block before it is stopped. That is the same
     /// guarantee in substance - a runaway script halts - with an error raised a
-    /// few thousand instructions later than the old loop would raise it. Both
+    /// few thousand instructions later than a per-instruction test would. Both
     /// failures are uncatchable by script, so neither can be swallowed by a
     /// handler and turned into a hang.
     /// </remarks>
@@ -232,8 +230,9 @@ public sealed partial class BytecodeInterpreter
     // -------------------------------------------------------------- call entry
 
     /// <summary>
-    /// Everything the new loop cannot enter itself: natives, bound functions,
-    /// proxies, generators, async bodies, and any function its layout declined.
+    /// Everything the loop cannot enter itself: natives, bound functions,
+    /// proxies, generators, async bodies, compiled code, and a class
+    /// constructor called without `new`.
     /// </summary>
     internal JsValue Interp2Call(JsValue callee, in CallArgs args, JsValue thisValue)
         => CallFunction(callee, args, thisValue);
@@ -301,7 +300,7 @@ public sealed partial class BytecodeInterpreter
         if (function.IsArrow)
         {
             var arrowContext = StampEnvironment(new DeclarativeEnvironmentRecord(outerEnvironment));
-            // The arrow's variable environment, as on the old loop.
+            // The arrow's variable environment, as for a compiled call.
             arrowContext.IsVariableScope = true;
             arrowContext.AttachSlotStorage(function, function.VariableSlots, function.SlotNames.Length);
             return arrowContext;
@@ -342,7 +341,7 @@ public sealed partial class BytecodeInterpreter
         }
 
         // No record in the chain provides one - fall back to the receiver the
-        // call supplied, which is what the dispatch loop does.
+        // call supplied.
         return status == BindingOpResult.Ok ? value : frameReceiver;
     }
 
@@ -368,7 +367,7 @@ public sealed partial class BytecodeInterpreter
             _heap.GetObject(awaitedPromise.AsObjectHandle()) is not Promises.PromiseInstance instance)
         {
             // Not something with reactions to hang the resumption on, so the
-            // value is its own result - as it is on the old loop.
+            // value is its own result.
             inlineResult = value;
             return false;
         }
@@ -662,7 +661,7 @@ public sealed partial class BytecodeInterpreter
     /// <summary>
     /// ECMA-262 9.1.2.1 GetIdentifierReference for a name this body does not
     /// declare. The walk starts at the closure's environment because a frame on
-    /// the new loop has none of its own - everything it declares is a register,
+    /// the loop has none of its own - everything it declares is a register,
     /// so there is nothing between it and its closure to shadow the name.
     /// </summary>
     internal JsValue Interp2LoadFree(EnvironmentRecord? outerEnvironment, string? name, bool strict)
@@ -740,8 +739,8 @@ public sealed partial class BytecodeInterpreter
     /// can call a <c>valueOf</c>, which can delete the very property the name
     /// resolved to. Walking again then answers differently - a ReferenceError in
     /// strict code where the spec says the write lands. Held on the interpreter
-    /// rather than the frame, and matched by name at the store, exactly as the
-    /// old loop holds it, so both loops answer the same.
+    /// rather than the frame, and matched by name at the store, exactly as compiled
+    /// code holds it, so both answer the same.
     /// </remarks>
     /// <summary>
     /// <see cref="Interp2PreResolveFree"/> through the slot's site, when the
@@ -931,7 +930,7 @@ public sealed partial class BytecodeInterpreter
     /// current receiver as the `this` an accessor would see.
     /// </summary>
     /// <remarks>
-    /// The old loop finds the home object on the frame's callee, and failing
+    /// A compiled frame finds the home object on its callee, and failing
     /// that walks the environment chain for an arrow that closed over one. Only
     /// the first case can arise here: a body whose nested function reaches for
     /// the enclosing `super` is refused by the capture analysis before it runs.
@@ -971,7 +970,7 @@ public sealed partial class BytecodeInterpreter
 
     /// <summary>
     /// An accessor on an object literal or a class - <c>get x() {}</c>,
-    /// <c>set [k](v) {}</c> - through the core the old loop's handlers wrap.
+    /// <c>set [k](v) {}</c> - through the core compiled code calls too.
     /// <paramref name="name"/> is the constant name, or null when the key is in
     /// <paramref name="key"/>.
     /// </summary>
@@ -979,11 +978,11 @@ public sealed partial class BytecodeInterpreter
         JsValue target, string? name, JsValue key, JsValue accessor, bool isGetter, bool enumerable)
         => DefineAccessorCore(target, name, key, accessor, isGetter, enumerable);
 
-    /// <summary>A class or object-literal method, through the old loop's core.</summary>
+    /// <summary>A class or object-literal method, through the shared core.</summary>
     internal void Interp2DefineMethod(JsValue target, string? name, JsValue key, JsValue method)
         => DefineMethodCore(target, name, key, method);
 
-    /// <summary>ECMA-262 7.3.5 CreateDataPropertyOrThrow, shared with the old loop.</summary>
+    /// <summary>ECMA-262 7.3.5 CreateDataPropertyOrThrow, shared with compiled code.</summary>
     internal void Interp2DefineOwnDataProperty(JsValue target, string key, JsValue value)
         => DefineOwnDataProperty(target, key, value);
 
@@ -1225,15 +1224,15 @@ public sealed partial class BytecodeInterpreter
     // ------------------------------------------------------------- operators
 
     /// <summary>
-    /// The two-operand numeric fast path, shared verbatim with the old loop and
-    /// the JIT so all three agree on what a Number-Number operation produces.
+    /// The two-operand numeric fast path, shared verbatim with the JIT so both
+    /// agree on what a Number-Number operation produces.
     /// </summary>
     internal static bool Interp2TryFastBinary(OpCode op, in JsValue left, in JsValue right, out JsValue result)
         => TryFastBinop(op, in left, in right, out result);
 
     /// <summary>
-    /// The generic form of every binary operator the new loop dispatches, each
-    /// forwarding to the same helper the old loop's case forwards to.
+    /// The generic form of every binary operator the loop dispatches, each
+    /// forwarding to the same helper compiled code calls.
     /// </summary>
     internal JsValue Interp2SlowBinary(OpCode op, JsValue left, JsValue right) => op switch
     {
@@ -1299,10 +1298,9 @@ public sealed partial class BytecodeInterpreter
 
     /// <summary>
     /// ECMA-262 13.3.2 property access by literal name, through the same
-    /// per-call-site inline cache the old loop populates. The caches are keyed
-    /// by (function, instruction offset), which both loops agree on because they
-    /// execute the same bytecode - so a site warmed on one loop is warm on the
-    /// other.
+    /// per-call-site inline cache compiled code uses. The caches are keyed by
+    /// (function, instruction offset), which both agree on because they execute
+    /// the same bytecode - so a site warmed by one is warm for the other.
     /// </summary>
     /// <param name="getter">
     /// Set, with the result undefined, when the read resolves through this

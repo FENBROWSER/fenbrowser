@@ -6,7 +6,7 @@ using Xunit;
 namespace FenBrowser.Js.Tests;
 
 // A bitwise operator coerces through ToInt32 (ECMA-262 13.9, 13.12), so a
-// number reaches it however it happens to be tagged. The dispatch loop settles
+// number reaches it however it happens to be tagged. The interpreter settles
 // those without entering the generic operator, which is where the modulo-2^32
 // wrap, the infinities and NaN all have to come out right.
 public class BitwiseNumericCoercionTests

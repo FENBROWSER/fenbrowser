@@ -228,7 +228,7 @@ namespace FenBrowser.Tooling
                     {
                         var interp = new FenBrowser.Js.Interpreter.BytecodeInterpreter
                         {
-                            // The dispatch loop only counts instructions when a
+                            // The interpreter only counts instructions when a
                             // budget is set, so a tool that exists to report the
                             // count has to ask for one. int.MaxValue is far past
                             // anything a benchmark reaches, so nothing is capped.

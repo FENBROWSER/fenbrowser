@@ -72,8 +72,7 @@ public sealed class InterpreterFrame
 
 	/// <summary>
 	/// Set when ThrowOrHandle moved this frame's instruction pointer to a
-	/// handler instead of raising. The dispatch loop reads the pointer every
-	/// step and needs no telling; compiled code has to be told, or it carries on
+	/// handler instead of raising. Compiled code has to be told, or it carries on
 	/// with the instruction after the one that threw.
 	/// </summary>
 	public bool ThrowRoutedToHandler;
@@ -88,7 +87,7 @@ public sealed class InterpreterFrame
 
 	/// <summary>
 	/// How many register-window frames were live when this frame was pushed.
-	/// The two loops nest in either order, so diagnostics use it to tell
+	/// Compiled frames and windows nest in either order, so diagnostics use it to tell
 	/// whether this frame or a window pushed after it is the innermost one.
 	/// </summary>
 	internal int Interp2DepthAtEntry { get; set; }

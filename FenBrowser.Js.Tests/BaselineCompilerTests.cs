@@ -7,8 +7,8 @@ using Xunit;
 namespace FenBrowser.Js.Tests;
 
 // The baseline tier emits IL directly, so what it produces has to agree with
-// the dispatch loop instruction for instruction. Each case here runs past the
-// tier-up threshold, which puts the same work through both.
+// the register-window loop instruction for instruction. Each case here runs
+// past the tier-up threshold, which puts the same work through both.
 public class BaselineCompilerTests
 {
     private const int TierUp = 2000;

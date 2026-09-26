@@ -7,7 +7,7 @@ namespace FenBrowser.Js.Tests;
 
 // The default interpreter must allow ordinary recursion (the old default of 20
 // frames threw on fib(21)) and still turn a runaway recursion into a catchable
-// RangeError, including when every level re-enters the dispatch loop through a
+// RangeError, including when every level re-enters the interpreter through a
 // native and so spends CLR stack rather than frame-stack slots.
 public sealed class CallDepthTests
 {

@@ -7,7 +7,8 @@ namespace FenBrowser.Js.Tests;
 
 // Error.prototype.stack (a host-defined property every engine provides): the
 // active frames innermost first, as "    at name (file:line:column)", across
-// both dispatch loops and through natives that call back into script.
+// register windows and compiled frames and through natives that call back
+// into script.
 public sealed class ErrorStackTests
 {
     private static string[] StackLines(string source)

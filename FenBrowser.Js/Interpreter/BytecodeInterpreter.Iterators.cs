@@ -136,7 +136,7 @@ public sealed partial class BytecodeInterpreter
     /// gets the iterator, and each resume forwards the generator's pending
     /// completion - next, throw or return - to it. The delegate's result object
     /// is yielded as it is, not rebuilt (27.5.3.7 GeneratorYield(innerResult)),
-    /// and its `done` and `value` are read with [[Get]]. Shared by both loops.
+    /// and its `done` and `value` are read with [[Get]].
     /// </summary>
     internal YieldStarOutcome YieldStarStep(GeneratorObject generator, JsValue operand, out JsValue value)
     {

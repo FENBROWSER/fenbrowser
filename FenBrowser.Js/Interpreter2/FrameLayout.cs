@@ -42,7 +42,7 @@ public enum Interp2Bailout
 /// worked out once and cached on the function itself.
 /// </summary>
 /// <remarks>
-/// The old loop gives every call a heap <c>InterpreterFrame</c>, a pooled
+/// The original dispatch loop gave every call a heap <c>InterpreterFrame</c>, a pooled
 /// register array and an <c>EnvironmentRecord</c> whose bindings are reached
 /// through slot arrays hanging off it. Most of that exists to serve the cases
 /// that need it - a closure capturing the scope, a generator suspending with it
@@ -54,10 +54,10 @@ public enum Interp2Bailout
 /// frame is a window on a shared stack, and entering it is a bump of two
 /// pointers.
 ///
-/// Eligibility is decided <b>before</b> the frame is entered and it is total:
-/// every opcode in the body must be one the new loop implements. There is
-/// deliberately no mid-body bailout. A loop that can abandon a half-executed
-/// frame has to be able to rebuild the old loop's state out of its own, and that
+/// The layout is decided <b>before</b> the frame is entered and it is total:
+/// every body the compiler emits has one. There is deliberately no mid-body
+/// bailout. A loop that can abandon a half-executed frame has to be able to
+/// rebuild some other representation's state out of its own, and that
 /// reconstruction is where an engine of this shape grows its subtlest bugs. A
 /// gate that is a single "yes" costs one cached field read per call and cannot
 /// be wrong halfway through.
@@ -129,13 +129,11 @@ public sealed class FrameLayout
 
     public BytecodeFunction Function { get; }
 
-    /// <summary>Why the new loop declined this body; <c>None</c> when it did not.</summary>
+    /// <summary>Why this analysis pass could not lay the body out; <c>None</c> when it could.</summary>
     public Interp2Bailout Bailout { get; }
 
     /// <summary>
     /// The opcode that decided it, when the reason was an unimplemented one.
-    /// Ranked across a real workload this is the work queue: the opcode at the
-    /// top of the list is the one holding the most code on the old loop.
     /// </summary>
     public OpCode? BailoutOpCode { get; }
 
@@ -456,10 +454,8 @@ public sealed class FrameLayout
         // with the call. What a home object is *for* is `super`, and a body
         // that reaches for one emits LoadSuperProperty, LoadSuperElement or
         // LoadSuperConstructor, which the opcode gate below refuses on its own.
-        // An async generator suspends at a yield like any other generator. On
-        // the old loop that is all it does - the body runs as a plain generator
-        // and its results are wrapped in resolved promises - so the two loops
-        // agree by running the same machinery, not by this one doing less.
+        // An async generator suspends at a yield like any other generator; its
+        // results are wrapped in resolved promises.
         var isGenerator = function.Kind is FunctionKind.Generator or FunctionKind.AsyncGenerator;
         // An async function suspends at an await and is resumed by a promise
         // job, which is the generator machinery pointed somewhere else. Module
@@ -486,9 +482,6 @@ public sealed class FrameLayout
         // object in its record. A body's own arguments object is a snapshot
         // rather than an alias of the parameter bindings, so a parameter can
         // still be a register.
-        // let/const need a hole distinct from undefined to keep the temporal
-        // dead zone observable. A register window has no such value yet, so the
-        // bodies that declare them stay on the old loop for now.
         // Slots are classified before the opcodes are scanned, because two of
         // the opcodes are only implementable for a slot this body owns.
         var slotNames = SlotNamesOf(function);
@@ -496,8 +489,7 @@ public sealed class FrameLayout
         var registerCount = function.RegisterCount;
 
         // A slot this body declares lives in its own window; anything else is a
-        // free identifier and resolves through the closure's environment chain,
-        // exactly as it does on the old loop.
+        // free identifier and resolves through the closure's environment chain.
         // A block introduces its binding with EnterScope, whose operand is the
         // slot. Those are declarations of this body as much as a `var` is, and
         // have to be classified before anything else looks at a slot.
@@ -650,7 +642,7 @@ public sealed class FrameLayout
 
             // A slot the layout never classified has no home to write to.
             // A free one does now: the loop carries the resolution between the
-            // two instructions on the interpreter, the way the old loop does.
+            // two instructions on the interpreter.
             if (ins.OpCode is OpCode.PreResolveVar or OpCode.StoreResolvedVar &&
                 (uint)ins.B >= (uint)slotCount)
             {
@@ -819,8 +811,8 @@ public sealed class FrameLayout
             parameterWindowIndex[i] = registerCount + slot;
         }
 
-        // Same for hoisted vars: the old loop's declaration instantiation would
-        // have created a binding by name for one the compiler gave no slot.
+        // Same for hoisted vars: declaration instantiation would create a
+        // binding by name for one the compiler gave no slot.
         if (!isProgram && !function.AllVarSlotsMapped)
             return new FrameLayout(function, Interp2Bailout.UnmappedSlot);
 
@@ -968,7 +960,7 @@ public sealed class FrameLayout
     /// cannot keep in registers.
     /// </summary>
     /// <remarks>
-    /// A block scope on the old loop is a record spliced into the chain, holding
+    /// A block scope as a record is one spliced into the chain, holding
     /// one binding. Here it is just a slot in the window, which works exactly
     /// when the block cannot be told apart from a straight-line assignment:
     ///
@@ -1118,10 +1110,9 @@ public sealed class FrameLayout
     }
 
     /// <summary>
-    /// The opcodes the register-window loop implements. Everything absent from
-    /// this table sends its function to the old loop, so growing the new loop is
-    /// always additive: an opcode joins the table only once its handler is
-    /// written and its test262 slice is green.
+    /// The opcodes the register-window loop implements - every one the compiler
+    /// emits. A body with an opcode missing here cannot be laid out, which is an
+    /// engine defect rather than a fallback.
     /// </summary>
     private static bool[] BuildSupportedOpCodeTable()
     {

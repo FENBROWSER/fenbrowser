@@ -5,10 +5,11 @@ using Xunit;
 
 namespace FenBrowser.Js.Tests;
 
-// The dispatch loop and compiled code key their free-variable sites by
-// instruction (BytecodeFunction.NameSites). Every function here captures a
-// block-scoped binding in a closure, which the register-window loop declines
-// (Bailout.BlockScopeCaptured), so these bodies run on the dispatch loop.
+// Free-variable reads in bodies whose blocks are records: every function here
+// captures a block-scoped binding in a closure, so the register-window loop lays
+// it out with its blocks as records, and a name can resolve to a nearer
+// binding at one instruction than at another. Compiled code keys its sites by
+// instruction (BytecodeFunction.NameSites) for the same reason.
 public sealed class DispatchLoopFreeVariableSiteTests
 {
     private const string KeepOnDispatchLoop = "{ let pin = 0; var keep = function () { return pin; }; }";

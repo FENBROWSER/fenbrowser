@@ -9,7 +9,7 @@ namespace FenBrowser.Js.Tests;
 // ECMA-262 10.2.11 FunctionDeclarationInstantiation: a rest parameter is bound
 // to a new array of every argument from its position on. The register-window
 // loop used to decline any body with one, which on a real library was the
-// largest share of calls still running on the old loop.
+// largest share of calls then still running on the old loop.
 public sealed class Interp2RestParameterTests
 {
     private static BytecodeFunction Compile(string source)

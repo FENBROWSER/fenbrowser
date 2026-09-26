@@ -6,8 +6,8 @@ using Xunit;
 
 namespace FenBrowser.Js.Tests;
 
-// The register-window loop gathers the same tier-up evidence as the old loop
-// and hands a call to compiled code only for a body whose loops stay on what
+// The register-window loop gathers tier-up evidence from back-edges and hands a
+// call to compiled code only for a body whose loops stay on what
 // compiled code is faster at (BytecodeFunction.LoopsSuitCompiledCode).
 public sealed class Interp2TierUpTests
 {

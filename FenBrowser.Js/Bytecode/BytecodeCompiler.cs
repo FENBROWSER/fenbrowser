@@ -5709,7 +5709,8 @@ public sealed class BytecodeCompiler
     // The body environment is worth making only if the body has something to put
     // in it: a declaration of its own, or a direct eval that may add one. Without
     // that, the parameters cannot tell it from the frame's own record - and every
-    // function carrying the instruction is one the new loop declines, which on
+    // function carrying the instruction is one the loop has to lay out with its
+    // scope resolved through records, which on
     // test/language was 315 bodies against the 24 the split exists for.
     private void SettleFunctionBodyScope(int prologueEndIp)
     {

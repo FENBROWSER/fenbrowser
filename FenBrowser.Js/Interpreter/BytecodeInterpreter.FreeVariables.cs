@@ -8,7 +8,7 @@ namespace FenBrowser.Js.Interpreter;
 // Reading and writing a variable a function does not declare through a
 // FreeSlotSite: the record of how many scopes out the name resolved and what
 // kind of binding it found there. The register-window loop keys its sites by
-// slot; the dispatch loop and compiled code key theirs by instruction, because
+// slot; compiled code keys its by instruction, because
 // a block scope can give one name a nearer binding at one instruction than at
 // another. Either way a site is only ever a hint - every use re-verifies the
 // binding it points at, and a miss walks the chain as the specification does.

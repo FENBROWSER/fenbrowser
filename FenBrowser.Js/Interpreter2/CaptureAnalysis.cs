@@ -87,7 +87,7 @@ public sealed class CaptureInfo
 /// This is the conservative half of what V8 and SpiderMonkey do. They go
 /// further: when a variable <i>is</i> captured, only that variable is moved to a
 /// heap context and the rest stay in registers. Here a single captured variable
-/// sends the whole body back to the old loop. That is the right first version -
+/// once sent the whole body back to the old loop. That was the right first version -
 /// it is decidable from the bytecode alone, it needs no change to the compiler,
 /// and it cannot be wrong in the direction that matters.
 /// </para>

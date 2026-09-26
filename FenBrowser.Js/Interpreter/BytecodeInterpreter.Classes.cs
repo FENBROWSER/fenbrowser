@@ -12,7 +12,7 @@ public sealed partial class BytecodeInterpreter
 {
 
     // SetPropByName with D=1: an object literal's own property, created rather
-    // than assigned (ECMA-262 13.2.5.5), exactly as the dispatch loop does it.
+    // than assigned (ECMA-262 13.2.5.5), exactly as the register-window loop does it.
     // The operands come in as values: SetPropByName is not a safepoint, so the
     // frame's registers may be behind the compiled code's locals.
     internal void DefineLiteralPropertyForJit(InterpreterFrame frame, JsValue target, int nameIndex, JsValue value)
@@ -526,8 +526,8 @@ public sealed partial class BytecodeInterpreter
 
     /// <summary>
     /// ECMA-262 13.3.7.1 SuperCall steps 4-6: IsConstructor, then Construct
-    /// with the running function's new.target. Shared by both loops and
-    /// compiled code.
+    /// with the running function's new.target. Shared by the
+    /// register-window loop and compiled code.
     /// </summary>
     internal JsValue SuperConstruct(JsValue superConstructor, in CallArgs args, JsValue newTarget)
     {

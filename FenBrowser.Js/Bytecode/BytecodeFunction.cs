@@ -31,7 +31,7 @@ public sealed class BytecodeFunction
 
     public required IReadOnlyList<Instruction> Instructions { get; init; }
 
-    // The dispatch loop reads an instruction for every step it takes, and
+    // The interpreter reads an instruction for every step it takes, and
     // through the interface that is two virtual calls plus a copy of a
     // 24-byte struct each time, with no bounds-check elimination and no
     // inlining. Materialise the array once per function and let the loop
@@ -329,7 +329,7 @@ public sealed class BytecodeFunction
     internal FenBrowser.Js.Jit.CacheIR.AddPropertyStub?[] EnsureAddPropertyStubs() =>
         _addPropertyStubs ?? PublishOnce(ref _addPropertyStubs, new FenBrowser.Js.Jit.CacheIR.AddPropertyStub?[InstructionArray.Length]);
 
-    // Free-variable sites for the dispatch loop and compiled code, one per
+    // Free-variable sites for compiled code, one per
     // LoadVar/StoreVar instruction (see BytecodeInterpreter.FreeVariables.cs).
     // Keyed by instruction rather than slot: a block scope can give one name a
     // nearer binding at one instruction than at another.
@@ -378,7 +378,7 @@ public sealed class BytecodeFunction
     /// the operations compiled code runs faster than the register-window loop:
     /// locals, arithmetic, property and element access on values it holds.
     /// Measured per iteration against Interp2, compiled code is ~2x faster on
-    /// those, and slower on the rest - a call goes out through the old loop's
+    /// those, and slower on the rest - a call goes out through the host's
     /// CallFunction, an object literal costs 253ns against 183ns, and a block
     /// scope - a `for (let ...)` loop or a const in the body - makes each
     /// iteration 1.6-2x slower compiled. Reading or writing an outer variable

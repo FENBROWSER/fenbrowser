@@ -290,8 +290,8 @@ public sealed partial class BytecodeInterpreter
         var scopeName = SlotNameTable.GetName(frame.Function, slotNameIndex);
         if (scopeName != null)
         {
-            // Not deletable, per ECMA-262 14.2.3 - see the EnterScope case in the
-            // dispatch loop, which this must match exactly.
+            // Not deletable, per ECMA-262 14.2.3 - see CreateBlockScope, which
+            // the register-window loop uses and this must match exactly.
             if (isConst == 1)
                 _ = newScope.CreateImmutableBinding(scopeName, strict: true);
             else

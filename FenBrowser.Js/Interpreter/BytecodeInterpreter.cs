@@ -35,7 +35,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // a cell only reachable through a frame register can be reclaimed by an
     // auto-MinorCollect inside user code and surface as "Stale heap handle.".
     private readonly Stack<InterpreterFrame> _activeFrames = new();
-    // A frame may be on either loop, so "is JS running" is the union of the two.
+    // A frame is a register window or a compiled frame, so "is JS running" is
+    // the union of the two.
     public bool IsExecuting => _activeFrames.Count > 0 || _interp2 is { Depth: > 0 };
     // Browsers render an array that recursively contains itself as an empty
     // element while Array.prototype.join/toString is already processing that
@@ -705,7 +706,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     // Diagnostic access for explicitly instrumented runs. The normal execution
     // path leaves InstructionBudget at zero and therefore does not increment
-    // this counter in the dispatch loop.
+    // this counter.
     public int InstructionsExecuted => System.Threading.Volatile.Read(ref _instructionCount);
 
     /// <summary>Instructions charged across every execution scope on this
@@ -774,7 +775,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         finally
         {
             LastExecutionInstructions = _instructionCount;
-            // Accumulated here rather than in the dispatch loop: the loop is the
+            // Accumulated here rather than in the dispatch: the loop is the
             // hottest code in the engine and does not need a second counter.
             // This covers compiled bodies too, which charge the same budget.
             TotalInstructionsExecuted += _instructionCount;
@@ -915,7 +916,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     /// The per-iteration copy of the <paramref name="scopeCount"/> innermost
     /// records from <paramref name="innermost"/>, returning the new innermost;
     /// <paramref name="innermost"/> itself when the chain is not the shape the
-    /// compiler emits. Shared by both loops and compiled code.
+    /// compiler emits. Shared by the register-window loop and compiled code.
     /// </summary>
     internal EnvironmentRecord? CopyIterationScopes(EnvironmentRecord? innermost, int scopeCount)
     {
@@ -1654,7 +1655,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     /// <summary>
     /// Throws the script-visible stack overflow RangeError when the native stack
-    /// is close to exhaustion. Every re-entry into a dispatch loop costs CLR
+    /// is close to exhaustion. Every re-entry into the interpreter costs CLR
     /// stack, and how much depends on the thread (a 1 MB pool thread versus the
     /// browser's large-stack script thread) and on which natives sit between the
     /// JS frames, so no fixed frame count is safe on its own. The runtime keeps
@@ -1711,8 +1712,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     /// <summary>
-    /// TailCall0/1/N from compiled code: the same request the dispatch loop
-    /// records before it returns, which <see cref="ExecuteInternal"/> then
+    /// TailCall0/1/N from compiled code: a request recorded before the
+    /// compiled body returns, which <see cref="ExecuteInternal"/> then
     /// continues with <see cref="RunTailCallChain"/>. A tail call is a
     /// safepoint, so the frame's registers are current here.
     /// </summary>
@@ -5005,7 +5006,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             : FenBrowser.Js.Builtins.MathHelpers.ToInt32(value.AsNumber());
 
     /// <summary>
-    /// Numeric fast paths shared by the dispatch loop and the JIT's compiled
+    /// Numeric fast paths shared by the register-window loop and the JIT's compiled
     /// body. Both operands being numbers is the overwhelmingly common case, and
     /// it settles every one of these operators without entering the generic
     /// algorithms — which for a comparison means abstract relational comparison
@@ -12553,9 +12554,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     /// <summary>
     /// The `stack` of an error created now: the header, then one line per
     /// active JS frame, innermost first, in the format V8 uses
-    /// ("    at name (file:line:column)"). The frames of the two dispatch loops
-    /// are interleaved into call order: an old-loop frame entered while the
-    /// new loop held <c>d</c> frames sits above exactly those <c>d</c>.
+    /// ("    at name (file:line:column)"). Register windows and compiled frames
+    /// are interleaved into call order: a compiled frame entered while the
+    /// loop held <c>d</c> windows sits above exactly those <c>d</c>.
     /// </summary>
     private string FormatCallStack(string errorName, string message)
     {
@@ -12584,7 +12585,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 (function, ip) = _interp2!.FrameForStackTrace(--interp2Depth);
             }
 
-            // Both loops leave the pointer just past the instruction running.
+            // Both kinds of frame leave the pointer just past the instruction running.
             AppendStackFrame(builder.Append('\n'), function, ip - 1);
         }
 
@@ -22025,7 +22026,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     internal void SetPropByNameForJit(InterpreterFrame frame, int receiverReg, int propNameIndex, int valueReg, int icOffset)
     {
-        // The dispatch loop's own store, so compiled code gets the same
+        // The register-window loop's own store, so compiled code gets the same
         // PutValue errors: a strict write that [[Set]] refuses throws, and a
         // null or undefined base says it was a set.
         try
@@ -22053,7 +22054,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     /// <summary>
     /// ECMA-262 13.3.2.1: GetValue requires RequireObjectCoercible on the base
     /// before the property key is coerced, so `null[obj]` throws a TypeError
-    /// before obj's toString runs - in compiled code as in the dispatch loop.
+    /// before obj's toString runs - in compiled code as in the register-window loop.
     /// </summary>
     private void ThrowIfNullishElementBase(JsValue receiver, JsValue keyValue)
     {
@@ -22102,7 +22103,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     /// <summary>
-    /// Assigns an element, for both the dispatch loop and compiled code.
+    /// Assigns an element, for both the register-window loop and compiled code.
     ///
     /// This existed twice, and the copies disagreed: the compiled one had no
     /// integer-indexed path, so writing to a typed array went through ordinary
@@ -22119,8 +22120,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     /// error through the frame's handler stack, and the frame-taking wrapper
     /// below does the routing instead. Every route site here was immediately
     /// followed by a return, so the two are the same sequence of observable
-    /// steps - and the semantics now belong to one method that both execution
-    /// loops call rather than to the old loop's dispatch.
+    /// steps - and the semantics belong to one method that the register-window
+    /// loop and compiled code both call.
     /// </remarks>
     internal void SetElementCore(
         JsValue receiverValue,
@@ -22318,8 +22319,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // ECMA-262 6.2.5.4 PutValue: strict-mode writes that return false
         // (non-writable data, missing setter, non-extensible) throw. A sloppy
-        // one is silently dropped and the site is still cached, which is what
-        // the dispatch loop did before this moved out of it.
+        // one is silently dropped and the site is still cached.
         if (!ok && strict)
         {
             throw new JsThrownException(CreateTypeError($"Cannot assign to read-only property '{prop}'."));
@@ -22623,7 +22623,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             Diagnostics.InterpreterProfiler.RecordJitDeopt(op);
         }
 
-        // The dispatch loop takes these shortcuts inline; without them here the
+        // The register-window loop takes these shortcuts inline; without them here the
         // compiled body was reaching the generic operators for work the
         // interpreter never sent there, and ran arithmetic slower than the loop
         // it replaced.
