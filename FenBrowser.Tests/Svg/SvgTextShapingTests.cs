@@ -1002,10 +1002,223 @@ namespace FenBrowser.Tests.Svg
                 Baseline("baseline-shift='10'", "80"));
         }
 
+        private static string Rotated(string declarations, string content = "X", string baselineY = "80") =>
+            $"<svg width='260' height='200'><text x='10' y='{baselineY}' {MetricFont} " +
+            $"font-size='40' fill='black' {declarations}>{content}</text></svg>";
+
+        [Fact]
+        public void Rotate_TurnsTheGlyphAndIsAdmitted()
+        {
+            AssertDifferentPixels(Rotated(string.Empty), Rotated("rotate='30'"));
+        }
+
         [Theory]
         [InlineData("rotate='30'")]
-        [InlineData("rotate='0 30'")]
-        [InlineData("rotate='45 45 45 45'")]
+        [InlineData("rotate='30 30'")]
+        [InlineData("rotate='30 30 30 30 30'")]
+        public void Rotate_SingleAngleAppliesToEveryCharacter(string declarations)
+        {
+            AssertSamePixels(Rotated(declarations, "AB"), Rotated("rotate='30 30'", "AB"));
+        }
+
+        [Fact]
+        public void Rotate_ShortListKeepsItsLastAngleForTheRemainingCharacters()
+        {
+            AssertSamePixels(
+                Rotated("rotate='0 30'", "ABC"),
+                Rotated("rotate='0 30 30 30'", "ABC"));
+        }
+
+        /// <summary>
+        /// A half turn about the glyph origin maps the ink above the baseline to
+        /// the same distance below it, so the two ink boxes are mirror images
+        /// across the resolved baseline.
+        /// </summary>
+        [Fact]
+        public void Rotate_TurnsTheGlyphAboutItsOwnOriginOnTheBaseline()
+        {
+            using var plain = new FenSvgRenderer().Render(Rotated(string.Empty));
+            using var flipped = new FenSvgRenderer().Render(Rotated("rotate='180'"));
+
+            Assert.True(plain.Success, plain.ErrorMessage);
+            Assert.False(plain.RequiresFallback, string.Join("; ", plain.Warnings));
+            Assert.True(flipped.Success, flipped.ErrorMessage);
+            Assert.False(flipped.RequiresFallback, string.Join("; ", flipped.Warnings));
+            Assert.True(TryGetInkBounds(plain.Bitmap, out var plainBounds));
+            Assert.True(TryGetInkBounds(flipped.Bitmap, out var flippedBounds));
+            Assert.True(plainBounds.Bottom <= 80,
+                "the unrotated glyph must not leave ink below its own baseline");
+            Assert.True(flippedBounds.Top >= 80,
+                "a half turned glyph must not leave ink above its own baseline");
+            Assert.InRange(plainBounds.Top + flippedBounds.Bottom, 158f, 162f);
+        }
+
+        /// <summary>
+        /// A tspan that declares no list keeps the list and the running index of
+        /// the nearest ancestor that declared one, so the flattened list is the
+        /// ancestor's read as one continuous sequence of characters.
+        /// </summary>
+        [Fact]
+        public void Rotate_TspanWithoutAListContinuesTheAncestorListAndIndex()
+        {
+            AssertSamePixels(
+                Rotated("rotate='0 90'", "AB<tspan>CD</tspan>"),
+                Rotated("rotate='0 90 90 90'", "ABCD"));
+        }
+
+        [Fact]
+        public void Rotate_TspanDeclaringAListRestartsTheAncestorIndexAfterIt()
+        {
+            AssertSamePixels(
+                Rotated("rotate='0 90'", "AB<tspan rotate='45 30'>CD</tspan>EF"),
+                Rotated("rotate='0 90 45 30 90 90'", "ABCDEF"));
+        }
+
+        [Fact]
+        public void Rotate_TextAnchorElementDeclaresItsOwnList()
+        {
+            AssertSamePixels(
+                Rotated("rotate='0 90'", "AB<a rotate='45 30'>CD</a>EF"),
+                Rotated("rotate='0 90 45 30 90 90'", "ABCDEF"));
+        }
+
+        [Fact]
+        public void Rotate_UnderlinedRunTurnsTheDecorationWithTheGlyph()
+        {
+            AssertDifferentPixels(
+                Rotated("rotate='0' text-decoration='underline'", "XY"),
+                Rotated("rotate='90' text-decoration='underline'", "XY"));
+        }
+
+        /// <summary>
+        /// A rotation turns the glyph but does not move the pen, so a character
+        /// that inherits a zero angle past a rotated run starts at the same
+        /// coordinate either way.
+        /// </summary>
+        [Fact]
+        public void Rotate_LeavesTheAdvanceUnchanged()
+        {
+            const string plain =
+                "<svg width='300' height='200'><text x='10' y='80' font-family='monospace' " +
+                "font-size='40' fill='black'>AB<tspan fill='red'>C</tspan></text></svg>";
+            const string rotated =
+                "<svg width='300' height='200'><text x='10' y='80' font-family='monospace' " +
+                "font-size='40' fill='black' rotate='25 70 0'>AB<tspan fill='red'>C</tspan></text></svg>";
+
+            using var unrotated = new FenSvgRenderer().Render(plain);
+            using var turned = new FenSvgRenderer().Render(rotated);
+
+            Assert.True(turned.Success, turned.ErrorMessage);
+            Assert.False(turned.RequiresFallback, string.Join("; ", turned.Warnings));
+            Assert.True(TryGetColorBounds(unrotated.Bitmap, IsRed, out var unrotatedRed));
+            Assert.True(TryGetColorBounds(turned.Bitmap, IsRed, out var turnedRed));
+            Assert.Equal(unrotatedRed, turnedRed);
+        }
+
+        [Fact]
+        public void Rotate_NonNumericValueFailsClosed()
+        {
+            using var result = new FenSvgRenderer().Render(Rotated("rotate='sideways'"));
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("advanced-text-layout", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void Rotate_BidirectionalRunFailsClosed()
+        {
+            const string svg =
+                "<svg width='300' height='80'><text x='10' y='60' font-family='monospace' " +
+                "font-size='30' fill='black' rotate='30'>a\u05D0</text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("bidirectional", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void Rotate_ExceedingTheValueBudgetFailsClosed()
+        {
+            var overBudget = new StringBuilder();
+            for (int i = 0; i < 4200; i++) overBudget.Append(i == 0 ? "0" : " 0");
+            using var result = new FenSvgRenderer().Render(Rotated("rotate='" + overBudget + "'"));
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("value budget", StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// WPT svg/text/reftests/text-context-fill.svg puts text inside a marker
+        /// that follows the path tangent, so the marker lays its content out in
+        /// the same orientation the shapes already use and the run stays
+        /// admissible.
+        /// </summary>
+        [Fact]
+        public void TextInsideATangentMarkerStaysAdmitted()
+        {
+            const string svg =
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 100' width='150' height='100'>" +
+                "<defs><marker id='m' viewBox='0 0 25 10' refY='5' markerWidth='125' refX='10' " +
+                "markerHeight='50'><text x='12' y='8' font-size='9' fill='black'>X</text>" +
+                "</marker></defs>" +
+                "<line y2='30' x2='50' y1='30' x1='10' stroke='green' marker-end='url(#m)'/>" +
+                "</svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+        }
+
+        /// <summary>
+        /// WPT svg/painting/reftests/paint-context-006.svg puts a rotated glyph
+        /// inside a marker that declares its own angle. The marker angle and the
+        /// glyph angle turn the same run about two different points, and the
+        /// single pass has not established that composition, so the document is
+        /// reported rather than painted at an unverified composed position.
+        /// </summary>
+        [Fact]
+        public void TextInsideAnExplicitlyRotatedMarkerFailsClosed()
+        {
+            const string svg =
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 300'>" +
+                "<defs><marker id='m' refX='0' refY='0' markerWidth='200' markerHeight='200' " +
+                "markerUnits='userSpaceOnUse' orient='0.25turn'>" +
+                "<text x='20' y='150' font-size='60' fill='black' rotate='-45'>A</text>" +
+                "</marker></defs>" +
+                "<path d='M 200 150 L 300 150' stroke='black' fill='none' marker-start='url(#m)'/>" +
+                "</svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("explicitly rotated marker", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void TextInsideAMarkerWithZeroOrientStaysAdmitted()
+        {
+            const string svg =
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 300'>" +
+                "<defs><marker id='m' refX='0' refY='0' markerWidth='200' markerHeight='200' " +
+                "markerUnits='userSpaceOnUse' orient='0'>" +
+                "<text x='20' y='100' font-size='60' fill='black'>A</text>" +
+                "</marker></defs>" +
+                "<path d='M 200 150 L 300 150' stroke='black' fill='none' marker-start='url(#m)'/>" +
+                "</svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+        }
+
+        [Theory]
         [InlineData("direction='rtl'")]
         [InlineData("unicode-bidi='embed'")]
         [InlineData("unicode-bidi='bidi-override'")]
@@ -1050,6 +1263,7 @@ namespace FenBrowser.Tests.Svg
         [InlineData("dominant-baseline='auto'")]
         [InlineData("baseline-shift='0'")]
         [InlineData("baseline-shift='inherit'")]
+        [InlineData("baseline-shift='baseline'")]
         [InlineData("font-variant='normal'")]
         [InlineData("font-stretch='normal'")]
         public void InertAdvancedTextValues_AreAdmittedAndPaintIdentically(string declarations)
@@ -1305,6 +1519,8 @@ namespace FenBrowser.Tests.Svg
 
         private static bool TryGetInkBounds(SKBitmap bitmap, out SKRectI bounds) =>
             TryGetColorBounds(bitmap, _ => true, out bounds);
+
+        private static bool IsRed(SKColor color) => color.Red > 180 && color.Green < 80;
 
         [Fact]
         public void SiblingTextElements_ObeyDocumentGlyphBudget()        {
