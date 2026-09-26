@@ -425,9 +425,16 @@ namespace FenBrowser.FenEngine.Rendering
             // host for its subdocument (even with overflow:hidden it scrolls
             // programmatically), so it needs its own context to carry the scroll offset
             // + clip that move its content within the frame box.
-            bool createsStackingContext = DetermineCreatesStackingContext(style) ||
-                (node is Element stackingEl &&
-                 string.Equals(stackingEl.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase));
+            // A text node never does: it paints with its parent's style, and the
+            // parent's transform, opacity and filter are applied by the parent's own
+            // context (CSS Transforms 1 §2 and CSS Color 4 §3.2 apply them to boxes,
+            // and none of them is inherited). Taken again here, a transform acted
+            // twice - Google's results flip a block with scaleY(-1) and flip its
+            // title back, and the title's text came out upside down.
+            bool createsStackingContext = node is not Text &&
+                (DetermineCreatesStackingContext(style) ||
+                 (node is Element stackingEl &&
+                  string.Equals(stackingEl.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase)));
             int zIndex = style?.ZIndex ?? 0;
 
             /*
@@ -2000,8 +2007,9 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             
-            // Wrap in OpacityGroupPaintNode if needed (group-based opacity only)
-            if (style?.Opacity.HasValue == true && style.Opacity.Value < 1.0)
+            // Wrap in OpacityGroupPaintNode if needed (group-based opacity only). A
+            // text node's style is its parent's, whose opacity the parent applies.
+            if (node is not Text && style?.Opacity.HasValue == true && style.Opacity.Value < 1.0)
             {
                 var groupNode = new OpacityGroupPaintNode
                 {
