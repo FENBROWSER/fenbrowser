@@ -10673,7 +10673,7 @@ Verification: 117 focused tests (`FenBrowser.Tests/Svg`): parser security suite 
 | direct and shaped text (tspan, textPath, complex scripts) | supported | bounded budgets; vertical writing modes are unsupported |
 | patterns / masks / markers / filters | supported when referenced | unused definitions do not force a rejection |
 | bounded document-time animation (`animate`, `set`, `animateMotion`) | supported | deterministic snapshot at a caller-supplied document time; unsupported timing is rejected |
-| foreignObject | unsupported | never interpreted; the render is rejected |
+| foreignObject | unsupported | viewport-accurate decision in the draw walk, still refused by the parse-time gate (2.178) |
 
 Remaining gaps are unsupported features, not alternate paths. There is one
 renderer, so a declared unsupported construct produces no pixels and the
@@ -10716,18 +10716,24 @@ logs.
 - `SvgRenderLimits.Default` admits 32 recursion depth, 16 filters, 250 ms elapsed,
   50,000 elements, 8 MiB source, 8,192 px raster edges, 16,777,216 raster pixels,
   16,777,216 decoded pixels per embedded image, 8 MiB decoded bytes,
-  32 MiB cumulative resource bytes, 64 resources, 8 simultaneous effect layers,
-  32 reference-chain depth, and no external references.
+  32 MiB cumulative resource bytes, 64 resources, 33,554,432 cumulative decoded
+  image pixels, 8 simultaneous effect layers, 32 reference-chain depth, and no
+  external references.
 - `SvgRenderLimits.Strict` tightens every one of those bounds for untrusted
   content.
 - `Normalize` hard-clamps to 512 recursion depth, 1,000 filters, 30,000 ms,
   250,000 elements, 32 MiB source, 32,768 px raster edges, 67,108,864 raster
   and decoded-image pixels, 32 MiB decoded bytes, 64 MiB cumulative
-  resource bytes, 512 resources, 16 effect layers, and 64 reference depth.
+  resource bytes, 512 resources, 67,108,864 cumulative decoded image pixels,
+  16 effect layers, and 64 reference depth.
 - Every admission rejection happens before the corresponding native allocation.
   Result diagnostics are bounded (at most 32 entries, 256 characters each), and
   reason codes are stripped of control characters, de-duplicated, and dropped
   when longer than 64 characters or outside `[A-Za-z0-9_-]`.
+- The three raster caps are not interchangeable: the per-axis caps are hard and
+  are never met by rescaling, and only the pixel budget may be met by a bounded
+  reduction. The exact contract, including the scale the result publishes, is in
+  2.178.
 
 
 ## 2.122 SVG Renderer Correctness Fixes, Differential Gate v2, Bench Tooling (2026-08-23)
@@ -11626,8 +11632,10 @@ Verification:
 ## 2.161 SVG Local-Reference Whitespace Processing (2026-09-04)
 
 - Local fragment references now use one bounded parser that strips leading and
-  trailing whitespace before checking `#fragment`. Internal whitespace remains
-  part of the fragment and is not normalized into a different identifier.
+  trailing whitespace before checking `#fragment`, and trims the fragment itself
+  along with the token, so `url(# red )` resolves the id `red` rather than the id
+  ` red`. Internal whitespace remains part of the fragment and is not normalized
+  into a different identifier.
 - The rule is shared by `use`, gradient templates, text paths, motion paths, and
   clip-path `use` geometry. Quoted paint `url(...)` inspection applies the same
   post-quote trimming, preventing valid local paint references from being
@@ -11903,6 +11911,313 @@ slices that pin this change are `Svg/SvgFirstPartyBackendContractTests`,
 `Svg/TargetProcessSvgDecodeTests`, and `Architecture/SvgSandboxingTests`. The
 cross-platform corpus and reference evidence is in VOLUME_VI 6.193-6.243, and
 `scripts/BenchSvg` reports the remaining cases.
+
+## 2.178 First-Party SVG Admission Contract (2026-09-27)
+
+`FenSvgRenderer` is a bounded, single-pass rasterizer. It has no script engine, no
+DOM, and no animation clock: it evaluates `SvgRenderRequest.DocumentTimeSeconds`
+once, records a picture, and rasterizes it. One rule governs that shape. Anything
+the engine cannot render correctly at that instant fails closed and paints
+nothing, because a wrong or pre-script frame reported as `Success` is worse than an
+absent one. `SvgRenderResult.IsAdmissible(...)` is the only thing that separates
+the two, so it can be no more trustworthy than the rule behind it.
+
+The subsections below make that rule explicit. Each refusal is placed at the
+earliest stage that can prove it, and a parse-stage refusal is re-asserted by the
+draw walk over the tree it is about to paint, so a document cannot escape a check
+by being reached through a `use` instance, a symbol, or a nested `<svg>`.
+
+### Script admission
+
+A `<script>` element requires fallback when its `type` is absent, when its `type`
+is `module`, or when the `type` MIME essence - the part before any `;` parameters,
+trimmed - is a JavaScript essence (`text/javascript`, `application/ecmascript`,
+`text/jscript`, and the rest of the registry). A non-JavaScript `type` is a data
+block that no browser executes, so the document is admitted and the subtree stays
+inert. Script admission is syntactic where it needs to be semantic, and two holes
+are deliberately left open:
+
+- An `on*` attribute alone is not a fallback trigger. With no script engine its
+  value is never compiled and there is only ever one frame, so refusing on its
+  presence would reject documents a browser renders identically. An `on*`
+  attribute next to a real `<script>` element is still refused, because the
+  element is the trigger.
+- The name test is the six-character local name after the last `:`, `{`, or `}`.
+  Test-suite boilerplate such as `<d:operatorScript>` is therefore not a script
+  element. An authored element name is never read as a policy signal: such a
+  document is still refused, as an unknown element.
+
+Timing elements are a separate branch. An `on*`-shaped attribute on `animate`,
+`animateColor`, `animateMotion`, `animateTransform`, or `set` fails closed with
+its own reason, `SVG animate event handler attribute '<name>' requires
+compatibility fallback`, so the diagnostic names the attribute instead of reusing
+the script-element wording. A blank handler value is not a trigger.
+
+The parse-time element check and the walk-level
+`SvgFeatureSupport.InspectScriptAdmission(root, report)` emit one reason string,
+so a document reports a single diagnostic rather than two that could disagree.
+Script admission also runs ahead of the reason classifier, so the classifier never
+sees an authored name. Script subtrees remain raw-skipped by the parser: their
+bodies are never interpreted, never become character data, and are never exposed,
+whether or not the document was refused. A DOCTYPE entity cannot materialize a
+script element, because injected markup is consumed inside the raw-skipped subtree
+that declared it.
+
+### The media evaluator is three-valued
+
+An `@media` condition evaluates to Match, NoMatch, or Undetermined. The third
+value exists because "the engine cannot answer this" and "CSS says this condition
+is false" are different facts, and conflating them silently drops a block a
+browser applies. Undetermined composes through `and`, `or`, and `not`, and `only`
+never introduces it, so `@media only print and (orientation: portrait)` still
+fails closed on the feature.
+
+Failing closed applies to names inside the CSS media-feature registry the engine
+cannot answer, and to media types it cannot answer (`print`, `speech`, `tty`,
+`tv`, and the rest of that list). The picture-scoped set the static raster does
+settle is `width` and `device-width` with their `min-`/`max-` forms, `resolution`,
+`device-pixel-ratio`, `color`, and `monochrome`. Everything else in the registry -
+`orientation`, `aspect-ratio`, `prefers-color-scheme`, `hover`, `any-hover`,
+`pointer`, `any-pointer`, `prefers-reduced-motion`, `prefers-contrast`,
+`forced-colors`, `color-gamut`, `color-index`, `grid`, `dynamic-range`, `height`,
+`device-height`, `device-aspect-ratio`, `inverted-colors`, `overflow-block`,
+`overflow-inline`, `prefers-reduced-data`, `prefers-reduced-transparency`,
+`scripting`, `update`, `video-dynamic-range` - fails closed. The diagnostic names
+the subject, as a `media query feature` or a `media query type`, and classifies as
+`css-cascade`.
+
+Genuinely unknown names stay inert, because CSS specifies that an unknown media
+feature is `not all`. `(unknown-feature: 1)` drops its block with no reason code,
+as do an empty query list, a percentage or unitless media length, and a
+`(prefers-color-scheme:)` with no value. That is the whole three-valued split:
+in-registry-but-unanswerable fails closed, out-of-registry stays inert.
+
+Two more cascade rules share that fail-closed shape:
+
+- `@scope` fails closed, in every form including a scoped block nested in a media
+  rule, with `SVG @scope stylesheet rule requires compatibility fallback`.
+  Discarding the block left the scoped declaration off the element it targets
+  while the document still reported `Success`. The `:scope` *selector* is a
+  separate feature and is supported: in a document stylesheet it matches the
+  document element and composes with descendant combinators.
+- The use shadow cascade is budgeted, and the budget is terminal: at most 64 roots
+  and 32,768 elements across all of them. Exceeding either fails closed with
+  `SVG use shadow cascade root/element budget (<n>) exceeded; use-site cascade is
+  incomplete`. It is not a warning, because a partial use-site cascade leaves the
+  affected subtrees with source-tree selectors instead of use-site ones, which is
+  a wrong frame rather than a missing one.
+
+### Raster admission and the published scale
+
+The three raster caps are not interchangeable.
+
+- `MaxRasterWidth` and `MaxRasterHeight` are hard. A document outside either is
+  rejected and never rescaled: shrinking it would silently reduce its resolution,
+  which is exactly what the cap exists to prevent.
+- `MaxRasterPixels` is the only cap a reduction may satisfy. A document inside both
+  per-axis caps but over the pixel budget is rasterized into a proportionally
+  smaller surface, floored so the reduction never takes either axis below
+  `MinRasterClampScale` (0.5). The clamped integer surface is re-verified against
+  every cap before anything is allocated, so no admitted surface exceeds the
+  budget. A document that would need a larger reduction is rejected with a message
+  distinct from a per-axis breach, naming the caps, the budget, and the minimum
+  reduction.
+- `MaxCumulativeDecodedImagePixels` bounds the decoded rasters of one render, and
+  nested documents charge the same budget. The recorded picture keeps each decoded
+  surface resident until it is released, so encoded-byte and resource-count
+  budgets cannot bound that native memory. Repeated identical payloads are decoded
+  once and shared; distinct payloads are charged individually. BGRA8888 costs four
+  bytes per charged pixel.
+
+A reduced raster is still a valid render, so the result still reports the
+document's natural size and publishes the reduction:
+
+- `SvgRenderResult.Width` and `Height` stay the natural size, deliberately
+  independent of the delivered bitmap.
+- `RasterScaleX` and `RasterScaleY` publish the factor from natural size to
+  delivered bitmap. They can differ by the integer rounding of the reduced
+  surface, so a caller must use both. `IsDownscaled` is derived from them and so
+  cannot disagree with them.
+- A reduced render carries one additional bounded warning naming the clamped and
+  natural pixel bounds, inside the existing 32-entry diagnostic cap.
+
+The caller applies the scale when compositing; the renderer never stretches a
+reduced bitmap back to the natural size. The scaled draw composes
+`p' = S * (p - cullRect.Origin)`, and because `SKMatrix.CreateScaleTranslation`
+builds `T*S`, the clamped translation is pre-multiplied by the scale. An unscaled
+`-left`/`-top` would shift the frame by `origin * (S - 1)` and paint nothing for a
+cull rect that does not start at the origin.
+
+One clock now covers the whole call - parse, draw, effect construction, and the
+final rasterization the adapter performs - and it is re-checked immediately before
+and after the scaled draw, so a result is never admitted after the budget elapsed.
+
+### DOCTYPE in the sandbox
+
+XXE is structurally impossible here: nothing outside the document is ever read. A
+DOCTYPE is honoured only as a bounded internal subset of general entity and
+attribute-list declarations.
+
+Honoured:
+
+- General entity declarations. Each is expanded and validated while it is being
+  declared, so a declaration that exceeds the depth, size, name, or
+  expansion-count budget is refused before it can ever be referenced. Entities
+  resolve through a fixed whitelist plus range-checked numeric character
+  references; anything malformed degrades to literal text or U+FFFD and never
+  throws.
+- Attribute-list declarations that declare no default value. `#REQUIRED` and
+  `#IMPLIED` are unquoted and are unaffected.
+
+Rejected, each failing the parse with `DOCTYPE <detail> is rejected by the SVG
+sandbox`:
+
+- External subsets, external identifiers, external and parameter entities,
+  conditional sections, and any undeclared or recursive reference.
+- An ATTLIST attribute default value: a quoted literal, including a `#FIXED`
+  default. A browser applies a declared default to every element that omits the
+  attribute, and this engine cannot, so a declared `fill="lime"` painted black
+  while the document reported success. Parsing the default and discarding it is
+  the same defect as not parsing it, so the declaration is refused instead. The
+  refusal does not depend on whether the element also carries the attribute
+  explicitly.
+
+Internal subsets over budget, entity counts over 128, and unterminated or
+malformed declarations are refused on the same path. Bounded budgets: 64 KiB per
+DOCTYPE, 8 KiB per ATTLIST declaration, 1 KiB per quoted literal, 128 entities,
+16 KiB per expansion, 4 expansion levels, 4,096 expansions per parse.
+
+### Foreign content
+
+Content outside the SVG namespace is never interpreted. The parser is
+namespace-aware and pairs a foreign element by scanning forward for its own end
+tag, within a 1 MiB lookahead budget shared by the whole parse.
+
+- An unpaired prefixed element such as `<h:base>` is added as void. It no longer
+  captures the siblings that follow it, so a document that previously rendered
+  blank now paints its remaining content. The document is still refused, because
+  a subtree the parser could not pair is not a faithful view of the source, so the
+  element carries a reason: the walk reports `unknown element '<name>' skipped`,
+  classified as `unsupported-element`, and the bounded parse warns that the
+  element has no end tag and was not nested.
+- Paired foreign content stays inert. It nests its own subtree, paints nothing,
+  and carries no reason code. A self-closed foreign element behaves the same way.
+- `foreignObject` children are traversed, so foreign content inside one is still
+  classified rather than passed over unexamined.
+- An unknown element in the SVG namespace itself does not take the foreign path
+  and still fails closed.
+- `title`, `desc`, and `metadata` are separate: their subtrees are raw-skipped and
+  inert.
+
+`use` follows the same rule for its target. A `use` whose target is a `tspan` or a
+`textPath` is not a graphics element, so a browser instantiates nothing at all. The
+engine now explicitly instantiates nothing and the document stays admissible,
+rather than painting a subtree a browser would not paint.
+
+### foreignObject
+
+A `foreignObject` establishes a viewport from its `x`/`y`/`width`/`height`
+geometry, and the walk resolves that geometry before deciding anything. The
+decision it can prove is the only one it certifies.
+
+- Zero-area viewport: certified non-rendering, with no reason code. An absent,
+  `auto`, or `none` extent is zero per the geometry property definition, and a
+  negative or zero resolved extent is zero. An empty clip admits nothing whatever
+  the subtree holds. `display: none` and a failed conditional-processing test are
+  skipped before the decision, and a `foreignObject` inside `defs` or `symbol` is
+  never traversed at all.
+- Viewport with area: fails closed. An extent the engine cannot resolve is refused
+  rather than treated as zero, because a silent zero would certify as
+  non-rendering content a browser paints.
+- The refusal names the blocker. Content that needs XHTML box layout is reported
+  as `'<name>' needs XHTML box layout`; a name outside the renderable set as
+  `'<name>' is not renderable here`; a subtree past the bounded inspection budget
+  as `exceeding the first-party render budget`. When no single blocker can be
+  named the reason is that the viewport content is not modelled by the bounded
+  parse, because the parse records character data only for text containers and a
+  `foreignObject`'s own text nodes are therefore absent from the tree.
+
+Interim state, stated so it is not misread: a parse-time `foreignObject` fallback
+gate is still in force, so a document containing any `foreignObject` is refused
+regardless of the walk's decision. The walk is the viewport-accurate decision that
+gate is to be replaced by. The refusal today is conservative in the safe
+direction, and the walk's value today is that a document which later drops the gate
+is already classified correctly rather than by a blanket "contains foreignObject".
+
+### Transform precision
+
+Angles stay in `double` through the unit conversion in both transform paths - the
+CSS `transform`, `rotate`, and `skew` property parser and the XML `transform`
+attribute parser - and an angle that is an exact multiple of 90 degrees resolves
+to exact cosine and sine. `Pi/2` has no binary representation, so a `float` angle
+turned every quarter turn into `cos = 4.37e-08` instead of `0`. Skia's analytic
+antialiasing is discontinuous in that value, which shifted antialiased edges by a
+single coverage step and made an otherwise pixel-exact document differ from its
+declared reference. Snapping is bounded by a 1e-9 quarter-turn tolerance;
+non-quarter angles keep full precision, and skew is untouched.
+
+The same pass adds `ch` to the attribute length vocabulary, resolved against half
+the font size, so letter spacing and lengths expressed in `ch` resolve as they
+already do in the CSS evaluator instead of falling through to the inherited value.
+
+### Filter references and standard filter inputs
+
+Filter reference resolution distinguishes three outcomes, and the distinction is
+visible in the pixels.
+
+- An unresolvable local reference - the id is absent, or it names something that
+  is not a `<filter>` - is simply not applied. The source renders unfiltered with
+  no reason code, which is the no-op reading of a missing filter reference.
+- A filter with no primitives, whether empty or containing only `title`, `desc`,
+  and `metadata`, replaces the source with a transparent result, so the element
+  disappears. The accepted SVG 1.1 test `import/filters-felem-01-b-manual.svg`
+  states that expectation in its own text - "the result of the filter is a
+  transparent black offscreen" - and its `<filter id="null"/>` cases are the
+  corpus documents that pin this behaviour. That file is a `manual` test with no
+  declared WPT reference, so it is rendered and classified but not scored by the
+  declared-reference oracle, and the same applies to its `url(#notthere)`
+  subtest: the engine renders that source unfiltered, so the file is not evidence
+  of a reference pass. Keep the disagreement visible instead of counting it.
+- A filter that cannot be resolved at all - an external template reference, a
+  broken `href` chain, a cycle, or a reference past the depth budget - is a
+  different case and fails closed.
+- `FillPaint` and `StrokePaint` resolve the target element's own fill and stroke
+  through the same paint chain used everywhere else, so a gradient or pattern
+  lands the same way, including context paint and an object-bounding-box gradient
+  over the target's box. The keyword names the property value at effectively
+  unbounded extent, so a `stroke-width` of zero is treated as the genuinely
+  ambiguous case it is and still fails closed, as does an unresolvable paint
+  server.
+- `BackgroundImage` and `BackgroundAlpha` fail closed with an accurate reason:
+  both need a snapshot of the document behind the filter region, and a single-pass
+  renderer captures no backdrop.
+
+### Animation liveness precedes animation form
+
+Every animation is asked whether it is live at the sampled document time before it
+is asked whether it is well-formed. An interval that is not live cannot change the
+frame, so its sampled value and its target form are not demanded, and a `set` on a
+class that begins at 1s no longer condemns a document rendered at t=0. This is the
+same order the rest of the snapshot application already uses.
+
+The relaxation is bounded to animations that provably do not apply at the
+document's base time. A live set on a structurally unsupported attribute, a live
+set on an external href, a syncbase begin, an event-based begin, and the
+out-of-range spline and paced-motion cases all still fail closed. A not-live
+animation is skipped, never approximated.
+
+Verification: the behaviour in this section is pinned by the Release
+`FullyQualifiedName~FenBrowser.Tests.Svg` slice, including
+`Svg/SvgScriptAdmissionTests`, `Svg/SvgForeignNamespaceVoidTests`,
+`Svg/SvgForeignObjectWalkTests`, `Svg/SvgMarkupParserSecurityTests`,
+`Svg/SvgCssCascadeTests`, `Svg/SvgCssTransformTests`,
+`Svg/FenSvgRendererSandboxParityTests`, `Svg/SvgFilterTests`,
+`Svg/SvgSmilAnimationTests`, and `Svg/SvgVisualShowcaseTests` (one showcase
+document combining the hardest supported cases, asserted admissible, warning-free,
+coverage-floored, and bit-for-bit repeatable, with the frame written to
+`logs/svg-hardest-showcase.png` so a regression is visible as a picture). Report
+the discovery-derived count from the run rather than copying a count forward. The
+corpus and declared-reference evidence for this contract is in VOLUME_VI 6.244.
 
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 

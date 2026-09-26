@@ -5385,3 +5385,135 @@ share than the 6.193-6.242 baselines for any document that previously relied on
 the compatibility backend. That is the expected consequence of removing the
 second renderer, not a new regression, and each such document is a tracked
 conformance gap in `docs/VOLUME_III_FENENGINE.md` 2.121-2.176.
+
+## 6.244 WPT Manifest Oracle And Report Comparability (2026-09-27)
+
+`WptManifestIndex` now reads the WPT v9 `MANIFEST.json`: it discovers the file,
+validates it, indexes every SVG item, and resolves each test's declared `==`/`!=`
+references against it. A default run stops at the 500-file `--max-files` limit, so
+an unparameterised run was not a corpus result. The change corrects the oracle and
+changes what a WPT pass rate means, so this section records both, together with
+the run invocation rules that follow from them. The engine-side admission contract
+these runs measure is in `docs/VOLUME_III_FENENGINE.md` 2.178.
+
+### Manifest discovery, and what `--manifest` is for
+
+`--corpus-kind wpt` discovers the manifest itself: it walks up from `--corpus`
+until it finds `MANIFEST.json`, then validates that the root is an object, that
+`version` is exactly 9, that `url_base` is absent or `"/"`, that `items` is an
+object of per-type `svg` trees, and that every item carries a content hash. A
+manifest of any other shape throws rather than being partially understood. The
+run then sets `manifestValidated` from that index, and strict mode requires it for
+both `wpt` and `captured-site` corpus kinds.
+
+`--manifest` is a different thing and is a frequent source of a wasted run. It
+takes a *corpus* manifest - a document this repository defines, carrying
+`schemaVersion: 1`, a `corpusKind` equal to the selected kind, and a per-file
+SHA-256 inventory that must exactly match the corpus's `.svg` set. It is required
+for `--corpus-kind captured-site` and optional otherwise. It is not a WPT input.
+Passing the WPT `MANIFEST.json` to `--manifest` aborts the run with `manifest
+schema, corpus kind, or file inventory is invalid` before a single document is
+evaluated. Do not pass it; `--corpus-kind wpt` needs no `--manifest` at all.
+
+### The denominator changed: pre- and post-change WPT rates are not comparable
+
+`WptManifestIndex` now classifies every selected file and removes reference-only
+support files from the test denominator: files whose manifest type is `support`,
+and files that are a declared reference target of some other test but declare no
+reference of their own. In the current checkout that removes 252 of the 1,307
+`.svg` files under the SVG corpus root, leaving 1,055 tests.
+
+The report records this as `wptExcludedReferenceFiles`, next to
+`wptManifestPath`, `wptManifestVersion`, `wptManifestItems`, and
+`wptUnclassifiedFiles`; the Markdown report prints the manifest path, its version,
+the indexed SVG item count, the exclusion count, and the count of files absent
+from the manifest. The summary schema is version 5 for this reason.
+
+State the consequence plainly: **a WPT pass rate recorded before this change and
+one recorded after it are not directly comparable unless both runs used the same
+manifest version and the same exclusion handling.** Every 6.193-6.243 baseline
+had reference-only files inside its denominator. When quoting a rate, quote the
+denominator with it, or quote `wptManifestVersion` and `wptExcludedReferenceFiles`
+next to it. A rate without those two fields cannot be reconciled with a later run.
+
+Two related oracle corrections travel with the same change and matter for reading
+any rate:
+
+- An unresolved declared reference is counted as not comparable, not as a pass.
+  It appears in `wptUnresolvedTargets` and in a bounded
+  `wptUnresolvedReferenceSamples` list rather than inflating the pass count, and
+  strict mode fails unless every applicable test is comparable.
+- Per-type reference accounting is now reported directly
+  (`wptReferenceTypeCounts`: tests, comparable, pass, fail, blocked, unresolved)
+  instead of forcing a per-directory rerun to find the affected feature.
+
+### `RendererBuildId` is a module version id, not a revision
+
+`RendererBuildId` is
+`typeof(SvgCorpusRunner).Assembly.ManifestModule.ModuleVersionId`: a fresh GUID
+per compile, not a content hash of the source. Two builds of identical source
+produce different ids, and rebuilding unchanged source produces a new one. It is
+therefore usable for exactly one purpose - deciding whether a `--resume`
+checkpoint is still valid, which requires both the same build id and the same
+per-file source SHA-256 - and it cannot tie a report to a source revision.
+
+Treat it as a cache key, not as provenance. Record the commit, the dirty state of
+the working tree, the manifest parameters, and the runner options alongside any
+report you intend to cite, and record them again for the baseline it is compared
+against.
+
+### Selection truncation and per-experiment output
+
+`--max-files` defaults to 500 and is hard-capped at 10,000. Selection is ordinal
+by path. A truncated run is visible - `truncated` is printed on the runner's JSON
+line, `selectionTruncated` is recorded in the report and as "Selection truncated
+by --max-files" in the Markdown, and strict mode fails on it - but a truncated run
+is not a corpus result. Pass an explicit `--max-files` large enough to cover the
+intended targets, confirm `truncated` is false, and use `--include-prefix` for a
+targeted root-cause rerun. `selectedFiles` and `evaluatedFiles` are reported
+separately, so a per-file byte or read skip is visible rather than absorbed into
+the total.
+
+The default `--output` is `Results/svg`, so every run writes the same
+`Results/svg/corpus-report.json` and `Results/svg/corpus-checkpoint.jsonl`.
+Reports are replaced atomically, which means concurrent runs silently overwrite
+each other's report rather than failing. Give every experiment its own `--output`
+directory under `Results/svg/`; the per-experiment subdirectories under
+`Results/svg/` are that pattern.
+
+### Build prerequisite: the SDK pin rolls forward
+
+`global.json` pins `10.0.300` with `rollForward: latestFeature`, not
+`latestPatch`. `latestPatch` asks for 10.0.300 exactly, which no installed SDK
+satisfies, so every documented build from the repo root failed with `SDK not
+found` before the change. `latestFeature` still prefers 10.0.300 when it is
+installed and otherwise takes the nearest higher 10.0.x band. Treat a `SDK not
+found` error as a bad working directory or a `global.json` edit, not as a missing
+SDK, and confirm `dotnet --list-sdks` names a 10.0.x SDK at or above the pin before
+diagnosing a build failure.
+
+### The WPT checkout path must be passed explicitly
+
+The runner has no default corpus location: it discovers the manifest by walking
+upward from `--corpus`, so the corpus root must always be given explicitly and
+must sit at or below a checkout containing `MANIFEST.json`. `AGENTS.md` records
+the WPT root as `C:\Users\udayk\Videos\wpt`; on the current machine the checkout
+is at `D:\wpt` and the SVG corpus root is `D:\wpt\svg`. Use the path that exists
+on the machine you are running on, and confirm `wptManifestPath` in the report
+names the manifest you expected.
+
+Verification:
+
+```bash
+dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release -- --corpus D:\wpt\svg --corpus-kind wpt --max-files 10000 --output Results/svg/wpt-full
+```
+
+Read back from the generated `corpus-report.json`: `schemaVersion` 5,
+`wptManifestVersion` 9, `wptManifestItems`, `wptExcludedReferenceFiles`,
+`selectionTruncated` false, and `selectedFiles`. `wptUnclassifiedFiles` is 0 when
+the selection is covered by the manifest; treat a non-zero value as selection
+outside manifest coverage, not as a rounding artifact. Add `--gate` to make a
+truncated selection, a read or oversize skip, an inadmissible document, a
+comparable reference failure, an unresolved declared reference, or a missing
+manifest a non-zero exit. Record the numbers, the commit, and the dirty state
+together; do not quote a rate from a run that lacks them.
