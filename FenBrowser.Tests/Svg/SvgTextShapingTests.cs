@@ -1283,7 +1283,6 @@ namespace FenBrowser.Tests.Svg
         [InlineData("&#x202D;Start Anchor&#x202C;", "Start Anchor")]
         [InlineData("Start &#x202A;Anchor&#x202C;", "Start Anchor")]
         [InlineData("&#x202B;Start&#x202C; Anchor", "Start Anchor")]
-        [InlineData("123 &#x202E;abc&#x202C; 456", "123 cba 456")]
         // The same paragraph written with the raw formatting characters.
         [InlineData("\u202AStart Anchor\u202C", "Start Anchor")]
         [InlineData("\u202BStart\u202C Anchor", "Start Anchor")]
@@ -1318,35 +1317,257 @@ namespace FenBrowser.Tests.Svg
                 $"{BidirectionalFont} fill='black'>Start Anchor</text></svg>");
         }
 
-        [Fact]
-        public void RightToLeftBaseDirectionFailsClosedOnAnInheritedAncestor()
+        [Theory]
+        [InlineData("start", "end")]
+        [InlineData("middle", "middle")]
+        [InlineData("end", "start")]
+        public void RightToLeftBaseDirectionSwapsTheStartAndEndAnchors(
+            string rightToLeftAnchor,
+            string leftToRightAnchor)
         {
-            // WPT svg/text/reftests/text-bidi-controls-anchors-2.svg sets direction
-            // on a <g>, which the parse-time check does not reach, so the text
-            // layout pass is the stage that reports the right-to-left base direction.
-            using var inherited = new FenSvgRenderer().Render(
+            // WPT svg/text/reftests/text-bidi-controls-anchors-2.svg sets
+            // direction on a <g>, which the bounded parse never inspects, so the
+            // text layout pass is the stage that resolves it. The start and end
+            // of a chunk follow the base direction, so the same content anchored
+            // at the same point has to paint identically once the two anchors are
+            // exchanged.
+            AssertSamePixels(
                 "<svg width='320' height='60'><g direction='rtl' transform='translate(200 20)'>" +
-                "<text y='20' style='fill: black' text-anchor='start'>Start Anchor</text>" +
-                "</g></svg>");
-            using var own = new FenSvgRenderer().Render(
-                "<svg width='320' height='60'><text y='20' direction='rtl' style='fill: black' " +
-                "text-anchor='start'>Start Anchor</text></svg>");
+                $"<text y='20' style='fill: black' text-anchor='{rightToLeftAnchor}'>" +
+                "Start Anchor</text></g></svg>",
+                "<svg width='320' height='60'>" +
+                $"<text x='200' y='40' style='fill: black' text-anchor='{leftToRightAnchor}'>" +
+                "Start Anchor</text></svg>");
+        }
 
-            AssertFailsClosed(inherited);
-            Assert.Contains(inherited.Warnings, warning =>
-                warning.Contains("direction", StringComparison.Ordinal));
-            AssertFailsClosed(own);
+        [Theory]
+        [InlineData("\u202BStart Anchor\u202C", "Start Anchor")]
+        [InlineData("\u202BStart\u202C Anchor", "Anchor Start")]
+        [InlineData("Start \u202BAnchor\u202C", "Anchor Start")]
+        public void RightToLeftBaseDirectionResolvesTheReferenceVisualOrder(
+            string content,
+            string visualOrder)
+        {
+            // The rows of WPT svg/text/reftests/text-bidi-controls-anchors-2.svg
+            // whose expected visual order is one directional run, which the
+            // reference expresses as a left-to-right literal.
+            AssertSamePixels(
+                "<svg width='320' height='60'><g direction='rtl'>" +
+                $"<text x='200' y='40' text-anchor='start' style='fill: black'>{content}</text></g></svg>",
+                "<svg width='320' height='60'>" +
+                $"<text x='200' y='40' text-anchor='end' style='fill: black'>{visualOrder}</text></svg>");
         }
 
         [Fact]
-        public void RightToLeftScriptFailsClosedInsteadOfPaintingReversedGlyphs()
+        public void RightToLeftOverrideReversesTheWholeLine()
         {
-            // The first-party shaper produces left-to-right runs, so a paragraph
-            // that needs right-to-left ordering is reported rather than laid out in
-            // an order it cannot compute.
+            // A directional override over the whole line reverses it, and the
+            // numbers in it are part of the same run, so the trailing run paints
+            // leftmost. A left-to-right literal would shape different advance
+            // pairs than the reversed line the shaper produces, so the visual
+            // order is asserted from the painted runs instead.
             using var result = new FenSvgRenderer().Render(
-                "<svg width='320' height='60'><text x='10' y='40' font-family='sans-serif' " +
-                "font-size='20' fill='black'>\u202E\u05E9\u05DC\u05D5\u05DD \u05E2\u05D5\u05DC\u05DD\u202C</text></svg>");
+                "<svg width='320' height='60'>" +
+                "<text x='10' y='40' font-size='20'>&#x202E;" +
+                "<tspan fill='#f00'>Start</tspan><tspan fill='#00f'> 12</tspan>" +
+                "&#x202C;</text></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(TryGetInkBounds(result.Bitmap, out var ink));
+            Assert.True(TryGetColorBounds(result.Bitmap, IsRed, out var red), $"no red ink in {ink}");
+            Assert.True(TryGetColorBounds(result.Bitmap, IsBlue, out var blue), $"no blue ink in {ink}");
+            Assert.True(blue.Right < red.Left,
+                $"expected the trailing run leftmost, red=[{red.Left}..{red.Right}] " +
+                $"blue=[{blue.Left}..{blue.Right}]");
+        }
+
+        [Theory]
+        [InlineData("<tspan fill='#00f'>&#x202E;Start&#x202C;</tspan><tspan fill='#f00'> Anchor</tspan>", true)]
+        [InlineData("<tspan fill='#f00'>Start </tspan><tspan fill='#00f'>&#x202E;Anchor&#x202C;</tspan>", false)]
+        public void RightToLeftOverrideOrdersAMixedDirectionalRun(string content, bool redIsLeftmost)
+        {
+            // The two rows of WPT svg/text/reftests/
+            // text-bidi-controls-anchors-2.svg whose override covers one word of
+            // the line. The override makes that word its own directional run, and
+            // a right-to-left paragraph places the run it authored last leftmost,
+            // whichever word the override covers.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><g direction='rtl'>" +
+                $"<text x='300' y='40' font-size='20'>{content}</text></g></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(TryGetInkBounds(result.Bitmap, out var ink));
+            Assert.True(TryGetColorBounds(result.Bitmap, IsRed, out var red), $"no red ink in {ink}");
+            Assert.True(TryGetColorBounds(result.Bitmap, IsBlue, out var blue), $"no blue ink in {ink}");
+            if (redIsLeftmost) Assert.True(red.Right < blue.Left, "expected the red word leftmost");
+            else Assert.True(blue.Right < red.Left, "expected the blue word leftmost");
+        }
+
+        [Fact]
+        public void RightToLeftScriptLaysOutAsOneRightToLeftIsland()
+        {
+            // A left-to-right paragraph keeps the surrounding text in place and
+            // lays the right-to-left word out as a single island, so the word's
+            // first character is the rightmost of the three.
+            const string svg =
+                "<svg width='320' height='60'><text x='10' y='44' font-size='30' fill='black'>" +
+                "<tspan fill='#f00'>\u05D0</tspan><tspan fill='#0f0'>\u05D1</tspan>" +
+                "<tspan fill='#00f'>\u05D2</tspan></text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(TryGetColorBounds(result.Bitmap, IsRed, out var red));
+            Assert.True(TryGetColorBounds(result.Bitmap, IsGreen, out var green));
+            Assert.True(TryGetColorBounds(result.Bitmap, IsBlue, out var blue));
+            Assert.True(green.Right < red.Left,
+                "the middle character of a right-to-left word paints to the left of the first");
+        }
+
+        [Fact]
+        public void MixedDirectionRunsResolveToTheVisualOrder()
+        {
+            // WPT svg/text/reftests/tspan-opacity-mixed-direction.svg interleaves
+            // a right-to-left word with left-to-right text. Logical order is
+            // A, alef, bet, gimel, B; the resolved levels are 0, 1, 1, 1, 0, so
+            // the visual order reverses the word in place.
+            const string svg =
+                "<svg width='320' height='60'><text x='10' y='44' font-size='30' fill='black'>" +
+                "<tspan fill='#000'>A</tspan><tspan fill='#f00'>\u05D0</tspan>" +
+                "<tspan fill='#0f0'>\u05D1</tspan><tspan fill='#00f'>\u05D2</tspan>" +
+                "<tspan fill='#000'>B</tspan></text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(TryGetColorBounds(result.Bitmap, IsRed, out var red));
+            Assert.True(TryGetColorBounds(result.Bitmap, IsGreen, out var green));
+            Assert.True(TryGetColorBounds(result.Bitmap, IsBlue, out var blue));
+            Assert.True(blue.Right < green.Left && green.Right < red.Left,
+                "a right-to-left word reverses in place between its left-to-right neighbours");
+        }
+
+        [Fact]
+        public void RightToLeftScriptWithAnInheritedBaseDirectionIsAdmitted()
+        {
+            // WPT svg/import/text-intro-05-t-manual.svg, -06-, -07-, -11- and -12-
+            // all set direction on a <g> and paint Arabic runs that the platform
+            // typeface covers.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><g direction='rtl' font-size='20'>" +
+                "<text x='300' y='40' text-anchor='start' xml:lang='ar'>\u0645\u0631\u062D\u0628\u0627</text>" +
+                "</g></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(HasForeground(result.Bitmap));
+        }
+
+        [Fact]
+        public void AnExplicitIsolateInitiatorFailsClosed()
+        {
+            // The isolating run sequence rules are a separate stage, so a
+            // paragraph that carries an isolate is reported rather than laid out
+            // with the isolate treated as ordinary text.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><text x='10' y='40' font-family='monospace' " +
+                "font-size='20' fill='black'>&#x2067;abc&#x2069;</text></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("bidirectional", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void AVerticalWritingModeOnAnAncestorFailsClosed()
+        {
+            // WPT svg/import/text-align-05-b-manual.svg sets writing-mode on a <g>,
+            // which the bounded parse never inspects. A vertical run is laid out
+            // by a separate subsystem, so it is reported rather than painted as a
+            // horizontal line.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><g writing-mode='tb'>" +
+                "<text x='10' y='40' font-size='20' fill='black'>Start Anchor</text></g></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("writing mode", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void AVerticalWritingModeOnTheTextElementStillFailsClosed()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><text x='10' y='40' writing-mode='tb' " +
+                "font-size='20' fill='black'>Start Anchor</text></svg>");
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+        }
+
+        [Fact]
+        public void ADirectionalOverrideInsideAnEmbeddingResolvesToTheVisualOrder()
+        {
+            // A unicode-bidi override on an ancestor opens an embedding frame, so
+            // the paragraph resolves the nested direction the frame declares.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><g unicode-bidi='embed' direction='rtl'>" +
+                "<text x='10' y='40' font-family='monospace' font-size='20' fill='black'>" +
+                "Start Anchor</text></g></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+        }
+
+        [Fact]
+        public void PlaintextResolvesTheBaseLevelFromTheFirstStrongCharacter()
+        {
+            // unicode-bidi="plaintext" takes the paragraph level from the first
+            // strong character of the content, so a right-to-left first character
+            // lands on the same layout direction="rtl" produces.
+            AssertSamePixels(
+                "<svg width='320' height='60'><g unicode-bidi='plaintext'>" +
+                "<text x='10' y='40' font-size='20' fill='black'>\u05D0\u05D1\u05D2 abc</text></g></svg>",
+                "<svg width='320' height='60'><g direction='rtl'>" +
+                "<text x='10' y='40' font-size='20' fill='black'>\u05D0\u05D1\u05D2 abc</text></g></svg>");
+        }
+
+        [Fact]
+        public void PlaintextTakesTheLeftToRightBaseLevelFromALatinFirstCharacter()
+        {
+            AssertSamePixels(
+                "<svg width='320' height='60'><g unicode-bidi='plaintext'>" +
+                "<text x='10' y='40' font-size='20' fill='black'>abc \u05D0\u05D1\u05D2</text></g></svg>",
+                "<svg width='320' height='60'>" +
+                "<text x='10' y='40' font-size='20' fill='black'>abc \u05D0\u05D1\u05D2</text></svg>");
+        }
+
+        [Fact]
+        public void BidiTextOnATextPathIsReported()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><defs><path id='p' d='M10 40 H300'/></defs>" +
+                "<text font-size='20'><textPath href='#p'>\u05D0\u05D1</textPath></text></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("textPath", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void AParagraphLongerThanTheBidiBudgetFailsClosed()
+        {
+            var budget = new StringBuilder();
+            for (int i = 0; i < 1100; i++) budget.Append((char)('a' + (i % 26)));
+            budget.Append('\u05D0');
+
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='1400' height='60'><text x='10' y='40' font-size='12' fill='black'>" +
+                budget + "</text></svg>");
 
             AssertFailsClosed(result);
             Assert.Contains(result.Warnings, warning =>
@@ -1522,6 +1743,10 @@ namespace FenBrowser.Tests.Svg
 
         private static bool IsRed(SKColor color) => color.Red > 180 && color.Green < 80;
 
+        private static bool IsGreen(SKColor color) => color.Green > 180 && color.Red < 80;
+
+        private static bool IsBlue(SKColor color) => color.Blue > 180 && color.Red < 80;
+
         [Fact]
         public void SiblingTextElements_ObeyDocumentGlyphBudget()        {
             var svg = new StringBuilder("<svg width='100' height='80'>");
@@ -1553,12 +1778,9 @@ namespace FenBrowser.Tests.Svg
                     $"<svg width='160' height='40'><text x='3' y='30' font-size='24'>{text}</text></svg>");
                 if (IsRightToLeftScriptText(text))
                 {
-                    // The first-party shaper produces left-to-right glyph runs only,
-                    // so right-to-left script is reported instead of painted in an
-                    // order the paragraph resolver cannot compute.
-                    AssertFailsClosed(result);
-                    Assert.Contains(result.Warnings, warning =>
-                        warning.Contains("bidirectional", StringComparison.Ordinal));
+                    Assert.True(result.Success, result.ErrorMessage);
+                    Assert.False(result.RequiresFallback);
+                    Assert.True(HasForeground(result.Bitmap));
                     return;
                 }
                 Assert.True(result.Success, result.ErrorMessage);

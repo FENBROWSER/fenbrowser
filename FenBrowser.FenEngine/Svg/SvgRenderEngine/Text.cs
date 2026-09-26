@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using FenBrowser.FenEngine.Typography;
@@ -36,8 +37,9 @@ namespace FenBrowser.FenEngine.Svg
             RequireFirstLetterSupport();
             RequireLanguageStyleSupport();
             LayoutTextElement(el, viewport, inherited, ResolveAncestorTextStyle(el), state, runs, chunks, true);
+            ApplyParagraphDirection(runs, chunks, state);
             ApplyTextLengthAdjustments(runs, state.LengthAdjustments);
-            ApplyTextAnchors(runs, chunks);
+            ApplyTextAnchors(runs, chunks, _chunkLevels);
             ApplyTextRotations(runs);
             if (runs.Count == 0) return;
 
@@ -105,7 +107,7 @@ namespace FenBrowser.FenEngine.Svg
                 if (isRoot || hasAbsolute || state.CurrentChunk < 0)
                 {
                     state.CurrentChunk = chunks.Count;
-                    chunks.Add(new TextChunk(state.X, textStyle.Anchor));
+                    chunks.Add(TextChunk.At(textStyle, state.X));
                 }
 
                 // A declared textLength governs the horizontal layout of the whole
@@ -290,7 +292,13 @@ namespace FenBrowser.FenEngine.Svg
                     token.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
                     token.Equals("normal", StringComparison.OrdinalIgnoreCase))
                 {
-                    continue;
+                    if (tokenizer.Next(out _))
+                    {
+                        _report.RequireFallback(
+                            "per-glyph SVG text rotation keyword must be the only value");
+                        return null;
+                    }
+                    return null;
                 }
                 if (!SvgValues.TryParseNumber(token, out float degrees) || !SvgValues.IsFinite(degrees))
                 {
@@ -512,7 +520,7 @@ namespace FenBrowser.FenEngine.Svg
                     .Equals("spacingAndGlyphs", StringComparison.OrdinalIgnoreCase);
             }
 
-            return new TextLengthAdjustment(0, 0, targets, glyphScale);
+            return new TextLengthAdjustment(0, 0, targets, glyphScale, -1);
         }
 
         private void RegisterTextLength(
@@ -525,7 +533,12 @@ namespace FenBrowser.FenEngine.Svg
             if (runs.Count <= startRun) return;
             var adjustment = declaration.Value;
             state.LengthAdjustments.Add(
-                adjustment with { StartRun = startRun, EndRun = runs.Count });
+                adjustment with
+                {
+                    StartRun = startRun,
+                    EndRun = runs.Count,
+                    Chunk = state.CurrentChunk
+                });
         }
 
         private static bool TryResolveTextLengthTargets(
@@ -708,6 +721,15 @@ namespace FenBrowser.FenEngine.Svg
             var paintStyle = inheritedPaint.ResolveOverrides(element, _report);
             if (!paintStyle.Visibility) return;
             var textStyle = ResolveTextStyle(element, inheritedText);
+
+            if (textStyle.RightToLeft || textStyle.Frame != null ||
+                ContainsBidirectionalText(element.TextContent))
+            {
+                _report.RequireFallback(
+                    "bidirectional SVG text on textPath requires compatibility fallback");
+                return;
+            }
+            if (state.CurrentChunk >= 0) state.PoisonedChunk = state.CurrentChunk;
 
             int firstRun = runs.Count;
             float originX = state.X;
@@ -910,20 +932,10 @@ namespace FenBrowser.FenEngine.Svg
             if (text.Length == 0) return null;
 
             bool rotated = state.RotationList != null;
-            if (!TryResolveVisualOrder(
-                    text,
-                    positions.HasPerCharacterLists || rotated,
-                    textStyle.WordSpacing,
-                    out string visualOrder))
-            {
-                _report.RequireFallback("bidirectional SVG text requires compatibility fallback");
-                return null;
-            }
-            if (visualOrder != null) text = visualOrder;
-            if (text.Length == 0) return null;
 
             var typeface = SvgTypefaceResolver.Resolve(
-                textStyle.Family, text, textStyle.Language, textStyle.Weight, textStyle.Slant);
+                textStyle.Family, PaintedCharacters(text), textStyle.Language,
+                textStyle.Weight, textStyle.Slant);
             if (typeface == null)
             {
                 _report.RequireFallback("SVG text has no available typeface");
@@ -989,6 +1001,9 @@ namespace FenBrowser.FenEngine.Svg
                 element, paintStyle, glyphRun, viewport, runX, runY + baselineOffset,
                 state.CurrentChunk, applyOwnOpacity, state.ContainerOpacity, textStyle.Decorations);
             run.GlyphRotations = rotations;
+            run.LogicalText = text;
+            run.Frame = textStyle.Frame;
+            run.PerCharacterPositioned = positions.HasPerCharacterLists;
             runs.Add(run);
             _documentTextGlyphCount += glyphRun.Count;
             state.GlyphCount += glyphRun.Count;
@@ -1406,18 +1421,35 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
-        private static void ApplyTextAnchors(List<TextPaintRun> runs, List<TextChunk> chunks)
+        private void ApplyTextAnchors(
+            List<TextPaintRun> runs,
+            List<TextChunk> chunks,
+            IReadOnlyList<int> paragraphLevels)
         {
             for (int chunkIndex = 0; chunkIndex < chunks.Count; chunkIndex++)
             {
-                var chunk = chunks[chunkIndex];
+                TextChunk chunk = chunks[chunkIndex];
                 float right = chunk.StartX;
                 for (int i = 0; i < runs.Count; i++)
                 {
                     if (runs[i].Chunk == chunkIndex) right = Math.Max(right, runs[i].X + runs[i].AdvanceExtent);
                 }
                 float width = Math.Max(0f, right - chunk.StartX);
-                float shift = chunk.Anchor == TextAnchor.Middle ? -width / 2f : chunk.Anchor == TextAnchor.End ? -width : 0f;
+                // The start and end of a text chunk follow the base direction the
+                // paragraph resolved, so a right-to-left chunk anchors its start
+                // edge on the right and its end edge on the left.
+                TextAnchor anchor = chunk.Anchor;
+                int level = chunkIndex < paragraphLevels.Count ? paragraphLevels[chunkIndex] : 0;
+                if ((level & 1) == 1)
+                {
+                    anchor = anchor switch
+                    {
+                        TextAnchor.Start => TextAnchor.End,
+                        TextAnchor.End => TextAnchor.Start,
+                        _ => anchor
+                    };
+                }
+                float shift = anchor == TextAnchor.Middle ? -width / 2f : anchor == TextAnchor.End ? -width : 0f;
                 if (shift == 0f) continue;
                 for (int i = 0; i < runs.Count; i++)
                 {
@@ -1445,6 +1477,10 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             ValidateTextDirection(element);
+            ValidateTextWritingMode(element);
+            bool rightToLeft = ResolveTextDirection(element, inherited.RightToLeft);
+            UnicodeBidi bidi = ResolveUnicodeBidi(element, inherited.Bidi);
+            BidiFrame frame = ResolveBidiFrame(element, inherited.Frame, rightToLeft, bidi);
             return new TextStyle(
                 string.IsNullOrWhiteSpace(family) ? inherited.Family : family,
                 fontSize,
@@ -1457,7 +1493,10 @@ namespace FenBrowser.FenEngine.Svg
                 ResolveBaselineShiftValue(element, inherited.BaselineShift, fontSize),
                 ResolveWordSpacing(element, inherited.WordSpacing, fontSize),
                 ResolveTextDecoration(element, inherited.Decorations),
-                ResolveLanguage(element, inherited.Language));
+                ResolveLanguage(element, inherited.Language),
+                rightToLeft,
+                bidi,
+                frame);
         }
 
         /// <summary>
@@ -1568,7 +1607,16 @@ namespace FenBrowser.FenEngine.Svg
             string raw = element.GetPresentationProperty("text-decoration");
             if (string.IsNullOrWhiteSpace(raw)) return inherited;
             var keyword = raw.AsSpan().Trim();
-            if (IsCssWideKeyword(keyword)) return TextDecoration.None;
+            if (keyword.Equals("initial", StringComparison.OrdinalIgnoreCase) ||
+                keyword.Equals("revert", StringComparison.OrdinalIgnoreCase))
+            {
+                return TextDecoration.None;
+            }
+            if (keyword.Equals("inherit", StringComparison.OrdinalIgnoreCase) ||
+                keyword.Equals("unset", StringComparison.OrdinalIgnoreCase))
+            {
+                return inherited;
+            }
 
             var flags = TextDecoration.None;
             var tokenizer = SvgValues.CreateTokenizer(keyword);
@@ -1597,12 +1645,10 @@ namespace FenBrowser.FenEngine.Svg
             value.Equals("revert", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
-        /// The first-party paragraph is laid out with a left-to-right base direction,
-        /// which is the initial value of <c>direction</c>. A right-to-left base
-        /// direction on any element in the inherited chain reverses the whole
-        /// paragraph, so it is reported here where the direction is resolved rather
-        /// than at attribute sight: the parse only inspects <c>text</c> and
-        /// <c>tspan</c>, while <c>direction</c> is inherited from any ancestor.
+        /// Reports a <c>direction</c> value the paragraph resolver cannot read.
+        /// The value is inherited from any ancestor, so the bounded parse, which
+        /// only inspects <c>text</c> and <c>tspan</c> attributes, cannot decide it
+        /// at attribute sight; the text layout pass is the stage that resolves it.
         /// </summary>
         private void ValidateTextDirection(SvgElement element)
         {
@@ -1611,7 +1657,83 @@ namespace FenBrowser.FenEngine.Svg
             var keyword = raw.AsSpan().Trim();
             if (IsCssWideKeyword(keyword)) return;
             if (keyword.Equals("ltr", StringComparison.OrdinalIgnoreCase)) return;
-            _report.RequireFallback("SVG text direction requires compatibility fallback");
+            if (keyword.Equals("rtl", StringComparison.OrdinalIgnoreCase)) return;
+            _report.RequireFallback("SVG text direction value requires compatibility fallback");
+        }
+
+        /// <summary>
+        /// Reports a vertical writing mode inherited from any ancestor. The
+        /// bounded parse only inspects <c>text</c> and <c>tspan</c> attributes, so
+        /// a <c>writing-mode</c> on an enclosing container reaches the text pass
+        /// unfiltered. Vertical runs are laid out by a separate subsystem, so
+        /// they are reported instead of painted horizontally.
+        /// </summary>
+        private void ValidateTextWritingMode(SvgElement element)
+        {
+            string raw = element.GetPresentationProperty("writing-mode");
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            var keyword = raw.AsSpan().Trim();
+            if (IsCssWideKeyword(keyword)) return;
+            if (keyword.Equals("horizontal-tb", StringComparison.OrdinalIgnoreCase) ||
+                keyword.Equals("lr", StringComparison.OrdinalIgnoreCase) ||
+                keyword.Equals("lr-tb", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            _report.RequireFallback("SVG vertical writing mode requires compatibility fallback");
+        }
+
+        private bool ResolveTextDirection(SvgElement element, bool inherited)
+        {
+            string raw = element.GetPresentationProperty("direction");
+            if (string.IsNullOrWhiteSpace(raw)) return inherited;
+            var keyword = raw.AsSpan().Trim();
+            if (IsCssWideKeyword(keyword)) return inherited;
+            if (keyword.Equals("rtl", StringComparison.OrdinalIgnoreCase)) return true;
+            if (keyword.Equals("ltr", StringComparison.OrdinalIgnoreCase)) return false;
+            return inherited;
+        }
+
+        private UnicodeBidi ResolveUnicodeBidi(SvgElement element, UnicodeBidi inherited)
+        {
+            string raw = element.GetPresentationProperty("unicode-bidi");
+            if (string.IsNullOrWhiteSpace(raw)) return inherited;
+            var keyword = raw.AsSpan().Trim();
+            if (IsCssWideKeyword(keyword)) return inherited;
+            if (keyword.Equals("normal", StringComparison.OrdinalIgnoreCase)) return UnicodeBidi.Normal;
+            if (keyword.Equals("plaintext", StringComparison.OrdinalIgnoreCase)) return UnicodeBidi.Plaintext;
+            if (keyword.Equals("embed", StringComparison.OrdinalIgnoreCase) ||
+                keyword.Equals("inline", StringComparison.OrdinalIgnoreCase))
+            {
+                return UnicodeBidi.Embed;
+            }
+            if (keyword.Equals("bidi-override", StringComparison.OrdinalIgnoreCase)) return UnicodeBidi.Override;
+            return inherited;
+        }
+
+        /// <summary>
+        /// Builds the embedding frame an element contributes to the paragraph.
+        /// Only <c>embed</c> and <c>bidi-override</c> open one; every other value
+        /// passes the inherited frame through unchanged, so a plain left-to-right
+        /// document allocates no frame at all. <c>isolate</c> deliberately opens
+        /// no frame: the isolating run sequence rules are a separate stage this
+        /// pass does not compute, and a frame would silently claim to.
+        /// </summary>
+        private BidiFrame ResolveBidiFrame(
+            SvgElement element,
+            BidiFrame inherited,
+            bool rightToLeft,
+            UnicodeBidi bidi)
+        {
+            if (bidi is not (UnicodeBidi.Embed or UnicodeBidi.Override)) return inherited;
+            string raw = element.GetPresentationProperty("unicode-bidi");
+            if (string.IsNullOrWhiteSpace(raw)) return inherited;
+            var keyword = raw.AsSpan().Trim();
+            bool embed = keyword.Equals("embed", StringComparison.OrdinalIgnoreCase) ||
+                         keyword.Equals("inline", StringComparison.OrdinalIgnoreCase);
+            bool over = keyword.Equals("bidi-override", StringComparison.OrdinalIgnoreCase);
+            if (!embed && !over) return inherited;
+            return new BidiFrame(inherited, rightToLeft, over);
         }
 
         private bool TryResolveTextLengthList(string raw, float percentReference, float fontSize, out float[] values)
@@ -1741,302 +1863,381 @@ namespace FenBrowser.FenEngine.Svg
             return false;
         }
 
-        /// <summary>
-        /// Resolves the visual character order of one text run.
-        ///
-        /// The first-party subset lays a paragraph out left to right. That is the
-        /// identity order for the overwhelming majority of content, so a run with no
-        /// explicit directional control and no right-to-left script is returned
-        /// unchanged and never reaches the resolver. Any other run is resolved with
-        /// the Unicode bidirectional algorithm restricted to the classes the subset
-        /// can honour: an explicit left-to-right base direction, no isolate
-        /// initiators, no bracket pairs, and no right-to-left script characters,
-        /// because the shaper behind the first-party path can only produce
-        /// left-to-right glyph runs. A run outside that subset reports false and is
-        /// routed to the compatibility fallback instead of painting a paragraph in
-        /// an order the engine cannot compute.
-        ///
-        /// <paramref name="visualOrder"/> is null when the run is already in visual
-        /// order and carries no explicit formatting character, which is the case for
-        /// every run that never reaches this resolver.
-        /// </summary>
-        private static bool TryResolveVisualOrder(
-            string text,
-            bool perCharacterPositions,
-            float wordSpacing,
-            out string visualOrder)
-        {
-            visualOrder = null;
-            if (!ContainsBidiRelevantText(text)) return true;
-            if (perCharacterPositions || wordSpacing != 0f) return false;
-            if (text.Length > MaxBidiParagraphChars) return false;
-
-            int count = text.Length;
-            var types = new BidiType[count];
-            var levels = new byte[count];
-            var origin = new int[count];
-            var stackLevel = new byte[MaxBidiEmbeddingDepth + 1];
-            var stackOverride = new BidiType[MaxBidiEmbeddingDepth + 1];
-            int depth = 0;
-            int overflow = 0;
-            int kept = 0;
-
-            for (int i = 0; i < count; i++)
-            {
-                if (!TryClassifyBidi(text[i], out BidiType type)) return false;
-                if (type is BidiType.Isolate or BidiType.IsolateTerminator) return false;
-
-                // UAX 9 rules X1 to X8.
-                if (type is BidiType.EmbeddingLeft or BidiType.EmbeddingRight or
-                    BidiType.OverrideLeft or BidiType.OverrideRight)
-                {
-                    bool rightToLeft = type is BidiType.EmbeddingRight or BidiType.OverrideRight;
-                    bool overridden = type is BidiType.OverrideLeft or BidiType.OverrideRight;
-                    if (depth < MaxBidiEmbeddingDepth)
-                    {
-                        depth++;
-                        stackLevel[depth] = NextEmbeddingLevel(stackLevel[depth - 1], rightToLeft);
-                        stackOverride[depth] = overridden
-                            ? (rightToLeft ? BidiType.RightToLeft : BidiType.LeftToRight)
-                            : BidiType.Neutral;
-                    }
-                    else
-                    {
-                        overflow++;
-                    }
-                    continue;
-                }
-                if (type == BidiType.PopFormatting)
-                {
-                    if (overflow > 0) overflow--;
-                    else if (depth > 0) depth--;
-                    continue;
-                }
-
-                if (type is BidiType.RightToLeft or BidiType.RightToLeftArabic) return false;
-                types[kept] = stackOverride[depth] != BidiType.Neutral ? stackOverride[depth] : type;
-                levels[kept] = stackLevel[depth];
-                origin[kept] = i;
-                kept++;
-            }
-            if (kept == 0)
-            {
-                visualOrder = string.Empty;
-                return true;
-            }
-
-            Array.Resize(ref types, kept);
-            Array.Resize(ref levels, kept);
-            Array.Resize(ref origin, kept);
-            ResolveWeakTypes(types, levels, kept);
-            ResolveNeutralTypes(types, levels, kept);
-            ResolveImplicitLevels(types, levels, kept);
-            ReorderVisually(text, origin, types, levels, kept, out visualOrder);
-            return true;
-        }
-
         private const int MaxBidiParagraphChars = 1024;
         private const int MaxBidiEmbeddingDepth = 125;
 
-        private static bool ContainsBidiRelevantText(string text)
+        private enum UnicodeBidi : byte { Normal, Embed, Plaintext, Override }
+
+        /// <summary>
+        /// One element's contribution to the paragraph's embedding stack. A
+        /// <c>unicode-bidi</c> embedding or override opens a frame whose parent
+        /// is the frame it inherits, so the paragraph pass can rebuild the stack
+        /// the run was authored under. A document that never opens a frame keeps
+        /// a null style frame and skips the stack entirely.
+        /// </summary>
+        private sealed class BidiFrame
         {
+            public BidiFrame(BidiFrame parent, bool rightToLeft, bool over)
+            {
+                Parent = parent;
+                RightToLeft = rightToLeft;
+                Override = over;
+            }
+
+            public BidiFrame Parent { get; }
+            public bool RightToLeft { get; }
+            public bool Override { get; }
+            public int Depth => Parent == null ? 1 : Parent.Depth + 1;
+        }
+
+        private enum BidiClass : byte
+        {
+            LeftToRight,
+            RightToLeft,
+            ArabicLetter,
+            ArabicNumber,
+            EuropeanNumber,
+            EuropeanSeparator,
+            EuropeanTerminator,
+            CommonSeparator,
+            Neutral,
+            Whitespace,
+            NonSpacingMark,
+            BoundaryNeutral,
+            EmbeddingLeft,
+            EmbeddingRight,
+            OverrideLeft,
+            OverrideRight,
+            PopFormatting,
+            IsolateInitiator,
+            IsolateTerminator
+        }
+
+        /// <summary>
+        /// Resolves the visual order of one text chunk, the unit a paragraph is
+        /// laid out in. Runs are shaped in logical order, so the bidirectional
+        /// algorithm runs here over the concatenated logical characters of the
+        /// chunk and the resulting level run is cut back into the painted runs:
+        /// a run is split wherever its characters resolve to different levels or
+        /// to different strong directions, and the pieces are emitted in visual
+        /// order from the chunk's start edge.
+        /// <para>
+        /// The shaper behind this path chooses its own direction per buffer from
+        /// the first strong character, so a level run is laid out correctly only
+        /// when that guess agrees with the resolved level. A run the guess
+        /// disagrees with is mirrored by reversing its glyph run, which is what a
+        /// browser does when it hands the buffer the other direction. A run that
+        /// has to be mirrored is mirrored as a whole glyph sequence, so no
+        /// character-to-glyph correspondence is needed; a run that has to be
+        /// split does need it, because the split points are character positions.
+        /// </para>
+        /// </summary>
+        private readonly List<int> _chunkLevels = new List<int>();
+
+        private void ApplyParagraphDirection(
+            List<TextPaintRun> runs,
+            List<TextChunk> chunks,
+            TextLayoutState state)
+        {
+            List<int> levels = _chunkLevels;
+            levels.Clear();
+            for (int chunkIndex = 0; chunkIndex < chunks.Count; chunkIndex++)
+            {
+                CheckDeadline();
+                levels.Add(ResolveChunkParagraph(runs, chunks, state, chunkIndex));
+            }
+        }
+
+        private readonly List<TextPaintRun> _chunkRuns = new List<TextPaintRun>();
+        private readonly List<BidiSegment> _chunkSegments = new List<BidiSegment>();
+        private readonly List<TextPaintRun> _chunkVisual = new List<TextPaintRun>();
+
+        private int ResolveChunkParagraph(
+            List<TextPaintRun> runs,
+            List<TextChunk> chunks,
+            TextLayoutState state,
+            int chunkIndex)
+        {
+            TextChunk chunk = chunks[chunkIndex];
+            List<TextPaintRun> members = _chunkRuns;
+            members.Clear();
+            for (int i = 0; i < runs.Count; i++)
+            {
+                if (runs[i].Chunk == chunkIndex) members.Add(runs[i]);
+            }
+            if (members.Count == 0) return 0;
+
+            int total = 0;
+            bool framed = false;
+            for (int i = 0; i < members.Count; i++)
+            {
+                total += members[i].LogicalText?.Length ?? 0;
+                if (members[i].Frame != null) framed = true;
+            }
+            if (total == 0) return 0;
+
+            byte paragraphLevel = chunk.Bidi == UnicodeBidi.Plaintext
+                ? ResolvePlaintextLevel(members)
+                : (byte)(chunk.RightToLeft ? 1 : 0);
+
+            if (!framed && paragraphLevel == 0 && !ContainsBidirectionalText(members))
+                return paragraphLevel;
+
+            if (total > MaxBidiParagraphChars)
+            {
+                _report.RequireFallback("bidirectional SVG text requires compatibility fallback");
+                return paragraphLevel;
+            }
+
+            if (!TryResolveParagraphLevels(
+                    members, paragraphLevel,
+                    out byte[] levels, out int[] origin, out int[] owner, out int[] runStart,
+                    out bool[] shaperRight, out int kept))
+            {
+                _report.RequireFallback("bidirectional SVG text requires compatibility fallback");
+                return paragraphLevel;
+            }
+
+            int[] order = VisualOrder(levels, paragraphLevel);
+            bool identity = kept == total;
+            for (int i = 0; i < kept && identity; i++)
+            {
+                // A chunk is already laid out when the resolved order is the
+                // logical one, no character is dropped from it, and every
+                // character sits at a level that agrees with the direction the
+                // shaper chose for the run it came from.
+                if (order[i] != i) identity = false;
+                else if (shaperRight[owner[i]] != ((levels[i] & 1) == 1)) identity = false;
+            }
+            if (identity) return paragraphLevel;
+
+            if (state.PoisonedChunk == chunkIndex)
+            {
+                _report.RequireFallback(
+                    "bidirectional SVG text adjacent to a textPath requires compatibility fallback");
+                return paragraphLevel;
+            }
+            for (int i = 0; i < members.Count; i++)
+            {
+                if (members[i].GlyphRotations != null || members[i].PerCharacterPositioned)
+                {
+                    _report.RequireFallback(
+                        "bidirectional SVG text cannot be combined with per-glyph positioning");
+                    return paragraphLevel;
+                }
+            }
+            for (int i = 0; i < state.LengthAdjustments.Count; i++)
+            {
+                if (state.LengthAdjustments[i].Chunk != chunkIndex) continue;
+                _report.RequireFallback(
+                    "bidirectional SVG text with textLength requires compatibility fallback");
+                return paragraphLevel;
+            }
+
+            BuildVisualSegments(members, levels, order, origin, owner, runStart, _chunkSegments);
+            List<TextPaintRun> visual = _chunkVisual;
+            visual.Clear();
+            float cursor = chunk.StartX;
+            for (int i = 0; i < _chunkSegments.Count; i++)
+            {
+                BidiSegment segment = _chunkSegments[i];
+                TextPaintRun source = members[segment.Run];
+                if (segment.Text.Length == source.LogicalText.Length && !segment.Reversed)
+                {
+                    source.X = cursor;
+                    cursor += source.AdvanceExtent;
+                    visual.Add(source);
+                    continue;
+                }
+                TextPaintRun piece = SliceRun(source, segment, cursor);
+                if (piece == null)
+                {
+                    _report.RequireFallback(
+                        "bidirectional SVG text run cannot be split at a character boundary");
+                    return paragraphLevel;
+                }
+                visual.Add(piece);
+                cursor += piece.AdvanceExtent;
+            }
+            for (int i = 0; i < members.Count; i++) runs.Remove(members[i]);
+            for (int i = 0; i < visual.Count; i++) runs.Add(visual[i]);
+            return paragraphLevel;
+        }
+
+        private static bool ContainsBidirectionalText(string text)
+        {
+            if (text == null) return false;
             for (int i = 0; i < text.Length; i++)
             {
                 char c = text[i];
-                if (IsBidiControl(c) || IsRightToLeftScript(c)) return true;
+                if (c is (>= '\u0590' and <= '\u08FF') or (>= '\uFB1D' and <= '\uFDFF') or
+                        (>= '\uFE70' and <= '\uFEFE') or '\u200E' or '\u200F' or '\u061C' or
+                        (>= '\u202A' and <= '\u202E') or (>= '\u2066' and <= '\u2069'))
+                {
+                    return true;
+                }
             }
             return false;
         }
 
         /// <summary>
-        /// True for the bidirectional formatting characters and directional marks,
-        /// which carry no glyphs but do decide the order of a paragraph.
+        /// The characters a run actually paints. The explicit directional
+        /// controls carry no glyph, so a typeface is chosen for the run without
+        /// them; a run made of nothing else keeps its own text so the resolver
+        /// still sees something to answer with.
         /// </summary>
-        private static bool IsBidiControl(char c) =>
-            c is (>= '\u202A' and <= '\u202E') or (>= '\u2066' and <= '\u2069') or
-                '\u200E' or '\u200F' or '\u061C';
-
-        /// <summary>
-        /// True for the code point blocks the bidirectional algorithm classifies as
-        /// strong right-to-left or Arabic-letter.
-        /// </summary>
-        private static bool IsRightToLeftScript(char c) =>
-            c is (>= '\u0590' and <= '\u08FF') or (>= '\uFB1D' and <= '\uFDFF') or
-                (>= '\uFE70' and <= '\uFEFE');
-
-        private static bool TryClassifyBidi(char c, out BidiType type)
+        private static string PaintedCharacters(string text)
         {
-            type = BidiType.Neutral;
-            switch (c)
+            int controls = 0;
+            for (int i = 0; i < text.Length; i++)
             {
-                case '\u202A': type = BidiType.EmbeddingLeft; return true;
-                case '\u202B': type = BidiType.EmbeddingRight; return true;
-                case '\u202D': type = BidiType.OverrideLeft; return true;
-                case '\u202E': type = BidiType.OverrideRight; return true;
-                case '\u202C': type = BidiType.PopFormatting; return true;
-                case '\u2066':
-                case '\u2067':
-                case '\u2068': type = BidiType.Isolate; return true;
-                case '\u2069': type = BidiType.IsolateTerminator; return true;
-                case '\u200E': type = BidiType.LeftToRight; return true;
-                case '\u200F': type = BidiType.RightToLeft; return true;
-                case '\u061C': type = BidiType.RightToLeftArabic; return true;
-                default: break;
+                char c = text[i];
+                if (c is (>= '\u202A' and <= '\u202E') or (>= '\u2066' and <= '\u2069')) controls++;
             }
-
-            // Paired brackets need the bracket resolution pass, and anything outside
-            // the ranges the first-party shaper is exercised on is left to the
-            // compatibility fallback.
-            if (c is '(' or ')' or '[' or ']' or '{' or '}' ||
-                IsRightToLeftScript(c) || c > '\uFFFE')
+            if (controls == 0 || controls == text.Length) return text;
+            var builder = new StringBuilder(text.Length - controls);
+            for (int i = 0; i < text.Length; i++)
             {
-                return false;
+                char c = text[i];
+                if (c is (>= '\u202A' and <= '\u202E') or (>= '\u2066' and <= '\u2069')) continue;
+                builder.Append(c);
             }
-
-            if (c is >= '0' and <= '9') { type = BidiType.Number; return true; }
-            if (c is '+' or '-') { type = BidiType.NumberSeparator; return true; }
-            if (c is '#' or '$') { type = BidiType.NumberTerminator; return true; }
-            if (c is ',' or '.' or ':' or '/') { type = BidiType.CommonSeparator; return true; }
-            if (c is ' ' or '\t' or '\u00A0') { type = BidiType.Whitespace; return true; }
-            type = char.IsLetter(c) ? BidiType.LeftToRight : BidiType.Neutral;
-            return true;
+            return builder.ToString();
         }
 
-        private static byte NextEmbeddingLevel(byte current, bool rightToLeft)
+        private static bool ContainsBidirectionalText(List<TextPaintRun> members)
         {
-            for (int candidate = current + 1; candidate <= MaxBidiEmbeddingDepth; candidate++)
+            for (int i = 0; i < members.Count; i++)
             {
-                if (((candidate & 1) == 1) == rightToLeft) return (byte)candidate;
-            }
-            return MaxBidiEmbeddingDepth;
-        }
-
-        /// <summary>
-        /// UAX 9 rules W4 to W7. The supported subset has no strong right-to-left
-        /// character, so a European number only ever becomes left-to-right.
-        /// </summary>
-        private static void ResolveWeakTypes(BidiType[] types, byte[] levels, int count)
-        {
-            for (int i = 1; i + 1 < count; i++)
-            {
-                if (types[i] != BidiType.CommonSeparator) continue;
-                if (types[i - 1] == BidiType.Number && types[i + 1] == BidiType.Number)
-                    types[i] = BidiType.Number;
-            }
-
-            int position = 0;
-            while (position < count)
-            {
-                if (types[position] != BidiType.NumberTerminator) { position++; continue; }
-                int start = position;
-                while (position < count && types[position] == BidiType.NumberTerminator) position++;
-                bool joinsNumber = (start > 0 && types[start - 1] == BidiType.Number) ||
-                                   (position < count && types[position] == BidiType.Number);
-                if (!joinsNumber) continue;
-                for (int i = start; i < position; i++) types[i] = BidiType.Number;
-            }
-
-            for (int i = 0; i < count; i++)
-            {
-                if (types[i] is BidiType.NumberSeparator or BidiType.NumberTerminator or
-                    BidiType.CommonSeparator)
+                string text = members[i].LogicalText;
+                if (text == null) continue;
+                for (int j = 0; j < text.Length; j++)
                 {
-                    types[i] = BidiType.Neutral;
+                    char c = text[j];
+                    if (c is (>= '\u0590' and <= '\u08FF') or (>= '\uFB1D' and <= '\uFDFF') or
+                            (>= '\uFE70' and <= '\uFEFE') or '\u200E' or '\u200F' or '\u061C' or
+                            (>= '\u202A' and <= '\u202E') or (>= '\u2066' and <= '\u2069'))
+                    {
+                        return true;
+                    }
                 }
             }
-
-            int lastStrong = -1;
-            for (int i = 0; i < count; i++)
-            {
-                if (types[i] == BidiType.LeftToRight)
-                {
-                    lastStrong = i;
-                }
-                else if (types[i] == BidiType.Number && lastStrong >= 0)
-                {
-                    types[i] = BidiType.LeftToRight;
-                }
-            }
+            return false;
         }
 
-        /// <summary>
-        /// UAX 9 rules N1 and N2. A neutral run between two strongs of the same
-        /// direction takes it; anything else takes the embedding direction.
-        /// </summary>
-        private static void ResolveNeutralTypes(BidiType[] types, byte[] levels, int count)
+        private static byte ResolvePlaintextLevel(List<TextPaintRun> members)
         {
-            int position = 0;
-            while (position < count)
+            for (int i = 0; i < members.Count; i++)
             {
-                if (!IsNeutral(types[position])) { position++; continue; }
-                int start = position;
-                while (position < count && IsNeutral(types[position])) position++;
-                BidiType before = start > 0 ? types[start - 1] : BidiType.Neutral;
-                BidiType after = position < count ? types[position] : BidiType.Neutral;
-                if (before != BidiType.LeftToRight && before != BidiType.RightToLeft)
-                    before = BidiType.Neutral;
-                if (after != BidiType.LeftToRight && after != BidiType.RightToLeft)
-                    after = BidiType.Neutral;
-                for (int i = start; i < position; i++)
+                string text = members[i].LogicalText;
+                if (text == null) continue;
+                for (int j = 0; j < text.Length; j++)
                 {
-                    if (before != BidiType.Neutral && before == after) types[i] = before;
-                    else types[i] = (levels[i] & 1) == 1 ? BidiType.RightToLeft : BidiType.LeftToRight;
+                    if (!TryClassifyBidi(text[j], out BidiClass type)) continue;
+                    if (type == BidiClass.LeftToRight) return 0;
+                    if (type is BidiClass.RightToLeft or BidiClass.ArabicLetter) return 1;
                 }
             }
+            return 0;
         }
 
-        private static bool IsNeutral(BidiType type) =>
-            type is BidiType.Neutral or BidiType.Whitespace;
-
         /// <summary>
-        /// UAX 9 rules I1 and I2: a left-to-right character or European number inside
-        /// a right-to-left embedding is raised to the next even level.
+        /// One contiguous piece of the visual line: a character range of one
+        /// source run, in the order the algorithm placed it. The range is
+        /// contiguous in the run's logical text, so a piece is shaped from that
+        /// substring rather than cut out of the run the shaper already produced,
+        /// which is the granularity a browser shapes a directional run at.
         /// </summary>
-        private static void ResolveImplicitLevels(BidiType[] types, byte[] levels, int count)
+        private readonly struct BidiSegment
         {
-            for (int i = 0; i < count; i++)
+            public BidiSegment(int run, string text, bool reversed, bool levelOdd)
             {
-                if ((levels[i] & 1) == 0) continue;
-                if (types[i] is BidiType.LeftToRight or BidiType.Number) levels[i]++;
+                Run = run;
+                Text = text;
+                Reversed = reversed;
+                LevelOdd = levelOdd;
             }
+
+            public int Run { get; }
+            public string Text { get; }
+            public bool Reversed { get; }
+            public bool LevelOdd { get; }
         }
 
         /// <summary>
-        /// UAX 9 rule L1: whitespace at the end of the line returns to the paragraph
-        /// embedding level, which the first-party subset fixes at left-to-right.
+        /// Cuts the resolved level run back into the painted runs. The order the
+        /// algorithm produces is already visual, so each piece is read straight
+        /// out of it. A piece is cut where the resolved level changes, where the
+        /// source run changes, and where the level run stops walking its source
+        /// characters monotonically. The piece keeps the characters the
+        /// algorithm kept, in the order the source run authored them, so an
+        /// explicit control between two of them is not read back as text.
         /// </summary>
-        private static void ResetTrailingWhitespace(BidiType[] types, byte[] levels, int count)
-        {
-            for (int i = count - 1; i >= 0 && types[i] == BidiType.Whitespace; i--) levels[i] = 0;
-        }
-
-        /// <summary>
-        /// UAX 9 rules L2 and X9: reverses every contiguous run at or above each
-        /// level from the highest one down to the lowest odd one, then rebuilds the
-        /// run without the explicit formatting characters.
-        /// </summary>
-        private static void ReorderVisually(
-            string text,
-            int[] origin,
-            BidiType[] types,
+        private void BuildVisualSegments(
+            List<TextPaintRun> members,
             byte[] levels,
-            int count,
-            out string visualOrder)
+            int[] order,
+            int[] origin,
+            int[] owner,
+            int[] runStart,
+            List<BidiSegment> segments)
         {
-            visualOrder = null;
-            ResetTrailingWhitespace(types, levels, count);
+            segments.Clear();
+            int count = levels.Length;
+            if (count == 0) return;
+            string[] sources = new string[members.Count];
+            for (int run = 0; run < members.Count; run++) sources[run] = members[run].LogicalText;
+            var picked = new List<int>();
+            int position = 0;
+            while (position < count)
+            {
+                int first = order[position];
+                byte level = levels[first];
+                bool reversed = (level & 1) == 1;
+                int run = owner[first];
+                picked.Clear();
+                picked.Add(origin[first]);
+                int end = position + 1;
+                while (end < count)
+                {
+                    int next = order[end];
+                    if (levels[next] != level) break;
+                    if (owner[next] != run) break;
+                    int previous = order[end - 1];
+                    if (origin[next] - origin[previous] != (reversed ? -1 : 1)) break;
+                    picked.Add(origin[next]);
+                    end++;
+                }
+                picked.Sort();
+                string source = sources[run];
+                int baseIndex = runStart[run];
+                var builder = new StringBuilder(picked.Count);
+                for (int i = 0; i < picked.Count; i++) builder.Append(source[picked[i] - baseIndex]);
+                segments.Add(new BidiSegment(run, builder.ToString(), reversed, reversed));
+                position = end;
+            }
+        }
 
+        /// <summary>
+        /// UAX 9 rule L2 over the resolved levels: from the highest level down to
+        /// the lowest odd level, reverse every contiguous range at or above it.
+        /// The paragraph embedding level counts as a level on the line even when
+        /// no character resolves to it, which is what lets a left-to-right island
+        /// inside a right-to-left paragraph move to the other side of its
+        /// neighbours.
+        /// </summary>
+        private static int[] VisualOrder(byte[] levels, byte paragraphLevel)
+        {
+            int count = levels.Length;
+            var order = new int[count];
             int highest = 0;
-            int lowestOdd = int.MaxValue;
+            int lowestOdd = (paragraphLevel & 1) == 1 ? paragraphLevel : int.MaxValue;
             for (int i = 0; i < count; i++)
             {
+                order[i] = i;
                 if (levels[i] > highest) highest = levels[i];
                 if ((levels[i] & 1) == 1 && levels[i] < lowestOdd) lowestOdd = levels[i];
             }
-            if (lowestOdd == int.MaxValue) lowestOdd = highest + 1;
-
-            var order = new int[count];
-            for (int i = 0; i < count; i++) order[i] = i;
             for (int level = highest; level >= lowestOdd; level--)
             {
                 int start = 0;
@@ -2049,40 +2250,625 @@ namespace FenBrowser.FenEngine.Svg
                     start = end;
                 }
             }
+            return order;
+        }
 
-            bool reordered = false;
+        /// <summary>
+        /// Produces the run that paints one piece, in visual order, from the
+        /// chunk cursor. The advances are re-accumulated from the source
+        /// positions rather than copied from the stored advance, so the letter
+        /// and word spacing already folded into those positions survives the
+        /// <summary>
+        /// Produces the run that paints one piece, in visual order, from the
+        /// chunk cursor. The piece is shaped from its own characters, which is
+        /// the granularity a browser shapes a directional run at, so the advance
+        /// the run carries is the one the visual order implies. The shaper
+        /// derives its direction from the first strong character of the buffer
+        /// it is given, and a piece whose level disagrees with that direction is
+        /// permuted: the shaper lays a right-to-left buffer out with the advances
+        /// its characters have in logical order and reverses the result, so
+        /// reversing the glyph sequence is the same operation the shaper would
+        /// have done for the other direction.
+        /// </summary>
+        private TextPaintRun SliceRun(
+            TextPaintRun source,
+            BidiSegment segment,
+            float cursor)
+        {
+            GlyphRun original = source.GlyphRun;
+            if (original?.Typeface == null || segment.Text == null) return null;
+            if (segment.Text.Length == 0) return null;
+
+            GlyphRun shaped = SkiaFontService.ShapeWithTypeface(
+                segment.Text, original.Typeface, original.FontSize);
+            if (shaped?.Glyphs == null || shaped.Glyphs.Length == 0) return null;
+            if (ShapedRightToLeft(segment.Text) != segment.LevelOdd) PermuteGlyphs(shaped);
+
+            return new TextPaintRun(
+                source.Element, source.PaintStyle, shaped, source.Viewport, cursor, source.Y,
+                source.Chunk, source.ApplyOwnOpacity, source.ContainerOpacity, source.Decorations)
+            {
+                Frame = source.Frame,
+                LogicalText = source.LogicalText
+            };
+        }
+
+        /// <summary>
+        /// Reverses a shaped glyph run in place, keeping every glyph its own
+        /// advance and mirroring the positions so the run still measures the
+        /// same.
+        /// </summary>
+        private static void PermuteGlyphs(GlyphRun run)
+        {
+            PositionedGlyph[] glyphs = run.Glyphs;
+            int count = glyphs.Length;
+            var reversed = new PositionedGlyph[count];
             for (int i = 0; i < count; i++)
             {
-                if (order[i] == i) continue;
-                reordered = true;
-                break;
+                int at = count - 1 - i;
+                reversed[i] = glyphs[at];
+                reversed[i].X = run.Width - glyphs[at].X - RunAdvance(run, at);
             }
-            if (!reordered && count == text.Length) return;
-
-            var builder = new StringBuilder(count);
-            for (int i = 0; i < count; i++) builder.Append(text[origin[order[i]]]);
-            visualOrder = builder.ToString();
+            run.Glyphs = reversed;
         }
 
-        private enum BidiType : byte
+        /// </summary>
+        private static float RunAdvance(GlyphRun glyphs, int index)
         {
-            LeftToRight,
-            RightToLeft,
-            RightToLeftArabic,
-            Number,
-            NumberSeparator,
-            NumberTerminator,
-            CommonSeparator,
-            Neutral,
-            Whitespace,
-            EmbeddingLeft,
-            EmbeddingRight,
-            OverrideLeft,
-            OverrideRight,
-            PopFormatting,
-            Isolate,
-            IsolateTerminator
+            float next = index + 1 < glyphs.Glyphs.Length
+                ? glyphs.Glyphs[index + 1].X
+                : glyphs.Width;
+            float advance = next - glyphs.Glyphs[index].X;
+            return SvgValues.IsFinite(advance) && advance > 0f ? advance : 0f;
         }
+
+        private static byte NextEmbeddingLevel(byte current, bool rightToLeft)
+        {
+            for (int candidate = current + 1; candidate <= MaxBidiEmbeddingDepth; candidate++)
+            {
+                if (((candidate & 1) == 1) == rightToLeft) return (byte)candidate;
+            }
+            return MaxBidiEmbeddingDepth;
+        }
+
+        private const byte MaxIsolateDepth = 125;
+
+        private bool TryResolveParagraphLevels(
+            List<TextPaintRun> members,
+            byte paragraphLevel,
+            out byte[] levels,
+            out int[] origin,
+            out int[] owner,
+            out int[] runStart,
+            out bool[] shaperRight,
+            out int keptCount)
+        {
+            levels = null;
+            origin = null;
+            owner = null;
+            runStart = null;
+            shaperRight = null;
+            keptCount = 0;
+            int count = 0;
+            for (int i = 0; i < members.Count; i++) count += members[i].LogicalText?.Length ?? 0;
+            if (count == 0) return false;
+
+            var text = new char[count];
+            var runOf = new int[count];
+            var starts = new int[members.Count];
+            int cursor = 0;
+            for (int run = 0; run < members.Count; run++)
+            {
+                string logical = members[run].LogicalText;
+                starts[run] = cursor;
+                if (logical == null) continue;
+                for (int i = 0; i < logical.Length; i++)
+                {
+                    text[cursor + i] = logical[i];
+                    runOf[cursor + i] = run;
+                }
+                cursor += logical.Length;
+            }
+
+            var types = new BidiClass[count];
+            var resolved = new byte[count];
+            var keptOrigin = new int[count];
+            var keptOwner = new int[count];
+            var stackLevel = new byte[MaxBidiEmbeddingDepth + 1];
+            var stackOverride = new BidiClass[MaxBidiEmbeddingDepth + 1];
+            RebuildEmbeddingStack(null, paragraphLevel, stackLevel, stackOverride, out int depth, out int overflow);
+            int currentRun = 0;
+            BidiFrame currentFrame = null;
+            BidiClass paragraphDirection = (paragraphLevel & 1) == 1
+                ? BidiClass.RightToLeft
+                : BidiClass.LeftToRight;
+            int kept = 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                if (runOf[i] != currentRun)
+                {
+                    currentRun = runOf[i];
+                    BidiFrame frame = members[currentRun].Frame;
+                    // Only an element that opens or closes an embedding resets
+                    // the stack; a run boundary inside the same embedding keeps
+                    // the explicit controls the text content opened.
+                    if (!ReferenceEquals(frame, currentFrame))
+                    {
+                        currentFrame = frame;
+                        RebuildEmbeddingStack(
+                            frame, paragraphLevel,
+                            stackLevel, stackOverride, out depth, out overflow);
+                    }
+                }
+                if (!TryClassifyBidi(text[i], out BidiClass type)) return false;
+                if (type is BidiClass.IsolateInitiator or BidiClass.IsolateTerminator) return false;
+
+                if (type is BidiClass.EmbeddingLeft or BidiClass.EmbeddingRight or
+                    BidiClass.OverrideLeft or BidiClass.OverrideRight)
+                {
+                    bool rightToLeft = type is BidiClass.EmbeddingRight or BidiClass.OverrideRight;
+                    bool over = type is BidiClass.OverrideLeft or BidiClass.OverrideRight;
+                    if (depth < MaxBidiEmbeddingDepth)
+                    {
+                        depth++;
+                        stackLevel[depth] = NextEmbeddingLevel(stackLevel[depth - 1], rightToLeft);
+                        stackOverride[depth] = over
+                            ? (rightToLeft ? BidiClass.RightToLeft : BidiClass.LeftToRight)
+                            : BidiClass.Neutral;
+                    }
+                    else
+                    {
+                        overflow++;
+                    }
+                    continue;
+                }
+                if (type == BidiClass.PopFormatting)
+                {
+                    if (overflow > 0) overflow--;
+                    else if (depth > 0) depth--;
+                    continue;
+                }
+                if (type == BidiClass.NonSpacingMark)
+                {
+                    type = kept > 0 ? types[kept - 1] : paragraphDirection;
+                }
+                types[kept] = stackOverride[depth] != BidiClass.Neutral
+                    ? stackOverride[depth]
+                    : type;
+                resolved[kept] = stackLevel[depth];
+                keptOrigin[kept] = i;
+                keptOwner[kept] = runOf[i];
+                kept++;
+            }
+            if (kept == 0) return false;
+
+            ResolveWeakTypes(types, kept);
+            ResolveNeutralTypes(types, resolved, kept, paragraphDirection, paragraphLevel);
+            ResolveImplicitLevels(types, resolved, kept);
+            ResetTrailingWhitespace(types, resolved, kept, paragraphLevel);
+
+            levels = new byte[kept];
+            origin = new int[kept];
+            owner = new int[kept];
+            runStart = starts;
+            shaperRight = new bool[members.Count];
+            for (int i = 0; i < kept; i++)
+            {
+                levels[i] = resolved[i];
+                origin[i] = keptOrigin[i];
+                owner[i] = keptOwner[i];
+            }
+            for (int run = 0; run < members.Count; run++)
+            {
+                shaperRight[run] = ShapedRightToLeft(members[run].LogicalText);
+            }
+            keptCount = kept;
+            return true;
+        }
+
+        /// <summary>
+        /// The direction the shaper chose for a run. The shaper behind this path
+        /// derives it from the first strong character of the buffer it is given,
+        /// so the paragraph reproduces the same choice and only mirrors a piece
+        /// whose resolved level disagrees with it.
+        /// </summary>
+        private static bool ShapedRightToLeft(string text)
+        {
+            if (text == null) return false;
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (!TryClassifyBidi(text[i], out BidiClass type)) continue;
+                if (type is BidiClass.LeftToRight) return false;
+                if (type is BidiClass.RightToLeft or BidiClass.ArabicLetter) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Rebuilds the element embedding stack for a run. Every
+        /// <c>unicode-bidi</c> embedding or override an element opens is replayed
+        /// as the explicit embedding the algorithm would have seen, so a run
+        /// authored inside a nested element starts from the same stack the
+        /// document declared.
+        /// </summary>
+        private static void RebuildEmbeddingStack(
+            BidiFrame frame,
+            byte paragraphLevel,
+            byte[] stackLevel,
+            BidiClass[] stackOverride,
+            out int depth,
+            out int overflow)
+        {
+            var chain = new BidiFrame[MaxBidiEmbeddingDepth + 1];
+            int length = 0;
+            for (BidiFrame at = frame; at != null && length < MaxBidiEmbeddingDepth; at = at.Parent)
+            {
+                chain[length++] = at;
+            }
+            depth = 0;
+            overflow = 0;
+            stackLevel[0] = paragraphLevel;
+            stackOverride[0] = BidiClass.Neutral;
+            for (int i = length - 1; i >= 0; i--)
+            {
+                BidiFrame at = chain[i];
+                if (depth < MaxBidiEmbeddingDepth)
+                {
+                    depth++;
+                    stackLevel[depth] = NextEmbeddingLevel(stackLevel[depth - 1], at.RightToLeft);
+                    stackOverride[depth] = at.Override
+                        ? (at.RightToLeft ? BidiClass.RightToLeft : BidiClass.LeftToRight)
+                        : BidiClass.Neutral;
+                }
+                else
+                {
+                    overflow++;
+                }
+            }
+        }
+
+        /// <summary>
+        /// UAX 9 rules W2 to W7.
+        /// </summary>
+        private static void ResolveWeakTypes(BidiClass[] types, int count)
+        {
+            BidiClass lastStrong = BidiClass.Neutral;
+            for (int i = 0; i < count; i++)
+            {
+                if (types[i] is BidiClass.LeftToRight or BidiClass.RightToLeft or BidiClass.ArabicLetter)
+                {
+                    lastStrong = types[i];
+                }
+                else if (types[i] == BidiClass.EuropeanNumber && lastStrong == BidiClass.ArabicLetter)
+                {
+                    types[i] = BidiClass.ArabicNumber;
+                }
+            }
+
+            for (int i = 1; i + 1 < count; i++)
+            {
+                if (types[i] != BidiClass.EuropeanSeparator && types[i] != BidiClass.CommonSeparator)
+                {
+                    continue;
+                }
+                bool european = types[i - 1] == BidiClass.EuropeanNumber &&
+                                types[i + 1] == BidiClass.EuropeanNumber;
+                bool arabic = types[i - 1] == BidiClass.ArabicNumber &&
+                              types[i + 1] == BidiClass.ArabicNumber;
+                if (european) types[i] = BidiClass.EuropeanNumber;
+                else if (arabic) types[i] = BidiClass.ArabicNumber;
+            }
+
+            int position = 0;
+            while (position < count)
+            {
+                if (types[position] != BidiClass.EuropeanTerminator) { position++; continue; }
+                int start = position;
+                while (position < count && types[position] == BidiClass.EuropeanTerminator) position++;
+                bool joins = (start > 0 && types[start - 1] == BidiClass.EuropeanNumber) ||
+                             (position < count && types[position] == BidiClass.EuropeanNumber);
+                if (!joins) continue;
+                for (int i = start; i < position; i++) types[i] = BidiClass.EuropeanNumber;
+            }
+
+            position = 0;
+            while (position < count)
+            {
+                if (types[position] != BidiClass.EuropeanTerminator &&
+                    types[position] != BidiClass.EuropeanSeparator)
+                {
+                    position++;
+                    continue;
+                }
+                int start = position;
+                while (position < count &&
+                       (types[position] == BidiClass.EuropeanTerminator ||
+                        types[position] == BidiClass.EuropeanSeparator))
+                {
+                    position++;
+                }
+                bool adjacent = (start > 0 && types[start - 1] == BidiClass.EuropeanNumber) ||
+                                (position < count && types[position] == BidiClass.EuropeanNumber);
+                if (!adjacent) continue;
+                for (int i = start; i < position; i++) types[i] = BidiClass.EuropeanNumber;
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                if (types[i] == BidiClass.ArabicLetter) types[i] = BidiClass.RightToLeft;
+                else if (types[i] is BidiClass.EuropeanSeparator or BidiClass.CommonSeparator or
+                         BidiClass.EuropeanTerminator)
+                {
+                    types[i] = BidiClass.Neutral;
+                }
+            }
+
+            lastStrong = BidiClass.Neutral;
+            for (int i = 0; i < count; i++)
+            {
+                if (types[i] is BidiClass.LeftToRight or BidiClass.RightToLeft)
+                {
+                    lastStrong = types[i];
+                }
+                else if (types[i] == BidiClass.EuropeanNumber && lastStrong == BidiClass.LeftToRight)
+                {
+                    types[i] = BidiClass.LeftToRight;
+                }
+            }
+        }
+
+        /// <summary>
+        /// UAX 9 rules N1 and N2, resolved per run of a constant embedding level.
+        /// A run has one embedding direction, so the neutrals at its edges take
+        /// that direction whenever the strong text on their other side does not
+        /// already agree. The direction a run inherits from its neighbour is the
+        /// parity of the higher of the neighbour's embedding level and the
+        /// paragraph level, which is rule X10; without it a left-to-right island
+        /// inside a right-to-left embedding would drag the neutrals around it to
+        /// the wrong side of the line.
+        /// </summary>
+        private static void ResolveNeutralTypes(
+            BidiClass[] types,
+            byte[] levels,
+            int count,
+            BidiClass paragraphDirection,
+            byte paragraphLevel)
+        {
+            int runStart = 0;
+            while (runStart < count)
+            {
+                int runEnd = runStart + 1;
+                while (runEnd < count && levels[runEnd] == levels[runStart]) runEnd++;
+                BidiClass runDirection = (levels[runStart] & 1) == 1
+                    ? BidiClass.RightToLeft
+                    : BidiClass.LeftToRight;
+                BidiClass start = runStart == 0
+                    ? paragraphDirection
+                    : BoundaryDirection(levels[runStart - 1], paragraphLevel);
+                BidiClass end = runEnd == count
+                    ? paragraphDirection
+                    : BoundaryDirection(levels[runEnd], paragraphLevel);
+                ResolveNeutralRun(types, levels, runStart, runEnd, start, end, runDirection);
+                runStart = runEnd;
+            }
+        }
+
+        /// <summary>
+        /// UAX 9 rule X10: the direction a run inherits across a level boundary
+        /// is the parity of the higher of the neighbour's embedding level and the
+        /// paragraph embedding level.
+        /// </summary>
+        private static BidiClass BoundaryDirection(byte neighbourLevel, byte paragraphLevel)
+        {
+            byte level = neighbourLevel > paragraphLevel ? neighbourLevel : paragraphLevel;
+            return (level & 1) == 1 ? BidiClass.RightToLeft : BidiClass.LeftToRight;
+        }
+
+        private static void ResolveNeutralRun(
+            BidiClass[] types,
+            byte[] levels,
+            int runStart,
+            int runEnd,
+            BidiClass start,
+            BidiClass end,
+            BidiClass runDirection)
+        {
+            int position = runStart;
+            while (position < runEnd)
+            {
+                if (!IsNeutral(types[position])) { position++; continue; }
+                int first = position;
+                while (position < runEnd && IsNeutral(types[position])) position++;
+                BidiClass before = first == runStart
+                    ? start
+                    : StrongOf(types[first - 1]);
+                if (before == BidiClass.Neutral) before = start;
+                BidiClass after = position == runEnd ? end : StrongOf(types[position]);
+                if (after == BidiClass.Neutral) after = end;
+                BidiClass resolved = before == after ? before : runDirection;
+                for (int i = first; i < position; i++) types[i] = resolved;
+            }
+        }
+
+        private static BidiClass StrongOf(BidiClass type) => type switch
+        {
+            BidiClass.LeftToRight => BidiClass.LeftToRight,
+            BidiClass.RightToLeft => BidiClass.RightToLeft,
+            BidiClass.EuropeanNumber or BidiClass.ArabicNumber => BidiClass.RightToLeft,
+            _ => BidiClass.Neutral
+        };
+
+        private static bool IsNeutral(BidiClass type) =>
+            type is BidiClass.Neutral or BidiClass.Whitespace;
+
+        /// <summary>
+        /// UAX 9 rules I1 and I2.
+        /// </summary>
+        private static void ResolveImplicitLevels(BidiClass[] types, byte[] levels, int count)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                if ((levels[i] & 1) == 0)
+                {
+                    if (types[i] == BidiClass.RightToLeft) levels[i]++;
+                    else if (types[i] is BidiClass.EuropeanNumber or BidiClass.ArabicNumber) levels[i] += 2;
+                }
+                else if (types[i] is BidiClass.LeftToRight or BidiClass.EuropeanNumber or
+                         BidiClass.ArabicNumber)
+                {
+                    levels[i]++;
+                }
+            }
+        }
+
+        /// <summary>
+        /// UAX 9 rule L1: whitespace at the end of the line returns to the
+        /// paragraph embedding level.
+        /// </summary>
+        private static void ResetTrailingWhitespace(
+            BidiClass[] types,
+            byte[] levels,
+            int count,
+            byte paragraphLevel)
+        {
+            for (int i = count - 1; i >= 0; i--)
+            {
+                if (types[i] != BidiClass.Whitespace) break;
+                levels[i] = paragraphLevel;
+            }
+        }
+
+        /// <summary>
+        /// Classifies one character for the bidirectional algorithm. Every
+        /// character a bidi-relevant paragraph can carry is classified here;
+        /// anything the tables below do not positively identify, which includes
+        /// every code point outside the basic multilingual plane and every
+        /// paired bracket, is refused so the paragraph is reported instead of
+        /// laid out from a guessed class.
+        /// </summary>
+        private static bool TryClassifyBidi(char c, out BidiClass type)
+        {
+            type = BidiClass.Neutral;
+            switch (c)
+            {
+                case '\u202A': type = BidiClass.EmbeddingLeft; return true;
+                case '\u202B': type = BidiClass.EmbeddingRight; return true;
+                case '\u202D': type = BidiClass.OverrideLeft; return true;
+                case '\u202E': type = BidiClass.OverrideRight; return true;
+                case '\u202C': type = BidiClass.PopFormatting; return true;
+                case '\u2066':
+                case '\u2067':
+                case '\u2068': type = BidiClass.IsolateInitiator; return true;
+                case '\u2069': type = BidiClass.IsolateTerminator; return true;
+                case '\u200E': type = BidiClass.LeftToRight; return true;
+                case '\u200F': type = BidiClass.RightToLeft; return true;
+                case '\u061C': type = BidiClass.ArabicLetter; return true;
+            }
+
+            if (c > '\uFFFD') return false;
+            if (IsPairedBracket(c)) return false;
+            if (IsArabicNumber(c)) { type = BidiClass.ArabicNumber; return true; }
+            if (IsRightToLeftBlock(c))
+            {
+                // A point or a haraka inside a right-to-left word takes the type
+                // of the character it follows, so the marks the block mixes into
+                // its letters are recognised before the letters are.
+                switch (CharUnicodeInfo.GetUnicodeCategory(c))
+                {
+                    case UnicodeCategory.NonSpacingMark:
+                    case UnicodeCategory.EnclosingMark:
+                    case UnicodeCategory.SpacingCombiningMark:
+                        type = BidiClass.NonSpacingMark;
+                        return true;
+                }
+                if (IsArabicBlock(c)) { type = BidiClass.ArabicLetter; return true; }
+                if (IsHebrewBlock(c)) { type = BidiClass.RightToLeft; return true; }
+                return false;
+            }
+
+            if (c is >= '0' and <= '9') { type = BidiClass.EuropeanNumber; return true; }
+            if (c is '+' or '-') { type = BidiClass.EuropeanSeparator; return true; }
+            if (c is '#' or '$') { type = BidiClass.EuropeanTerminator; return true; }
+            if (c is ',' or '.' or ':' or '/' or '\u00A0') { type = BidiClass.CommonSeparator; return true; }
+            if (c is ' ' or '\t' or '\n' or '\r' or '\u000B' or '\u000C' or '\u0085' or
+                      '\u2028' or '\u2029' or '\u2000' or '\u2001' or '\u2002' or '\u2003' or
+                      '\u2004' or '\u2005' or '\u2006' or '\u2007' or '\u2008' or '\u2009' or
+                      '\u200A' or '\u205F' or '\u3000')
+            {
+                type = BidiClass.Whitespace;
+                return true;
+            }
+            if (c is '\u00B2' or '\u00B3' or '\u00B9' or '\u2070' or '\u2074' or '\u2075' or
+                      '\u2076' or '\u2077' or '\u2078' or '\u2079' or '\u2080' or '\u2081' or
+                      '\u2082' or '\u2083' or '\u2084' or '\u2085' or '\u2086' or '\u2087' or
+                      '\u2088' or '\u2089')
+            {
+                type = BidiClass.EuropeanNumber;
+                return true;
+            }
+            if (c is >= '\uFF10' and <= '\uFF19') { type = BidiClass.EuropeanNumber; return true; }
+            if (c is >= '\u06F0' and <= '\u06F9') { type = BidiClass.EuropeanNumber; return true; }
+            if (c is '\u00AD' or '\uFEFF' or '\u2060' or '\u180E' or '\u200B' or '\u200C' or '\u200D')
+            {
+                type = BidiClass.BoundaryNeutral;
+                return true;
+            }
+
+            switch (CharUnicodeInfo.GetUnicodeCategory(c))
+            {
+                case UnicodeCategory.UppercaseLetter:
+                case UnicodeCategory.LowercaseLetter:
+                case UnicodeCategory.TitlecaseLetter:
+                case UnicodeCategory.ModifierLetter:
+                case UnicodeCategory.OtherLetter:
+                    type = BidiClass.LeftToRight;
+                    return true;
+                case UnicodeCategory.NonSpacingMark:
+                case UnicodeCategory.EnclosingMark:
+                case UnicodeCategory.SpacingCombiningMark:
+                    type = BidiClass.NonSpacingMark;
+                    return true;
+                case UnicodeCategory.DecimalDigitNumber:
+                    type = BidiClass.LeftToRight;
+                    return true;
+                default:
+                    type = BidiClass.Neutral;
+                    return true;
+            }
+        }
+
+        private static bool IsPairedBracket(char c) =>
+            c is '(' or ')' or '[' or ']' or '{' or '}' or '\u27E6' or '\u27E7' or
+                  '\u27E8' or '\u27E9' or '\u27EA' or '\u27EB' or '\u27EC' or '\u27ED' or
+                  '\u27EE' or '\u27EF' or '\u2983' or '\u2984' or '\u2985' or '\u2986' or
+                  '\u2987' or '\u2988' or '\u2989' or '\u298A' or '\u298B' or '\u298C' or
+                  '\u298D' or '\u298E' or '\u298F' or '\u2990' or '\u2991' or '\u2992' or
+                  '\u2993' or '\u2994' or '\u2995' or '\u2996' or '\u2997' or '\u2998' or
+                  '\u29D8' or '\u29D9' or '\u29DA' or '\u29DB' or '\u2E22' or '\u2E23' or
+                  '\u2E24' or '\u2E25' or '\u2E26' or '\u2E27' or '\u2E28' or
+                  '\u2045' or '\u2046' or '\u207D' or '\u207E' or '\u208D' or '\u208E' or
+                  '\u3008' or '\u3009' or '\u300A' or '\u300B' or '\u300C' or '\u300D' or
+                  '\u3010' or '\u3011' or '\u3014' or '\u3015' or '\u3016' or '\u3017' or
+                  '\u3018' or '\u3019' or '\u301A' or '\uFE59' or '\uFE5A' or '\uFE5B' or
+                  '\uFE5C' or '\uFE5D' or '\uFF08' or '\uFF09' or '\uFF3B' or '\uFF3D' or
+                  '\uFF5B' or '\uFF5D' or '\uFF5F' or '\uFF62';
+
+        private static bool IsArabicNumber(char c) =>
+            c is (>= '\u0600' and <= '\u0605') or (>= '\u0660' and <= '\u0669') or
+                  '\u066B' or '\u066C' or '\u06DD' or '\u08E2';
+
+        private static bool IsRightToLeftBlock(char c) =>
+            c is (>= '\u0590' and <= '\u08FF') or (>= '\uFB1D' and <= '\uFDFF') or
+                  (>= '\uFE70' and <= '\uFEFE');
+
+        private static bool IsHebrewBlock(char c) =>
+            c is (>= '\u05D0' and <= '\u05F4') or (>= '\uFB1D' and <= '\uFB4F');
+
+        private static bool IsArabicBlock(char c) =>
+            c is (>= '\u0600' and <= '\u06FF') or (>= '\u0750' and <= '\u077F') or
+                  (>= '\u08A0' and <= '\u08FF') or (>= '\uFB50' and <= '\uFDFF') or
+                  (>= '\uFE70' and <= '\uFEFC');
 
         private static int ParseFontWeight(string raw, int inherited)
         {
@@ -2132,10 +2918,16 @@ namespace FenBrowser.FenEngine.Svg
             public int GlyphCount;
             public bool HasRenderedText;
             public bool PendingSpace;
+            public int PoisonedChunk = -1;
             public readonly List<TextLengthAdjustment> LengthAdjustments = new List<TextLengthAdjustment>();
         }
 
-        private readonly record struct TextLengthAdjustment(int StartRun, int EndRun, float[] Targets, bool GlyphScale);
+        private readonly record struct TextLengthAdjustment(
+            int StartRun,
+            int EndRun,
+            float[] Targets,
+            bool GlyphScale,
+            int Chunk);
 
         private readonly struct TextPositionLists
         {
@@ -2177,9 +2969,12 @@ namespace FenBrowser.FenEngine.Svg
             float BaselineShift,
             float WordSpacing,
             TextDecoration Decorations,
-            string Language)
+            string Language,
+            bool RightToLeft,
+            UnicodeBidi Bidi,
+            BidiFrame Frame)
         {
-            public static TextStyle Default => new(null, DefaultFontSize, 400, SKFontStyleSlant.Upright, TextAnchor.Start, 0f, false, BaselineKind.Alphabetic, 0f, 0f, TextDecoration.None, null);
+            public static TextStyle Default => new(null, DefaultFontSize, 400, SKFontStyleSlant.Upright, TextAnchor.Start, 0f, false, BaselineKind.Alphabetic, 0f, 0f, TextDecoration.None, null, false, UnicodeBidi.Normal, null);
         }
 
         private sealed class TextPaintRun
@@ -2223,6 +3018,9 @@ namespace FenBrowser.FenEngine.Svg
             public SKRect PathBounds { get; set; }
             public float HorizontalScale { get; set; } = 1f;
             public float AdvanceScale { get; set; } = 1f;
+            public string LogicalText { get; set; }
+            public BidiFrame Frame { get; set; }
+            public bool PerCharacterPositioned { get; set; }
 
             public float NaturalExtent
             {
@@ -2238,6 +3036,15 @@ namespace FenBrowser.FenEngine.Svg
             public float AdvanceExtent => NaturalExtent * AdvanceScale;
         }
 
-        private readonly record struct TextChunk(float StartX, TextAnchor Anchor);
+        private readonly record struct TextChunk(
+            float StartX,
+            TextAnchor Anchor,
+            bool RightToLeft,
+            UnicodeBidi Bidi,
+            BidiFrame Frame)
+        {
+            public static TextChunk At(TextStyle style, float startX) =>
+                new(startX, style.Anchor, style.RightToLeft, style.Bidi, style.Frame);
+        }
     }
 }

@@ -318,14 +318,12 @@ namespace FenBrowser.Tests.Svg
             if (text.Any(c => c is (>= '\u0590' and <= '\u08FF') or (>= '\uFB1D' and <= '\uFDFF') or
                 (>= '\uFE70' and <= '\uFEFE')))
             {
-                // The first-party shaper produces left-to-right glyph runs only, so
-                // a paragraph that needs right-to-left ordering is reported instead
-                // of painted with its words reversed.
-                Assert.False(result.Success, result.ErrorMessage);
-                Assert.Null(result.Bitmap);
-                Assert.True(result.RequiresFallback);
-                Assert.Contains(result.Warnings, warning =>
-                    warning.Contains("bidirectional", StringComparison.Ordinal));
+                // Right-to-left script is laid out as a directional run the
+                // paragraph resolver reorders, so the run is still shaped rather
+                // than laid out from per-glyph fallbacks.
+                Assert.True(result.Success, result.ErrorMessage);
+                Assert.False(result.RequiresFallback);
+                Assert.True(HasForeground(result.Bitmap));
                 return;
             }
             Assert.True(result.Success, result.ErrorMessage);
