@@ -22,14 +22,54 @@ public sealed class SvgResourceContextTests
     }
 
     [Fact]
+    public void DefaultPolicyRejectsAuthorizedSameOriginBeforeResolverCall()
+    {
+        var uri = new Uri("https://example.test/assets/red.png");
+        var resolver = new MemoryResolver((uri, Png(SKColors.Red)));
+
+        using var result = new FenSvgRenderer().Render(new SvgRenderRequest(
+            "<svg width='4' height='4'><image href='assets/red.png' width='4' height='4'/></svg>",
+            SvgRenderLimits.Default)
+        {
+            BaseUri = new Uri("https://example.test/page.svg"),
+            ResourceResolver = resolver
+        });
+
+        AssertFailsClosed(result);
+        Assert.True(result.HadResourceRejection);
+        Assert.Contains("external-resource", result.ResourceRejectionReasonCodes);
+        Assert.Equal(0, resolver.CallCount);
+    }
+
+    [Fact]
     public void MissingResolverContext_FailsClosed()
     {
-        using var result = new FenSvgRenderer().Render(
-            "<svg width='4' height='4'><image href='red.png' width='4' height='4'/></svg>");
+        using var result = new FenSvgRenderer().Render(new SvgRenderRequest(
+            "<svg width='4' height='4'><image href='red.png' width='4' height='4'/></svg>",
+            ExternalReferenceLimits()));
 
-        Assert.True(result.Success, result.ErrorMessage);
+        AssertFailsClosed(result);
         Assert.True(result.HadResourceRejection);
         Assert.Contains("resource-context-missing", result.ResourceRejectionReasonCodes);
+    }
+
+    [Fact]
+    public void ExplicitExternalReferenceWithoutTrustedResolver_FailsClosed()
+    {
+        var uri = new Uri("https://example.test/red.png");
+        var resolver = new MemoryResolver((uri, Png(SKColors.Red)));
+
+        using var result = new FenSvgRenderer().Render(new SvgRenderRequest(
+            "<svg width='4' height='4'><image href='red.png' width='4' height='4'/></svg>",
+            new SvgRenderLimits { AllowExternalReferences = true })
+        {
+            BaseUri = new Uri("https://example.test/page.svg")
+        });
+
+        AssertFailsClosed(result);
+        Assert.True(result.HadResourceRejection);
+        Assert.Contains("resource-context-missing", result.ResourceRejectionReasonCodes);
+        Assert.Equal(0, resolver.CallCount);
     }
 
     [Fact]
@@ -41,6 +81,7 @@ public sealed class SvgResourceContextTests
             "<svg width='4' height='4'><image href='https://other.test/red.png' width='4' height='4'/></svg>",
             new Uri("https://example.test/page.svg"), resolver);
 
+        AssertFailsClosed(result);
         Assert.True(result.HadResourceRejection);
         Assert.Equal(0, resolver.CallCount);
         Assert.Contains("cross-origin-resource", result.ResourceRejectionReasonCodes);
@@ -59,6 +100,7 @@ public sealed class SvgResourceContextTests
             "<svg width='4' height='4'><image href='red.png' width='4' height='4'/></svg>",
             new Uri("https://example.test/page.svg"), resolver);
 
+        AssertFailsClosed(result);
         Assert.True(result.HadResourceRejection);
         Assert.Contains("resolver-uri-mismatch", result.ResourceRejectionReasonCodes);
     }
@@ -68,7 +110,7 @@ public sealed class SvgResourceContextTests
     {
         var uri = new Uri("https://example.test/red.png");
         var resolver = new MemoryResolver((uri, Png(SKColors.Red)));
-        var limits = SvgRenderLimits.Default;
+        var limits = ExternalReferenceLimits();
         limits.MaxResourceCount = 1;
 
         using var result = Render(
@@ -76,6 +118,7 @@ public sealed class SvgResourceContextTests
             "<image href='red.png' x='2' width='2' height='2'/></svg>",
             new Uri("https://example.test/page.svg"), resolver, limits);
 
+        AssertFailsClosed(result);
         Assert.True(result.HadResourceRejection);
         Assert.Contains("resource-budget", result.ResourceRejectionReasonCodes);
     }
@@ -86,7 +129,7 @@ public sealed class SvgResourceContextTests
         byte[] png = Png(SKColors.Red);
         var uri = new Uri("https://example.test/red.png");
         var resolver = new MemoryResolver((uri, png));
-        var limits = SvgRenderLimits.Default;
+        var limits = ExternalReferenceLimits();
         limits.MaxCumulativeResourceBytes = png.Length;
 
         using var result = Render(
@@ -94,6 +137,7 @@ public sealed class SvgResourceContextTests
             "<image href='red.png' x='2' width='2' height='2'/></svg>",
             new Uri("https://example.test/page.svg"), resolver, limits);
 
+        AssertFailsClosed(result);
         Assert.True(result.HadResourceRejection);
         Assert.Contains("resource-budget", result.ResourceRejectionReasonCodes);
     }
@@ -137,17 +181,27 @@ public sealed class SvgResourceContextTests
     [Fact]
     public void RequestOverloads_AreNullSafe()
     {
-        ISvgRenderer firstParty = new FenSvgRenderer();
-        ISvgRenderer legacy = new SvgSkiaRenderer();
-        ISvgRenderer hybrid = new HybridSvgRenderer(firstParty, legacy);
+        ISvgRenderer firstParty = SvgRendererFactory.GetRenderer(SvgRendererBackend.FirstParty);
 
         using var first = firstParty.Render((SvgRenderRequest)null!);
-        using var second = legacy.Render((SvgRenderRequest)null!);
-        using var third = hybrid.Render((SvgRenderRequest)null!);
+        using var second = new FenSvgRenderer().Render((string)null!);
 
         Assert.False(first.Success);
         Assert.False(second.Success);
-        Assert.False(third.Success);
+        Assert.Null(first.Bitmap);
+        Assert.Null(second.Bitmap);
+    }
+
+    private static void AssertFailsClosed(SvgRenderResult result)
+    {
+        Assert.False(result.Success, result.ErrorMessage);
+        Assert.Null(result.Bitmap);
+        Assert.Null(result.Picture);
+        Assert.Equal(0f, result.Width);
+        Assert.Equal(0f, result.Height);
+        Assert.False(SvgRenderResult.IsAdmissible(result));
+        Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+        Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
     }
 
     private static SvgRenderResult Render(
@@ -155,11 +209,18 @@ public sealed class SvgResourceContextTests
         Uri baseUri,
         ISvgResourceResolver resolver,
         SvgRenderLimits? limits = null) =>
-        new FenSvgRenderer().Render(new SvgRenderRequest(source, limits ?? SvgRenderLimits.Default)
+        new FenSvgRenderer().Render(new SvgRenderRequest(source, limits ?? ExternalReferenceLimits())
         {
             BaseUri = baseUri,
             ResourceResolver = resolver
         });
+
+    private static SvgRenderLimits ExternalReferenceLimits()
+    {
+        var limits = SvgRenderLimits.Default;
+        limits.AllowExternalReferences = true;
+        return limits;
+    }
 
     private static byte[] Png(SKColor color)
     {

@@ -19,7 +19,7 @@ namespace FenBrowser.Tests.Svg
 
         private SKColor Px(string svg, int x, int y)
         {
-            var res = _r.Render(svg);
+            using var res = _r.Render(svg);
             Assert.True(res.Success, res.ErrorMessage ?? "(no error)");
             return res.Bitmap.GetPixel(x, y);
         }

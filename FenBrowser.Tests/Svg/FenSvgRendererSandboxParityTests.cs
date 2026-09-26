@@ -6,8 +6,8 @@ using Xunit;
 namespace FenBrowser.Tests.Svg
 {
     /// <summary>
-    /// Contract parity with SvgSkiaRenderer budget semantics + adversarial
-    /// corpus that must never throw, hang, or allocate unbounded memory.
+    /// First-party sandbox budget semantics plus an adversarial corpus that must
+    /// never throw, hang, or allocate unbounded memory.
     /// </summary>
     public class FenSvgRendererSandboxParityTests
     {
@@ -16,7 +16,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void EmptyContent_FailsWithParityMessage()
         {
-            var result = _renderer.Render("");
+            using var result = _renderer.Render("");
             Assert.False(result.Success);
             Assert.Equal("Empty SVG content", result.ErrorMessage);
         }
@@ -25,7 +25,7 @@ namespace FenBrowser.Tests.Svg
         public void SourceLengthLimit_ParityMessage()
         {
             var limits = new SvgRenderLimits { MaxSourceChars = 10 };
-            var result = _renderer.Render("<svg></svg>", limits);
+            using var result = _renderer.Render("<svg></svg>", limits);
             Assert.False(result.Success);
             Assert.Contains("exceeds limit (10)", result.ErrorMessage);
             Assert.Contains("source length", result.ErrorMessage);
@@ -34,7 +34,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void ElementCountLimit_ParityMessage()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width=\"1\" height=\"1\"><g/><g/><g/></svg>",
                 new SvgRenderLimits { MaxElementCount = 3 });
             Assert.False(result.Success);
@@ -44,7 +44,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void FilterCountLimit_ParityMessage()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width=\"1\" height=\"1\">" +
                 "<filter id=\"a\"/><filter id=\"b\"/><filter id=\"c\"/></svg>",
                 new SvgRenderLimits { MaxFilterCount = 2 });
@@ -57,7 +57,7 @@ namespace FenBrowser.Tests.Svg
         {
             var sb = new StringBuilder("<svg width=\"1\" height=\"1\">");
             for (int i = 0; i < 40; i++) sb.Append("<g>");
-            var result = _renderer.Render(sb.ToString(), new SvgRenderLimits { MaxRecursionDepth = 8 });
+            using var result = _renderer.Render(sb.ToString(), new SvgRenderLimits { MaxRecursionDepth = 8 });
             Assert.False(result.Success);
             Assert.Contains("nesting depth", result.ErrorMessage);
         }
@@ -65,7 +65,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void RasterBomb_IsRejected_BeforeAllocation()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width=\"20000\" height=\"20000\"><rect width=\"20000\" height=\"20000\"/></svg>",
                 new SvgRenderLimits { MaxRasterWidth = 512, MaxRasterHeight = 512, MaxRasterPixels = 262144 });
             Assert.False(result.Success);
@@ -79,7 +79,7 @@ namespace FenBrowser.Tests.Svg
             // A classic raster-bomb trick: huge width/height, small content.
             // Our intrinsic sizing prefers explicit attrs, so this must hit the
             // raster guard rather than attempt a giant allocation.
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width=\"1000000\" height=\"1000000\"><rect width=\"10\" height=\"10\" fill=\"red\"/></svg>",
                 new SvgRenderLimits { MaxRasterWidth = 8192, MaxRasterHeight = 8192, MaxRasterPixels = 16L * 1024 * 1024 });
             Assert.False(result.Success);
@@ -89,7 +89,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void NonSvgRoot_FailsGracefully()
         {
-            var result = _renderer.Render("<html><body>x</body></html>");
+            using var result = _renderer.Render("<html><body>x</body></html>");
             Assert.False(result.Success);
             Assert.NotNull(result.ErrorMessage);
         }
@@ -123,7 +123,7 @@ namespace FenBrowser.Tests.Svg
 
             foreach (var input in corpus)
             {
-                var result = _renderer.Render(input);
+                using var result = _renderer.Render(input);
                 if (!result.Success)
                 {
                     Assert.NotNull(result.ErrorMessage);

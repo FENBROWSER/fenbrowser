@@ -54,14 +54,31 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void TextPath_ExternalReferenceIsRejectedWithoutLegacyFallback()
+        public void TextPath_DisplayNoneSuppressesOnlyItsTextContent()
+        {
+            const string hidden =
+                "<svg width='120' height='40'><defs><path id='p' d='M5 30H115'/></defs>" +
+                "<text font-size='20'><textPath href='#p' display='none'>hidden</textPath></text></svg>";
+            const string empty =
+                "<svg width='120' height='40'><defs><path id='p' d='M5 30H115'/></defs>" +
+                "<text font-size='20'></text></svg>";
+
+            AssertIdenticalRender(hidden, empty);
+        }
+
+        [Fact]
+        public void TextPath_ExternalReferenceFailsClosedAsRejectedResource()
         {
             const string svg =
                 "<svg width='100' height='30'><text><textPath href='https://example.invalid/p.svg#p'>x</textPath></text></svg>";
             using var result = new FenSvgRenderer().Render(svg);
-            Assert.True(result.Success, result.ErrorMessage);
+
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
             Assert.True(result.HadResourceRejection);
-            Assert.False(result.UsedLegacyFallback);
+            Assert.NotEmpty(result.ResourceRejectionReasonCodes);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
         }
 
         [Fact]

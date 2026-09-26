@@ -74,18 +74,18 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(
                 $"<svg width='20' height='20'><rect width='20' height='20' mask='{mask}'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback || result.HadResourceRejection);
         }
 
         [Fact]
-        public void MaskOnUnsupportedObjectBounds_RoutesToCompatibility()
+        public void MaskOnUnsupportedObjectBounds_FailsClosed()
         {
             using var result = new FenSvgRenderer().Render(
                 "<svg width='40' height='30'><defs><mask id='m'><rect width='1' height='1' fill='white'/></mask></defs>" +
                 "<text x='2' y='18' font-size='12' mask='url(#m)'>masked</text></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("object bounds"));
         }
@@ -101,9 +101,21 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(svg,
                 new SvgRenderLimits { MaxActiveLayers = 1 });
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("layer budget"));
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
     }
 }

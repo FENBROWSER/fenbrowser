@@ -8,6 +8,25 @@ namespace FenBrowser.Tests.Svg
     public sealed class SvgMarkerTests
     {
         [Fact]
+        public void MarkerEnd_UsesPathBearingInsteadOfEndpointChord()
+        {
+            const string svg =
+                "<svg width='40' height='40'><defs>" +
+                "<marker id='m' markerWidth='8' markerHeight='4' refX='0' refY='2' " +
+                "markerUnits='userSpaceOnUse' overflow='visible' orient='auto'>" +
+                "<path d='M0 0 L8 2 L0 4 Z' fill='red'/></marker></defs>" +
+                "<circle cx='20' cy='20' r='10' fill='none' stroke='black' " +
+                "marker-start='url(#m)' marker-end='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(HasRed(result.Bitmap, 28, 22, 33, 28));
+            Assert.False(HasRed(result.Bitmap, 28, 12, 33, 20));
+        }
+
+        [Fact]
         public void MarkerEnd_UsesPathEndpointAndAutoOrientation()
         {
             const string svg =
@@ -73,7 +92,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void MarkerMidOnBearingPath_RemainsExplicitFallback()
+        public void MarkerMidOnBearingPath_FailsClosedAsExplicitUnsupported()
         {
             const string svg =
                 "<svg width='60' height='40'><defs><marker id='m'><circle r='1'/></marker></defs>" +
@@ -81,7 +100,7 @@ namespace FenBrowser.Tests.Svg
 
             using var result = new FenSvgRenderer().Render(svg);
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("marker-mid"));
         }
@@ -205,7 +224,7 @@ namespace FenBrowser.Tests.Svg
 
             using var result = new FenSvgRenderer().Render(svg);
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("marker instance budget"));
         }
@@ -275,6 +294,31 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.Bitmap.GetPixel(7, 2).Red > 200);
         }
 
+        [Fact]
+        public void MarkerPercentageDimensionsAndReferencePointUseTheMarkerViewport()
+        {
+            const string percentage =
+                "<svg width='100' height='40'><defs>" +
+                "<marker id='m' markerWidth='50%' markerHeight='50%' refX='50%' refY='50%' " +
+                "markerUnits='userSpaceOnUse' overflow='visible'><circle cx='25' cy='10' r='5' fill='red'/>" +
+                "</marker></defs><line x1='10' y1='20' x2='30' y2='20' marker-end='url(#m)'/></svg>";
+            const string numeric =
+                "<svg width='100' height='40'><defs>" +
+                "<marker id='m' markerWidth='50' markerHeight='20' refX='25' refY='10' " +
+                "markerUnits='userSpaceOnUse' overflow='visible'><circle cx='25' cy='10' r='5' fill='red'/>" +
+                "</marker></defs><line x1='10' y1='20' x2='30' y2='20' marker-end='url(#m)'/></svg>";
+
+            using var actual = new FenSvgRenderer().Render(percentage);
+            using var expected = new FenSvgRenderer().Render(numeric);
+
+            Assert.True(actual.Success, actual.ErrorMessage);
+            Assert.True(expected.Success, expected.ErrorMessage);
+            Assert.False(actual.RequiresFallback, string.Join("; ", actual.Warnings));
+            for (int y = 0; y < actual.Bitmap.Height; y++)
+            for (int x = 0; x < actual.Bitmap.Width; x++)
+                Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
+        }
+
         private static bool HasRed(SKBitmap bitmap, int left, int top, int right, int bottom) =>
             HasColor(bitmap, left, top, right, bottom, red: true);
 
@@ -292,6 +336,18 @@ namespace FenBrowser.Tests.Svg
                         : color.Blue > 180 && color.Red < 80)) return true;
             }
             return false;
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
     }
 }

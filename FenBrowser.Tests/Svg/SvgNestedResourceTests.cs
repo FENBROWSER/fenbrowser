@@ -8,17 +8,16 @@ namespace FenBrowser.Tests.Svg
     public sealed class SvgNestedResourceTests
     {
         [Fact]
-        public void NestedUnsupportedFeature_IsRejectedWithoutLegacyEscape()
+        public void NestedUnsupportedFeature_IsRejectedWithoutEscape()
         {
             string nested = DataSvg("<svg width='10' height='10'><foreignObject width='10' height='10'/></svg>");
-            var renderer = new HybridSvgRenderer(new FenSvgRenderer(), new SvgSkiaRenderer());
 
-            using var result = renderer.Render(
+            using var result = new FenSvgRenderer().Render(
                 $"<svg width='10' height='10'><image href='{nested}' width='10' height='10'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.HadResourceRejection);
-            Assert.False(result.UsedLegacyFallback);
+            Assert.NotEmpty(result.ResourceRejectionReasonCodes);
             Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
         }
 
@@ -35,7 +34,7 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(nested,
                 new SvgRenderLimits { MaxReferenceDepth = 4, MaxDecodedImageBytes = 2 * 1024 * 1024 });
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.HadResourceRejection);
             Assert.Contains(result.Warnings, warning => warning.Contains("embedded SVG"));
         }
@@ -54,7 +53,7 @@ namespace FenBrowser.Tests.Svg
                     MaxCumulativeResourceBytes = 100
                 });
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.HadResourceRejection);
             Assert.Contains(result.Warnings, warning => warning.Contains("cumulative byte budget"));
         }
@@ -67,7 +66,7 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(
                 $"<svg width='2' height='2'><image href='{uri}' width='2' height='2'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.HadResourceRejection);
             Assert.Contains(result.Warnings, warning => warning.Contains("UTF-8"));
         }
@@ -100,6 +99,18 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.Success, result.ErrorMessage);
             Assert.False(result.HadResourceRejection);
             Assert.True(result.Bitmap.GetPixel(2, 2).Red > 200);
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
 
         private static string DataSvg(string svg) =>

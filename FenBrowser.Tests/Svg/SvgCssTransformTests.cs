@@ -16,73 +16,66 @@ namespace FenBrowser.Tests.Svg
     {
         private readonly FenSvgRenderer _r = new();
 
-        private SKBitmap RenderRaw(string svg, out bool requiresFallback, out bool success)
+        private SvgRenderResult RenderRaw(string svg)
         {
             var res = _r.Render(svg);
-            success = res.Success;
-            requiresFallback = res.RequiresFallback;
             Assert.True(res.Success, res.ErrorMessage ?? "(no error)");
-            return res.Bitmap;
+            return res;
         }
 
         [Fact]
         public void StylesheetTranslate_MovesRect()
         {
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='60' height='20'><style>rect { fill: red; transform: translate(30px, 5px); }</style>" +
-                "<rect width='20' height='10'/></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(40, 10));
-            Assert.True(bmp.GetPixel(10, 5).Alpha == 0, "original position must be vacated");
+                "<rect width='20' height='10'/></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(40, 10));
+            Assert.True(result.Bitmap.GetPixel(10, 5).Alpha == 0, "original position must be vacated");
         }
 
         [Fact]
         public void CssTransform_OverridesTransformAttribute()
         {
             // Attribute says move right/down; CSS wins and moves further.
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='80' height='20'><style>rect { fill: red; transform: translate(50px, 5px); }</style>" +
-                "<rect transform='translate(2,2)' width='20' height='10'/></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(60, 10));
-            Assert.True(bmp.GetPixel(30, 8).Alpha == 0, "attribute-only position must be vacated");
+                "<rect transform='translate(2,2)' width='20' height='10'/></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(60, 10));
+            Assert.True(result.Bitmap.GetPixel(30, 8).Alpha == 0, "attribute-only position must be vacated");
         }
 
         [Fact]
         public void CssTransformNone_ResetsAttributeTransform()
         {
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='60' height='20'><style>rect { fill: red; transform: none; }</style>" +
-                "<rect transform='translate(30,5)' width='20' height='10'/></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(10, 5));
-            Assert.True(bmp.GetPixel(40, 10).Alpha == 0, "attribute translation must be suppressed");
+                "<rect transform='translate(30,5)' width='20' height='10'/></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 5));
+            Assert.True(result.Bitmap.GetPixel(40, 10).Alpha == 0, "attribute translation must be suppressed");
         }
 
         [Fact]
         public void CalcInsideTranslate_Resolves()
         {
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='60' height='20'><style>rect { fill: red; transform: translate(calc(10px + 20px), 5px); }</style>" +
-                "<rect width='20' height='10'/></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(40, 10));
+                "<rect width='20' height='10'/></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(40, 10));
         }
 
         [Fact]
         public void PercentageTranslate_ResolvesAgainstViewport()
         {
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='40' height='12'><style>rect { fill: red; transform: translate(50%, 0px); }</style>" +
-                "<rect width='10' height='10'/></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(25, 5));
-            Assert.True(bmp.GetPixel(5, 5).Alpha == 0);
+                "<rect width='10' height='10'/></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(25, 5));
+            Assert.True(result.Bitmap.GetPixel(5, 5).Alpha == 0);
         }
 
         [Fact]
@@ -90,15 +83,14 @@ namespace FenBrowser.Tests.Svg
         {
             // g translate(50,20) + rect(0,0,20,10), origin (10px,5px), scale 2:
             // local (-10,-5)-(30,15) -> canvas x 40..80, y 15..35.
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='100' height='50'><style>rect { fill: red; transform-origin: 10px 5px; transform: scale(2); }</style>" +
-                "<g transform='translate(50,20)'><rect width='20' height='10'/></g></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(75, 30));
-            Assert.True(bmp.GetPixel(90, 12).Alpha == 0, "right of the scaled rect");
-            Assert.True(bmp.GetPixel(38, 30).Alpha == 0, "left of the scaled rect");
-            Assert.True(bmp.GetPixel(60, 44).Alpha == 0, "below the scaled rect");
+                "<g transform='translate(50,20)'><rect width='20' height='10'/></g></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(75, 30));
+            Assert.True(result.Bitmap.GetPixel(90, 12).Alpha == 0, "right of the scaled rect");
+            Assert.True(result.Bitmap.GetPixel(38, 30).Alpha == 0, "left of the scaled rect");
+            Assert.True(result.Bitmap.GetPixel(60, 44).Alpha == 0, "below the scaled rect");
         }
 
         [Fact]
@@ -107,14 +99,13 @@ namespace FenBrowser.Tests.Svg
             // rect(0,0,40,10) inside g translate(20,10); fill-box origin
             // (75%,100%) = (30,10) local; scale 2 -> local (-30,-10)-(50,10)
             // -> canvas (-10,-0)-(70,20).
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='100' height='60'><style>#r { fill: red; transform-box: fill-box;" +
                 "transform-origin: 75% 100%; transform: scale(2,2); }</style>" +
-                "<g transform='translate(20,10)'><rect id='r' width='40' height='10'/></g></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(65, 18));
-            Assert.True(bmp.GetPixel(90, 55).Alpha == 0);
+                "<g transform='translate(20,10)'><rect id='r' width='40' height='10'/></g></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(65, 18));
+            Assert.True(result.Bitmap.GetPixel(90, 55).Alpha == 0);
         }
 
         [Fact]
@@ -122,13 +113,12 @@ namespace FenBrowser.Tests.Svg
         {
             // rotate(90deg) maps rect(0,-10,10,4) (offscreen strip) to
             // x 6..10, y 0..10; ignoring the transform would draw nothing.
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='40' height='20'><style>rect { fill: red; transform: rotate(90deg); }</style>" +
-                "<rect y='-10' width='10' height='4'/></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(8, 5));
-            Assert.True(bmp.GetPixel(2, 5).Alpha == 0, "outside the rotated strip");
+                "<rect y='-10' width='10' height='4'/></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(8, 5));
+            Assert.True(result.Bitmap.GetPixel(2, 5).Alpha == 0, "outside the rotated strip");
         }
 
         [Fact]
@@ -137,94 +127,98 @@ namespace FenBrowser.Tests.Svg
             // SVG2 presentation attribute form: transform-origin="30 10" with
             // attribute scale(2,3) on rect(0,0,40,10) in g translate(50,20):
             // local (-30,-20)-(50,10) -> canvas (20..100, 0..30).
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='120' height='40'><style>rect { fill: red; }</style>" +
                 "<g transform='translate(50,20)'>" +
-                "<rect width='40' height='10' transform='scale(2, 3)' transform-origin='30 10'/></g></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(95, 25));
-            Assert.True(bmp.GetPixel(15, 8).Alpha == 0, "left of scaled rect");
-            Assert.True(bmp.GetPixel(60, 35).Alpha == 0, "below scaled rect");
+                "<rect width='40' height='10' transform='scale(2, 3)' transform-origin='30 10'/></g></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(95, 25));
+            Assert.True(result.Bitmap.GetPixel(15, 8).Alpha == 0, "left of scaled rect");
+            Assert.True(result.Bitmap.GetPixel(60, 35).Alpha == 0, "below scaled rect");
         }
 
         [Fact]
-        public void ThreeDFunction_RequiresCompatibilityFallback()
+        public void ThreeDFunction_FailsClosedAsUnsupported()
         {
-            RenderRaw(
+            AssertFailsClosed(
                 "<svg width='40' height='20'><style>rect { fill: red; transform: rotate3d(1,1,1,45deg); }</style>" +
-                "<rect width='10' height='10'/></svg>",
-                out bool fb, out _);
-            Assert.True(fb);
+                "<rect width='10' height='10'/></svg>");
         }
 
         [Fact]
-        public void UnitlessNonZeroAngle_RequiresCompatibilityFallback()
+        public void UnitlessNonZeroAngle_FailsClosedAsUnsupported()
         {
-            RenderRaw(
+            AssertFailsClosed(
                 "<svg width='40' height='20'><style>rect { fill: red; transform: rotate(45); }</style>" +
-                "<rect width='10' height='10'/></svg>",
-                out bool fb, out _);
-            Assert.True(fb);
+                "<rect width='10' height='10'/></svg>");
         }
 
         [Fact]
-        public void StrokeBoxKeyword_RequiresCompatibilityFallback()
+        public void StrokeBoxKeyword_FailsClosedAsUnsupported()
         {
-            RenderRaw(
+            AssertFailsClosed(
                 "<svg width='40' height='20'><style>rect { fill: red; transform-box: stroke-box; transform: scale(2); }</style>" +
-                "<rect width='10' height='10'/></svg>",
-                out bool fb, out _);
-            Assert.True(fb);
+                "<rect width='10' height='10'/></svg>");
         }
 
         [Fact]
         public void TransformNone_DoesNotResolveInertUnsupportedBox()
         {
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='40' height='20'><style>rect { fill:red; transform:none; transform-box:stroke-box; }</style>" +
-                "<rect width='10' height='10'/></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(5, 5));
+                "<rect width='10' height='10'/></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(5, 5));
         }
 
         [Fact]
         public void EmLengthInTranslate_ResolvesAgainstInheritedFontSize()
         {
             // Default font size is 16px: 1em shifts the rect by 16.
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='40' height='20'><style>rect { fill: red; transform: translate(1em, 0px); }</style>" +
-                "<rect width='10' height='10'/></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(20, 5));
-            Assert.True(bmp.GetPixel(5, 5).Alpha == 0);
+                "<rect width='10' height='10'/></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(20, 5));
+            Assert.True(result.Bitmap.GetPixel(5, 5).Alpha == 0);
         }
 
         [Fact]
         public void CssOriginAndFillBox_ApplyToAttributeTransform()
         {
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='100' height='40'><style>#r { fill:red; transform-box:fill-box;" +
                 "transform-origin:right center; }</style>" +
-                "<rect id='r' x='20' y='10' width='20' height='10' transform='scale(2)'/></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(10, 10));
-            Assert.True(bmp.GetPixel(50, 15).Alpha == 0);
+                "<rect id='r' x='20' y='10' width='20' height='10' transform='scale(2)'/></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+            Assert.True(result.Bitmap.GetPixel(50, 15).Alpha == 0);
         }
 
         [Fact]
         public void PresentationOriginUserUnits_ApplyToCssTransform()
         {
-            var bmp = RenderRaw(
+            using var result = RenderRaw(
                 "<svg width='100' height='40'><style>#r { fill:red; transform:scale(2); }</style>" +
-                "<rect id='r' x='20' y='10' width='20' height='10' transform-origin='40 15'/></svg>",
-                out bool fb, out _);
-            Assert.False(fb);
-            Assert.Equal(SKColors.Red, bmp.GetPixel(10, 10));
-            Assert.True(bmp.GetPixel(50, 15).Alpha == 0);
+                "<rect id='r' x='20' y='10' width='20' height='10' transform-origin='40 15'/></svg>");
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(10, 10));
+            Assert.True(result.Bitmap.GetPixel(50, 15).Alpha == 0);
+        }
+
+        private void AssertFailsClosed(string svg)
+        {
+            using var result = _r.Render(svg);
+
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.True(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.NotEmpty(result.FallbackReasonCodes);
         }
     }
 }

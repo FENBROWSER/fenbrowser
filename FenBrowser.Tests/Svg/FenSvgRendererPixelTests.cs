@@ -13,7 +13,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void RedRect_FillsExpectedPixels()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width=\"32\" height=\"32\"><rect width=\"32\" height=\"32\" fill=\"red\"/></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
@@ -24,9 +24,9 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void DefaultFill_IsBlack_PerSpec()
         {
-            // No fill attribute anywhere: rect must render black. The legacy
-            // adapter needed regex injection to fix Svg.Skia here; we do not.
-            var result = _renderer.Render(
+            // No fill attribute anywhere: rect must render black. No source
+            // rewrite is needed; the default fill comes from the cascade.
+            using var result = _renderer.Render(
                 "<svg width=\"10\" height=\"10\"><rect width=\"8\" height=\"8\"/></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
@@ -38,7 +38,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void FillNone_RendersNothing()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\" fill=\"none\"/></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
@@ -48,7 +48,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void RootFillAttribute_InheritsToChildren()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width=\"10\" height=\"10\" fill=\"blue\"><rect width=\"6\" height=\"6\"/></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
@@ -60,7 +60,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void Circle_CenterFilled_EdgeOutside()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width=\"20\" height=\"20\"><circle cx=\"10\" cy=\"10\" r=\"6\" fill=\"green\"/></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
@@ -71,7 +71,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void GroupOpacity_CompositesChildren()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width=\"10\" height=\"10\">" +
                 "<g opacity=\"0.5\"><rect width=\"10\" height=\"10\" fill=\"red\"/></g></svg>");
 

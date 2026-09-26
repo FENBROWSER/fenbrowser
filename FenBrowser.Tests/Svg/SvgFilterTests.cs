@@ -106,6 +106,119 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void FilterHref_InheritsTemplatePrimitivesAndRegions()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs>" +
+                "<filter id='base' filterUnits='userSpaceOnUse' x='0' y='0' width='20' height='20'>" +
+                "<feFlood flood-color='lime'/></filter>" +
+                "<filter id='derived' href='#base'/></defs>" +
+                "<rect width='20' height='20' filter='url(#derived)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void FloodCurrentColor_UsesReferencedElementColor()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs><filter id='f'>" +
+                "<feFlood flood-color='currentColor'/></filter></defs>" +
+                "<rect width='20' height='20' color='blue' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void FloodProperties_DoNotInheritFromFilteredTarget()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='20' height='20'>" +
+                "<feFlood/></filter></defs>" +
+                "<rect width='20' height='20' fill='white' flood-color='blue' " +
+                "flood-opacity='.25' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Black, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void FloodProperties_InheritThroughFilterDomChain()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='20' height='20' " +
+                "flood-color='lime' flood-opacity='.5'><feFlood/></filter></defs>" +
+                "<rect width='20' height='20' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            SKColor pixel = result.Bitmap.GetPixel(10, 10);
+            Assert.Equal((byte)0, pixel.Red);
+            Assert.Equal((byte)255, pixel.Green);
+            Assert.Equal((byte)0, pixel.Blue);
+            Assert.InRange(pixel.Alpha, (byte)120, (byte)136);
+        }
+
+        [Fact]
+        public void LightingColor_DoesNotInheritFromFilteredTarget()
+        {
+            const string filter =
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='20' height='20'>" +
+                "<feDiffuseLighting surfaceScale='2'><feDistantLight elevation='90'/>" +
+                "</feDiffuseLighting></filter>";
+            const string prefix = "<svg width='20' height='20'><defs>" + filter + "</defs>" +
+                "<rect width='20' height='20' fill='white' ";
+            const string suffix = "filter='url(#f)'/></svg>";
+
+            using var baseline = new FenSvgRenderer().Render(prefix + suffix);
+            using var candidate = new FenSvgRenderer().Render(
+                prefix + "lighting-color='red' " + suffix);
+
+            Assert.True(baseline.Success, baseline.ErrorMessage);
+            Assert.True(candidate.Success, candidate.ErrorMessage);
+            Assert.False(baseline.RequiresFallback, string.Join("; ", baseline.Warnings));
+            Assert.False(candidate.RequiresFallback, string.Join("; ", candidate.Warnings));
+            for (int y = 0; y < 20; y++)
+            for (int x = 0; x < 20; x++)
+                Assert.Equal(baseline.Bitmap.GetPixel(x, y), candidate.Bitmap.GetPixel(x, y));
+        }
+
+        [Fact]
+        public void FilterRegion_IsRejectedBeforeOversizedPictureAdmission()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='10' height='10'><defs>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='20' height='20'>" +
+                "<feImage href='#source'/></filter><path id='source' d='M0 0H10V10H0Z'/>" +
+                "</defs><rect width='10' height='10' filter='url(#f)'/></svg>",
+                new SvgRenderLimits { MaxRasterWidth = 10, MaxRasterHeight = 10 });
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("raster admission", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void NestedOpacity_IsIncludedInEffectLayerAdmission()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><defs><filter id='f'><feOffset dx='1'/></filter></defs>" +
+                "<g filter='url(#f)'><g opacity='.5'><rect width='10' height='10' fill='red'/></g></g></svg>",
+                new SvgRenderLimits { MaxActiveLayers = 1 });
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("layer budget", StringComparison.Ordinal));
+        }
+
+        [Fact]
         public void Image_LocalFragmentRendersAsFilterGraphSource()
         {
             using var result = new FenSvgRenderer().Render(
@@ -533,15 +646,61 @@ namespace FenBrowser.Tests.Svg
         [InlineData("<feTurbulence stitchTiles='stitch'/>")]
         [InlineData("<feDiffuseLighting><fePointLight/></feDiffuseLighting>")]
         [InlineData("<feSpecularLighting specularExponent='129'><feDistantLight/></feSpecularLighting>")]
-        public void UnsupportedOrUnboundedPrimitive_RemainsExplicitFallback(string primitive)
+        [InlineData("<feMorphology operator='grow' radius='1'/>")]
+        [InlineData("<feMorphology operator='' radius='1'/>")]
+        public void UnsupportedOrUnboundedPrimitive_FailsClosedAsExplicitUnsupported(string primitive)
         {
             using var result = new FenSvgRenderer().Render(
                 $"<svg width='30' height='30'><defs><filter id='f'>{primitive}</filter></defs>" +
                 "<rect width='20' height='20' filter='url(#f)'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
-            Assert.True(result.RequiresFallback);
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback || result.HadResourceRejection);
             Assert.NotEmpty(result.Warnings);
+        }
+
+        [Fact]
+        public void MorphologyOperators_ApplyErodeAndDilateWithoutFallback()
+        {
+            const string erode =
+                "<svg width='30' height='30'><defs><filter id='f'>" +
+                "<feMorphology operator='erode' radius='2'/></filter></defs>" +
+                "<rect x='5' y='5' width='20' height='20' fill='red' filter='url(#f)'/></svg>";
+            const string dilate =
+                "<svg width='30' height='30'><defs><filter id='f'>" +
+                "<feMorphology operator='dilate' radius='2'/></filter></defs>" +
+                "<rect x='5' y='5' width='20' height='20' fill='red' filter='url(#f)'/></svg>";
+
+            using var eroded = new FenSvgRenderer().Render(erode);
+            using var dilated = new FenSvgRenderer().Render(dilate);
+
+            Assert.True(eroded.Success, eroded.ErrorMessage);
+            Assert.True(dilated.Success, dilated.ErrorMessage);
+            Assert.False(eroded.RequiresFallback, string.Join("; ", eroded.Warnings));
+            Assert.False(dilated.RequiresFallback, string.Join("; ", dilated.Warnings));
+            Assert.Equal(0, eroded.Bitmap.GetPixel(3, 15).Alpha);
+            Assert.True(eroded.Bitmap.GetPixel(15, 15).Red > 200);
+            Assert.True(dilated.Bitmap.GetPixel(3, 15).Red > 200);
+        }
+
+        [Fact]
+        public void FilterTemplateChain_ResolvesPrimitivesThroughEveryHref()
+        {
+            const string svg =
+                "<svg width='40' height='40'><defs>" +
+                "<filter id='f4' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feOffset dx='2'/></filter>" +
+                "<filter id='f3' href='#f4'/>" +
+                "<filter id='f2' href='#f3'/>" +
+                "<filter id='f1' href='#f2'/>" +
+                "</defs><rect x='5' y='5' width='30' height='30' fill='red' filter='url(#f1)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(7, 20));
+            Assert.Equal(0, result.Bitmap.GetPixel(4, 20).Alpha);
         }
 
         [Fact]
@@ -557,6 +716,18 @@ namespace FenBrowser.Tests.Svg
                 Assert.True(result.Success, result.ErrorMessage);
                 Assert.False(result.RequiresFallback);
             });
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
     }
 }

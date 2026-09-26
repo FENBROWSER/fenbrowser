@@ -106,13 +106,171 @@ namespace FenBrowser.Tests.Svg
                 Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
         }
 
+        [Theory]
+        [InlineData("xx-small", 9)]
+        [InlineData("x-small", 10)]
+        [InlineData("small", 13)]
+        [InlineData("medium", 16)]
+        [InlineData("large", 18)]
+        [InlineData("x-large", 24)]
+        [InlineData("xx-large", 32)]
+        public void FontSizeAbsoluteKeywords_MatchTheEquivalentPixelLength(
+            string keyword,
+            int pixels)
+        {
+            using var keywordResult = new FenSvgRenderer().Render(
+                $"<svg width='200' height='60'><text x='4' y='46' font-family='sans-serif' " +
+                $"font-size='{keyword}'>Fen</text></svg>");
+            using var lengthResult = new FenSvgRenderer().Render(
+                $"<svg width='200' height='60'><text x='4' y='46' font-family='sans-serif' " +
+                $"font-size='{pixels}'>Fen</text></svg>");
+
+            Assert.True(keywordResult.Success, keywordResult.ErrorMessage);
+            Assert.False(keywordResult.RequiresFallback, string.Join("; ", keywordResult.Warnings));
+            Assert.True(lengthResult.Success, lengthResult.ErrorMessage);
+            Assert.True(TryGetColorBounds(lengthResult.Bitmap, c => c.Alpha > 0, out _));
+            Assert.Equal(lengthResult.Bitmap.Width, keywordResult.Bitmap.Width);
+            Assert.Equal(lengthResult.Bitmap.Height, keywordResult.Bitmap.Height);
+            for (int y = 0; y < keywordResult.Bitmap.Height; y++)
+            for (int x = 0; x < keywordResult.Bitmap.Width; x++)
+                Assert.Equal(lengthResult.Bitmap.GetPixel(x, y), keywordResult.Bitmap.GetPixel(x, y));
+        }
+
         [Fact]
-        public void PerGlyphPositionList_RemainsExplicitCompatibilityCase()
+        public void FontSizeKeywordThroughStylesheet_MatchesTheEquivalentPixelLength()
+        {
+            using var keywordResult = new FenSvgRenderer().Render(
+                "<svg width='200' height='60'><style>text { font-size: xx-large }</style>" +
+                "<text x='4' y='46' font-family='sans-serif'>Fen</text></svg>");
+            using var lengthResult = new FenSvgRenderer().Render(
+                "<svg width='200' height='60'><text x='4' y='46' font-family='sans-serif' " +
+                "font-size='32'>Fen</text></svg>");
+
+            Assert.True(keywordResult.Success, keywordResult.ErrorMessage);
+            Assert.False(keywordResult.RequiresFallback, string.Join("; ", keywordResult.Warnings));
+            for (int y = 0; y < keywordResult.Bitmap.Height; y++)
+            for (int x = 0; x < keywordResult.Bitmap.Width; x++)
+                Assert.Equal(lengthResult.Bitmap.GetPixel(x, y), keywordResult.Bitmap.GetPixel(x, y));
+        }
+
+        [Fact]
+        public void FontSizePercentage_ResolvesAgainstTheInheritedSize()
+        {
+            using var percentage = new FenSvgRenderer().Render(
+                "<svg width='200' height='60' style='font-size:20px'><g>" +
+                "<text x='4' y='46' font-family='sans-serif' font-size='150%'>Fen</text>" +
+                "</g></svg>");
+            using var length = new FenSvgRenderer().Render(
+                "<svg width='200' height='60'><text x='4' y='46' font-family='sans-serif' " +
+                "font-size='30'>Fen</text></svg>");
+
+            Assert.True(percentage.Success, percentage.ErrorMessage);
+            Assert.False(percentage.RequiresFallback, string.Join("; ", percentage.Warnings));
+            Assert.True(length.Success, length.ErrorMessage);
+            for (int y = 0; y < percentage.Bitmap.Height; y++)
+            for (int x = 0; x < percentage.Bitmap.Width; x++)
+                Assert.Equal(length.Bitmap.GetPixel(x, y), percentage.Bitmap.GetPixel(x, y));
+        }
+
+        [Fact]
+        public void FontSizeRelativeKeywords_ScaleTheInheritedSize()
+        {
+            using var larger = RenderRelative("larger");
+            using var inherited = RenderRelative(null);
+            using var smaller = RenderRelative("smaller");
+
+            Assert.True(larger.Success, larger.ErrorMessage);
+            Assert.True(inherited.Success, inherited.ErrorMessage);
+            Assert.True(smaller.Success, smaller.ErrorMessage);
+            Assert.False(larger.RequiresFallback, string.Join("; ", larger.Warnings));
+            Assert.False(smaller.RequiresFallback, string.Join("; ", smaller.Warnings));
+            TryGetColorBounds(larger.Bitmap, c => c.Alpha > 0, out var largerBounds);
+            TryGetColorBounds(inherited.Bitmap, c => c.Alpha > 0, out var inheritedBounds);
+            TryGetColorBounds(smaller.Bitmap, c => c.Alpha > 0, out var smallerBounds);
+            Assert.True(largerBounds.Width > inheritedBounds.Width);
+            Assert.True(inheritedBounds.Width > smallerBounds.Width);
+            Assert.InRange(largerBounds.Width, inheritedBounds.Width + 2, inheritedBounds.Width * 2);
+            Assert.InRange(smallerBounds.Width, inheritedBounds.Width / 2, inheritedBounds.Width - 2);
+        }
+
+        private static SvgRenderResult RenderRelative(string keyword)
+        {
+            string declaration = keyword == null ? string.Empty : $" font-size='{keyword}'";
+            return new FenSvgRenderer().Render(
+                "<svg width='200' height='60' style='font-size:20px'>" +
+                $"<text x='4' y='46' font-family='sans-serif'{declaration}>Fen</text></svg>");
+        }
+
+        [Theory]
+        [InlineData("huge")]
+        [InlineData("tiny")]
+        [InlineData("20pixels")]
+        [InlineData("calc(20px)")]
+        public void InvalidFontSize_KeepsTheInheritedSizeAndFailsClosed(string value)
+        {
+            using var invalid = new FenSvgRenderer().Render(
+                "<svg width='200' height='60' style='font-size:20px'>" +
+                $"<text x='4' y='46' font-family='sans-serif' font-size='{value}'>Fen</text></svg>");
+            using var inherited = new FenSvgRenderer().Render(
+                "<svg width='200' height='60' style='font-size:20px'>" +
+                "<text x='4' y='46' font-family='sans-serif'>Fen</text></svg>");
+
+            AssertFailsClosed(invalid);
+            Assert.True(invalid.RequiresFallback);
+            Assert.Contains(
+                invalid.Warnings,
+                warning => warning.Contains("font-size", StringComparison.Ordinal));
+            Assert.Contains("unsupported-feature", invalid.FallbackReasonCodes);
+            Assert.True(inherited.Success, inherited.ErrorMessage);
+            Assert.False(inherited.RequiresFallback, string.Join("; ", inherited.Warnings));
+        }
+
+        [Fact]
+        public void InheritedFillOpacity_AppliesToTextRuns()
+        {
+            using var inherited = new FenSvgRenderer().Render(
+                "<svg width='200' height='60'><g fill='red' fill-opacity='0.5'>" +
+                "<text x='4' y='46' font-size='32'>Fen</text></g></svg>");
+            using var opaque = new FenSvgRenderer().Render(
+                "<svg width='200' height='60'><g fill='red'>" +
+                "<text x='4' y='46' font-size='32'>Fen</text></g></svg>");
+
+            Assert.True(inherited.Success, inherited.ErrorMessage);
+            Assert.False(inherited.RequiresFallback, string.Join("; ", inherited.Warnings));
+            Assert.True(opaque.Success, opaque.ErrorMessage);
+            Assert.True(TryGetMaxAlphaColor(inherited.Bitmap, out var faded));
+            Assert.True(TryGetMaxAlphaColor(opaque.Bitmap, out var solid));
+            Assert.Equal((byte)255, solid.Alpha);
+            Assert.InRange(faded.Alpha, 110, 145);
+            Assert.Equal((byte)255, faded.Red);
+            Assert.Equal((byte)0, faded.Green);
+            Assert.Equal((byte)0, faded.Blue);
+        }
+
+        [Fact]
+        public void TspanIsolatedOpacity_FailsClosedAsExplicitUnsupported()
+        {
+            using var reduced = new FenSvgRenderer().Render(
+                "<svg width='80' height='30'><text x='2' y='20'>A<tspan opacity='0.5'>B</tspan>" +
+                "</text></svg>");
+            using var full = new FenSvgRenderer().Render(
+                "<svg width='80' height='30'><text x='2' y='20'>A<tspan opacity='1'>B</tspan>" +
+                "</text></svg>");
+
+            AssertFailsClosed(reduced);
+            Assert.True(reduced.RequiresFallback);
+            Assert.Contains("advanced-text-layout", reduced.FallbackReasonCodes);
+            Assert.True(full.Success, full.ErrorMessage);
+            Assert.False(full.RequiresFallback, string.Join("; ", full.Warnings));
+        }
+
+        [Fact]
+        public void PerGlyphPositionList_FailsClosedAsExplicitUnsupported()
         {
             using var result = new FenSvgRenderer().Render(
                 "<svg width='80' height='30'><text x='2 10' y='20'>AB</text></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("per-glyph", StringComparison.Ordinal));
         }
@@ -129,7 +287,27 @@ namespace FenBrowser.Tests.Svg
 
             using var result = new FenSvgRenderer().Render(svg.ToString());
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("glyph budget", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void SiblingTextElements_ObeyDocumentGlyphBudget()
+        {
+            var svg = new StringBuilder("<svg width='100' height='80'>");
+            for (int element = 0; element < 2; element++)
+            {
+                svg.Append("<text x='2' y='").Append(20 + element * 35).Append("'>");
+                for (int run = 0; run < 3; run++)
+                    svg.Append("<tspan>").Append('a', 4096).Append("</tspan>");
+                svg.Append("</text>");
+            }
+            svg.Append("</svg>");
+
+            using var result = new FenSvgRenderer().Render(svg.ToString());
+
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("glyph budget", StringComparison.Ordinal));
         }
@@ -171,12 +349,39 @@ namespace FenBrowser.Tests.Svg
             return right >= left;
         }
 
+        private static bool TryGetMaxAlphaColor(SKBitmap bitmap, out SKColor color)
+        {
+            int best = -1;
+            color = default;
+            for (int y = 0; y < bitmap.Height; y++)
+            for (int x = 0; x < bitmap.Width; x++)
+            {
+                var candidate = bitmap.GetPixel(x, y);
+                if (candidate.Alpha <= best) continue;
+                best = candidate.Alpha;
+                color = candidate;
+            }
+            return best > 0;
+        }
+
         private static bool HasForeground(SKBitmap bitmap)
         {
             for (int y = 0; y < bitmap.Height; y++)
             for (int x = 0; x < bitmap.Width; x++)
                 if (bitmap.GetPixel(x, y).Alpha > 0) return true;
             return false;
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
     }
 }

@@ -15,7 +15,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void InlineStyle_ShadowsPresentationAttribute()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width='10' height='10'>" +
                 "<rect width='10' height='10' fill='red' style='fill:blue'/></svg>");
 
@@ -29,7 +29,7 @@ namespace FenBrowser.Tests.Svg
         public void InlineStyle_Alone_Applies()
         {
             // CSS "green" is #008000; use lime (#00FF00) for a full-channel check.
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width='10' height='10'><rect width='10' height='10' style=\"fill:lime\"/></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
@@ -41,7 +41,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void InlineStyle_MalformedDeclarations_Skipped()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width='10' height='10'>" +
                 "<rect width='10' height='10' style=';;;fill : red ; bad; : x ;'/></svg>");
 
@@ -54,7 +54,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void ClipPath_UserSpace_RestrictsPaint()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width='20' height='10'>" +
                 "<clipPath id='c'><rect x='0' y='0' width='10' height='10'/></clipPath>" +
                 "<rect x='0' y='0' width='20' height='10' fill='red' clip-path='url(#c)'/></svg>");
@@ -67,19 +67,21 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void ClipPath_Cycle_Terminates()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width='10' height='10'>" +
                 "<clipPath id='a'><use href='#a'/></clipPath>" +
                 "<rect width='10' height='10' fill='red' clip-path='url(#a)'/></svg>",
                 new SvgRenderLimits { MaxRenderTimeMs = 2000 });
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.NotEmpty(result.FallbackReasonCodes);
         }
 
         [Fact]
         public void ClipPath_MissingReference_DoesNotHideElement()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width='10' height='10'><rect width='10' height='10' fill='red' clip-path='url(#nope)'/></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
@@ -100,7 +102,7 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void Image_DataUri_DecodesAndPlaces()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 $"<svg width='20' height='10'><image href='{RedPngDataUri(4, 4)}' x='3' y='3' width='6' height='4'/></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
@@ -110,31 +112,33 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void Image_ExternalReference_IsIgnored_FailClosed()
+        public void Image_ExternalReference_FailsClosed()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width='10' height='10'><image href='http://evil.example/x.png' width='10' height='10'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
-            Assert.Equal(0, result.Bitmap.GetPixel(5, 5).Alpha);
+            AssertFailsClosed(result);
+            Assert.True(result.HadResourceRejection);
+            Assert.Contains("external-resource", result.ResourceRejectionReasonCodes);
         }
 
         [Fact]
-        public void Image_InvalidBase64_IsRejectedGracefully()
+        public void Image_InvalidBase64_FailsClosed()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<svg width='10' height='10'><image href='data:image/png;base64,!!!!not-base64!!!!' width='10' height='10'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
-            Assert.Equal(0, result.Bitmap.GetPixel(5, 5).Alpha);
+            AssertFailsClosed(result);
+            Assert.True(result.HadResourceRejection);
+            Assert.NotEmpty(result.ResourceRejectionReasonCodes);
         }
 
         [Fact]
-        public void Image_DecodedRasterBomb_RejectedByBudget()
+        public void Image_DecodedRasterBomb_FailsClosedByBudget()
         {
             // MaxDecodedImagePixels is independent of the document raster
-            // budget: the 4x4 image is dropped while the 10x10 doc renders.
-            var result = _renderer.Render(
+            // budget: the 4x4 image is dropped, so nothing is admissible.
+            using var result = _renderer.Render(
                 "<svg width='10' height='10'>" +
                 $"<image href='{RedPngDataUri(4, 4)}' x='1' y='1' width='6' height='6'/>" +
                 "</svg>",
@@ -144,8 +148,9 @@ namespace FenBrowser.Tests.Svg
                     MaxDecodedImagePixels = 1
                 });
 
-            Assert.True(result.Success, result.ErrorMessage);
-            Assert.Equal(0, result.Bitmap.GetPixel(3, 3).Alpha); // image dropped
+            AssertFailsClosed(result);
+            Assert.True(result.HadResourceRejection);
+            Assert.Contains("resource-budget", result.ResourceRejectionReasonCodes);
         }
 
         // -------------------------------------------------- security regressions
@@ -153,14 +158,14 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void LowercaseDoctype_IsRejected()
         {
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 "<!doctype svg SYSTEM \"x\"><svg width='1' height='1'/>");
             Assert.False(result.Success);
             Assert.Contains("DOCTYPE", result.ErrorMessage);
         }
 
         [Fact]
-        public void NestedOpacityGroups_PastLayerCap_StillSucceed()
+        public void NestedOpacityGroups_PastLayerCap_FailClosed()
         {
             var sb = new System.Text.StringBuilder("<svg width='8' height='8'>");
             for (int i = 0; i < 30; i++) sb.Append("<g opacity='0.5'>");
@@ -168,11 +173,13 @@ namespace FenBrowser.Tests.Svg
             for (int i = 0; i < 30; i++) sb.Append("</g>");
             sb.Append("</svg>");
 
-            // Deep nesting must terminate quickly and safely; compositing math
-            // legitimately drives alpha toward zero (0.5^N), and the layer cap
-            // bounds memory regardless of nesting depth.
-            var result = _renderer.Render(sb.ToString(), new SvgRenderLimits { MaxRenderTimeMs = 1500 });
-            Assert.True(result.Success, result.ErrorMessage);
+            // Deep nesting must terminate quickly and safely; the layer cap
+            // bounds memory regardless of nesting depth, and exceeding it is
+            // terminal because no other backend can complete the render.
+            using var result = _renderer.Render(sb.ToString(), new SvgRenderLimits { MaxRenderTimeMs = 1500 });
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("layer budget", StringComparison.Ordinal));
         }
 
         [Fact]
@@ -184,7 +191,7 @@ namespace FenBrowser.Tests.Svg
             for (int i = 0; i < 4; i++) sb.Append("</g>");
             sb.Append("</svg>");
 
-            var result = _renderer.Render(sb.ToString());
+            using var result = _renderer.Render(sb.ToString());
             Assert.True(result.Success, result.ErrorMessage);
             Assert.True(result.Bitmap.GetPixel(4, 4).Alpha >= 60,
                 $"expected visible composite, got {result.Bitmap.GetPixel(4, 4)}");
@@ -201,7 +208,7 @@ namespace FenBrowser.Tests.Svg
             }
             sb.Append("<use href='#s0'/></svg>");
 
-            var result = _renderer.Render(sb.ToString(), new SvgRenderLimits { MaxRenderTimeMs = 1500 });
+            using var result = _renderer.Render(sb.ToString(), new SvgRenderLimits { MaxRenderTimeMs = 1500 });
             Assert.True(result.Success, result.ErrorMessage);
         }
 
@@ -209,10 +216,22 @@ namespace FenBrowser.Tests.Svg
         public void OversizedIdValue_IsIgnoredSafely()
         {
             var bigId = new string('a', 600);
-            var result = _renderer.Render(
+            using var result = _renderer.Render(
                 $"<svg width='10' height='10'><rect id='{bigId}' width='10' height='10' fill='red'/></svg>");
             Assert.True(result.Success, result.ErrorMessage);
             Assert.Equal((byte)255, result.Bitmap.GetPixel(5, 5).Red);
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
     }
 }

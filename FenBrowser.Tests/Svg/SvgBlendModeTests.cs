@@ -45,14 +45,26 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void UnknownBlendMode_RemainsExplicitFallback()
+        public void UnknownBlendMode_FailsClosedAsExplicitUnsupported()
         {
             using var result = new FenSvgRenderer().Render(
                 "<svg width='20' height='20'><rect width='20' height='20' style='mix-blend-mode:plus-lighter'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("mix-blend-mode"));
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
     }
 }

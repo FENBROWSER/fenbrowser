@@ -69,6 +69,21 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void PatternTemplate_MetadataOnlyDerivedInheritsRenderableContent()
+        {
+            using var result = _renderer.Render(
+                "<svg width='20' height='10'><defs>" +
+                "<pattern id='base' patternUnits='userSpaceOnUse' width='10' height='10'>" +
+                "<rect width='10' height='10' fill='green'/></pattern>" +
+                "<pattern id='derived' href='#base'><metadata>template metadata</metadata></pattern>" +
+                "</defs><rect width='20' height='10' fill='url(#derived)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(15, 5));
+        }
+
+        [Fact]
         public void PatternContent_InheritsCurrentColorThroughItsDefinitionTree()
         {
             using var result = _renderer.Render(
@@ -156,16 +171,28 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void OversizedMappedPatternTile_RemainsExplicitFallback()
+        public void OversizedMappedPatternTile_FailsClosedAsExplicitUnsupported()
         {
             using var result = _renderer.Render(
                 "<svg width='100' height='100'><pattern id='p' width='100' height='100'>" +
                 "<rect width='100' height='100' fill='red'/></pattern>" +
                 "<rect width='100' height='100' fill='url(#p)'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("pattern tile exceeds"));
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
     }
 }

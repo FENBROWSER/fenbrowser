@@ -7,6 +7,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.Svg
 {
+    [Collection(SvgRendererBackendStateCollection.Name)]
     public sealed class SvgProductionHardeningTests
     {
         [Fact]
@@ -118,18 +119,27 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData("hybrid", SvgRendererBackend.FirstPartyWithLegacyFallback)]
-        [InlineData("AUTO", SvgRendererBackend.FirstPartyWithLegacyFallback)]
         [InlineData("first-party", SvgRendererBackend.FirstParty)]
         [InlineData("fen", SvgRendererBackend.FirstParty)]
-        [InlineData("legacy", SvgRendererBackend.LegacySvgSkia)]
-        [InlineData("svg-skia", SvgRendererBackend.LegacySvgSkia)]
+        [InlineData("legacy", SvgRendererBackend.FirstParty)]
+        [InlineData("svg-skia", SvgRendererBackend.FirstParty)]
         public void BackendConfiguration_ParsesCrossPlatformValues(
             string value,
             SvgRendererBackend expected)
         {
             Assert.True(SvgRendererConfiguration.TryParse(value, out var parsed));
             Assert.Equal(expected, parsed);
+        }
+
+        [Theory]
+        [InlineData("hybrid")]
+        [InlineData("AUTO")]
+        [InlineData("not-a-backend")]
+        public void BackendConfiguration_RetiredOrUnrecognizedValuesFailClosedOntoFirstParty(
+            string value)
+        {
+            Assert.False(SvgRendererConfiguration.TryParse(value, out var parsed));
+            Assert.Equal(SvgRendererBackend.FirstParty, parsed);
         }
 
         [Fact]
@@ -140,20 +150,6 @@ namespace FenBrowser.Tests.Svg
 
             Assert.True(result.Success, result.ErrorMessage);
             Assert.False(result.RequiresFallback);
-            Assert.False(result.UsedLegacyFallback);
-            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
-            Assert.True(HasForeground(result.Bitmap));
-        }
-
-        [Fact]
-        public void Hybrid_BasicTextStaysOnFirstPartyRenderer()
-        {
-            var renderer = new HybridSvgRenderer(new FenSvgRenderer(), new SvgSkiaRenderer());
-            using var result = renderer.Render(
-                "<svg width='80' height='30'><text x='2' y='22' font-size='20'>Fen</text></svg>");
-
-            Assert.True(result.Success, result.ErrorMessage);
-            Assert.False(result.UsedLegacyFallback);
             Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
             Assert.True(HasForeground(result.Bitmap));
         }
@@ -183,13 +179,14 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void FirstParty_VerticalTextRequiresCompatibilityFallback()
+        public void FirstParty_VerticalTextFailsClosedAsUnsupported()
         {
             using var result = new FenSvgRenderer().Render(
                 "<svg width='80' height='30'><text x='2' y='15' writing-mode='vertical-rl'>Fen</text></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
+            Assert.NotEmpty(result.FallbackReasonCodes);
             Assert.NotEmpty(result.Warnings);
         }
 
@@ -223,13 +220,13 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void FirstParty_OversizedBasicTextRequiresFallbackBeforeFontWork()
+        public void FirstParty_OversizedBasicTextFailsClosedBeforeFontWork()
         {
             string content = new string('a', 4097);
             using var result = new FenSvgRenderer().Render(
                 $"<svg width='80' height='30'><text x='2' y='15'>{content}</text></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("render length budget", StringComparison.Ordinal));
         }
@@ -249,49 +246,45 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void Hybrid_SupportedGeometryStaysOnFirstPartyRenderer()
+        public void FirstParty_SupportedGeometryRendersAuthoritatively()
         {
-            var renderer = new HybridSvgRenderer(new FenSvgRenderer(), new SvgSkiaRenderer());
-            using var result = renderer.Render(
+            using var result = new FenSvgRenderer().Render(
                 "<svg width='10' height='10'><rect width='10' height='10' fill='red'/></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
             Assert.False(result.RequiresFallback);
-            Assert.False(result.UsedLegacyFallback);
+            Assert.False(result.HadResourceRejection);
             Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.True(SvgRenderResult.IsAdmissible(result));
         }
 
         [Fact]
-        public void Hybrid_SecurityFailureNeverFallsBack()
+        public void FirstParty_SecurityFailureFailsClosed()
         {
-            var renderer = new HybridSvgRenderer(new FenSvgRenderer(), new SvgSkiaRenderer());
-            using var result = renderer.Render(
+            using var result = new FenSvgRenderer().Render(
                 "<!DOCTYPE svg><svg width='10' height='10'><rect width='10' height='10'/></svg>");
 
-            Assert.False(result.Success);
-            Assert.False(result.UsedLegacyFallback);
+            AssertFailsClosed(result);
             Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
             Assert.Contains("DOCTYPE", result.ErrorMessage, StringComparison.Ordinal);
         }
 
         [Fact]
-        public void Hybrid_ExternalImageRejectionNeverEntersLegacyRenderer()
+        public void FirstParty_ExternalImageRejectionFailsClosed()
         {
-            var renderer = new HybridSvgRenderer(new FenSvgRenderer(), new SvgSkiaRenderer());
-            using var result = renderer.Render(
+            using var result = new FenSvgRenderer().Render(
                 "<svg width='10' height='10'><image href='https://invalid.example/image.png' " +
                 "width='10' height='10'/></svg>",
                 SvgRenderLimits.Strict);
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.HadResourceRejection);
-            Assert.False(result.UsedLegacyFallback);
+            Assert.NotEmpty(result.ResourceRejectionReasonCodes);
             Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
-            Assert.Equal(0, result.Bitmap.GetPixel(5, 5).Alpha);
         }
 
         [Fact]
-        public void Hybrid_LayerBudgetFidelityLossUsesCompatibilityRenderer()
+        public void FirstParty_LayerBudgetExhaustionFailsClosedInsteadOfFidelityLoss()
         {
             var svg = new System.Text.StringBuilder("<svg width='20' height='20'>");
             for (int i = 0; i < 10; i++) svg.Append("<g opacity='.9'>");
@@ -299,19 +292,18 @@ namespace FenBrowser.Tests.Svg
             for (int i = 0; i < 10; i++) svg.Append("</g>");
             svg.Append("</svg>");
 
-            var renderer = new HybridSvgRenderer(new FenSvgRenderer(), new SvgSkiaRenderer());
-            using var result = renderer.Render(svg.ToString());
+            using var result = new FenSvgRenderer().Render(svg.ToString());
 
-            Assert.True(result.Success, result.ErrorMessage);
-            Assert.True(result.UsedLegacyFallback);
-            Assert.Equal(SvgRendererBackend.LegacySvgSkia, result.Backend);
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.NotEmpty(result.FallbackReasonCodes);
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
         }
 
         [Fact]
-        public void SharedHybridRenderer_IsSafeUnderConcurrentMixedWorkload()
+        public void SharedFirstPartyRenderer_IsSafeUnderConcurrentMixedWorkload()
         {
-            var renderer = SvgRendererFactory.GetRenderer(
-                SvgRendererBackend.FirstPartyWithLegacyFallback);
+            var renderer = SvgRendererFactory.GetRenderer(SvgRendererBackend.FirstParty);
             var failures = new System.Collections.Concurrent.ConcurrentQueue<string>();
 
             System.Threading.Tasks.Parallel.For(0, 64, index =>
@@ -330,14 +322,13 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData("<style>rect{filter:blur(2px)}</style><rect width='10' height='10'/>")]
         [InlineData("<rect width='10' height='10' style='mask:url(#m)'/>")]
         [InlineData("<path d='M0 0L10 10' marker-end='url(#m)'/>")]
-        public void FirstParty_CompatibilityFeaturesAreNeverSilentlyDropped(string content)
+        public void FirstParty_PartiallySupportedFeaturesFailClosedRatherThanDropSilently(string content)
         {
             using var result = new FenSvgRenderer().Render($"<svg width='10' height='10'>{content}</svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.NotEmpty(result.Warnings);
         }
@@ -403,14 +394,12 @@ namespace FenBrowser.Tests.Svg
             string svg =
                 $"<svg width='10' height='10'><style>rect{{fill:red}}</style>" +
                 $"<image href='data:image/svg+xml;base64,{nested}' width='10' height='10'/></svg>";
-            var renderer = new HybridSvgRenderer(new FenSvgRenderer(), new SvgSkiaRenderer());
 
-            using var result = renderer.Render(svg);
+            using var result = new FenSvgRenderer().Render(svg);
 
             Assert.True(result.Success, result.ErrorMessage);
             Assert.False(result.RequiresFallback);
             Assert.False(result.HadResourceRejection);
-            Assert.False(result.UsedLegacyFallback);
             Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
             Assert.Equal(SKColors.Black, result.Bitmap.GetPixel(5, 5));
         }
@@ -437,15 +426,16 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void EmbeddedRasterBudgetRejection_IsObservableOnSuccessfulDocument()
+        public void EmbeddedRasterBudgetRejection_FailsClosed()
         {
             string payload = Convert.ToBase64String(BuildPngHeader(width: 50_000, height: 50_000));
             using var result = new FenSvgRenderer().Render(
                 $"<svg width='10' height='10'><image href='data:image/png;base64,{payload}' width='10' height='10'/></svg>");
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.HadResourceRejection);
             Assert.False(result.RequiresFallback);
+            Assert.NotEmpty(result.ResourceRejectionReasonCodes);
         }
 
         [Fact]
@@ -496,6 +486,328 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(svg);
             Assert.True(result.Success, result.ErrorMessage);
             Assert.True(result.Bitmap.GetPixel(10, 10).Alpha > 0);
+        }
+
+        [Fact]
+        public void RootDisplayOpacityAndExplicitZeroDimensions_ArePreserved()
+        {
+            using var hidden = new FenSvgRenderer().Render(
+                "<svg width='20' height='20' display='none'><rect width='20' height='20' fill='red'/></svg>");
+            using var faded = new FenSvgRenderer().Render(
+                "<svg width='20' height='20' opacity='.5'><rect width='20' height='20' fill='red'/></svg>");
+            using var zero = new FenSvgRenderer().Render(
+                "<svg width='0' height='0'><rect width='20' height='20' fill='red'/></svg>");
+
+            Assert.True(hidden.Success, hidden.ErrorMessage);
+            Assert.Equal(0, hidden.Bitmap.GetPixel(10, 10).Alpha);
+            Assert.True(faded.Success, faded.ErrorMessage);
+            Assert.InRange(faded.Bitmap.GetPixel(10, 10).Alpha, 100, 155);
+            Assert.True(zero.Success, zero.ErrorMessage);
+            Assert.True(zero.Width < 10f);
+            Assert.Equal(0, zero.Bitmap.GetPixel(0, 0).Alpha);
+        }
+
+        [Fact]
+        public void RootClipFilterAndMaskApplyThroughTheRootEffectPipeline()
+        {
+            using var clip = new FenSvgRenderer().Render(
+                "<svg width='20' height='20' clip-path='url(#c)'><defs>" +
+                "<clipPath id='c'><rect width='10' height='20'/></clipPath></defs>" +
+                "<rect width='20' height='20' fill='red'/></svg>");
+            using var filter = new FenSvgRenderer().Render(
+                "<svg width='40' height='40' filter='url(#f)'><defs><filter id='f' " +
+                "filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feOffset dx='10'/></filter></defs>" +
+                "<rect x='5' y='5' width='10' height='10' fill='red'/></svg>");
+            using var mask = new FenSvgRenderer().Render(
+                "<svg width='40' height='20' mask='url(#m)'><defs><mask id='m' " +
+                "maskUnits='userSpaceOnUse' x='0' y='0' width='20' height='20'>" +
+                "<rect width='20' height='20' fill='white'/></mask></defs>" +
+                "<rect width='40' height='20' fill='red'/></svg>");
+
+            Assert.True(clip.Success, clip.ErrorMessage);
+            Assert.False(clip.RequiresFallback);
+            Assert.True(clip.Bitmap.GetPixel(5, 10).Alpha > 0);
+            Assert.Equal(0, clip.Bitmap.GetPixel(15, 10).Alpha);
+            Assert.True(filter.Success, filter.ErrorMessage);
+            Assert.False(filter.RequiresFallback);
+            Assert.Equal(0, filter.Bitmap.GetPixel(7, 7).Alpha);
+            Assert.True(filter.Bitmap.GetPixel(17, 7).Red > 200);
+            Assert.True(mask.Success, mask.ErrorMessage);
+            Assert.False(mask.RequiresFallback);
+            Assert.True(mask.Bitmap.GetPixel(10, 10).Alpha > 0);
+            Assert.Equal(0, mask.Bitmap.GetPixel(30, 10).Alpha);
+        }
+
+        [Fact]
+        public void RootOpacityAndBlendUseBoundedEffectHandling()
+        {
+            using var budgeted = new FenSvgRenderer().Render(
+                "<svg width='20' height='20' opacity='.5' filter='url(#f)'><defs>" +
+                "<filter id='f'><feOffset dx='1'/></filter></defs>" +
+                "<rect width='20' height='20' fill='red'/></svg>",
+                new SvgRenderLimits { MaxActiveLayers = 1 });
+            using var invalidBlend = new FenSvgRenderer().Render(
+                "<svg width='20' height='20' style='mix-blend-mode:plus-lighter'>" +
+                "<rect width='20' height='20' fill='red'/></svg>");
+
+            AssertFailsClosed(budgeted);
+            Assert.True(budgeted.RequiresFallback);
+            Assert.Contains(budgeted.Warnings, warning => warning.Contains("layer budget", StringComparison.Ordinal));
+            AssertFailsClosed(invalidBlend);
+            Assert.True(invalidBlend.RequiresFallback);
+        }
+
+        [Fact]
+        public void ZeroDimensionRootSkipsAuthorEffectsWithoutChangingSize()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='0' height='0' opacity='.5' clip-path='url(#c)' " +
+                "filter='url(#missing)' mask='url(#missing)' style='mix-blend-mode:multiply'>" +
+                "<rect width='20' height='20' fill='red'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.True(result.Width < 10f);
+            Assert.Equal(0, result.Bitmap.GetPixel(0, 0).Alpha);
+        }
+
+        [Fact]
+        public void NestedSvgClipUsesViewBoxTransformOnce()
+        {
+            const string svg =
+                "<svg width='40' height='20'><defs><clipPath id='c'>" +
+                "<rect width='6' height='20'/></clipPath></defs>" +
+                "<svg x='5' width='20' height='20' viewBox='0 0 10 10' " +
+                "preserveAspectRatio='none' transform='translate(3 0)' clip-path='url(#c)'>" +
+                "<rect width='10' height='10' fill='red'/></svg></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(0, result.Bitmap.GetPixel(7, 10).Alpha);
+            Assert.True(result.Bitmap.GetPixel(8, 10).Alpha > 0);
+            Assert.True(result.Bitmap.GetPixel(19, 10).Alpha > 0);
+            Assert.Equal(0, result.Bitmap.GetPixel(20, 10).Alpha);
+        }
+
+        [Fact]
+        public void NestedSvgUsesXyTranslation()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='20'><svg x='10' y='5' width='10' height='10'>" +
+                "<rect width='10' height='10' fill='red'/></svg></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.Bitmap.GetPixel(15, 10).Alpha > 0);
+            Assert.Equal(0, result.Bitmap.GetPixel(5, 5).Alpha);
+        }
+
+        [Fact]
+        public void SwitchAppliesContainerStyleClipOpacityAndTransform()
+        {
+            const string svg =
+                "<svg width='30' height='20'><defs><clipPath id='c'>" +
+                "<rect width='10' height='10'/></clipPath></defs>" +
+                "<switch transform='translate(5 5)' opacity='.5' fill='red' clip-path='url(#c)'>" +
+                "<rect width='20' height='20'/></switch></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.InRange(result.Bitmap.GetPixel(7, 7).Alpha, 100, 155);
+            Assert.Equal(0, result.Bitmap.GetPixel(17, 17).Alpha);
+        }
+
+        [Fact]
+        public void RequiredFeaturesSelectSupportedConditionalBranches()
+        {
+            const string svg =
+                "<svg width='20' height='20'><switch>" +
+                "<rect width='20' height='20' fill='red' requiredFeatures='invalid'/>" +
+                "<rect width='20' height='20' fill='green' " +
+                "requiredFeatures='http://www.w3.org/TR/SVG11/feature#ConditionalProcessing'/>" +
+                "</switch></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void InvalidCssWinnersFallBackToPresentationOrInheritedPaint()
+        {
+            const string svg =
+                "<svg width='20' height='20'><g fill='blue'>" +
+                "<rect width='10' height='20' fill='red' style='fill:not-a-color'/>" +
+                "<rect x='10' width='10' height='20' style='fill:not-a-color'/>" +
+                "</g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(5, 10));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(15, 10));
+        }
+
+        [Fact]
+        public void TinyViewBoxAndOverflowingTransformRemainFinite()
+        {
+            using var tiny = new FenSvgRenderer().Render(
+                "<svg width='20' height='20' viewBox='0 0 1e-30 1'>" +
+                "<rect width='1' height='1' fill='red'/></svg>");
+            using var overflow = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'><rect width='4' height='4' fill='red' " +
+                "transform='scale(1e308)'/></svg>");
+
+            AssertFailsClosed(tiny);
+            Assert.True(tiny.RequiresFallback);
+            Assert.NotEmpty(tiny.FallbackReasonCodes);
+            AssertFailsClosed(overflow);
+            Assert.True(overflow.RequiresFallback);
+        }
+
+        [Fact]
+        public void UseCssCoordinatesAndImageDimensionsAreValidated()
+        {
+            string image = MakeSolidPngDataUri(2, 2, SKColors.Red);
+            const string useSvg =
+                "<svg width='30' height='20'><defs><rect id='r' width='4' height='4' fill='red'/></defs>" +
+                "<use href='#r' style='x:10px;y:5px'/></svg>";
+            string imageSvg =
+                $"<svg width='20' height='20'><image href='{image}' " +
+                "style='x:2px;y:3px;width:6px;height:4px'/></svg>";
+            string invalidImageSvg =
+                $"<svg width='20' height='20'><image href='{image}' width='-1' height='4'/></svg>";
+
+            using var useResult = new FenSvgRenderer().Render(useSvg);
+            using var imageResult = new FenSvgRenderer().Render(imageSvg);
+            using var invalidResult = new FenSvgRenderer().Render(invalidImageSvg);
+
+            Assert.True(useResult.Success, useResult.ErrorMessage);
+            Assert.True(useResult.Bitmap.GetPixel(12, 7).Alpha > 0);
+            Assert.True(imageResult.Success, imageResult.ErrorMessage);
+            Assert.True(imageResult.Bitmap.GetPixel(5, 5).Alpha > 0);
+            Assert.True(invalidResult.Success, invalidResult.ErrorMessage);
+            Assert.Equal(0, invalidResult.Bitmap.GetPixel(0, 0).Alpha);
+        }
+
+        [Fact]
+        public void ClipPathInheritsClipRuleFromItsDefinition()
+        {
+            const string svg =
+                "<svg width='20' height='20'><defs><clipPath id='c' clip-rule='evenodd'>" +
+                "<path d='M0 0H20V20H0Z'/><path d='M5 5H15V15H5Z'/>" +
+                "</clipPath></defs><rect width='20' height='20' fill='red' " +
+                "clip-path='url(#c)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.Bitmap.GetPixel(2, 2).Alpha > 0);
+            Assert.Equal(0, result.Bitmap.GetPixel(10, 10).Alpha);
+        }
+
+        [Fact]
+        public void NamespacePrefixedRootWithScriptLikeElementFailsClosedAsDynamicContent()
+        {
+            const string svg =
+                "<svg:svg xmlns:svg='http://www.w3.org/2000/svg' width='20' height='20'>" +
+                "<svg:defs><svg:clipPath id='base'><svg:rect width='10' height='10'/>" +
+                "</svg:clipPath><svg:clipPath id='derived' href='#base'/></svg:defs>" +
+                "<SCRIPT>ignored</SCRIPT><svg:rect width='20' height='20' fill='red' " +
+                "clip-path='url(#derived)'/></svg:svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("dynamic-content", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void NamespacePrefixedRootAndClipHrefRenderWithoutScript()
+        {
+            const string svg =
+                "<svg:svg xmlns:svg='http://www.w3.org/2000/svg' width='20' height='20'>" +
+                "<svg:defs><svg:clipPath id='base'><svg:rect width='10' height='10'/>" +
+                "</svg:clipPath><svg:clipPath id='derived' href='#base'/></svg:defs>" +
+                "<svg:rect width='20' height='20' fill='red' clip-path='url(#derived)'/></svg:svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(result.Bitmap.GetPixel(5, 5).Alpha > 0);
+            Assert.Equal(0, result.Bitmap.GetPixel(15, 15).Alpha);
+        }
+
+        [Fact]
+        public void FirstParty_OversizedRootNameFatalDiagnosticStaysBounded()
+        {
+            string rootName = new string('z', 200_000);
+
+            using var result = new FenSvgRenderer().Render($"<{rootName}/>");
+
+            Assert.False(result.Success);
+            Assert.False(string.IsNullOrEmpty(result.ErrorMessage));
+            Assert.InRange(result.ErrorMessage.Length, 1, FenSvgRenderer.MaxResultDiagnosticChars);
+            Assert.DoesNotContain(rootName, result.ErrorMessage, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void FirstParty_OversizedDuplicateAttributeWarningStaysBounded()
+        {
+            string attributeName = new string('q', 2_000);
+            string svg =
+                $"<svg width='4' height='4' {attributeName}='1' {attributeName}='2'>" +
+                "<rect width='4' height='4'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.InRange(result.Warnings.Count, 1, FenSvgRenderer.MaxResultDiagnosticEntries);
+            Assert.Contains(result.Warnings, warning =>
+                warning.StartsWith("duplicate attribute '", StringComparison.Ordinal));
+            Assert.All(result.Warnings, warning =>
+                Assert.InRange(warning.Length, 1, SvgDiagnosticText.MaxIdentifierChars + 64));
+            Assert.DoesNotContain(attributeName, string.Join("|", result.Warnings), StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void FirstParty_OversizedDuplicateIdWarningAndReasonCodesStayBounded()
+        {
+            string id = new string('i', 400);
+            string svg =
+                $"<svg width='4' height='4'><rect id='{id}' width='2' height='2'/>" +
+                $"<rect id='{id}' width='2' height='2'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Contains(result.Warnings, warning =>
+                warning.StartsWith("duplicate id '", StringComparison.Ordinal));
+            Assert.All(result.Warnings, warning =>
+                Assert.InRange(warning.Length, 1, SvgDiagnosticText.MaxIdentifierChars + 64));
+            Assert.All(result.FallbackReasonCodes, code =>
+                Assert.InRange(code.Length, 1, FenSvgRenderer.MaxResultDiagnosticChars));
+            Assert.All(result.ResourceRejectionReasonCodes, code =>
+                Assert.InRange(code.Length, 1, FenSvgRenderer.MaxResultDiagnosticChars));
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
 
         private static string MakeSolidPngDataUri(int width, int height, SKColor color)

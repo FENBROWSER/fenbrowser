@@ -69,6 +69,9 @@
     <!-- Active renderer-child stdin polling contract; keep Architecture legacy
          and policy tests excluded until they are reviewed independently. -->
     <Compile Include="Architecture\RendererChildLoopIoTests.cs" />
+    <!-- SVG sandbox-limit compliance coverage. The rest of the Architecture
+         legacy/policy tree stays excluded. -->
+    <Compile Include="Architecture\SvgSandboxingTests.cs" />
     <!-- Phase 1 animation-scoping regression (BrowserIntegration is in Host,
          which is otherwise excluded). -->
     <Compile Include="Host\Phase1AnimationScopingTests.cs" />

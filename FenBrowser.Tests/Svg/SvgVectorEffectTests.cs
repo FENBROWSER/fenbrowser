@@ -53,7 +53,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void NonScalingPaintServerStroke_RemainsExplicitFallback()
+        public void NonScalingPaintServerStroke_FailsClosedAsExplicitUnsupported()
         {
             const string svg =
                 "<svg width='40' height='40'><defs><linearGradient id='g'>" +
@@ -63,7 +63,7 @@ namespace FenBrowser.Tests.Svg
 
             using var result = new FenSvgRenderer().Render(svg);
 
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("paint-server stroke"));
         }
@@ -83,6 +83,18 @@ namespace FenBrowser.Tests.Svg
             Assert.False(result.RequiresFallback);
             Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(50, 50));
             Assert.Equal(0, result.Bitmap.GetPixel(110, 50).Alpha);
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
     }
 }

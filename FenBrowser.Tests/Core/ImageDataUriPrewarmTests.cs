@@ -55,19 +55,29 @@ public sealed class ImageDataUriPrewarmTests
         }
     }
 
-    private static Task InvokePrewarmImagesAsync(
+    private static async Task InvokePrewarmImagesAsync(
         Element root,
         Uri baseUri,
         Func<Uri, Task<Stream>> loader,
         double viewportWidth)
     {
-        var method = typeof(CustomHtmlEngine).GetMethod(
-            "PrewarmImagesAsync",
-            BindingFlags.NonPublic | BindingFlags.Static);
+        using var engine = new CustomHtmlEngine();
+        var method = typeof(CustomHtmlEngine)
+            .GetMethods(BindingFlags.NonPublic | BindingFlags.Instance)
+            .Single(candidate => candidate.Name == "PrewarmImagesAsync" &&
+                                 candidate.GetParameters().Length == 6);
+        using var taskGroup = new NavigationTaskGroup();
 
-        Assert.NotNull(method);
-        return Assert.IsAssignableFrom<Task>(method!.Invoke(
-            null,
-            new object[] { root, baseUri, loader, viewportWidth }));
+        await Assert.IsAssignableFrom<Task>(method.Invoke(
+            engine,
+            new object[]
+            {
+                root,
+                baseUri,
+                loader,
+                viewportWidth,
+                CancellationToken.None,
+                taskGroup
+            }));
     }
 }
