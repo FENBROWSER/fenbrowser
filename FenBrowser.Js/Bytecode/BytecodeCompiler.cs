@@ -1712,8 +1712,13 @@ public sealed class BytecodeCompiler
         // constructing property-accessed functions (e.g. new c.B() where B is
         // a class expression or function expression in a field initializer).
         // Instead, the caller for the direct class constructor passes
-        // FunctionKind.Constructor via explicitKind.
-        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _fieldInitializerStatements = this._fieldInitializerStatements, _rawSource = _rawSource, _sourcePath = _sourcePath };
+        // FunctionKind.Constructor via explicitKind. The same goes for the
+        // IsClassConstructor and IsDerivedConstructor marks themselves: they
+        // belong to the constructor alone. Handed down, they made every
+        // function nested in a class body - a field initializer's class, its
+        // methods, an arrow - a class constructor that [[Call]] must refuse.
+        var compilesConstructor = explicitKind == FunctionKind.Constructor;
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = compilesConstructor && this._isDerivedConstructor, _isClassConstructor = compilesConstructor && this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _fieldInitializerStatements = this._fieldInitializerStatements, _rawSource = _rawSource, _sourcePath = _sourcePath };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,

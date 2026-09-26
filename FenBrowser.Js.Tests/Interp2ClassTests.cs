@@ -43,6 +43,43 @@ public sealed class Interp2ClassTests : IDisposable
         }
     }
 
+    [Fact]
+    public void OnlyTheConstructorItselfIsMarkedAClassConstructor()
+    {
+        // A field initializer's class, its method, and a function and an arrow
+        // made in a derived constructor are ordinary functions of their own.
+        var script = Compile(
+            "class A {} class B extends A { f = class { m() { return 1; } }; " +
+            "constructor() { super(); this.g = function () { return 2; }; this.h = () => 3; } }");
+        var constructor = Assert.Single(script.NestedFunctions, fn => fn.IsClassConstructor && fn.IsDerivedConstructor);
+        foreach (var nested in Descendants(constructor))
+        {
+            Assert.False(nested.IsClassConstructor && nested.Kind != FenBrowser.Js.Objects.FunctionKind.Constructor);
+            Assert.False(nested.IsDerivedConstructor && nested.Kind != FenBrowser.Js.Objects.FunctionKind.Constructor);
+            if (nested.Kind != FenBrowser.Js.Objects.FunctionKind.Constructor)
+            {
+                Assert.Equal(Interp2Bailout.None, FrameLayout.For(nested).Bailout);
+            }
+        }
+
+        Assert.Equal("1,2,3", new BytecodeInterpreter().Execute(Compile(
+            "class A {} class B extends A { f = class { m() { return 1; } }; " +
+            "constructor() { super(); this.g = function () { return 2; }; this.h = () => 3; } }" +
+            " var b = new B(); [new b.f().m(), b.g(), b.h()].join();")).AsString());
+    }
+
+    private static IEnumerable<BytecodeFunction> Descendants(BytecodeFunction function)
+    {
+        foreach (var nested in function.NestedFunctions)
+        {
+            yield return nested;
+            foreach (var deeper in Descendants(nested))
+            {
+                yield return deeper;
+            }
+        }
+    }
+
     [Theory]
     [InlineData("class A { constructor(x) { this.x = x; } } class B extends A { constructor() { super(5); this.y = this.x + 1; } }" +
                 " var b = new B(); return b.x + ',' + b.y;", "5,6")]
