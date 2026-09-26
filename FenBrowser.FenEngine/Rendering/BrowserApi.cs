@@ -2679,74 +2679,47 @@ pre {{
                     return;
                 }
 
-                string iconUrl = null;
-                var dom = _engine.GetActiveDom();
-                
-                // 1. Try to find link tag in DOM
-                if (dom != null)
+                foreach (var iconUrl in SelectFaviconCandidates(_engine.GetActiveDom()))
                 {
-                    // Find <link rel="icon" ...>
-                    var links = dom
-                        .Descendants()
-                        .OfType<Element>()
-                        .Where(x => string.Equals(x.TagName, "link", StringComparison.OrdinalIgnoreCase) &&
-                                    x.HasAttribute("rel"));
-                    var iconLink = links.LastOrDefault(x => x.GetAttribute("rel")?.IndexOf("icon", StringComparison.OrdinalIgnoreCase) >= 0);
-                    
-                    if (iconLink != null && iconLink.HasAttribute("href"))
+                    if (!Uri.TryCreate(pageUrl, iconUrl, out var absoluteIconUri))
                     {
-                        iconUrl = iconLink.GetAttribute("href")?.Trim();
+                        continue;
                     }
-                }
-                
-                // 2. Fallback to /favicon.ico
-                if (string.IsNullOrEmpty(iconUrl))
-                {
-                    iconUrl = "/favicon.ico";
-                }
-                
-                // Resolve relative URL
-                Uri absoluteIconUri = null;
-                if (Uri.TryCreate(pageUrl, iconUrl, out absoluteIconUri))
-                {
+
                     if (!IsLatestNavigation(navigationId))
                     {
                         return;
                     }
 
-                    // 3. Fetch Image
                     using var stream = await _resources.FetchImageAsync(absoluteIconUri, pageUrl);
-                    if (stream != null)
+                    if (stream == null)
                     {
-                        // Decode
-                        // Copy to memory stream if needed for Skia
-                        using var ms = new System.IO.MemoryStream();
-                        await stream.CopyToAsync(ms);
-                        ms.Position = 0;
-                        
-                        var bytes = ms.ToArray();
-                        var bitmap = DecodeFavicon(bytes);
-                        if (bitmap != null)
-                        {
-                            if (!IsLatestNavigation(navigationId))
-                            {
-                                bitmap.Dispose();
-                                return;
-                            }
-
-                            // Resize if too large? Tab is small (16px), but keep quality High.
-                            // Set property and fire event
-                            Favicon = bitmap;
-                            FenBrowser.Core.EngineLogCompat.Info($"[BrowserHost] Favicon loaded for {pageUrl}", FenBrowser.Core.Logging.LogCategory.General);
-                            
-                            // Marshall to UI thread handled by consumers
-                            RepaintReady?.Invoke(this, null); // Trigger repaint? Or specific event
-                            FaviconChanged?.Invoke(this, bitmap);
-                            return;
-                        }
+                        continue;
                     }
+
+                    using var ms = new System.IO.MemoryStream();
+                    await stream.CopyToAsync(ms);
+                    var bitmap = DecodeFavicon(ms.ToArray());
+                    if (bitmap == null)
+                    {
+                        continue;
+                    }
+
+                    if (!IsLatestNavigation(navigationId))
+                    {
+                        bitmap.Dispose();
+                        return;
+                    }
+
+                    Favicon = bitmap;
+                    FenBrowser.Core.EngineLogCompat.Info($"[BrowserHost] Favicon loaded for {pageUrl}", FenBrowser.Core.Logging.LogCategory.General);
+
+                    // Marshall to UI thread handled by consumers
+                    RepaintReady?.Invoke(this, null);
+                    FaviconChanged?.Invoke(this, bitmap);
+                    return;
                 }
-                
+
                 // If failed, clear favicon?
                 // Favicon = null;
                 // FaviconChanged?.Invoke(this, null);
@@ -2787,6 +2760,46 @@ pre {{
             return titleNode?.TextContent?.Trim() ?? string.Empty;
         }
 
+        /// <summary>
+        /// HTML §4.6.7.8: a link is an icon when its rel has the "icon" keyword as a whole
+        /// token ("shortcut icon" included). A substring match also took apple-touch-icon and
+        /// mask-icon, and w3schools lists its mask-icon SVG last. The last declared icon is
+        /// preferred, earlier ones are fallbacks, and /favicon.ico is the last resort.
+        /// </summary>
+        private static List<string> SelectFaviconCandidates(Node dom)
+        {
+            var candidates = new List<string>();
+            if (dom != null)
+            {
+                foreach (var link in dom.Descendants().OfType<Element>())
+                {
+                    if (!string.Equals(link.TagName, "link", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var rel = link.GetAttribute("rel");
+                    var href = link.GetAttribute("href")?.Trim();
+                    if (string.IsNullOrEmpty(rel) || string.IsNullOrEmpty(href))
+                    {
+                        continue;
+                    }
+
+                    foreach (var token in rel.Split((char[])null, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (string.Equals(token, "icon", StringComparison.OrdinalIgnoreCase))
+                        {
+                            candidates.Insert(0, href);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            candidates.Add("/favicon.ico");
+            return candidates;
+        }
+
         private static SKBitmap DecodeFavicon(byte[] bytes)
         {
             if (bytes == null || bytes.Length == 0)
@@ -2794,10 +2807,19 @@ pre {{
                 return null;
             }
 
-            var bitmap = SKBitmap.Decode(bytes);
-            if (bitmap != null)
+            // SKBitmap.Decode(byte[]) throws rather than returning null when no codec
+            // recognises the bytes (an SVG icon, an HTML error page).
+            using (var data = SKData.CreateCopy(bytes))
+            using (var codec = SKCodec.Create(data))
             {
-                return bitmap;
+                if (codec != null)
+                {
+                    var bitmap = SKBitmap.Decode(codec);
+                    if (bitmap != null)
+                    {
+                        return bitmap;
+                    }
+                }
             }
 
             return DecodeIcoFavicon(bytes);
