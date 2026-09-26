@@ -16,7 +16,8 @@ namespace FenBrowser.FenEngine.Svg
             Discrete,
             Points,
             NumberList,
-            PathData
+            PathData,
+            Reference
         }
 
         private static readonly HashSet<string> SmilColorAttributes = new(StringComparer.OrdinalIgnoreCase)
@@ -57,8 +58,16 @@ namespace FenBrowser.FenEngine.Svg
         private const int MaxSmilValueListEntries = 1024;
         private const int MaxSmilListNumbers = 4096;
         private const int MaxSmilRawTimingChars = 8 * 1024;
+        private const int MaxSmilSyncbaseDepth = 8;
         private const int SmilEasingIterations = 32;
         private const int MaxSmilTransformNumbers = 6;
+
+        private static readonly HashSet<string> SmilUndeliveredEvents = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "click", "dblclick", "mousedown", "mouseup", "mouseover", "mouseout",
+            "mousemove", "keydown", "keypress", "keyup", "focusin", "focusout",
+            "activate", "DOMActivate", "beginEvent", "endEvent", "repeatEvent"
+        };
 
         private Dictionary<SvgElement, SKMatrix> _animatedTransforms;
         private HashSet<SvgElement> _animatedTransformReplacesBase;
@@ -160,7 +169,7 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
             if ((paced || spline) && kind is SmilValueKind.Discrete or SmilValueKind.Points
-                    or SmilValueKind.NumberList or SmilValueKind.PathData)
+                    or SmilValueKind.NumberList or SmilValueKind.PathData or SmilValueKind.Reference)
             {
                 RequireSmilFallback("animate calculation mode");
                 return;
@@ -204,6 +213,17 @@ namespace FenBrowser.FenEngine.Svg
                     out string value))
             {
                 RequireSmilFallback("animate values");
+                return;
+            }
+            if (kind == SmilValueKind.Reference)
+            {
+                if (string.Equals(animation.GetAttribute("additive")?.Trim(), "sum",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    RequireSmilFallback("set additive sum");
+                    return;
+                }
+                TryApplySmilReference(target, attributeName, value);
                 return;
             }
             if (string.Equals(animation.GetAttribute("additive")?.Trim(), "sum",
@@ -329,6 +349,18 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
+            if (kind == SmilValueKind.Reference)
+            {
+                if (string.Equals(animation.GetAttribute("additive")?.Trim(), "sum",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    RequireSmilFallback("animate additive sum");
+                    return;
+                }
+                TryApplySmilReference(target, attributeName, value);
+                return;
+            }
+
             value = BindSmilCurrentColor(target, kind, value);
 
             if (string.Equals(animation.GetAttribute("additive")?.Trim(), "sum",
@@ -362,12 +394,41 @@ namespace FenBrowser.FenEngine.Svg
             return _doc.ElementsById.TryGetValue(id, out SvgElement target) ? target : null;
         }
 
+        private bool TryApplySmilReference(
+            SvgElement target,
+            string attributeName,
+            string value)
+        {
+            if (target.Name != "use")
+            {
+                RequireSmilFallback("animated reference target");
+                return false;
+            }
+            if (!attributeName.Equals("href", StringComparison.OrdinalIgnoreCase) &&
+                ReadUnderlyingValue(target, "href") != null)
+            {
+                RequireSmilFallback("animated reference precedence");
+                return false;
+            }
+            if (value == null || !SvgValues.TryParseLocalReference(value, out _))
+            {
+                RequireSmilFallback("animated reference resolution");
+                return false;
+            }
+            target.AnimatedProperties ??=
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            target.AnimatedProperties[attributeName] = value;
+            target.AnimatedProperties["href"] = value;
+            return true;
+        }
+
         private static bool TryClassifySmilAttribute(string name, out SmilValueKind kind)
         {
             if (SmilColorAttributes.Contains(name)) kind = SmilValueKind.Color;
             else if (SmilScalarAttributes.Contains(name)) kind = SmilValueKind.Scalar;
             else if (SmilNumberListAttributes.Contains(name)) kind = SmilValueKind.NumberList;
             else if (name.Equals("points", StringComparison.OrdinalIgnoreCase)) kind = SmilValueKind.Points;
+            else if (IsSmilReferenceAttribute(name)) kind = SmilValueKind.Reference;
             else if (SmilDiscreteAttributes.Contains(name))
                 kind = name.Equals("d", StringComparison.OrdinalIgnoreCase)
                     ? SmilValueKind.PathData
@@ -380,10 +441,13 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
+        private static bool IsSmilReferenceAttribute(string name) =>
+            name.Equals("href", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("xlink:href", StringComparison.OrdinalIgnoreCase);
+
         private static bool IsStructurallyUnsupportedSmilAttribute(string name) =>
             name.Equals("class", StringComparison.OrdinalIgnoreCase) ||
             name.Equals("style", StringComparison.OrdinalIgnoreCase) ||
-            name.IndexOf("href", StringComparison.OrdinalIgnoreCase) >= 0 ||
             name.IndexOf("url", StringComparison.OrdinalIgnoreCase) >= 0;
 
         private static bool IsSupportedSmilAttributeType(string attributeType) =>
@@ -500,24 +564,26 @@ namespace FenBrowser.FenEngine.Svg
                 }
             }
 
-            if (!TryParseSmilClockList(animation.GetAttribute("begin"), out double[] begins))
+            if (!TryParseSmilTimeList(animation, animation.GetAttribute("begin"), true, 0,
+                    out SmilTimeValue[] begins))
             {
                 RequireSmilFallback("animate begin timing");
                 return false;
             }
-            if (begins == null || begins.Length == 0) begins = new[] { 0d };
+            if (begins == null || begins.Length == 0) begins = new[] { SmilClockValue(0d) };
 
-            double[] ends = null;
+            SmilTimeValue[] ends = null;
             string endRaw = animation.GetAttribute("end");
             if (!string.IsNullOrWhiteSpace(endRaw))
             {
-                if (!TryParseSmilClockList(endRaw, out ends) || ends.Length == 0)
+                if (!TryParseSmilTimeList(animation, endRaw, false, 0, out ends) ||
+                    ends.Length == 0)
                 {
                     RequireSmilFallback("animate end timing");
                     return false;
                 }
             }
-            if ((long)(begins?.Length ?? 1) * (ends?.Length ?? 1) > MaxSmilTimingPairs)
+            if ((long)begins.Length * (ends?.Length ?? 1) > MaxSmilTimingPairs)
             {
                 RequireSmilFallback("animate begin timing");
                 return false;
@@ -534,7 +600,8 @@ namespace FenBrowser.FenEngine.Svg
 
             for (int i = 0; i < begins.Length; i++)
             {
-                double instanceBegin = begins[i];
+                if (!begins[i].Instant) continue;
+                double instanceBegin = begins[i].Seconds;
                 if (instanceBegin > _documentTimeSeconds) continue;
                 double instanceEnd = indefiniteActive
                     ? double.PositiveInfinity
@@ -542,8 +609,9 @@ namespace FenBrowser.FenEngine.Svg
                 if (!double.IsPositiveInfinity(instanceEnd) && ends != null)
                 {
                     for (int j = 0; j < ends.Length; j++)
-                        if (ends[j] > instanceBegin && ends[j] < instanceEnd)
-                            instanceEnd = ends[j];
+                        if (ends[j].Instant && ends[j].Seconds > instanceBegin &&
+                            ends[j].Seconds < instanceEnd)
+                            instanceEnd = ends[j].Seconds;
                 }
                 bool inside = double.IsPositiveInfinity(instanceEnd) ||
                     _documentTimeSeconds < instanceEnd;
@@ -578,6 +646,27 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
+        private readonly struct SmilTimeValue
+        {
+            public readonly double Seconds;
+            public readonly bool Instant;
+            public readonly bool InError;
+
+            public SmilTimeValue(double seconds, bool instant, bool inError)
+            {
+                Seconds = seconds;
+                Instant = instant;
+                InError = inError;
+            }
+        }
+
+        private static SmilTimeValue SmilClockValue(double seconds) =>
+            new(seconds, true, false);
+
+        private static SmilTimeValue SmilPendingValue() => new(0d, false, false);
+
+        private static SmilTimeValue SmilInErrorValue() => new(0d, false, true);
+
         private static bool TryParseSmilClockList(string raw, out double[] times)
         {
             times = null;
@@ -591,6 +680,262 @@ namespace FenBrowser.FenEngine.Svg
                     return false;
             times = parsed;
             return true;
+        }
+
+        private bool TryParseSmilTimeList(
+            SvgElement owner,
+            string raw,
+            bool isBegin,
+            int depth,
+            out SmilTimeValue[] values)
+        {
+            values = null;
+            if (string.IsNullOrWhiteSpace(raw)) return true;
+            if (raw.Length > MaxSmilRawTimingChars) return false;
+            string[] parts = raw.Split(';');
+            if (parts.Length == 0 || parts.Length > MaxSmilTimingListEntries) return false;
+            var parsed = new SmilTimeValue[parts.Length];
+            int instantCount = 0;
+            bool hasInError = false;
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (!TryResolveSmilTimeValue(owner, parts[i], depth, out parsed[i])) return false;
+                if (parsed[i].Instant) instantCount++;
+                else if (parsed[i].InError) hasInError = true;
+            }
+            if (isBegin && instantCount == 0 && hasInError) return false;
+            values = parsed;
+            return true;
+        }
+
+        private bool TryResolveSmilTimeValue(
+            SvgElement owner,
+            string raw,
+            int depth,
+            out SmilTimeValue value)
+        {
+            value = SmilPendingValue();
+            string text = raw?.Trim() ?? string.Empty;
+            if (text.Length == 0 || text.Length > MaxSmilRawTimingChars) return false;
+            if (TryParseClockSeconds(text, out double seconds))
+            {
+                value = SmilClockValue(seconds);
+                return true;
+            }
+            if (text.Equals("indefinite", StringComparison.OrdinalIgnoreCase)) return true;
+            if (depth >= MaxSmilSyncbaseDepth) return false;
+
+            string head = TrySplitSmilOffset(text, out string offsetHead, out double offset)
+                ? offsetHead
+                : text;
+            if (head.Length == 0) return false;
+            if (IsSmilFunctionalTimeValue(head, "wallclock")) return false;
+            if (IsSmilFunctionalTimeValue(head, "repeat")) return false;
+            if (IsSmilFunctionalTimeValue(head, "accessKey")) return true;
+
+            int dot = head.IndexOf('.');
+            if (dot < 0)
+            {
+                if (!SmilUndeliveredEvents.Contains(head)) return false;
+                return true;
+            }
+            string id = head.Substring(0, dot).Trim();
+            string token = head.Substring(dot + 1).Trim();
+            if (id.Length == 0 || token.Length == 0 || token.IndexOf('.') >= 0) return false;
+            if (IsSmilFunctionalTimeValue(token, "repeat")) return false;
+            if (SmilUndeliveredEvents.Contains(token))
+                return IsSmilSyncbaseTargetInDocument(id) || SetSmilInError(out value);
+            bool wantsEnd;
+            if (token.Equals("begin", StringComparison.OrdinalIgnoreCase)) wantsEnd = false;
+            else if (token.Equals("end", StringComparison.OrdinalIgnoreCase)) wantsEnd = true;
+            else return false;
+            return TryResolveSmilSyncbase(owner, id, wantsEnd, offset, depth, out value);
+        }
+
+        private bool IsSmilSyncbaseTargetInDocument(string id) =>
+            _doc.ElementsById.ContainsKey(id);
+
+        private static bool SetSmilInError(out SmilTimeValue value)
+        {
+            value = SmilInErrorValue();
+            return true;
+        }
+
+        private static bool SetSmilPending(out SmilTimeValue value)
+        {
+            value = SmilPendingValue();
+            return true;
+        }
+
+        private bool TryResolveSmilSyncbase(
+            SvgElement owner,
+            string id,
+            bool wantsEnd,
+            double offset,
+            int depth,
+            out SmilTimeValue value)
+        {
+            if (!_doc.ElementsById.TryGetValue(id, out SvgElement referenced) ||
+                ReferenceEquals(referenced, owner) ||
+                !IsSmilTimingElement(referenced))
+            {
+                value = SmilInErrorValue();
+                return true;
+            }
+            if (!TryCollectSmilInterval(referenced, depth + 1,
+                    out double intervalBegin, out double intervalEnd, out bool hasAnchor))
+            {
+                value = SmilPendingValue();
+                return false;
+            }
+            if (!hasAnchor) return SetSmilPending(out value);
+            double anchor = wantsEnd ? intervalEnd : intervalBegin;
+            if (double.IsPositiveInfinity(anchor))
+            {
+                value = SmilClockValue(double.PositiveInfinity);
+                return true;
+            }
+            if (!double.IsFinite(anchor))
+            {
+                value = SmilPendingValue();
+                return false;
+            }
+            double instant = anchor + offset;
+            if (instant < 0d) return SetSmilInError(out value);
+            value = SmilClockValue(instant);
+            return true;
+        }
+
+        private bool TryCollectSmilInterval(
+            SvgElement referenced,
+            int depth,
+            out double begin,
+            out double end,
+            out bool hasAnchor)
+        {
+            begin = 0d;
+            end = 0d;
+            hasAnchor = false;
+            if (referenced.GetAttribute("min") != null ||
+                referenced.GetAttribute("max") != null ||
+                referenced.GetAttribute("repeatDur") != null ||
+                !TryParseSmilTimeList(referenced, referenced.GetAttribute("begin"), true, depth,
+                    out SmilTimeValue[] begins))
+            {
+                return false;
+            }
+            if (begins == null || begins.Length == 0) begins = new[] { SmilClockValue(0d) };
+            int instantCount = 0;
+            double onlyBegin = 0d;
+            for (int i = 0; i < begins.Length; i++)
+            {
+                if (!begins[i].Instant) continue;
+                instantCount++;
+                onlyBegin = begins[i].Seconds;
+            }
+            if (instantCount == 0) return true;
+            if (instantCount > 1) return false;
+
+            begin = onlyBegin;
+            hasAnchor = true;
+            if (!TryResolveSmilActiveDuration(referenced, out double activeDuration,
+                    out bool indefinite))
+            {
+                return false;
+            }
+            if (indefinite)
+            {
+                end = double.PositiveInfinity;
+                return true;
+            }
+            double instanceEnd = onlyBegin + activeDuration;
+            if (!double.IsFinite(instanceEnd))
+            {
+                end = double.PositiveInfinity;
+                return true;
+            }
+            if (!TryParseSmilTimeList(referenced, referenced.GetAttribute("end"), false, depth,
+                    out SmilTimeValue[] ends))
+            {
+                return false;
+            }
+            if (ends != null)
+            {
+                for (int i = 0; i < ends.Length; i++)
+                {
+                    if (!ends[i].Instant) continue;
+                    if (ends[i].Seconds > onlyBegin && ends[i].Seconds < instanceEnd)
+                        instanceEnd = ends[i].Seconds;
+                }
+            }
+            end = instanceEnd;
+            return true;
+        }
+
+        private static bool TryResolveSmilActiveDuration(
+            SvgElement element,
+            out double activeDuration,
+            out bool indefinite)
+        {
+            activeDuration = 0d;
+            indefinite = false;
+            string durationRaw = element.GetAttribute("dur")?.Trim();
+            if (string.IsNullOrEmpty(durationRaw) ||
+                durationRaw.Equals("indefinite", StringComparison.OrdinalIgnoreCase))
+            {
+                indefinite = true;
+                return true;
+            }
+            if (!TryParseClockSeconds(durationRaw, out double duration) ||
+                !double.IsFinite(duration) || duration <= 0d)
+                return false;
+            string repeatRaw = element.GetAttribute("repeatCount")?.Trim();
+            if (!string.IsNullOrEmpty(repeatRaw))
+            {
+                if (repeatRaw.Equals("indefinite", StringComparison.OrdinalIgnoreCase)) return false;
+                if (!double.TryParse(repeatRaw, NumberStyles.Float, CultureInfo.InvariantCulture,
+                        out double repeatCount) ||
+                    !double.IsFinite(repeatCount) || repeatCount <= 0d || repeatCount > 1_000_000d ||
+                    repeatCount != 1d)
+                    return false;
+            }
+            activeDuration = duration;
+            return true;
+        }
+
+        private static bool IsSmilTimingElement(SvgElement element) =>
+            element != null &&
+            element.Name is "set" or "animate" or "animateColor" or
+                "animateTransform" or "animateMotion";
+
+        private static bool IsSmilFunctionalTimeValue(string value, string name) =>
+            value.Length > name.Length + 1 &&
+            value.EndsWith(")", StringComparison.Ordinal) &&
+            value.StartsWith(name, StringComparison.OrdinalIgnoreCase) &&
+            value[name.Length] == '(';
+
+        private static bool TrySplitSmilOffset(string text, out string head, out double offset)
+        {
+            head = text;
+            offset = 0d;
+            for (int i = text.Length - 1; i > 0; i--)
+            {
+                char sign = text[i];
+                if (sign != '+' && sign != '-') continue;
+                if (!TryParseSmilOffsetSeconds(text.Substring(i + 1).Trim(),
+                        sign == '-' ? -1d : 1d, out offset)) continue;
+                head = text.Substring(0, i).Trim();
+                return true;
+            }
+            return false;
+        }
+
+        private static bool TryParseSmilOffsetSeconds(string raw, double sign, out double seconds)
+        {
+            seconds = 0d;
+            if (!TryParseClockSeconds(raw, out double magnitude)) return false;
+            seconds = magnitude * sign;
+            return double.IsFinite(seconds);
         }
 
         private static bool TryReadSmilKeyTimes(
@@ -707,7 +1052,7 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private static bool IsDiscreteSmilKind(SmilValueKind kind) =>
-            kind is SmilValueKind.Discrete or SmilValueKind.PathData;
+            kind is SmilValueKind.Discrete or SmilValueKind.PathData or SmilValueKind.Reference;
 
         private static bool TryComputeSmilProgress(SmilTiming timing, out float progress)
         {
