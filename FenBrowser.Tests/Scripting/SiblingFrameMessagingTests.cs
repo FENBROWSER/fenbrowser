@@ -453,6 +453,13 @@ namespace FenBrowser.Tests.Scripting
                 frameUri).Parse();
 
             var frameElement = Assert.IsType<Element>(world.Document.GetElementById(id));
+            // As a real frame load does: the loaded document replaces the initial
+            // about:blank one the iframe was given when its window was created.
+            while (frameElement.FirstChild != null)
+            {
+                frameElement.RemoveChild(frameElement.FirstChild);
+            }
+
             frameElement.AppendChild(frameDocument);
             await world.Engine.SetSubdocumentDomAsync(frameDocument.DocumentElement, frameUri);
             return frameDocument;
