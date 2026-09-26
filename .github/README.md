@@ -158,7 +158,7 @@ When running, FenBrowser writes rich diagnostic artifacts to `logs/`:
 | Text Shaping | **HarfBuzz** (via SkiaSharp.HarfBuzz) | Complex script rendering for 100+ writing systems |
 | Text Layout | **RichTextKit** | Paragraph layout, word wrapping, hit testing |
 | Windowing | **Silk.NET** | Cross-platform window creation, input, OpenGL context |
-| SVG | **Svg.Skia** | SVG parsing and rendering |
+| SVG | **First-party engine** (SkiaSharp-backed, sandboxed) | SVG parsing and rendering |
 | Testing | **xUnit** | Unit and integration test framework |
 
 All runtime dependencies are **MIT or Apache 2.0 licensed**. Zero telemetry. Zero analytics.

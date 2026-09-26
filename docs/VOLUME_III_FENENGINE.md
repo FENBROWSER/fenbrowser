@@ -2904,7 +2904,7 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - Fixed whitespace-only text handling in inline flow by recognizing all-empty split tokens and preserving strut-driven line height.
 - Observers/ObserverCoordinator.cs
   - Hardened `ExecutePendingCallbacks` against leaked layout-phase state by temporarily entering `JSExecution` when invoked during measure/layout/paint, then restoring previous phase.
-- Adapters/SvgSkiaRenderer.cs
+- Adapters/ (compatibility SVG renderer, deleted in 2.177)
   - Fixed attribute deduplication to preserve self-closing SVG tags (`/>`) instead of rewriting them as open tags.
 - Tests hardened:
   - `EventInvariantTests` no longer performs concurrent debug-file appends.
@@ -2929,11 +2929,11 @@ eturnValue) after each callback in registry-based dispatch, matching top-level i
   - Full suite latest run: `971` passed / `3` failed (non-layout clusters: SVG visibility, font bad-url behavior, worker importScripts dependency).
 
 ### 2.29 Runtime Hardening (2026-03-04, Wave 25)
-- Adapters/SvgSkiaRenderer.cs
+- Adapters/ (compatibility SVG renderer, deleted in 2.177)
   - Added root `<svg>` viewport normalization so SVGs that provide `viewBox` but omit explicit `width/height` now derive intrinsic dimensions from `viewBox` before parse/render.
   - Preserved existing negative-origin cull translation and default fill injection path; this closes the remaining negative-`viewBox` visible-pixels regression.
 - Verification:
-  - Targeted: `SvgSkiaRenderer_NegativeViewBoxOrigin_RendersVisiblePixels` => pass.
+  - Targeted: negative-origin `viewBox` visible-pixels test (in the compatibility renderer's since-deleted suite) => pass.
 
 ### 2.30 Runtime Hardening (2026-03-04, Wave 26)
 - Tests/Rendering/FontTests.cs
@@ -10583,6 +10583,14 @@ Verification:
 - Dispatch failures are logged without discarding the successfully attached child
   document, matching the existing frame-load error isolation boundary.
 
+> **Reading note for 2.119-2.176:** these entries are the migration-era record
+> for the first-party SVG renderer. They describe a period when a third-party
+> compatibility backend, a hybrid routing backend, and per-document fallback
+> diagnostics still existed. All of that is removed; 2.177 is the current
+> architecture and supersedes any present-tense selection or fallback statement
+> in the entries below. Counts and pixel comparisons in those entries are
+> historical measurements, not current targets.
+
 ## 2.406 First-Party SVG Renderer Behind `ISvgRenderer` (2026-08-23)
 
 - `Svg/` contains a sandboxed XML-subset parser, strict SVG value and path
@@ -10592,12 +10600,13 @@ Verification:
   fetch path, builds with an explicit stack, and enforces source, element,
   nesting, attribute, path-segment, coordinate, elapsed-time, and raster budgets.
 - `Adapters/FenSvgRenderer.cs` implements the existing `ISvgRenderer` seam. It
-  preserves the legacy adapter's limit contract, never lets malformed content
-  escape as an exception, and returns an `SKPicture` whose native resources
-  remain valid after the renderer call returns.
-- `NetworkConfiguration.UseFirstPartySvgRenderer` selects the new backend for
-  `ImageLoader`; it remains opt-in while the legacy `Svg.Skia` adapter is the
-  default and utility-process decode paths await parity sign-off.
+  preserves the limit contract, never lets malformed content escape as an
+  exception, and returns an `SKPicture` whose native resources remain valid
+  after the renderer call returns.
+- `SvgRendererConfiguration` and `SvgRendererFactory` own renderer selection for
+  `ImageLoader` and utility-process decode. At this checkpoint the first-party
+  renderer was selectable alongside a compatibility backend; it is now the only
+  backend and the package, legacy, and hybrid paths are removed (2.177).
 
 Verification:
 
@@ -10640,9 +10649,9 @@ Modularity & clarity:
 
 Logging: gated summary line `[FenSvgRenderer] ok WxH <ms> warnings=<n>` via LogCategory.Rendering; zero logging remains inside element loops (warnings are deduped, capped at 32 per document).
 
-Verification: 117 focused tests (`FenBrowser.Tests/Svg`): parser security suite (17), value/path grammars, pixel semantics incl. new features, sandbox parity/adversarial corpus, security regressions for every fix above, and a NEW migration gate - SvgBackendGoldenCompareTests asserts >=0.85 RGB similarity vs the legacy SvgSkiaRenderer across a geometric corpus (6/6). Full solution builds clean.
+Verification: 117 focused tests (`FenBrowser.Tests/Svg`): parser security suite (17), value/path grammars, pixel semantics incl. new features, sandbox parity/adversarial corpus, security regressions for every fix above, and a NEW migration gate - SvgBackendGoldenCompareTests asserts >=0.85 RGB similarity vs the since-removed compatibility renderer across a geometric corpus (6/6). Full solution builds clean. That differential gate is removed with the package in 2.177.
 
-## 2.121 SVG Renderer: Supported-Subset Matrix and Backend Selection Notes (2026-08-23)
+## 2.121 SVG Renderer: Supported-Subset Matrix and Renderer Selection Notes (2026-08-23)
 
 ### Supported-subset matrix (FenSvgRenderer)
 
@@ -10652,35 +10661,73 @@ Verification: 117 focused tests (`FenBrowser.Tests/Svg`): parser security suite 
 | transform lists on shapes/groups/use/image | supported | spec order save->transform->clip->draw |
 | viewBox / preserveAspectRatio (all 9 alignments, meet/slice, root+nested) | supported | axis-aware grammar |
 | solid fills/strokes, dash arrays, caps/joins/miterlimit | supported | |
-| linear/radial gradients (both units, stop href chains) | supported | per-render memoized |
-| group/element opacity, fill-/stroke-opacity | supported | SaveLayer cap = 8 |
-| inline style="" (shadowing presentation attrs) | supported | fixed declaration set |
-| clipPath + clip-path (userSpaceOnUse; shape children + 1-level use) | partial | objectBoundingBox is exact for shapes/images; containers route to compatibility |
+| linear/radial gradients (both units, stop and coordinate href chains, gradientTransform) | supported | cached per (server, currentColor, font-size, viewport) |
+| group/element opacity, fill-/stroke-opacity (inherited) | supported | effect-layer cap = 8 by default |
+| inline style="" (shadowing presentation attrs) | supported | definitely-invalid declarations are dropped, later valid ones win |
+| stylesheet CSS (<style>) | supported | shared CSS engine: selectors, specificity, layers, calc(), zoom, variables |
+| clipPath + clip-path (userSpaceOnUse; shape children + 1-level use) | partial | objectBoundingBox is exact for shapes/images; container clips are unsupported |
 | <image> data: URI rasters | supported | base64 only; encoded/decoded budgets; preserveAspectRatio meet/slice/none |
 | use/symbol (+ nested svg viewports) | supported | cycle guards |
-| currentColor inheritance | supported | |
+| currentColor inheritance | supported | including inside gradients, patterns, and filters |
 | switch | partial | first drawable child; requiredFeatures treated as pass |
-| direct basic text | supported | bounded ASCII character data, entities, x/y/dx/dy, anchors, font properties, fill/stroke/opacity |
-| tspan / textPath / complex text shaping | compatibility-routed | non-ASCII and advanced text attributes require compatibility shaping |
-| stylesheet CSS (<style>) | compatibility-routed | no second CSS engine in the first-party subset |
-| patterns / masks / markers / filters | compatibility-routed when referenced | unused definitions do not force fallback |
-| animation (SMIL/animate*) | compatibility-routed | first-party-only mode remains static |
-| foreignObject | compatibility-routed | never interpreted by the first-party sandbox |
+| direct and shaped text (tspan, textPath, complex scripts) | supported | bounded budgets; vertical writing modes are unsupported |
+| patterns / masks / markers / filters | supported when referenced | unused definitions do not force a rejection |
+| bounded document-time animation (`animate`, `set`, `animateMotion`) | supported | deterministic snapshot at a caller-supplied document time; unsupported timing is rejected |
+| foreignObject | unsupported | never interpreted; the render is rejected |
 
-Migration-blocking gaps before any default flip: stylesheet CSS, complex text shaping,
-masks/markers/patterns parity on a real-site corpus.
+Remaining gaps are unsupported features, not alternate paths. There is one
+renderer, so a declared unsupported construct produces no pixels and the
+result fails the shared admission predicate (2.177).
 
-### Backend selection (PHASE 4 note)
+### Renderer selection (current)
 
-`SvgRendererConfiguration` owns backend choice inside FenEngine. The
-cross-platform `FEN_SVG_RENDERER` environment variable accepts `first-party` /
-`fen`, `hybrid` / `auto`, or `legacy` / `svg-skia`; invalid and absent values
-fail safe to legacy. Hybrid renders the declared static subset first-party and
-uses legacy pixels only when bounded capability detection reports visible loss.
-`SvgRendererFactory` reuses stateless thread-safe renderer instances, observes
-atomic runtime changes without a static-read-once cache, and is used by both
-`ImageLoader` and Host utility-process SVG/image decode paths. Rendering policy
-no longer leaks into `NetworkConfiguration`.
+`SvgRendererConfiguration` owns renderer choice inside FenEngine, and there is
+now only one choice. The cross-platform `FEN_SVG_RENDERER` environment variable
+is still read so existing deployments keep starting, but it no longer selects a
+backend: `first-party` and `fen` are the canonical spellings, `legacy` and
+`svg-skia` are accepted as deprecated aliases, and absent, blank, and
+unrecognized values all resolve to `SvgRendererBackend.FirstParty`. No other
+`SvgRendererBackend` member exists, and `SvgRendererFactory` has a single
+stateless thread-safe instance
+shared by `ImageLoader` and Host utility-process SVG/image decode paths.
+Rendering policy does not leak into `NetworkConfiguration`.
+`SvgRenderRequest` supplies `BaseUri` and an optional caller-owned
+`ISvgResourceResolver`; the renderer performs no ambient file or network I/O.
+`SvgRenderLimits.Normalize` is the single defaulting boundary and clamps
+caller-supplied values to non-bypassable process caps, so no caller can request
+unbounded native memory, recursion, or reference expansion.
+`AllowExternalReferences` defaults to `false`: a document that references an
+external resource is rejected before the resolver is consulted, and enabling it
+still requires an explicit base URI, a caller-supplied resolver, and a
+same-origin target. Resource rejections carry stable reason codes and are
+observable on the result even when the document still renders.
+
+Because there is no second renderer, an unsupported declared feature is
+terminal. `SvgRenderResult.IsAdmissible(result)` is the shared fail-closed
+admission predicate for every consumer: pixels are admissible only when the
+render succeeded and neither `RequiresFallback` nor `HadResourceRejection` is
+set and no resource-rejection reason codes are present.
+`SvgRenderResult.DescribeRejection(result)` returns a bounded, source-free
+reason (at most four codes and 200 characters) suitable for IPC metadata and
+logs.
+
+### Sandbox limits (verified contract)
+
+- `SvgRenderLimits.Default` admits 32 recursion depth, 16 filters, 250 ms elapsed,
+  50,000 elements, 8 MiB source, 8,192 px raster edges, 16,777,216 raster pixels,
+  16,777,216 decoded pixels per embedded image, 8 MiB decoded bytes,
+  32 MiB cumulative resource bytes, 64 resources, 8 simultaneous effect layers,
+  32 reference-chain depth, and no external references.
+- `SvgRenderLimits.Strict` tightens every one of those bounds for untrusted
+  content.
+- `Normalize` hard-clamps to 512 recursion depth, 1,000 filters, 30,000 ms,
+  250,000 elements, 32 MiB source, 32,768 px raster edges, 67,108,864 raster
+  and decoded-image pixels, 32 MiB decoded bytes, 64 MiB cumulative
+  resource bytes, 512 resources, 16 effect layers, and 64 reference depth.
+- Every admission rejection happens before the corresponding native allocation.
+  Result diagnostics are bounded (at most 32 entries, 256 characters each), and
+  reason codes are stripped of control characters, de-duplicated, and dropped
+  when longer than 64 characters or outside `[A-Za-z0-9_-]`.
 
 
 ## 2.122 SVG Renderer Correctness Fixes, Differential Gate v2, Bench Tooling (2026-08-23)
@@ -10702,23 +10749,30 @@ canvas dimensions, foreground pixel-count ratio >= 0.80, alpha-mask IoU >= 0.80 
 omissions collapse this), foreground bbox agreement <= 2px per edge, and union-mask RGB mean diff
 <= 16/255. Corpus expanded to 21 cases (arcs/curves, transforms incl. nested, PAR alignments,
 gradients, currentColor, inline-style override, opacities, clipPath, use+symbol, data-URI image,
-malformed-recoverable, unsupported-text). Svg.Skia is reference ONLY on its conformant subset:
-text and malformed-markup cases carry explicit spec-derived expectations instead.
+malformed-recoverable, unsupported-text). The compatibility renderer was the
+reference only on its conformant subset: text and malformed-markup cases carried
+explicit spec-derived expectations instead. This differential suite is removed
+with the package (2.177); the replacement evidence is declared-reference parity
+and the process-isolated corpus runs in VOLUME_VI 6.193-6.242.
 
-Supported-subset matrix and runtime backend selection are documented in 2.121.
+Supported-subset matrix and runtime renderer selection are documented in 2.121.
 
-Bench tooling: scripts/BenchSvg (Release console) emits JSON lines per case/backend and writes
-Results/svg/perf-report.md with --report; comparison summary in Results/svg/comparison-report.md.
-Measured (Release, best-of-7 warm): fen allocations 7.7KB-114KB vs legacy 175KB-936KB across the
-seven-case corpus (5x-22x less); warm latency 0ms vs 0-2ms; identical sampled-RGB checksums on
-tiny-icon / medium-logo / embedded-image; fen succeeds on malformed input where legacy fails.
-hsl()-based bench fills diverge by design (legacy color resolution); not part of any gate.
+Bench tooling: scripts/BenchSvg (Release console) emits JSON lines per case and writes
+Results/svg/perf-report.md with --report; the per-case summary lives in Results/svg/comparison-report.md.
+At this checkpoint it measured the first-party renderer against the compatibility
+backend: fen allocations 7.7KB-114KB vs legacy 175KB-936KB across the seven-case corpus
+(5x-22x less); warm latency 0ms vs 0-2ms; identical sampled-RGB checksums on
+tiny-icon / medium-logo / embedded-image; fen succeeded on malformed input where legacy
+failed. hsl()-based bench fills diverged by design (legacy color resolution). The
+comparison columns are gone now that there is a single renderer.
 
-Focused SVG test count (derived from the Release filter
-`FullyQualifiedName~FenBrowser.Tests.Svg`): 241 tests, all passing at the 2.132 checkpoint. Treat
-current test discovery as source of truth rather than older counts retained in historical entries.
+Focused SVG test count is derived, never hard-coded as a contract: run the Release
+filter `FullyQualifiedName~FenBrowser.Tests.Svg` and report the discovered count from
+that run. The `Architecture/SvgSandboxingTests` sandbox-compliance suite is
+additionally compiled and discovered outside that namespace. Treat current test
+discovery as source of truth rather than older counts retained in historical entries.
 
-### Default-switch gate (updated)
+### Release-readiness gate (updated)
 1. All focused SVG tests pass (discovery-derived count reported each run).
 2. Transform + preserveAspectRatio regressions fixed and pinned (2.122).
 3. Complete local WPT differential corpus passes - NOT YET DONE. The isolated 1,197-file baseline
@@ -10732,27 +10786,32 @@ current test discovery as source of truth rather than older counts retained in h
 7. Benchmark acceptable (see Results/svg/perf-report.md) - DONE, opt-in basis only.
 8. Unsupported-feature matrix reviewed (2.121-2.132). Shared CSS, shaped horizontal text,
    common effects/markers, and bounded nested SVG images are implemented; advanced text,
-   branching filters, patterns, and the full fallback/failure inventory remain migration-blocking.
-9. Utility/out-of-process decode paths use the shared backend factory and carry the complete
+   branching filters, patterns, and the full gap inventory remain open.
+9. Utility/out-of-process decode paths use the shared renderer factory and carry the complete
    serialized safety-limit contract - DONE in 2.123.
-10. Rollback available (flag flips back; package retained).
+10. Rollback: none through the renderer seam. `FEN_SVG_RENDERER` accepts deprecated
+    values but resolves them to the first-party renderer (2.177).
 
-STATUS: remains OPT-IN. Do not change the default until item 4 closes and text/CSS support lands
-or is scoped out with evidence.
+STATUS: the first-party renderer is the only backend and is no longer behind a
+default-selection gate. Unsupported constructs are now visible as absent pixels
+rather than routed to a second renderer; remaining conformance gaps stay tracked
+in 2.121-2.176.
 
 ## 2.123 SVG Production Hardening: Ownership, Admission, Configuration, Utility Parity (2026-08-23)
 
 - `SvgRenderResult` now owns native outputs explicitly, supports idempotent disposal, and exposes
   detach operations for cache/IPC ownership transfer. `ImageLoader` disposes source rasters after
-  scaling instead of leaking them, legacy invalid-picture fallback is no longer exported, Host
+  scaling instead of leaking them, the invalid-picture fallback is no longer exported, Host
   utility encoding disposes results, and the benchmark disposes every measured result.
 - Embedded data-URI images use `SKCodec` header inspection before pixel allocation. Encoded-byte,
   decoded-dimension, and decoded-pixel budgets are enforced before `TryAllocPixels`; malformed,
   incomplete, and failed native decodes fail closed with bounded diagnostics.
-- `SvgRenderLimits.Normalize` is the single defaulting boundary for both backends and applies hard
+- `SvgRenderLimits.Normalize` is the single defaulting boundary and applies hard
   process caps even when a caller supplies permissive values. Embedded bytes/pixels, active layers,
-  and reference-chain depth are now explicit limits. Host IPC carries the complete limit set.
-- Backend choice moved from network configuration to the thread-safe FenEngine
+  and reference-chain depth are now explicit limits. Target-process SVG decode IPC carries the
+  complete safety-limit set, but not `BaseUri`, resolver snapshots, or ambient file/network authority;
+  external resources therefore fail closed on that path.
+- Renderer choice moved from network configuration to the thread-safe FenEngine
   `SvgRendererConfiguration` / `SvgRendererFactory` seam. `FEN_SVG_RENDERER` works identically on
   Windows, Linux, and macOS, and utility processes inherit the same selection.
 - Obsolete Skia calls were replaced by `SKPathBuilder` and sampling-aware bitmap drawing; focused
@@ -10770,7 +10829,11 @@ Verification:
 
 ## 2.124 SVG Compatibility Routing and Declared-Subset Correctness (2026-08-23)
 
-- Added `HybridSvgRenderer`, selected with `FEN_SVG_RENDERER=hybrid` (alias `auto`). It attempts
+Historical: this section records the compatibility-routing work that has since
+been removed. The hybrid routing renderer and the compatibility renderer it
+wrapped are deleted in 2.177; nothing below describes current behavior.
+
+- Added the hybrid routing renderer, selected with `FEN_SVG_RENDERER=hybrid` (alias `auto`). It attempts
   the sandboxed first-party renderer first and falls back only for explicitly detected visible
   compatibility gaps. Parse/admission/security failures never enter the legacy parser. Results
   identify the pixel-producing backend, whether fallback was required/used, and carry deduplicated,
@@ -10791,10 +10854,11 @@ Verification:
   quoted, unquoted, entity-expanded, and unterminated values. Caller-provided limits are hard-clamped,
   and render-result disposal is idempotent and ownership-tested.
 
-Production policy remains explicit: `first-party` is the maximum-isolation static subset, `hybrid`
-is the compatibility migration mode, and `legacy` remains the default until the captured real-site
-gate closes. This avoids presenting partial SVG support as full conformance while allowing supported
-content to leave the external renderer today.
+Production policy at this checkpoint: the bounded hybrid backend was the default
+maximum-isolation routing path, with first-party rendering first and legacy
+compatibility fallback limited to declared gaps. This whole policy is retired in
+2.177 — the first-party renderer is the only backend and a declared gap now
+means no pixels.
 
 Verification:
 
@@ -10808,7 +10872,11 @@ Verification:
 
 ## 2.125 SVG Linux Native-Dependency Alignment (2026-08-23)
 
-- `Svg.Skia` requested `HarfBuzzSharp.NativeAssets.Linux` 8.3.1.3 transitively while FenEngine and
+Historical: the package named here no longer exists (2.177). The direct Linux
+HarfBuzz native pin introduced below is retained and is now the only HarfBuzz
+native resolution in the tree.
+
+- The removed SVG compatibility package requested `HarfBuzzSharp.NativeAssets.Linux` 8.3.1.3 transitively while FenEngine and
   `SkiaSharp.HarfBuzz` use managed HarfBuzzSharp 14.2.0. The Linux publish therefore carried an
   avoidable managed/native ABI mismatch despite compiling successfully.
 - FenEngine now directly pins the Linux HarfBuzz native assets to 14.2.0. The committed lock file
@@ -10910,7 +10978,7 @@ Verification:
   render deadline. Rules are indexed by the rightmost id/class/type selector before element matching, avoiding
   an element-by-all-rules hot path. Self-closing style elements no longer consume following SVG markup.
 - External CSS URLs/imports and external image/use references are observable resource rejections. Hybrid
-  routing never hands those documents to Svg.Skia, closing the previous assumption that legacy fallback
+  routing never hands those documents to the compatibility backend, closing the previous assumption that legacy fallback
   would remain network-isolated by configuration.
 
 Verification:
@@ -10986,7 +11054,8 @@ Verification:
   of `min(MaxReferenceDepth, 16)`. Each document still receives the normalized parser element/depth/filter limits;
   cumulative admitted source bytes prevent sibling or recursive documents from multiplying those limits without bound.
 - Nested fallback is fail-closed: an unsupported feature, parse/render failure, or further resource rejection marks
-  the parent image as a resource rejection. Hybrid routing cannot pass that nested document to Svg.Skia. Nested CSS,
+  the parent image as a resource rejection. Hybrid routing cannot pass that nested document to the
+  compatibility backend. Nested CSS,
   ids, reference stacks, and renderer caches are document-local, preventing parent/child style or id leakage.
 - Nested pictures and canvas state are deterministically disposed. Rendering does not allocate an intermediate nested
   raster, and the final image still clips and scales under the already admitted root raster dimensions.
@@ -11002,7 +11071,7 @@ Verification:
   remains a retained pixel differential; an XHTML-link test now reaches ordinary compatibility fallback after its
   embedded SVG is accepted. Neither transition is presented as complete parity.
 
-## 2.133 Process-Isolated SVG Default-Switch Gate (2026-08-24)
+## 2.133 Process-Isolated SVG Corpus Release Gate (2026-08-24)
 
 - Corpus documents now execute in fresh cross-platform worker processes. The parent uses argument-list process
   launching (no shell), a configurable 100-60,000 ms wall timeout, process-tree termination, bounded result files
@@ -11011,7 +11080,7 @@ Verification:
   first-party failure, hybrid failure, resource rejection, legacy fallback, and pixel differential classifications.
 - Strict `--gate` requires an untruncated non-empty selection with zero legacy fallback, resource rejection,
   first-party/hybrid/worker failure, timeout, read/oversize skip, or comparable pixel mismatch. The previous false-
-  positive path that allowed a strict corpus to pass while routing documents to Svg.Skia is closed.
+  positive path that allowed a strict corpus to pass while routing documents to the compatibility backend is closed.
 - `--corpus-kind captured-site` additionally requires an exact JSON manifest. Relative paths are traversal-checked,
   SHA-256 is verified, and duplicates/missing/extra SVGs fail validation. A synthetic signed smoke corpus proves the
   mechanism; no genuine captured-site SVG inventory exists in workspace `logs/` or `Results/`, so that gate is not met.
@@ -11022,7 +11091,8 @@ Complete local WPT evidence:
 - 103 first-party, 899 legacy fallback, 143 resource rejection, 31 first-party failure, 19 hybrid failure,
   2 per-file timeouts, 0 worker failures, and 49/58 comparable pixel passes.
 - The bounded timeouts are `import/paths-data-18-f-manual.svg` and `path/bearing/zero.svg`. This baseline proves
-  isolation works and also proves the first-party renderer is not ready to become default.
+  isolation works and shows why the first-party renderer was not accepted as the
+  sole production renderer at the time; a bounded selection was used instead.
 
 ## 2.134 SVG Blend, Metadata, And User-Space Mask Completion (2026-08-24)
 
@@ -11049,13 +11119,14 @@ Verification:
   no per-site or global limit truncated the capture.
 - Differential comparison uses the union transparent canvas when backends choose different intrinsic raster sizes,
   so content is measured instead of skipped. A legacy-reference exception is accepted only when source declares a
-  chromatic gradient, first-party output contains chroma, and Svg.Skia loses all chroma; the report keeps this visible.
+  chromatic gradient, first-party output contains chroma, and the compatibility backend loses all
+  chroma; the report keeps this visible.
 
 Verification:
 
 - Genuine captured-site gate: 151/151 first-party, zero fallback/rejection/failure/timeout/skip/truncation; 150 direct
-  Svg.Skia pixel-parity passes plus one reported `legacy-chromatic-gradient-loss` reference defect.
-- The captured-site gate is closed. The complete local WPT baseline above remains open, so legacy stays the default.
+  compatibility-backend pixel-parity passes plus one reported `legacy-chromatic-gradient-loss` reference defect.
+- The captured-site gate is closed. The complete local WPT baseline above remains open; this evidence did not by itself change renderer selection.
 
 ## 2.136 Structured SVG Routing Diagnostics (2026-08-24)
 
@@ -11349,8 +11420,8 @@ Verification:
   render first-party and match their declared references with zero differing
   pixels. `paint-order-001.svg` remains an explicit compatibility fallback only
   for marker `overflow:visible`, which is a separate clipping-semantics unit.
-- `Svg.Skia` remains the default while the wider dynamic, resource, cross-platform,
-  and soak gates remain open.
+- The first-party renderer is now the only backend (2.177); wider dynamic, resource, cross-platform,
+  and soak gaps remain tracked.
 
 ## 2.148 SVG Marker Viewport Overflow (2026-09-04)
 
@@ -11366,7 +11437,7 @@ Verification:
   reftests are 3/3 first-party with zero fallback, rejection, renderer/worker
   failure, timeout, maximum-channel difference, or differing pixels.
 - This closes marker `overflow:visible` for the isolated SVG image renderer; it
-  does not claim general nested-SVG overflow layout or close the default switch.
+  does not claim general nested-SVG overflow layout or close the remaining gaps.
 
 ## 2.149 Bounded Non-Scaling SVG Strokes (2026-09-04)
 
@@ -11389,7 +11460,7 @@ Verification:
   reftests render first-party and match their declared references exactly with
   alpha intersection-over-union 1 and zero pixel/channel difference.
 - Dynamic vector-effect behavior, text, paint-server strokes, and browser-level
-  HTML reftests remain open. First-party SVG remains non-default.
+  HTML reftests remain open. The first-party renderer is now the only backend (2.177).
 
 ## 2.150 Non-Rendering SVG Test Metadata (2026-09-04)
 
@@ -11406,14 +11477,14 @@ Verification:
   previously false metadata fallbacks; remaining fallbacks and rejections retain
   their independent feature/resource reasons.
 - Windows is the current production-parity target. Cross-platform validation is
-  deferred, but first-party SVG remains non-default until the remaining Windows
-  feature, pixel-reference, browser-integration, and stability gates close.
+  deferred; the first-party renderer is now the only backend (2.177) while the remaining Windows
+  feature, pixel-reference, browser-integration, and stability gates stay open.
 
 ## 2.151 Inert Script Content In SVG Images (2026-09-04)
 
 - The isolated `ISvgRenderer` image pipeline treats `script`, `h:script`, and
   `html:script` subtrees as inert, non-rendering content. Their bodies are skipped
-  raw by the bounded SVG parser and no longer request Svg.Skia compatibility.
+  raw by the bounded SVG parser and no longer request compatibility routing.
 - This does not disable SVG document scripting. Top-level `image/svg+xml`
   navigation continues through the namespace-aware XML DOM and the browser's
   bounded script pipeline; the image renderer still has no script runtime, DOM,
@@ -11421,8 +11492,8 @@ Verification:
 - The exact local WPT `geometry/parsing/cx-valid.svg` is first-party with direct
   legacy pixel parity. Across all 47 local `svg/geometry/parsing` files, 45 render
   first-party with 45/45 legacy pixel parity; two independent CSS fallbacks remain.
-- First-party SVG remains non-default while actual dynamic SVG document WPT and
-  the remaining static Windows feature/reference gates are incomplete.
+- The first-party renderer is now the only backend (2.177); dynamic SVG document WPT and the
+  remaining static Windows feature/reference gates stay open.
 
 ## 2.152 Bounded Linear-Path Markers (2026-09-04)
 
@@ -11464,7 +11535,7 @@ Verification:
   painting slice improves from 131 to 134 first-party documents, 15 to 12 legacy
   fallbacks, and 19 to 22 reference passes without worker failure or timeout.
 - `marker-006.svg` remains the sole targeted marker mismatch at 103 differing edge
-  pixels; it is not waived. First-party SVG remains non-default.
+  pixels; it is not waived. The first-party renderer is now the only backend (2.177).
 
 ## 2.154 Zero-Area SVG ViewBox Rendering (2026-09-04)
 
@@ -11476,7 +11547,7 @@ Verification:
   200-by-200 document is not collapsed to a one-pixel raster.
 - Local Windows WPT artifacts for zero-width, zero-height, zero-area, symbol, and
   marker viewBoxes are byte-identical to their checked-in expected images. The
-  Svg.Skia compatibility renderer paints content in these cases, so legacy pixel
+  The compatibility renderer paints content in these cases, so legacy pixel
   parity is deliberately not used as the correctness oracle.
 
 ## 2.155 Used SVG Viewport Sizing And Overflow (2026-09-04)
@@ -11489,8 +11560,8 @@ Verification:
   inline style, or the supported CSS cascade. `hidden` retains viewport clipping;
   unsupported overflow modes still request compatibility fallback.
 - The four local Windows WPT `use-*-dimensions-override` reftests route entirely
-  first-party and match their declared references exactly. First-party SVG remains
-  opt-in while broader conformance gaps are open.
+  first-party and match their declared references exactly. The first-party renderer
+  is now the only backend (2.177); broader conformance gaps stay open.
 
 ## 2.156 Embedded SVG Aspect-Ratio Propagation (2026-09-04)
 
@@ -11502,7 +11573,7 @@ Verification:
   edge when an embedded SVG explicitly requests `xMinYMin`. No extra raster,
   allocation, or resource-fetch path is introduced.
 - The local Windows `image-fractional-width-vertical-fidelity.svg` WPT now matches
-  its declared reference exactly. First-party SVG remains non-default.
+  its declared reference exactly. The first-party renderer is now the only backend (2.177).
 
 ## 2.157 Malformed Path Parser Progress (2026-09-04)
 
@@ -11515,7 +11586,7 @@ Verification:
   marker tangent extraction.
 - The sole complete-corpus Windows worker timeout,
   `import/paths-data-18-f-manual.svg`, now completes first-party in 266 ms without
-  fallback or failure. First-party SVG remains opt-in.
+  fallback or failure. The first-party renderer is now the only backend (2.177).
 
 ## 2.158 Paint-Server currentColor Fallbacks (2026-09-04)
 
@@ -11527,7 +11598,7 @@ Verification:
   constant-color shaders. This keeps antialiased geometry byte-identical to the
   equivalent direct-color rendering while retaining fill/stroke opacity.
 - Unsupported paint-server element types remain explicit compatibility
-  fallbacks. The first-party SVG backend remains non-default.
+  fallbacks. The first-party renderer is now the only backend (2.177).
 
 ## 2.159 SVG Text XML-Whitespace Normalization (2026-09-04)
 
@@ -11536,8 +11607,8 @@ Verification:
   Unicode spacing characters remain intact for font shaping.
 - `xml:space="preserve"` continues to preserve ordinary spaces while normalizing
   tab and line endings to spaces. Text length and glyph budgets are unchanged.
-- The first-party SVG backend remains non-default while broader text conformance
-  gaps are open.
+- The first-party renderer is now the only backend (2.177); broader text conformance gaps stay
+  open.
 
 ## 2.160 SVG Marker And Use Context Paint (2026-09-04)
 
@@ -11549,8 +11620,8 @@ Verification:
   propagation. It resolves against the computed color of the element being
   painted, rather than being frozen on the referencing ancestor.
 - Gradient and pattern context paint still request compatibility fallback because
-  their coordinate-space semantics are not implemented. The first-party SVG
-  backend remains non-default.
+  their coordinate-space semantics are not implemented. The first-party renderer
+  is now the only backend (2.177).
 
 ## 2.161 SVG Local-Reference Whitespace Processing (2026-09-04)
 
@@ -11562,7 +11633,7 @@ Verification:
   post-quote trimming, preventing valid local paint references from being
   rejected as external resources.
 - Resource policy is unchanged: non-fragment references on local-only surfaces
-  remain rejected. The first-party SVG backend remains non-default.
+  remain rejected. The first-party renderer is now the only backend (2.177).
 
 ## 2.162 SVG requiredExtensions Conditional Rendering (2026-09-04)
 
@@ -11574,14 +11645,14 @@ Verification:
   choosing the first supported rendering child. Preflight remains conservative
   for unsupported content inside conditional branches.
 - `requiredFeatures` and locale-dependent `systemLanguage` negotiation remain
-  separate open work. The first-party SVG backend remains non-default.
+  separate open work. The first-party renderer is now the only backend (2.177).
 
 ## 2.163 First-Party SVG Pattern Paint Servers (2026-09-05)
 
 - The first-party paint pipeline now renders local `pattern` servers through
   repeat-tiled `SKPicture` shaders. Pattern content remains vector draw work;
   the renderer does not pre-rasterize a tile or delegate SVG semantics to
-  Svg.Skia.
+  another backend.
 - Static pattern geometry supports `patternUnits` and `patternContentUnits` in
   user-space and object-bounding-box coordinate systems, percentage tile
   lengths, `patternTransform`, `viewBox`, `preserveAspectRatio`, patterned fill
@@ -11596,16 +11667,16 @@ Verification:
   non-invertible transforms, and unusable references select the optional
   `url(...)` fallback paint. A transformed tile that exceeds the configured
   raster dimensions or pixel budget remains explicit compatibility fallback.
-- Scripted pattern mutation remains a browser-runtime concern, and the
-  first-party SVG backend remains non-default while the other Windows
-  conformance gaps are open.
+- Scripted pattern mutation remains a browser-runtime concern; the first-party
+  renderer is now the only backend (2.177) while other Windows conformance gaps
+  stay open.
 
 ## 2.164 First-Party SVG Filter Graphs (2026-09-05)
 
 - The first-party effects pipeline now builds bounded filter graphs instead of
   accepting only a linear primitive chain. Named `result` outputs can feed
   later `in` and `in2` inputs, and `SourceGraphic` and `SourceAlpha` are
-  resolved without delegating SVG semantics to Svg.Skia.
+  resolved without delegating SVG semantics to another backend.
 - `feFlood`, `feBlend`, Porter-Duff `feComposite`, and ordered `feMerge` nodes
   join the existing blur, offset, drop-shadow, color-matrix, and morphology
   primitives. Color matrices additionally implement `saturate` and degree-based
@@ -11617,8 +11688,7 @@ Verification:
 - Filter graph state and native image-filter ownership remain local to one
   render. Primitive and layer budgets still bound native work. Background,
   fill/stroke-paint inputs and the remaining unsupported primitives continue to
-  request compatibility fallback, so the first-party SVG backend remains
-  non-default.
+  request compatibility fallback; the first-party renderer is now the only backend (2.177).
 
 ## 2.165 SVG Component-Transfer Filters (2026-09-05)
 
@@ -11730,7 +11800,7 @@ Verification:
   range. Output is constrained to the resolved primitive region and native
   filters remain owned by the current graph.
 - Non-unit `kernelUnitLength`, point and spot lights, multiple light children,
-  and invalid or over-bound parameters remain explicit compatibility fallbacks.
+  and invalid or over-bound parameters are declared unsupported (2.177).
 
 ## 2.174 Deterministic SMIL Set Snapshots (2026-09-07)
 
@@ -11743,9 +11813,9 @@ Verification:
   presentation attributes. Animated values override both XML presentation
   attributes and the static CSS cascade for that render only.
 - Event/list timing, min/max/repeat-duration constraints, unsafe target
-  attributes, and unsupported values remain explicit `smil-animation`
-  fallbacks. The legacy renderer rejects nonzero document time rather than
-  silently returning a time-zero image.
+  attributes, and unsupported values are declared `smil-animation` unsupported
+  and produce no pixels. The removed compatibility renderer used to reject
+  nonzero document time rather than silently returning a time-zero image.
 
 ## 2.175 Deterministic SMIL Value Interpolation (2026-09-07)
 
@@ -11768,8 +11838,71 @@ Verification:
   retain the final value. Local `href` and `xlink:href` fragment targets resolve
   through the parsed document ID map; external targets remain rejected.
 - Value lists are capped at 1,024 entries. Multi-value paced calculation,
-  spline calculation, additive/accumulative composition, and event timing remain
-  explicit compatibility fallbacks.
+  spline calculation, additive/accumulative composition, and event timing are
+  declared unsupported and produce no pixels.
+
+## 2.177 First-Party SVG Is The Only Backend (2026-09-26)
+
+The first-party renderer is now the only SVG backend in the product. The
+third-party SVG package, the compatibility renderer, the hybrid routing
+renderer, and per-document legacy fallback are all removed. This retires the
+default-selection gate that ran from 2.119 through 2.176.
+
+Removed:
+
+- `FenBrowser.FenEngine/Adapters/` no longer contains the compatibility or
+  hybrid-routing SVG renderer files; both are deleted.
+- `FenBrowser.FenEngine/FenBrowser.FenEngine.csproj` no longer carries an SVG
+  `PackageReference`; no lock file resolves the removed package or its
+  `ShimSkiaSharp` shim, so the legacy managed/native SkiaSharp and
+  HarfBuzzSharp request it dragged in is gone from every output.
+- `SvgRendererBackend` reduces to a single `FirstParty` member. The other two
+  members no longer exist, and `SvgRendererFactory.GetRenderer(...)` throws for
+  any other value.
+- `SvgRenderResult` no longer carries a legacy-fallback flag.
+  `FallbackReasonCodes` remains as the declared-unsupported-feature signal and
+  is now terminal.
+
+Environment contract: `FEN_SVG_RENDERER` is still read so existing deployments
+keep starting, but it no longer selects anything. `first-party` and `fen` are
+canonical, `legacy` and `svg-skia` are accepted as deprecated aliases, and
+absent, blank, and unrecognized values all resolve to first-party. Treat the
+variable as a compatibility surface, not a knob; remove it from operator
+runbooks once deployments have migrated.
+
+Fail-closed admission: because there is no second renderer, an unsupported
+declared feature can never be completed later, so its pixels are never
+admissible.
+
+- `SvgRenderResult.IsAdmissible(result)` is the single shared predicate for
+  every consumer of a render result: admissible only when the render succeeded
+  and neither `RequiresFallback` nor `HadResourceRejection` is set and no
+  resource-rejection reason codes are present.
+- `SvgRenderResult.DescribeRejection(result)` returns a bounded, source-free
+  explanation (at most `MaxRejectionDiagnosticCodes` codes and
+  `MaxRejectionDiagnosticChars` characters, `+N more` overflow suffix), safe to
+  place in IPC metadata and logs.
+- Consumers that used to pick a second renderer now drop inadmissible results
+  instead of substituting pixels. `ImageLoader`, target-process decode entry
+  points, and tooling all share the same predicate, so a resource-policy
+  decision made by the parser cannot be re-interpreted downstream.
+
+Behavioral consequence, stated plainly: a document that hits a declared
+unsupported feature, a rejected resource, or a sandbox admission failure now
+renders nothing where it previously could render compatibility pixels. That is
+the intended trade — the pixels are now authoritative when they exist — and it
+is why the remaining gaps in 2.121-2.176 are tracked as open conformance work
+rather than as a routing decision.
+
+Verification: report the discovery-derived count from a Release run of
+`dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter
+"FullyQualifiedName~FenBrowser.Tests.Svg"` plus the
+`Architecture/SvgSandboxingTests` slice. Do not hard-code a count here; the
+focused suite shrinks when the removed differential tests go away. The new
+slices that pin this change are `Svg/SvgFirstPartyBackendContractTests`,
+`Svg/TargetProcessSvgDecodeTests`, and `Architecture/SvgSandboxingTests`. The
+cross-platform corpus and reference evidence is in VOLUME_VI 6.193-6.243, and
+`scripts/BenchSvg` reports the remaining cases.
 
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 

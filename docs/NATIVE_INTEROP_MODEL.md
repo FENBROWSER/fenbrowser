@@ -8,7 +8,7 @@ Status: RESEARCHED. Snapshot date: 2026-07-14.
 | --- | --- | --- | --- |
 | 2D graphics/raster | SkiaSharp 4.148.0 | Core/FenEngine/Host adapters | INTEGRATED |
 | Text shaping | HarfBuzzSharp and SkiaSharp.HarfBuzz | FenEngine typography | INTEGRATED |
-| SVG | Svg.Skia | FenEngine resource/render path | INTEGRATED |
+| SVG | First-party `FenSvgRenderer` on SkiaSharp (no SVG package) | FenEngine resource/render path | INTEGRATED |
 | Window/input/OpenGL ES | Silk.NET Windowing/Input/OpenGLES and ANGLE native assets | Host | INTEGRATED |
 | Windows window/clipboard APIs | `user32.dll` and `kernel32.dll` P/Invoke | Host | IMPLEMENTED |
 | Rich text | Topten.RichTextKit | Host/adapter surface | IMPLEMENTED |
@@ -25,6 +25,7 @@ No new native language component is proposed by this audit.
 6. Pinned managed memory is avoided. Any required pin has a bounded size and duration and cannot cross an asynchronous/process boundary.
 7. Native exceptions/status failures are converted at the adapter boundary and traced without leaking secrets.
 8. Drawing and font libraries supply measurements/raster services; they do not define CSS layout semantics.
+9. There is exactly one native-backed SVG implementation. A second SVG parser or renderer is not an admissible native surface for this product.
 
 ## Thread and process rules
 

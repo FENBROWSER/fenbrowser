@@ -54,17 +54,17 @@ Key facts from Volume I not visible in code:
 
 From `docs/ENGINEERING_CONSTITUTION.md` — violating these is a hard block:
 
-1. **Layout authority lives only in FenEngine.** HarfBuzz shapes glyphs; Skia draws pixels. Neither decides line breaks, line height, or box sizing. Use `ITextMeasurer` / `ISvgRenderer` adapters — never call `TextBlock.MaxWidth` or raw `Svg.Skia` directly.
+1. **Layout authority lives only in FenEngine.** HarfBuzz shapes glyphs; Skia draws pixels. Neither decides line breaks, line height, or box sizing. Use `ITextMeasurer` / `ISvgRenderer` adapters — never call `TextBlock.MaxWidth` or reach past the `ISvgRenderer` seam into SVG internals.
 2. **Never use raw `SKFontMetrics` in layout code.** Normalize to `NormalizedFontMetrics` (Ascent, Descent, LineHeight, XHeight). FenEngine calculates line-height; Skia only informs.
 3. **SVG must be sandboxed**: max recursion depth 32, max filters 10, max render time 100 ms, external references disabled. SVG failures degrade to a placeholder — never crash.
 4. **No `SKCanvas` outside `IRenderBackend`.** Rendering backend must stay abstract (testable via `HeadlessRenderBackend`, swappable without touching layout).
-5. **Wrap risky dependencies** (`RichTextKit`, `Svg.Skia`) behind interfaces. All new hot-path code must survive the dependency dying.
+5. **Wrap risky dependencies** (`RichTextKit`) behind interfaces. All new hot-path code must survive the dependency dying. SVG is exempt: it is first-party (`FenEngine/Svg/` + `Adapters/FenSvgRenderer`), so there is no third-party SVG backend to replace and none may be reintroduced.
 
 **Banned patterns** (CI will fail):
 - `TextBlock.MaxWidth` — RichTextKit deciding layout
 - Raw `SKFontMetrics` in layout code
 - `SKCanvas` outside `IRenderBackend`
-- Direct `Svg.Skia` calls outside `ISvgRenderer` adapter
+- A second `ISvgRenderer` implementation, or any `SvgRendererBackend` value other than `FirstParty`
 - Direct `RichTextKit` calls outside `ITextMeasurer` adapter
 
 ## Definition of Done

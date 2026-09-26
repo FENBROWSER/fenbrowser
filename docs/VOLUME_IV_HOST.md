@@ -1425,7 +1425,7 @@ Verification:
 - Renderer child mode exits immediately when its authenticated pipe name or token
   is absent; it no longer remains alive in a compatibility idle loop.
 - Updated Host drawing calls to the current explicit Skia sampling API.
-- Prevented `Svg.Skia`'s legacy SkiaSharp 2.88 Linux runtime asset from flowing
+- Prevented a transitive SkiaSharp 2.88 Linux runtime asset from flowing
   into Host and test outputs. Linux now loads the native 4.148 asset matching the
   managed SkiaSharp assembly instead of failing during static initialization.
 
@@ -1611,3 +1611,36 @@ Verification:
 
 - In-process Host WebDriver adapters expose a bounded readiness wait tied to the committed URL and the matching script-loading snapshot. Brokered mode remains commit-based until renderer-command IPC exposes child script snapshots; it never polls the host's intentionally stale local document.
 - This keeps parser-blocking SVG/HTML scripts out of the ordinary interactive navigation critical path while allowing automation `normal`/`eager` navigation to observe the matching document rather than a prior `about:blank` runtime.
+
+### Target-Process SVG Decode Fails Closed On The First-Party Renderer (2026-09-26)
+
+- The first-party SVG renderer is the only backend, so the target-process SVG
+  decode handler no longer accepts pixels from an alternate renderer. It calls
+  `SvgRenderResult.IsAdmissible(result)` and additionally requires
+  `result.Backend == SvgRendererBackend.FirstParty`; anything else is rejected
+  with a bounded reason from `SvgRenderResult.DescribeRejection(result)`. A
+  rejected decode returns `Success = false`, no bitmap bytes, and a bounded
+  `ErrorMessage` — it never returns a partially rendered or
+  resource-stripped raster.
+- `RejectSvgDecodeResult(result, entryPoint)` is the single admission gate for
+  that path and logs the rejection reason through `EngineLog` with
+  `LogSubsystem.ProcessIsolation`.
+- Target IPC response metadata is now bounded on assignment:
+  `TargetIpc.BoundMetadata(...)` truncates `ErrorMessage` to
+  `MaxResponseMetadataChars` and `Format` to `MaxFormatMetadataChars` without
+  splitting a surrogate pair, and child error payloads are bounded to
+  `MaxLoggedErrorChars` before being logged.
+- `TargetIpc.TrySerializeEnvelope(...)` rejects an outbound envelope before it
+  reaches the pipe when type, request id, capability token, or payload exceeds
+  its bound, or when the serialized envelope exceeds `MaxEnvelopeChars`, and
+  records a structured rejection reason instead of writing the line.
+- `DecodeImage(...)` and the SVG decode handler now dispose the decoded
+  `SKBitmap` deterministically instead of leaving it to finalization.
+- `HandleSvgDecodeRequest` and `DecodeImage` are `internal` so the admission
+  gate is covered directly by the focused test slice.
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Release --nologo --verbosity minimal`:
+  zero errors.
+- Focused slice: `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "FullyQualifiedName~Svg|FullyQualifiedName~TargetProcessSvgDecode"`. Report the discovered count from that run rather than a hard-coded number.
