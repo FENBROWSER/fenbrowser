@@ -355,6 +355,7 @@ public sealed class BytecodeCompiler
         _positionColumns.Clear();
         _currentPosition = default;
         _constants.Clear();
+        _completionResetConstIndex = -1;
         _variables.Clear();
         _varDeclarationNames.Clear();
         _annexBFunctionNames.Clear();
