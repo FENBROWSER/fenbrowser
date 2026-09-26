@@ -61,12 +61,12 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void MarkerShorthand_PaintsStartMiddleAndEndForPolyline()
+        public void MarkerShorthand_CssDeclarationPaintsStartMiddleAndEndForPolyline()
         {
             const string svg =
                 "<svg width='100' height='60'><defs><marker id='dot' markerWidth='6' markerHeight='6' " +
                 "refX='3' refY='3' markerUnits='userSpaceOnUse'><circle cx='3' cy='3' r='3' fill='blue'/></marker></defs>" +
-                "<polyline points='10 40 50 10 90 40' fill='none' stroke='black' marker='url(#dot)'/></svg>";
+                "<polyline points='10 40 50 10 90 40' fill='none' stroke='black' style='marker:url(#dot)'/></svg>";
 
             using var result = new FenSvgRenderer().Render(svg);
 
@@ -75,6 +75,28 @@ namespace FenBrowser.Tests.Svg
             Assert.True(HasBlue(result.Bitmap, 6, 36, 15, 45));
             Assert.True(HasBlue(result.Bitmap, 46, 6, 55, 15));
             Assert.True(HasBlue(result.Bitmap, 86, 36, 95, 45));
+        }
+
+        [Fact]
+        public void MarkerShorthand_PresentationAttributeIsNotADeclaration()
+        {
+            const string shorthand =
+                "<svg width='100' height='60'><defs><marker id='dot' markerWidth='6' markerHeight='6' " +
+                "refX='3' refY='3' markerUnits='userSpaceOnUse'><circle cx='3' cy='3' r='3' fill='blue'/></marker></defs>" +
+                "<polyline points='10 40 50 10 90 40' fill='none' stroke='black' marker='url(#dot)'/></svg>";
+            const string longhand =
+                "<svg width='100' height='60'><defs><marker id='dot' markerWidth='6' markerHeight='6' " +
+                "refX='3' refY='3' markerUnits='userSpaceOnUse'><circle cx='3' cy='3' r='3' fill='blue'/></marker></defs>" +
+                "<polyline points='10 40 50 10 90 40' fill='none' stroke='black' marker-start='url(#dot)'/></svg>";
+
+            using var ignored = new FenSvgRenderer().Render(shorthand);
+            using var honoured = new FenSvgRenderer().Render(longhand);
+
+            // `marker` is a shorthand, and shorthands are not presentation
+            // attributes: the attribute form is dropped, the longhand is not.
+            Assert.Equal(SvgRenderResult.IsAdmissible(ignored), SvgRenderResult.IsAdmissible(honoured));
+            Assert.False(HasBlue(ignored.Bitmap, 0, 0, ignored.Bitmap.Width, ignored.Bitmap.Height));
+            Assert.True(HasBlue(honoured.Bitmap, 6, 36, 15, 45));
         }
 
         [Fact]
@@ -264,6 +286,70 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void MarkerDefaultOverflow_KeepsAntialiasedCoverageOnTheViewportEdge()
+        {
+            // The triangle is inscribed in the marker viewBox, so one of its
+            // edges lies exactly on the marker viewport edge. The rotated
+            // viewport clip must not swallow that edge's own coverage, which is
+            // what a pixel-sampled clip boundary does. Skia still folds the
+            // surviving coverage through the clip mask, which costs one 8-bit
+            // step, so the contract is "keeps its coverage", not "bit identical".
+            const string clipped =
+                "<svg width='300' height='300'><defs>" +
+                "<marker id='m' viewBox='-5 -5 10 10' markerWidth='2' markerHeight='2' " +
+                "markerUnits='strokeWidth' orient='auto'>" +
+                "<path d='M 0 -5 L 5 5 L -5 5 Z' fill='blue' stroke='none'/></marker></defs>" +
+                "<path fill='none' stroke='black' stroke-width='16' marker-mid='url(#m)' " +
+                "d='M 130 230 L 180 230 L 180 280'/></svg>";
+            const string unclipped =
+                "<svg width='300' height='300'>" +
+                "<path fill='none' stroke='black' stroke-width='16' d='M 130 230 L 180 230 L 180 280'/>" +
+                "<g transform='translate(180,230) rotate(45)'>" +
+                "<path d='M 0 -16 L 16 16 L -16 16 Z' fill='blue' stroke='none'/></g></svg>";
+
+            using var actual = new FenSvgRenderer().Render(clipped);
+            using var expected = new FenSvgRenderer().Render(unclipped);
+
+            Assert.True(actual.Success, actual.ErrorMessage);
+            Assert.True(expected.Success, expected.ErrorMessage);
+            Assert.False(actual.RequiresFallback, string.Join("; ", actual.Warnings));
+            Assert.Equal(expected.Bitmap.Width, actual.Bitmap.Width);
+            Assert.Equal(expected.Bitmap.Height, actual.Bitmap.Height);
+
+            int worst = 0;
+            for (int y = 0; y < actual.Bitmap.Height; y++)
+            for (int x = 0; x < actual.Bitmap.Width; x++)
+            {
+                SKColor a = actual.Bitmap.GetPixel(x, y);
+                SKColor b = expected.Bitmap.GetPixel(x, y);
+                worst = System.Math.Max(worst, System.Math.Abs(a.Red - b.Red));
+                worst = System.Math.Max(worst, System.Math.Abs(a.Green - b.Green));
+                worst = System.Math.Max(worst, System.Math.Abs(a.Blue - b.Blue));
+                worst = System.Math.Max(worst, System.Math.Abs(a.Alpha - b.Alpha));
+            }
+            Assert.True(worst <= 1, $"marker viewport clip shifted coverage by {worst}");
+        }
+
+        [Fact]
+        public void MarkerDefaultOverflow_StillClipsContentBeyondTheViewport()
+        {
+            const string svg =
+                "<svg width='40' height='20'><defs><marker id='dot' markerWidth='4' markerHeight='4' " +
+                "refX='2' refY='2' markerUnits='userSpaceOnUse' orient='auto'>" +
+                "<circle cx='2' cy='2' r='6' fill='red'/></marker></defs>" +
+                "<line x1='5' y1='10' x2='20' y2='10' stroke='none' marker-end='url(#dot)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            // The rotated clip bias is half a device pixel; a 2-unit overflow
+            // still has to disappear entirely.
+            Assert.Equal(0, result.Bitmap.GetPixel(24, 10).Alpha);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(21, 10));
+        }
+
+        [Fact]
         public void ZeroAreaMarkerViewBox_SuppressesMarkerContent()
         {
             const string svg =
@@ -319,6 +405,93 @@ namespace FenBrowser.Tests.Svg
                 Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
         }
 
+        [Fact]
+        public void MarkerProperties_InheritFromAncestorGroup()
+        {
+            const string svg =
+                "<svg width='60' height='40'><defs>" +
+                "<marker id='start' viewBox='0 0 10 10' refX='0' refY='5' markerUnits='userSpaceOnUse' " +
+                "markerWidth='10' markerHeight='10' orient='auto' overflow='visible'>" +
+                "<path d='M0 0 L10 5 L0 10 z' fill='green'/></marker>" +
+                "<marker id='mid' viewBox='0 0 10 10' refX='0' refY='5' markerUnits='userSpaceOnUse' " +
+                "markerWidth='10' markerHeight='10' orient='auto' overflow='visible'>" +
+                "<path d='M0 0 L10 5 L0 10 z' fill='orange'/></marker>" +
+                "<marker id='end' viewBox='0 0 10 10' refX='0' refY='5' markerUnits='userSpaceOnUse' " +
+                "markerWidth='10' markerHeight='10' orient='auto' overflow='visible'>" +
+                "<path d='M0 0 L10 5 L0 10 z' fill='blue'/></marker></defs>" +
+                "<g style='marker-start:url(#start);marker-mid:url(#mid);marker-end:url(#end)'>" +
+                "<path d='M10 10 h20 h20' fill='none' stroke='black'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(HasTint(result.Bitmap, 12, 8, 18, 13, 0, 100, 0));
+            Assert.True(HasTint(result.Bitmap, 32, 8, 38, 13, 200, 120, 0));
+            Assert.True(HasTint(result.Bitmap, 52, 8, 58, 13, 0, 0, 200));
+            Assert.False(HasTint(result.Bitmap, 22, 8, 28, 13, 0, 100, 0));
+        }
+
+        [Fact]
+        public void MarkerShorthand_CssInheritsAndIsOverriddenByDescendantNone()
+        {
+            const string svg =
+                "<svg width='60' height='40'><defs>" +
+                "<marker id='dot' refX='2' refY='2' markerWidth='4' markerHeight='4' " +
+                "markerUnits='userSpaceOnUse'><circle cx='2' cy='2' r='2' fill='green'/></marker></defs>" +
+                "<g style='marker:url(#dot)'>" +
+                "<path d='M10 10 h20' fill='none' stroke='none' marker-start='none'/>" +
+                "<path d='M10 30 h20' fill='none' stroke='none'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.False(HasTint(result.Bitmap, 7, 7, 14, 14, 0, 100, 0));
+            Assert.True(HasTint(result.Bitmap, 28, 8, 32, 12, 0, 100, 0));
+            Assert.True(HasTint(result.Bitmap, 8, 28, 12, 32, 0, 100, 0));
+        }
+
+        [Fact]
+        public void ClosedPathReversalMarkers_TileTheVertexQuadrants()
+        {
+            const string svg =
+                "<svg width='100' height='100' xmlns='http://www.w3.org/2000/svg'>" +
+                "<marker id='m' markerWidth='100' markerHeight='50' markerUnits='userSpaceOnUse' " +
+                "orient='auto' refX='50' refY='50'><path d='M50,-5L105,50h-110z' fill='green'/></marker>" +
+                "<g marker-start='url(#m)'><path d='M50,0v50z'/><path d='M100,50h-50z'/>" +
+                "<path d='M50,100v-50z'/><path d='M0,50h50z'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(100, result.Bitmap.Width);
+            Assert.Equal(100, result.Bitmap.Height);
+            for (int y = 0; y < 100; y++)
+            for (int x = 0; x < 100; x++)
+                Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(x, y));
+        }
+
+        [Fact]
+        public void MarkerMid_OnReversedVertexUsesQuarterTurnBearing()
+        {
+            const string svg =
+                "<svg width='60' height='40'><defs>" +
+                "<marker id='m' markerWidth='20' markerHeight='20' refX='0' refY='0' " +
+                "markerUnits='userSpaceOnUse' orient='auto' overflow='visible'>" +
+                "<rect x='0' y='-1' width='20' height='2' fill='red'/></marker></defs>" +
+                "<path d='M40 30 L40 10 L40 30 z' fill='none' stroke='none' marker-mid='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(HasRed(result.Bitmap, 21, 9, 39, 11));
+            Assert.False(HasRed(result.Bitmap, 41, 9, 59, 11));
+            Assert.False(HasRed(result.Bitmap, 39, 11, 41, 29));
+        }
+
         private static bool HasRed(SKBitmap bitmap, int left, int top, int right, int bottom) =>
             HasColor(bitmap, left, top, right, bottom, red: true);
 
@@ -334,6 +507,28 @@ namespace FenBrowser.Tests.Svg
                 if (color.Alpha > 0 && (red
                         ? color.Red > 180 && color.Blue < 80
                         : color.Blue > 180 && color.Red < 80)) return true;
+            }
+            return false;
+        }
+
+        private static bool HasTint(
+            SKBitmap bitmap,
+            int left,
+            int top,
+            int right,
+            int bottom,
+            int minimumRed,
+            int minimumGreen,
+            int minimumBlue)
+        {
+            for (int y = top; y < bottom; y++)
+            for (int x = left; x < right; x++)
+            {
+                SKColor color = bitmap.GetPixel(x, y);
+                if (color.Alpha == 0) continue;
+                if (color.Red >= minimumRed &&
+                    color.Green >= minimumGreen &&
+                    color.Blue >= minimumBlue) return true;
             }
             return false;
         }

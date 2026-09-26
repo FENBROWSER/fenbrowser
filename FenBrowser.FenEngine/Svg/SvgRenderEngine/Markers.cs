@@ -17,10 +17,7 @@ namespace FenBrowser.FenEngine.Svg
             InheritedStyle style,
             SKPath path)
         {
-            string shorthand = element.GetPresentationProperty("marker");
-            string start = element.GetPresentationProperty("marker-start") ?? shorthand;
-            string middle = element.GetPresentationProperty("marker-mid") ?? shorthand;
-            string end = element.GetPresentationProperty("marker-end") ?? shorthand;
+            ResolveInheritedMarkerProperties(element, out string start, out string middle, out string end);
             if (!HasEffectValue(start) && !HasEffectValue(middle) && !HasEffectValue(end)) return;
 
             if (element.Name == "path")
@@ -59,9 +56,8 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         SKPoint incoming = Direction(vertices[i - 1].Point, vertices[i].Point);
                         SKPoint outgoing = Direction(vertices[i].Point, vertices[i + 1].Point);
-                        var tangent = new SKPoint(incoming.X + outgoing.X, incoming.Y + outgoing.Y);
-                        if (tangent.X == 0f && tangent.Y == 0f) tangent = outgoing;
-                        DrawMarkerInstance(middle, element, canvas, viewport, style, vertices[i].Point, tangent, false);
+                        DrawMarkerInstance(middle, element, canvas, viewport, style, vertices[i].Point,
+                            BisectDirections(incoming, outgoing), false);
                     }
                     if (vertices.Count > MaxMarkersPerElement)
                         _report.RequireFallback("SVG marker instance budget exceeded");
@@ -74,6 +70,50 @@ namespace FenBrowser.FenEngine.Svg
                 DrawMarkerInstance(end, element, canvas, viewport, style, vertices[last].Point,
                     vertices[last].Direction, isStart: false);
             }
+        }
+
+        private static void ResolveInheritedMarkerProperties(
+            SvgElement element,
+            out string start,
+            out string middle,
+            out string end)
+        {
+            string shorthand = null, resolvedStart = null, resolvedMiddle = null, resolvedEnd = null;
+            for (SvgElement current = element; current != null; current = current.Parent)
+            {
+                if (resolvedStart == null) resolvedStart = ReadMarkerPropertyValue(current, "marker-start");
+                if (resolvedMiddle == null) resolvedMiddle = ReadMarkerPropertyValue(current, "marker-mid");
+                if (resolvedEnd == null) resolvedEnd = ReadMarkerPropertyValue(current, "marker-end");
+                if (shorthand == null) shorthand = ReadMarkerShorthandValue(current);
+                if (resolvedStart != null && resolvedMiddle != null && resolvedEnd != null &&
+                    shorthand != null) break;
+            }
+            start = resolvedStart ?? shorthand;
+            middle = resolvedMiddle ?? shorthand;
+            end = resolvedEnd ?? shorthand;
+        }
+
+        private static string ReadMarkerPropertyValue(SvgElement element, string name) =>
+            NormalizeMarkerKeyword(element.GetPresentationProperty(name));
+
+        /// <summary>
+        /// `marker` is a shorthand, and shorthand properties are not presentation
+        /// attributes, so only a real CSS declaration - a stylesheet rule or the
+        /// `style` attribute - sets it. Reading it through the presentation
+        /// attribute fallback would honour `marker="url(#m)"`, which every
+        /// browser drops; the longhands keep the attribute fallback.
+        /// </summary>
+        private static string ReadMarkerShorthandValue(SvgElement element) =>
+            NormalizeMarkerKeyword(element.GetCascadedPresentationProperty("marker"));
+
+        private static string NormalizeMarkerKeyword(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            string keyword = value.Trim();
+            if (keyword.Equals("inherit", StringComparison.OrdinalIgnoreCase) ||
+                keyword.Equals("unset", StringComparison.OrdinalIgnoreCase) ||
+                keyword.Equals("revert", StringComparison.OrdinalIgnoreCase)) return null;
+            return keyword.Equals("initial", StringComparison.OrdinalIgnoreCase) ? "none" : value;
         }
 
         private void DrawMarkerInstance(
@@ -159,7 +199,7 @@ namespace FenBrowser.FenEngine.Svg
                         "visible",
                         StringComparison.OrdinalIgnoreCase))
                 {
-                    canvas.ClipRect(new SKRect(0f, 0f, markerWidth, markerHeight));
+                    ClipMarkerViewport(canvas, markerWidth, markerHeight);
                 }
                 if (hasViewBox &&
                     !ApplyViewportTransform(canvas, markerViewport, true, vbX, vbY, vbW, vbH,
@@ -273,7 +313,9 @@ namespace FenBrowser.FenEngine.Svg
         private static SKPoint BisectDirections(SKPoint incoming, SKPoint outgoing)
         {
             var tangent = new SKPoint(incoming.X + outgoing.X, incoming.Y + outgoing.Y);
-            return tangent.X == 0f && tangent.Y == 0f ? outgoing : tangent;
+            return tangent.X == 0f && tangent.Y == 0f
+                ? new SKPoint(-outgoing.Y, outgoing.X)
+                : tangent;
         }
 
         private InheritedStyle ResolveMarkerInheritedStyle(SvgElement marker)
@@ -453,6 +495,60 @@ namespace FenBrowser.FenEngine.Svg
                 fontSize > 0f && float.IsFinite(fontSize) ? fontSize : DefaultFontSize,
                 percentReference > 0f && float.IsFinite(percentReference) ? percentReference : 1f);
             return float.IsFinite(resolved) ? SvgValues.ClampCoord(resolved) : fallback;
+        }
+
+        /// <summary>
+        /// Establishes the `overflow: hidden` marker viewport clip.
+        /// </summary>
+        private static void ClipMarkerViewport(SKCanvas canvas, float width, float height)
+        {
+            var viewport = new SKRect(0f, 0f, width, height);
+            if (!MapsToAxisAlignedDeviceRect(canvas.TotalMatrix))
+            {
+                viewport = BiasClipForPixelSampling(canvas, viewport);
+            }
+            canvas.ClipRect(viewport);
+        }
+
+        /// <summary>
+        /// Whether a rect in the current local space still lands on a device
+        /// axis aligned rect. Skia resolves an axis aligned clip as a bounds
+        /// test, which is exact; any other rect has to be sampled per pixel, and
+        /// a sample that lands outside drops the pixel's own antialiased
+        /// coverage. So the boundary only needs biasing in the sampled case:
+        /// sampling the pixel's inner edge instead is the box-filter consistent
+        /// reading of the same boundary, and it keeps content that lies on the
+        /// viewport edge from losing coverage while still clipping content that
+        /// spills further than half a pixel.
+        /// </summary>
+        private static SKRect BiasClipForPixelSampling(SKCanvas canvas, SKRect rect)
+        {
+            float bias = HalfDevicePixelInLocalUnits(canvas);
+            if (!(bias > 0f)) return rect;
+            float largest = MathF.Max(rect.Width, rect.Height);
+            if (float.IsNaN(bias) || bias > largest) bias = largest;
+            if (!float.IsFinite(bias) || !(bias > 0f)) return rect;
+            return new SKRect(
+                rect.Left - bias, rect.Top - bias, rect.Right + bias, rect.Bottom + bias);
+        }
+
+        private static bool MapsToAxisAlignedDeviceRect(SKMatrix matrix)
+        {
+            // Skia rows: the local x axis maps to (ScaleX, SkewY) and the local
+            // y axis to (SkewX, ScaleY). A rect stays axis aligned only when
+            // each of those lands on a device axis, exactly one component zero.
+            bool xIsAxis = (matrix.ScaleX == 0f) != (matrix.SkewY == 0f);
+            bool yIsAxis = (matrix.SkewX == 0f) != (matrix.ScaleY == 0f);
+            return xIsAxis && yIsAxis;
+        }
+
+        private static float HalfDevicePixelInLocalUnits(SKCanvas canvas)
+        {
+            SKMatrix matrix = canvas.TotalMatrix;
+            float x = MathF.Sqrt(matrix.ScaleX * matrix.ScaleX + matrix.SkewY * matrix.SkewY);
+            float y = MathF.Sqrt(matrix.SkewX * matrix.SkewX + matrix.ScaleY * matrix.ScaleY);
+            float scale = MathF.Max(x, y);
+            return float.IsFinite(scale) && scale > 0f ? 0.5f / scale : 0f;
         }
 
         private readonly record struct MarkerVertex(SKPoint Point, SKPoint Direction);
