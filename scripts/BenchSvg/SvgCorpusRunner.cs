@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using FenBrowser.FenEngine.Adapters;
 using SkiaSharp;
 
@@ -112,18 +111,7 @@ internal sealed record SvgCorpusOptions(
 
 internal static class SvgCorpusRunner
 {
-    private const double MinimumAlphaIntersectionOverUnion = 0.80;
-    private const double MaximumMeanRgbDifference = 16.0;
-    private static readonly Regex StopColorPattern = new(
-        "stop-color\\s*(?:=|:)\\s*['\\\"]?(?<color>#[0-9a-fA-F]{3,8}|[a-zA-Z]+)",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
-        TimeSpan.FromMilliseconds(250));
-
-    public static int Run(
-        SvgCorpusOptions options,
-        ISvgRenderer firstParty,
-        ISvgRenderer hybrid,
-        ISvgRenderer legacy)
+    public static int Run(SvgCorpusOptions options)
     {
         bool manifestValidated = false;
         Directory.CreateDirectory(options.OutputDirectory);
@@ -246,7 +234,7 @@ internal static class SvgCorpusRunner
 
         var summary = new SvgCorpusSummary
         {
-            SchemaVersion = 3,
+            SchemaVersion = 4,
             CorpusRoot = options.CorpusDirectory,
             CorpusKind = options.CorpusKind,
             SelectionPrefixes = options.IncludePrefixes.ToList(),
@@ -258,17 +246,15 @@ internal static class SvgCorpusRunner
             SelectionTruncated = selectionTruncated,
             EvaluatedFiles = entries.Count(entry => entry.Classification != "skipped-oversize" && entry.Classification != "read-failure"),
             FirstPartySupported = entries.Count(entry => entry.Classification == "first-party"),
-            CompatibilityFallbacks = entries.Count(entry => entry.Classification == "legacy-fallback"),
+            InadmissibleDocuments = entries.Count(entry => entry.Classification is
+                "unsupported" or "resource-rejection" or "first-party-failure"),
+            UnsupportedDocuments = entries.Count(entry => entry.Classification == "unsupported"),
             ResourceRejections = entries.Count(entry => entry.Classification == "resource-rejection"),
             FirstPartyFailures = entries.Count(entry => entry.Classification == "first-party-failure"),
-            HybridFailures = entries.Count(entry => entry.Classification == "hybrid-failure"),
             WorkerTimeouts = entries.Count(entry => entry.Classification == "worker-timeout"),
             WorkerFailures = entries.Count(entry => entry.Classification == "worker-failure"),
             ReadFailures = entries.Count(entry => entry.Classification == "read-failure"),
             SkippedOversize = entries.Count(entry => entry.Classification == "skipped-oversize"),
-            ComparablePairs = entries.Count(entry => entry.PixelComparable),
-            ComparableParityPasses = entries.Count(entry => entry.PixelParity),
-            AcceptedReferenceDefects = entries.Count(entry => entry.ReferenceDefect != null),
             WptReferenceTests = entries.Count(entry => entry.WptReferenceApplicable),
             WptReferenceComparable = entries.Count(entry => entry.WptReferenceComparable),
             WptReferencePasses = entries.Count(entry => entry.WptReferenceApplicable && entry.WptReferencePass),
@@ -296,17 +282,15 @@ internal static class SvgCorpusRunner
         WriteMarkdown(options.OutputDirectory, summary);
 
         bool routingOk = summary.SelectedFiles > 0 && summary.FirstPartyFailures == 0 &&
-                         summary.HybridFailures == 0 && summary.WorkerTimeouts == 0 &&
+                         summary.WorkerTimeouts == 0 &&
                          summary.WorkerFailures == 0 && summary.ReadFailures == 0;
-        bool parityOk = summary.ComparableParityPasses + summary.AcceptedReferenceDefects == summary.ComparablePairs;
         bool referenceOk = options.CorpusKind == "wpt"
             ? summary.WptReferenceTests > 0 &&
               summary.WptReferencePasses == summary.WptReferenceTests &&
               summary.WptReferenceComparable == summary.WptReferenceTests
-            : parityOk;
-        bool compatibilityOk = options.CorpusKind == "wpt" ||
-                               (summary.ResourceRejections == 0 && summary.CompatibilityFallbacks == 0);
-        bool gateOk = routingOk && referenceOk && compatibilityOk && summary.SkippedOversize == 0 &&
+            : true;
+        bool admissibilityOk = options.CorpusKind == "wpt" || summary.InadmissibleDocuments == 0;
+        bool gateOk = routingOk && referenceOk && admissibilityOk && summary.SkippedOversize == 0 &&
                       !summary.SelectionTruncated &&
                       (options.CorpusKind != "captured-site" || summary.ManifestValidated);
         Console.WriteLine(JsonSerializer.Serialize(new
@@ -322,17 +306,15 @@ internal static class SvgCorpusRunner
             reused = summary.ReusedEntries,
             evaluated = summary.EvaluatedFiles,
             firstParty = summary.FirstPartySupported,
-            fallback = summary.CompatibilityFallbacks,
+            inadmissible = summary.InadmissibleDocuments,
+            unsupported = summary.UnsupportedDocuments,
             resourceRejections = summary.ResourceRejections,
             firstPartyFailures = summary.FirstPartyFailures,
-            hybridFailures = summary.HybridFailures,
             workerTimeouts = summary.WorkerTimeouts,
             workerFailures = summary.WorkerFailures,
-            parity = $"{summary.ComparableParityPasses}/{summary.ComparablePairs}",
             wptReferences = $"{summary.WptReferencePasses}/{summary.WptReferenceTests}",
             wptReferenceBlocked = summary.WptReferenceBlocked,
             wptUnresolvedTargets = summary.WptUnresolvedTargets,
-            acceptedReferenceDefects = summary.AcceptedReferenceDefects,
             reasons = summary.ReasonCounts.Count,
             report = Path.Combine(options.OutputDirectory, "corpus-report.json")
         }));
@@ -482,10 +464,8 @@ internal static class SvgCorpusRunner
                 ResourceResolver = wptResolver
             };
             ISvgRenderer firstParty = new FenSvgRenderer();
-            ISvgRenderer legacy = new SvgSkiaRenderer();
-            ISvgRenderer hybrid = new HybridSvgRenderer(firstParty, legacy);
             var entry = Evaluate(
-                Path.GetFileName(inputPath), info.Length, request, firstParty, hybrid, legacy,
+                Path.GetFileName(inputPath), info.Length, request, firstParty,
                 wptReferences, wptResolver);
             File.WriteAllText(outputPath, JsonSerializer.Serialize(entry));
             return 0;
@@ -658,48 +638,22 @@ internal static class SvgCorpusRunner
         long bytes,
         SvgRenderRequest request,
         ISvgRenderer firstParty,
-        ISvgRenderer hybrid,
-        ISvgRenderer legacy,
         IReadOnlyList<WptReference> wptReferences,
         LocalWptSvgResourceResolver? wptResolver)
     {
         using var fen = TimedRender(firstParty, request);
-        using var routed = TimedRender(hybrid, request);
-        using var reference = TimedRender(legacy, request);
 
-        string classification = !routed.Result.Success
-            ? "hybrid-failure"
-            : fen.Result.HadResourceRejection
+        bool admissible = SvgRenderResult.IsAdmissible(fen.Result);
+        string classification = admissible
+            ? "first-party"
+            : fen.Result.ResourceRejectionReasonCodes.Count > 0
                 ? "resource-rejection"
-            : fen.Result.Success && !fen.Result.RequiresFallback
-                ? "first-party"
-                : routed.Result.UsedLegacyFallback
-                    ? "legacy-fallback"
+                : fen.Result.FallbackReasonCodes.Count > 0
+                    ? "unsupported"
                     : "first-party-failure";
 
-        bool comparable = classification == "first-party" && reference.Result.Success &&
-                          fen.Result.Bitmap != null && reference.Result.Bitmap != null;
-        double alphaIou = 0;
-        double meanRgbDifference = 0;
-        long firstPartyForegroundPixels = 0;
-        long legacyForegroundPixels = 0;
-        bool parity = false;
-        if (comparable)
-        {
-            ComparePixels(
-                fen.Result.Bitmap!, reference.Result.Bitmap!,
-                out alphaIou, out meanRgbDifference,
-                out firstPartyForegroundPixels, out legacyForegroundPixels);
-            parity = alphaIou >= MinimumAlphaIntersectionOverUnion &&
-                     meanRgbDifference <= MaximumMeanRgbDifference;
-        }
-        string? referenceDefect = comparable && !parity &&
-                                  IsLegacyChromaticGradientLoss(
-                                      request.Content, fen.Result.Bitmap!, reference.Result.Bitmap!)
-            ? "legacy-chromatic-gradient-loss"
-            : null;
         WptReferenceEvaluation wpt = EvaluateWptReferences(
-            classification,
+            admissible,
             fen.Result.Bitmap,
             request.Limits,
             firstParty,
@@ -711,25 +665,15 @@ internal static class SvgCorpusRunner
             Path = relativePath,
             Bytes = bytes,
             Classification = classification,
-            ProducingBackend = routed.Result.Backend.ToString(),
-            FirstPartyMilliseconds = fen.ElapsedMilliseconds,
-            HybridMilliseconds = routed.ElapsedMilliseconds,
-            LegacyMilliseconds = reference.ElapsedMilliseconds,
+            RenderMilliseconds = fen.ElapsedMilliseconds,
             WarningCount = fen.Result.Warnings.Count,
             WarningMessages = fen.Result.Warnings.Take(8).Select(message => Bound(message) ?? string.Empty).ToList(),
-            FallbackReasonCodes = fen.Result.FallbackReasonCodes.Distinct(StringComparer.Ordinal).ToList(),
+            UnsupportedReasonCodes = fen.Result.FallbackReasonCodes.Distinct(StringComparer.Ordinal).ToList(),
             ResourceRejectionReasonCodes = fen.Result.ResourceRejectionReasonCodes.Distinct(StringComparer.Ordinal).ToList(),
-            FailureReasonCode = classification is "first-party-failure" or "hybrid-failure"
-                ? ClassifyFailure(routed.Result.ErrorMessage ?? fen.Result.ErrorMessage)
+            FailureReasonCode = classification == "first-party-failure"
+                ? ClassifyFailure(fen.Result.ErrorMessage)
                 : null,
-            Error = Bound(routed.Result.ErrorMessage ?? fen.Result.ErrorMessage),
-            PixelComparable = comparable,
-            PixelParity = parity,
-            ReferenceDefect = referenceDefect,
-            AlphaIntersectionOverUnion = Math.Round(alphaIou, 4),
-            MeanRgbDifference = Math.Round(meanRgbDifference, 4),
-            FirstPartyForegroundPixels = firstPartyForegroundPixels,
-            LegacyForegroundPixels = legacyForegroundPixels,
+            Error = Bound(fen.Result.ErrorMessage),
             WptReferenceApplicable = wpt.Applicable,
             WptReferenceComparable = wpt.Comparable,
             WptReferencePass = wpt.Pass,
@@ -741,7 +685,7 @@ internal static class SvgCorpusRunner
     }
 
     private static WptReferenceEvaluation EvaluateWptReferences(
-        string classification,
+        bool admissible,
         SKBitmap? sourceBitmap,
         SvgRenderLimits limits,
         ISvgRenderer firstParty,
@@ -754,14 +698,14 @@ internal static class SvgCorpusRunner
         int unresolved = 0;
         foreach (var reference in references)
         {
-            if (!reference.IsResolved || classification != "first-party" || sourceBitmap == null)
+            if (!reference.IsResolved || !admissible || sourceBitmap == null)
             {
                 if (!reference.IsResolved) unresolved++;
                 outcomes.Add(new WptReferenceOutcome
                 {
                     Relation = reference.IsMatch ? "==" : "!=",
                     Reference = Bound(reference.ManifestUrl) ?? string.Empty,
-                    Error = !reference.IsResolved ? "unresolved-reference" : "source-not-first-party"
+                    Error = !reference.IsResolved ? "unresolved-reference" : "source-inadmissible"
                 });
                 continue;
             }
@@ -788,9 +732,8 @@ internal static class SvgCorpusRunner
                     ResourceResolver = resolver
                 };
                 using var rendered = TimedRender(firstParty, referenceRequest);
-                if (!rendered.Result.Success || rendered.Result.RequiresFallback ||
-                    rendered.Result.HadResourceRejection || rendered.Result.Bitmap == null)
-                    throw new InvalidDataException("WPT reference did not render entirely with the first-party backend");
+                if (!SvgRenderResult.IsAdmissible(rendered.Result) || rendered.Result.Bitmap == null)
+                    throw new InvalidDataException("WPT reference was inadmissible under the first-party backend");
                 outcomes.Add(CompareWptReference(reference, sourceBitmap, rendered.Result.Bitmap));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
@@ -899,10 +842,9 @@ internal static class SvgCorpusRunner
 
         foreach (var entry in entries)
         {
-            foreach (string code in entry.FallbackReasonCodes) Add(reasons, "fallback", code);
+            foreach (string code in entry.UnsupportedReasonCodes) Add(reasons, "unsupported", code);
             foreach (string code in entry.ResourceRejectionReasonCodes) Add(reasons, "resource-rejection", code);
             Add(reasons, "failure", entry.FailureReasonCode);
-            Add(reasons, "reference-defect", entry.ReferenceDefect);
             if (entry.Classification is "worker-timeout" or "worker-failure" or "read-failure" or "skipped-oversize")
                 Add(reasons, "execution", entry.Classification);
         }
@@ -978,48 +920,6 @@ internal static class SvgCorpusRunner
         meanRgbDifference = foregroundChannels == 0 ? 0.0 : (double)rgbDifference / foregroundChannels;
     }
 
-    private static bool IsLegacyChromaticGradientLoss(string source, SKBitmap first, SKBitmap legacy)
-    {
-        if (!source.Contains("Gradient", StringComparison.OrdinalIgnoreCase) ||
-            !DeclaresChromaticStop(source))
-            return false;
-
-        static bool HasChromaticPixel(SKBitmap bitmap)
-        {
-            for (int y = 0; y < bitmap.Height; y++)
-            for (int x = 0; x < bitmap.Width; x++)
-            {
-                SKColor color = bitmap.GetPixel(x, y);
-                if (color.Alpha > 0 &&
-                    Math.Max(color.Red, Math.Max(color.Green, color.Blue)) -
-                    Math.Min(color.Red, Math.Min(color.Green, color.Blue)) >= 16)
-                    return true;
-            }
-            return false;
-        }
-
-        return HasChromaticPixel(first) && !HasChromaticPixel(legacy);
-    }
-
-    private static bool DeclaresChromaticStop(string source)
-    {
-        try
-        {
-            foreach (Match match in StopColorPattern.Matches(source))
-            {
-                if (SKColor.TryParse(match.Groups["color"].Value, out var color) &&
-                    Math.Max(color.Red, Math.Max(color.Green, color.Blue)) -
-                    Math.Min(color.Red, Math.Min(color.Green, color.Blue)) >= 16)
-                    return true;
-            }
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            return false;
-        }
-        return false;
-    }
-
     private static void WriteMarkdown(string outputDirectory, SvgCorpusSummary summary)
     {
         var lines = new List<string>
@@ -1037,13 +937,11 @@ internal static class SvgCorpusRunner
             $"- Renderer build id: {summary.RendererBuildId}",
             $"- Evaluated: {summary.EvaluatedFiles}",
             $"- First-party supported: {summary.FirstPartySupported}",
-            $"- Compatibility fallbacks: {summary.CompatibilityFallbacks}",
+            $"- Inadmissible documents: {summary.InadmissibleDocuments}",
+            $"- Declared-unsupported documents: {summary.UnsupportedDocuments}",
             $"- Embedded resource rejections: {summary.ResourceRejections}",
             $"- First-party failures: {summary.FirstPartyFailures}",
-            $"- Hybrid failures: {summary.HybridFailures}",
             $"- Worker timeouts / failures: {summary.WorkerTimeouts} / {summary.WorkerFailures}",
-            $"- Comparable pixel parity: {summary.ComparableParityPasses}/{summary.ComparablePairs}",
-            $"- Accepted, detected legacy reference defects: {summary.AcceptedReferenceDefects}",
             $"- WPT declared-reference passes: {summary.WptReferencePasses}/{summary.WptReferenceTests}",
             $"- WPT reference comparable / failed / blocked: {summary.WptReferenceComparable} / {summary.WptReferenceFailures} / {summary.WptReferenceBlocked}",
             $"- WPT unresolved reference targets: {summary.WptUnresolvedTargets}",
@@ -1067,21 +965,17 @@ internal static class SvgCorpusRunner
             "",
             "## Files",
             "",
-            "| file | classification | reasons | producer | fen ms | hybrid ms | legacy ms | legacy parity | WPT refs | reference defect | alpha IoU | RGB mean diff | fen fg | legacy fg |",
-            "|---|---|---|---|---:|---:|---:|---|---|---|---:|---:|---:|---:|"
+            "| file | classification | reasons | render ms | WPT refs |",
+            "|---|---|---|---:|---|"
         });
         foreach (var entry in summary.Entries)
         {
-            string reasons = string.Join(",", entry.FallbackReasonCodes
+            string reasons = string.Join(",", entry.UnsupportedReasonCodes
                 .Concat(entry.ResourceRejectionReasonCodes)
                 .Concat(entry.FailureReasonCode == null ? Array.Empty<string>() : new[] { entry.FailureReasonCode }));
-            lines.Add($"| {Escape(entry.Path)} | {entry.Classification} | {Escape(reasons.Length == 0 ? "-" : reasons)} | {entry.ProducingBackend ?? "-"} | " +
-                      $"{entry.FirstPartyMilliseconds} | {entry.HybridMilliseconds} | {entry.LegacyMilliseconds} | " +
-                      $"{(entry.PixelComparable ? (entry.PixelParity ? "pass" : "FAIL") : "-")} | " +
-                      $"{(entry.WptReferenceApplicable ? (entry.WptReferenceComparable ? (entry.WptReferencePass ? "pass" : "FAIL") : "unresolved") : "-")} | " +
-                      $"{entry.ReferenceDefect ?? "-"} | " +
-                      $"{entry.AlphaIntersectionOverUnion:0.####} | {entry.MeanRgbDifference:0.####} | " +
-                      $"{entry.FirstPartyForegroundPixels} | {entry.LegacyForegroundPixels} |");
+            lines.Add($"| {Escape(entry.Path)} | {entry.Classification} | {Escape(reasons.Length == 0 ? "-" : reasons)} | " +
+                      $"{entry.RenderMilliseconds} | " +
+                      $"{(entry.WptReferenceApplicable ? (entry.WptReferenceComparable ? (entry.WptReferencePass ? "pass" : "FAIL") : "unresolved") : "-")} |");
         }
         WriteAllTextAtomic(
             Path.Combine(outputDirectory, "corpus-report.md"),
@@ -1145,17 +1039,14 @@ internal sealed class SvgCorpusSummary
     public bool SelectionTruncated { get; set; }
     public int EvaluatedFiles { get; set; }
     public int FirstPartySupported { get; set; }
-    public int CompatibilityFallbacks { get; set; }
+    public int InadmissibleDocuments { get; set; }
+    public int UnsupportedDocuments { get; set; }
     public int ResourceRejections { get; set; }
     public int FirstPartyFailures { get; set; }
-    public int HybridFailures { get; set; }
     public int WorkerTimeouts { get; set; }
     public int WorkerFailures { get; set; }
     public int ReadFailures { get; set; }
     public int SkippedOversize { get; set; }
-    public int ComparablePairs { get; set; }
-    public int ComparableParityPasses { get; set; }
-    public int AcceptedReferenceDefects { get; set; }
     public int WptReferenceTests { get; set; }
     public int WptReferenceComparable { get; set; }
     public int WptReferencePasses { get; set; }
@@ -1222,23 +1113,13 @@ internal sealed class SvgCorpusEntry
     public string SourceSha256 { get; set; } = string.Empty;
     public string Classification { get; set; } = string.Empty;
     public string? WptType { get; set; }
-    public string? ProducingBackend { get; set; }
-    public long FirstPartyMilliseconds { get; set; }
-    public long HybridMilliseconds { get; set; }
-    public long LegacyMilliseconds { get; set; }
+    public long RenderMilliseconds { get; set; }
     public int WarningCount { get; set; }
     public List<string> WarningMessages { get; set; } = new();
-    public List<string> FallbackReasonCodes { get; set; } = new();
+    public List<string> UnsupportedReasonCodes { get; set; } = new();
     public List<string> ResourceRejectionReasonCodes { get; set; } = new();
     public string? FailureReasonCode { get; set; }
     public string? Error { get; set; }
-    public bool PixelComparable { get; set; }
-    public bool PixelParity { get; set; }
-    public string? ReferenceDefect { get; set; }
-    public double AlphaIntersectionOverUnion { get; set; }
-    public double MeanRgbDifference { get; set; }
-    public long FirstPartyForegroundPixels { get; set; }
-    public long LegacyForegroundPixels { get; set; }
     public bool WptReferenceApplicable { get; set; }
     public bool WptReferenceComparable { get; set; }
     public bool WptReferencePass { get; set; }

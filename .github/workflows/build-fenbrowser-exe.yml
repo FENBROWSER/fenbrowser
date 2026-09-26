@@ -100,7 +100,10 @@ jobs:
             "FullyQualifiedName~FenBrowser.Tests.Core.Network.CspPolicyTests",
             "FullyQualifiedName~FenBrowser.Tests.Core.SecurityChecksTests",
             "FullyQualifiedName~FenBrowser.Tests.Core.ResourceManagerCorsSendAsyncTests",
-            "FullyQualifiedName~FenBrowser.Tests.Architecture.IpcEnvelopeValidationTests"
+            "FullyQualifiedName~FenBrowser.Tests.Architecture.IpcEnvelopeValidationTests",
+            "FullyQualifiedName~FenBrowser.Tests.Svg.",
+            "FullyQualifiedName~FenBrowser.Tests.Architecture.SvgSandboxingTests",
+            "FullyQualifiedName~FenBrowser.Tests.Core.ImageLoader"
           )
 
           foreach ($filter in $filters) {

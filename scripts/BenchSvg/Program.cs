@@ -3,7 +3,8 @@ using FenBrowser.FenEngine.Adapters;
 using SkiaSharp;
 using SkiaSharp.HarfBuzz;
 
-// BenchSvg: comparative benchmark for the three ISvgRenderer backends.
+// BenchSvg: latency, allocation, and corpus benchmark for the first-party
+// ISvgRenderer backend.
 // Emits machine-readable JSON lines on stdout; --report also writes a
 // markdown summary to Results/svg/perf-report.md. No CSV is generated.
 //
@@ -42,6 +43,7 @@ if ((args.Length == 2 || args.Length == 4) && args[0] == "--inspect-svg")
         return;
     }
     using var inspectResult = new FenSvgRenderer().Render(await File.ReadAllTextAsync(inspectPath));
+    bool inspectAdmissible = SvgRenderResult.IsAdmissible(inspectResult);
     if (args.Length == 4)
     {
         if (args[2] != "--output-prefix")
@@ -52,22 +54,18 @@ if ((args.Length == 2 || args.Length == 4) && args[0] == "--inspect-svg")
         }
         string prefix = Path.GetFullPath(args[3]);
         Directory.CreateDirectory(Path.GetDirectoryName(prefix)!);
-        if (inspectResult.Success && inspectResult.Bitmap != null)
-            SaveBitmap(inspectResult.Bitmap, prefix + ".first-party.png");
-        using var legacyInspect = new SvgSkiaRenderer().Render(await File.ReadAllTextAsync(inspectPath));
-        if (legacyInspect.Success && legacyInspect.Bitmap != null)
-            SaveBitmap(legacyInspect.Bitmap, prefix + ".legacy.png");
+        if (inspectAdmissible && inspectResult.Bitmap != null)
+            SaveBitmap(inspectResult.Bitmap, prefix + ".png");
     }
     Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
     {
         probe = "svg-inspect",
-        success = inspectResult.Success,
-        fallback = inspectResult.RequiresFallback,
-        resourceRejected = inspectResult.HadResourceRejection,
+        admissible = inspectAdmissible,
+        rejection = SvgRenderResult.DescribeRejection(inspectResult),
         warnings = inspectResult.Warnings,
         error = inspectResult.ErrorMessage
     }));
-    Environment.ExitCode = inspectResult.Success ? 0 : 1;
+    Environment.ExitCode = inspectAdmissible ? 0 : 1;
     return;
 }
 
@@ -98,10 +96,7 @@ Console.WriteLine(
     $"{{\"probe\":\"native-text-stack\",\"ok\":true," +
     $"\"glyphs\":{nativeTextProbe.Glyphs},\"width\":{nativeTextProbe.Width:0.###}}}");
 
-(ISvgRenderer Renderer, string Name) fen = (new FenSvgRenderer(), "fen");
-(ISvgRenderer Renderer, string Name) legacy = (new SvgSkiaRenderer(), "legacy");
-(ISvgRenderer Renderer, string Name) hybrid =
-    (new HybridSvgRenderer(fen.Renderer, legacy.Renderer), "hybrid");
+ISvgRenderer fen = new FenSvgRenderer();
 
 int corpusArgument = Array.IndexOf(args, "--corpus");
 if (corpusArgument >= 0)
@@ -115,8 +110,7 @@ if (corpusArgument >= 0)
     try
     {
         var options = SvgCorpusOptions.Parse(args, corpusArgument + 1, resultsDir);
-        Environment.ExitCode = SvgCorpusRunner.Run(
-            options, fen.Renderer, hybrid.Renderer, legacy.Renderer);
+        Environment.ExitCode = SvgCorpusRunner.Run(options);
     }
     catch (ArgumentException ex)
     {
@@ -153,7 +147,7 @@ var cases = new (string Name, string Svg)[]
 if (args.Contains("--stress-only"))
 {
     bool stressOk = RunStress(
-        hybrid.Renderer,
+        fen,
         cases.Select(item => item.Svg).Append(
             "<svg width='80' height='30'><text x='2' y='20'>A<tspan>B</tspan></text></svg>")
             .Concat(new[]
@@ -174,41 +168,34 @@ const int WarmRuns = 7;
 
 foreach (var (name, svg) in cases)
 {
-    foreach (var backend in new[] { fen, hybrid, legacy })
-    {
-        var cold = TimeOne(backend.Renderer, svg);
-        Console.WriteLine($"{{\"case\":\"{name}\",\"backend\":\"{backend.Name}\",\"phase\":\"cold\"," +
-                          $"\"ms\":{cold.ElapsedMs},\"ok\":{Cold(cold.Success)}}}");
+    var cold = TimeOne(fen, svg);
+    Console.WriteLine($"{{\"case\":\"{name}\",\"phase\":\"cold\"," +
+                      $"\"ms\":{cold.ElapsedMs},\"admissible\":{Cold(cold.Admissible)}}}");
 
-        long best = long.MaxValue;
-        long allocSum = 0;
-        bool ok = true;
-        string dims = "-";
-        string producer = "unknown";
-        bool usedFallback = false;
-        ulong checksum = 0;
-        for (int i = 0; i < WarmRuns; i++)
+    long best = long.MaxValue;
+    long allocSum = 0;
+    bool admissible = true;
+    string dims = "-";
+    ulong checksum = 0;
+    for (int i = 0; i < WarmRuns; i++)
+    {
+        var m = TimeOne(fen, svg);
+        admissible &= m.Admissible;
+        best = Math.Min(best, m.ElapsedMs);
+        allocSum += m.AllocatedBytes;
+        if (i == 0)
         {
-            var m = TimeOne(backend.Renderer, svg);
-            ok &= m.Success;
-            best = Math.Min(best, m.ElapsedMs);
-            allocSum += m.AllocatedBytes;
-            if (i == 0)
-            {
-                dims = $"{m.Width}x{m.Height}";
-                checksum = m.Checksum;
-                producer = m.Backend.ToString();
-                usedFallback = m.UsedFallback;
-            }
+            dims = $"{m.Width}x{m.Height}";
+            checksum = m.Checksum;
         }
-        long avgAlloc = allocSum / WarmRuns;
-        Console.WriteLine($"{{\"case\":\"{name}\",\"backend\":\"{backend.Name}\",\"phase\":\"warm-best\"," +
-                          $"\"ms\":{best},\"avgAllocBytes\":{avgAlloc},\"ok\":{Cold(ok)}," +
-                          $"\"dims\":\"{dims}\",\"producer\":\"{producer}\"," +
-                          $"\"fallback\":{Cold(usedFallback)},\"checksum\":{checksum}}}");
-        reportRows.Add($"| {name} | {backend.Name} | {producer} | {(usedFallback ? "yes" : "no")} | " +
-                       $"{cold.ElapsedMs} | {best} | {avgAlloc} | {(ok ? "yes" : "NO")} | {dims} | {checksum} |");
     }
+    long avgAlloc = allocSum / WarmRuns;
+    Console.WriteLine($"{{\"case\":\"{name}\",\"phase\":\"warm-best\"," +
+                      $"\"ms\":{best},\"avgAllocBytes\":{avgAlloc}," +
+                      $"\"admissible\":{Cold(admissible)}," +
+                      $"\"dims\":\"{dims}\",\"checksum\":{checksum}}}");
+    reportRows.Add($"| {name} | {cold.ElapsedMs} | {best} | {avgAlloc} | " +
+                   $"{(admissible ? "yes" : "NO")} | {dims} | {checksum} |");
 }
 
 if (writeReport)
@@ -216,14 +203,16 @@ if (writeReport)
     Directory.CreateDirectory(resultsDir);
     var lines = new List<string>
     {
-        "# SVG Backend Benchmark",
+        "# SVG Renderer Benchmark",
         "",
         $"Generated: {DateTime.UtcNow:u}",
+        "Renderer: first-party (FenSvgRenderer)",
         $"Warm runs per case: {WarmRuns} (best-of reported); allocations averaged across warm runs.",
-        "Checksums compare sampled ARGB of both backends; identical values indicate pixel parity.",
+        "A case is admissible only when every run is admissible under SvgRenderResult.IsAdmissible.",
+        "Checksums are a sampled ARGB fingerprint of the rendered output; a case is reproducible when repeated runs match.",
         "",
-        "| case | requested | producer | fallback | cold ms | warm best ms | avg alloc B | ok | dims | checksum |",
-        "|---|---|---|---|---|---|---|---|---|---|"
+        "| case | cold ms | warm best ms | avg alloc B | admissible | dims | checksum |",
+        "|---|---:|---:|---:|---|---|---|"
     };
     lines.AddRange(reportRows);
     File.WriteAllLines(Path.Combine(resultsDir, "perf-report.md"), lines);
@@ -236,12 +225,12 @@ static bool RunStress(ISvgRenderer renderer, string[] documents, int iterations)
 {
     const long maxRetainedGrowthBytes = 64L * 1024 * 1024;
     int failures = 0;
-    int fallbacks = 0;
+    int inadmissible = 0;
 
     for (int i = 0; i < 256; i++)
     {
         using var warm = renderer.Render(documents[i % documents.Length]);
-        if (!warm.Success) failures++;
+        CountRender(warm, ref failures, ref inadmissible);
     }
     GC.Collect();
     GC.WaitForPendingFinalizers();
@@ -253,8 +242,7 @@ static bool RunStress(ISvgRenderer renderer, string[] documents, int iterations)
     for (int i = 0; i < iterations; i++)
     {
         using var result = renderer.Render(documents[i % documents.Length]);
-        if (!result.Success || result.Bitmap == null) failures++;
-        if (result.UsedLegacyFallback) fallbacks++;
+        CountRender(result, ref failures, ref inadmissible);
     }
 
     GC.Collect();
@@ -267,9 +255,15 @@ static bool RunStress(ISvgRenderer renderer, string[] documents, int iterations)
     Console.WriteLine(
         $"{{\"probe\":\"dispose-stress\",\"ok\":{Cold(ok)}," +
         $"\"iterations\":{iterations},\"failures\":{failures}," +
-        $"\"fallbacks\":{fallbacks},\"retainedPrivateBytes\":{retainedGrowth}," +
+        $"\"inadmissible\":{inadmissible},\"retainedPrivateBytes\":{retainedGrowth}," +
         $"\"limitBytes\":{maxRetainedGrowthBytes}}}");
     return ok;
+}
+
+static void CountRender(SvgRenderResult result, ref int failures, ref int inadmissible)
+{
+    if (!SvgRenderResult.IsAdmissible(result) || result.Bitmap == null) failures++;
+    if (!SvgRenderResult.IsAdmissible(result)) inadmissible++;
 }
 
 static (int Glyphs, float Width) ProbeNativeTextStack()
@@ -293,8 +287,7 @@ static (int Glyphs, float Width) ProbeNativeTextStack()
     return (result.Codepoints.Length, result.Width);
 }
 
-static (long ElapsedMs, long AllocatedBytes, bool Success, int Width, int Height,
-    ulong Checksum, SvgRendererBackend Backend, bool UsedFallback)
+static (long ElapsedMs, long AllocatedBytes, int Width, int Height, ulong Checksum, bool Admissible)
     TimeOne(ISvgRenderer renderer, string svg)
 {
     GC.Collect();
@@ -321,8 +314,8 @@ static (long ElapsedMs, long AllocatedBytes, bool Success, int Width, int Height
             }
         }
     }
-    return (sw.ElapsedMilliseconds, after - before, result.Success, w, h, checksum,
-        result.Backend, result.UsedLegacyFallback);
+    return (sw.ElapsedMilliseconds, after - before, w, h, checksum,
+        SvgRenderResult.IsAdmissible(result));
 }
 
 static string MakeRedPng(int w, int h)
