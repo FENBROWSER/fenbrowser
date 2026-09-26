@@ -644,8 +644,6 @@ namespace FenBrowser.Tests.Svg
         [InlineData("<feTurbulence baseFrequency='-.1'/>")]
         [InlineData("<feTurbulence numOctaves='17'/>")]
         [InlineData("<feTurbulence stitchTiles='stitch'/>")]
-        [InlineData("<feDiffuseLighting><fePointLight/></feDiffuseLighting>")]
-        [InlineData("<feSpecularLighting specularExponent='129'><feDistantLight/></feSpecularLighting>")]
         [InlineData("<feMorphology operator='grow' radius='1'/>")]
         [InlineData("<feMorphology operator='' radius='1'/>")]
         public void UnsupportedOrUnboundedPrimitive_FailsClosedAsExplicitUnsupported(string primitive)
@@ -716,6 +714,96 @@ namespace FenBrowser.Tests.Svg
                 Assert.True(result.Success, result.ErrorMessage);
                 Assert.False(result.RequiresFallback);
             });
+        }
+
+        [Fact]
+        public void EmptyFilterTemplate_ReplacesTheSourceWithATransparentResult()
+        {
+            const string svg =
+                "<svg width='20' height='20'><defs><filter id='f'/></defs>" +
+                "<rect width='20' height='20' fill='red' filter='url(#f)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(0, CountOpaquePixels(result));
+        }
+
+        [Fact]
+        public void EmptyFilterTemplateWithTitleDescMetadata_AlsoReplacesTheSource()
+        {
+            const string svg =
+                "<svg width='20' height='20'><defs><filter id='f'>" +
+                "<title>t</title><desc>d</desc><metadata>m</metadata></filter></defs>" +
+                "<rect width='20' height='20' fill='red' filter='url(#f)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(0, CountOpaquePixels(result));
+        }
+
+        [Fact]
+        public void UnresolvedLocalFilterReference_RendersTheSourceUnfiltered()
+        {
+            const string svg =
+                "<svg width='20' height='20'>" +
+                "<rect width='20' height='20' fill='red' filter='url(#notthere)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(20 * 20, CountOpaquePixels(result));
+        }
+
+        [Fact]
+        public void FilterReferenceToANonFilterElement_RendersTheSourceUnfiltered()
+        {
+            const string svg =
+                "<svg width='20' height='20'><rect id='r' width='1' height='1'/>" +
+                "<rect width='20' height='20' fill='red' filter='url(#r)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(20 * 20, CountOpaquePixels(result));
+        }
+
+        [Fact]
+        public void DiffuseAndSpecularLighting_RenderThroughFirstPartyFilterLayer()
+        {
+            const string diffuse =
+                "<svg width='30' height='30'><defs><filter id='f'>" +
+                "<feDiffuseLighting><fePointLight x='15' y='15' z='20'/></feDiffuseLighting>" +
+                "</filter></defs><rect width='20' height='20' filter='url(#f)'/></svg>";
+            const string specular =
+                "<svg width='30' height='30'><defs><filter id='f'>" +
+                "<feSpecularLighting specularExponent='12'>" +
+                "<feDistantLight azimuth='45' elevation='60'/></feSpecularLighting>" +
+                "</filter></defs><rect width='20' height='20' filter='url(#f)'/></svg>";
+
+            using var diffuseResult = new FenSvgRenderer().Render(diffuse);
+            Assert.True(diffuseResult.Success, diffuseResult.ErrorMessage);
+            Assert.False(diffuseResult.RequiresFallback);
+
+            using var specularResult = new FenSvgRenderer().Render(specular);
+            Assert.True(specularResult.Success, specularResult.ErrorMessage);
+            Assert.False(specularResult.RequiresFallback);
+        }
+
+        private static int CountOpaquePixels(SvgRenderResult result)
+        {
+            SKBitmap bitmap = result.Bitmap;
+            Assert.NotNull(bitmap);
+            int opaque = 0;
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    if (bitmap.GetPixel(x, y).Alpha > 0) opaque++;
+                }
+            }
+            return opaque;
         }
 
         private static void AssertFailsClosed(SvgRenderResult result)

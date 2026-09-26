@@ -7,12 +7,14 @@ namespace FenBrowser.FenEngine.Svg
     internal sealed partial class SvgRenderEngine
     {
         private const int MaxFilterPrimitives = 32;
+        private const int MaxTileRepeats = 64;
         private HashSet<string> _activeFilterIds;
         private HashSet<string> _activeMaskIds;
 
         private sealed class ResolvedFilter
         {
             public SvgElement ContentOwner;
+            public bool HasPrimitives;
             public string X;
             public string Y;
             public string Width;
@@ -46,9 +48,8 @@ namespace FenBrowser.FenEngine.Svg
             {
                 if (wantsFilter)
                 {
-                    TryEnterReference(
-                        filterRaw, "filter", ref _activeFilterIds,
-                        out filterId, out filterElement);
+                    TryEnterFilterReference(
+                        filterRaw, ref _activeFilterIds, out filterId, out filterElement);
                 }
                 if (wantsMask)
                 {
@@ -249,6 +250,23 @@ namespace FenBrowser.FenEngine.Svg
             active.Add(candidate);
             id = candidate;
             return true;
+        }
+
+        private void TryEnterFilterReference(
+            string raw,
+            ref HashSet<string> active,
+            out string id,
+            out SvgElement referenced)
+        {
+            id = null;
+            referenced = null;
+            if (TryResolveLocalReference(raw, out string candidate) &&
+                (!_doc.ElementsById.TryGetValue(candidate, out SvgElement target) ||
+                 target.Name != "filter"))
+            {
+                return;
+            }
+            TryEnterReference(raw, "filter", ref active, out id, out referenced);
         }
 
         private static bool IsExternalEffectReference(string raw)
@@ -454,7 +472,7 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement server,
             out ResolvedFilter resolved)
         {
-            resolved = new ResolvedFilter();
+            resolved = new ResolvedFilter { ContentOwner = server };
             var visited = new HashSet<SvgElement>();
             SvgElement current = server;
             while (current != null)
@@ -477,9 +495,10 @@ namespace FenBrowser.FenEngine.Svg
                 resolved.ColorInterpolationFilters ??=
                     current.GetPresentationProperty("color-interpolation-filters");
 
-                if (resolved.ContentOwner == null && HasRenderableFilterContent(current))
+                if (!resolved.HasPrimitives && HasRenderableFilterContent(current))
                 {
                     resolved.ContentOwner = current;
+                    resolved.HasPrimitives = true;
                 }
 
                 string href = current.GetAttribute("href") ?? current.GetLookup("xlink:href");
@@ -500,7 +519,7 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 current = template;
             }
-            return resolved.ContentOwner != null;
+            return true;
         }
 
         private static bool HasRenderableFilterContent(SvgElement filter)
@@ -525,13 +544,14 @@ namespace FenBrowser.FenEngine.Svg
             current = null;
             if (!TryResolveFilterTemplate(filterElement, out var filterTemplate))
             {
-                _report.RequireFallback("empty or invalid SVG filter template requires compatibility fallback");
+                _report.RequireFallback("invalid SVG filter template requires compatibility fallback");
                 return false;
             }
 
             int primitiveCount = 0;
             float primitiveScaleX = 1f;
             float primitiveScaleY = 1f;
+            float primitiveScaleZ = 1f;
             string primitiveUnits = filterTemplate.PrimitiveUnits;
             if (string.Equals(primitiveUnits, "objectBoundingBox", StringComparison.OrdinalIgnoreCase))
             {
@@ -543,6 +563,22 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 primitiveScaleX = bounds.Width;
                 primitiveScaleY = bounds.Height;
+                double diagonal = Math.Sqrt(
+                    (double)bounds.Width * bounds.Width +
+                    (double)bounds.Height * bounds.Height);
+                if (double.IsNaN(diagonal) || double.IsInfinity(diagonal) || diagonal <= 0)
+                {
+                    _report.RequireFallback(
+                        $"SVG filter on '{target.Name}' has degenerate object bounds");
+                    return false;
+                }
+                primitiveScaleZ = (float)(diagonal / Math.Sqrt(2));
+                if (!float.IsFinite(primitiveScaleZ) || primitiveScaleZ <= 0f)
+                {
+                    _report.RequireFallback(
+                        $"SVG filter on '{target.Name}' has an unusable object bounding box depth");
+                    return false;
+                }
             }
             else if (!string.IsNullOrWhiteSpace(primitiveUnits) &&
                      !string.Equals(primitiveUnits, "userSpaceOnUse", StringComparison.OrdinalIgnoreCase))
@@ -559,6 +595,19 @@ namespace FenBrowser.FenEngine.Svg
                 return false;
             }
 
+            if (!filterTemplate.HasPrimitives)
+            {
+                using var emptyShader = SKShader.CreateColor(SKColors.Transparent);
+                current = SKImageFilter.CreateShader(emptyShader, false, filterRegion);
+                if (current == null)
+                {
+                    _report.RequireFallback("empty SVG filter result could not be created");
+                    return false;
+                }
+                owned.Add(current);
+                return true;
+            }
+
             var results = new Dictionary<string, SKImageFilter>(StringComparer.Ordinal);
             foreach (var primitive in filterTemplate.ContentOwner.Children)
             {
@@ -573,6 +622,7 @@ namespace FenBrowser.FenEngine.Svg
                     return false;
                 }
 
+                bool rejectedBefore = _report.ResourceRejected;
                 SKImageFilter next;
                 if (primitive.Name == "feFlood")
                 {
@@ -660,19 +710,28 @@ namespace FenBrowser.FenEngine.Svg
                             filterTemplate, primitive, input, filterRegion, owned),
                         "feMorphology" => BuildMorphology(
                             primitive, input, primitiveScaleX, primitiveScaleY),
-                        "feDiffuseLighting" => BuildDistantLighting(
+                        "feTile" => BuildTile(
+                            primitive, filterRegion, input, owned,
+                            primitiveScaleX, primitiveScaleY),
+                        "feDiffuseLighting" => BuildLighting(
                             filterTemplate, primitive, target, viewport, filterRegion,
-                            input, specular: false),
-                        "feSpecularLighting" => BuildDistantLighting(
+                            input, specular: false,
+                            primitiveScaleX, primitiveScaleY, primitiveScaleZ),
+                        "feSpecularLighting" => BuildLighting(
                             filterTemplate, primitive, target, viewport, filterRegion,
-                            input, specular: true),
+                            input, specular: true,
+                            primitiveScaleX, primitiveScaleY, primitiveScaleZ),
                         _ => null
                     };
                 }
 
                 if (next == null)
                 {
-                    _report.RequireFallback($"SVG filter primitive '{primitive.Name}' requires compatibility fallback");
+                    if (!rejectedBefore && !_report.ResourceRejected)
+                    {
+                        _report.RequireFallback(
+                            $"SVG filter primitive '{primitive.Name}' requires compatibility fallback");
+                    }
                     return false;
                 }
                 owned.Add(next);
@@ -685,12 +744,11 @@ namespace FenBrowser.FenEngine.Svg
                 }
             }
 
-            if (primitiveCount == 0)
+            if (current == null)
             {
-                _report.RequireFallback("empty SVG filter requires compatibility fallback");
+                _report.RequireFallback("SVG filter produced no primitive result");
                 return false;
             }
-            if (current == null) return false;
 
             var cropped = SKImageFilter.CreateOffset(0f, 0f, current, filterRegion);
             if (cropped == null)
@@ -937,14 +995,17 @@ namespace FenBrowser.FenEngine.Svg
                 !tokenizer.Next(out _);
         }
 
-        private SKImageFilter BuildDistantLighting(
+        private SKImageFilter BuildLighting(
             ResolvedFilter filter,
             SvgElement lighting,
             SvgElement target,
             ViewportContext viewport,
             SKRect filterRegion,
             SKImageFilter input,
-            bool specular)
+            bool specular,
+            float scaleX,
+            float scaleY,
+            float scaleZ)
         {
             if (!TryResolvePrimitiveRegion(
                     filter, lighting, target, viewport, filterRegion, out var primitiveRegion) ||
@@ -959,52 +1020,144 @@ namespace FenBrowser.FenEngine.Svg
             {
                 CheckDeadline();
                 if (child.Name is "title" or "desc" or "metadata") continue;
-                if (light != null || child.Name != "feDistantLight") return null;
+                if (light != null) return null;
                 light = child;
             }
             if (light == null ||
-                !TryReadBoundedLightingNumber(
-                    light.GetAttribute("azimuth"), 0f, -360000f, 360000f,
-                    out float azimuth) ||
-                !TryReadBoundedLightingNumber(
-                    light.GetAttribute("elevation"), 0f, -360000f, 360000f,
-                    out float elevation))
+                !TryResolveFilterColor(
+                    lighting, filter, target, "lighting-color", SKColors.White, out var lightColor) ||
+                !TryReadLightingGains(lighting, specular, out float specularConstant, out float specularExponent))
                 return null;
 
-            const float DegreesToRadians = MathF.PI / 180f;
-            float azimuthRadians = azimuth * DegreesToRadians;
-            float elevationRadians = elevation * DegreesToRadians;
-            float elevationCosine = MathF.Cos(elevationRadians);
-            var direction = new SKPoint3(
-                MathF.Cos(azimuthRadians) * elevationCosine,
-                MathF.Sin(azimuthRadians) * elevationCosine,
-                MathF.Sin(elevationRadians));
-
-            if (!TryResolveFilterColor(
-                    lighting, filter, target, "lighting-color", SKColors.White, out var lightColor))
-                return null;
-
-            if (!specular)
+            if (light.Name == "feDistantLight")
             {
                 if (!TryReadBoundedLightingNumber(
-                        lighting.GetAttribute("diffuseConstant"), 1f, 0f, 32767f,
-                        out float diffuseConstant))
+                        light.GetAttribute("azimuth"), 0f, -360000f, 360000f,
+                        out float azimuth) ||
+                    !TryReadBoundedLightingNumber(
+                        light.GetAttribute("elevation"), 0f, -360000f, 360000f,
+                        out float elevation))
                     return null;
-                return SKImageFilter.CreateDistantLitDiffuse(
-                    direction, lightColor, surfaceScale, diffuseConstant,
-                    input, primitiveRegion);
+
+                const float DegreesToRadians = MathF.PI / 180f;
+                float azimuthRadians = azimuth * DegreesToRadians;
+                float elevationRadians = elevation * DegreesToRadians;
+                float elevationCosine = MathF.Cos(elevationRadians);
+                var direction = new SKPoint3(
+                    MathF.Cos(azimuthRadians) * elevationCosine,
+                    MathF.Sin(azimuthRadians) * elevationCosine,
+                    MathF.Sin(elevationRadians));
+
+                if (!specular)
+                {
+                    if (!TryReadBoundedLightingNumber(
+                            lighting.GetAttribute("diffuseConstant"), 1f, 0f, 32767f,
+                            out float diffuseConstant))
+                        return null;
+                    return SKImageFilter.CreateDistantLitDiffuse(
+                        direction, lightColor, surfaceScale, diffuseConstant,
+                        input, primitiveRegion);
+                }
+                return SKImageFilter.CreateDistantLitSpecular(
+                    direction, lightColor, surfaceScale, specularConstant,
+                    specularExponent, input, primitiveRegion);
             }
 
-            if (!TryReadBoundedLightingNumber(
-                    lighting.GetAttribute("specularConstant"), 1f, 0f, 32767f,
-                    out float specularConstant) ||
-                !TryReadBoundedLightingNumber(
-                    lighting.GetAttribute("specularExponent"), 1f, 1f, 128f,
-                    out float specularExponent))
-                return null;
-            return SKImageFilter.CreateDistantLitSpecular(
-                direction, lightColor, surfaceScale, specularConstant,
-                specularExponent, input, primitiveRegion);
+            if (light.Name == "fePointLight")
+            {
+                var location = ReadLightPosition(light, scaleX, scaleY, scaleZ);
+                if (!specular)
+                {
+                    if (!TryReadBoundedLightingNumber(
+                            lighting.GetAttribute("diffuseConstant"), 1f, 0f, 32767f,
+                            out float diffuseConstant))
+                        return null;
+                    return SKImageFilter.CreatePointLitDiffuse(
+                        location, lightColor, surfaceScale, diffuseConstant,
+                        input, primitiveRegion);
+                }
+                return SKImageFilter.CreatePointLitSpecular(
+                    location, lightColor, surfaceScale, specularConstant,
+                    specularExponent, input, primitiveRegion);
+            }
+
+            if (light.Name == "feSpotLight")
+            {
+                var location = ReadLightPosition(light, scaleX, scaleY, scaleZ);
+                var focus = ReadSpotLightFocus(light, scaleX, scaleY, scaleZ);
+                if (!TryReadLightExponent(
+                        light.GetAttribute("specularExponent"), out float lightExponent) ||
+                    !TryReadConeAngle(light.GetAttribute("limitingConeAngle"), out float coneAngle))
+                    return null;
+                if (!specular)
+                {
+                    if (!TryReadBoundedLightingNumber(
+                            lighting.GetAttribute("diffuseConstant"), 1f, 0f, 32767f,
+                            out float diffuseConstant))
+                        return null;
+                    return SKImageFilter.CreateSpotLitDiffuse(
+                        location, focus, lightExponent, coneAngle, lightColor, surfaceScale,
+                        diffuseConstant, input, primitiveRegion);
+                }
+                return SKImageFilter.CreateSpotLitSpecular(
+                    location, focus, lightExponent, coneAngle, lightColor, surfaceScale,
+                    specularConstant, specularExponent, input, primitiveRegion);
+            }
+
+            return null;
+        }
+
+        private static bool TryReadLightingGains(
+            SvgElement lighting,
+            bool specular,
+            out float specularConstant,
+            out float specularExponent)
+        {
+            specularConstant = 1f;
+            specularExponent = 1f;
+            if (!specular) return true;
+            return TryReadBoundedLightingNumber(
+                       lighting.GetAttribute("specularConstant"), 1f, 0f, 32767f,
+                       out specularConstant) &&
+                   TryReadBoundedLightingNumber(
+                       lighting.GetAttribute("specularExponent"), 1f, 1f, 128f,
+                       out specularExponent);
+        }
+
+        private static SKPoint3 ReadLightPosition(
+            SvgElement light,
+            float scaleX,
+            float scaleY,
+            float scaleZ) =>
+            new SKPoint3(
+                ReadScaledLength(light.GetAttribute("x"), scaleX, 32767f),
+                ReadScaledLength(light.GetAttribute("y"), scaleY, 32767f),
+                ReadScaledLength(light.GetAttribute("z"), scaleZ, 32767f));
+
+        private static SKPoint3 ReadSpotLightFocus(
+            SvgElement light,
+            float scaleX,
+            float scaleY,
+            float scaleZ) =>
+            new SKPoint3(
+                ReadScaledLength(
+                    light.GetAttribute("pointsAtX") ?? light.GetAttribute("x"), scaleX, 32767f),
+                ReadScaledLength(
+                    light.GetAttribute("pointsAtY") ?? light.GetAttribute("y"), scaleY, 32767f),
+                ReadScaledLength(light.GetAttribute("pointsAtZ"), scaleZ, 32767f));
+
+        private static bool TryReadLightExponent(string raw, out float value)
+        {
+            if (!TryReadSingleNumber(raw, 1f, out value)) return false;
+            value = Math.Clamp(value, 1f, 128f);
+            return float.IsFinite(value);
+        }
+
+        private static bool TryReadConeAngle(string raw, out float value)
+        {
+            if (!TryReadSingleNumber(raw, 180f, out value)) return false;
+            value = Math.Clamp(value, 0f, 180f);
+            return float.IsFinite(value);
         }
 
         private static bool TryReadBoundedLightingNumber(
@@ -1257,6 +1410,91 @@ namespace FenBrowser.FenEngine.Svg
             _report.RequireFallback(
                 $"SVG feMorphology operator '{raw}' requires compatibility fallback");
             return null;
+        }
+
+        private SKImageFilter BuildTile(
+            SvgElement tile,
+            SKRect filterRegion,
+            SKImageFilter input,
+            List<SKImageFilter> owned,
+            float scaleX,
+            float scaleY)
+        {
+            if (!TryReadTileLength(
+                    tile.GetAttribute("x"), filterRegion.Left, scaleX, out float x) ||
+                !TryReadTileLength(
+                    tile.GetAttribute("y"), filterRegion.Top, scaleY, out float y) ||
+                !TryReadTileLength(
+                    tile.GetAttribute("width"), filterRegion.Width, scaleX, out float width) ||
+                !TryReadTileLength(
+                    tile.GetAttribute("height"), filterRegion.Height, scaleY, out float height))
+                return null;
+
+            x = MathF.Round(x);
+            y = MathF.Round(y);
+            width = MathF.Round(width);
+            height = MathF.Round(height);
+            if (width < 1f || height < 1f ||
+                width > 32767f || height > 32767f ||
+                MathF.Abs(x) > 1048576f || MathF.Abs(y) > 1048576f)
+                return null;
+
+            if (x > filterRegion.Left)
+                x -= width * (MathF.Floor((x - filterRegion.Left) / width) + 1f);
+            if (y > filterRegion.Top)
+                y -= height * (MathF.Floor((y - filterRegion.Top) / height) + 1f);
+            if (!float.IsFinite(x) || !float.IsFinite(y) ||
+                MathF.Abs(x) > 1048576f || MathF.Abs(y) > 1048576f)
+                return null;
+
+            int columns = TileRepeatCount(x, width, filterRegion.Right);
+            int rows = TileRepeatCount(y, height, filterRegion.Bottom);
+            long repeats = (long)columns * rows;
+            if (repeats > MaxTileRepeats)
+            {
+                _report.RequireFallback("SVG feTile repeat budget exceeded");
+                return null;
+            }
+            if (repeats == 1)
+                return SKImageFilter.CreateOffset(0f, 0f, input, filterRegion);
+
+            var copies = new SKImageFilter[repeats];
+            for (int row = 0; row < rows; row++)
+            {
+                CheckDeadline();
+                for (int column = 0; column < columns; column++)
+                {
+                    var copy = SKImageFilter.CreateOffset(column * width, row * height, input);
+                    if (copy == null) return null;
+                    owned.Add(copy);
+                    copies[row * columns + column] = copy;
+                }
+            }
+            var repeated = SKImageFilter.CreateMerge(copies);
+            return repeated == null
+                ? null
+                : SKImageFilter.CreateOffset(0f, 0f, repeated, filterRegion);
+        }
+
+        private static int TileRepeatCount(float start, float size, float limit) =>
+            limit > start
+                ? Math.Max(1, (int)MathF.Ceiling((limit - start) / size))
+                : 1;
+
+        private static bool TryReadTileLength(
+            string raw,
+            float fallback,
+            float scale,
+            out float value)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                value = fallback;
+                return true;
+            }
+            if (!TryReadSingleNumber(raw, 0f, out value)) return false;
+            value *= scale;
+            return float.IsFinite(value);
         }
 
         private SKImageFilter BuildColorMatrix(SvgElement element, SKImageFilter input)
@@ -1711,6 +1949,15 @@ namespace FenBrowser.FenEngine.Svg
         {
             float value = ReadFiniteNumber(element, name, 0f, 32767f) * scale;
             return float.IsFinite(value) ? Math.Clamp(value, -limit, limit) : 0f;
+        }
+
+        private static float ReadScaledLength(string raw, float scale, float limit)
+        {
+            if (string.IsNullOrWhiteSpace(raw) ||
+                !SvgValues.TryParseNumber(raw.AsSpan(), out float value) ||
+                !float.IsFinite(value)) return 0f;
+            float scaled = value * scale;
+            return float.IsFinite(scaled) ? Math.Clamp(scaled, -limit, limit) : 0f;
         }
 
         private static bool TryResolveLocalReference(string raw, out string id)

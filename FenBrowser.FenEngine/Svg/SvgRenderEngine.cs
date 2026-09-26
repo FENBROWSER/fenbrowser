@@ -21,10 +21,8 @@ namespace FenBrowser.FenEngine.Svg
     {
         private readonly SvgParsedDocument _doc;
         private readonly SvgParseReport _report;
-        private readonly Stopwatch _clock;
-        private readonly long _deadlineMs;
         private readonly SvgRenderLimits _limits;
-        private readonly NestedResourceBudget _resourceBudget;
+        private readonly SvgRenderResources _resources;
         private readonly int _resourceDepth;
         private readonly System.Uri _baseUri;
         private readonly ISvgResourceResolver _resourceResolver;
@@ -55,7 +53,7 @@ namespace FenBrowser.FenEngine.Svg
         private SvgRenderEngine(
             SvgParsedDocument doc,
             SvgRenderLimits limits,
-            NestedResourceBudget resourceBudget,
+            SvgRenderResources resources,
             int resourceDepth,
             System.Uri baseUri,
             ISvgResourceResolver resourceResolver,
@@ -64,13 +62,11 @@ namespace FenBrowser.FenEngine.Svg
             _doc = doc;
             _report = doc.Report;
             _limits = limits;
-            _resourceBudget = resourceBudget;
+            _resources = resources;
             _resourceDepth = resourceDepth;
             _baseUri = baseUri;
             _resourceResolver = resourceResolver;
             _documentTimeSeconds = documentTimeSeconds;
-            _clock = resourceBudget.Clock;
-            _deadlineMs = limits.MaxRenderTimeMs > 0 ? limits.MaxRenderTimeMs : long.MaxValue;
             _maxActiveLayers = limits.MaxActiveLayers;
             _maxReferenceDepth = limits.MaxReferenceDepth;
         }
@@ -91,6 +87,31 @@ namespace FenBrowser.FenEngine.Svg
             out bool requiresFallback,
             out bool resourceRejected)
         {
+            using var resources = new SvgRenderResources(limits);
+            return TryRender(
+                source, limits, baseUri, resourceResolver, documentTimeSeconds,
+                out picture, out width, out height, out error, out warnings,
+                out fallbackReasonCodes, out resourceRejectionReasonCodes,
+                out requiresFallback, out resourceRejected, resources);
+        }
+
+        internal static bool TryRender(
+            string source,
+            SvgRenderLimits limits,
+            System.Uri baseUri,
+            ISvgResourceResolver resourceResolver,
+            double documentTimeSeconds,
+            out SKPicture picture,
+            out float width,
+            out float height,
+            out string error,
+            out IReadOnlyList<string> warnings,
+            out IReadOnlyList<string> fallbackReasonCodes,
+            out IReadOnlyList<string> resourceRejectionReasonCodes,
+            out bool requiresFallback,
+            out bool resourceRejected,
+            SvgRenderResources resources)
+        {
             picture = null;
             width = 0f;
             height = 0f;
@@ -101,8 +122,18 @@ namespace FenBrowser.FenEngine.Svg
             requiresFallback = false;
             resourceRejected = false;
 
+            if (resources == null)
+            {
+                using var owned = new SvgRenderResources(limits);
+                return TryRender(
+                    source, limits, baseUri, resourceResolver, documentTimeSeconds,
+                    out picture, out width, out height, out error, out warnings,
+                    out fallbackReasonCodes, out resourceRejectionReasonCodes,
+                    out requiresFallback, out resourceRejected, owned);
+            }
+
             return TryRenderInternal(
-                source, limits, new NestedResourceBudget(limits), 0, baseUri, resourceResolver,
+                source, limits, resources, 0, baseUri, resourceResolver,
                 documentTimeSeconds,
                 out picture, out width, out height, out _, out error, out warnings,
                 out fallbackReasonCodes, out resourceRejectionReasonCodes,
@@ -112,7 +143,7 @@ namespace FenBrowser.FenEngine.Svg
         private static bool TryRenderInternal(
             string source,
             SvgRenderLimits limits,
-            NestedResourceBudget resourceBudget,
+            SvgRenderResources resources,
             int resourceDepth,
             System.Uri baseUri,
             ISvgResourceResolver resourceResolver,
@@ -147,12 +178,8 @@ namespace FenBrowser.FenEngine.Svg
             rootPreserveAspectRatio = doc.Root.GetAttribute("preserveAspectRatio");
 
             var engine = new SvgRenderEngine(
-                doc, limits, resourceBudget, resourceDepth, baseUri, resourceResolver,
+                doc, limits, resources, resourceDepth, baseUri, resourceResolver,
                 documentTimeSeconds);
-            engine.ConfigureImageBudgets(
-                limits.MaxDecodedImagePixels,
-                limits.MaxDecodedImageBytes,
-                limits.MaxRasterWidth);
             try
             {
                 engine.ApplySmilSnapshot(doc.Root);
@@ -190,34 +217,9 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
-        private sealed class NestedResourceBudget
-        {
-            private readonly long _maxDecodedBytes;
-            private readonly int _maxResourceCount;
-            private long _decodedBytes;
-            private int _resourceCount;
-
-            public NestedResourceBudget(SvgRenderLimits limits)
-            {
-                _maxDecodedBytes = Math.Max(1, limits.MaxCumulativeResourceBytes);
-                _maxResourceCount = Math.Max(1, limits.MaxResourceCount);
-            }
-
-            public Stopwatch Clock { get; } = Stopwatch.StartNew();
-
-            public bool TryAdmit(int bytes)
-            {
-                if (bytes < 0 || _resourceCount >= _maxResourceCount ||
-                    _decodedBytes + bytes > _maxDecodedBytes) return false;
-                _decodedBytes += bytes;
-                _resourceCount++;
-                return true;
-            }
-        }
-
         private void CheckTime()
         {
-            if ((_elementsVisited & TimeCheckMask) == 0 && _clock.ElapsedMilliseconds > _deadlineMs)
+            if ((_elementsVisited & TimeCheckMask) == 0 && _resources.IsExpired)
             {
                 throw new SvgTimeBudgetExceededException();
             }
@@ -225,7 +227,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private void CheckDeadline()
         {
-            if (_clock.ElapsedMilliseconds > _deadlineMs)
+            if (_resources.IsExpired)
             {
                 throw new SvgTimeBudgetExceededException();
             }
@@ -350,6 +352,106 @@ namespace FenBrowser.FenEngine.Svg
             picture = recorder.EndRecording();
         }
 
+    }
+
+    internal sealed class SvgRenderResources : System.IDisposable
+    {
+        private readonly long _maxCumulativeBytes;
+        private readonly int _maxResourceCount;
+        private readonly long _maxCumulativeDecodedPixels;
+        private readonly Dictionary<string, SKImage> _decodedImages =
+            new Dictionary<string, SKImage>(System.StringComparer.Ordinal);
+        private long _cumulativeBytes;
+        private long _cumulativeDecodedPixels;
+        private int _resourceCount;
+        private bool _disposed;
+
+        public SvgRenderResources(SvgRenderLimits limits, Stopwatch clock = null)
+        {
+            _maxCumulativeBytes = System.Math.Max(1, limits.MaxCumulativeResourceBytes);
+            _maxResourceCount = System.Math.Max(1, limits.MaxResourceCount);
+            _maxCumulativeDecodedPixels = System.Math.Max(1, limits.MaxCumulativeDecodedImagePixels);
+            MaxDecodedImageBytes = System.Math.Max(1, limits.MaxDecodedImageBytes);
+            MaxDecodedImagePixels = System.Math.Max(1, limits.MaxDecodedImagePixels);
+            MaxRasterDimension = System.Math.Max(1, limits.MaxRasterWidth);
+            DeadlineMs = limits.MaxRenderTimeMs > 0 ? limits.MaxRenderTimeMs : long.MaxValue;
+            Clock = clock ?? Stopwatch.StartNew();
+        }
+
+        public Stopwatch Clock { get; }
+        public long DeadlineMs { get; }
+        public int MaxDecodedImageBytes { get; }
+        public long MaxDecodedImagePixels { get; }
+        public int MaxRasterDimension { get; }
+
+        public long ElapsedMs => Clock.ElapsedMilliseconds;
+
+        public bool IsExpired => ElapsedMs > DeadlineMs;
+
+        public int DecodedImageCount => _decodedImages.Count;
+
+        public long CumulativeDecodedPixels => _cumulativeDecodedPixels;
+
+        public long CumulativeResourceBytes => _cumulativeBytes;
+
+        public int ResourceCount => _resourceCount;
+
+        public bool TryAdmit(int bytes)
+        {
+            if (bytes < 0 || _disposed || _resourceCount >= _maxResourceCount ||
+                _cumulativeBytes + bytes > _maxCumulativeBytes) return false;
+            _cumulativeBytes += bytes;
+            _resourceCount++;
+            return true;
+        }
+
+        public bool TryAdmitDecodedPixels(long pixels)
+        {
+            if (pixels <= 0 || _disposed ||
+                _cumulativeDecodedPixels + pixels > _maxCumulativeDecodedPixels) return false;
+            _cumulativeDecodedPixels += pixels;
+            return true;
+        }
+
+        public bool TryBorrowDecodedImage(
+            byte[] payload,
+            out SKImage image,
+            out string key)
+        {
+            key = null;
+            image = null;
+            if (_disposed || payload == null || payload.Length == 0 ||
+                _decodedImages.Count == 0) return false;
+            key = ImageKey(payload);
+            return _decodedImages.TryGetValue(key, out image);
+        }
+
+        public void RetainDecodedImage(byte[] payload, SKImage image)
+        {
+            if (image == null || _disposed) return;
+            _decodedImages[ImageKey(payload)] = image;
+        }
+
+        private static string ImageKey(byte[] payload) =>
+            System.Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(payload));
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            foreach (var entry in _decodedImages)
+            {
+                try
+                {
+                    entry.Value?.Dispose();
+                }
+                catch (System.Exception)
+                {
+                }
+            }
+            _decodedImages.Clear();
+        }
     }
 
     internal sealed class SvgTimeBudgetExceededException : System.Exception

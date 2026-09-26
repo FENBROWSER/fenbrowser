@@ -192,6 +192,47 @@ public sealed class SvgResourceContextTests
         Assert.Null(second.Bitmap);
     }
 
+    [Fact]
+    public void RepeatedResolvedImages_ReuseOneDecodedSurface()
+    {
+        byte[] png = Png(SKColors.Red);
+        var uri = new Uri("https://example.test/red.png");
+        var resolver = new MemoryResolver((uri, png));
+        var limits = ExternalReferenceLimits();
+        limits.MaxCumulativeDecodedImagePixels = 4;
+
+        using var result = Render(
+            "<svg width='4' height='2'><image href='red.png' width='2' height='2'/>" +
+            "<image href='red.png' x='2' width='2' height='2'/></svg>",
+            new Uri("https://example.test/page.svg"), resolver, limits);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.False(result.HadResourceRejection);
+        Assert.Equal(2, resolver.CallCount);
+        Assert.True(result.Bitmap!.GetPixel(3, 1).Red > 200);
+    }
+
+    [Fact]
+    public void DistinctResolvedImages_ObeyCumulativeDecodedPixelBudget()
+    {
+        var red = new Uri("https://example.test/red.png");
+        var blue = new Uri("https://example.test/blue.png");
+        var resolver = new MemoryResolver(
+            (red, Png(SKColors.Red)),
+            (blue, Png(SKColors.Blue, SKColors.Blue, SKColors.Blue, SKColors.Blue)));
+        var limits = ExternalReferenceLimits();
+        limits.MaxCumulativeDecodedImagePixels = 4;
+
+        using var result = Render(
+            "<svg width='4' height='2'><image href='red.png' width='2' height='2'/>" +
+            "<image href='blue.png' x='2' width='2' height='2'/></svg>",
+            new Uri("https://example.test/page.svg"), resolver, limits);
+
+        AssertFailsClosed(result);
+        Assert.True(result.HadResourceRejection);
+        Assert.Contains("resource-budget", result.ResourceRejectionReasonCodes);
+    }
+
     private static void AssertFailsClosed(SvgRenderResult result)
     {
         Assert.False(result.Success, result.ErrorMessage);
@@ -226,6 +267,21 @@ public sealed class SvgResourceContextTests
     {
         using var bitmap = new SKBitmap(2, 2);
         bitmap.Erase(color);
+        return Encode(bitmap);
+    }
+
+    private static byte[] Png(SKColor topLeft, SKColor topRight, SKColor bottomLeft, SKColor bottomRight)
+    {
+        using var bitmap = new SKBitmap(2, 2);
+        bitmap.Erase(topLeft);
+        bitmap.SetPixel(1, 0, topRight);
+        bitmap.SetPixel(0, 1, bottomLeft);
+        bitmap.SetPixel(1, 1, bottomRight);
+        return Encode(bitmap);
+    }
+
+    private static byte[] Encode(SKBitmap bitmap)
+    {
         using var image = SKImage.FromBitmap(bitmap);
         using var data = image.Encode(SKEncodedImageFormat.Png, 100);
         return data.ToArray();

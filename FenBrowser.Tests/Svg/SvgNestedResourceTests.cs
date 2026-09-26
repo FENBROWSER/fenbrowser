@@ -1,6 +1,7 @@
 using System;
 using System.Text;
 using FenBrowser.FenEngine.Adapters;
+using SkiaSharp;
 using Xunit;
 
 namespace FenBrowser.Tests.Svg
@@ -101,6 +102,64 @@ namespace FenBrowser.Tests.Svg
             Assert.True(result.Bitmap.GetPixel(2, 2).Red > 200);
         }
 
+        [Fact]
+        public void NestedRasterImages_ShareOneDecodedSurfaceAcrossNesting()
+        {
+            string inner = "<svg width='2' height='2'>" +
+                           "<image href='" + PngUri(SKColors.Red, seed: 1) +
+                           "' width='2' height='2'/></svg>";
+            for (int i = 0; i < 4; i++) inner = "<svg width='2' height='2'>" +
+                "<image href='" + DataSvg(inner) + "' width='2' height='2'/></svg>";
+            var limits = SvgRenderLimits.Default;
+            limits.MaxCumulativeDecodedImagePixels = 4;
+
+            using var result = new FenSvgRenderer().Render(inner, limits);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.HadResourceRejection);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(1, 1));
+        }
+
+        [Fact]
+        public void NestedDistinctRasters_ObeyCumulativeDecodedPixelBudget()
+        {
+            string inner = "<svg width='2' height='2'>" +
+                           "<image href='" + PngUri(SKColors.Red, seed: 1) +
+                           "' width='2' height='2'/></svg>";
+            inner = "<svg width='2' height='2'>" +
+                    "<image href='" + DataSvg(inner) + "' width='2' height='2'/>" +
+                    "<image href='" + PngUri(SKColors.Blue, seed: 2) +
+                    "' width='2' height='2'/></svg>";
+            var limits = SvgRenderLimits.Default;
+            limits.MaxCumulativeDecodedImagePixels = 4;
+
+            using var result = new FenSvgRenderer().Render(inner, limits);
+
+            AssertFailsClosed(result);
+            Assert.True(result.HadResourceRejection);
+            Assert.Contains("resource-budget", result.ResourceRejectionReasonCodes);
+            Assert.Contains(
+                result.Warnings,
+                warning => warning.Contains("cumulative decoded raster budget"));
+        }
+
+        [Fact]
+        public void NestedRasterBudget_IsSharedAcrossNestingLevels()
+        {
+            string inner = "<svg width='2' height='2'>" +
+                           "<image href='" + PngUri(SKColors.Red, seed: 1) +
+                           "' width='2' height='2'/></svg>";
+            string outer = "<svg width='2' height='2'>" +
+                           "<image href='" + DataSvg(inner) + "' width='2' height='2'/></svg>";
+            var limits = SvgRenderLimits.Default;
+            limits.MaxCumulativeDecodedImagePixels = 8;
+
+            using var result = new FenSvgRenderer().Render(outer, limits);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(1, 1));
+        }
+
         private static void AssertFailsClosed(SvgRenderResult result)
         {
             Assert.False(result.Success, result.ErrorMessage);
@@ -115,5 +174,18 @@ namespace FenBrowser.Tests.Svg
 
         private static string DataSvg(string svg) =>
             "data:image/svg+xml;base64," + Convert.ToBase64String(Encoding.UTF8.GetBytes(svg));
+
+        private static string PngUri(SKColor color, byte seed)
+        {
+            using var bitmap = new SkiaSharp.SKBitmap(2, 2);
+            using (var canvas = new SkiaSharp.SKCanvas(bitmap))
+            {
+                canvas.Clear(color);
+                canvas.DrawPoint(0, 0, new SkiaSharp.SKPaint { Color = new SkiaSharp.SKColor(seed, seed, seed) });
+            }
+            using var image = SkiaSharp.SKImage.FromBitmap(bitmap);
+            using var data = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+            return "data:image/png;base64," + Convert.ToBase64String(data.ToArray());
+        }
     }
 }
