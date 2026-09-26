@@ -290,6 +290,43 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
+        public async Task Xhr_FiresLoadForAnHttpErrorStatusAndErrorOnlyForNetworkFailure()
+        {
+            // XHR §4.6.6: a 404 is a response, so it is a load event with status 404; only a
+            // network error is an error event.
+            var baseUri = new Uri("https://example.test/");
+            var document = new HtmlParser(
+                """
+                <html><body><script>
+                globalThis.__events = [];
+                function go(url) {
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('GET', url, true);
+                    xhr.onload = function () { globalThis.__events.push('load:' + url + ':' + xhr.status); };
+                    xhr.onerror = function () { globalThis.__events.push('error:' + url + ':' + xhr.status); };
+                    xhr.send();
+                }
+                go('/missing');
+                go('/network-failure');
+                </script></body></html>
+                """,
+                baseUri).Parse();
+
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll,
+                FetchHandler = request => request.RequestUri.AbsolutePath == "/missing"
+                    ? Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("gone") })
+                    : Task.FromException<HttpResponseMessage>(new HttpRequestException("connection refused"))
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            await WaitForGlobalAsync(engine, "globalThis.__events.length === 2");
+
+            Assert.Equal("error:/network-failure:0,load:/missing:404", engine.Evaluate("globalThis.__events.slice().sort().join(',')")?.ToString());
+        }
+
+        [Fact]
         public async Task Fetch_PostsFormDataAndExposesJsonResponseHeaders()
         {
             var baseUri = new Uri("https://www.amazon.in/");

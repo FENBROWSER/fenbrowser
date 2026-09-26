@@ -197,7 +197,19 @@ public sealed partial class FenJsBrowserScriptEngine
         return ImportCrossRealmValue(exported);
     }
 
-    private JsValue CallParentGlobalFunction(string name, JsValue argumentList)
+    private JsValue CallParentGlobalFunction(string name, JsValue argumentList) =>
+        CallGlobalFunctionAcrossRealms("parent", name, argumentList, work => WithParentRealm(work, false));
+
+    /// <summary>
+    /// Calls the global function <paramref name="name"/> of another realm, which
+    /// <paramref name="enter"/> runs a callback in while holding that realm's lock:
+    /// the arguments and the result cross as structured copies.
+    /// </summary>
+    private JsValue CallGlobalFunctionAcrossRealms(
+        string label,
+        string name,
+        JsValue argumentList,
+        Func<Func<FenJsBrowserScriptEngine, bool>, bool> enter)
     {
         var count = 0;
         if (argumentList.Tag == JsValueTag.Object)
@@ -217,21 +229,21 @@ public sealed partial class FenJsBrowserScriptEngine
             {
                 ThrowDomException(
                     "TypeError",
-                    $"parent.{name}: a function cannot be passed to a window in another realm");
+                    $"{label}.{name}: a function cannot be passed to a window in another realm");
             }
         }
 
         object result = JsValue.Undefined;
         string errorName = null;
         string errorMessage = null;
-        var entered = WithParentRealm(
+        var entered = enter(
             parent =>
             {
                 var function = parent.ReadGlobalValueOrUndefined(name);
                 if (!parent._interpreter.CanCallValue(function))
                 {
                     errorName = "TypeError";
-                    errorMessage = $"parent.{name} is not a function";
+                    errorMessage = $"{label}.{name} is not a function";
                     return true;
                 }
 
@@ -262,12 +274,11 @@ public sealed partial class FenJsBrowserScriptEngine
                 }
 
                 return true;
-            },
-            false);
+            });
 
         if (!entered)
         {
-            ThrowDomException("Error", $"parent.{name}: the parent window did not become available");
+            ThrowDomException("Error", $"{label}.{name}: the {label} window did not become available");
         }
 
         if (errorMessage != null)
@@ -297,31 +308,46 @@ public sealed partial class FenJsBrowserScriptEngine
     private T WithParentRealm<T>(Func<FenJsBrowserScriptEngine, T> work, T unavailable)
     {
         var parent = _parentRealmOwner;
-        if (parent == null || parent._realmAbandoned || _embeddingFrameElement == null)
+        if (parent == null || _embeddingFrameElement == null)
         {
             return unavailable;
         }
 
-        if (!Monitor.TryEnter(parent._fenJsLock, ParentWindowLockTimeoutMs))
+        return WithRealmLocked(parent, work, unavailable);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="work"/> holding <paramref name="realm"/>'s lock, waiting at
+    /// most <see cref="ParentWindowLockTimeoutMs"/> for it, so two realms each waiting
+    /// on the other give up instead of deadlocking.
+    /// </summary>
+    private static T WithRealmLocked<T>(FenJsBrowserScriptEngine realm, Func<FenJsBrowserScriptEngine, T> work, T unavailable)
+    {
+        if (realm == null || realm._realmAbandoned)
+        {
+            return unavailable;
+        }
+
+        if (!Monitor.TryEnter(realm._fenJsLock, ParentWindowLockTimeoutMs))
         {
             FenBrowser.Core.EngineLogCompat.Warn(
-                $"[FenJsBridge] Parent window lock not available within {ParentWindowLockTimeoutMs}ms",
+                $"[FenJsBridge] Window lock not available within {ParentWindowLockTimeoutMs}ms",
                 LogCategory.JavaScript);
             return unavailable;
         }
 
         try
         {
-            if (parent._interpreter == null || parent._realmAbandoned)
+            if (realm._interpreter == null || realm._realmAbandoned)
             {
                 return unavailable;
             }
 
-            return work(parent);
+            return work(realm);
         }
         finally
         {
-            Monitor.Exit(parent._fenJsLock);
+            Monitor.Exit(realm._fenJsLock);
         }
     }
 

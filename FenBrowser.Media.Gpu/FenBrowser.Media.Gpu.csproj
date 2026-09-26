@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The GPU side of decoding (design §5, M7): a hand-declared slice of Direct3D 11 video
+       on Windows that hardware decoders share one device through, reads their pictures back
+       and converts them to BGRA on the GPU. Nothing here runs off Windows; other platforms'
+       hardware pictures are downloaded by their codec adapter. Only FenBrowser.Media is
+       referenced. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\FenBrowser.Media\FenBrowser.Media.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FenBrowser.Media.Tests</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FenBrowser.Media.Codecs.Ffmpeg</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FenBrowser.Media.Codecs.MediaFoundation</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

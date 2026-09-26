@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -16,7 +16,8 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
     public enum TargetProcessKind
     {
         Gpu,
-        Utility
+        Utility,
+        Media
     }
 
     public enum TargetIpcMessageType
@@ -41,7 +42,20 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         ImageDecode,
         ImageDecodeResponse,
         SvgDecode,
-        SvgDecodeResponse
+        SvgDecodeResponse,
+        MediaOpen,
+        MediaOpenResponse,
+        MediaRead,
+        MediaReadResponse,
+        MediaSeek,
+        MediaSeekResponse,
+        MediaVideoDecode,
+        MediaVideoDecodeResponse,
+        MediaClose,
+        MediaDecoderOpen,
+        MediaDecoderOpenResponse,
+        MediaDecoderPush,
+        MediaDecoderPushResponse
     }
 
     public sealed class TargetIpcEnvelope
@@ -344,7 +358,13 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                    messageType == TargetIpcMessageType.FontShapeTextResponse ||
                    messageType == TargetIpcMessageType.FontResolveTypefaceResponse ||
                    messageType == TargetIpcMessageType.ImageDecodeResponse ||
-                   messageType == TargetIpcMessageType.SvgDecodeResponse;
+                   messageType == TargetIpcMessageType.SvgDecodeResponse ||
+                   messageType == TargetIpcMessageType.MediaOpenResponse ||
+                   messageType == TargetIpcMessageType.MediaReadResponse ||
+                   messageType == TargetIpcMessageType.MediaSeekResponse ||
+                   messageType == TargetIpcMessageType.MediaVideoDecodeResponse ||
+                   messageType == TargetIpcMessageType.MediaDecoderOpenResponse ||
+                   messageType == TargetIpcMessageType.MediaDecoderPushResponse;
         }
     }
 
@@ -585,6 +605,12 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 case TargetIpcMessageType.FontResolveTypefaceResponse:
                 case TargetIpcMessageType.ImageDecodeResponse:
                 case TargetIpcMessageType.SvgDecodeResponse:
+                case TargetIpcMessageType.MediaOpenResponse:
+                case TargetIpcMessageType.MediaReadResponse:
+                case TargetIpcMessageType.MediaSeekResponse:
+                case TargetIpcMessageType.MediaVideoDecodeResponse:
+                case TargetIpcMessageType.MediaDecoderOpenResponse:
+                case TargetIpcMessageType.MediaDecoderPushResponse:
                     DispatchResponse(envelope);
                     break;
             }

@@ -79,7 +79,8 @@ public enum LogSubsystem
     Verification,
     Security,
     Accessibility,
-    ProcessIsolation
+    ProcessIsolation,
+    Media
 }
 
 public readonly record struct EngineLogContext(
@@ -468,6 +469,7 @@ public static class EngineLogCompatibility
         if ((category & LogCategory.Security) != 0) return LogSubsystem.Security;
         if ((category & LogCategory.Accessibility) != 0) return LogSubsystem.Accessibility;
         if ((category & LogCategory.ProcessIsolation) != 0) return LogSubsystem.ProcessIsolation;
+        if ((category & LogCategory.Media) != 0) return LogSubsystem.Media;
         if ((category & LogCategory.Images) != 0) return LogSubsystem.Img;
         if ((category & LogCategory.FeatureGaps) != 0) return LogSubsystem.Verification;
         return LogSubsystem.General;
@@ -494,6 +496,7 @@ public static class EngineLogCompatibility
             LogSubsystem.Security => LogCategory.Security,
             LogSubsystem.Accessibility => LogCategory.Accessibility,
             LogSubsystem.ProcessIsolation => LogCategory.ProcessIsolation,
+            LogSubsystem.Media => LogCategory.Media,
             LogSubsystem.Img => LogCategory.Images,
             _ => LogCategory.General
         };

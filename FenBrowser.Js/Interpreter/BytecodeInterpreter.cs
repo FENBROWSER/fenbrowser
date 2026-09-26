@@ -399,11 +399,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _directEvalEnv?.Trace(tracer);
         _preResolvedEnv?.Trace(tracer);
 
-        foreach (var callback in _pendingMicrotasks)
-        {
-            TraceRootValue(tracer, callback, "interp.pendingMicrotask");
-        }
-
         foreach (var (callback, heldValues) in _finalizationCleanupJobs)
         {
             TraceRootValue(tracer, callback, "interp.finalizationCleanupJob.callback");
@@ -496,7 +491,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     JsValue IBuiltinContext.ConstructDate(IReadOnlyList<JsValue> args) => ConstructDate(args);
     void IBuiltinContext.InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto) => InstallPrototypeMethodsOnRegExpPrototype(protoHandle, proto);
     JsValue IBuiltinContext.Eval(IReadOnlyList<JsValue> args) => Eval(args);
-    void IBuiltinContext.EnqueueMicrotask(JsValue callback) => _pendingMicrotasks.Enqueue(callback);
+    void IBuiltinContext.EnqueueMicrotask(JsValue callback) => EnqueueHostCallback(callback);
     ObjectHandle IBuiltinContext.MaterializeObjectConstructor() => EnsureObjectConstructor();
     ObjectHandle IBuiltinContext.MaterializeArrayConstructor() => EnsureArrayConstructor();
     ObjectHandle IBuiltinContext.MaterializeFunctionConstructor() => EnsureFunctionConstructor();
@@ -584,14 +579,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private ObjectHandle? _aggregateErrorPrototypeHandle;
     private ObjectHandle? _structuredCloneHandle;
     private ObjectHandle? _queueMicrotaskHandle;
-
-    // Pending HostQueueMicrotask callbacks. Drained at the end of every top-level
-    // Execute() invocation as part of the unified microtask checkpoint (D.6) which
-    // also flushes the Promise JobQueue. The two queues live separately because
-    // queueMicrotask jobs carry a single JsValue callback while PromiseJobs carry
-    // structured reaction state - but they drain interleaved FIFO within the same
-    // checkpoint so ordering matches HTML's "perform a microtask checkpoint".
-    private readonly Queue<JsValue> _pendingMicrotasks = new();
 
     // FinalizationRegistry cleanup jobs. Per ECMA-262 26.2, cleanup callbacks
     // run as jobs at agent level; FenJS drains them as part of the unified
@@ -1116,6 +1103,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (function.Kind == FunctionKind.Async)
             {
                 var capability = NewPromiseCapability();
+                using var capabilityScope = PinPromiseCapability(capability);
                 result = StartAsyncProgram(
                     function, JsValue.FromObject(globalHandle), EnsureGlobalEnvironment(), capability, out var asyncCtx);
 
@@ -1260,6 +1248,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (function.Kind == FunctionKind.Async)
         {
             var capability = NewPromiseCapability();
+            using var capabilityScope = PinPromiseCapability(capability);
             var asyncResult = StartAsyncProgram(
                 function, JsValue.FromObject(globalHandle), environment, capability, out var asyncCtx);
 
@@ -1495,6 +1484,34 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
     }
 
+    // HTML 8.1.7.3 "queue a microtask": one FIFO with the promise jobs.
+    private void EnqueueHostCallback(JsValue callback) =>
+        _jobQueue.Enqueue(new HostCallbackJob(callback, DefaultPromiseRealmId));
+
+    // A queueMicrotask callback. An exception is reported to the host (the
+    // observer, then the caller of the checkpoint) rather than swallowed the way
+    // a promise reaction's is; the jobs behind it wait for the next checkpoint.
+    private void RunHostCallbackJob(HostCallbackJob job, Action<JsValue, Exception>? onFailure)
+    {
+        try
+        {
+            _ = CallFunction(job.Callback, Array.Empty<JsValue>(), JsValue.Undefined);
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                onFailure?.Invoke(job.Callback, exception);
+            }
+            catch
+            {
+                // A diagnostic observer must never replace the JS exception.
+            }
+
+            throw;
+        }
+    }
+
     private void DrainPendingMicrotasksCore(Action<JsValue, Exception>? onQueueMicrotaskFailure)
     {
         var checkpointDeadlineTicks = WallClockTimeoutMs > 0
@@ -1513,7 +1530,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var checkpointPass = 0;
-        while (_pendingMicrotasks.Count > 0 || _jobQueue.Count > 0 || _finalizationCleanupJobs.Count > 0)
+        while (_jobQueue.Count > 0 || _finalizationCleanupJobs.Count > 0)
         {
             BeginMicrotaskTracePass(++checkpointPass);
             // FinalizationRegistry cleanup callbacks run first so collected
@@ -1560,62 +1577,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
             }
 
-            // Drain queueMicrotask first so an early host callback that resolves a
-            // promise gets its triggered reactions into the JobQueue before we
-            // start running jobs - keeping HTML's tail-call ordering intact.
-            while (_pendingMicrotasks.Count > 0)
-            {
-                CheckCheckpointBudget();
-                var callback = _pendingMicrotasks.Dequeue();
-                var traceJob = BeginMicrotaskTraceJob(
-                    "queue-microtask",
-                    "callback=" + DescribeMicrotaskCallbackForTrace(callback));
-                Exception? traceFailure = null;
-                // The dequeued callback leaves the traced root set here; pin it
-                // for the invocation so a safe-point collection inside the
-                // callback's own body cannot sweep the closure cell that is
-                // executing (top-level invocations hold it only in this local).
-                var microtaskRootMark = _heap.RootCount;
-                if (callback.Tag == JsValueTag.Object)
-                {
-                    _heap.PushRoot(callback.AsObjectHandle());
-                }
-                try
-                {
-                    _ = CallFunction(callback, Array.Empty<JsValue>(), JsValue.Undefined);
-                }
-                catch (Exception exception)
-                {
-                    traceFailure = exception;
-                    try
-                    {
-                        onQueueMicrotaskFailure?.Invoke(callback, exception);
-                    }
-                    catch
-                    {
-                        // A diagnostic observer must never replace the JS exception.
-                    }
-
-                    throw;
-                }
-                finally
-                {
-                    _heap.PopRootsTo(microtaskRootMark);
-                    EndMicrotaskTraceJob(traceJob, traceFailure);
-                }
-            }
-
             _ = _jobQueue.RunMicrotaskCheckpoint(job =>
             {
                 CheckCheckpointBudget();
                 var traceJob = BeginMicrotaskTraceJob(
-                    "promise-job",
+                    job is HostCallbackJob ? "queue-microtask" : "promise-job",
                     DescribePromiseJobForTrace(job));
                 Exception? traceFailure = null;
                 var jobStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 var jobInstructions = _instructionCount;
                 try
                 {
+                    if (job is HostCallbackJob callbackJob)
+                    {
+                        RunHostCallbackJob(callbackJob, onQueueMicrotaskFailure);
+                        return true;
+                    }
+
                     return RunPromiseJob(job);
                 }
                 catch (Exception exception)
@@ -2258,7 +2236,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             var sourceObj = _heap.GetObject(iter.SourceHandle);
-            var length = GetArrayLength(sourceObj);
+            int length;
+            if (sourceObj is TypedArrayObject typedArray)
+            {
+                // ECMA-262 23.1.5.1 CreateArrayIterator step for a typed array: out of
+                // bounds (detached included) is a TypeError, the length is TypedArrayLength.
+                if (typedArray.IsViewDetached || typedArray.IsOutOfBounds())
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Cannot perform %ArrayIteratorPrototype%.next on a detached or out-of-bounds TypedArray."));
+                }
+
+                length = typedArray.Length;
+            }
+            else
+            {
+                length = GetArrayLength(sourceObj);
+            }
+
             if (iter.Index >= length)
             {
                 iter.IsExhausted = true;
@@ -12112,7 +12107,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     continue;
                 }
 
-                SetHostObjectProperty(targetValue, key, GetReceiverProperty(fromValue, key));
+                SetHostObjectProperty(targetValue, key, GetReceiverProperty(fromValue, key), strict: true);
             }
 
             return;
@@ -12126,7 +12121,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 continue;
             }
 
-            SetHostObjectProperty(targetValue, pair.Key, GetReceiverProperty(fromValue, pair.Key));
+            SetHostObjectProperty(targetValue, pair.Key, GetReceiverProperty(fromValue, pair.Key), strict: true);
         }
     }
 
@@ -15383,7 +15378,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ArrayPrototypePush(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLengthDouble(obj);
 
@@ -15453,7 +15448,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypePop(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         if (length == 0)
@@ -15474,7 +15469,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeShift(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         if (length == 0)
@@ -15507,7 +15502,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // shifting existing elements up by args.Count; returns the new length.
     private JsValue ArrayPrototypeUnshift(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         var insert = args.Count;
@@ -15550,7 +15545,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // for i < len/2; preserves holes (a missing source slot deletes the target).
     private JsValue ArrayPrototypeToSpliced(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var lengthD = GetArrayLengthDouble(obj);
         var length = (int)Math.Min(lengthD, int.MaxValue);
         var start = NormaliseSliceIndex(args, 0, 0, length);
@@ -15594,7 +15589,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ArrayPrototypeWith(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         ThrowIfArrayLengthExceedsLimit(GetArrayLengthDouble(obj));
         var length = GetArrayLength(obj);
         var rawIndex = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
@@ -15624,7 +15619,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ArrayPrototypeToSorted(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         ThrowIfArrayLengthExceedsLimit(GetArrayLengthDouble(obj));
         var length = GetArrayLength(obj);
         var comparator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? args[0] : (JsValue?)null;
@@ -15678,7 +15673,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeToReversed(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         ThrowIfArrayLengthExceedsLimit(GetArrayLengthDouble(obj));
         var length = GetArrayLength(obj);
@@ -15696,7 +15691,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeReverse(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         var middle = length / 2;
@@ -15737,7 +15732,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // start/end wrap from length; out-of-range values clamp into [0, length].
     private JsValue ArrayPrototypeFill(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var ownerHandle = receiver.AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
@@ -15844,7 +15839,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // backward pass to avoid clobbering data not yet copied.
     private JsValue ArrayPrototypeCopyWithin(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var ownerHandle = receiver.AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
@@ -15891,7 +15886,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // length; out-of-range returns undefined.
     private JsValue ArrayPrototypeAt(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         var raw = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
         var idx = raw < 0 ? length + raw : raw;
@@ -15908,7 +15903,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // as undefined-valued slots per spec.
     private JsValue ArrayPrototypeFindLast(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLengthDouble(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -15930,7 +15925,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 23.1.3.13 findLastIndex.
     private JsValue ArrayPrototypeFindLastIndex(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLengthDouble(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -15956,7 +15951,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // were inserted or extra elements removed.
     private JsValue ArrayPrototypeSplice(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var lengthD = GetArrayLengthDouble(obj);
         var length = (int)Math.Min(lengthD, int.MaxValue);
@@ -16054,7 +16049,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // already stable). Sorts in place and returns the receiver.
     private JsValue ArrayPrototypeSort(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var ownerHandle = ToArrayReceiver(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         var comparator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? args[0] : (JsValue?)null;
@@ -16196,7 +16191,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // (default length-1, negative wraps from length). Returns -1 when not found.
     private JsValue ArrayPrototypeLastIndexOf(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         if (length == 0)
         {
@@ -16232,7 +16227,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // up to the given depth; non-Array elements are kept as-is. Holes are skipped.
     private JsValue ArrayPrototypeFlat(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var depth = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
             ? Math.Max(0, (int)ToNumber(args[0]))
             : 1;
@@ -16280,7 +16275,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // array allocation that the spec also avoids.
     private JsValue ArrayPrototypeFlatMap(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -16316,7 +16311,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // satisfied).
     private JsValue ArrayPrototypeEvery(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -16343,7 +16338,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // one present element. Short-circuits on first truthy.
     private JsValue ArrayPrototypeSome(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -16371,7 +16366,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // spec treats them as undefined-valued slots that the callback can match).
     private JsValue ArrayPrototypeFind(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -16394,7 +16389,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // holes for the same reason find does.
     private JsValue ArrayPrototypeFindIndex(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -16420,7 +16415,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // reduceRight. Callback receives (accumulator, value, index, receiver).
     private JsValue ArrayPrototypeReduce(JsValue thisValue, IReadOnlyList<JsValue> args, bool reverse)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -16533,7 +16528,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ArrayPrototypeForEach(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToObjectValue(thisValue);   // walks a host array-like itself, keeping it as the callback's receiver
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         RequireCallable(callback, "Array.prototype.forEach");
@@ -16620,7 +16615,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // are mapped (step 7.b HasProperty), and a hole stays a hole.
     private JsValue ArrayPrototypeMap(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var lengthD = GetArrayLengthDouble(obj);
         var length = (int)Math.Min(lengthD, int.MaxValue);
@@ -16682,7 +16677,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // CreateDataPropertyOrThrow as it is found.
     private JsValue ArrayPrototypeFilter(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -16759,7 +16754,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // missing arguments degrade to "0, length"; negative arguments wrap.
     private JsValue ArrayPrototypeSlice(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var lengthDouble = GetArrayLengthDouble(obj);
         var length = GetArrayLength(obj);
 
@@ -16790,7 +16785,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // ECMA-262 23.1.3.2 steps 1-2: ToObject(this) then ArraySpeciesCreate.
         // The creation order is observable (constructor side effects happen
         // before any @@isConcatSpreadable lookup).
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var resultValue = ArraySpeciesCreate(receiver, Array.Empty<JsValue>());
         if (resultValue.Tag != JsValueTag.Object)
         {
@@ -17089,7 +17084,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // and options as arguments per the Intl spec.
     private JsValue ArrayPrototypeToLocaleString(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         var separator = ",";
         var sb = new System.Text.StringBuilder();
@@ -17127,7 +17122,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // the shared ToString conversion.
     private JsValue ArrayPrototypeJoin(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         var separator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
             ? ToStringValue(args[0])
@@ -17137,7 +17132,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private string JoinArrayElements(JsValue thisValue, string separator)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         return JoinArrayElements(thisValue, obj, length, separator);
     }
@@ -17189,7 +17184,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // negative wraps from length). Returns -1 when not found.
     private JsValue ArrayPrototypeIndexOf(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var obj = _heap.GetObject(ToArrayReceiver(thisValue).AsObjectHandle());
         var length = GetArrayLength(obj);
         if (length == 0)
         {
@@ -17220,7 +17215,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 23.1.3.14 includes - SameValueZero (NaN matches NaN; +0 matches -0).
     private JsValue ArrayPrototypeIncludes(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var receiver = ToObjectValue(thisValue);
+        var receiver = ToArrayReceiver(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLengthDouble(obj);
         if (length <= 0)
@@ -18262,11 +18257,53 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var fn = new NativeFunctionObject("structuredClone", (_, args) =>
         {
             if (args.Count == 0) return JsValue.Undefined;
-            return StructuredCloneValue(args[0], new Dictionary<ObjectHandle, ObjectHandle>());
+            var memo = new Dictionary<ObjectHandle, ObjectHandle>();
+            var transferred = CollectStructuredCloneTransfer(args.Count > 1 ? args[1] : JsValue.Undefined, memo);
+            var result = StructuredCloneValue(args[0], memo);
+            // HTML StructuredSerializeWithTransfer: the originals are detached only once the
+            // whole value serialized, so a failed clone leaves them usable.
+            foreach (var buffer in transferred)
+                buffer.Detach();
+            return result;
         }, length: 1);
         _structuredCloneHandle = _heap.AllocateObject(fn, AllocationSite.Current());
         _heap.PushRoot(_structuredCloneHandle.Value);
         return _structuredCloneHandle.Value;
+    }
+
+    // HTML 2.7.3 StructuredSerializeWithTransfer steps 1-4: options.transfer lists the
+    // ArrayBuffers whose contents move to the clone. Each gets its clone up front (in the memo,
+    // so references inside the value find it); the caller detaches the originals afterwards.
+    private List<ArrayBufferObject> CollectStructuredCloneTransfer(JsValue options, Dictionary<ObjectHandle, ObjectHandle> memo)
+    {
+        var buffers = new List<ArrayBufferObject>();
+        if (options.Tag is JsValueTag.Undefined or JsValueTag.Null)
+            return buffers;
+        if (options.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("structuredClone: options must be an object."));
+        if (!TryGetPropertyValue(_heap.GetObject(options.AsObjectHandle()), options, "transfer", out var list) ||
+            list.Tag == JsValueTag.Undefined)
+            return buffers;
+
+        foreach (var item in DrainIterableToListCapped(list, "structuredClone", cap: 100_000))
+        {
+            if (item.Tag != JsValueTag.Object || _heap.GetObject(item.AsObjectHandle()) is not ArrayBufferObject buffer)
+                throw new JsThrownException(CreateDataCloneError("Only ArrayBuffers can be transferred."));
+            if (buffer.IsSharedArrayBuffer)
+                throw new JsThrownException(CreateDataCloneError("A SharedArrayBuffer cannot be transferred."));
+            if (buffer.IsDetached)
+                throw new JsThrownException(CreateDataCloneError("A detached ArrayBuffer cannot be transferred."));
+            if (memo.ContainsKey(item.AsObjectHandle()))
+                throw new JsThrownException(CreateDataCloneError("An ArrayBuffer is listed twice in the transfer list."));
+
+            var moved = new ArrayBufferObject(buffer.ByteLength, buffer.IsResizable ? buffer.MaxByteLength : 0, buffer.IsResizable);
+            moved.SetPrototype(EnsureArrayBufferPrototype());
+            Array.Copy(buffer.Data, moved.Data, buffer.ByteLength);
+            memo[item.AsObjectHandle()] = _heap.AllocateObject(moved, AllocationSite.Current());
+            buffers.Add(buffer);
+        }
+
+        return buffers;
     }
 
     private JsValue StructuredCloneValue(JsValue value, Dictionary<ObjectHandle, ObjectHandle> memo)
@@ -18313,6 +18350,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var cloneObj = new RegExpObject(r.Pattern, r.Flags, r.NativeProgram);
                 cloneObj.SetPrototype(EnsureRegExpPrototype());
                 var h = _heap.AllocateObject(cloneObj, AllocationSite.Current());
+                memo[sourceHandle] = h;
+                return JsValue.FromObject(h);
+            }
+            case ArrayBufferObject buffer:
+            {
+                // HTML 2.7.3 StructuredSerializeInternal: an ArrayBuffer's bytes are copied.
+                if (buffer.IsDetached)
+                    throw new JsThrownException(CreateDataCloneError("A detached ArrayBuffer cannot be cloned."));
+                if (buffer.IsSharedArrayBuffer)
+                    return value;
+                var copy = new ArrayBufferObject(buffer.ByteLength, buffer.IsResizable ? buffer.MaxByteLength : 0, buffer.IsResizable);
+                copy.SetPrototype(EnsureArrayBufferPrototype());
+                Array.Copy(buffer.Data, copy.Data, buffer.ByteLength);
+                var h = _heap.AllocateObject(copy, AllocationSite.Current());
                 memo[sourceHandle] = h;
                 return JsValue.FromObject(h);
             }
@@ -19865,38 +19916,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromString(sb.ToString());
         }, length: 1);
 
+        // ECMA-262 23.2.3.19 / .37 / .7 keys, values, entries: ValidateTypedArray, then
+        // CreateArrayIterator(O, kind). The iterator reads the typed array live, so a later
+        // write is seen and a detach mid-iteration throws, as the spec requires.
         DefineNativePrototypeMethod(protoHandle, proto, "keys", (thisValue, _) =>
         {
-            var self = ValidateTypedArray(thisValue);
-            var keys = new List<JsValue>(self.Length);
-            for (var i = 0; i < self.Length; i++) keys.Add(JsValue.FromNumber(i));
-            var arr = CreateArrayObject(keys);
-            var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
-            return CreateArrayIterator(JsValue.FromObject(arrHandle), ArrayIteratorKind.Value);
+            ValidateTypedArray(thisValue);
+            return CreateArrayIterator(thisValue, ArrayIteratorKind.Key);
         }, length: 0);
 
         DefineNativePrototypeMethod(protoHandle, proto, "values", (thisValue, _) =>
         {
-            var self = ValidateTypedArray(thisValue);
-            var values = new List<JsValue>(self.Length);
-            for (var i = 0; i < self.Length; i++) values.Add(self.GetElement(i));
-            var arr = CreateArrayObject(values);
-            var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
-            return CreateArrayIterator(JsValue.FromObject(arrHandle), ArrayIteratorKind.Value);
+            ValidateTypedArray(thisValue);
+            return CreateArrayIterator(thisValue, ArrayIteratorKind.Value);
         }, length: 0);
 
         DefineNativePrototypeMethod(protoHandle, proto, "entries", (thisValue, _) =>
         {
-            var self = ValidateTypedArray(thisValue);
-            var entries = new List<JsValue>(self.Length);
-            for (var i = 0; i < self.Length; i++)
-            {
-                var pair = CreateArrayObject(new[] { JsValue.FromNumber(i), self.GetElement(i) });
-                entries.Add(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())));
-            }
-            var arr = CreateArrayObject(entries);
-            var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
-            return CreateArrayIterator(JsValue.FromObject(arrHandle), ArrayIteratorKind.Value);
+            ValidateTypedArray(thisValue);
+            return CreateArrayIterator(thisValue, ArrayIteratorKind.Entry);
         }, length: 0);
 
         DefineNativePrototypeMethod(protoHandle, proto, "toString", (thisValue, _) =>
@@ -20174,8 +20212,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return ta;
     }
 
-    // HTML queueMicrotask(callback). The callback is appended to the pending
-    // microtask queue and drained when the current Execute returns. Non-callable
+    // HTML queueMicrotask(callback). The callback is appended to the microtask
+    // queue, behind any promise jobs already in it, and runs at the next checkpoint. Non-callable
     // argument raises TypeError per the HTML spec.
     private ObjectHandle EnsureQueueMicrotaskFunction()
     {
@@ -20190,7 +20228,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 throw new JsThrownException(CreateTypeError("queueMicrotask: argument must be callable."));
             }
-            _pendingMicrotasks.Enqueue(args[0]);
+            EnqueueHostCallback(args[0]);
             return JsValue.Undefined;
         }, length: 1);
         _queueMicrotaskHandle = _heap.AllocateObject(fn, AllocationSite.Current());
@@ -21964,7 +22002,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         if (receiverValue.Tag == JsValueTag.HostObject)
         {
-            try { SetHostObjectProperty(receiverValue, prop, value); }
+            try { SetHostObjectProperty(receiverValue, prop, value, frame.Function.IsStrictMode); }
             catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
             return;
         }
@@ -22133,7 +22171,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             if (keyValue.Tag != JsValueTag.Symbol)
             {
-                SetHostObjectProperty(receiverValue, ToPropertyKey(keyValue), value);
+                SetHostObjectProperty(receiverValue, ToPropertyKey(keyValue), value, strict);
             }
 
             return;
@@ -22278,7 +22316,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         if (receiverValue.Tag == JsValueTag.HostObject)
         {
-            SetHostObjectProperty(receiverValue, prop, value);
+            SetHostObjectProperty(receiverValue, prop, value, strict);
             return;
         }
 
@@ -23250,6 +23288,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return _heap.GetObject(ToObjectValue(value).AsObjectHandle());
     }
 
+    /// <summary>
+    /// The receiver of a generic Array.prototype method. A host object (a NodeList, a
+    /// NamedNodeMap, an HTMLCollection) lives behind the host bridge, not in the JS heap,
+    /// so the array algorithms cannot walk it; they get a snapshot of its array-like view
+    /// instead - length and every index read through the host - which is what
+    /// <c>Array.prototype.map.call(element.attributes, ...)</c> and friends need (ECMA-262
+    /// 23.1.3 "The Array.prototype methods are intentionally generic").
+    /// </summary>
+    private JsValue ToArrayReceiver(JsValue thisValue)
+    {
+        var receiver = ToObjectValue(thisValue);
+        if (receiver.Tag != JsValueTag.HostObject)
+        {
+            return receiver;
+        }
+
+        var length = GetHostArrayLikeLength(receiver);
+        var items = new List<JsValue>(length);
+        for (var i = 0; i < length; i++)
+        {
+            items.Add(GetReceiverProperty(receiver, JsIndexKeys.For(i)));
+        }
+
+        var arr = CreateArrayFromElements(items);
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+    }
+
     private JsValue ToObjectValue(JsValue value)
     {
         if (value.Tag == JsValueTag.Undefined || value.Tag == JsValueTag.Null)
@@ -23923,7 +23988,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var propertyKey = ToPropertyKey(key);
-        var deletedKey = obj.DeleteProperty(propertyKey);
+        var deletedKey = obj is ProxyObject computedDeleteProxy
+            ? ProxyDelete(computedDeleteProxy, JsValue.FromString(propertyKey))
+            : obj.DeleteProperty(propertyKey);
         if (!deletedKey && strict)
         {
             throw new JsThrownException(CreateTypeError($"Cannot delete property '{propertyKey}'."));

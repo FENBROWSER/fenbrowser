@@ -67,6 +67,7 @@
     <Compile Include="Engine\EventLoopRenderOrderingTests.cs" />
     <!-- MessageRouter dispatch concurrency tests; the rest of the DevTools tree
          stays excluded pending review. -->
+    <Compile Include="DOM\SelectorEngineConformanceTests.cs" />
     <Compile Include="DevTools\MessageRouterTests.cs" />
     <!-- Active renderer-child stdin polling contract; keep Architecture legacy
          and policy tests excluded until they are reviewed independently. -->
@@ -82,6 +83,9 @@
     <!-- Page loads must not restyle the whole document (a forced full relayout)
          when nothing about the document as a whole changed. -->
     <Compile Include="Rendering\RedundantRelayoutTests.cs" />
+    <!-- The media element's user agent controls: geometry, hit testing, paint, accessibility. -->
+    <Compile Include="Rendering\MediaControlsTests.cs" />
+    <Compile Include="Rendering\MediaControlsInteractionTests.cs" />
     <!-- Phase 1 animation-scoping regression (BrowserIntegration is in Host,
          which is otherwise excluded). -->
     <Compile Include="Host\Phase1AnimationScopingTests.cs" />

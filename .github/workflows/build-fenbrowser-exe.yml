@@ -256,6 +256,42 @@ jobs:
           path: TestResults/
           if-no-files-found: ignore
 
+  media-suite:
+    name: Media engine tests (blocking)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+
+      - name: Build media engine and tests
+        run: dotnet build FenBrowser.Media.Tests/FenBrowser.Media.Tests.csproj -c Release --nologo
+
+      - name: Run media engine tests
+        run: dotnet test FenBrowser.Media.Tests/FenBrowser.Media.Tests.csproj -c Release --no-build --logger trx --results-directory TestResults/media --verbosity minimal
+
+      - name: Build media fuzz suite
+        run: dotnet build FenBrowser.Media.Fuzz/FenBrowser.Media.Fuzz.csproj -c Release --nologo
+
+      - name: Run media fuzz suite
+        run: dotnet test FenBrowser.Media.Fuzz/FenBrowser.Media.Fuzz.csproj -c Release --no-build --logger "trx;LogFileName=media-fuzz.trx" --results-directory TestResults/media --verbosity minimal
+
+      - name: Upload media test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-test-results
+          path: TestResults/media/
+          if-no-files-found: ignore
+
   package-windows:
     name: Publish Windows Artifact (tag or manual)
     needs: quality-gate

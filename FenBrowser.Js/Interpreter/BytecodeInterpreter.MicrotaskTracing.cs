@@ -17,8 +17,7 @@ public sealed record FenJsMicrotaskTraceEvent(
     int JobIndex,
     string JobKind,
     string Detail,
-    int PendingQueueMicrotasks,
-    int PendingPromiseJobs,
+    int PendingMicrotasks,
     int PendingCleanupJobs,
     int InstructionCount,
     long ElapsedMilliseconds,
@@ -185,7 +184,6 @@ public sealed partial class BytecodeInterpreter
             context.JobIndex,
             context.JobKind,
             eventDetail,
-            _pendingMicrotasks.Count,
             _jobQueue.Count,
             _finalizationCleanupJobs.Count,
             _instructionCount,
@@ -258,6 +256,8 @@ public sealed partial class BytecodeInterpreter
                 $"reaction realm={reaction.RealmId} type={reaction.Reaction.Type} " +
                 $"handler={DescribeCalleeForDiagnostics(reaction.Reaction.Handler)} " +
                 $"argument={reaction.Argument.Tag}",
+            HostCallbackJob callback =>
+                "callback=" + DescribeMicrotaskCallbackForTrace(callback.Callback),
             PromiseResolveThenableJob thenable =>
                 $"resolve-thenable realm={thenable.RealmId} " +
                 $"then={DescribeCalleeForDiagnostics(thenable.Then)} " +

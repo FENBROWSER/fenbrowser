@@ -121,7 +121,7 @@ namespace FenBrowser.FenEngine.Layout
         public static bool IsReplacedElementTag(string tagUpper)
         {
             if (string.IsNullOrEmpty(tagUpper)) return false;
-            return tagUpper is "IMG" or "SVG" or "CANVAS" or "VIDEO" or "IFRAME" or "EMBED" or "OBJECT";
+            return tagUpper is "IMG" or "SVG" or "CANVAS" or "VIDEO" or "AUDIO" or "IFRAME" or "EMBED" or "OBJECT";
         }
 
         public static SKSize GetFallbackSize(string tagUpper)
@@ -132,6 +132,8 @@ namespace FenBrowser.FenEngine.Layout
                 "SVG" => new SKSize(300f, 150f),
                 "CANVAS" => new SKSize(300f, 150f),
                 "VIDEO" => new SKSize(300f, 150f),
+                // HTML rendering §15.4.3: an audio element with controls is 300x54 in the shipping engines.
+                "AUDIO" => new SKSize(300f, 54f),
                 "IFRAME" => new SKSize(300f, 150f),
                 "EMBED" => new SKSize(300f, 150f),
                 "OBJECT" => new SKSize(300f, 150f),
@@ -264,8 +266,63 @@ namespace FenBrowser.FenEngine.Layout
                     return true;
                 }
             }
+            else if (string.Equals(tagUpper, "VIDEO", StringComparison.Ordinal))
+            {
+                if (TryResolveVideoIntrinsicSize(element, out width, out height))
+                {
+                    return true;
+                }
+            }
 
             return false;
+        }
+
+        /// <summary>
+        /// HTML 4.8.9: the intrinsic size of a video's playback area is the video's, if
+        /// there is one, otherwise the poster frame's while it is shown; with neither the
+        /// caller falls back to 300x150.
+        /// </summary>
+        private static bool TryResolveVideoIntrinsicSize(Element element, out float width, out float height)
+        {
+            width = 0f;
+            height = 0f;
+            var state = FenBrowser.FenEngine.Media.MediaPresentation.Get(element);
+            if (state.VideoWidth > 0 && state.VideoHeight > 0)
+            {
+                width = state.VideoWidth;
+                height = state.VideoHeight;
+                return true;
+            }
+
+            if (!state.ShowPoster)
+            {
+                return false;
+            }
+
+            var poster = TryGetPosterBitmap(element);
+            if (poster == null)
+            {
+                return false;
+            }
+
+            width = poster.Width;
+            height = poster.Height;
+            return width > 0f && height > 0f;
+        }
+
+        /// <summary>The poster frame's bitmap once fetched, starting the fetch the first time.</summary>
+        internal static SKBitmap TryGetPosterBitmap(Element element)
+        {
+            string poster = element?.GetAttribute("poster");
+            if (string.IsNullOrWhiteSpace(poster))
+            {
+                return null;
+            }
+
+            string resolved = ResolveElementResourceUrl(element, poster);
+            return string.IsNullOrWhiteSpace(resolved)
+                ? null
+                : ImageLoader.GetImage(resolved, ownerDocument: element.OwnerDocument);
         }
 
         private static bool TryResolveImageBitmapIntrinsicSize(Element element, out float width, out float height)

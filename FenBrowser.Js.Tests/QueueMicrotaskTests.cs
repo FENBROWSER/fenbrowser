@@ -38,6 +38,23 @@ public sealed class QueueMicrotaskTests
     }
 
     [Fact]
+    public void CallbacksShareOneFifoQueueWithPromiseJobs()
+    {
+        // HTML 8.1.7.3: queueMicrotask and promise reactions append to the same
+        // microtask queue, so they run in the order they were queued.
+        var interpreter = new BytecodeInterpreter();
+        interpreter.Execute(new BytecodeCompiler().CompileScript(new SourceText(
+            "var log = []; var p = Promise.resolve();" +
+            "p.then(function(){ log.push('J1'); });" +
+            "queueMicrotask(function(){ log.push('M1'); });" +
+            "p.then(function(){ log.push('J2'); queueMicrotask(function(){ log.push('M2'); }); });" +
+            "queueMicrotask(function(){ log.push('M3'); });")));
+
+        Assert.Equal("J1,M1,J2,M3,M2", interpreter.Execute(
+            new BytecodeCompiler().CompileScript(new SourceText("log.join();"))).AsString());
+    }
+
+    [Fact]
     public void NonCallableThrowsTypeError()
     {
         Assert.Throws<JsThrownException>(() => Run("queueMicrotask(5);"));

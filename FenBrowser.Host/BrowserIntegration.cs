@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
@@ -1622,6 +1622,21 @@ public class BrowserIntegration : IDisposable
     private HitTestResult _cachedHitTest = HitTestResult.None;
     private readonly object _hitTestCacheLock = new();
 
+    private PageVisibilityState _lastPushedVisibility = PageVisibilityState.Visible;
+
+    /// <summary>Tells the document when the tab or window state changed its visibility.</summary>
+    private void PushPageVisibility()
+    {
+        var state = VisibilityState;
+        if (state == _lastPushedVisibility)
+        {
+            return;
+        }
+
+        _lastPushedVisibility = state;
+        _browser.SetPageVisible(state == PageVisibilityState.Visible);
+    }
+
     private void EngineLoop()
     {
         Volatile.Write(ref _engineThreadId, Environment.CurrentManagedThreadId);
@@ -1636,6 +1651,12 @@ public class BrowserIntegration : IDisposable
             // Stage 1: Drain host → engine input events
             DrainInputQueue();
             DrainEventQueue();
+
+            // The document's Page Visibility state follows the tab and the window, so
+            // script hears visibilitychange and the media engine stops decoding video
+            // for a page nobody is looking at (MEDIA_ENGINE_DESIGN section 5).
+            PushPageVisibility();
+            _browser.RefreshMediaViewportVisibility();
 
             if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
             {

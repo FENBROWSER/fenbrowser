@@ -1,0 +1,15 @@
+// Selected declarations from local WPT interfaces/html.idl at
+// 08008df7afd0916a2afdc41d919dd322ecf295cc (HTML 4.8.2).
+// Metadata only: generated FenEngine bindings remain excluded from compilation.
+[Exposed=Window]
+interface HTMLSourceElement : HTMLElement {
+  [HTMLConstructor] constructor();
+
+  [CEReactions, ReflectURL] attribute USVString src;
+  [CEReactions, Reflect] attribute DOMString type;
+  [CEReactions, Reflect] attribute USVString srcset;
+  [CEReactions, Reflect] attribute DOMString sizes;
+  [CEReactions, Reflect] attribute DOMString media;
+  [CEReactions, Reflect] attribute unsigned long width;
+  [CEReactions, Reflect] attribute unsigned long height;
+};

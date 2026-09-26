@@ -119,7 +119,9 @@ public sealed partial class BytecodeInterpreter
     // defers to IHostHooks.TrySetHostProperty. A false return becomes a
     // TypeError so scripts can see refused writes; this matches the spec's
     // "throw a TypeError" branch of OrdinarySet when the host vetoes.
-    private void SetHostObjectProperty(JsValue receiver, string key, JsValue value)
+    // <paramref name="strict"/> is whether a false [[Set]] throws (PutValue in
+    // strict code, or Set(O, P, V, true) for the built-ins).
+    private void SetHostObjectProperty(JsValue receiver, string key, JsValue value, bool strict)
     {
         _ = RequireHostObject(receiver, "set host property");
         var handle = receiver.AsHostObjectHandle();
@@ -160,12 +162,27 @@ public sealed partial class BytecodeInterpreter
         // prototype chain decides, and an inherited setter is called with the host
         // object as receiver. Reads already let prototype members shadow the host
         // hook; without the same order here, an accessor script defines on an
-        // interface prototype (Document.prototype.adoptedStyleSheets) is skipped and
-        // the host stores the value as an expando.
-        if (TryGetHostObjectPrototypeSetter(handle, key, out var inherited))
+        // interface prototype (Document.prototype.adoptedStyleSheets,
+        // HTMLMediaElement.prototype, a polyfill's accessor) is skipped and the host
+        // stores the value as an expando.
+        if (TryGetHostObjectPrototypeSetter(handle, key, out var inheritedSetter))
         {
-            _ = CallSetter(inherited, value, receiver);
+            _ = CallSetter(inheritedSetter, value, receiver);
             return;
+        }
+
+        // For a name the platform object does not implement itself, an inherited
+        // getter-only accessor or read-only data property makes OrdinarySet return
+        // false, which strict code sees as a TypeError. Sloppy code still leaves
+        // the write to the host, as it did before the prototype chain was consulted.
+        if (strict &&
+            TryGetHostObjectPrototypeDescriptor(handle, key, out var inherited) &&
+            (inherited.IsAccessor || !inherited.Writable) &&
+            !_hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.InCheck, out _))
+        {
+            throw new JsThrownException(CreateTypeError(inherited.IsAccessor
+                ? "Cannot set property '" + key + "' which has only a getter."
+                : "Cannot assign to read-only property '" + key + "'."));
         }
 
         if (_hostHooks.TrySetHostProperty(handle, key, value))
@@ -512,6 +529,25 @@ public sealed partial class BytecodeInterpreter
             current = current.PrototypeHandle is { } next ? _heap.GetObject(next) : null;
         }
 
+        return false;
+    }
+
+    /// <summary>The first descriptor for <paramref name="key"/> on the host object's explicit prototype chain.</summary>
+    private bool TryGetHostObjectPrototypeDescriptor(HostObjectHandle handle, string key, out JsPropertyDescriptor descriptor)
+    {
+        var prototype = GetExplicitHostObjectPrototype(handle);
+        var current = prototype.Tag == JsValueTag.Object ? _heap.GetObject(prototype.AsObjectHandle()) : null;
+        while (current is not null)
+        {
+            if (current.TryGetOwnProperty(key, out descriptor))
+            {
+                return true;
+            }
+
+            current = current.PrototypeHandle is { } next ? _heap.GetObject(next) : null;
+        }
+
+        descriptor = default;
         return false;
     }
 
@@ -990,7 +1026,7 @@ public sealed partial class BytecodeInterpreter
             throw new ArgumentException("An interface prototype object is required.", nameof(interfacePrototype));
 
         var target = _heap.GetObject(interfacePrototype.AsObjectHandle());
-        var named = new Objects.NamedPropertiesObject(resolve);
+        var named = new Objects.NamedPropertiesObject(resolve, _heap.GetObject);
         named.SetPrototype(target.PrototypeHandle);
 
         // WebIDL 3.7.4: the class string is "<Interface>Properties".
@@ -1031,6 +1067,17 @@ public sealed partial class BytecodeInterpreter
         }
 
         obj.PreventExtensions();
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    /// <summary>
+    /// An empty <see cref="ForwardingObject"/> with Object.prototype; the host defines its
+    /// own properties first and sets its source afterwards.
+    /// </summary>
+    public JsValue AllocateForwardingObject()
+    {
+        var obj = new ForwardingObject();
+        obj.SetPrototype(EnsureObjectPrototype());
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 

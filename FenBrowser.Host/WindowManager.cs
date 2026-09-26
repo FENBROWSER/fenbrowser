@@ -70,6 +70,7 @@ namespace FenBrowser.Host
             }
 
             _mainThreadId = Environment.CurrentManagedThreadId;
+            IsHeadless = isHeadless;
             _window = platformWindow.SilkWindow;
             _logicalWidth = platformWindow.Size.X;
             _logicalHeight = platformWindow.Size.Y;
@@ -77,10 +78,14 @@ namespace FenBrowser.Host
             AttachWindowEvents();
         }
 
+        /// <summary>True when the window is off-screen: automation, not a person, is using it.</summary>
+        public bool IsHeadless { get; private set; }
+
         public void Initialize(string initialUrl, bool isHeadless = false)
         {
             ThrowIfDisposed();
             _mainThreadId = Environment.CurrentManagedThreadId;
+            IsHeadless = isHeadless;
 
             var options = WindowOptions.Default;
             options.Size = new Vector2D<int>(_logicalWidth, _logicalHeight);

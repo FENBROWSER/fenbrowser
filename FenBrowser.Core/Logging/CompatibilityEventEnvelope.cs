@@ -210,6 +210,7 @@ public static class CompatibilityEventRecorder
             LogSubsystem.Dom => "dom",
             LogSubsystem.Net or LogSubsystem.Fetch => "network",
             LogSubsystem.Ipc or LogSubsystem.ProcessIsolation => "ipc",
+            LogSubsystem.Media => "media",
             _ => "engine"
         };
     }

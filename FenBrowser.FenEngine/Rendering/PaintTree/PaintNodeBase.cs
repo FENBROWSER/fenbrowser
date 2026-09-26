@@ -348,6 +348,28 @@ namespace FenBrowser.FenEngine.Rendering
     }
     
     /// <summary>
+    /// Paints the current picture of a playing video (design §2.5 VideoPaintNode). The
+    /// picture itself is acquired from the presenter at paint time, so the node stays a
+    /// value: <see cref="Sequence"/> is the picture that was latest when the tree was
+    /// built and tells the retained-tree diff that a repaint is due.
+    /// </summary>
+    public sealed class VideoPaintNode : PaintNodeBase
+    {
+        /// <summary>Where the picture comes from; never null.</summary>
+        public FenBrowser.Media.Video.VideoPresenter Presenter { get; init; }
+
+        /// <summary>The presenter's sequence number when this node was built.</summary>
+        public long Sequence { get; init; }
+
+        /// <summary>Object-fit mode: "fill", "contain", "cover", "none", "scale-down".</summary>
+        public string ObjectFit { get; init; } = "contain";
+
+        public string ObjectPosition { get; init; } = "50% 50%";
+
+        public override void Accept(IPaintNodeVisitor visitor) => visitor.Visit(this);
+    }
+
+    /// <summary>
     /// Applies an alpha mask to children.
     /// </summary>
     public sealed class MaskPaintNode : PaintNodeBase

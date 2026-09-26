@@ -236,6 +236,7 @@ namespace FenBrowser.FenEngine.Rendering
             @"window\s*\.\s*open\s*\((?<args>[^)]*)\)",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
+        private bool _pageVisible = true;
         private readonly ResourceManager _resources;
         private readonly ConditionalWeakTable<Document, FrameResourceSecurityContext> _frameResourceSecurity = new();
         // Per-host speculative prefetcher fed by the HTML PreloadScanner;
@@ -719,6 +720,34 @@ namespace FenBrowser.FenEngine.Rendering
             FenBrowser.Core.Security.PermissionsPolicy.None;
         public Dictionary<Node, CssComputed> ComputedStyles => _engine.LastComputedStyles;
         public CustomHtmlEngine Engine => _engine;
+
+        /// <summary>
+        /// Page Visibility: the embedder's tab or window state changed. The document's
+        /// visibilityState follows, script hears visibilitychange, and the media engine's
+        /// background policy (MEDIA_ENGINE_DESIGN section 5) stops decoding video that
+        /// nobody is looking at. The state is kept and re-applied to the next document.
+        /// </summary>
+        public void SetPageVisible(bool visible)
+        {
+            _pageVisible = visible;
+            if (_engine?.ScriptEngine is FenBrowser.FenEngine.Scripting.FenJsBrowserScriptEngine realm)
+            {
+                realm.SetPageVisible(visible);
+            }
+        }
+
+        /// <summary>
+        /// A frame tick: a media element whose box has scrolled or been laid out away from
+        /// the viewport stops decoding pictures (MEDIA_ENGINE_DESIGN section 5). Costs a
+        /// volatile read on a page with no media element.
+        /// </summary>
+        public void RefreshMediaViewportVisibility()
+        {
+            if (_engine?.ScriptEngine is FenBrowser.FenEngine.Scripting.FenJsBrowserScriptEngine realm)
+            {
+                realm.ScheduleMediaViewportCheck();
+            }
+        }
         public NavigationLifecycleSnapshot NavigationLifecycleState => _navigationLifecycle.GetSnapshot();
 
         public SKBitmap Favicon { get; private set; }
@@ -840,7 +869,13 @@ namespace FenBrowser.FenEngine.Rendering
                     TopLevelDocumentUri = _current ?? frameDocumentUri,
                     Destination = Header("Sec-Fetch-Dest") ?? "empty",
                     Mode = Header("Sec-Fetch-Mode") ?? "cors",
-                    CredentialsMode = "same-origin",
+                    // A request may carry its own credentials mode (a track element's
+                    // crossorigin state, or "omit" after a foreign redirect hop).
+                    CredentialsMode = req.Options.TryGetValue(
+                        new HttpRequestOptionsKey<string>(FenBrowser.Core.Network.Handlers.CorsHandler.CredentialsModeOptionKey),
+                        out var requestCredentials) && !string.IsNullOrWhiteSpace(requestCredentials)
+                        ? requestCredentials
+                        : "same-origin",
                     ReferrerPolicy = CurrentReferrerPolicy,
                     ContentSecurityPolicy = CurrentPolicy,
                     Method = req.Method.Method
@@ -1098,6 +1133,7 @@ namespace FenBrowser.FenEngine.Rendering
             ImageLoader.FetchDetailedAsync = _imageLoaderContext.FetchDetailedAsync;
             ImageLoader.RequestRepaint = _imageLoaderContext.RequestRepaint;
             ImageLoader.RequestRelayout = _imageLoaderContext.RequestRelayout;
+            FenBrowser.FenEngine.Media.MediaFetchResource.FetchDetailedAsync = FetchMediaResourceAsync;
             FontRegistry.FetchDetailedAsync = _fontLoaderContext.FetchDetailedAsync;
             FontRegistry.FetchDetailedForDocumentAsync = _fontLoaderContext.FetchDetailedForDocumentAsync;
 
@@ -1566,6 +1602,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (_engine?.ScriptEngine is FenBrowser.FenEngine.Scripting.FenJsBrowserScriptEngine jsEngine)
                 {
                     jsEngine.PermissionsPolicyProvider = () => CurrentPermissionsPolicy;
+                    jsEngine.SetPageVisible(_pageVisible);
                 }
 
                 string htmlToRender = result.Content;
@@ -3929,6 +3966,9 @@ pre {{
                 _lastClickTarget = inputEvent.Target;
                 _lastClickDefaultAllowed = true;
                 _suppressNextDomClickDispatchInHandleElementClick = false;
+                _lastClickPageX = (float)inputEvent.PageX;
+                _lastClickPageY = (float)inputEvent.PageY;
+                _lastClickPagePointValid = true;
             }
 
             if (inputEvent.Target != null && IsScriptDomInputEvent(type))
@@ -4085,6 +4125,9 @@ pre {{
                 _lastClickTarget = inputEvent.Target;
                 _lastClickDefaultAllowed = true;
                 _suppressNextDomClickDispatchInHandleElementClick = false;
+                _lastClickPageX = (float)inputEvent.PageX;
+                _lastClickPageY = (float)inputEvent.PageY;
+                _lastClickPagePointValid = true;
             }
 
             if (inputEvent.Target != null && IsScriptDomInputEvent(type))
@@ -5912,6 +5955,86 @@ pre {{
                 .ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// HTML 4.8.11.5 "resource fetch algorithm": a media request has destination
+        /// "audio" or "video", mode "no-cors" unless the crossorigin attribute asks for
+        /// CORS (then "anonymous" sends same-origin credentials and "use-credentials"
+        /// sends them always), and is checked against the frame's media-src.
+        /// </summary>
+        private async Task<BinaryFetchResult> FetchMediaResourceAsync(
+            FenBrowser.Media.Element.MediaFetchRequest request,
+            Document ownerDocument)
+        {
+            if (request == null || !Uri.TryCreate(request.Url, UriKind.Absolute, out var resourceUri))
+            {
+                return new BinaryFetchResult
+                {
+                    FailureReason = BinaryFetchFailureReason.InvalidRequest,
+                    FailureDetail = "Media URL is not an absolute URL"
+                };
+            }
+
+            var destination = request.IsVideo ? "video" : "audio";
+            var mode = request.CrossOrigin == null ? "no-cors" : "cors";
+            var credentials = request.CrossOrigin == null
+                ? "include"
+                : string.Equals(request.CrossOrigin, "use-credentials", StringComparison.OrdinalIgnoreCase)
+                    ? "include"
+                    : "same-origin";
+
+            if (ownerDocument == null ||
+                !_frameResourceSecurity.TryGetValue(ownerDocument, out var frameContext))
+            {
+                return await _resources.FetchBytesDetailedAsync(
+                        new FetchContext
+                        {
+                            RequestUri = MapRuntimeUri(resourceUri),
+                            InitiatorUri = _current,
+                            FrameDocumentUri = _current,
+                            TopLevelDocumentUri = _current,
+                            Destination = destination,
+                            Mode = mode,
+                            CredentialsMode = credentials,
+                            ReferrerPolicy = CurrentReferrerPolicy,
+                            ContentSecurityPolicy = CurrentPolicy,
+                            Method = "GET"
+                        },
+                        accept: null)
+                    .ConfigureAwait(false);
+            }
+
+            if (frameContext.Policy != null &&
+                !frameContext.Policy.IsAllowed("media-src", resourceUri, frameContext.DocumentUri))
+            {
+                return new BinaryFetchResult
+                {
+                    FinalUri = resourceUri,
+                    FailureReason = BinaryFetchFailureReason.CspBlocked,
+                    FailureDetail = "Blocked by media-src",
+                    CspAllowed = false
+                };
+            }
+
+            return await _resources.FetchBytesDetailedAsync(
+                    new FetchContext
+                    {
+                        RequestUri = MapRuntimeUri(resourceUri),
+                        InitiatorUri = frameContext.DocumentUri,
+                        FrameDocumentUri = frameContext.DocumentUri,
+                        TopLevelDocumentUri = _current ?? frameContext.DocumentUri,
+                        Destination = destination,
+                        Mode = mode,
+                        CredentialsMode = credentials,
+                        ReferrerPolicy = frameContext.ReferrerPolicy,
+                        ContentSecurityPolicy = frameContext.Policy,
+                        IsTopLevelNavigation = false,
+                        IsUserInitiated = false,
+                        Method = "GET"
+                    },
+                    accept: null)
+                .ConfigureAwait(false);
+        }
+
         private async Task<BinaryFetchResult> FetchFrameAwareFontAsync(Uri resourceUri, Document ownerDocument)
         {
             if (resourceUri == null)
@@ -6145,7 +6268,13 @@ pre {{
                         TopLevelDocumentUri = topLevelUri,
                         Destination = Header("Sec-Fetch-Dest") ?? "empty",
                         Mode = Header("Sec-Fetch-Mode") ?? "cors",
-                        CredentialsMode = "same-origin",
+                        // A request may carry its own credentials mode (a track element
+                        // with crossorigin=use-credentials); the default is same-origin.
+                        CredentialsMode = request.Options.TryGetValue(
+                            new HttpRequestOptionsKey<string>(FenBrowser.Core.Network.Handlers.CorsHandler.CredentialsModeOptionKey),
+                            out var credentialsMode) && !string.IsNullOrWhiteSpace(credentialsMode)
+                            ? credentialsMode
+                            : "same-origin",
                         ReferrerPolicy = referrerPolicy,
                         ContentSecurityPolicy = framePolicy,
                         IsTopLevelNavigation = false,
@@ -9747,6 +9876,104 @@ pre {{
             }
         }
 
+        // Where the last physical click landed, in page coordinates, for controls that
+        // decide what to do from the point rather than the element (media controls).
+        private float _lastClickPageX;
+        private float _lastClickPageY;
+        private bool _lastClickPagePointValid;
+
+        /// <summary>
+        /// HTML §4.8.13: a click on a media element with controls activates the control
+        /// under the point (play/pause, seek, mute). Returns true when a control took it.
+        /// </summary>
+        private bool TryActivateMediaControls(Element element, string tag)
+        {
+            if (tag != "video" && tag != "audio")
+            {
+                return false;
+            }
+
+            var pointValid = _lastClickPagePointValid;
+            _lastClickPagePointValid = false;
+            if (!pointValid || !FenBrowser.FenEngine.Media.MediaControls.ShowsControls(element))
+            {
+                return false;
+            }
+
+            // The element's box: the layout snapshot when there is one, else the visual
+            // rect the script side keeps (both are page space, like the click point).
+            SkiaSharp.SKRect box;
+            var layout = _engine?.LastLayout;
+            if (layout != null && layout.TryGetElementRect(element, out var geo))
+            {
+                box = geo.ToSKRect();
+            }
+            else if (FenBrowser.FenEngine.Scripting.JavaScriptEngine.TryGetVisualRect(element, out var vx, out var vy, out var vw, out var vh))
+            {
+                box = SkiaSharp.SKRect.Create((float)vx, (float)vy, (float)vw, (float)vh);
+            }
+            else
+            {
+                return false;
+            }
+
+            var geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(box, tag == "video");
+            var action = FenBrowser.FenEngine.Media.MediaControls.HitTest(geometry, _lastClickPageX, _lastClickPageY, out var fraction);
+            if (action == FenBrowser.FenEngine.Media.MediaControlAction.None)
+            {
+                return false;
+            }
+
+            SetFocusedElementState(element);
+            _engine.ActivateMediaControl(element, action, fraction);
+            TryInvokeRepaintReady(_engine.GetActiveDom());
+            return true;
+        }
+
+        /// <summary>Keyboard operation of focused media controls: space/k play, arrows seek, m mute.</summary>
+        private bool TryHandleMediaControlKey(Element element, string tag, string key)
+        {
+            if ((tag != "video" && tag != "audio") || !FenBrowser.FenEngine.Media.MediaControls.ShowsControls(element))
+            {
+                return false;
+            }
+
+            var state = FenBrowser.FenEngine.Scripting.FenJsBrowserScriptEngine.ReadMediaControlsState(element);
+            FenBrowser.FenEngine.Media.MediaControlAction action;
+            double fraction = 0;
+            switch (key)
+            {
+                case " ":
+                case "Space":
+                case "Enter":
+                case "k":
+                case "K":
+                    action = FenBrowser.FenEngine.Media.MediaControlAction.TogglePlay;
+                    break;
+                case "m":
+                case "M":
+                    action = FenBrowser.FenEngine.Media.MediaControlAction.ToggleMute;
+                    break;
+                case "ArrowLeft":
+                case "ArrowRight":
+                    if (state == null || !(state.Duration > 0) || double.IsInfinity(state.Duration))
+                    {
+                        return true;
+                    }
+
+                    var target = state.CurrentTime + (key == "ArrowLeft" ? -5.0 : 5.0);
+                    fraction = Math.Clamp(target / state.Duration, 0, 1);
+                    action = FenBrowser.FenEngine.Media.MediaControlAction.Seek;
+                    break;
+                default:
+                    return false;
+            }
+
+            _engine.ActivateMediaControl(element, action, fraction);
+            TryInvokeRepaintReady(_engine.GetActiveDom());
+            return true;
+        }
+
         private bool TryGetElementClickClientPoint(Element element, out int clientX, out int clientY)
         {
             clientX = 0;
@@ -10062,6 +10289,11 @@ pre {{
             // legacy "promote to descendant editable" behavior so focus/typing
             // remains stable when the user clicks a decorative wrapper.
             if (TryToggleCustomPopupActivation(element, allowDefaultActivation))
+            {
+                return;
+            }
+
+            if (allowDefaultActivation && TryActivateMediaControls(element, tag))
             {
                 return;
             }
@@ -11806,6 +12038,11 @@ pre {{
                 }
 
                 bool isContentEditable = string.Equals(_focusedElement.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
+                if (TryHandleMediaControlKey(_focusedElement, tag, key))
+                {
+                    return;
+                }
+
                 if (tag == "button")
                 {
                     if (IsButtonActivationKey(key) && !IsDisabledControl(_focusedElement))

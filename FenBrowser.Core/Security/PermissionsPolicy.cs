@@ -24,7 +24,9 @@ namespace FenBrowser.Core.Security
         PictureInPicture = 13,
         ScreenWakeLock = 14,
         Gamepad = 15,
-        Unknown = 16
+        Unknown = 16,
+        EncryptedMedia = 17,
+        SpeakerSelection = 18
     }
 
     /// <summary>
@@ -91,7 +93,7 @@ namespace FenBrowser.Core.Security
                     continue;
 
                 var parts = SplitTopLevel(trimmed, '=');
-                if (parts.Count != 2)
+                if (parts.Count > 2)
                     continue;
 
                 string featureName = parts[0].Trim().ToLowerInvariant();
@@ -100,6 +102,15 @@ namespace FenBrowser.Core.Security
                     continue;
 
                 var allowlist = new FeatureAllowlist();
+
+                // A feature named with nothing after it has an empty allowlist: the header
+                // mentions the feature, and mentioning it with no origins takes it away.
+                if (parts.Count == 1)
+                {
+                    policy.Allowlists[feature] = allowlist;
+                    continue;
+                }
+
                 string allowlistValue = parts[1].Trim();
 
                 if (allowlistValue.Length == 0 || allowlistValue == "()")
@@ -217,7 +228,31 @@ namespace FenBrowser.Core.Security
             if (Allowlists.TryGetValue(feature, out var allowlist))
                 return allowlist.Allows(origin, documentOrigin);
 
-            return DefaultAllowsAll;
+            // A policy that says nothing about a feature leaves that feature's own default
+            // allowlist in force. Falling back to DefaultAllowsAll instead meant one
+            // Permissions-Policy header took away every feature it did not mention, even
+            // from the document that sent it.
+            return DefaultAllowsAll || DefaultAllowlistAllows(feature, origin, documentOrigin);
+        }
+
+        /// <summary>
+        /// The default allowlist each policy-controlled feature carries when no policy
+        /// names it: "*" for the two features whose specifications say so, and "self" for
+        /// the rest, which is what every one of these features defaults to.
+        /// </summary>
+        /// <summary>Whether the feature's default allowlist is "*" rather than "self".</summary>
+        public static bool DefaultAllowlistIsAll(PolicyControlledFeature feature) =>
+            feature is PolicyControlledFeature.PictureInPicture or PolicyControlledFeature.Gamepad;
+
+        public static bool DefaultAllowlistAllows(PolicyControlledFeature feature, string origin, string documentOrigin)
+        {
+            if (DefaultAllowlistIsAll(feature))
+                return true;
+
+            if (string.IsNullOrEmpty(origin) || string.IsNullOrEmpty(documentOrigin))
+                return true; // nothing to compare; an unknown origin is the document's own
+
+            return string.Equals(origin.TrimEnd('/'), documentOrigin.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
         }
 
         public bool IsFeatureAllowedInFrame(
@@ -241,6 +276,25 @@ namespace FenBrowser.Core.Security
                 feature,
                 frameOrigin,
                 documentOrigin);
+        }
+
+        /// <summary>
+        /// Permissions Policy §9.7 steps 3-4 for a container: whether the iframe's allow
+        /// attribute enables <paramref name="feature"/> for a document at
+        /// <paramref name="frameOrigin"/> embedded by one at <paramref name="parentOrigin"/>,
+        /// or null when the attribute does not name the feature and its default allowlist
+        /// decides instead.
+        /// </summary>
+        public static bool? EvaluateContainerAllow(
+            string allowAttribute,
+            PolicyControlledFeature feature,
+            string frameOrigin,
+            string parentOrigin)
+        {
+            if (!ParseIframeAllowAttribute(allowAttribute).ContainsKey(feature))
+                return null;
+
+            return IsIframeFeatureAllowed(allowAttribute, feature, frameOrigin, parentOrigin);
         }
 
         /// <summary>
@@ -474,6 +528,8 @@ namespace FenBrowser.Core.Security
                 "picture-in-picture" => PolicyControlledFeature.PictureInPicture,
                 "screen-wake-lock" or "wake-lock" => PolicyControlledFeature.ScreenWakeLock,
                 "gamepad" => PolicyControlledFeature.Gamepad,
+                "encrypted-media" => PolicyControlledFeature.EncryptedMedia,
+                "speaker-selection" => PolicyControlledFeature.SpeakerSelection,
                 _ => PolicyControlledFeature.Unknown
             };
         }
@@ -493,7 +549,7 @@ namespace FenBrowser.Core.Security
             return value;
         }
 
-        internal static string NormalizeOrigin(string origin)
+        public static string NormalizeOrigin(string origin)
         {
             origin = StripQuotes(origin);
             if (origin.Length == 0)

@@ -19,6 +19,18 @@ namespace FenBrowser.FenEngine.Rendering.Css
     {
         private const int MaxSelectorLength = 16384;
         private const int MaxSelectorParseDepth = 32;
+
+        private static readonly HashSet<string> NonFunctionalPseudoClasses = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "link", "visited", "any-link", "local-link", "hover", "active", "focus", "focus-visible",
+            "focus-within", "target", "enabled", "disabled", "checked", "indeterminate", "default",
+            "required", "optional", "valid", "invalid", "user-valid", "user-invalid", "in-range",
+            "out-of-range", "read-only", "read-write", "placeholder-shown", "autofill", "defined",
+            "root", "empty", "scope", "first-child", "last-child", "only-child", "first-of-type",
+            "last-of-type", "only-of-type", "open", "closed", "modal", "popover-open", "fullscreen",
+            "picture-in-picture", "playing", "paused", "seeking", "buffering", "stalled", "muted",
+            "volume-locked", "blank",
+        };
         private const int MaxSelectorChains = 2048;
         private const int MaxSegmentsPerChain = 4096;
 
@@ -133,10 +145,16 @@ namespace FenBrowser.FenEngine.Rendering.Css
         /// </summary>
         public static List<SelectorChain> ParseSelectorList(string selector)
         {
-            return ParseSelectorListInternal(selector, 0);
+            return ParseSelectorListInternal(selector, 0, forgiving: false);
         }
 
-        private static List<SelectorChain> ParseSelectorListInternal(string selector, int depth)
+        /// <summary>
+        /// Selectors 4 §3.1: a selector list with one invalid selector in it is invalid as a
+        /// whole (an empty result), so <c>video, :picture-in-picture(*)</c> styles nothing.
+        /// Only the &lt;forgiving-selector-list&gt; of :is() and :where() (§17) drops its
+        /// invalid selectors one by one.
+        /// </summary>
+        private static List<SelectorChain> ParseSelectorListInternal(string selector, int depth, bool forgiving)
         {
             var result = new List<SelectorChain>();
             if (string.IsNullOrWhiteSpace(selector)) return result;
@@ -179,6 +197,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (chain != null && chain.Segments.Count > 0)
                 {
                     result.Add(chain);
+                }
+                else if (!forgiving)
+                {
+                    result.Clear();
+                    return result;
                 }
 
                 partStart = i + 1;
@@ -389,18 +412,34 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     pseudo.Args = args;
                     if (!isElement && !string.IsNullOrWhiteSpace(args))
                     {
-                        if (name == "is" || name == "not" || name == "where" || name == "has")
+                        if (name == "is" || name == "where")
                         {
-                            pseudo.ParsedArgs = ParseSelectorListInternal(args, depth + 1);
+                            pseudo.ParsedArgs = ParseSelectorListInternal(args, depth + 1, forgiving: true);
+                        }
+                        else if (name == "not" || name == "has")
+                        {
+                            pseudo.ParsedArgs = ParseSelectorListInternal(args, depth + 1, forgiving: false);
+                            if (pseudo.ParsedArgs.Count == 0)
+                            {
+                                isInvalid = true;
+                                break;
+                            }
                         }
                         else if (name == "nth-child" || name == "nth-last-child")
                         {
                             ParseNthArguments(args, out _, out var ofSelector);
                             if (!string.IsNullOrWhiteSpace(ofSelector))
                             {
-                                pseudo.ParsedArgs = ParseSelectorListInternal(ofSelector, depth + 1);
+                                pseudo.ParsedArgs = ParseSelectorListInternal(ofSelector, depth + 1, forgiving: false);
                             }
                         }
+                    }
+
+                    // A pseudo-class that is not a function is invalid written as one.
+                    if (!isElement && args != null && NonFunctionalPseudoClasses.Contains(name))
+                    {
+                        isInvalid = true;
+                        break;
                     }
 
                     if (isElement)

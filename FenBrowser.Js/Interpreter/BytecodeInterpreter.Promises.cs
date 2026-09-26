@@ -1037,6 +1037,28 @@ public sealed partial class BytecodeInterpreter
     // 27.2.1.5 NewPromiseCapability(%Promise%). Bundles a fresh promise with its
     // resolve/reject closures, suitable for places that want to feed a promise
     // from outside its constructor (Promise.reject, derived .then, etc.).
+    /// <summary>
+    /// Pins a capability's promise and resolving functions for as long as the caller
+    /// holds the scope. An async body's capability lives in C# locals until it is stored
+    /// on the AsyncContext, and that context is only a root while its frame runs - so
+    /// without this a collection at the context's own allocation, or one between the
+    /// body returning and the capability being settled, sweeps the resolve function the
+    /// caller is about to call ("Stale heap handle ... allocSite=CreateResolvingFunctions").
+    /// </summary>
+    private HandleScope PinPromiseCapability(PromiseCapability capability)
+    {
+        var scope = new HandleScope(_heap);
+        foreach (var value in new[] { capability.Promise, capability.Resolve, capability.Reject })
+        {
+            if (value.Tag == JsValueTag.Object)
+            {
+                _ = scope.Create(value.AsObjectHandle());
+            }
+        }
+
+        return scope;
+    }
+
     private PromiseCapability NewPromiseCapability()
     {
         var promise = new PromiseObject();

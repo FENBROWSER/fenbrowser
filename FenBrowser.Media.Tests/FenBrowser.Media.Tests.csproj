@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.7.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\FenBrowser.Media\FenBrowser.Media.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Gpu\FenBrowser.Media.Gpu.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Codecs.Ffmpeg\FenBrowser.Media.Codecs.Ffmpeg.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Codecs.MediaFoundation\FenBrowser.Media.Codecs.MediaFoundation.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Shell\FenBrowser.Media.Shell.csproj" />
+  </ItemGroup>
+</Project>

@@ -40,6 +40,7 @@ namespace FenBrowser.Core.Logging
         ProcessIsolation = 1 << 27, // Child process contracts, sandbox lifecycle, IPC boundaries
         DevTools     = 1 << 28,  // Remote debugging, protocol traffic, instrumentation
         WhatsApp     = 1 << 29,  // WhatsApp Web compatibility diagnostics
+        Media        = 1 << 30,  // Audio/video playback, demux, decode, A/V sync (ADR-0006)
         // Compatibility aliases used by newer pipeline components.
         Telemetry    = Performance,
         Warning      = Errors,

@@ -48,6 +48,20 @@ namespace FenBrowser.FenEngine.Scripting
 
         internal Action RequestRepaint => _requestRepaint;
 
+        private long _version;
+
+        /// <summary>
+        /// Bumped by every change to the bitmap, so a capture (canvas.captureStream) can tell
+        /// whether the canvas was painted since its last frame without comparing pixels.
+        /// </summary>
+        public long Version => System.Threading.Interlocked.Read(ref _version);
+
+        private void Changed()
+        {
+            System.Threading.Interlocked.Increment(ref _version);
+            _requestRepaint?.Invoke();
+        }
+
         public void Resize(int width, int height)
         {
             width = Math.Clamp(width, 1, MaxCanvasDimension);
@@ -58,7 +72,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
 
             AllocateSurface(width, height);
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         private void AllocateSurface(int width, int height)
@@ -338,7 +352,7 @@ namespace FenBrowser.FenEngine.Scripting
         public void ClosePath()
         {
             _path.Close();
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         public void MoveTo(float x, float y)
@@ -375,7 +389,7 @@ namespace FenBrowser.FenEngine.Scripting
         {
             ApplyTransformRef(ref x, ref y);
             _path.AddRect(new SKRect(x, y, x + width, y + height));
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         public void Arc(float x, float y, float radius, float startAngle, float endAngle, bool counterclockwise = false)
@@ -471,7 +485,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             using var paint = CreateFillPaint();
             _canvas.DrawPath(_path, paint);
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         public void Stroke()
@@ -483,7 +497,7 @@ namespace FenBrowser.FenEngine.Scripting
 
             using var paint = CreateStrokePaint();
             _canvas.DrawPath(_path, paint);
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         public void Clip(string fillRule = "nonzero")
@@ -501,7 +515,7 @@ namespace FenBrowser.FenEngine.Scripting
             ApplyTransformRef(ref x, ref y);
             using var paint = CreateFillPaint();
             _canvas.DrawRect(new SKRect(x, y, x + width, y + height), paint);
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         public void StrokeRect(float x, float y, float width, float height)
@@ -509,7 +523,7 @@ namespace FenBrowser.FenEngine.Scripting
             ApplyTransformRef(ref x, ref y);
             using var paint = CreateStrokePaint();
             _canvas.DrawRect(new SKRect(x, y, x + width, y + height), paint);
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         public void ClearRect(float x, float y, float width, float height)
@@ -520,7 +534,7 @@ namespace FenBrowser.FenEngine.Scripting
             _canvas.ClipRect(new SKRect(x, y, x + width, y + height));
             _canvas.Clear(SKColors.Transparent);
             _canvas.Restore();
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         public void DrawImageFromBitmap(SKBitmap source, float dx, float dy, float? dWidth, float? dHeight)
@@ -539,7 +553,7 @@ namespace FenBrowser.FenEngine.Scripting
                 new SKRect(0, 0, source.Width, source.Height),
                 new SKRect(dx, dy, dx + destWidth, dy + destHeight),
                 paint);
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         public (int Width, int Height, byte[] Pixels) GetImageData(int sx, int sy, int sw, int sh)
@@ -579,7 +593,7 @@ namespace FenBrowser.FenEngine.Scripting
             _canvas.ResetMatrix();
             _canvas.DrawImage(image, dx, dy);
             _canvas.Restore();
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         public double MeasureTextWidth(string text)
@@ -629,7 +643,7 @@ namespace FenBrowser.FenEngine.Scripting
                 _ => font.Size * 0.8f
             };
             _canvas.DrawText(text ?? string.Empty, x - offsetX, y - offsetY, SKTextAlign.Left, font, paint);
-            _requestRepaint?.Invoke();
+            Changed();
         }
 
         private static SKFont ResolveFont(string fontSpec)

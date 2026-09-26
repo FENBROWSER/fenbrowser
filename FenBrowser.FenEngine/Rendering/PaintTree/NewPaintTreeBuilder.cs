@@ -1933,11 +1933,12 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     var videoNode = BuildVideoPlaceholder(elem, box, style);
                     if (videoNode != null) nodes.Add(videoNode);
+                    BuildTextTrackCueNodes(elem, box, nodes);
+                    BuildMediaControlNodes(elem, box, isVideo: true, nodes);
                 }
                 else if (elem.TagName?.ToUpperInvariant() == "AUDIO")
                 {
-                    var audioNode = BuildAudioPlaceholder(elem, box, style);
-                    if (audioNode != null) nodes.Add(audioNode);
+                    BuildMediaControlNodes(elem, box, isVideo: false, nodes);
                 }
                 else if (elem.TagName?.ToUpperInvariant() == "IFRAME")
                 {
@@ -5106,10 +5107,91 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
         
+        private static readonly Adapters.SkiaTextMeasurer s_cueTextMeasurer = new();
+
+        /// <summary>HTML §4.8.13: the user agent controls, when the element has the attribute.</summary>
+        private static void BuildMediaControlNodes(Element elem, Layout.BoxModel box, bool isVideo, List<PaintNodeBase> nodes)
+        {
+            if (box == null || !FenBrowser.FenEngine.Media.MediaControls.ShowsControls(elem)) return;
+            var state = FenBrowser.FenEngine.Media.MediaPresentation.Get(elem).Controls;
+            FenBrowser.FenEngine.Media.MediaControls.BuildPaintNodes(elem, box.ContentBox, isVideo, state, nodes);
+        }
+
+        /// <summary>
+        /// WebVTT §7: the showing cues of the video, each line as a background box in
+        /// rgba(0,0,0,0.8) with white text over the picture (the UA's default ::cue style).
+        /// </summary>
+        private static void BuildTextTrackCueNodes(Element elem, Layout.BoxModel box, List<PaintNodeBase> nodes)
+        {
+            if (box == null) return;
+            var cues = FenBrowser.FenEngine.Media.TextTrackCueOverlay.Get(elem);
+            if (cues.Count == 0) return;
+
+            var lines = FenBrowser.FenEngine.Media.TextTrackCueOverlay.Layout(cues, box.ContentBox, s_cueTextMeasurer, out float fontSize);
+            if (lines.Count == 0) return;
+
+            var typeface = TextLayoutHelper.ResolveTypeface(FenBrowser.FenEngine.Media.TextTrackCueOverlay.FontFamily, lines[0].Text);
+            foreach (var line in lines)
+            {
+                nodes.Add(new BackgroundPaintNode
+                {
+                    Bounds = line.Box,
+                    SourceNode = elem,
+                    Color = new SKColor(0, 0, 0, 204),
+                });
+                nodes.Add(new TextPaintNode
+                {
+                    Bounds = line.Box,
+                    SourceNode = elem,
+                    Typeface = typeface,
+                    FontSize = fontSize,
+                    Color = SKColors.White,
+                    FallbackText = line.Text,
+                    TextOrigin = line.Baseline,
+                });
+            }
+        }
+
         private PaintNodeBase BuildVideoPlaceholder(Element elem, Layout.BoxModel box, CssComputed style)
         {
             if (box == null) return null;
-            
+
+            // HTML 4.8.9: while the show-poster flag is set the element represents its
+            // poster frame, fitted into the content box by object-fit (the UA default
+            // for video is "contain", as in Chromium's html.css). Without a poster the
+            // element represents the frame of video for the current position when one
+            // has been decoded (the first frame stands in for a missing poster), and
+            // only then the placeholder below.
+            var presentation = FenBrowser.FenEngine.Media.MediaPresentation.Get(elem);
+            if (presentation.ShowPoster)
+            {
+                var poster = Layout.ReplacedElementSizing.TryGetPosterBitmap(elem);
+                if (poster != null)
+                {
+                    return new ImagePaintNode
+                    {
+                        Bounds = box.ContentBox,
+                        SourceNode = elem,
+                        Bitmap = poster,
+                        ObjectFit = string.IsNullOrWhiteSpace(style?.ObjectFit) ? "contain" : style.ObjectFit,
+                        ObjectPosition = style?.ObjectPosition ?? "50% 50%"
+                    };
+                }
+            }
+
+            if (presentation.Presenter is { } presenter && presenter.Sequence > 0)
+            {
+                return new VideoPaintNode
+                {
+                    Bounds = box.ContentBox,
+                    SourceNode = elem,
+                    Presenter = presenter,
+                    Sequence = presenter.Sequence,
+                    ObjectFit = string.IsNullOrWhiteSpace(style?.ObjectFit) ? "contain" : style.ObjectFit,
+                    ObjectPosition = style?.ObjectPosition ?? "50% 50%"
+                };
+            }
+
             return new CustomPaintNode
             {
                 Bounds = box.ContentBox,
@@ -5237,57 +5319,6 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return renderableChildren == 1;
-        }
-        
-        private PaintNodeBase BuildAudioPlaceholder(Element elem, Layout.BoxModel box, CssComputed style)
-        {
-            if (box == null) return null;
-            
-            // Only show if controls attribute is present
-            if (!elem.HasAttribute("controls")) return null;
-            
-            return new CustomPaintNode
-            {
-                Bounds = box.ContentBox,
-                PaintAction = (canvas, bounds) =>
-                {
-                    // Control bar background
-                    using var bgPaint = new SKPaint { Color = new SKColor(240, 240, 240), Style = SKPaintStyle.Fill };
-                    canvas.DrawRoundRect(bounds, 4, 4, bgPaint);
-                    
-                    // Play button
-                    float btnSize = bounds.Height * 0.6f;
-                    float btnX = bounds.Left + 8;
-                    float btnY = bounds.MidY;
-                    
-                    using var playPaint = new SKPaint { Color = new SKColor(100, 100, 100), Style = SKPaintStyle.Fill, IsAntialias = true };
-                    using var path = PathBuilderHelper.Build(builder =>
-                    {
-                        builder.MoveTo(btnX, btnY - btnSize * 0.4f);
-                        builder.LineTo(btnX + btnSize * 0.7f, btnY);
-                        builder.LineTo(btnX, btnY + btnSize * 0.4f);
-                        builder.Close();
-                    });
-                    canvas.DrawPath(path, playPaint);
-                    
-                    // Progress bar track
-                    float trackLeft = btnX + btnSize + 10;
-                    float trackRight = bounds.Right - 60;
-                    float trackY = bounds.MidY - 2;
-                    
-                    using var trackPaint = new SKPaint { Color = new SKColor(200, 200, 200), Style = SKPaintStyle.Fill };
-                    canvas.DrawRoundRect(new SKRect(trackLeft, trackY, trackRight, trackY + 4), 2, 2, trackPaint);
-                    
-                    // Time display placeholder
-                    using var timeFont = new SKFont(SKTypeface.Default, 10);
-                    using var timePaint = new SKPaint { Color = new SKColor(100, 100, 100), IsAntialias = true };
-                    canvas.DrawText("0:00", bounds.Right - 50, bounds.MidY + 4, SKTextAlign.Left, timeFont, timePaint);
-                    
-                    // Border
-                    using var borderPaint = new SKPaint { Color = new SKColor(200, 200, 200), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
-                    canvas.DrawRoundRect(bounds, 4, 4, borderPaint);
-                }
-            };
         }
         
         private PaintNodeBase BuildProgressBar(Element elem, Layout.BoxModel box, CssComputed style)

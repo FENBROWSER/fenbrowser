@@ -194,6 +194,53 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         /// <summary>
+        /// Moves a node into this parent before a child, without the removal and insertion
+        /// steps that reset state (the node keeps focus, frame documents, etc.).
+        /// https://dom.spec.whatwg.org/#dom-node-movebefore
+        /// </summary>
+        /// <remarks>
+        /// The "ensure pre-move validity" checks are the spec's: this parent and the node
+        /// must be in the same shadow-including tree, the node must have a parent, and the
+        /// usual hierarchy rules apply. The tree change itself reuses the internal removal
+        /// and insertion, so observers see a removal and an insertion record, as the "move"
+        /// algorithm queues.
+        /// </remarks>
+        public Node MoveBefore(Node node, Node child)
+        {
+            AssertNotInRestrictedPhase();
+            if (node == null)
+                throw new ArgumentNullException(nameof(node));
+
+            // 1. Let referenceChild be child; if it is node, use node's next sibling.
+            var referenceChild = ReferenceEquals(child, node) ? node._nextSibling : child;
+
+            // "ensure pre-move validity"
+            if (this is not (Document or DocumentFragment or Element))
+                throw new DomException("HierarchyRequestError", "The parent cannot have children");
+            if (!ReferenceEquals(node.GetRootNode(new GetRootNodeOptions { Composed = true }), GetRootNode(new GetRootNodeOptions { Composed = true })))
+                throw new DomException("HierarchyRequestError", "The node to move must be in the same tree as its new parent");
+            if (ReferenceEquals(node, this) || node is ContainerNode ancestor && ancestor.Contains(this))
+                throw new DomException("HierarchyRequestError", "The node to move cannot be an inclusive ancestor of the new parent");
+            if (referenceChild != null && !ReferenceEquals(referenceChild._parentNode, this))
+                throw new DomException("NotFoundError", "The reference child is not a child of this node");
+            if (node is not (Element or CharacterData))
+                throw new DomException("HierarchyRequestError", "Only elements and character data can be moved");
+            if (node is Text && this is Document)
+                throw new DomException("HierarchyRequestError", "A document cannot contain text directly");
+            if (this is Document && node is Element && (Children.Any(c => !ReferenceEquals(c, node)) || referenceChild is DocumentType))
+                throw new DomException("HierarchyRequestError", "A document can have only one element child");
+            if (node._parentNode == null)
+                throw new DomException("HierarchyRequestError", "The node to move has no parent");
+
+            if (ReferenceEquals(referenceChild, node))
+                return node;
+            if (ReferenceEquals(node._parentNode, this) && ReferenceEquals(node._nextSibling, referenceChild))
+                return node;
+
+            return referenceChild == null ? AppendChildInternal(node) : InsertBeforeInternal(node, referenceChild);
+        }
+
+        /// <summary>
         /// Replaces a child node with another.
         /// https://dom.spec.whatwg.org/#dom-node-replacechild
         /// </summary>
