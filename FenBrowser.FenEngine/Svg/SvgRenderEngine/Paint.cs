@@ -266,7 +266,7 @@ namespace FenBrowser.FenEngine.Svg
             public string GradientUnits;
             public string SpreadMethod;
             public SvgElement TransformOwner;
-            public string TransformRaw;
+            public SKMatrix Transform = SKMatrix.Identity;
         }
 
         private readonly Dictionary<GradientCacheKey, CachedGradient> _gradientCache = new();
@@ -323,11 +323,7 @@ namespace FenBrowser.FenEngine.Svg
                 return entry;
             }
 
-            SKMatrix transform = SKMatrix.Identity;
-            if (!TryResolveGradientTransform(definition, out transform))
-            {
-                return entry;
-            }
+            SKMatrix transform = definition.Transform;
             if (!transform.TryInvert(out _))
             {
                 return entry;
@@ -429,20 +425,18 @@ namespace FenBrowser.FenEngine.Svg
                 definition.SpreadMethod ??= InheritedAttribute(current, "spreadMethod");
                 if (definition.TransformOwner == null)
                 {
-                    if (current.CascadedDeclarations != null &&
-                        current.CascadedDeclarations.ContainsKey("transform"))
+                    switch (ResolveServerTransform(current, "gradientTransform", out var candidate))
                     {
-                        definition.TransformOwner = current;
-                        definition.TransformRaw = current.GetPresentationProperty("transform");
-                    }
-                    else
-                    {
-                        string gradientTransform = InheritedAttribute(current, "gradientTransform");
-                        if (gradientTransform != null)
-                        {
+                        case ServerTransformStatus.NotSpecified:
+                            break;
+                        case ServerTransformStatus.Resolved:
                             definition.TransformOwner = current;
-                            definition.TransformRaw = gradientTransform;
-                        }
+                            definition.Transform = candidate;
+                            break;
+                        default:
+                            _report.RequireFallback(
+                                "SVG gradientTransform requires compatibility fallback");
+                            return false;
                     }
                 }
 
@@ -473,21 +467,39 @@ namespace FenBrowser.FenEngine.Svg
             return string.IsNullOrWhiteSpace(value) ? null : value;
         }
 
-        private bool TryResolveGradientTransform(GradientDefinition definition, out SKMatrix transform)
+        private enum ServerTransformStatus
+        {
+            NotSpecified,
+            Resolved,
+            Unresolved
+        }
+
+        private static ServerTransformStatus ResolveServerTransform(
+            SvgElement element,
+            string attributeName,
+            out SKMatrix transform)
         {
             transform = SKMatrix.Identity;
-            string raw = definition.TransformRaw;
-            if (string.IsNullOrWhiteSpace(raw) ||
-                string.Equals(raw.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+            bool fromCss = element.CascadedDeclarations != null &&
+                           element.CascadedDeclarations.ContainsKey("transform");
+            string raw = fromCss
+                ? element.GetPresentationProperty("transform")
+                : InheritedAttribute(element, attributeName);
+            if (string.IsNullOrWhiteSpace(raw))
             {
-                return true;
+                return ServerTransformStatus.NotSpecified;
             }
-            if (SvgValues.TryParseTransformList(raw.AsSpan(), out transform))
+            if (string.Equals(raw.Trim(), "none", StringComparison.OrdinalIgnoreCase))
             {
-                return true;
+                return ServerTransformStatus.Resolved;
             }
-            _report.RequireFallback("SVG gradientTransform requires compatibility fallback");
-            return false;
+            if (!fromCss && SvgCssCascade.IsDefinitelyInvalid("transform", raw))
+            {
+                return ServerTransformStatus.NotSpecified;
+            }
+            return SvgValues.TryParseTransformList(raw.AsSpan(), out transform)
+                ? ServerTransformStatus.Resolved
+                : ServerTransformStatus.Unresolved;
         }
 
         private bool TryGradientLength(

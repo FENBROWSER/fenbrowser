@@ -277,6 +277,116 @@ namespace FenBrowser.Tests.Svg
             Assert.Contains(result.Warnings, warning => warning.Contains("pattern tile exceeds"));
         }
 
+        [Theory]
+        [InlineData("")]
+        [InlineData("bogus")]
+        [InlineData(null)]
+        public void WptPatternTransformTemplateInheritance_OnlySpecifiedTransformStopsIt(
+            string? declared)
+        {
+            string declaration = declared == null
+                ? string.Empty
+                : $" patternTransform='{declared}'";
+
+            using var inherited = _renderer.Render(PatternTemplateInheritance(declaration));
+            using var direct = _renderer.Render(
+                "<svg width='100' height='100' xmlns='http://www.w3.org/2000/svg'>" +
+                "<pattern id='p' width='20' height='20' patternUnits='userSpaceOnUse' " +
+                "patternTransform='rotate(45)'><rect width='10' height='10' fill='green'/></pattern>" +
+                "<rect x='10' y='10' width='80' height='80' fill='url(#p)'/></svg>");
+
+            Assert.True(inherited.Success, inherited.ErrorMessage);
+            Assert.False(inherited.RequiresFallback, string.Join("; ", inherited.Warnings));
+            AssertEquivalent(
+                inherited.Bitmap, direct.Bitmap,
+                $"patternTransform='{declared}' must inherit rotate(45) from the template");
+        }
+
+        [Fact]
+        public void WptPatternTransformTemplateInheritance_ScriptOnlyReasonFailsClosed()
+        {
+            using var result = _renderer.Render(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='100'><defs>" +
+                "<pattern id='pattern-base' width='20' height='20' patternUnits='userSpaceOnUse' " +
+                "patternTransform='rotate(45)'><rect width='10' height='10' fill='green'/></pattern>" +
+                "<pattern id='pattern-empty' href='#pattern-base' patternTransform=''/>" +
+                "<pattern id='pattern-invalid' href='#pattern-base' patternTransform='bogus'/>" +
+                "<pattern id='pattern-absent' href='#pattern-base'/></defs>" +
+                "<rect x='10' y='10' width='80' height='80' fill='url(#pattern-empty)'/>" +
+                "<rect x='110' y='10' width='80' height='80' fill='url(#pattern-invalid)'/>" +
+                "<rect x='210' y='10' width='80' height='80' fill='url(#pattern-absent)'/>" +
+                "<script>var t = document.documentElement.createSVGTransform();" +
+                "t.setTranslate(5, 0);" +
+                "document.getElementById('pattern-absent')" +
+                ".patternTransform.baseVal.appendItem(t);</script></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains("dynamic-content", result.FallbackReasonCodes);
+            Assert.DoesNotContain("paint-server", result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("bogus")]
+        [InlineData("not-a-transform")]
+        public void InvalidPatternTransform_LeavesThePatternUntransformed(string declared)
+        {
+            using var invalid = _renderer.Render(
+                "<svg width='20' height='10'><pattern id='p' width='1' height='1' " +
+                $"patternTransform='{declared}'><rect width='1' height='1' fill='red'/></pattern>" +
+                "<rect width='20' height='10' fill='url(#p)'/></svg>");
+            using var untransformed = _renderer.Render(
+                "<svg width='20' height='10'><pattern id='p' width='1' height='1'>" +
+                "<rect width='1' height='1' fill='red'/></pattern>" +
+                "<rect width='20' height='10' fill='url(#p)'/></svg>");
+
+            Assert.True(invalid.Success, invalid.ErrorMessage);
+            Assert.False(invalid.RequiresFallback, string.Join("; ", invalid.Warnings));
+            AssertEquivalent(
+                invalid.Bitmap, untransformed.Bitmap,
+                $"patternTransform='{declared}' must be dropped like any invalid declaration");
+        }
+
+        [Fact]
+        public void UnresolvablePatternTransform_FailsClosedInsteadOfInheriting()
+        {
+            using var result = _renderer.Render(
+                "<svg width='20' height='10'><defs>" +
+                "<pattern id='base' width='1' height='1' patternTransform='rotate(45)'>" +
+                "<rect width='1' height='1' fill='red'/></pattern>" +
+                "<pattern id='p' href='#base' patternTransform='translate(10px, 20px)'/>" +
+                "</defs><rect width='20' height='10' fill='url(#p) green'/></svg>");
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("paint-server", result.FallbackReasonCodes);
+            Assert.Contains(
+                result.Warnings,
+                warning => warning.Contains("SVG pattern transform requires compatibility fallback"));
+        }
+
+        private static string PatternTemplateInheritance(string declaration) =>
+            "<svg width='100' height='100' xmlns='http://www.w3.org/2000/svg'><defs>" +
+            "<pattern id='base' width='20' height='20' patternUnits='userSpaceOnUse' " +
+            "patternTransform='rotate(45)'><rect width='10' height='10' fill='green'/></pattern>" +
+            $"<pattern id='p' href='#base'{declaration}/></defs>" +
+            "<rect x='10' y='10' width='80' height='80' fill='url(#p)'/></svg>";
+
+        private static void AssertEquivalent(SKBitmap actual, SKBitmap expected, string label)
+        {
+            Assert.Equal(expected.Width, actual.Width);
+            Assert.Equal(expected.Height, actual.Height);
+            for (int y = 0; y < actual.Height; y++)
+            {
+                for (int x = 0; x < actual.Width; x++)
+                {
+                    Assert.True(
+                        actual.GetPixel(x, y) == expected.GetPixel(x, y),
+                        $"{label}: pixel {x},{y} is {actual.GetPixel(x, y)} but must be " +
+                        $"{expected.GetPixel(x, y)}");
+                }
+            }
+        }
+
         private static void AssertFailsClosed(SvgRenderResult result)
         {
             Assert.False(result.Success, result.ErrorMessage);

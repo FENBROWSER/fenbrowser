@@ -540,6 +540,109 @@ namespace FenBrowser.Tests.Svg
             AssertEquivalent(boundingBox.Bitmap, boundingBoxReference.Bitmap, "objectBoundingBox fr=0.25");
         }
 
+        [Theory]
+        [InlineData("linearGradient", "rotate(90 0.5 0.5)", "")]
+        [InlineData("linearGradient", "rotate(90 0.5 0.5)", "bogus")]
+        [InlineData("linearGradient", "rotate(90 0.5 0.5)", null)]
+        [InlineData("radialGradient", "scale(2)", " ")]
+        public void WptPserversGradientTransformTemplateInheritance_OnlySpecifiedTransformStopsIt(
+            string server,
+            string templateTransform,
+            string? declared)
+        {
+            const string Stops =
+                "<stop offset='0' stop-color='green'/><stop offset='1' stop-color='blue'/>";
+            string declaration = declared == null
+                ? string.Empty
+                : $" gradientTransform='{declared}'";
+
+            using var inherited = _renderer.Render(
+                Square100 + $"<{server} id='base' gradientTransform='{templateTransform}'>" +
+                Stops + $"</{server}>" +
+                $"<{server} id='g' href='#base'{declaration}/>" +
+                "<rect width='100' height='100' fill='url(#g)'/></svg>");
+            using var direct = _renderer.Render(
+                Square100 + $"<{server} id='g' gradientTransform='{templateTransform}'>" +
+                Stops + $"</{server}>" +
+                "<rect width='100' height='100' fill='url(#g)'/></svg>");
+
+            Assert.True(inherited.Success, inherited.ErrorMessage);
+            Assert.False(inherited.RequiresFallback, string.Join("; ", inherited.Warnings));
+            AssertEquivalent(
+                inherited.Bitmap, direct.Bitmap,
+                $"{server} gradientTransform='{declared}' must inherit '{templateTransform}' " +
+                "from the template");
+        }
+
+        [Fact]
+        public void WptPserversGradientTransformTemplateInheritance_ScriptOnlyReasonFailsClosed()
+        {
+            using var result = _renderer.Render(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='500' height='100'><defs>" +
+                "<linearGradient id='linear-base' gradientTransform='rotate(90 0.5 0.5)'>" +
+                "<stop offset='0' stop-color='green'/><stop offset='1' stop-color='blue'/>" +
+                "</linearGradient>" +
+                "<linearGradient id='linear-empty' href='#linear-base' gradientTransform=''/>" +
+                "<linearGradient id='linear-invalid' href='#linear-base' gradientTransform='bogus'/>" +
+                "<linearGradient id='linear-absent' href='#linear-base'/>" +
+                "<radialGradient id='radial-base' gradientTransform='scale(2)'>" +
+                "<stop offset='0' stop-color='yellow'/><stop offset='1' stop-color='red'/>" +
+                "</radialGradient>" +
+                "<radialGradient id='radial-whitespace' href='#radial-base' gradientTransform=' '/>" +
+                "</defs>" +
+                "<rect x='10' y='10' width='80' height='80' fill='url(#linear-empty)'/>" +
+                "<rect x='110' y='10' width='80' height='80' fill='url(#linear-invalid)'/>" +
+                "<rect x='210' y='10' width='80' height='80' fill='url(#linear-absent)'/>" +
+                "<rect x='310' y='10' width='80' height='80' fill='url(#radial-whitespace)'/>" +
+                "<script>var t = document.documentElement.createSVGTransform();" +
+                "t.setTranslate(0.5, 0);" +
+                "document.getElementById('linear-absent')" +
+                ".gradientTransform.baseVal.appendItem(t);</script></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains("dynamic-content", result.FallbackReasonCodes);
+            Assert.DoesNotContain("unsupported-feature", result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("bogus")]
+        [InlineData("not-a-transform")]
+        public void InvalidGradientTransform_LeavesTheGradientUntransformed(string declared)
+        {
+            const string Stops =
+                "<stop offset='0' stop-color='green'/><stop offset='1' stop-color='red'/>";
+            using var invalid = _renderer.Render(
+                Square100 + $"<linearGradient id='g' gradientTransform='{declared}'>" +
+                Stops + "</linearGradient><rect width='100' height='100' fill='url(#g)'/></svg>");
+            using var untransformed = _renderer.Render(
+                Square100 + "<linearGradient id='g'>" + Stops +
+                "</linearGradient><rect width='100' height='100' fill='url(#g)'/></svg>");
+
+            Assert.True(invalid.Success, invalid.ErrorMessage);
+            Assert.False(invalid.RequiresFallback, string.Join("; ", invalid.Warnings));
+            AssertEquivalent(
+                invalid.Bitmap, untransformed.Bitmap,
+                $"gradientTransform='{declared}' must be dropped like any invalid declaration");
+        }
+
+        [Fact]
+        public void UnresolvableGradientTransform_FailsClosedInsteadOfInheriting()
+        {
+            using var result = _renderer.Render(
+                Square100 + "<linearGradient id='base' gradientTransform='rotate(90 0.5 0.5)'>" +
+                "<stop offset='0' stop-color='green'/><stop offset='1' stop-color='red'/>" +
+                "</linearGradient>" +
+                "<linearGradient id='g' href='#base' gradientTransform='translate(10px, 20px)'>" +
+                "<stop offset='0' stop-color='green'/><stop offset='1' stop-color='red'/>" +
+                "</linearGradient><rect width='50' height='100' fill='url(#g) green'/></svg>");
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(
+                result.Warnings,
+                warning => warning.Contains("SVG gradientTransform requires compatibility fallback"));
+        }
+
         private static void AssertEquivalent(SKBitmap actual, SKBitmap expected, string label)
         {
             Assert.Equal(expected.Width, actual.Width);
@@ -554,6 +657,18 @@ namespace FenBrowser.Tests.Svg
                         $"{expected.GetPixel(x, y)}");
                 }
             }
+        }
+
+        private static void AssertFailsClosed(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
 
         [Fact]

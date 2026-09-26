@@ -15,7 +15,8 @@ namespace FenBrowser.FenEngine.Svg
             public string Height;
             public string Units;
             public string ContentUnits;
-            public string Transform;
+            public bool HasTransform;
+            public SKMatrix Transform = SKMatrix.Identity;
             public string ViewBox;
             public string PreserveAspectRatio;
         }
@@ -100,10 +101,7 @@ namespace FenBrowser.FenEngine.Svg
                     SKMatrix.CreateScale(bounds.Width, bounds.Height))
                 : SKMatrix.Identity;
 
-            if (!TryResolvePatternTransform(server, pattern.Transform, out var patternTransform))
-            {
-                return null;
-            }
+            SKMatrix patternTransform = pattern.Transform;
 
             var localMatrix = context == null
                 ? SKMatrix.Concat(unitsMatrix, patternTransform)
@@ -237,7 +235,22 @@ namespace FenBrowser.FenEngine.Svg
                 resolved.Height ??= InheritedAttribute(current, "height");
                 resolved.Units ??= InheritedAttribute(current, "patternUnits");
                 resolved.ContentUnits ??= InheritedAttribute(current, "patternContentUnits");
-                resolved.Transform ??= InheritedAttribute(current, "patternTransform");
+                if (!resolved.HasTransform)
+                {
+                    switch (ResolveServerTransform(current, "patternTransform", out var transform))
+                    {
+                        case ServerTransformStatus.NotSpecified:
+                            break;
+                        case ServerTransformStatus.Resolved:
+                            resolved.HasTransform = true;
+                            resolved.Transform = transform;
+                            break;
+                        default:
+                            _report.RequireFallback(
+                                "SVG pattern transform requires compatibility fallback");
+                            return false;
+                    }
+                }
                 resolved.ViewBox ??= InheritedAttribute(current, "viewBox");
                 resolved.PreserveAspectRatio ??= InheritedAttribute(current, "preserveAspectRatio");
 
@@ -320,35 +333,6 @@ namespace FenBrowser.FenEngine.Svg
                 style = style.ResolveOverrides(ancestry[i], _report);
             }
             return style;
-        }
-
-        private bool TryResolvePatternTransform(
-            SvgElement server,
-            string inheritedPatternTransform,
-            out SKMatrix transform)
-        {
-            transform = SKMatrix.Identity;
-            string raw = inheritedPatternTransform;
-
-            if (server.CascadedDeclarations != null &&
-                server.CascadedDeclarations.ContainsKey("transform"))
-            {
-                raw = server.GetPresentationProperty("transform");
-            }
-
-            if (string.IsNullOrWhiteSpace(raw) ||
-                string.Equals(raw.Trim(), "none", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            if (SvgValues.TryParseTransformList(raw.AsSpan(), out transform))
-            {
-                return true;
-            }
-
-            _report.RequireFallback("SVG pattern CSS transform requires compatibility fallback");
-            return false;
         }
 
         private static bool TryGetPatternBounds(
