@@ -162,7 +162,13 @@ namespace FenBrowser.FenEngine.Svg
                 markerPoint = sourceMatrix.MapPoint(point);
                 markerTangent = sourceMatrix.MapVector(tangent);
             }
-            float angle = ResolveMarkerAngle(marker.GetAttribute("orient"), markerTangent, isStart);
+            if (!TryResolveMarkerAngle(
+                    marker.GetAttribute("orient"), markerTangent, isStart, out float angle))
+            {
+                _report.RequireFallback(
+                    "SVG marker orient is not a finite representable angle");
+                return;
+            }
 
             _activeMarkerIds.Add(id);
             try
@@ -395,15 +401,86 @@ namespace FenBrowser.FenEngine.Svg
             return length > 0f ? new SKPoint(x / length, y / length) : new SKPoint(1f, 0f);
         }
 
-        private static float ResolveMarkerAngle(string raw, SKPoint tangent, bool isStart)
+        /// <summary>
+        /// <c>orient</c> is a CSS/SVG <c>&lt;angle&gt;</c>, so <c>grad</c>,
+        /// <c>rad</c> and <c>turn</c> are as legal as <c>deg</c>. Reading a bare
+        /// number and stripping only a literal <c>deg</c> left those three
+        /// spellings unparsed, and the caller then substituted the <c>auto</c>
+        /// tangent - a rotation no browser paints for that document. An
+        /// unparseable spelling now fails closed instead of borrowing the
+        /// tangent, because the engine cannot verify the frame it would emit.
+        /// </summary>
+        private static bool TryResolveMarkerAngle(
+            string raw,
+            SKPoint tangent,
+            bool isStart,
+            out float angle)
         {
             float auto = MathF.Atan2(tangent.Y, tangent.X) * 180f / MathF.PI;
-            if (string.IsNullOrWhiteSpace(raw)) return 0f;
-            if (raw.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase)) return auto;
-            if (raw.Trim().Equals("auto-start-reverse", StringComparison.OrdinalIgnoreCase)) return auto + (isStart ? 180f : 0f);
-            string value = raw.Trim();
-            if (value.EndsWith("deg", StringComparison.OrdinalIgnoreCase)) value = value[..^3].Trim();
-            return SvgValues.TryParseNumber(value.AsSpan(), out float angle) && float.IsFinite(angle) ? angle : auto;
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                angle = 0f;
+                return true;
+            }
+            ReadOnlySpan<char> value = raw.AsSpan().Trim();
+            if (value.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                angle = auto;
+                return true;
+            }
+            if (value.Equals("auto-start-reverse", StringComparison.OrdinalIgnoreCase))
+            {
+                angle = auto + (isStart ? 180f : 0f);
+                return true;
+            }
+            return TryParseMarkerAngleDegrees(value, out angle);
+        }
+
+        private static bool TryParseMarkerAngleDegrees(ReadOnlySpan<char> raw, out float degrees)
+        {
+            degrees = 0f;
+            ReadOnlySpan<char> value = raw.Trim();
+            if (value.IsEmpty) return false;
+
+            int cut = value.Length;
+            while (cut > 0 && char.IsLetter(value[cut - 1])) cut--;
+            float scale = 1f;
+            if (cut != value.Length)
+            {
+                scale = MarkerAngleUnitScale(value, cut, out bool known);
+                if (!known) return false;
+            }
+            if (!SvgValues.TryParseNumber(value.Slice(0, cut), out float magnitude)) return false;
+
+            float resolved = magnitude * scale;
+            if (!SvgValues.IsFinite(resolved)) return false;
+            degrees = MathF.Abs(resolved) <= 360f ? resolved : resolved % 360f;
+            return true;
+        }
+
+        private static float MarkerAngleUnitScale(ReadOnlySpan<char> value, int start, out bool known)
+        {
+            known = true;
+            switch (value.Length - start)
+            {
+                case 0: return 1f;
+                case 3 when MatchesAsciiUnit(value, start, "deg"): return 1f;
+                case 4 when MatchesAsciiUnit(value, start, "grad"): return 0.9f;
+                case 3 when MatchesAsciiUnit(value, start, "rad"): return 180f / (float)Math.PI;
+                case 4 when MatchesAsciiUnit(value, start, "turn"): return 360f;
+                default:
+                    known = false;
+                    return 0f;
+            }
+        }
+
+        private static bool MatchesAsciiUnit(ReadOnlySpan<char> value, int start, string unit)
+        {
+            for (int i = 0; i < unit.Length; i++)
+            {
+                if ((char)(value[start + i] | 0x20) != unit[i]) return false;
+            }
+            return true;
         }
 
         private static bool TryMapMarkerReference(

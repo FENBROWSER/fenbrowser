@@ -218,6 +218,56 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(0, result.Bitmap.GetPixel(16, 24).Alpha);
         }
 
+        [Theory]
+        [InlineData("0.25turn")]
+        [InlineData("0.25TURN")]
+        [InlineData("90")]
+        [InlineData("90deg")]
+        [InlineData("90DEG")]
+        [InlineData("100grad")]
+        [InlineData("100GRAD")]
+        [InlineData("1.5707963267948966rad")]
+        public void MarkerOrientAngleUnits_PlaceTheStartVertexMarkerIdentically(string orient)
+        {
+            using var expected = new FenSvgRenderer().Render(MarkerOrientDocument("90deg"));
+            using var actual = new FenSvgRenderer().Render(MarkerOrientDocument(orient));
+
+            Assert.True(expected.Success, expected.ErrorMessage);
+            Assert.True(actual.Success, actual.ErrorMessage);
+            Assert.False(actual.RequiresFallback, string.Join("; ", actual.Warnings));
+            Assert.Equal(expected.Bitmap.Width, actual.Bitmap.Width);
+            Assert.Equal(expected.Bitmap.Height, actual.Bitmap.Height);
+            for (int y = 0; y < expected.Bitmap.Height; y++)
+            for (int x = 0; x < expected.Bitmap.Width; x++)
+                Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
+        }
+
+        [Fact]
+        public void MarkerOrientTurn_PlacesContentOnTheNinetyDegreeBearing()
+        {
+            using var result = new FenSvgRenderer().Render(MarkerOrientDocument("0.25turn"));
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            // refX=10 refY=20 on a 20x40 marker anchored at (20,20) lays the
+            // content box over x 0..36, y 10..30 at a 90 degree orient. The start
+            // bearing of `M20 20 L60 60` is 45 degrees, so these two windows fall
+            // inside the box only when the angle really came from the turn unit
+            // rather than from the tangent fallback.
+            Assert.True(HasRed(result.Bitmap, 2, 11, 5, 14));
+            Assert.True(HasRed(result.Bitmap, 33, 27, 36, 30));
+        }
+
+        [Fact]
+        public void MarkerOrientThatIsNotAnAngle_FailsClosed()
+        {
+            using var result = new FenSvgRenderer().Render(MarkerOrientDocument("quarter-turn"));
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("orient"));
+        }
+
         [Fact]
         public void ClosedPathStartMarker_AveragesClosingAndOutgoingTangents()
         {
@@ -491,6 +541,14 @@ namespace FenBrowser.Tests.Svg
             Assert.False(HasRed(result.Bitmap, 41, 9, 59, 11));
             Assert.False(HasRed(result.Bitmap, 39, 11, 41, 29));
         }
+
+        private static string MarkerOrientDocument(string orient) =>
+            "<svg width='80' height='80' xmlns='http://www.w3.org/2000/svg'><defs>" +
+            "<marker id='m' refX='10' refY='20' markerWidth='20' markerHeight='40' " +
+            "overflow='visible' orient='" + orient + "'>" +
+            "<rect x='0' y='4' width='20' height='36' fill='red'/></marker></defs>" +
+            "<path d='M20 20 L60 60' fill='none' stroke='black' stroke-width='1' " +
+            "marker-start='url(#m)'/></svg>";
 
         private static bool HasRed(SKBitmap bitmap, int left, int top, int right, int bottom) =>
             HasColor(bitmap, left, top, right, bottom, red: true);
