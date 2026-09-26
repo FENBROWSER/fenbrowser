@@ -1517,7 +1517,7 @@ public sealed partial class BytecodeInterpreter
                 CloseForOfIteratorState(closing, suppressErrors);
             }
         }
-        catch (JsThrownException) when (suppressErrors)
+        catch (JsThrownException thrown) when (suppressErrors && !thrown.IsUncatchableByScript)
         {
         }
     }

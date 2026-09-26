@@ -41,6 +41,10 @@ public sealed class UncatchableStopTests
     // An iterator's return, called while closing on an error.
     [InlineData("var it = { [Symbol.iterator]() { return this; }, next() { return { value: 1, done: false }; }," +
                 " return() { while (true) {} } }; try { for (var v of it) throw 0; } catch (e) {}")]
+    // The same inside a function, whose for-of closes the iterator suppressing
+    // errors from return() - but not a stop.
+    [InlineData("var it = { [Symbol.iterator]() { return this; }, next() { return { value: 1, done: false }; }," +
+                " return() { while (true) {} } }; function f() { try { for (var v of it) throw 0; } catch (e) {} } f();")]
     public void ADeadlineReachedInsideNativeMachineryStillStopsTheScript(string source)
     {
         AssertStoppedByDeadline(source);
