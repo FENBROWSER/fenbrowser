@@ -329,7 +329,7 @@ public sealed partial class BytecodeInterpreter
                 // completion this would mask the real error. Silently ignore.
             }
         }
-        catch (JsThrownException)
+        catch (JsThrownException caught) when (!caught.IsUncatchableByScript)
         {
             if (!suppressErrors)
             {
@@ -507,7 +507,7 @@ public sealed partial class BytecodeInterpreter
         {
             _ = CallFunction(ret, Array.Empty<JsValue>(), iterator);
         }
-        catch (JsThrownException)
+        catch (JsThrownException caught) when (!caught.IsUncatchableByScript)
         {
             // 7.4.11 step 6: an inner throw is discarded when the original
             // completion is itself a throw, which is the only path that calls

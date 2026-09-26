@@ -993,7 +993,7 @@ public sealed partial class BytecodeInterpreter
                     IteratorCloseOnAbrupt(iters[j]);
                 }
             }
-            catch (JsThrownException e)
+            catch (JsThrownException e) when (!e.IsUncatchableByScript)
             {
                 pending ??= e;
             }

@@ -519,7 +519,7 @@ public sealed partial class BytecodeInterpreter
             // or all awaited promises were already settled).
             _ = CallFunction(capability.Resolve, new[] { result }, JsValue.Undefined);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             if (asyncCtx.IsSuspended)
             {

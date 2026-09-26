@@ -112,7 +112,7 @@ public sealed partial class BytecodeInterpreter
                     return thisValue;
                 }
             }
-            catch (JsThrownException)
+            catch (JsThrownException caught) when (!caught.IsUncatchableByScript)
             {
                 // If prototype chain walk throws (non-object prototype), fall through.
             }
@@ -997,7 +997,7 @@ public sealed partial class BytecodeInterpreter
             instant = DateTimeOffset.FromUnixTimeMilliseconds(ms);
             return true;
         }
-        catch (JsThrownException)
+        catch (JsThrownException caught) when (!caught.IsUncatchableByScript)
         {
             return false;
         }
@@ -1023,7 +1023,7 @@ public sealed partial class BytecodeInterpreter
         // If ToNumber throws (e.g., Temporal objects with throwing valueOf),
         // return NaN so the caller can handle it.
         try { return ToNumber(arg); }
-        catch (JsThrownException) { return double.NaN; }
+        catch (JsThrownException caught) when (!caught.IsUncatchableByScript) { return double.NaN; }
     }
 
     private bool TryGetTemporalInstant(JsValue arg, out DateTimeOffset instant)

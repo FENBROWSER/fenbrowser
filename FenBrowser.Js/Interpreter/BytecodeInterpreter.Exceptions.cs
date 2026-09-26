@@ -98,7 +98,7 @@ public sealed partial class BytecodeInterpreter
             ThrowOrHandle(frame, value);
             return true;
         }
-        catch (JsThrownException)
+        catch (JsThrownException caught) when (!caught.IsUncatchableByScript)
         {
             // Nothing in this frame wanted it; the caller rethrows.
             return false;

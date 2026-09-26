@@ -57,7 +57,7 @@ public sealed partial class BytecodeInterpreter
             ProcessDynamicImportOptions(options);
             loaded = LoadImportedModule(specifierText, environment);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             return BuildRejectedPromise(ex.Value);
         }

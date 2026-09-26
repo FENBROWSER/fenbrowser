@@ -461,7 +461,7 @@ public sealed class AsyncDisposableStackBuiltin : IBuiltinModule
                     }
                 }
             }
-            catch (JsThrownException ex)
+            catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
             {
                 pendingError = pendingError.Tag == JsValueTag.Undefined
                     ? ex.Value

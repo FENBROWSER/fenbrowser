@@ -1347,7 +1347,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.PopRootsTo(rootMark);
             return result;
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             if (ctx.CapabilityReject is { } reject)
             {
@@ -3291,7 +3291,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             CloseForOfIteratorState(closing, suppressErrors: ins.C == 1);
                         }
                     }
-                    catch (JsThrownException ex)
+                    catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
                     {
                         if (ins.C != 1)
                         {
@@ -5008,7 +5008,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // when the iterator's return() returns a non-object) so the
             // original error propagates correctly per 7.4.11.
             try { CloseForOfIteratorState(forOf); }
-            catch (JsThrownException) { /* original error propagates */ }
+            catch (JsThrownException caught) when (!caught.IsUncatchableByScript) { /* original error propagates */ }
         }
     }
 
@@ -5772,7 +5772,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         }
                         finally
                         {
-                            try { CloseForOfIteratorState(forOf); } catch (JsThrownException) { }
+                            try { CloseForOfIteratorState(forOf); } catch (JsThrownException caught) when (!caught.IsUncatchableByScript) { }
                         }
                     }
                 }
@@ -5985,7 +5985,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         }
                         finally
                         {
-                            try { CloseForOfIteratorState(forOf); } catch (JsThrownException) { }
+                            try { CloseForOfIteratorState(forOf); } catch (JsThrownException caught) when (!caught.IsUncatchableByScript) { }
                         }
                     }
                 }
@@ -19083,7 +19083,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var result = CallFunction(toLocaleFn, callArgs, element);
                     sb.Append(ToStringValue(result));
                 }
-                catch (JsThrownException)
+                catch (JsThrownException caught) when (!caught.IsUncatchableByScript)
                 {
                     sb.Append(ToStringValue(element));
                 }
@@ -22859,7 +22859,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var result = ExecuteGenerator(generator, sentValue);
                     return CreateResolvedPromise(result);
                 }
-                catch (JsThrownException ex)
+                catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
                 {
                     generator.State = GeneratorState.Completed;
                     return CreateRejectedPromise(ex.Value);
@@ -22917,7 +22917,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                     return CreateResolvedPromise(result);
                 }
-                catch (JsThrownException ex)
+                catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
                 {
                     generator.State = GeneratorState.Completed;
                     return CreateRejectedPromise(ex.Value);
@@ -22960,7 +22960,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var result = ExecuteGenerator(generator, throwValue);
                     return CreateResolvedPromise(result);
                 }
-                catch (JsThrownException ex)
+                catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
                 {
                     generator.State = GeneratorState.Completed;
                     return CreateRejectedPromise(ex.Value);
@@ -25045,7 +25045,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             result = CallFunction(method, Array.Empty<JsValue>(), receiver);
             return true;
         }
-        catch (JsThrownException)
+        catch (JsThrownException caught) when (!caught.IsUncatchableByScript)
         {
             // Caller (ToNumber/etc.) prefers NaN over re-throwing here so
             // string-coercion that falls back can still complete.
@@ -25428,7 +25428,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             method = GetReceiverProperty(hostValue, name);
         }
-        catch (JsThrownException)
+        catch (JsThrownException caught) when (!caught.IsUncatchableByScript)
         {
             return false;
         }

@@ -211,7 +211,7 @@ public sealed partial class BytecodeInterpreter
                 var result = CallFunction(callbackfn, Array.Empty<JsValue>(), JsValue.Undefined);
                 _ = CallFunction(capability.Resolve, new[] { result }, JsValue.Undefined);
             }
-            catch (JsThrownException ex)
+            catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
             {
                 _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
             }
@@ -401,7 +401,7 @@ public sealed partial class BytecodeInterpreter
                 InvokePromiseThen(child, onFulfilled, capability.Reject);
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
         }
@@ -547,7 +547,7 @@ public sealed partial class BytecodeInterpreter
                 InvokePromiseThen(child, onFulfilled, onRejected);
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
         }
@@ -610,7 +610,7 @@ public sealed partial class BytecodeInterpreter
                 InvokePromiseThen(child, capability.Resolve, onRejected);
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
         }
@@ -652,7 +652,7 @@ public sealed partial class BytecodeInterpreter
                 InvokePromiseThen(child, capability.Resolve, capability.Reject);
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
         }
@@ -703,7 +703,7 @@ public sealed partial class BytecodeInterpreter
                 InvokePromiseThen(child, onFulfilled, capability.Reject);
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
         }
@@ -767,7 +767,7 @@ public sealed partial class BytecodeInterpreter
                 InvokePromiseThen(child, onFulfilled, onRejected);
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
         }
@@ -844,7 +844,7 @@ public sealed partial class BytecodeInterpreter
         {
             _ = CallFunction(executor, new[] { resolveFn, rejectFn }, JsValue.Undefined);
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             // 27.2.3.1 step 11.a - executor threw, route to reject.
             _ = CallFunction(rejectFn, new[] { ex.Value }, JsValue.Undefined);
@@ -1000,7 +1000,7 @@ public sealed partial class BytecodeInterpreter
                 throw new JsThrownException(CreateTypeError("Promise combinator requires a callable 'resolve'."));
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
             return false;
@@ -1121,7 +1121,7 @@ public sealed partial class BytecodeInterpreter
                 return;
             }
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             RejectPromise(promiseHandle, ex.Value);
             return;
@@ -1353,7 +1353,7 @@ public sealed partial class BytecodeInterpreter
                 handlerResult = CallFunction(reaction.Handler, new[] { job.Argument }, JsValue.Undefined);
                 TraceMicrotaskStage("promise-reaction-handler-complete");
             }
-            catch (JsThrownException ex)
+            catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
             {
                 TraceMicrotaskStage(
                     "promise-reaction-handler-threw",
@@ -1389,7 +1389,7 @@ public sealed partial class BytecodeInterpreter
             _ = CallFunction(job.Then, new[] { resolveFn, rejectFn }, job.Thenable);
             TraceMicrotaskStage("promise-thenable-call-complete");
         }
-        catch (JsThrownException ex)
+        catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
         {
             TraceMicrotaskStage("promise-thenable-call-threw", DescribeMicrotaskTraceException(ex));
             _ = CallFunction(rejectFn, new[] { ex.Value }, JsValue.Undefined);
