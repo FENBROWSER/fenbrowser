@@ -9,12 +9,20 @@ namespace FenBrowser.FenEngine.Svg
 {
     internal sealed partial class SvgRenderEngine
     {
+        private const string XhtmlNamespace = "http://www.w3.org/1999/xhtml";
 
         // ------------------------------------------------------------ draw walk
 
         private void DrawChildren(SvgElement container, SKCanvas canvas, ViewportContext viewport, InheritedStyle inherited)
         {
             if (!PassesConditionalProcessing(container)) return;
+            if (container.Parent == null)
+            {
+                // The outermost <svg> transform establishes the user space its
+                // children draw in, after the viewBox transform RenderRoot applied.
+                RejectsScriptDrivenDocument(container);
+                ApplyTransformProperty(container, canvas, viewport, inherited);
+            }
             var children = container.Children;
             for (int i = 0; i < children.Count; i++)
             {
@@ -99,6 +107,12 @@ namespace FenBrowser.FenEngine.Svg
             ViewportContext viewport,
             InheritedStyle inherited)
         {
+            if (IsXhtmlForeignElement(el))
+            {
+                if (el.UnclosedForeignElement)
+                    WarnUnknownOnce(el.Name);
+                return;
+            }
             if (!PassesConditionalProcessing(el)) return;
             ReportUnsupportedMaskHref(el);
 
@@ -106,6 +120,7 @@ namespace FenBrowser.FenEngine.Svg
             {
                 case "g":
                 case "a":
+                case "view":
                     {
                         if (IsDisplayNone(el)) return;
             using var scope = new CanvasState(canvas);
@@ -165,6 +180,26 @@ namespace FenBrowser.FenEngine.Svg
                 case "filter":
                 case "mask":
                 case "clipPath":
+                case "cursor":
+                case "color-profile":
+                case "font":
+                case "font-face":
+                case "font-face-src":
+                case "font-face-uri":
+                case "font-face-name":
+                case "font-face-format":
+                case "glyph":
+                case "missing-glyph":
+                case "hkern":
+                case "vkern":
+                case "altGlyphDef":
+                case "altGlyphItem":
+                case "glyphRef":
+                case "altGlyphRef":
+                case "mesh":
+                case "meshgradient":
+                case "meshrow":
+                case "meshpatch":
                     return; // Referenced-only content: never drawn inline.
                 case "switch":
                     {
@@ -222,12 +257,12 @@ namespace FenBrowser.FenEngine.Svg
                 case "textPath":
                 case "foreignObject":
                 case "animation":
-                case "animateTransform":
                     WarnUnsupportedOnce(el.Name);
                     return;
                 case "animate":
                 case "animateColor":
                 case "animateMotion":
+                case "animateTransform":
                 case "set":
                     return;
                 default:
@@ -254,6 +289,13 @@ namespace FenBrowser.FenEngine.Svg
                     StringComparison.Ordinal);
         }
 
+        private static bool IsXhtmlForeignElement(SvgElement el)
+        {
+            string ns = el.NamespaceUri;
+            return ns != null &&
+                string.Equals(ns, XhtmlNamespace, StringComparison.Ordinal);
+        }
+
         private void DrawNestedSvg(
             SvgElement el,
             SKCanvas canvas,
@@ -272,8 +314,8 @@ namespace FenBrowser.FenEngine.Svg
                 el, "height", outer.Width, outer.Height, out float cssHeight);
             string widthAttribute = el.GetAttribute("width");
             string heightAttribute = el.GetAttribute("height");
-            string instanceWidth = instance?.GetPresentationProperty("width");
-            string instanceHeight = instance?.GetPresentationProperty("height");
+            string instanceWidth = instance?.GetAttribute("width");
+            string instanceHeight = instance?.GetAttribute("height");
             bool hasInstanceWidth = !string.IsNullOrWhiteSpace(instanceWidth);
             bool hasInstanceHeight = !string.IsNullOrWhiteSpace(instanceHeight);
             float w = hasInstanceWidth
@@ -343,13 +385,6 @@ namespace FenBrowser.FenEngine.Svg
             });
         }
 
-        /// <summary>
-        /// Resolves a cascaded CSS width/height declaration on a nested &lt;svg&gt;
-        /// when it is one of the supported viewport-dependent forms. Returns false
-        /// for every other value (including valid plain lengths and percentages),
-        /// leaving XML attribute/default sizing in charge. Negative results are
-        /// invalid per spec and likewise return false.
-        /// </summary>
         private float ResolveGeometryCoordinate(
             SvgElement element,
             string property,
@@ -364,6 +399,12 @@ namespace FenBrowser.FenEngine.Svg
                 : 0f;
         }
 
+        /// <summary>
+        /// Resolves a cascaded CSS width/height declaration on a nested &lt;svg&gt;
+        /// when it is one of the supported viewport-dependent forms. Returns false
+        /// for every other value, leaving XML attribute/default sizing in charge.
+        /// Negative results are invalid per spec and likewise return false.
+        /// </summary>
         private static bool TryResolveNestedSvgCssSizing(
             SvgElement element,
             string property,
@@ -377,30 +418,22 @@ namespace FenBrowser.FenEngine.Svg
                 resolved.Length > SvgMarkupParser.MaxAttributeValueChars)
                 return false;
             string trimmed = resolved.Trim();
-            float percentReference = property == "width" ? viewportWidth : viewportHeight;
 
-            if (SvgCssLengthEvaluator.IsNestedSvgSizingKeyword(trimmed))
-            {
-                // Fill-available sizing: an SVG viewport has no intrinsic size,
-                // so stretch/fit-content/min-content/max-content all resolve to
-                // the containing viewport extent.
-                value = percentReference;
-                return true;
-            }
-
-            ResolveGeometryFontContext(element, out float fontSize, out float rootFontSize);
-            if (trimmed.StartsWith("calc-size(", System.StringComparison.OrdinalIgnoreCase))
-            {
-                return SvgCssLengthEvaluator.TryEvaluateCalcSize(
-                           trimmed, percentReference, fontSize, rootFontSize,
-                           viewportWidth, viewportHeight, out value) &&
-                       value >= 0f;
-            }
+            // The fill-available sizing keywords and calc-size() do not apply to a
+            // nested <svg>: an SVG viewport has no intrinsic size, so there is
+            // nothing for them to size against and the geometry attributes stay
+            // in charge (svgwg#1059). Resolving them to the containing viewport
+            // extent instead silently overrode the authored width/height.
+            if (SvgCssLengthEvaluator.IsNestedSvgSizingKeyword(trimmed) ||
+                trimmed.StartsWith("calc-size(", System.StringComparison.OrdinalIgnoreCase))
+                return false;
 
             if (!SvgCssLengthEvaluator.HasViewportUnitDimension(trimmed))
                 return false;
+            ResolveGeometryFontContext(element, out float fontSize, out float rootFontSize);
             return SvgCssLengthEvaluator.TryEvaluate(
-                       trimmed, percentReference, fontSize, rootFontSize,
+                       trimmed, property == "width" ? viewportWidth : viewportHeight,
+                       fontSize, rootFontSize,
                        viewportWidth, viewportHeight, out value) &&
                    value >= 0f;
         }
@@ -573,7 +606,7 @@ namespace FenBrowser.FenEngine.Svg
         {
             CheckDeadline();
             string href = el.GetAttribute("href") ?? el.GetLookup("xlink:href");
-            if (!SvgValues.TryParseLocalReference(href, out string id))
+            if (!SvgValues.TryParseLocalReference(href, out string rawId))
             {
                 // Remote references have no code path here by construction; log
                 // and ignore (fail closed).
@@ -581,6 +614,7 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
+            string id = DecodeFragmentEscapes(rawId);
             if (!_doc.ElementsById.TryGetValue(id, out var target))
             {
                 return; // Dangling reference: silently nothing (browser behavior).
@@ -613,6 +647,8 @@ namespace FenBrowser.FenEngine.Svg
                 next = next.Clone();
                 next.ContextFill = next.Fill;
                 next.ContextStroke = next.Stroke;
+
+                using var shadowScope = SvgCssCascade.UseShadowScope.Enter(target);
 
                 DrawWithEffects(el, canvas, viewport, () =>
                 {
@@ -656,6 +692,52 @@ namespace FenBrowser.FenEngine.Svg
         private HashSet<string> _activeUseIds;
         private HashSet<SvgElement> _activeUseElements;
 
+        internal static string DecodeFragmentEscapes(string fragment)
+        {
+            int firstPercent = fragment.IndexOf('%');
+            if (firstPercent < 0)
+            {
+                return fragment;
+            }
+            if (fragment.Length - firstPercent > SvgMarkupParser.MaxIdChars)
+            {
+                return fragment;
+            }
+            var buffer = new char[fragment.Length];
+            int written = 0;
+            for (int read = 0; read < fragment.Length; read++)
+            {
+                char c = fragment[read];
+                if (c == '%' && TryDecodeEscape(fragment, read, out char decoded))
+                {
+                    buffer[written++] = decoded;
+                    read += 2;
+                    continue;
+                }
+                buffer[written++] = c;
+            }
+            return written == fragment.Length ? fragment : new string(buffer, 0, written);
+        }
+
+        private static bool TryDecodeEscape(string value, int start, out char decoded)
+        {
+            decoded = '\0';
+            if (start + 2 >= value.Length) return false;
+            int high = HexValue(value[start + 1]);
+            int low = HexValue(value[start + 2]);
+            if (high < 0 || low < 0) return false;
+            decoded = (char)((high << 4) | low);
+            return true;
+        }
+
+        private static int HexValue(char c) => c switch
+        {
+            >= '0' and <= '9' => c - '0',
+            >= 'a' and <= 'f' => c - 'a' + 10,
+            >= 'A' and <= 'F' => c - 'A' + 10,
+            _ => -1
+        };
+
         private void DrawSymbolInstance(
             SvgElement symbol,
             SKCanvas canvas,
@@ -664,8 +746,8 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement instance)
         {
             if (IsDisplayNone(symbol)) return;
-            string instanceWidth = instance?.GetPresentationProperty("width");
-            string instanceHeight = instance?.GetPresentationProperty("height");
+            string instanceWidth = instance?.GetAttribute("width");
+            string instanceHeight = instance?.GetAttribute("height");
             string width = !string.IsNullOrWhiteSpace(instanceWidth)
                 ? instanceWidth
                 : symbol.GetAttribute("width");
@@ -716,13 +798,31 @@ namespace FenBrowser.FenEngine.Svg
             InheritedStyle inherited)
         {
             ApplyCssZoom(el, canvas);
-            string cssTransform = el.GetCascadedPresentationProperty("transform");
-            if (!string.IsNullOrWhiteSpace(cssTransform))
+            ApplyTransformProperty(el, canvas, viewport, inherited);
+        }
+
+        private void ApplyTransformProperty(
+            SvgElement el,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited)
+        {
+            bool animated = TryGetAnimatedTransformBase(
+                el, out SKMatrix sampled, out bool replacesBase);
+            if (!animated || !replacesBase)
             {
-                ApplyCssTransform(el, cssTransform, canvas, viewport, inherited);
-                return;
+                string cssTransform = el.GetCascadedPresentationProperty("transform");
+                if (!string.IsNullOrWhiteSpace(cssTransform))
+                {
+                    ApplyCssTransform(el, cssTransform, canvas, viewport, inherited);
+                }
+                else
+                {
+                    ApplyAttributeTransform(el, canvas, viewport, inherited);
+                }
             }
-            ApplyAttributeTransform(el, canvas, viewport, inherited);
+            if (animated && !sampled.IsIdentity)
+                canvas.Concat(sampled);
         }
 
         private void ApplyCssZoom(SvgElement element, SKCanvas canvas)
@@ -1535,8 +1635,12 @@ namespace FenBrowser.FenEngine.Svg
 
             string widthText = element.GetPresentationProperty("width");
             string heightText = element.GetPresentationProperty("height");
+            bool widthIsAuto = widthText == null ||
+                               widthText.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase);
+            bool heightIsAuto = heightText == null ||
+                                heightText.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase);
             float width;
-            if (widthText == null || widthText.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase))
+            if (widthIsAuto)
             {
                 width = defaultWidth;
             }
@@ -1549,7 +1653,7 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             float height;
-            if (heightText == null || heightText.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase))
+            if (heightIsAuto)
             {
                 height = defaultHeight;
             }
@@ -1560,6 +1664,11 @@ namespace FenBrowser.FenEngine.Svg
                 box = default;
                 return false;
             }
+
+            if (widthIsAuto && !heightIsAuto && defaultHeight > 0f)
+                width = height * (defaultWidth / defaultHeight);
+            else if (heightIsAuto && !widthIsAuto && defaultWidth > 0f)
+                height = width * (defaultHeight / defaultWidth);
 
             if (!SvgValues.IsFinite(x) || !SvgValues.IsFinite(y) ||
                 !SvgValues.IsFinite(width) || !SvgValues.IsFinite(height) ||
@@ -1579,7 +1688,9 @@ namespace FenBrowser.FenEngine.Svg
         /// Renders raster images embedded as data: URIs. SECURITY: this is the
         /// ONLY image source - there is no fetch code path here, so external
         /// hrefs are logged and ignored (fail closed). Decoded pixel counts are
-        /// bounded by MaxRasterPixels before drawing.
+        /// bounded by MaxDecodedImagePixels before drawing and charged against the
+        /// cumulative decoded budget that also covers every other image in the
+        /// render, nested documents included.
         /// </summary>
         private void DrawImageElement(
             SvgElement el,
@@ -1594,51 +1705,59 @@ namespace FenBrowser.FenEngine.Svg
             }
             if (!href.StartsWith("data:", System.StringComparison.OrdinalIgnoreCase))
             {
-                DrawResolvedImage(el, canvas, viewport, inherited, href);
+                SplitReferenceFragment(href, out string target, out string referenceFragment);
+                if (target.Length == 0)
+                {
+                    return;
+                }
+                DrawResolvedImage(el, canvas, viewport, inherited, target, referenceFragment);
                 return;
             }
             if (IsSvgDataUri(href))
             {
-                DrawEmbeddedSvgImage(el, canvas, viewport, inherited, href);
+                SplitReferenceFragment(href, out string payload, out string svgFragment);
+                if (payload.Length == 0)
+                {
+                    return;
+                }
+                DrawEmbeddedSvgImage(el, canvas, viewport, inherited, payload, svgFragment);
                 return;
             }
 
-            var bytes = DecodeDataUriBytes(href, _maxDecodedImageBytes, out var decodeError);
+            CheckDeadline();
+            var bytes = DecodeDataUriBytes(href, _resources.MaxDecodedImageBytes, out var decodeError);
             if (bytes == null)
             {
                 _report.RejectResource(decodeError);
                 return;
             }
-            if (!_resourceBudget.TryAdmit(bytes.Length))
+            if (!_resources.TryAdmit(bytes.Length))
             {
                 _report.RejectResource("embedded raster image cumulative resource budget exceeded");
                 return;
             }
 
-            if (!TryDecodeEmbeddedBitmap(
-                    bytes,
-                    _maxRasterPixels,
-                    _maxRasterDim,
-                    out var bitmap,
-                    out var bitmapError))
+            if (!TryBorrowOrDecodeImage(bytes, _resources, out var image, out var imageError))
             {
-                _report.RejectResource(bitmapError);
+                _report.RejectResource(imageError);
                 return;
             }
 
-            DrawOwnedBitmap(el, canvas, viewport, inherited, bitmap);
+            DrawBorrowedImage(el, canvas, viewport, inherited, image);
         }
 
-        private long _maxRasterPixels = 16L * 1024 * 1024;
-        private int _maxDecodedImageBytes = 8 * 1024 * 1024;
-        private int _maxRasterDim = 8192;
-
-        /// <summary>Called from TryRender with caller limits (keeps caps in sync).</summary>
-        internal void ConfigureImageBudgets(long maxRasterPixels, int maxDecodedImageBytes, int maxRasterDim)
+        private static void SplitReferenceFragment(string reference, out string target, out string fragment)
         {
-            _maxRasterPixels = maxRasterPixels;
-            _maxDecodedImageBytes = maxDecodedImageBytes;
-            _maxRasterDim = maxRasterDim;
+            int hash = reference.IndexOf('#');
+            if (hash < 0)
+            {
+                target = reference;
+                fragment = null;
+                return;
+            }
+            target = reference.Substring(0, hash);
+            fragment = reference.Substring(hash + 1);
+            if (fragment.Length == 0) fragment = null;
         }
 
         private void DrawEmbeddedSvgImage(
@@ -1646,22 +1765,24 @@ namespace FenBrowser.FenEngine.Svg
             SKCanvas canvas,
             ViewportContext viewport,
             InheritedStyle inherited,
-            string href)
+            string href,
+            string fragment)
         {
-            byte[] bytes = DecodeSvgDataUriBytes(href, _maxDecodedImageBytes, out string decodeError);
+            CheckDeadline();
+            byte[] bytes = DecodeSvgDataUriBytes(href, _resources.MaxDecodedImageBytes, out string decodeError);
             if (bytes == null)
             {
                 _report.RejectResource(decodeError);
                 return;
             }
 
-            if (!_resourceBudget.TryAdmit(bytes.Length))
+            if (!_resources.TryAdmit(bytes.Length))
             {
                 _report.RejectResource("embedded SVG cumulative byte budget exceeded");
                 return;
             }
 
-            DrawSvgImageBytes(element, canvas, viewport, inherited, bytes, _baseUri);
+            DrawSvgImageBytes(element, canvas, viewport, inherited, bytes, _baseUri, fragment);
         }
 
         private void DrawSvgImageBytes(
@@ -1670,7 +1791,8 @@ namespace FenBrowser.FenEngine.Svg
             ViewportContext viewport,
             InheritedStyle inherited,
             byte[] bytes,
-            Uri resourceUri)
+            Uri resourceUri,
+            string fragment)
         {
             int maxDepth = Math.Min(16, _limits.MaxReferenceDepth);
             if (_resourceDepth >= maxDepth)
@@ -1690,34 +1812,34 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
-            if (!TryRenderInternal(
-                    source, _limits, _resourceBudget, _resourceDepth + 1,
-                    resourceUri, _resourceResolver, _documentTimeSeconds,
-                    out var picture, out float sourceWidth, out float sourceHeight,
-                    out string nestedPreserveAspectRatio,
-                    out string nestedError, out _, out _, out _,
-                    out bool requiresFallback, out bool resourceRejected))
+            ReferencedSvgRender referenced =
+                RenderReferencedSvg(source, fragment, element, viewport, resourceUri);
+            if (referenced.ViewFragmentRejected)
+            {
+                return;
+            }
+            if (referenced.Picture == null)
             {
                 _report.RejectResource(
                     "embedded SVG failed bounded first-party rendering: " +
-                    (string.IsNullOrWhiteSpace(nestedError) ? "unknown nested failure" : nestedError));
+                    (string.IsNullOrWhiteSpace(referenced.Error) ? "unknown nested failure" : referenced.Error));
                 return;
             }
 
-            using (picture)
+            using (referenced.Picture)
             {
-                if (requiresFallback || resourceRejected)
+                if (referenced.RequiresFallback || referenced.ResourceRejected)
                 {
                     _report.RejectResource(
-                        requiresFallback
+                        referenced.RequiresFallback
                             ? "embedded SVG requires unsupported compatibility rendering"
                             : "embedded SVG contained a rejected nested resource");
                     return;
                 }
 
-                if (sourceWidth <= 0f || sourceHeight <= 0f ||
+                if (referenced.Width <= 0f || referenced.Height <= 0f ||
                     !TryResolveImageBox(
-                        element, viewport, sourceWidth, sourceHeight, out var imageViewport))
+                        element, viewport, referenced.Width, referenced.Height, out var imageViewport))
                     return;
 
                 var style = inherited.ResolveOverrides(element, _report);
@@ -1728,15 +1850,17 @@ namespace FenBrowser.FenEngine.Svg
                     using var state = new CanvasState(canvas);
                     string preserveAspectRatio = element.GetAttribute("preserveAspectRatio");
                     if (string.IsNullOrWhiteSpace(preserveAspectRatio))
-                        preserveAspectRatio = nestedPreserveAspectRatio;
+                        preserveAspectRatio = referenced.RootPreserveAspectRatio;
                     var destination = ResolveImageDestination(
-                        imageViewport, sourceWidth, sourceHeight,
+                        imageViewport, referenced.Width, referenced.Height,
                         preserveAspectRatio);
                     if (destination.IsEmpty) return;
                     canvas.ClipRect(imageViewport);
                     canvas.Translate(destination.Left, destination.Top);
-                    canvas.Scale(destination.Width / sourceWidth, destination.Height / sourceHeight);
-                    canvas.DrawPicture(picture);
+                    canvas.Scale(
+                        destination.Width / referenced.Width,
+                        destination.Height / referenced.Height);
+                    canvas.DrawPicture(referenced.Picture);
                 }
                 finally
                 {
@@ -1750,16 +1874,159 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
+        private sealed class ReferencedSvgRender
+        {
+            public SKPicture Picture;
+            public float Width;
+            public float Height;
+            public string RootPreserveAspectRatio;
+            public string Error;
+            public bool RequiresFallback;
+            public bool ResourceRejected;
+            public bool ViewFragmentRejected;
+        }
+
+        private ReferencedSvgRender RenderReferencedSvg(
+            string source,
+            string fragment,
+            SvgElement element,
+            ViewportContext viewport,
+            Uri resourceUri)
+        {
+            var result = new ReferencedSvgRender();
+            if (!SvgMarkupParser.TryParse(source, _limits, out SvgParsedDocument doc, out string error))
+            {
+                result.Error = error;
+                return result;
+            }
+
+            if (!EstablishReferencedViewport(doc, fragment, element, viewport))
+            {
+                result.ViewFragmentRejected = true;
+                return result;
+            }
+            result.RootPreserveAspectRatio = doc.Root.GetAttribute("preserveAspectRatio");
+
+            var nested = new SvgRenderEngine(
+                doc, _limits, _resources, _resourceDepth + 1,
+                resourceUri, _resourceResolver, _documentTimeSeconds);
+            SKPicture picture = null;
+            float width = 0f;
+            float height = 0f;
+            try
+            {
+                nested.ApplySmilSnapshot(doc.Root);
+                nested.RenderRoot(out picture, out width, out height);
+            }
+            catch (SvgTimeBudgetExceededException)
+            {
+                picture = null;
+                result.Error = $"SVG render exceeded time limit ({_limits.MaxRenderTimeMs}ms)";
+            }
+            catch (SvgSandboxViolationException ex)
+            {
+                picture = null;
+                result.Error = ex.Message;
+            }
+            result.Picture = picture;
+            result.Width = width;
+            result.Height = height;
+            result.RequiresFallback = nested._report.UnsupportedFeatureIgnored;
+            result.ResourceRejected = nested._report.ResourceRejected;
+            return result;
+        }
+
+        private bool EstablishReferencedViewport(
+            SvgParsedDocument doc,
+            string fragment,
+            SvgElement element,
+            ViewportContext viewport)
+        {
+            var root = doc.Root;
+            if (!string.IsNullOrEmpty(fragment))
+            {
+                if (!doc.ElementsById.TryGetValue(fragment, out SvgElement view) ||
+                    view.Name != "view")
+                {
+                    _report.RequireFallback(
+                        "referenced SVG view fragment is unresolved or invalid");
+                    return false;
+                }
+                string viewBox = view.GetAttribute("viewBox");
+                if (!TryParseViewBox(
+                        viewBox, out _, out _, out _, out _, out bool viewBoxDisablesRendering))
+                {
+                    if (!viewBoxDisablesRendering)
+                    {
+                        return true;
+                    }
+                    _report.RequireFallback(
+                        "referenced SVG view fragment is unresolved or invalid");
+                    return false;
+                }
+                SetReferencedRootAttribute(root, "viewBox", viewBox);
+                string viewPreserveAspectRatio = view.GetAttribute("preserveAspectRatio");
+                if (!string.IsNullOrWhiteSpace(viewPreserveAspectRatio))
+                    SetReferencedRootAttribute(root, "preserveAspectRatio", viewPreserveAspectRatio);
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(root.GetAttribute("viewBox")) ||
+                !string.IsNullOrWhiteSpace(root.GetAttribute("width")) ||
+                !string.IsNullOrWhiteSpace(root.GetAttribute("height")) ||
+                !TryResolveImageBox(element, viewport, 0f, 0f, out SKRect imageViewport))
+                return true;
+            SetReferencedRootSize(root, imageViewport.Width, imageViewport.Height);
+            return true;
+        }
+
+        private static void SetReferencedRootSize(SvgElement root, float width, float height)
+        {
+            SetReferencedRootAttribute(root, "width", FormatReferencedRootLength(width));
+            SetReferencedRootAttribute(root, "height", FormatReferencedRootLength(height));
+        }
+
+        private static string FormatReferencedRootLength(float value) =>
+            NormalizeGeometryValue(SvgValues.ClampCoord(value))
+                .ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+
+        private static void SetReferencedRootAttribute(SvgElement root, string name, string value)
+        {
+            var attributes = root.Attributes;
+            if (attributes != null)
+            {
+                for (int i = 0; i < attributes.Length; i++)
+                {
+                    if (!string.Equals(
+                            attributes[i].Key, name, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    attributes[i] = new KeyValuePair<string, string>(attributes[i].Key, value);
+                    return;
+                }
+                var grown = new KeyValuePair<string, string>[attributes.Length + 1];
+                System.Array.Copy(attributes, grown, attributes.Length);
+                attributes = grown;
+                root.Attributes = grown;
+            }
+            else
+            {
+                attributes = new KeyValuePair<string, string>[1];
+                root.Attributes = attributes;
+            }
+            attributes[attributes.Length - 1] = new KeyValuePair<string, string>(name, value);
+        }
+
         private void DrawResolvedImage(
             SvgElement element,
             SKCanvas canvas,
             ViewportContext viewport,
             InheritedStyle inherited,
-            string reference)
+            string reference,
+            string fragment)
         {
             if (!TryResolveResource(reference, SvgResourceKind.Image, out var resource)) return;
             byte[] bytes = resource.Content.ToArray();
-            if (!_resourceBudget.TryAdmit(bytes.Length))
+            if (!_resources.TryAdmit(bytes.Length))
             {
                 _report.RejectResource("resolved image cumulative resource budget exceeded");
                 return;
@@ -1771,18 +2038,17 @@ namespace FenBrowser.FenEngine.Svg
                          LooksLikeSvg(bytes);
             if (isSvg)
             {
-                DrawSvgImageBytes(element, canvas, viewport, inherited, bytes, resource.Uri);
+                DrawSvgImageBytes(element, canvas, viewport, inherited, bytes, resource.Uri, fragment);
                 return;
             }
 
-            if (!TryDecodeEmbeddedBitmap(
-                    bytes, _maxRasterPixels, _maxRasterDim,
-                    out var bitmap, out var bitmapError))
+            if (!TryBorrowOrDecodeImage(
+                    bytes, _resources, out var image, out var imageError))
             {
-                _report.RejectResource(bitmapError);
+                _report.RejectResource(imageError);
                 return;
             }
-            DrawOwnedBitmap(element, canvas, viewport, inherited, bitmap);
+            DrawBorrowedImage(element, canvas, viewport, inherited, image);
         }
 
         private bool TryResolveResource(
@@ -1822,7 +2088,7 @@ namespace FenBrowser.FenEngine.Svg
                 resource = default;
                 return false;
             }
-            if (resource.Content.Length <= 0 || resource.Content.Length > _maxDecodedImageBytes)
+            if (resource.Content.Length <= 0 || resource.Content.Length > _resources.MaxDecodedImageBytes)
             {
                 _report.RejectResource("resolved SVG resource exceeds byte budget");
                 resource = default;
@@ -1845,17 +2111,16 @@ namespace FenBrowser.FenEngine.Svg
             return prefix.IndexOf("<svg", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private void DrawOwnedBitmap(
+        private void DrawBorrowedImage(
             SvgElement el,
             SKCanvas canvas,
             ViewportContext viewport,
             InheritedStyle inherited,
-            SKBitmap bitmap)
+            SKImage image)
         {
             if (!TryResolveImageBox(
-                    el, viewport, bitmap.Width, bitmap.Height, out var imageViewport))
+                    el, viewport, image.Width, image.Height, out var imageViewport))
             {
-                bitmap.Dispose();
                 return;
             }
 
@@ -1866,13 +2131,13 @@ namespace FenBrowser.FenEngine.Svg
                 using var state = new CanvasState(canvas);
                 using var paint = new SKPaint { IsAntialias = true };
                 paint.Color = style.Visibility ? SKColors.Black : SKColors.Transparent;
-                var source = new SKRect(0f, 0f, bitmap.Width, bitmap.Height);
+                var source = new SKRect(0f, 0f, image.Width, image.Height);
                 var destination = ResolveImageDestination(
-                    imageViewport, bitmap.Width, bitmap.Height,
+                    imageViewport, image.Width, image.Height,
                     el.GetAttribute("preserveAspectRatio"));
                 if (destination.IsEmpty) return;
                 canvas.ClipRect(imageViewport);
-                canvas.DrawBitmap(bitmap, source, destination, SKSamplingOptions.Default, paint);
+                canvas.DrawImage(image, source, destination, SKSamplingOptions.Default, paint);
             }
             finally
             {
@@ -1882,7 +2147,6 @@ namespace FenBrowser.FenEngine.Svg
                     _activeLayers--;
                     layerPaint.Dispose();
                 }
-                bitmap.Dispose();
             }
         }
 
@@ -1964,6 +2228,65 @@ namespace FenBrowser.FenEngine.Svg
             long maxPixels,
             int maxDimension,
             out SKBitmap bitmap,
+            out string error) =>
+            TryDecodeEmbeddedSurface(
+                bytes, maxPixels, maxDimension, null, out bitmap, out error);
+
+        private static bool TryBorrowOrDecodeImage(
+            byte[] bytes,
+            SvgRenderResources resources,
+            out SKImage image,
+            out string error)
+        {
+            image = null;
+            if (resources == null)
+            {
+                error = "image decode has no render resource scope";
+                return false;
+            }
+
+            if (resources.TryBorrowDecodedImage(bytes, out image, out _))
+            {
+                error = null;
+                return true;
+            }
+
+            if (!TryDecodeEmbeddedSurface(
+                    bytes,
+                    resources.MaxDecodedImagePixels,
+                    resources.MaxRasterDimension,
+                    resources,
+                    out var bitmap,
+                    out error))
+            {
+                return false;
+            }
+
+            try
+            {
+                image = SKImage.FromBitmap(bitmap);
+            }
+            finally
+            {
+                bitmap.Dispose();
+            }
+
+            if (image == null)
+            {
+                error = "image raster allocation refused";
+                return false;
+            }
+
+            resources.RetainDecodedImage(bytes, image);
+            return true;
+        }
+
+        private static bool TryDecodeEmbeddedSurface(
+            byte[] bytes,
+            long maxPixels,
+            int maxDimension,
+            SvgRenderResources resources,
+            out SKBitmap bitmap,
             out string error)
         {
             bitmap = null;
@@ -1992,6 +2315,12 @@ namespace FenBrowser.FenEngine.Svg
                     pixels <= 0 || pixels > maxPixels)
                 {
                     error = "image decoded size exceeds raster budget; rejected";
+                    return false;
+                }
+
+                if (resources != null && !resources.TryAdmitDecodedPixels(pixels))
+                {
+                    error = "image cumulative decoded raster budget exceeded";
                     return false;
                 }
 

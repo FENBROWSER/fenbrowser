@@ -30,10 +30,17 @@ namespace FenBrowser.FenEngine.Svg
     /// Hand-written, sandboxed parser for the XML subset required by standalone SVG.
     ///
     /// Security contract (all enforced DURING the single scan, never afterwards):
-    /// 1. DOCTYPE declarations are rejected outright. The parser implements no
-    ///    custom-entity machinery at all, which makes entity-expansion attacks
-    ///    (billion laughs / XXE) structurally impossible rather than merely limited.
-    /// 2. Entities resolve through a fixed whitelist plus numeric character
+    /// 1. A DOCTYPE is honoured only as a bounded internal subset of general
+    ///    entities and attribute lists that declare no attribute default value
+    ///    (a quoted literal, including a #FIXED default, is rejected, because a
+    ///    browser applies it and the engine cannot). External subsets, external
+    ///    identifiers, external and parameter entities, conditional sections and
+    ///    any undeclared or recursive reference fail the parse closed, so XXE is
+    ///    structurally impossible: nothing outside the document is ever read.
+    /// 2. Every declared entity is expanded and validated while it is being
+    ///    declared, so a declaration that exceeds the depth, size, name or
+    ///    expansion-count budget is refused before it can ever be referenced.
+    /// 3. Entities resolve through a fixed whitelist plus numeric character
     ///    references whose values are range-checked to valid Unicode scalars.
     ///    Anything malformed degrades to literal text or U+FFFD - it never throws.
     /// 3. Element count, nesting depth, attributes-per-element, attribute-value
@@ -52,6 +59,22 @@ namespace FenBrowser.FenEngine.Svg
         internal const int MaxAttributeValueChars = 256 * 1024;
         internal const int MaxTextContentChars = 256 * 1024;
         internal const int MaxIdChars = 512;
+        internal const long MaxForeignEndTagScanChars = 1024 * 1024;
+
+        internal const int MaxDoctypeChars = 64 * 1024;
+        internal const int MaxDoctypeEntities = 128;
+        internal const int MaxDoctypeEntityNameChars = 64;
+        internal const int MaxDoctypeEntityValueChars = 8 * 1024;
+        internal const int MaxDoctypeAttlistChars = 8 * 1024;
+        internal const int MaxEntityNameChars = 64;
+        internal const int MaxEntityExpansionDepth = 4;
+        internal const int MaxEntityExpansionChars = 16 * 1024;
+        internal const int MaxEntityExpansionsPerParse = 4096;
+        internal const int MaxEntityInjectionChars = 256 * 1024;
+        internal const int MaxEntitySplices = 256;
+        internal const long MaxEntitySpliceCopyChars = 8L * 1024 * 1024;
+
+        private const int MaxDoctypeLiteralChars = 1024;
         private const string SvgNamespace = "http://www.w3.org/2000/svg";
 
         // Subtrees consumed raw rather than interpreted as SVG markup. Style text
@@ -104,8 +127,12 @@ namespace FenBrowser.FenEngine.Svg
                     if (PeekWordAfterLtBang(state, "DOCTYPE"))
                     {
                         state.Report.SawDoctype = true;
-                        fatalReason = "DOCTYPE declarations are rejected by the SVG sandbox";
-                        return false;
+                        if (!ReadDoctype(state, out string doctypeFatal))
+                        {
+                            fatalReason = doctypeFatal;
+                            return false;
+                        }
+                        continue;
                     }
                     SkipBangOrPi(state);
                     continue;
@@ -176,16 +203,30 @@ namespace FenBrowser.FenEngine.Svg
                     continue;
                 }
 
+                if (state.Peek() == '&' &&
+                    state.Dtd != null &&
+                    TryExpandContentEntity(state, out string entityFatal))
+                {
+                    if (entityFatal != null)
+                    {
+                        fatalReason = entityFatal;
+                        return false;
+                    }
+                    continue;
+                }
+
                 if (state.Peek() == '!')
                 {
                     if (PeekWordAfterLtBang(state, "DOCTYPE"))
                     {
+                        // A declaration in content position is a well-formedness
+                        // error, so the bounded-subset path never applies here.
                         state.Report.SawDoctype = true;
                         fatalReason = "DOCTYPE declarations are rejected by the SVG sandbox";
                         return false;
                     }
                     string containerName = openStack[openStack.Count - 1].Name;
-                    if ((containerName == "text" || containerName == "tspan") &&
+                    if (IsCharacterDataContainer(containerName) &&
                         state.Source.AsSpan(state.Pos).StartsWith(
                             "![CDATA[".AsSpan(), System.StringComparison.Ordinal))
                     {
@@ -223,6 +264,18 @@ namespace FenBrowser.FenEngine.Svg
                     continue;
                 }
 
+                if (!child.IsSelfClosing &&
+                    state.PendingNamespaceFrame != null &&
+                    !state.PendingNamespaceFrame.IsSvgNamespace &&
+                    !HasForeignEndTag(state, state.PendingNamespaceFrame.RawName))
+                {
+                    state.Report.Warn(
+                        $"foreign element '{SvgDiagnosticText.Identifier(child.Name)}' has no end tag and was not nested");
+                    child.UnclosedForeignElement = true;
+                    AddChild(openStack[openStack.Count - 1], child);
+                    continue;
+                }
+
                 if (child.IsSelfClosing)
                 {
                     AddChild(openStack[openStack.Count - 1], child);
@@ -256,38 +309,50 @@ namespace FenBrowser.FenEngine.Svg
             public readonly bool IsSvgNamespace;
             public readonly string ResolvedName;
             public readonly string NamespaceUri;
+            public readonly string RawName;
 
             public NamespaceFrame(
                 Dictionary<string, string> bindings,
                 bool isSvgNamespace,
                 string resolvedName,
-                string namespaceUri)
+                string namespaceUri,
+                string rawName)
             {
                 Bindings = bindings;
                 IsSvgNamespace = isSvgNamespace;
                 ResolvedName = resolvedName;
                 NamespaceUri = namespaceUri;
+                RawName = rawName;
             }
         }
 
         private sealed class ParseState
         {
-            public readonly string Source;
+            public string Source;
             public int Pos;
             public readonly SvgParseReport Report;
             public int FilterCount;
+            public DtdSubset Dtd;
             public readonly List<NamespaceFrame> NamespaceStack = new List<NamespaceFrame>();
             public NamespaceFrame PendingNamespaceFrame;
+            public long ForeignEndTagScanBudget;
 
             public ParseState(string source, SvgParseReport report)
             {
                 Source = source ?? string.Empty;
                 Report = report;
+                ForeignEndTagScanBudget = MaxForeignEndTagScanChars;
             }
 
             public bool Eof => Pos >= Source.Length;
 
             public char Peek() => Pos < Source.Length ? Source[Pos] : '\0';
+
+            public char PeekAt(int offset)
+            {
+                int index = Pos + offset;
+                return index >= 0 && index < Source.Length ? Source[index] : '\0';
+            }
 
             public bool Match(char c)
             {
@@ -320,6 +385,565 @@ namespace FenBrowser.FenEngine.Svg
 
             // Filter counting mirrors the legacy pre-scan so limit messages stay
             // byte-compatible during the migration window.
+        }
+
+        // ------------------------------------------------- doctype / dtd subset
+
+        private sealed class SvgDtdEntity
+        {
+            public readonly string Name;
+            public readonly string Value;
+
+            public SvgDtdEntity(string name, string value)
+            {
+                Name = name;
+                Value = value;
+            }
+        }
+
+        private sealed class DtdSubset
+        {
+            public readonly Dictionary<string, SvgDtdEntity> Entities =
+                new Dictionary<string, SvgDtdEntity>(System.StringComparer.Ordinal);
+
+            public readonly HashSet<string> Active =
+                new HashSet<string>(System.StringComparer.Ordinal);
+
+            public int EntityCount;
+            public int AttlistCount;
+            public int Expansions;
+            public int InjectedChars;
+            public int Splices;
+            public long SpliceCopyChars;
+            public bool HasExternalId;
+        }
+
+        private static bool RejectDoctype(string detail, out string fatalReason)
+        {
+            fatalReason = SvgDiagnosticText.Bounded(
+                $"DOCTYPE {detail} is rejected by the SVG sandbox",
+                SvgDiagnosticText.MaxFatalChars);
+            return false;
+        }
+
+        private static bool ReadDoctype(ParseState state, out string fatalReason)
+        {
+            fatalReason = null;
+            if (state.Dtd != null)
+            {
+                return RejectDoctype("declaration", out fatalReason);
+            }
+            var dtd = new DtdSubset();
+            state.Dtd = dtd;
+
+            int start = state.Pos;
+            state.Pos += 1 + "DOCTYPE".Length; // cursor sits on '!'
+            SkipWhitespace(state);
+            if (state.Eof || state.Pos - start > MaxDoctypeChars)
+            {
+                return RejectDoctype("declaration", out fatalReason);
+            }
+            if (!ReadName(state, out _))
+            {
+                return RejectDoctype("declaration", out fatalReason);
+            }
+            SkipWhitespace(state);
+
+            if (IsDtdKeyword(state, "SYSTEM") || IsDtdKeyword(state, "PUBLIC"))
+            {
+                if (!ReadExternalId(state, out string externalFatal))
+                {
+                    return RejectDoctype(externalFatal, out fatalReason);
+                }
+                dtd.HasExternalId = true;
+                SkipWhitespace(state);
+            }
+
+            if (!state.Eof && state.Peek() == '[')
+            {
+                state.Pos++;
+                if (!ReadInternalSubset(state, out fatalReason))
+                {
+                    return false;
+                }
+                SkipWhitespace(state);
+            }
+            else
+            {
+                return RejectDoctype(
+                    dtd.HasExternalId
+                        ? "external subset"
+                        : "declaration without an internal subset",
+                    out fatalReason);
+            }
+
+            if (state.Eof || state.Peek() != '>' || state.Pos - start > MaxDoctypeChars)
+            {
+                return RejectDoctype("declaration", out fatalReason);
+            }
+            state.Pos++;
+
+            if (dtd.EntityCount > 0 || dtd.AttlistCount > 0)
+            {
+                state.Report.Warn("DOCTYPE internal subset declarations honored (no external resolution)");
+            }
+            if (dtd.HasExternalId)
+            {
+                state.Report.Warn("DOCTYPE external identifier ignored; external subsets are never resolved");
+            }
+            return true;
+        }
+
+        private static bool ReadInternalSubset(ParseState state, out string fatalReason)
+        {
+            fatalReason = null;
+            int start = state.Pos;
+            while (true)
+            {
+                SkipWhitespace(state);
+                if (state.Eof)
+                {
+                    return RejectDoctype("internal subset", out fatalReason);
+                }
+                if (state.Peek() == ']')
+                {
+                    state.Pos++;
+                    return true;
+                }
+                if (state.Peek() == '<')
+                {
+                    state.Pos++;
+                }
+                if (state.Eof || state.Peek() != '!')
+                {
+                    return RejectDoctype("internal subset", out fatalReason);
+                }
+                state.Pos++;
+
+                if (Matches(state, state.Pos, "--"))
+                {
+                    state.Pos += 2;
+                    int close = state.Source.IndexOf("-->", state.Pos, System.StringComparison.Ordinal);
+                    if (close < 0)
+                    {
+                        return RejectDoctype("internal subset comment", out fatalReason);
+                    }
+                    state.Pos = close + 3;
+                    continue;
+                }
+
+                if (Matches(state, state.Pos, "ENTITY"))
+                {
+                    state.Pos += 6;
+                    if (!ReadEntityDeclaration(state, out fatalReason))
+                    {
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (Matches(state, state.Pos, "ATTLIST"))
+                {
+                    state.Pos += 7;
+                    if (!ReadAttlistDeclaration(state, out fatalReason))
+                    {
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (state.Pos - start > MaxDoctypeChars)
+                {
+                    return RejectDoctype("internal subset over size budget", out fatalReason);
+                }
+                return RejectDoctype("declaration", out fatalReason);
+            }
+        }
+
+        private static bool ReadEntityDeclaration(ParseState state, out string fatalReason)
+        {
+            fatalReason = null;
+            SkipWhitespace(state);
+            if (state.Eof)
+            {
+                return RejectDoctype("entity declaration", out fatalReason);
+            }
+            if (state.Peek() == '%')
+            {
+                return RejectDoctype("parameter entity declaration", out fatalReason);
+            }
+            if (!ReadName(state, out string name) || name.Length > MaxDoctypeEntityNameChars)
+            {
+                return RejectDoctype("entity name", out fatalReason);
+            }
+            SkipWhitespace(state);
+            if (IsDtdKeyword(state, "SYSTEM") || IsDtdKeyword(state, "PUBLIC"))
+            {
+                return RejectDoctype("external entity declaration", out fatalReason);
+            }
+            SkipWhitespace(state);
+            if (!ReadQuotedLiteral(state, MaxDoctypeEntityValueChars, out string value, out _))
+            {
+                return RejectDoctype("entity value", out fatalReason);
+            }
+            SkipWhitespace(state);
+            if (state.Eof || state.Peek() != '>')
+            {
+                return RejectDoctype("entity declaration", out fatalReason);
+            }
+            state.Pos++;
+
+            if (state.Dtd.EntityCount >= MaxDoctypeEntities)
+            {
+                return RejectDoctype($"entity count over budget ({MaxDoctypeEntities})", out fatalReason);
+            }
+            if (!TryExpandEntityText(state.Dtd, name, value, 0, out _, out string detail))
+            {
+                return RejectDoctype(detail, out fatalReason);
+            }
+
+            state.Dtd.Entities[name] = new SvgDtdEntity(name, value);
+            state.Dtd.EntityCount++;
+            return true;
+        }
+
+        private static bool ReadAttlistDeclaration(ParseState state, out string fatalReason)
+        {
+            fatalReason = null;
+            SkipWhitespace(state);
+            if (!ReadName(state, out _))
+            {
+                return RejectDoctype("attribute list declaration", out fatalReason);
+            }
+
+            int start = state.Pos;
+            while (true)
+            {
+                if (state.Eof)
+                {
+                    return RejectDoctype("attribute list declaration", out fatalReason);
+                }
+                if (state.Pos - start > MaxDoctypeAttlistChars)
+                {
+                    return RejectDoctype("attribute list over size budget", out fatalReason);
+                }
+
+                char c = state.Peek();
+                if (c == '>')
+                {
+                    state.Pos++;
+                    state.Dtd.AttlistCount++;
+                    return true;
+                }
+                if (c == ']')
+                {
+                    state.Dtd.AttlistCount++;
+                    return true;
+                }
+                if (c == '<')
+                {
+                    if (state.PeekAt(1) != '!')
+                    {
+                        return RejectDoctype("attribute list declaration", out fatalReason);
+                    }
+                    state.Pos++;
+                    return true;
+                }
+                if (c == '%')
+                {
+                    return RejectDoctype("parameter entity reference", out fatalReason);
+                }
+                if (c == '"' || c == '\'')
+                {
+                    return RejectDoctype("attribute list default value", out fatalReason);
+                }
+                state.Pos++;
+            }
+        }
+
+        private static bool ReadExternalId(ParseState state, out string detail)
+        {
+            detail = null;
+            bool isPublic = IsDtdKeyword(state, "PUBLIC");
+            if (!isPublic && !IsDtdKeyword(state, "SYSTEM"))
+            {
+                detail = "external identifier";
+                return false;
+            }
+            state.Pos += isPublic ? "PUBLIC".Length : "SYSTEM".Length;
+            SkipWhitespace(state);
+            if (!ReadQuotedLiteral(state, MaxDoctypeLiteralChars, out _, out _))
+            {
+                detail = "external identifier";
+                return false;
+            }
+            if (isPublic)
+            {
+                SkipWhitespace(state);
+                if (!ReadQuotedLiteral(state, MaxDoctypeLiteralChars, out _, out _))
+                {
+                    detail = "external identifier";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool ReadQuotedLiteral(
+            ParseState state, int maxChars, out string value, out int length)
+        {
+            value = null;
+            length = 0;
+            char quote = state.Peek();
+            if (quote != '"' && quote != '\'')
+            {
+                return false;
+            }
+            state.Pos++;
+
+            int start = state.Pos;
+            while (!state.Eof)
+            {
+                char c = state.Source[state.Pos];
+                if (c == quote)
+                {
+                    length = state.Pos - start;
+                    if (length > maxChars)
+                    {
+                        return false;
+                    }
+                    value = state.Source.Substring(start, length);
+                    state.Pos++;
+                    return true;
+                }
+                if (state.Pos - start >= maxChars)
+                {
+                    return false;
+                }
+                state.Pos++;
+            }
+            return false;
+        }
+
+        private static bool ReadName(ParseState state, out string name)
+        {
+            name = null;
+            if (state.Eof || !IsNameStartChar(state.Peek()))
+            {
+                return false;
+            }
+            int start = state.Pos;
+            state.Pos++;
+            while (!state.Eof && IsNameChar(state.Peek()))
+            {
+                state.Pos++;
+            }
+            name = state.Source.Substring(start, state.Pos - start);
+            return true;
+        }
+
+        private static bool IsDtdKeyword(ParseState state, string keyword)
+        {
+            if (state.Pos + keyword.Length > state.Source.Length)
+            {
+                return false;
+            }
+            if (string.Compare(
+                    state.Source,
+                    state.Pos,
+                    keyword,
+                    0,
+                    keyword.Length,
+                    System.StringComparison.OrdinalIgnoreCase) != 0)
+            {
+                return false;
+            }
+            int after = state.Pos + keyword.Length;
+            return after >= state.Source.Length || !IsNameChar(state.Source[after]);
+        }
+
+        private static bool Matches(ParseState state, int index, string word)
+        {
+            if (index < 0 || index + word.Length > state.Source.Length)
+            {
+                return false;
+            }
+            return string.CompareOrdinal(state.Source, index, word, 0, word.Length) == 0;
+        }
+
+        private static bool TryExpandEntityText(
+            DtdSubset dtd, string name, string value, int depth, out string text, out string detail)
+        {
+            text = null;
+            detail = null;
+            var output = new System.Text.StringBuilder(
+                System.Math.Min(value.Length, MaxEntityExpansionChars));
+            if (!AppendEntityText(dtd, name, value, depth, output, out detail))
+            {
+                return false;
+            }
+            text = output.ToString();
+            return true;
+        }
+
+        private static bool AppendEntityText(
+            DtdSubset dtd,
+            string name,
+            string value,
+            int depth,
+            System.Text.StringBuilder output,
+            out string detail)
+        {
+            detail = null;
+            if (depth > MaxEntityExpansionDepth)
+            {
+                detail = $"entity expansion depth ({depth}) over budget ({MaxEntityExpansionDepth})";
+                return false;
+            }
+            if (!dtd.Active.Add(name))
+            {
+                detail = $"recursive entity expansion of '{SvgDiagnosticText.Identifier(name)}'";
+                return false;
+            }
+
+            try
+            {
+                int i = 0;
+                while (i < value.Length)
+                {
+                    if (value[i] != '&')
+                    {
+                        if (!AppendBounded(output, value, i, 1))
+                        {
+                            detail = $"entity expansion over size budget ({MaxEntityExpansionChars})";
+                            return false;
+                        }
+                        i++;
+                        continue;
+                    }
+
+                    if (!TryReadEntityName(value, i, value.Length, out int bodyStart, out int bodyLength, out int after))
+                    {
+                        if (!AppendBounded(output, value, i, 1))
+                        {
+                            detail = $"entity expansion over size budget ({MaxEntityExpansionChars})";
+                            return false;
+                        }
+                        i++;
+                        continue;
+                    }
+
+                    if (value[bodyStart] == '#' || PredefinedEntityValue(value, bodyStart, bodyLength) != null)
+                    {
+                        if (!AppendBounded(output, value, i, after - i))
+                        {
+                            detail = $"entity expansion over size budget ({MaxEntityExpansionChars})";
+                            return false;
+                        }
+                        i = after;
+                        continue;
+                    }
+
+                    string reference = value.Substring(bodyStart, bodyLength);
+                    if (dtd.Active.Contains(reference))
+                    {
+                        detail =
+                            $"recursive entity expansion of '{SvgDiagnosticText.Identifier(reference)}'";
+                        return false;
+                    }
+                    if (!dtd.Entities.TryGetValue(reference, out SvgDtdEntity nested))
+                    {
+                        detail =
+                            $"undeclared entity reference '{SvgDiagnosticText.Identifier(reference)}' in internal subset";
+                        return false;
+                    }
+                    if (dtd.Expansions >= MaxEntityExpansionsPerParse)
+                    {
+                        detail = $"entity expansion count over budget ({MaxEntityExpansionsPerParse})";
+                        return false;
+                    }
+                    dtd.Expansions++;
+                    if (!AppendEntityText(
+                            dtd, nested.Name, nested.Value, depth + 1, output, out detail))
+                    {
+                        return false;
+                    }
+                    i = after;
+                }
+                return true;
+            }
+            finally
+            {
+                dtd.Active.Remove(name);
+            }
+        }
+
+        private static bool AppendBounded(
+            System.Text.StringBuilder output, string value, int start, int count)
+        {
+            if (output.Length + count > MaxEntityExpansionChars)
+            {
+                return false;
+            }
+            output.Append(value, start, count);
+            return true;
+        }
+
+        private static bool TryExpandContentEntity(ParseState state, out string fatalReason)
+        {
+            fatalReason = null;
+            DtdSubset dtd = state.Dtd;
+            if (!TryReadEntityName(
+                    state.Source, state.Pos, state.Source.Length, out int bodyStart, out int bodyLength, out int after))
+            {
+                return false;
+            }
+            if (state.Source[bodyStart] == '#' ||
+                PredefinedEntityValue(state.Source, bodyStart, bodyLength) != null)
+            {
+                return false;
+            }
+
+            string name = state.Source.Substring(bodyStart, bodyLength);
+            if (!dtd.Entities.TryGetValue(name, out SvgDtdEntity declared))
+            {
+                return false;
+            }
+
+            if (!TryExpandEntityText(dtd, declared.Name, declared.Value, 0, out string text, out string detail))
+            {
+                fatalReason = SvgDiagnosticText.Bounded(
+                    $"DOCTYPE {detail} is rejected by the SVG sandbox",
+                    SvgDiagnosticText.MaxFatalChars);
+                return true;
+            }
+            if (dtd.Splices >= MaxEntitySplices ||
+                dtd.SpliceCopyChars + state.Source.Length > MaxEntitySpliceCopyChars)
+            {
+                fatalReason = SvgDiagnosticText.Bounded(
+                    $"DOCTYPE entity injection over splice budget ({MaxEntitySplices})",
+                    SvgDiagnosticText.MaxFatalChars);
+                return true;
+            }
+            if (dtd.InjectedChars + text.Length > MaxEntityInjectionChars)
+            {
+                fatalReason = SvgDiagnosticText.Bounded(
+                    $"DOCTYPE entity injection over character budget ({MaxEntityInjectionChars})",
+                    SvgDiagnosticText.MaxFatalChars);
+                return true;
+            }
+
+            int amp = state.Pos;
+            int previousLength = state.Source.Length;
+            var spliced = new System.Text.StringBuilder(previousLength + text.Length);
+            spliced.Append(state.Source, 0, amp);
+            spliced.Append(text);
+            spliced.Append(state.Source, after, previousLength - after);
+            state.Source = spliced.ToString();
+            dtd.Splices++;
+            dtd.SpliceCopyChars += previousLength;
+            dtd.InjectedChars += text.Length;
+            return true;
         }
 
         // ------------------------------------------------------------- elements
@@ -477,7 +1101,7 @@ namespace FenBrowser.FenEngine.Svg
                 : namespaceUri == null || namespaceUri.Length == 0 || colon >= 0
                     ? rawName
                     : "{" + namespaceUri + "}" + rawName;
-            return new NamespaceFrame(bindings, isSvg, resolvedName, namespaceUri);
+            return new NamespaceFrame(bindings, isSvg, resolvedName, namespaceUri, rawName);
         }
 
         private static string ResolveCloseName(ParseState state, string rawName) =>
@@ -699,11 +1323,20 @@ namespace FenBrowser.FenEngine.Svg
                 ? null
                 : parent.Children[parent.Children.Count - 1];
             parent.Children.Add(child);
-            if (parent.Name == "text" || parent.Name == "tspan")
+            if (IsCharacterDataContainer(parent.Name))
             {
                 parent.Content.Add(new SvgContentPart(child));
             }
         }
+
+        /// <summary>
+        /// True for the SVG elements whose children may be character data rather
+        /// than graphics. <c>text</c>/<c>tspan</c> are the classic pair, but
+        /// <c>textPath</c> and the link element <c>a</c> carry glyph runs too, so
+        /// their content is materialized under the same budget and rules.
+        /// </summary>
+        private static bool IsCharacterDataContainer(string name) =>
+            name is "text" or "tspan" or "textPath" or "a";
 
         private static bool SameIgnoredName(string first, string second)
         {
@@ -801,6 +1434,90 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
+        private static bool HasForeignEndTag(ParseState state, string rawName)
+        {
+            if (rawName.Length == 0 || state.ForeignEndTagScanBudget <= 0)
+            {
+                return false;
+            }
+
+            int start = state.Pos;
+            long budget = state.ForeignEndTagScanBudget;
+            int end = (int)System.Math.Min(state.Source.Length, start + budget);
+            int resume = start;
+            int depth = 1;
+            while (resume < end)
+            {
+                int lt = state.Source.IndexOf('<', resume, end - resume);
+                if (lt < 0)
+                {
+                    break;
+                }
+
+                int savedPos = state.Pos;
+                state.Pos = lt + 1;
+                if (state.Eof)
+                {
+                    break;
+                }
+
+                if (state.Peek() == '/')
+                {
+                    state.Pos++;
+                    int nameStart = state.Pos;
+                    while (!state.Eof && IsNameChar(state.Peek()))
+                    {
+                        state.Pos++;
+                    }
+                    if (SameIgnoredName(
+                            state.Source.Substring(nameStart, state.Pos - nameStart), rawName) &&
+                        --depth == 0)
+                    {
+                        state.ForeignEndTagScanBudget =
+                            System.Math.Max(0, budget - (System.Math.Min(state.Pos, end) - start));
+                        state.Pos = start;
+                        return true;
+                    }
+                    resume = state.Pos;
+                    state.Pos = savedPos;
+                    continue;
+                }
+
+                if (IsNameStartChar(state.Peek()))
+                {
+                    int nameStart = state.Pos;
+                    while (!state.Eof && IsNameChar(state.Peek()))
+                    {
+                        state.Pos++;
+                    }
+                    bool insideWindow = state.Pos < end;
+                    bool selfClosing = insideWindow && ScanPastTagEnd(state);
+                    if (!selfClosing &&
+                        SameIgnoredName(
+                            state.Source.Substring(nameStart, state.Pos - nameStart), rawName))
+                    {
+                        depth++;
+                    }
+                    resume = System.Math.Min(state.Pos, end);
+                    state.Pos = savedPos;
+                    continue;
+                }
+
+                if (state.Peek() == '!' || state.Peek() == '?')
+                {
+                    SkipBangOrPi(state);
+                }
+
+                resume = System.Math.Min(state.Pos, end);
+                state.Pos = savedPos;
+            }
+
+            state.ForeignEndTagScanBudget =
+                System.Math.Max(0, budget - (System.Math.Max(resume, end) - start));
+            state.Pos = start;
+            return false;
+        }
+
         /// <summary>Consumes attributes up to and including '>' or "/>"; returns true if self-closing.</summary>
         private static bool ScanPastTagEnd(ParseState state)
         {
@@ -850,6 +1567,7 @@ namespace FenBrowser.FenEngine.Svg
         {
             // Advances past text content and the leading '<' of the next markup,
             // leaving the cursor on the character AFTER '<'.
+            bool expandsDeclaredEntities = state.Dtd != null && !IsCharacterDataContainer(current.Name);
             int textStart = state.Pos;
             while (!state.Eof)
             {
@@ -867,6 +1585,13 @@ namespace FenBrowser.FenEngine.Svg
                     }
                     return;
                 }
+                if (c == '&' && expandsDeclaredEntities && IsNameStartChar(state.PeekAt(1)))
+                {
+                    // Hand the reference to the caller so declared entities that
+                    // expand to markup are spliced into the scan position.
+                    AppendTextContent(state, current, textStart, state.Pos);
+                    return;
+                }
                 state.Pos++;
             }
             AppendTextContent(state, current, textStart, state.Pos);
@@ -878,7 +1603,7 @@ namespace FenBrowser.FenEngine.Svg
             int start,
             int end)
         {
-            if ((current.Name != "text" && current.Name != "tspan") || end <= start)
+            if (!IsCharacterDataContainer(current.Name) || end <= start)
             {
                 return;
             }
@@ -912,7 +1637,7 @@ namespace FenBrowser.FenEngine.Svg
             out bool truncated)
         {
             var decoded = new System.Text.StringBuilder(System.Math.Min(end - start, maximumChars));
-            var cursor = new ParseState(state.Source, state.Report) { Pos = start };
+            var cursor = new ParseState(state.Source, state.Report) { Pos = start, Dtd = state.Dtd };
             while (cursor.Pos < end && decoded.Length < maximumChars)
             {
                 if (cursor.Peek() == '&')
@@ -1080,65 +1805,115 @@ namespace FenBrowser.FenEngine.Svg
             string s = state.Source;
             int ampPos = state.Pos;
 
-            const int maxEntityName = 32;
-            int searchLength = System.Math.Min(
-                maxEntityName + 2, // '&' + bounded body + ';'
-                System.Math.Max(0, System.Math.Min(endExclusive, s.Length) - ampPos));
-            int semi = searchLength > 0 ? s.IndexOf(';', ampPos, searchLength) : -1;
-            if (semi < 0)
+            if (!TryReadEntityName(
+                    s, ampPos, endExclusive, out int bodyStart, out int bodyLength, out int afterName))
             {
                 sb.Append('&');
                 state.Pos = ampPos + 1;
                 return;
             }
 
-            int bodyStart = ampPos + 1;
-            int bodyLen = semi - bodyStart;
-            if (bodyLen == 0 || bodyLen > maxEntityName)
+            string predefined = PredefinedEntityValue(s, bodyStart, bodyLength);
+            if (predefined != null)
             {
-                sb.Append('&');
-                state.Pos = ampPos + 1;
+                sb.Append(predefined);
+                state.Pos = afterName;
                 return;
-            }
-
-            switch (bodyLen)
-            {
-                case 3:
-                    if (s[bodyStart] == 'a' && s[bodyStart + 1] == 'm' && s[bodyStart + 2] == 'p')
-                    { sb.Append('&'); state.Pos = semi + 1; return; }
-                    break;
-                case 2:
-                    if (s[bodyStart] == 'l' && s[bodyStart + 1] == 't')
-                    { sb.Append('<'); state.Pos = semi + 1; return; }
-                    if (s[bodyStart] == 'g' && s[bodyStart + 1] == 't')
-                    { sb.Append('>'); state.Pos = semi + 1; return; }
-                    break;
-                case 4:
-                    if (s[bodyStart] == 'q' && s[bodyStart + 1] == 'u' && s[bodyStart + 2] == 'o' && s[bodyStart + 3] == 't')
-                    { sb.Append('"'); state.Pos = semi + 1; return; }
-                    break;
-                case 5:
-                    if (s[bodyStart] == 'a' && s[bodyStart + 1] == 'p' && s[bodyStart + 2] == 'o' && s[bodyStart + 3] == 's')
-                    { sb.Append('\''); state.Pos = semi + 1; return; }
-                    break;
             }
 
             if (s[bodyStart] == '#')
             {
-                if (TryExpandNumericRef(s, bodyStart + 1, semi, sb))
+                if (TryExpandNumericRef(s, bodyStart + 1, afterName - 1, sb))
                 {
-                    state.Pos = semi + 1;
+                    state.Pos = afterName;
                     return;
                 }
                 // Malformed numeric ref: emit replacement char (browser-style).
                 sb.Append('\uFFFD');
-                state.Pos = semi + 1;
+                state.Pos = afterName;
+                return;
+            }
+
+            DtdSubset dtd = state.Dtd;
+            if (dtd != null &&
+                dtd.Entities.TryGetValue(s.Substring(bodyStart, bodyLength), out SvgDtdEntity declared))
+            {
+                if (TryExpandEntityText(
+                        dtd, declared.Name, declared.Value, 0, out string text, out string detail))
+                {
+                    sb.Append(text);
+                }
+                else
+                {
+                    sb.Append('\uFFFD');
+                    state.Report.Warn(SvgDiagnosticText.Bounded(
+                        $"DOCTYPE {detail}", SvgDiagnosticText.MaxFatalChars));
+                }
+                state.Pos = afterName;
                 return;
             }
 
             // Unknown named entity: emit literal text (never fatal).
             sb.Append('&');
             state.Pos = ampPos + 1;
+        }
+
+        private static bool TryReadEntityName(
+            string s,
+            int amp,
+            int endExclusive,
+            out int bodyStart,
+            out int bodyLength,
+            out int afterName)
+        {
+            bodyStart = amp + 1;
+            bodyLength = 0;
+            afterName = amp + 1;
+            int limit = System.Math.Min(endExclusive, s.Length);
+            int window = System.Math.Min(
+                MaxEntityNameChars + 2, // '&' + bounded body + ';'
+                System.Math.Max(0, limit - amp));
+            if (window <= 0)
+            {
+                return false;
+            }
+            int semi = s.IndexOf(';', amp, window);
+            if (semi < 0)
+            {
+                return false;
+            }
+            int length = semi - amp - 1;
+            if (length == 0 || length > MaxEntityNameChars)
+            {
+                return false;
+            }
+            bodyLength = length;
+            afterName = semi + 1;
+            return true;
+        }
+
+        private static string PredefinedEntityValue(string s, int start, int length)
+        {
+            if (length == 3)
+            {
+                if (s[start] == 'a' && s[start + 1] == 'm' && s[start + 2] == 'p') return "&";
+            }
+            else if (length == 2)
+            {
+                if (s[start] == 'l' && s[start + 1] == 't') return "<";
+                if (s[start] == 'g' && s[start + 1] == 't') return ">";
+            }
+            else if (length == 4)
+            {
+                if (s[start] == 'q' && s[start + 1] == 'u' &&
+                    s[start + 2] == 'o' && s[start + 3] == 't') return "\"";
+            }
+            else if (length == 5)
+            {
+                if (s[start] == 'a' && s[start + 1] == 'p' && s[start + 2] == 'o' &&
+                    s[start + 3] == 's') return "'";
+            }
+            return null;
         }
 
         private static bool TryExpandNumericRef(string s, int start, int semi, System.Text.StringBuilder sb)

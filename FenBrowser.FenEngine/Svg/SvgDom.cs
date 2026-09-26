@@ -18,6 +18,7 @@ namespace FenBrowser.FenEngine.Svg
         public string NamespaceUri;
         public string IdAttribute;
         public bool IsSelfClosing;
+        public bool UnclosedForeignElement;
         public string TextContent;
         public KeyValuePair<string, string>[] Attributes;
         public readonly List<SvgElement> Children = new List<SvgElement>();
@@ -308,10 +309,10 @@ namespace FenBrowser.FenEngine.Svg
                 return "admission-budget";
             if (Has(reason, "cycle") || Has(reason, "unresolved") || Has(reason, "reference"))
                 return "reference-resolution";
-            if (Has(reason, "script") || Has(reason, "dynamic") || Has(reason, "pseudo-element"))
-                return "dynamic-content";
             if (Has(reason, "unknown element") || Has(reason, "unsupported SVG feature") || Has(reason, "SVG feature"))
                 return "unsupported-element";
+            if (Has(reason, "script") || Has(reason, "dynamic") || Has(reason, "pseudo-element"))
+                return "dynamic-content";
             if (Has(reason, "property") || Has(reason, "attribute")) return "unsupported-property";
             return "unsupported-feature";
         }
