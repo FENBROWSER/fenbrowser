@@ -117,6 +117,7 @@ internal static class SvgCorpusRunner
         Directory.CreateDirectory(options.OutputDirectory);
         string checkpointPath = Path.Combine(options.OutputDirectory, "corpus-checkpoint.jsonl");
         string rendererBuildId = typeof(SvgCorpusRunner).Assembly.ManifestModule.ModuleVersionId.ToString("D");
+        RendererSourceProvenance provenance = RendererSourceProvenanceReader.Capture();
         var checkpoint = options.Resume
             ? LoadCheckpoint(checkpointPath, rendererBuildId)
             : new Dictionary<string, SvgCorpusCheckpoint>(StringComparer.Ordinal);
@@ -252,13 +253,20 @@ internal static class SvgCorpusRunner
 
         var summary = new SvgCorpusSummary
         {
-            SchemaVersion = 5,
+            SchemaVersion = 6,
             CorpusRoot = options.CorpusDirectory,
             CorpusKind = options.CorpusKind,
             SelectionPrefixes = options.IncludePrefixes.ToList(),
             Resumed = options.Resume,
             ReusedEntries = reusedEntries,
             RendererBuildId = rendererBuildId,
+            RendererSourceHash = provenance.SourceHash,
+            RendererSourceRoots = provenance.SourceRoots.ToList(),
+            RendererSourceFiles = provenance.SourceFiles.ToList(),
+            GitRevision = provenance.GitRevision,
+            GitShortRevision = provenance.ShortRevision,
+            GitTreeDirty = provenance.GitTreeDirty,
+            SourcesMatchGitRevision = provenance.SourcesMatchGitRevision,
             ManifestValidated = manifestValidated,
             WptManifestPath = wptIndex?.ManifestPath ?? string.Empty,
             WptManifestVersion = wptIndex?.ManifestVersion ?? 0,
@@ -355,6 +363,12 @@ internal static class SvgCorpusRunner
             prefixes = summary.SelectionPrefixes,
             resumed = summary.Resumed,
             reused = summary.ReusedEntries,
+            rendererBuildId = summary.RendererBuildId,
+            rendererSourceHash = summary.RendererSourceHash,
+            rendererSourceFiles = summary.RendererSourceFiles.Count,
+            gitRevision = summary.GitRevision,
+            gitTreeDirty = summary.GitTreeDirty,
+            sourcesMatchGitRevision = summary.SourcesMatchGitRevision,
             evaluated = summary.EvaluatedFiles,
             firstParty = summary.FirstPartySupported,
             inadmissible = summary.InadmissibleDocuments,
@@ -1008,6 +1022,12 @@ internal static class SvgCorpusRunner
             $"- Selection prefixes: {(summary.SelectionPrefixes.Count == 0 ? "all" : string.Join(", ", summary.SelectionPrefixes))}",
             $"- Resume enabled / entries reused: {(summary.Resumed ? "yes" : "no")} / {summary.ReusedEntries}",
             $"- Renderer build id: {summary.RendererBuildId}",
+            $"- Renderer source hash: {(summary.RendererSourceHash.Length == 0 ? "unavailable" : summary.RendererSourceHash)}",
+            $"- Renderer source roots: {(summary.RendererSourceRoots.Count == 0 ? "unavailable" : string.Join(", ", summary.RendererSourceRoots))}",
+            $"- Renderer source files hashed: {summary.RendererSourceFiles.Count}",
+            $"- Git revision: {(summary.GitRevision.Length == 0 ? "unavailable" : $"{summary.GitShortRevision} ({summary.GitRevision})")}",
+            $"- Git tree dirty: {Describe(summary.GitTreeDirty)}",
+            $"- Hashed sources match git revision: {Describe(summary.SourcesMatchGitRevision)}",
             $"- Evaluated: {summary.EvaluatedFiles}",
             $"- First-party supported: {summary.FirstPartySupported}",
             $"- Inadmissible documents: {summary.InadmissibleDocuments}",
@@ -1089,6 +1109,7 @@ internal static class SvgCorpusRunner
 
     private static string Escape(string value) => value.Replace("|", "\\|");
     private static string? Bound(string? value) => value == null ? null : value[..Math.Min(256, value.Length)];
+    private static string Describe(bool? value) => value == null ? "unavailable" : value == true ? "yes" : "no";
 
     private sealed record WptReferenceEvaluation(
         bool Applicable,
@@ -1125,6 +1146,13 @@ internal sealed class SvgCorpusSummary
     public bool Resumed { get; set; }
     public int ReusedEntries { get; set; }
     public string RendererBuildId { get; set; } = string.Empty;
+    public string RendererSourceHash { get; set; } = string.Empty;
+    public List<string> RendererSourceRoots { get; set; } = new();
+    public List<string> RendererSourceFiles { get; set; } = new();
+    public string GitRevision { get; set; } = string.Empty;
+    public string GitShortRevision { get; set; } = string.Empty;
+    public bool? GitTreeDirty { get; set; }
+    public bool? SourcesMatchGitRevision { get; set; }
     public bool ManifestValidated { get; set; }
     public string WptManifestPath { get; set; } = string.Empty;
     public int WptManifestVersion { get; set; }
