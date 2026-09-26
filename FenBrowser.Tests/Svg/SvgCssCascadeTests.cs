@@ -1396,7 +1396,6 @@ namespace FenBrowser.Tests.Svg
 
         [Theory]
         [InlineData("font: 18px")]
-        [InlineData("text-decoration: underline")]
         [InlineData("text-decoration-color: red")]
         [InlineData("direction: rtl")]
         [InlineData("writing-mode: tb-rl")]
@@ -1423,6 +1422,21 @@ namespace FenBrowser.Tests.Svg
 
             AssertFailsClosed(result);
             Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void TextDecorationUnderline_RendersInsteadOfFailingClosed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>text { text-decoration: underline }" +
+                "</style><text x='0' y='12' font-size='8' fill='black'>hi</text>" +
+                "<rect width='20' height='20' fill='white'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.DoesNotContain("css-cascade", result.FallbackReasonCodes);
+            Assert.NotNull(result.Bitmap);
         }
 
         [Fact]

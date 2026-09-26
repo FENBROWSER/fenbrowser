@@ -35,6 +35,7 @@ namespace FenBrowser.FenEngine.Svg
             "flood-color", "flood-opacity",
             "stop-color", "stop-opacity",
             "font-family", "font-size", "font-style", "font-weight", "letter-spacing", "text-anchor",
+            "text-decoration",
             "transform", "transform-origin", "transform-box", "zoom",
             "x", "y", "width", "height", "cx", "cy", "r", "rx", "ry", "d", "path-length",
             "paint-order"
