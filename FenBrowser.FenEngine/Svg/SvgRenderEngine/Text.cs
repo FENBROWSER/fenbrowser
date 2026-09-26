@@ -11,6 +11,7 @@ namespace FenBrowser.FenEngine.Svg
     {
         private const int MaxTextRenderCharsPerElement = 4096;
         private const int MaxTextGlyphsPerDocument = 16384;
+        private int _documentTextGlyphCount;
 
         private void DrawTextElement(SvgElement el, SKCanvas canvas, ViewportContext viewport, InheritedStyle inherited)
         {
@@ -63,7 +64,7 @@ namespace FenBrowser.FenEngine.Svg
             {
                 string opacity = element.GetPresentationProperty("opacity");
                 if (!string.IsNullOrWhiteSpace(opacity) &&
-                    (!SvgValues.TryParseNumber(opacity.AsSpan(), out float parsedOpacity) || parsedOpacity < 1f))
+                    (!TryParseOpacity(opacity, out float parsedOpacity) || parsedOpacity < 1f))
                 {
                     _report.RequireFallback("isolated tspan opacity requires compatibility fallback");
                 }
@@ -126,6 +127,7 @@ namespace FenBrowser.FenEngine.Svg
             TextLayoutState state,
             List<TextPaintRun> runs)
         {
+            if (IsDisplayNone(element)) return;
             string href = element.GetAttribute("href") ?? element.GetLookup("xlink:href");
             if (string.IsNullOrWhiteSpace(href)) return;
             if (!SvgValues.TryParseLocalReference(href, out string id))
@@ -284,7 +286,7 @@ namespace FenBrowser.FenEngine.Svg
                 _report.RequireFallback("complex SVG text requires an available HarfBuzz shaper");
                 return null;
             }
-            if (state.GlyphCount + glyphRun.Count > MaxTextGlyphsPerDocument)
+            if (_documentTextGlyphCount + glyphRun.Count > MaxTextGlyphsPerDocument)
             {
                 _report.RequireFallback("SVG text exceeds first-party glyph budget");
                 return null;
@@ -301,6 +303,7 @@ namespace FenBrowser.FenEngine.Svg
                 state.CurrentChunk, applyOwnOpacity);
             runs.Add(run);
             state.X += glyphRun.Width;
+            _documentTextGlyphCount += glyphRun.Count;
             state.GlyphCount += glyphRun.Count;
             state.HasRenderedText = true;
             return run;
@@ -317,16 +320,6 @@ namespace FenBrowser.FenEngine.Svg
                     Edging = SKFontEdging.Antialias,
                     Subpixel = true
                 };
-                var metrics = font.Metrics;
-                using var boundsBuilder = new SKPathBuilder();
-                boundsBuilder.AddRect(run.PathTransforms == null
-                    ? new SKRect(run.X, run.Y + metrics.Ascent, run.X + Math.Max(1f, run.GlyphRun.Width), run.Y + metrics.Descent)
-                    : run.PathBounds);
-                using var boundsPath = boundsBuilder.Detach();
-                using var fillPaint = BuildFillPaint(
-                    run.Element, run.PaintStyle, boundsPath, run.Viewport);
-                using var strokePaint = BuildStrokePaint(
-                    run.Element, run.PaintStyle, boundsPath, run.Viewport);
                 using var blobBuilder = new SKTextBlobBuilder();
                 if (run.PathTransforms != null)
                 {
@@ -347,6 +340,28 @@ namespace FenBrowser.FenEngine.Svg
                     }
                 }
                 using var blob = blobBuilder.Build();
+                if (blob == null) return;
+
+                var metrics = font.Metrics;
+                SKRect objectBounds = blob.Bounds;
+                if (!float.IsFinite(objectBounds.Left) || !float.IsFinite(objectBounds.Top) ||
+                    !float.IsFinite(objectBounds.Right) || !float.IsFinite(objectBounds.Bottom) ||
+                    objectBounds.Width <= 0f || objectBounds.Height <= 0f)
+                {
+                    objectBounds = run.PathTransforms == null
+                        ? new SKRect(run.X, run.Y + metrics.Ascent,
+                            run.X + Math.Max(1f, run.GlyphRun.Width), run.Y + metrics.Descent)
+                        : ResolvePathTextBounds(run, font);
+                }
+                using var boundsBuilder = new SKPathBuilder();
+                boundsBuilder.AddRect(objectBounds);
+                using var boundsPath = boundsBuilder.Detach();
+                using var fillPaint = ApplyInheritedFillOpacity(
+                    BuildFillPaint(run.Element, run.PaintStyle, boundsPath, run.Viewport),
+                    run.PaintStyle);
+                using var strokePaint = ApplyInheritedStrokeOpacity(
+                    BuildStrokePaint(run.Element, run.PaintStyle, boundsPath, run.Viewport),
+                    run.PaintStyle);
                 for (int i = 0; i < 3; i++)
                 {
                     switch (run.PaintStyle.PaintOrder.At(i))
@@ -369,6 +384,33 @@ namespace FenBrowser.FenEngine.Svg
                     layerPaint.Dispose();
                 }
             }
+        }
+
+        private SKRect ResolvePathTextBounds(TextPaintRun run, SKFont font)
+        {
+            if (run.PathTransforms == null || run.PathTransforms.Length == 0)
+                return run.PathBounds;
+
+            bool hasBounds = false;
+            SKRect bounds = default;
+            for (int i = 0; i < run.PathTransforms.Length; i++)
+            {
+                if ((i & 255) == 0) CheckDeadline();
+                using var glyphPath = font.GetGlyphPath(run.PathGlyphIds[i]);
+                if (glyphPath == null || glyphPath.IsEmpty) continue;
+                using var transformed = new SKPath();
+                glyphPath.Transform(run.PathTransforms[i].ToMatrix(), transformed);
+                SKRect glyphBounds = transformed.TightBounds;
+                if (!float.IsFinite(glyphBounds.Left) || !float.IsFinite(glyphBounds.Top) ||
+                    !float.IsFinite(glyphBounds.Right) || !float.IsFinite(glyphBounds.Bottom) ||
+                    glyphBounds.Width <= 0f || glyphBounds.Height <= 0f)
+                {
+                    continue;
+                }
+                bounds = hasBounds ? SKRect.Union(bounds, glyphBounds) : glyphBounds;
+                hasBounds = true;
+            }
+            return hasBounds ? bounds : run.PathBounds;
         }
 
         private static void ApplyTextAnchors(List<TextPaintRun> runs, List<TextChunk> chunks)
@@ -401,7 +443,7 @@ namespace FenBrowser.FenEngine.Svg
             string spacingRaw = element.GetPresentationProperty("letter-spacing");
             string xmlSpace = element.GetAttribute("xml:space");
 
-            float fontSize = ResolveFontSize(sizeRaw, inherited.FontSize);
+            float fontSize = ResolveFontSize(sizeRaw, inherited.FontSize, _report);
             float letterSpacing = inherited.LetterSpacing;
             if (!string.IsNullOrWhiteSpace(spacingRaw) && !spacingRaw.Trim().Equals("normal", StringComparison.OrdinalIgnoreCase) &&
                 SvgValues.TryParseLength(spacingRaw.AsSpan().Trim(), out float spacing, out var spacingUnit))
@@ -445,11 +487,68 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
-        private static float ResolveFontSize(string raw, float inherited)
+        private const float MaxFontSize = 4096f;
+        private const float MinFontSize = 0.01f;
+
+        private static float ResolveFontSize(string raw, float inherited, SvgParseReport report)
         {
-            if (string.IsNullOrWhiteSpace(raw) || !SvgValues.TryParseLength(raw.AsSpan().Trim(), out float value, out var unit)) return inherited;
-            float resolved = SvgValues.ResolveUnits(value, unit, inherited, inherited);
-            return float.IsFinite(resolved) && resolved > 0f ? Math.Min(resolved, 4096f) : inherited;
+            if (string.IsNullOrWhiteSpace(raw)) return inherited;
+            ReadOnlySpan<char> value = raw.AsSpan().Trim();
+            if (value.IsEmpty) return inherited;
+
+            if (value.Equals("inherit", System.StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("revert", System.StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("unset", System.StringComparison.OrdinalIgnoreCase))
+            {
+                return inherited;
+            }
+            if (value.Equals("initial", System.StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("medium", System.StringComparison.OrdinalIgnoreCase))
+            {
+                return BoundedFontSize(DefaultFontSize);
+            }
+            if (value.Equals("smaller", System.StringComparison.OrdinalIgnoreCase))
+            {
+                return BoundedFontSize(inherited / 1.2f);
+            }
+            if (value.Equals("larger", System.StringComparison.OrdinalIgnoreCase))
+            {
+                return BoundedFontSize(inherited * 1.2f);
+            }
+
+            float absolute = AbsoluteFontSizeKeyword(value);
+            if (absolute > 0f) return BoundedFontSize(absolute);
+
+            if (SvgValues.TryParseLength(value, out float parsed, out var unit))
+            {
+                float resolved = SvgValues.ResolveUnits(parsed, unit, inherited, inherited);
+                return float.IsFinite(resolved) && resolved > 0f
+                    ? BoundedFontSize(resolved)
+                    : inherited;
+            }
+
+            report?.RequireFallback("SVG font-size value requires compatibility fallback");
+            return inherited;
+        }
+
+        private static float AbsoluteFontSizeKeyword(ReadOnlySpan<char> value)
+        {
+            float ratio;
+            if (value.Equals("xx-small", System.StringComparison.OrdinalIgnoreCase)) ratio = 9f / 16f;
+            else if (value.Equals("x-small", System.StringComparison.OrdinalIgnoreCase)) ratio = 10f / 16f;
+            else if (value.Equals("small", System.StringComparison.OrdinalIgnoreCase)) ratio = 13f / 16f;
+            else if (value.Equals("large", System.StringComparison.OrdinalIgnoreCase)) ratio = 18f / 16f;
+            else if (value.Equals("x-large", System.StringComparison.OrdinalIgnoreCase)) ratio = 24f / 16f;
+            else if (value.Equals("xx-large", System.StringComparison.OrdinalIgnoreCase)) ratio = 32f / 16f;
+            else return 0f;
+            return DefaultFontSize * ratio;
+        }
+
+        private static float BoundedFontSize(float value)
+        {
+            if (!float.IsFinite(value)) return DefaultFontSize;
+            if (value < MinFontSize) return MinFontSize;
+            return value > MaxFontSize ? MaxFontSize : value;
         }
 
         private static string NormalizeText(string raw, bool preserve, TextLayoutState state)

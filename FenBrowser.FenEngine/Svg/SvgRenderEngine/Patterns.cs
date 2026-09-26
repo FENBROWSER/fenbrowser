@@ -103,6 +103,11 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             var localMatrix = SKMatrix.Concat(unitsMatrix, patternTransform);
+            if (!SvgValues.IsFinite(localMatrix))
+            {
+                _report.RequireFallback("SVG pattern transform is not finite and bounded");
+                return null;
+            }
             if (!localMatrix.TryInvert(out _))
             {
                 return null;
@@ -154,15 +159,18 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         canvas.Translate(tile.Left, tile.Top);
                         var tileViewport = new ViewportContext(tile.Width, tile.Height);
-                        ApplyViewportTransform(
-                            canvas,
-                            tileViewport,
-                            hasViewBox: true,
-                            vbX,
-                            vbY,
-                            vbWidth,
-                            vbHeight,
-                            pattern.PreserveAspectRatio);
+                        if (!ApplyViewportTransform(
+                                canvas,
+                                tileViewport,
+                                hasViewBox: true,
+                                vbX,
+                                vbY,
+                                vbWidth,
+                                vbHeight,
+                                pattern.PreserveAspectRatio))
+                        {
+                            return null;
+                        }
                         contentViewport = new ViewportContext(vbWidth, vbHeight);
                     }
                     else if (objectBoundingBoxContent)
@@ -206,13 +214,15 @@ namespace FenBrowser.FenEngine.Svg
             var visited = new HashSet<SvgElement>();
             SvgElement current = server;
 
-            while (current != null && current.Name == "pattern")
+            while (current != null)
             {
-                if (!IsPatternInValidContext(current) ||
+                if (current.Name != "pattern" ||
+                    !IsPatternInValidContext(current) ||
                     !visited.Add(current) ||
                     visited.Count > _maxReferenceDepth)
                 {
-                    break;
+                    _report.RequireFallback("SVG pattern template reference requires compatibility fallback");
+                    return false;
                 }
 
                 resolved.X ??= current.GetAttribute("x");
@@ -225,25 +235,57 @@ namespace FenBrowser.FenEngine.Svg
                 resolved.ViewBox ??= current.GetAttribute("viewBox");
                 resolved.PreserveAspectRatio ??= current.GetAttribute("preserveAspectRatio");
 
-                if (resolved.ContentOwner == null && current.Children.Count != 0)
+                if (resolved.ContentOwner == null && HasRenderablePatternContent(current))
                 {
                     resolved.ContentOwner = current;
                 }
 
                 string href = current.GetAttribute("href") ?? current.GetLookup("xlink:href");
-                if (!SvgValues.TryParseLocalReference(href, out string id) ||
-                    !_doc.ElementsById.TryGetValue(id, out var template) ||
-                    template.Name != "pattern" ||
-                    !IsPatternInValidContext(template))
+                if (string.IsNullOrWhiteSpace(href))
                 {
                     break;
+                }
+                if (!SvgValues.TryParseLocalReference(href, out string id))
+                {
+                    _report.RejectResource("SVG pattern external template reference rejected");
+                    return false;
+                }
+                if (!_doc.ElementsById.TryGetValue(id, out var template))
+                {
+                    return false;
+                }
+                if (template.Name != "pattern")
+                {
+                    _report.RequireFallback("SVG pattern template reference is invalid or unsupported");
+                    return false;
+                }
+                if (!IsPatternInValidContext(template))
+                {
+                    return false;
                 }
                 current = template;
             }
 
-            // A pattern with no renderable content is not a usable paint server;
-            // the optional fallback paint in url(...) must be selected instead.
             return resolved.ContentOwner != null;
+        }
+
+        private static bool HasRenderablePatternContent(SvgElement pattern)
+        {
+            for (int i = 0; i < pattern.Children.Count; i++)
+            {
+                var child = pattern.Children[i];
+                if (child.Name is "title" or "desc" or "metadata")
+                {
+                    continue;
+                }
+                if (child.Name is "g" or "a" or "switch")
+                {
+                    if (HasRenderablePatternContent(child)) return true;
+                    continue;
+                }
+                return true;
+            }
+            return false;
         }
 
         private static bool IsPatternInValidContext(SvgElement pattern)

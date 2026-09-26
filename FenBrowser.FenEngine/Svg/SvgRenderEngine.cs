@@ -233,29 +233,45 @@ namespace FenBrowser.FenEngine.Svg
 
         // -------------------------------------------------------------- viewport
 
+        private void ResolveRootCssViewportSize(SvgElement root, ref float width, ref float height)
+        {
+            if (root.GetCascadedPresentationProperty("width") == null &&
+                root.GetCascadedPresentationProperty("height") == null)
+                return;
+            ResolveGeometryFontContext(root, out float fontSize, out float rootFontSize);
+            var viewport = new ViewportContext(width, height);
+            if (TryResolveGeometryLength(
+                    root, "width", viewport, width, fontSize, rootFontSize, out float cssWidth) &&
+                cssWidth >= 0f)
+                width = cssWidth;
+            if (TryResolveGeometryLength(
+                    root, "height", viewport, height, fontSize, rootFontSize, out float cssHeight) &&
+                cssHeight >= 0f)
+                height = cssHeight;
+        }
+
         private void RenderRoot(out SKPicture picture, out float width, out float height)
         {
             var root = _doc.Root;
 
-            width = ResolveViewportLength(root.GetAttribute("width"), 0f);
-            height = ResolveViewportLength(root.GetAttribute("height"), 0f);
+            string rootWidth = root.GetAttribute("width");
+            string rootHeight = root.GetAttribute("height");
+            bool hasRootWidth = TryResolveViewportLength(rootWidth, 0f, out width);
+            bool hasRootHeight = TryResolveViewportLength(rootHeight, 0f, out height);
+            if (!hasRootWidth) width = 0f;
+            if (!hasRootHeight) height = 0f;
 
             bool hasViewBox = TryParseViewBox(
                 root.GetAttribute("viewBox"),
                 out float vbX, out float vbY, out float vbW, out float vbH,
                 out bool viewBoxDisablesRendering);
 
-            // Intrinsic sizing: explicit px-ish lengths win; otherwise derive from
-            // viewBox (legacy adapter parity); otherwise CSS replaced-element
-            // default 300x150 keeps output deterministic.
-            bool sizeComplete = width > 0f && height > 0f;
-            if (!sizeComplete && hasViewBox)
-            {
-                if (width <= 0f) width = vbW;
-                if (height <= 0f) height = vbH;
-            }
-            if (width <= 0f || !SvgValues.IsFinite(width)) width = 300f;
-            if (height <= 0f || !SvgValues.IsFinite(height)) height = 150f;
+            if (!hasRootWidth && hasViewBox) width = vbW;
+            if (!hasRootHeight && hasViewBox) height = vbH;
+            if (!hasRootWidth && !hasViewBox) width = 300f;
+            if (!hasRootHeight && !hasViewBox) height = 150f;
+            if (!SvgValues.IsFinite(width) || width < 0f) width = hasRootWidth ? width : 300f;
+            if (!SvgValues.IsFinite(height) || height < 0f) height = hasRootHeight ? height : 150f;
 
             // Absolute upper bound independent of caller limits: a viewport this
             // large can never pass raster admission below anyway.
@@ -265,6 +281,9 @@ namespace FenBrowser.FenEngine.Svg
             // Apply author CSS after the intrinsic viewport is known so media
             // queries and percentage-aware values see the replaced-element size.
             SvgCssCascade.Apply(_doc, width, _report, CheckDeadline);
+            ResolveRootCssViewportSize(root, ref width, ref height);
+            width = System.Math.Min(width, 32767f);
+            height = System.Math.Min(height, 32767f);
 
             using var recorder = new SKPictureRecorder();
             var canvas = recorder.BeginRecording(new SKRect(0f, 0f, width, height));
@@ -288,17 +307,44 @@ namespace FenBrowser.FenEngine.Svg
                     picture = recorder.EndRecording();
                     return;
                 }
-                ApplyViewportTransform(canvas, viewport, hasViewBox, vbX, vbY, vbW, vbH, root.GetAttribute("preserveAspectRatio"));
-                ApplyCssZoom(root, canvas);
-                if (!rootStyle.Visibility)
+                if (IsDisplayNone(root) || !rootStyle.Visibility)
                 {
                     picture = recorder.EndRecording();
                     return;
                 }
+                ReportUnsupportedMaskHref(root);
+                if (!ApplyViewportTransform(canvas, viewport, hasViewBox, vbX, vbY, vbW, vbH, root.GetAttribute("preserveAspectRatio")))
+                {
+                    picture = recorder.EndRecording();
+                    return;
+                }
+                ApplyCssZoom(root, canvas);
                 var userViewport = hasViewBox
                     ? new ViewportContext(vbW, vbH)
                     : viewport;
-                DrawChildren(root, canvas, userViewport, rootStyle);
+                if (width <= 0f || height <= 0f)
+                {
+                    picture = recorder.EndRecording();
+                    return;
+                }
+                ApplyClipPath(root, canvas, userViewport, inherited);
+                DrawWithEffects(root, canvas, userViewport, () =>
+                {
+                    bool layered = TryBeginGroupOpacity(root, canvas, out var layerPaint);
+                    try
+                    {
+                        DrawChildren(root, canvas, userViewport, rootStyle);
+                    }
+                    finally
+                    {
+                        if (layered)
+                        {
+                            canvas.Restore();
+                            _activeLayers--;
+                            layerPaint.Dispose();
+                        }
+                    }
+                });
             }
 
             picture = recorder.EndRecording();

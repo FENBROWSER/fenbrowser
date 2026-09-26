@@ -7,11 +7,6 @@ namespace FenBrowser.FenEngine.Svg
 {
     internal sealed partial class SvgRenderEngine
     {
-        /// <summary>
-        /// Applies the deterministic SVG document-time-zero snapshot for the
-        /// bounded animateMotion subset. No clock or mutable animation state is
-        /// consulted, so picture recording remains repeatable and thread-safe.
-        /// </summary>
         private void ApplyInitialMotionTransform(
             SvgElement target,
             SKCanvas canvas,
@@ -38,6 +33,12 @@ namespace FenBrowser.FenEngine.Svg
             if (path == null || path.IsEmpty) return;
             if (!TryMeasureMotionPoint(path, fraction, out SKPoint position, out SKPoint tangent))
                 return;
+            if (!float.IsFinite(position.X) || !float.IsFinite(position.Y) ||
+                !float.IsFinite(tangent.X) || !float.IsFinite(tangent.Y))
+            {
+                RequireMotionFallback("animateMotion path sample");
+                return;
+            }
 
             float degrees = 0f;
             string rotate = motion.GetAttribute("rotate")?.Trim();
@@ -66,28 +67,25 @@ namespace FenBrowser.FenEngine.Svg
             out bool active)
         {
             fraction = 0f;
-            active = true;
+            active = false;
             if (!IsDefaultMotionAttribute(motion, "additive", "replace") ||
                 !IsDefaultMotionAttribute(motion, "accumulate", "none") ||
-                !IsDefaultMotionAttribute(motion, "restart", "always"))
+                !IsDefaultMotionAttribute(motion, "restart", "always") ||
+                motion.GetAttribute("min") != null ||
+                motion.GetAttribute("max") != null ||
+                motion.GetAttribute("repeatDur") != null)
             {
                 RequireMotionFallback("advanced animateMotion composition");
                 return false;
             }
 
+            double beginSeconds = 0d;
             string begin = motion.GetAttribute("begin")?.Trim();
-            if (!string.IsNullOrEmpty(begin))
+            if (!string.IsNullOrEmpty(begin) &&
+                !TryParseClockSeconds(begin, out beginSeconds))
             {
-                if (!TryParseClockSeconds(begin, out double beginSeconds))
-                {
-                    RequireMotionFallback("event-based animateMotion begin");
-                    return false;
-                }
-                if (beginSeconds > 0d)
-                {
-                    active = false;
-                    return true;
-                }
+                RequireMotionFallback("event-based animateMotion begin");
+                return false;
             }
 
             string duration = motion.GetAttribute("dur")?.Trim();
@@ -96,6 +94,13 @@ namespace FenBrowser.FenEngine.Svg
                 durationSeconds <= 0d)
             {
                 RequireMotionFallback("animateMotion duration");
+                return false;
+            }
+
+            string calcMode = motion.GetAttribute("calcMode")?.Trim();
+            if (calcMode?.Equals("paced", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                RequireMotionFallback("animateMotion calcMode='paced'");
                 return false;
             }
 
@@ -111,18 +116,145 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             string keyPoints = motion.GetAttribute("keyPoints")?.Trim();
+            float[] parsedKeyPoints = null;
             if (!string.IsNullOrEmpty(keyPoints))
             {
                 if (parsedKeyTimes == null ||
-                    !TryParseSemicolonNumbers(keyPoints, out float[] parsedKeyPoints) ||
+                    !TryParseSemicolonNumbers(keyPoints, out parsedKeyPoints) ||
                     parsedKeyPoints.Length != parsedKeyTimes.Length ||
                     !IsUnitInterval(parsedKeyPoints))
                 {
                     RequireMotionFallback("animateMotion keyPoints");
                     return false;
                 }
-                fraction = parsedKeyPoints[0];
             }
+
+            bool discrete = calcMode?.Equals("discrete", StringComparison.OrdinalIgnoreCase) == true;
+            if (!string.IsNullOrEmpty(calcMode) &&
+                !calcMode.Equals("linear", StringComparison.OrdinalIgnoreCase) &&
+                !discrete)
+            {
+                RequireMotionFallback("animateMotion calculation mode");
+                return false;
+            }
+
+            double repeatCount = 1d;
+            string repeatRaw = motion.GetAttribute("repeatCount")?.Trim();
+            if (!string.IsNullOrEmpty(repeatRaw))
+            {
+                if (repeatRaw.Equals("indefinite", StringComparison.OrdinalIgnoreCase))
+                {
+                    repeatCount = double.PositiveInfinity;
+                }
+                else if (!double.TryParse(
+                             repeatRaw,
+                             NumberStyles.Float,
+                             CultureInfo.InvariantCulture,
+                             out repeatCount) ||
+                         !double.IsFinite(repeatCount) || repeatCount <= 0d || repeatCount > 1_000_000d)
+                {
+                    RequireMotionFallback("animateMotion repeat count");
+                    return false;
+                }
+            }
+
+            bool freeze = string.Equals(
+                motion.GetAttribute("fill")?.Trim(), "freeze", StringComparison.OrdinalIgnoreCase);
+            string fill = motion.GetAttribute("fill")?.Trim();
+            if (!string.IsNullOrEmpty(fill) &&
+                !fill.Equals("remove", StringComparison.OrdinalIgnoreCase) && !freeze)
+            {
+                RequireMotionFallback("animateMotion fill mode");
+                return false;
+            }
+
+            if (!double.IsFinite(_documentTimeSeconds))
+            {
+                RequireMotionFallback("animateMotion document time");
+                return false;
+            }
+            double totalDuration = repeatCount * durationSeconds;
+            if (!(totalDuration > 0d) ||
+                (double.IsPositiveInfinity(totalDuration) &&
+                 !double.IsPositiveInfinity(repeatCount)))
+            {
+                RequireMotionFallback("animateMotion total duration");
+                return false;
+            }
+            double elapsed = _documentTimeSeconds - beginSeconds;
+            if (!double.IsFinite(elapsed))
+            {
+                RequireMotionFallback("animateMotion elapsed time");
+                return false;
+            }
+            if (elapsed < 0d) return true;
+            bool finished = double.IsFinite(totalDuration) && elapsed >= totalDuration;
+            if (finished && !freeze) return true;
+
+            double cycleProgress = finished ? 1d : elapsed / durationSeconds;
+            if (!double.IsFinite(cycleProgress))
+            {
+                RequireMotionFallback("animateMotion progress");
+                return false;
+            }
+            double progress = finished ? 1d : cycleProgress % 1d;
+            if (progress < 0d) progress += 1d;
+            progress = Math.Clamp(progress, 0d, 1d);
+            if (!double.IsFinite(progress))
+            {
+                RequireMotionFallback("animateMotion progress");
+                return false;
+            }
+
+            if (parsedKeyPoints == null)
+            {
+                fraction = (float)progress;
+                if (!float.IsFinite(fraction))
+                {
+                    RequireMotionFallback("animateMotion progress");
+                    return false;
+                }
+                active = true;
+                return true;
+            }
+
+            if (discrete)
+            {
+                int selected = 0;
+                for (int i = 1; i < parsedKeyTimes.Length && progress >= parsedKeyTimes[i]; i++)
+                    selected = i;
+                fraction = parsedKeyPoints[selected];
+                active = true;
+                return true;
+            }
+
+            int segment = parsedKeyTimes.Length - 2;
+            for (int i = 0; i < parsedKeyTimes.Length - 1; i++)
+            {
+                if (progress <= parsedKeyTimes[i + 1] || i == parsedKeyTimes.Length - 2)
+                {
+                    segment = i;
+                    break;
+                }
+            }
+            float start = parsedKeyTimes[segment];
+            float finish = parsedKeyTimes[segment + 1];
+            double segmentProgress = finish > start
+                ? Math.Clamp((progress - start) / (finish - start), 0d, 1d)
+                : 1d;
+            if (!double.IsFinite(segmentProgress))
+            {
+                RequireMotionFallback("animateMotion segment progress");
+                return false;
+            }
+            fraction = (float)(parsedKeyPoints[segment] +
+                (parsedKeyPoints[segment + 1] - parsedKeyPoints[segment]) * segmentProgress);
+            if (!float.IsFinite(fraction))
+            {
+                RequireMotionFallback("animateMotion fraction");
+                return false;
+            }
+            active = true;
             return true;
         }
 
@@ -162,13 +294,21 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             string href = mpath.GetAttribute("href") ?? mpath.GetLookup("xlink:href");
-            if (string.IsNullOrWhiteSpace(href)) return null;
+            if (string.IsNullOrWhiteSpace(href))
+            {
+                RequireMotionFallback("animateMotion mpath without a reference");
+                return null;
+            }
             if (!SvgValues.TryParseLocalReference(href, out string id))
             {
                 _report.RejectResource("animateMotion external mpath reference rejected");
                 return null;
             }
-            if (!_doc.ElementsById.TryGetValue(id, out SvgElement referenced)) return null;
+            if (!_doc.ElementsById.TryGetValue(id, out SvgElement referenced))
+            {
+                RequireMotionFallback("animateMotion mpath reference is unresolved");
+                return null;
+            }
             if (referenced.Name is not ("path" or "rect" or "circle" or "ellipse" or "line" or "polyline" or "polygon"))
             {
                 RequireMotionFallback("animateMotion reference geometry");
@@ -191,6 +331,8 @@ namespace FenBrowser.FenEngine.Svg
         {
             position = default;
             tangent = default;
+            if (!float.IsFinite(fraction)) return false;
+            fraction = Math.Clamp(fraction, 0f, 1f);
             var lengths = new List<float>(4);
             float total = 0f;
             using (var measure = new SKPathMeasure(path, false))
@@ -199,15 +341,30 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     CheckDeadline();
                     float length = measure.Length;
+                    if (!float.IsFinite(length))
+                    {
+                        RequireMotionFallback("animateMotion path length");
+                        return false;
+                    }
                     lengths.Add(length);
                     total += length;
                     if (lengths.Count > 1024)
                         throw new SvgSandboxViolationException("SVG animateMotion contour limit exceeded");
                 } while (measure.NextContour());
             }
-            if (!(total > 0f) || !float.IsFinite(total)) return false;
+            if (!(total > 0f) || !float.IsFinite(total))
+            {
+                if (float.IsNaN(total) || float.IsInfinity(total))
+                    RequireMotionFallback("animateMotion path length");
+                return false;
+            }
 
             float remaining = total * fraction;
+            if (!float.IsFinite(remaining))
+            {
+                RequireMotionFallback("animateMotion path distance");
+                return false;
+            }
             using var lookup = new SKPathMeasure(path, false);
             for (int i = 0; i < lengths.Count; i++)
             {
@@ -229,6 +386,9 @@ namespace FenBrowser.FenEngine.Svg
         private static bool TryParseClockSeconds(string value, out double seconds)
         {
             seconds = 0d;
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            value = value.Trim();
+            if (value.StartsWith("-", StringComparison.Ordinal)) return false;
             double multiplier = 1d;
             if (value.EndsWith("ms", StringComparison.OrdinalIgnoreCase))
             {
@@ -239,8 +399,11 @@ namespace FenBrowser.FenEngine.Svg
             {
                 value = value.Substring(0, value.Length - 1);
             }
-            return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds) &&
-                   double.IsFinite(seconds) && (seconds *= multiplier) >= 0d;
+            if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds) ||
+                !double.IsFinite(seconds) || seconds < 0d)
+                return false;
+            seconds *= multiplier;
+            return double.IsFinite(seconds) && seconds >= 0d;
         }
 
         private static bool TryParseSemicolonNumbers(string value, out float[] numbers)

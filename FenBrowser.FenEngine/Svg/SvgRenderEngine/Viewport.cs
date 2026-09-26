@@ -20,7 +20,9 @@ namespace FenBrowser.FenEngine.Svg
             public float Height { get; }
         }
 
-        private static void ApplyViewportTransform(
+        private const float MaxViewportScale = 1_000_000f;
+
+        private bool ApplyViewportTransform(
             SKCanvas canvas,
             ViewportContext viewport,
             bool hasViewBox,
@@ -29,38 +31,105 @@ namespace FenBrowser.FenEngine.Svg
         {
             if (!hasViewBox)
             {
-                return;
+                return true;
+            }
+            if (!SvgValues.IsFinite(viewport.Width) || !SvgValues.IsFinite(viewport.Height) ||
+                !SvgValues.IsFinite(vbX) || !SvgValues.IsFinite(vbY) ||
+                !SvgValues.IsFinite(vbW) || !SvgValues.IsFinite(vbH) ||
+                System.Math.Abs(vbX) > SvgValues.CoordClamp ||
+                System.Math.Abs(vbY) > SvgValues.CoordClamp ||
+                viewport.Width < 0f || viewport.Height < 0f || vbW <= 0f || vbH <= 0f)
+            {
+                _report.RequireFallback("SVG viewport transform is not finite and bounded");
+                return false;
+            }
+            if (viewport.Width <= 0f || viewport.Height <= 0f)
+                return true;
+
+            float scaleX = viewport.Width / vbW;
+            float scaleY = viewport.Height / vbH;
+            if (!SvgValues.IsFinite(scaleX) || !SvgValues.IsFinite(scaleY) ||
+                scaleX <= 0f || scaleY <= 0f ||
+                System.Math.Abs(scaleX) > MaxViewportScale ||
+                System.Math.Abs(scaleY) > MaxViewportScale)
+            {
+                _report.RequireFallback("SVG viewport transform scale exceeds the bounded limit");
+                return false;
             }
 
             ParsePreserveAspectRatio(parText, out ParAlign align, out ParMeet meet);
-
+            SKMatrix viewportMatrix;
             if (align == ParAlign.None)
             {
-                // Stretched to fill: independent scale factors, no letterboxing.
-                canvas.Scale(viewport.Width / vbW, viewport.Height / vbH);
-                canvas.Translate(-vbX, -vbY);
-                return;
+                if (!SvgValues.IsFinite(-vbX) || !SvgValues.IsFinite(-vbY) ||
+                    System.Math.Abs(-vbX) > SvgValues.CoordClamp ||
+                    System.Math.Abs(-vbY) > SvgValues.CoordClamp)
+                {
+                    _report.RequireFallback("SVG viewport transform composition is not bounded");
+                    return false;
+                }
+                viewportMatrix = SKMatrix.Concat(
+                    SKMatrix.CreateScale(scaleX, scaleY),
+                    SKMatrix.CreateTranslation(-vbX, -vbY));
+            }
+            else
+            {
+                float scale = meet == ParMeet.Slice
+                    ? System.Math.Max(scaleX, scaleY)
+                    : System.Math.Min(scaleX, scaleY);
+                float leftoverX = viewport.Width - vbW * scale;
+                float leftoverY = viewport.Height - vbH * scale;
+                if (!SvgValues.IsFinite(scale) || System.Math.Abs(scale) > MaxViewportScale ||
+                    !SvgValues.IsFinite(leftoverX) || !SvgValues.IsFinite(leftoverY) ||
+                    System.Math.Abs(leftoverX) > SvgValues.CoordClamp ||
+                    System.Math.Abs(leftoverY) > SvgValues.CoordClamp)
+                {
+                    _report.RequireFallback("SVG viewport transform composition is not finite and bounded");
+                    return false;
+                }
+
+                float tx = 0f;
+                float ty = 0f;
+                if ((align & ParAlign.XMid) != 0) tx = leftoverX / 2f;
+                else if ((align & ParAlign.XMax) != 0) tx = leftoverX;
+                if ((align & ParAlign.YMid) != 0) ty = leftoverY / 2f;
+                else if ((align & ParAlign.YMax) != 0) ty = leftoverY;
+
+                if (!SvgValues.IsFinite(tx) || !SvgValues.IsFinite(ty) ||
+                    System.Math.Abs(tx) > SvgValues.CoordClamp ||
+                    System.Math.Abs(ty) > SvgValues.CoordClamp)
+                {
+                    _report.RequireFallback("SVG viewport transform composition is not bounded");
+                    return false;
+                }
+                viewportMatrix = SKMatrix.Concat(
+                    SKMatrix.CreateTranslation(tx, ty),
+                    SKMatrix.Concat(
+                        SKMatrix.CreateScale(scale, scale),
+                        SKMatrix.CreateTranslation(-vbX, -vbY)));
             }
 
-            float scale = meet == ParMeet.Slice
-                ? System.Math.Max(viewport.Width / vbW, viewport.Height / vbH)
-                : System.Math.Min(viewport.Width / vbW, viewport.Height / vbH);
-
-            float tx = 0f;
-            float ty = 0f;
-            float leftoverX = viewport.Width - vbW * scale;
-            float leftoverY = viewport.Height - vbH * scale;
-
-            if ((align & ParAlign.XMid) != 0) tx = leftoverX / 2f;
-            else if ((align & ParAlign.XMax) != 0) tx = leftoverX;
-
-            if ((align & ParAlign.YMid) != 0) ty = leftoverY / 2f;
-            else if ((align & ParAlign.YMax) != 0) ty = leftoverY;
-
-            canvas.Translate(tx, ty);
-            canvas.Scale(scale, scale);
-            canvas.Translate(-vbX, -vbY);
+            SKMatrix current = canvas.TotalMatrix;
+            if (!IsBoundedViewportMatrix(viewportMatrix) ||
+                !SvgValues.IsFinite(current) ||
+                !SvgValues.IsFinite(SKMatrix.Concat(current, viewportMatrix)))
+            {
+                _report.RequireFallback("SVG viewport transform is not finite and bounded");
+                return false;
+            }
+            if (!viewportMatrix.IsIdentity)
+                canvas.Concat(viewportMatrix);
+            return true;
         }
+
+        private static bool IsBoundedViewportMatrix(SKMatrix matrix) =>
+            SvgValues.IsFinite(matrix) &&
+            System.Math.Abs(matrix.ScaleX) <= MaxViewportScale &&
+            System.Math.Abs(matrix.SkewX) <= MaxViewportScale &&
+            System.Math.Abs(matrix.ScaleY) <= MaxViewportScale &&
+            System.Math.Abs(matrix.SkewY) <= MaxViewportScale &&
+            System.Math.Abs(matrix.TransX) <= SvgValues.CoordClamp &&
+            System.Math.Abs(matrix.TransY) <= SvgValues.CoordClamp;
 
         [System.Flags]
         private enum ParAlign { XMin = 0, XMid = 1, XMax = 2, YMin = 0, YMid = 4, YMax = 8, None = 16 }
@@ -167,12 +236,14 @@ namespace FenBrowser.FenEngine.Svg
             {
                 if (count >= 4 || !SvgValues.TryParseNumber(token, out float num))
                 {
+                    disablesRendering = true;
                     return false;
                 }
                 vb[count++] = num;
             }
             if (count != 4)
             {
+                disablesRendering = true;
                 return false;
             }
 
@@ -184,43 +255,42 @@ namespace FenBrowser.FenEngine.Svg
             if (!SvgValues.IsFinite(x) || !SvgValues.IsFinite(y) ||
                 !SvgValues.IsFinite(w) || !SvgValues.IsFinite(h))
             {
+                disablesRendering = true;
                 return false;
             }
-            // A parsed zero viewBox dimension is not equivalent to an absent or
-            // malformed viewBox: it disables rendering for this viewport.
-            if (w == 0f || h == 0f)
+            if (w <= 0f || h <= 0f)
             {
                 disablesRendering = true;
                 return false;
             }
-            if (w < 0f || h < 0f) return false;
             return true;
         }
 
-        private float ResolveViewportLength(string raw, float parentDim)
+        private bool TryResolveViewportLength(string raw, float parentDim, out float value)
         {
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return 0f;
-            }
-            if (!SvgValues.TryParseLength(raw.AsSpan(), out float value, out var unit))
-            {
-                return 0f;
-            }
-            if (value < 0f)
-            {
-                return 0f; // Negative viewport lengths are ignored (not errors).
-            }
+            value = 0f;
+            if (string.IsNullOrWhiteSpace(raw) ||
+                !SvgValues.TryParseLength(raw.AsSpan(), out float parsed, out var unit) ||
+                !SvgValues.IsFinite(parsed) || parsed < 0f)
+                return false;
             if (unit == SvgValues.SvgUnit.Percent)
             {
-                return parentDim > 0f ? value * 0.01f * parentDim : 0f;
+                if (parentDim > 0f)
+                    value = parsed * 0.01f * parentDim;
+                else if (parsed == 0f)
+                    value = 0f;
+                else
+                    return false;
             }
-            if (unit == SvgValues.SvgUnit.Em || unit == SvgValues.SvgUnit.Ex)
-            {
-                return 0f; // Font-relative intrinsic sizes unsupported at viewport level.
-            }
-            return SvgValues.ResolveUnits(value, unit, DefaultFontSize, 1f);
+            else if (unit == SvgValues.SvgUnit.Em || unit == SvgValues.SvgUnit.Ex)
+                return false;
+            else
+                value = SvgValues.ResolveUnits(parsed, unit, DefaultFontSize, 1f);
+            return SvgValues.IsFinite(value) && value >= 0f;
         }
+
+        private float ResolveViewportLength(string raw, float parentDim) =>
+            TryResolveViewportLength(raw, parentDim, out float value) ? value : 0f;
 
     }
 }

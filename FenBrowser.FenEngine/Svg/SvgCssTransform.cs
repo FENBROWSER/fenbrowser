@@ -167,6 +167,11 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     return SvgCssTransformStatus.Unsupported;
                 }
+                if (!SvgValues.TryNormalizeMatrix(matrix, out SKMatrix normalized))
+                {
+                    return SvgCssTransformStatus.Unsupported;
+                }
+                matrix = normalized;
             }
 
             if (!matrix.IsIdentity && (origin.X != 0f || origin.Y != 0f))
@@ -174,6 +179,11 @@ namespace FenBrowser.FenEngine.Svg
                 matrix = SKMatrix.Concat(
                     SKMatrix.Concat(SKMatrix.CreateTranslation(origin.X, origin.Y), matrix),
                     SKMatrix.CreateTranslation(-origin.X, -origin.Y));
+                if (!SvgValues.TryNormalizeMatrix(matrix, out SKMatrix normalized))
+                {
+                    return SvgCssTransformStatus.Unsupported;
+                }
+                matrix = normalized;
             }
             return matrix.IsIdentity
                 ? SvgCssTransformStatus.Identity
@@ -190,6 +200,7 @@ namespace FenBrowser.FenEngine.Svg
                     return true;
                 case "fill-box":
                     if (!fillBox.HasValue ||
+                        !IsFinite(fillBox.Value.Left) || !IsFinite(fillBox.Value.Top) ||
                         !IsFinite(fillBox.Value.Width) || !IsFinite(fillBox.Value.Height))
                         return false;
                     isFillBox = true;
@@ -244,6 +255,9 @@ namespace FenBrowser.FenEngine.Svg
             out SKPoint origin)
         {
             origin = new SKPoint(boxLeft, boxTop);
+            if (!IsFinite(boxLeft) || !IsFinite(boxTop) ||
+                !IsFinite(referenceWidth) || !IsFinite(referenceHeight))
+                return SvgCssTransformStatus.Unsupported;
             if (string.IsNullOrWhiteSpace(originValue))
             {
                 // Initial used value for SVG elements without an associated CSS
@@ -401,7 +415,7 @@ namespace FenBrowser.FenEngine.Svg
                 case "right":
                 case "bottom":
                     value = boxOffset + referenceSize;
-                    return true;
+                    return IsFinite(value);
             }
             if (allowUserUnits &&
                 SvgValues.TryParseLength(part.AsSpan(), out float userValue, out var unit))

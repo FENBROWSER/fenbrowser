@@ -10,6 +10,18 @@ namespace FenBrowser.FenEngine.Svg
         private HashSet<string> _activeFilterIds;
         private HashSet<string> _activeMaskIds;
 
+        private sealed class ResolvedFilter
+        {
+            public SvgElement ContentOwner;
+            public string X;
+            public string Y;
+            public string Width;
+            public string Height;
+            public string FilterUnits;
+            public string PrimitiveUnits;
+            public string ColorInterpolationFilters;
+        }
+
         private void DrawWithEffects(
             SvgElement element,
             SKCanvas canvas,
@@ -27,15 +39,16 @@ namespace FenBrowser.FenEngine.Svg
             string maskId = null;
             var owned = new List<SKImageFilter>();
             SKImageFilter imageFilter = null;
+            SvgElement filterElement = null;
             SvgElement maskElement = null;
             SKPaint blendPaint = null;
             try
             {
-                if (wantsFilter &&
-                    TryEnterReference(filterRaw, "filter", ref _activeFilterIds, out filterId, out var filterElement))
+                if (wantsFilter)
                 {
-                    if (!TryBuildFilter(filterElement, element, viewport, owned, out imageFilter))
-                        imageFilter = null;
+                    TryEnterReference(
+                        filterRaw, "filter", ref _activeFilterIds,
+                        out filterId, out filterElement);
                 }
                 if (wantsMask)
                 {
@@ -43,7 +56,30 @@ namespace FenBrowser.FenEngine.Svg
                 }
 
                 bool maskLayer = maskElement != null;
-                int requiredLayers = (maskLayer ? 2 : 0) + (imageFilter != null ? 1 : 0) + (blendLayer ? 1 : 0);
+                int sourceLayers = EstimateOpacityLayerDepth(element, 0);
+                int requestedLayers =
+                    (maskLayer ? 2 : 0) +
+                    (filterElement != null ? 1 : 0) +
+                    (blendLayer ? 1 : 0) +
+                    sourceLayers;
+                if (_activeLayers + requestedLayers > _maxActiveLayers)
+                {
+                    _report.RequireFallback("SVG filter/mask/blend layer budget exceeded");
+                    drawSource();
+                    return;
+                }
+
+                if (filterElement != null &&
+                    !TryBuildFilter(filterElement, element, viewport, owned, out imageFilter))
+                {
+                    imageFilter = null;
+                }
+
+                int requiredLayers =
+                    (maskLayer ? 2 : 0) +
+                    (imageFilter != null ? 1 : 0) +
+                    (blendLayer ? 1 : 0) +
+                    sourceLayers;
                 if (_activeLayers + requiredLayers > _maxActiveLayers)
                 {
                     _report.RequireFallback("SVG filter/mask/blend layer budget exceeded");
@@ -106,6 +142,40 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
+        private int EstimateOpacityLayerDepth(SvgElement element, int depth)
+        {
+            CheckDeadline();
+            if (element == null || depth > MaxRenderDepth)
+            {
+                return depth > MaxRenderDepth ? _maxActiveLayers + 1 : 0;
+            }
+            if (IsDisplayNone(element) || !PassesRequiredExtensions(element) ||
+                string.Equals(element.GetPresentationProperty("visibility"), "hidden", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(element.GetPresentationProperty("visibility"), "collapse", StringComparison.OrdinalIgnoreCase))
+            {
+                return 0;
+            }
+
+            int ownLayer = ReadClampedOpacity(element, "opacity", 1f) < 1f ? 1 : 0;
+            int childLayers = 0;
+            for (int i = 0; i < element.Children.Count; i++)
+            {
+                if ((i & 0xF) == 0) CheckDeadline();
+                var child = element.Children[i];
+                if (child.Name is "defs" or "style" or "title" or "desc" or "metadata" or
+                    "link" or "meta" or "script" or "symbol" or "marker" or "pattern" or
+                    "linearGradient" or "radialGradient" or "stop" or "filter" or
+                    "mask" or "clipPath")
+                {
+                    continue;
+                }
+                childLayers = Math.Max(
+                    childLayers,
+                    EstimateOpacityLayerDepth(child, depth + 1));
+            }
+            return ownLayer + childLayers;
+        }
+
         private bool TryResolveBlendLayer(SvgElement element, out SKBlendMode mode)
         {
             mode = SKBlendMode.SrcOver;
@@ -154,8 +224,15 @@ namespace FenBrowser.FenEngine.Svg
         {
             id = null;
             referenced = null;
-            if (!TryResolveLocalReference(raw, out string candidate) ||
-                !_doc.ElementsById.TryGetValue(candidate, out referenced) ||
+            if (!TryResolveLocalReference(raw, out string candidate))
+            {
+                if (IsExternalEffectReference(raw))
+                    _report.RejectResource($"SVG {expectedElement} external reference rejected");
+                else
+                    _report.RequireFallback($"SVG {expectedElement} reference is invalid or unresolved");
+                return false;
+            }
+            if (!_doc.ElementsById.TryGetValue(candidate, out referenced) ||
                 referenced.Name != expectedElement)
             {
                 _report.RequireFallback($"SVG {expectedElement} reference is invalid or unresolved");
@@ -172,6 +249,14 @@ namespace FenBrowser.FenEngine.Svg
             active.Add(candidate);
             id = candidate;
             return true;
+        }
+
+        private static bool IsExternalEffectReference(string raw)
+        {
+            string value = raw?.Trim();
+            return !string.IsNullOrEmpty(value) &&
+                value.StartsWith("url(", StringComparison.OrdinalIgnoreCase) &&
+                value.IndexOf('#', StringComparison.Ordinal) < 0;
         }
 
         private void ApplyMask(
@@ -252,13 +337,105 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
+        private bool TryResolveFilterColor(
+            SvgElement element,
+            ResolvedFilter filter,
+            SvgElement target,
+            string property,
+            SKColor defaultColor,
+            out SKColor color)
+        {
+            string raw = FindInheritedFilterProperty(element, property);
+            if (raw == null && filter?.ContentOwner != null)
+                raw = FindInheritedFilterProperty(filter.ContentOwner, property);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                color = defaultColor;
+                return true;
+            }
+            if (raw.Equals("currentColor", StringComparison.OrdinalIgnoreCase))
+                return TryResolveCurrentColor(element, target, out color);
+            if (!SvgValues.TryParseColor(raw.AsSpan(), out color))
+            {
+                _report.RequireFallback(
+                    $"SVG filter {property} '{raw}' requires compatibility fallback");
+                return false;
+            }
+            return true;
+        }
+
+        private static string FindInheritedFilterProperty(SvgElement element, string property)
+        {
+            for (SvgElement current = element; current != null; current = current.Parent)
+            {
+                string raw = current.GetPresentationProperty(property);
+                if (string.IsNullOrWhiteSpace(raw) ||
+                    raw.Equals("inherit", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                return raw;
+            }
+            return null;
+        }
+
+        private static bool TryResolveCurrentColor(
+            SvgElement context,
+            SvgElement target,
+            out SKColor color)
+        {
+            for (SvgElement current = context; current != null; current = current.Parent)
+            {
+                string raw = current.GetPresentationProperty("color");
+                if (string.IsNullOrWhiteSpace(raw) ||
+                    raw.Equals("currentColor", StringComparison.OrdinalIgnoreCase) ||
+                    raw.Equals("inherit", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                if (SvgValues.TryParseColor(raw.AsSpan(), out color)) return true;
+            }
+            for (SvgElement current = target; current != null; current = current.Parent)
+            {
+                string raw = current.GetPresentationProperty("color");
+                if (string.IsNullOrWhiteSpace(raw) ||
+                    raw.Equals("currentColor", StringComparison.OrdinalIgnoreCase) ||
+                    raw.Equals("inherit", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                if (SvgValues.TryParseColor(raw.AsSpan(), out color)) return true;
+            }
+            color = SKColors.Black;
+            return true;
+        }
+
+        private static float ReadInheritedOpacity(
+            SvgElement element,
+            ResolvedFilter filter,
+            string property,
+            float fallback)
+        {
+            string raw = FindInheritedFilterProperty(element, property) ??
+                (filter?.ContentOwner == null ? null : FindInheritedFilterProperty(filter.ContentOwner, property));
+            if (string.IsNullOrWhiteSpace(raw) ||
+                !SvgValues.TryParseNumber(raw.AsSpan(), out float value) ||
+                !SvgValues.IsFinite(value))
+            {
+                return fallback;
+            }
+            return Math.Clamp(value, 0f, 1f);
+        }
+
         private static bool HasEffectValue(string raw) =>
             !string.IsNullOrWhiteSpace(raw) &&
             !raw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase);
 
-        private static float ReadMaskFraction(SvgElement element, string name, float fallback)
+        private static float ReadMaskFraction(SvgElement element, string name, float fallback) =>
+            ReadMaskFraction(element.GetAttribute(name), fallback);
+
+        private static float ReadMaskFraction(string raw, float fallback)
         {
-            string raw = element.GetAttribute(name);
             if (string.IsNullOrWhiteSpace(raw)) return fallback;
             if (!SvgValues.TryParseLength(raw.AsSpan(), out float value, out var unit)) return fallback;
             float resolved = unit == SvgValues.SvgUnit.Percent ? value / 100f : value;
@@ -273,6 +450,71 @@ namespace FenBrowser.FenEngine.Svg
             return float.IsFinite(resolved) ? SvgValues.ClampCoord(resolved) : fallback;
         }
 
+        private bool TryResolveFilterTemplate(
+            SvgElement server,
+            out ResolvedFilter resolved)
+        {
+            resolved = new ResolvedFilter();
+            var visited = new HashSet<SvgElement>();
+            SvgElement current = server;
+            while (current != null)
+            {
+                CheckDeadline();
+                if (current.Name != "filter" ||
+                    !visited.Add(current) ||
+                    visited.Count > _maxReferenceDepth)
+                {
+                    _report.RequireFallback("SVG filter template reference requires compatibility fallback");
+                    return false;
+                }
+
+                resolved.X ??= current.GetAttribute("x");
+                resolved.Y ??= current.GetAttribute("y");
+                resolved.Width ??= current.GetAttribute("width");
+                resolved.Height ??= current.GetAttribute("height");
+                resolved.FilterUnits ??= current.GetAttribute("filterUnits");
+                resolved.PrimitiveUnits ??= current.GetAttribute("primitiveUnits");
+                resolved.ColorInterpolationFilters ??=
+                    current.GetPresentationProperty("color-interpolation-filters");
+
+                if (resolved.ContentOwner == null && HasRenderableFilterContent(current))
+                {
+                    resolved.ContentOwner = current;
+                }
+
+                string href = current.GetAttribute("href") ?? current.GetLookup("xlink:href");
+                if (string.IsNullOrWhiteSpace(href))
+                {
+                    break;
+                }
+                if (!SvgValues.TryParseLocalReference(href, out string id))
+                {
+                    _report.RejectResource("SVG filter external template reference rejected");
+                    return false;
+                }
+                if (!_doc.ElementsById.TryGetValue(id, out var template) ||
+                    template.Name != "filter")
+                {
+                    _report.RequireFallback("SVG filter template reference is invalid or unsupported");
+                    return false;
+                }
+                current = template;
+            }
+            return resolved.ContentOwner != null;
+        }
+
+        private static bool HasRenderableFilterContent(SvgElement filter)
+        {
+            for (int i = 0; i < filter.Children.Count; i++)
+            {
+                if (filter.Children[i].Name is not ("title" or "desc" or "metadata"))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private bool TryBuildFilter(
             SvgElement filterElement,
             SvgElement target,
@@ -281,11 +523,17 @@ namespace FenBrowser.FenEngine.Svg
             out SKImageFilter current)
         {
             current = null;
+            if (!TryResolveFilterTemplate(filterElement, out var filterTemplate))
+            {
+                _report.RequireFallback("empty or invalid SVG filter template requires compatibility fallback");
+                return false;
+            }
+
             int primitiveCount = 0;
             float primitiveScaleX = 1f;
             float primitiveScaleY = 1f;
-            string primitiveUnits = filterElement.GetAttribute("primitiveUnits");
-            if (string.Equals(primitiveUnits, "objectBoundingBox", StringComparison.Ordinal))
+            string primitiveUnits = filterTemplate.PrimitiveUnits;
+            if (string.Equals(primitiveUnits, "objectBoundingBox", StringComparison.OrdinalIgnoreCase))
             {
                 if (!TryResolveObjectBounds(target, viewport, out var bounds))
                 {
@@ -297,14 +545,14 @@ namespace FenBrowser.FenEngine.Svg
                 primitiveScaleY = bounds.Height;
             }
             else if (!string.IsNullOrWhiteSpace(primitiveUnits) &&
-                     !string.Equals(primitiveUnits, "userSpaceOnUse", StringComparison.Ordinal))
+                     !string.Equals(primitiveUnits, "userSpaceOnUse", StringComparison.OrdinalIgnoreCase))
             {
                 _report.RequireFallback(
                     $"SVG primitiveUnits '{primitiveUnits}' requires compatibility fallback");
                 return false;
             }
 
-            if (!TryResolveFilterRegion(filterElement, target, viewport, out var filterRegion))
+            if (!TryResolveFilterRegion(filterTemplate, target, viewport, out var filterRegion))
             {
                 _report.RequireFallback(
                     $"SVG filter on '{target.Name}' has an unusable filter region");
@@ -312,7 +560,7 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             var results = new Dictionary<string, SKImageFilter>(StringComparer.Ordinal);
-            foreach (var primitive in filterElement.Children)
+            foreach (var primitive in filterTemplate.ContentOwner.Children)
             {
                 CheckDeadline();
                 if (primitive.Name is "title" or "desc" or "metadata")
@@ -329,17 +577,17 @@ namespace FenBrowser.FenEngine.Svg
                 if (primitive.Name == "feFlood")
                 {
                     next = BuildFlood(
-                        filterElement, primitive, target, viewport, filterRegion);
+                        filterTemplate, primitive, target, viewport, filterRegion);
                 }
                 else if (primitive.Name == "feImage")
                 {
                     next = BuildImage(
-                        filterElement, primitive, target, viewport, filterRegion);
+                        filterTemplate, primitive, target, viewport, filterRegion);
                 }
                 else if (primitive.Name == "feTurbulence")
                 {
                     next = BuildTurbulence(
-                        filterElement, primitive, target, viewport, filterRegion);
+                        filterTemplate, primitive, target, viewport, filterRegion);
                 }
                 else if (primitive.Name == "feBlend")
                 {
@@ -362,7 +610,7 @@ namespace FenBrowser.FenEngine.Svg
                             current, results, owned, primitive.Name, out var input2))
                         return false;
                     next = BuildComposite(
-                        filterElement, primitive, target, viewport, filterRegion,
+                        filterTemplate, primitive, target, viewport, filterRegion,
                         input, input2);
                 }
                 else if (primitive.Name == "feDisplacementMap")
@@ -404,18 +652,19 @@ namespace FenBrowser.FenEngine.Svg
                                 primitive, "dy", primitiveScaleY, 32767f),
                             input),
                         "feDropShadow" => BuildDropShadow(
-                            primitive, input, primitiveScaleX, primitiveScaleY),
+                            filterTemplate, target, primitive, input, primitiveScaleX, primitiveScaleY),
                         "feColorMatrix" => BuildColorMatrix(primitive, input),
-                        "feComponentTransfer" => BuildComponentTransfer(primitive, input),
+                        "feComponentTransfer" => BuildComponentTransfer(
+                            filterTemplate, primitive, input),
                         "feConvolveMatrix" => BuildConvolveMatrix(
-                            primitive, input, filterRegion, owned),
+                            filterTemplate, primitive, input, filterRegion, owned),
                         "feMorphology" => BuildMorphology(
                             primitive, input, primitiveScaleX, primitiveScaleY),
                         "feDiffuseLighting" => BuildDistantLighting(
-                            filterElement, primitive, target, viewport, filterRegion,
+                            filterTemplate, primitive, target, viewport, filterRegion,
                             input, specular: false),
                         "feSpecularLighting" => BuildDistantLighting(
-                            filterElement, primitive, target, viewport, filterRegion,
+                            filterTemplate, primitive, target, viewport, filterRegion,
                             input, specular: true),
                         _ => null
                     };
@@ -499,7 +748,7 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private SKImageFilter BuildFlood(
-            SvgElement filter,
+            ResolvedFilter filter,
             SvgElement flood,
             SvgElement target,
             ViewportContext viewport,
@@ -509,10 +758,10 @@ namespace FenBrowser.FenEngine.Svg
                     filter, flood, target, viewport, filterRegion, out var primitiveRegion))
                 return null;
 
-            string raw = flood.GetPresentationProperty("flood-color");
-            if (!SvgValues.TryParseColor((raw ?? "black").AsSpan(), out var color))
-                color = SKColors.Black;
-            float opacity = ReadClampedOpacity(flood, "flood-opacity", 1f);
+            if (!TryResolveFilterColor(
+                    flood, filter, target, "flood-color", SKColors.Black, out var color))
+                return null;
+            float opacity = ReadInheritedOpacity(flood, filter, "flood-opacity", 1f);
             color = color.WithAlpha((byte)Math.Clamp(
                 (int)MathF.Round(color.Alpha * opacity), 0, 255));
 
@@ -521,7 +770,7 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private SKImageFilter BuildImage(
-            SvgElement filter,
+            ResolvedFilter filter,
             SvgElement image,
             SvgElement target,
             ViewportContext viewport,
@@ -542,6 +791,11 @@ namespace FenBrowser.FenEngine.Svg
             {
                 return null;
             }
+            if (_activeLayers + 1 + EstimateOpacityLayerDepth(referenced, 0) > _maxActiveLayers)
+            {
+                _report.RequireFallback("SVG filter image layer budget exceeded");
+                return null;
+            }
 
             using var recorder = new SKPictureRecorder();
             var pictureCanvas = recorder.BeginRecording(primitiveRegion);
@@ -555,15 +809,15 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private SKImageFilter BuildTurbulence(
-            SvgElement filter,
+            ResolvedFilter filter,
             SvgElement turbulence,
             SvgElement target,
             ViewportContext viewport,
             SKRect filterRegion)
         {
             if (string.Equals(
-                    filter.GetAttribute("primitiveUnits"), "objectBoundingBox",
-                    StringComparison.Ordinal) ||
+                    filter.PrimitiveUnits, "objectBoundingBox",
+                    StringComparison.OrdinalIgnoreCase) ||
                 !TryResolvePrimitiveRegion(
                     filter, turbulence, target, viewport, filterRegion, out var primitiveRegion) ||
                 !TryReadNumberPair(
@@ -622,7 +876,7 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private SKImageFilter BuildComposite(
-            SvgElement filter,
+            ResolvedFilter filter,
             SvgElement element,
             SvgElement target,
             ViewportContext viewport,
@@ -684,7 +938,7 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private SKImageFilter BuildDistantLighting(
-            SvgElement filter,
+            ResolvedFilter filter,
             SvgElement lighting,
             SvgElement target,
             ViewportContext viewport,
@@ -703,6 +957,7 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement light = null;
             foreach (var child in lighting.Children)
             {
+                CheckDeadline();
                 if (child.Name is "title" or "desc" or "metadata") continue;
                 if (light != null || child.Name != "feDistantLight") return null;
                 light = child;
@@ -725,8 +980,8 @@ namespace FenBrowser.FenEngine.Svg
                 MathF.Sin(azimuthRadians) * elevationCosine,
                 MathF.Sin(elevationRadians));
 
-            string colorRaw = lighting.GetPresentationProperty("lighting-color");
-            if (!SvgValues.TryParseColor((colorRaw ?? "white").AsSpan(), out var lightColor))
+            if (!TryResolveFilterColor(
+                    lighting, filter, target, "lighting-color", SKColors.White, out var lightColor))
                 return null;
 
             if (!specular)
@@ -832,13 +1087,13 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private bool TryResolveFilterRegion(
-            SvgElement filter,
+            ResolvedFilter filter,
             SvgElement target,
             ViewportContext viewport,
             out SKRect region)
         {
             bool objectUnits = !string.Equals(
-                filter.GetAttribute("filterUnits"), "userSpaceOnUse", StringComparison.Ordinal);
+                filter.FilterUnits, "userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
             if (objectUnits)
             {
                 if (!TryResolveObjectBounds(target, viewport, out var bounds))
@@ -846,10 +1101,10 @@ namespace FenBrowser.FenEngine.Svg
                     region = default;
                     return false;
                 }
-                float x = ReadMaskFraction(filter, "x", -.1f);
-                float y = ReadMaskFraction(filter, "y", -.1f);
-                float width = ReadMaskFraction(filter, "width", 1.2f);
-                float height = ReadMaskFraction(filter, "height", 1.2f);
+                float x = ReadMaskFraction(filter.X, -.1f);
+                float y = ReadMaskFraction(filter.Y, -.1f);
+                float width = ReadMaskFraction(filter.Width, 1.2f);
+                float height = ReadMaskFraction(filter.Height, 1.2f);
                 region = new SKRect(
                     bounds.Left + x * bounds.Width,
                     bounds.Top + y * bounds.Height,
@@ -858,21 +1113,21 @@ namespace FenBrowser.FenEngine.Svg
             }
             else
             {
-                float x = ResolveMaskUserLength(filter.GetAttribute("x"),
+                float x = ResolveMaskUserLength(filter.X,
                     -viewport.Width * .1f, viewport.Width);
-                float y = ResolveMaskUserLength(filter.GetAttribute("y"),
+                float y = ResolveMaskUserLength(filter.Y,
                     -viewport.Height * .1f, viewport.Height);
-                float width = ResolveMaskUserLength(filter.GetAttribute("width"),
+                float width = ResolveMaskUserLength(filter.Width,
                     viewport.Width * 1.2f, viewport.Width);
-                float height = ResolveMaskUserLength(filter.GetAttribute("height"),
+                float height = ResolveMaskUserLength(filter.Height,
                     viewport.Height * 1.2f, viewport.Height);
                 region = new SKRect(x, y, x + width, y + height);
             }
-            return IsUsableFilterRegion(region);
+            return IsFilterRegionAdmitted(region);
         }
 
         private bool TryResolvePrimitiveRegion(
-            SvgElement filter,
+            ResolvedFilter filter,
             SvgElement primitive,
             SvgElement target,
             ViewportContext viewport,
@@ -883,11 +1138,11 @@ namespace FenBrowser.FenEngine.Svg
                 primitive.GetAttribute("width") == null && primitive.GetAttribute("height") == null)
             {
                 region = fallback;
-                return true;
+                return IsFilterRegionAdmitted(region);
             }
 
             bool objectUnits = string.Equals(
-                filter.GetAttribute("primitiveUnits"), "objectBoundingBox", StringComparison.Ordinal);
+                filter.PrimitiveUnits, "objectBoundingBox", StringComparison.OrdinalIgnoreCase);
             if (objectUnits)
             {
                 if (!TryResolveObjectBounds(target, viewport, out var bounds))
@@ -917,7 +1172,21 @@ namespace FenBrowser.FenEngine.Svg
                     primitive.GetAttribute("height"), fallback.Height, viewport.Height);
                 region = new SKRect(x, y, x + width, y + height);
             }
-            return IsUsableFilterRegion(region);
+            return IsFilterRegionAdmitted(region);
+        }
+
+        private bool IsFilterRegionAdmitted(SKRect region)
+        {
+            if (!IsUsableFilterRegion(region)) return false;
+            double width = Math.Ceiling(region.Width);
+            double height = Math.Ceiling(region.Height);
+            if (width <= _limits.MaxRasterWidth && height <= _limits.MaxRasterHeight &&
+                width * height <= _limits.MaxRasterPixels)
+            {
+                return true;
+            }
+            _report.RequireFallback("SVG filter region exceeds raster admission limits");
+            return false;
         }
 
         private static bool IsUsableFilterRegion(SKRect region) =>
@@ -941,6 +1210,8 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private SKImageFilter BuildDropShadow(
+            ResolvedFilter filter,
+            SvgElement target,
             SvgElement element,
             SKImageFilter input,
             float scaleX,
@@ -952,9 +1223,10 @@ namespace FenBrowser.FenEngine.Svg
             {
                 return null;
             }
-            string colorRaw = element.GetPresentationProperty("flood-color") ?? element.GetAttribute("flood-color");
-            if (!SvgValues.TryParseColor((colorRaw ?? "black").AsSpan(), out var color)) color = SKColors.Black;
-            float opacity = ReadClampedOpacity(element, "flood-opacity", 1f);
+            if (!TryResolveFilterColor(
+                    element, filter, target, "flood-color", SKColors.Black, out var color))
+                return null;
+            float opacity = ReadInheritedOpacity(element, filter, "flood-opacity", 1f);
             color = color.WithAlpha((byte)Math.Clamp((int)MathF.Round(color.Alpha * opacity), 0, 255));
             return SKImageFilter.CreateDropShadow(
                 ReadScaledFiniteNumber(element, "dx", scaleX, 32767f),
@@ -977,9 +1249,14 @@ namespace FenBrowser.FenEngine.Svg
             {
                 return null;
             }
-            return string.Equals(element.GetAttribute("operator"), "dilate", StringComparison.OrdinalIgnoreCase)
-                ? SKImageFilter.CreateDilate(x, y, input)
-                : SKImageFilter.CreateErode(x, y, input);
+            string raw = (element.GetAttribute("operator") ?? "erode").Trim();
+            if (string.Equals(raw, "erode", StringComparison.OrdinalIgnoreCase))
+                return SKImageFilter.CreateErode(x, y, input);
+            if (string.Equals(raw, "dilate", StringComparison.OrdinalIgnoreCase))
+                return SKImageFilter.CreateDilate(x, y, input);
+            _report.RequireFallback(
+                $"SVG feMorphology operator '{raw}' requires compatibility fallback");
+            return null;
         }
 
         private SKImageFilter BuildColorMatrix(SvgElement element, SKImageFilter input)
@@ -1040,7 +1317,10 @@ namespace FenBrowser.FenEngine.Svg
             return SKImageFilter.CreateColorFilter(colorFilter, input);
         }
 
-        private SKImageFilter BuildComponentTransfer(SvgElement element, SKImageFilter input)
+        private SKImageFilter BuildComponentTransfer(
+            ResolvedFilter filter,
+            SvgElement element,
+            SKImageFilter input)
         {
             byte[] alpha = CreateIdentityTransferTable();
             byte[] red = CreateIdentityTransferTable();
@@ -1049,6 +1329,7 @@ namespace FenBrowser.FenEngine.Svg
 
             foreach (var function in element.Children)
             {
+                CheckDeadline();
                 if (function.Name is "title" or "desc" or "metadata") continue;
                 byte[] table = function.Name switch
                 {
@@ -1069,15 +1350,16 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             using var colorFilter = SKColorFilter.CreateTable(alpha, red, green, blue);
-            return BuildColorImageFilter(element, colorFilter, input);
+            return BuildColorImageFilter(filter, element, colorFilter, input);
         }
 
         private SKImageFilter BuildColorImageFilter(
+            ResolvedFilter filter,
             SvgElement element,
             SKColorFilter operation,
             SKImageFilter input)
         {
-            if (!TryUseLinearFilterColorSpace(element, out bool useLinear)) return null;
+            if (!TryUseLinearFilterColorSpace(filter, element, out bool useLinear)) return null;
             if (!useLinear)
                 return SKImageFilter.CreateColorFilter(operation, input);
 
@@ -1092,14 +1374,16 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private static bool TryUseLinearFilterColorSpace(
+            ResolvedFilter filter,
             SvgElement element,
             out bool useLinear)
         {
-            string interpolation = null;
-            for (SvgElement current = element; current != null; current = current.Parent)
+            string interpolation = filter?.ColorInterpolationFilters?.Trim();
+            for (SvgElement current = element;
+                 string.IsNullOrEmpty(interpolation) && current != null;
+                 current = current.Parent)
             {
                 interpolation = current.GetPresentationProperty("color-interpolation-filters")?.Trim();
-                if (!string.IsNullOrEmpty(interpolation)) break;
             }
 
             useLinear = !string.Equals(interpolation, "sRGB", StringComparison.OrdinalIgnoreCase);
@@ -1110,6 +1394,7 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private SKImageFilter BuildConvolveMatrix(
+            ResolvedFilter filter,
             SvgElement element,
             SKImageFilter input,
             SKRect filterRegion,
@@ -1155,7 +1440,7 @@ namespace FenBrowser.FenEngine.Svg
             bool preserveAlpha = string.Equals(
                 element.GetAttribute("preserveAlpha")?.Trim(), "true",
                 StringComparison.OrdinalIgnoreCase);
-            if (!TryUseLinearFilterColorSpace(element, out bool useLinear)) return null;
+            if (!TryUseLinearFilterColorSpace(filter, element, out bool useLinear)) return null;
 
             SKImageFilter convolutionInput = input;
             if (useLinear)

@@ -15,6 +15,7 @@ namespace FenBrowser.FenEngine.Svg
     internal sealed class SvgElement
     {
         public string Name;
+        public string NamespaceUri;
         public string IdAttribute;
         public bool IsSelfClosing;
         public string TextContent;
@@ -60,19 +61,27 @@ namespace FenBrowser.FenEngine.Svg
             return map.TryGetValue(name, out var value) ? value : null;
         }
 
+        public string GetCascadedPresentationProperty(string name)
+        {
+            if (name == null) return null;
+            if (AnimatedProperties != null &&
+                AnimatedProperties.TryGetValue(name, out string animated))
+            {
+                return animated;
+            }
+            if (CascadedDeclarations == null ||
+                !CascadedDeclarations.TryGetValue(name, out string value))
+                return null;
+            value = ResolveCssVariables(value, new HashSet<string>(System.StringComparer.Ordinal), 0);
+            return value != null && !SvgCssCascade.IsDefinitelyInvalid(name, value)
+                ? value
+                : null;
+        }
+
         public string GetPresentationProperty(string name)
         {
-            string value;
-            if (AnimatedProperties != null &&
-                AnimatedProperties.TryGetValue(name, out value))
-            {
-                return value;
-            }
-            if (CascadedDeclarations != null &&
-                CascadedDeclarations.TryGetValue(name, out value))
-            {
-                return ResolveCssVariables(value, new HashSet<string>(System.StringComparer.Ordinal), 0);
-            }
+            string value = GetCascadedPresentationProperty(name);
+            if (value != null) return value;
             value = GetAttribute(name);
             return ResolveCssVariables(value, new HashSet<string>(System.StringComparer.Ordinal), 0);
         }

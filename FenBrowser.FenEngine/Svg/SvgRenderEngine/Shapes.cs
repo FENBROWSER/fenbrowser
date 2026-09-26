@@ -34,8 +34,10 @@ namespace FenBrowser.FenEngine.Svg
                 bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
                 try
                 {
-                    using var fillPaint = BuildFillPaint(el, style, path, viewport);
-                    using var strokePaint = BuildStrokePaint(el, style, path, viewport);
+                    using var fillPaint = ApplyInheritedFillOpacity(
+                        BuildFillPaint(el, style, path, viewport), style);
+                    using var strokePaint = ApplyInheritedStrokeOpacity(
+                        BuildStrokePaint(el, style, path, viewport), style);
                     bool nonScalingStroke =
                         SvgFeatureSupport.SupportsNonScalingStroke(
                             el, el.GetPresentationProperty("vector-effect"));
@@ -98,14 +100,15 @@ namespace FenBrowser.FenEngine.Svg
 
         private SKPath BuildGeometry(SvgElement element, ViewportContext viewport)
         {
-            ResolveGeometryFontContext(element, out float fontSize, out float rootFontSize);
+            ResolveGeometryFontContext(element, out float fontSize, out float rootFontSize, _report);
             return BuildGeometry(element, viewport, fontSize, rootFontSize);
         }
 
         private static void ResolveGeometryFontContext(
             SvgElement element,
             out float fontSize,
-            out float rootFontSize)
+            out float rootFontSize,
+            SvgParseReport report = null)
         {
             var ancestry = new List<SvgElement>();
             for (SvgElement current = element; current != null; current = current.Parent)
@@ -116,7 +119,8 @@ namespace FenBrowser.FenEngine.Svg
             {
                 fontSize = ResolveFontSize(
                     ancestry[i].GetPresentationProperty("font-size"),
-                    fontSize);
+                    fontSize,
+                    report);
                 if (ancestry[i].Parent == null) rootFontSize = fontSize;
             }
         }

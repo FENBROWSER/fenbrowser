@@ -20,6 +20,22 @@ namespace FenBrowser.FenEngine.Svg
 
         public static bool IsFinite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
 
+        public static bool IsFinite(SKMatrix matrix) =>
+            IsFinite(matrix.ScaleX) && IsFinite(matrix.SkewX) && IsFinite(matrix.TransX) &&
+            IsFinite(matrix.SkewY) && IsFinite(matrix.ScaleY) && IsFinite(matrix.TransY) &&
+            IsFinite(matrix.Persp0) && IsFinite(matrix.Persp1) && IsFinite(matrix.Persp2);
+
+        public static bool TryNormalizeMatrix(SKMatrix matrix, out SKMatrix normalized)
+        {
+            normalized = SKMatrix.Identity;
+            if (!IsFinite(matrix)) return false;
+            normalized = new SKMatrix(
+                ClampCoord(matrix.ScaleX), ClampCoord(matrix.SkewX), ClampCoord(matrix.TransX),
+                ClampCoord(matrix.SkewY), ClampCoord(matrix.ScaleY), ClampCoord(matrix.TransY),
+                0f, 0f, 1f);
+            return IsFinite(normalized);
+        }
+
         public static float ClampCoord(float v)
         {
             if (!IsFinite(v)) return 0f;
@@ -501,23 +517,42 @@ namespace FenBrowser.FenEngine.Svg
 
                 int nameStart = i;
                 while (i < n && char.IsLetter(s[i])) i++;
-                if (i == nameStart) return false;
+                if (i == nameStart)
+                {
+                    matrix = SKMatrix.Identity;
+                    return false;
+                }
                 var fn = s.Slice(nameStart, i - nameStart);
 
                 while (i < n && char.IsWhiteSpace(s[i])) i++;
-                if (i >= n || s[i] != '(') return false;
+                if (i >= n || s[i] != '(')
+                {
+                    matrix = SKMatrix.Identity;
+                    return false;
+                }
                 i++;
                 int argStart = i;
                 while (i < n && s[i] != ')') i++;
-                if (i >= n) return false;
+                if (i >= n)
+                {
+                    matrix = SKMatrix.Identity;
+                    return false;
+                }
                 var args = s.Slice(argStart, i - argStart);
                 i++;
 
                 if (!ApplyTransformFunction(fn, args, ref matrix))
                 {
+                    matrix = SKMatrix.Identity;
                     return false;
                 }
             }
+            if (!TryNormalizeMatrix(matrix, out SKMatrix normalized))
+            {
+                matrix = SKMatrix.Identity;
+                return false;
+            }
+            matrix = normalized;
             return true;
         }
 
@@ -544,8 +579,6 @@ namespace FenBrowser.FenEngine.Svg
 
             int n = count;
 
-            // Zero-allocation dispatch: span compares instead of
-            // ToString()+ToLowerInvariant() (two heap strings per function).
             SKMatrix t;
             if (EqIgnoreCase(fn, "matrix"))
             {
@@ -571,34 +604,38 @@ namespace FenBrowser.FenEngine.Svg
             else if (EqIgnoreCase(fn, "rotate"))
             {
                 if (n != 1 && n != 3) return false;
+                float radians = DegreesToRadians(nums[0]);
+                if (!IsFinite(radians)) return false;
                 if (n == 3)
                 {
                     t = SKMatrix.CreateRotation(
-                        DegreesToRadians(nums[0]),
+                        radians,
                         ClampCoord(nums[1]),
                         ClampCoord(nums[2]));
                 }
                 else
                 {
-                    t = SKMatrix.CreateRotation(DegreesToRadians(nums[0]));
+                    t = SKMatrix.CreateRotation(radians);
                 }
             }
             else if (EqIgnoreCase(fn, "skewx"))
             {
-                if (n != 1) return false;
-                t = CreateSkew(DegreesToRadians(nums[0]), 0f);
+                if (n != 1 || !TryCreateSkew(DegreesToRadians(nums[0]), 0f, out t)) return false;
             }
             else if (EqIgnoreCase(fn, "skewy"))
             {
-                if (n != 1) return false;
-                t = CreateSkew(0f, DegreesToRadians(nums[0]));
+                if (n != 1 || !TryCreateSkew(0f, DegreesToRadians(nums[0]), out t)) return false;
             }
             else
             {
-                return false; // Unknown function invalidates the list (spec).
+                return false;
             }
 
+            if (!IsFinite(t)) return false;
             m = SKMatrix.Concat(m, t);
+            if (!TryNormalizeMatrix(m, out SKMatrix normalized))
+                return false;
+            m = normalized;
             return true;
         }
 
@@ -607,13 +644,15 @@ namespace FenBrowser.FenEngine.Svg
             return degrees * ((float)System.Math.PI / 180f);
         }
 
-        private static SKMatrix CreateSkew(float radiansX, float radiansY)
+        private static bool TryCreateSkew(float radiansX, float radiansY, out SKMatrix matrix)
         {
+            matrix = SKMatrix.Identity;
+            if (!IsFinite(radiansX) || !IsFinite(radiansY)) return false;
             float tx = (float)System.Math.Tan(radiansX);
             float ty = (float)System.Math.Tan(radiansY);
-            if (!IsFinite(tx)) tx = 0f;
-            if (!IsFinite(ty)) ty = 0f;
-            return new SKMatrix(1f, tx, 0f, ty, 1f, 0f, 0f, 0f, 1f);
+            if (!IsFinite(tx) || !IsFinite(ty)) return false;
+            matrix = new SKMatrix(1f, tx, 0f, ty, 1f, 0f, 0f, 0f, 1f);
+            return IsFinite(matrix);
         }
 
         // ---------------------------------------------------------- list utils

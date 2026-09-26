@@ -34,7 +34,7 @@ namespace FenBrowser.FenEngine.Svg
                 return null;
             }
 
-            float opacity = ReadClampedOpacity(el, "fill-opacity", 1f);
+            float opacity = ReadOwnPaintOpacity(el, "fill-opacity");
             if (opacity <= 0f)
             {
                 return null;
@@ -108,7 +108,7 @@ namespace FenBrowser.FenEngine.Svg
                 return null; // Zero/negative disables stroking.
             }
 
-            float opacity = ReadClampedOpacity(el, "stroke-opacity", 1f);
+            float opacity = ReadOwnPaintOpacity(el, "stroke-opacity");
             if (opacity <= 0f)
             {
                 return null;
@@ -231,33 +231,70 @@ namespace FenBrowser.FenEngine.Svg
             return System.Math.Clamp(v, 0f, 1f);
         }
 
-        /// <summary>Per-render memoized paint-server state (P0.3).</summary>
+        private float ReadOwnPaintOpacity(SvgElement el, string name) =>
+            TryParseOpacity(el.GetPresentationProperty(name), out float opacity) ? opacity : 1f;
+
         internal sealed class CachedGradient
         {
             public bool IsValid;
             public bool IsRadial;
+            public bool IsUserSpace;
             public SKShaderTileMode Mode;
             public float[] Positions;
             public SKColor[] Colors;
-            // Linear (unit space for oBB; user space for userSpaceOnUse).
             public SKPoint P1, P2;
-            // Radial.
             public SKPoint Center, Focus;
             public float Radius;
-            // Fully-built shader for userSpaceOnUse servers (extra baked in).
-            public SKShader UserSpaceShader;
+            public SKMatrix Transform;
         }
 
-        private CachedGradient GetCachedGradient(SvgElement server, InheritedStyle style)
+        private sealed class GradientDefinition
         {
-            var key = server;
-            if (ShaderCache.TryGetValue(key, out var cached))
+            public string X1;
+            public string Y1;
+            public string X2;
+            public string Y2;
+            public string Cx;
+            public string Cy;
+            public string R;
+            public string Fx;
+            public string Fy;
+            public string GradientUnits;
+            public string GradientTransform;
+            public string SpreadMethod;
+        }
+
+        private readonly Dictionary<GradientCacheKey, CachedGradient> _gradientCache = new();
+        private readonly record struct GradientCacheKey(
+            SvgElement Server,
+            SKColor CurrentColor,
+            float FontSize,
+            float ViewportWidth,
+            float ViewportHeight);
+
+        private CachedGradient GetCachedGradient(
+            SvgElement server,
+            InheritedStyle style,
+            ViewportContext viewport)
+        {
+            var key = new GradientCacheKey(
+                server,
+                style.CurrentColor,
+                style.FontSize,
+                viewport.Width,
+                viewport.Height);
+            if (_gradientCache.TryGetValue(key, out var cached))
             {
                 return cached;
             }
 
             var entry = new CachedGradient();
-            ShaderCache[key] = entry;
+            _gradientCache[key] = entry;
+
+            if (!TryResolveGradientDefinition(server, out var definition))
+            {
+                return entry;
+            }
 
             var stops = CollectStops(server, style, visited: null);
             if (stops == null || stops.Length == 0)
@@ -267,98 +304,177 @@ namespace FenBrowser.FenEngine.Svg
 
             entry.Positions = StopsPositions(stops);
             entry.Colors = StopsColors(stops);
-            entry.Mode = TileModeOf(server);
+            entry.Mode = TileModeOf(definition.SpreadMethod);
             entry.IsRadial = server.Name == "radialGradient";
-
-            bool isObjectBoundingBox =
-                !string.Equals(server.GetAttribute("gradientUnits"), "userSpaceOnUse", System.StringComparison.Ordinal);
-
-            SKMatrix extra = SKMatrix.Identity;
-            var gt = server.GetAttribute("gradientTransform");
-            if (!string.IsNullOrWhiteSpace(gt) &&
-                !SvgValues.TryParseTransformList(gt.AsSpan(), out extra))
+            entry.IsUserSpace = string.Equals(
+                definition.GradientUnits, "userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(definition.GradientUnits) &&
+                !entry.IsUserSpace &&
+                !string.Equals(
+                    definition.GradientUnits, "objectBoundingBox", StringComparison.OrdinalIgnoreCase))
             {
-                return entry; // Malformed transform disables the paint server.
+                _report.RequireFallback(
+                    $"SVG gradientUnits '{definition.GradientUnits}' requires compatibility fallback");
+                return entry;
             }
 
-            if (!isObjectBoundingBox)
+            SKMatrix transform = SKMatrix.Identity;
+            if (!string.IsNullOrWhiteSpace(definition.GradientTransform) &&
+                !SvgValues.TryParseTransformList(definition.GradientTransform.AsSpan(), out transform))
             {
-                // User-space coordinates are shape-independent: build the whole
-                // shader once and reuse it for every referencing shape.
-                if (!entry.IsRadial)
+                _report.RequireFallback("SVG gradientTransform requires compatibility fallback");
+                return entry;
+            }
+            entry.Transform = transform;
+
+            if (entry.IsUserSpace &&
+                (!SvgValues.IsFinite(viewport.Width) || !SvgValues.IsFinite(viewport.Height) ||
+                 viewport.Width <= 0f || viewport.Height <= 0f))
+            {
+                _report.RequireFallback("SVG userSpaceOnUse gradient requires a finite viewport");
+                return entry;
+            }
+
+            float xReference = entry.IsUserSpace ? viewport.Width : 1f;
+            float yReference = entry.IsUserSpace ? viewport.Height : 1f;
+            float radiusReference = entry.IsUserSpace
+                ? MathF.Sqrt((viewport.Width * viewport.Width + viewport.Height * viewport.Height) / 2f)
+                : 1f;
+            if (entry.IsUserSpace && !SvgValues.IsFinite(radiusReference))
+            {
+                _report.RequireFallback("SVG userSpaceOnUse gradient requires a finite normalized diagonal");
+                return entry;
+            }
+            float x1Default = 0f;
+            float y1Default = 0f;
+            float x2Default = entry.IsUserSpace ? xReference : 1f;
+            float y2Default = 0f;
+            float cxDefault = entry.IsUserSpace ? xReference * 0.5f : 0.5f;
+            float cyDefault = entry.IsUserSpace ? yReference * 0.5f : 0.5f;
+            float radiusDefault = entry.IsUserSpace ? radiusReference * 0.5f : 0.5f;
+            if (entry.IsRadial)
+            {
+                bool hasFx = !string.IsNullOrWhiteSpace(definition.Fx);
+                bool hasFy = !string.IsNullOrWhiteSpace(definition.Fy);
+                if (!TryGradientLength(definition.Cx, cxDefault, xReference, style.FontSize, out float cx) ||
+                    !TryGradientLength(definition.Cy, cyDefault, yReference, style.FontSize, out float cy) ||
+                    !TryGradientLength(definition.R, radiusDefault, radiusReference, style.FontSize, out float radius) ||
+                    !TryGradientLength(definition.Fx, cx, xReference, style.FontSize, out float fx) ||
+                    !TryGradientLength(definition.Fy, cy, yReference, style.FontSize, out float fy) ||
+                    radius <= 0f || !SvgValues.IsFinite(radius))
                 {
-                    entry.P1 = new SKPoint(
-                        GradientCoord(server, "x1", 0f),
-                        GradientCoord(server, "y1", 0f));
-                    entry.P2 = new SKPoint(
-                        GradientCoord(server, "x2", 1f),
-                        GradientCoord(server, "y2", 0f));
-                    entry.UserSpaceShader = SKShader.CreateLinearGradient(
-                        entry.P1, entry.P2, entry.Colors, entry.Positions, entry.Mode);
+                    return entry;
                 }
-                else
-                {
-                    entry.Center = new SKPoint(
-                        GradientCoord(server, "cx", 0.5f),
-                        GradientCoord(server, "cy", 0.5f));
-                    entry.Radius = GradientRadius(server);
-                    entry.Focus = ResolveFocus(server, entry.Center);
-                    if (entry.Radius > 0f)
-                    {
-                        entry.UserSpaceShader = SKShader.CreateTwoPointConicalGradient(
-                            entry.Focus, 0f, entry.Center, entry.Radius,
-                            entry.Colors, entry.Positions, entry.Mode);
-                    }
-                }
-                if (entry.UserSpaceShader != null && !extra.IsIdentity)
-                {
-                    entry.UserSpaceShader = entry.UserSpaceShader.WithLocalMatrix(extra);
-                }
-                entry.IsValid = entry.UserSpaceShader != null;
+                entry.Center = new SKPoint(cx, cy);
+                entry.Focus = entry.IsUserSpace
+                    ? new SKPoint(fx, fy)
+                    : ClampObjectBoundingBoxFocus(fx, fy, hasFx, hasFy);
+                entry.Radius = radius;
+            }
+            else if (!TryGradientLength(definition.X1, x1Default, xReference, style.FontSize, out float x1) ||
+                     !TryGradientLength(definition.Y1, y1Default, yReference, style.FontSize, out float y1) ||
+                     !TryGradientLength(definition.X2, x2Default, xReference, style.FontSize, out float x2) ||
+                     !TryGradientLength(definition.Y2, y2Default, yReference, style.FontSize, out float y2))
+            {
+                return entry;
             }
             else
             {
-                // objectBoundingBox: geometry resolves in the 0..1 unit square
-                // so only stops/mode are cached; the per-shape bbox matrix is
-                // applied via WithLocalMatrix at use time.
-                if (!entry.IsRadial)
-                {
-                    entry.P1 = new SKPoint(
-                        GradientCoord(server, "x1", 0f),
-                        GradientCoord(server, "y1", 0f));
-                    entry.P2 = new SKPoint(
-                        GradientCoord(server, "x2", 1f),
-                        GradientCoord(server, "y2", 0f));
-                }
-                else
-                {
-                    entry.Center = new SKPoint(
-                        GradientCoord(server, "cx", 0.5f),
-                        GradientCoord(server, "cy", 0.5f));
-                    entry.Radius = GradientRadius(server);
-                }
-                entry.IsValid = !entry.IsRadial || entry.Radius > 0f;
+                entry.P1 = new SKPoint(x1, y1);
+                entry.P2 = new SKPoint(x2, y2);
             }
 
+            entry.IsValid = !entry.IsRadial || (entry.Radius > 0f && SvgValues.IsFinite(entry.Radius));
             return entry;
         }
 
-        private SKPoint ResolveFocus(SvgElement server, SKPoint center)
+        private bool TryResolveGradientDefinition(
+            SvgElement server,
+            out GradientDefinition definition)
         {
-            var focus = center;
-            var fxRaw = server.GetAttribute("fx");
-            var fyRaw = server.GetAttribute("fy");
-            if (!string.IsNullOrWhiteSpace(fxRaw) &&
-                SvgValues.TryParseLength(fxRaw.AsSpan(), out float fxv, out var fu))
+            definition = new GradientDefinition();
+            var visited = new HashSet<SvgElement>();
+            SvgElement current = server;
+            while (current != null)
             {
-                focus.X = SvgValues.ResolveUnits(fxv, fu, DefaultFontSize, 1f);
+                CheckDeadline();
+                if (current.Name is not ("linearGradient" or "radialGradient") ||
+                    !visited.Add(current) || visited.Count > _maxReferenceDepth)
+                {
+                    _report.RequireFallback("SVG paint server gradient template requires compatibility fallback");
+                    return false;
+                }
+
+                definition.X1 ??= current.GetAttribute("x1");
+                definition.Y1 ??= current.GetAttribute("y1");
+                definition.X2 ??= current.GetAttribute("x2");
+                definition.Y2 ??= current.GetAttribute("y2");
+                definition.Cx ??= current.GetAttribute("cx");
+                definition.Cy ??= current.GetAttribute("cy");
+                definition.R ??= current.GetAttribute("r");
+                definition.Fx ??= current.GetAttribute("fx");
+                definition.Fy ??= current.GetAttribute("fy");
+                definition.GradientUnits ??= current.GetAttribute("gradientUnits");
+                definition.GradientTransform ??= current.GetAttribute("gradientTransform");
+                definition.SpreadMethod ??= current.GetAttribute("spreadMethod");
+
+                string href = current.GetAttribute("href") ?? current.GetLookup("xlink:href");
+                if (string.IsNullOrWhiteSpace(href))
+                {
+                    break;
+                }
+                if (!SvgValues.TryParseLocalReference(href, out string id))
+                {
+                    _report.RejectResource("SVG gradient external template reference rejected");
+                    return false;
+                }
+                if (!_doc.ElementsById.TryGetValue(id, out var template) ||
+                    template.Name != server.Name)
+                {
+                    _report.RequireFallback("SVG paint server gradient template reference is invalid or unsupported");
+                    return false;
+                }
+                current = template;
             }
-            if (!string.IsNullOrWhiteSpace(fyRaw) &&
-                SvgValues.TryParseLength(fyRaw.AsSpan(), out float fyv, out var fv))
+            return true;
+        }
+
+        private bool TryGradientLength(
+            string raw,
+            float fallback,
+            float percentReference,
+            float fontSize,
+            out float value)
+        {
+            value = fallback;
+            if (string.IsNullOrWhiteSpace(raw))
             {
-                focus.Y = SvgValues.ResolveUnits(fyv, fv, DefaultFontSize, 1f);
+                return true;
             }
-            return focus;
+            if (!SvgValues.TryParseLength(raw.AsSpan(), out float parsed, out var unit))
+            {
+                _report.RequireFallback("SVG paint server gradient coordinate requires compatibility fallback");
+                return false;
+            }
+            float resolved = SvgValues.ResolveUnits(parsed, unit, fontSize, percentReference);
+            if (!SvgValues.IsFinite(resolved))
+            {
+                _report.RequireFallback("SVG paint server gradient coordinate is non-finite");
+                return false;
+            }
+            value = SvgValues.ClampCoord(resolved);
+            return true;
+        }
+
+        private static SKPoint ClampObjectBoundingBoxFocus(
+            float fx,
+            float fy,
+            bool hasFx,
+            bool hasFy)
+        {
+            return new SKPoint(
+                hasFx ? System.Math.Clamp(fx, 0f, 1f) : fx,
+                hasFy ? System.Math.Clamp(fy, 0f, 1f) : fy);
         }
 
         private SKShader BuildServerShader(
@@ -377,7 +493,7 @@ namespace FenBrowser.FenEngine.Svg
             {
                 if (server.Name == "linearGradient" || server.Name == "radialGradient")
                 {
-                    g = GetCachedGradient(server, style);
+                    g = GetCachedGradient(server, style, viewport);
                 }
                 else if (server.Name == "pattern")
                 {
@@ -405,44 +521,65 @@ namespace FenBrowser.FenEngine.Svg
                 return null;
             }
 
-            if (g.UserSpaceShader != null)
+            SKShader baseShader;
+            if (g.IsUserSpace)
             {
-                return g.UserSpaceShader; // shared, owned by cache for this render
+                baseShader = g.IsRadial
+                    ? SKShader.CreateTwoPointConicalGradient(
+                        g.Focus, 0f, g.Center, g.Radius, g.Colors, g.Positions, g.Mode)
+                    : SKShader.CreateLinearGradient(
+                        g.P1, g.P2, g.Colors, g.Positions, g.Mode);
             }
-
-            var (matrix, degenerate) = ObjectBoundingBoxMatrix(path, SKMatrix.Identity);
-            if (degenerate)
+            else
             {
-                if (TryResolvePaintFallbackColor(fallbackText, style, out var color))
+                var (matrix, degenerate) = ObjectBoundingBoxMatrix(path, SKMatrix.Identity);
+                if (degenerate)
                 {
-                    fallbackColor = color;
+                    if (TryResolvePaintFallbackColor(fallbackText, style, out var color))
+                    {
+                        fallbackColor = color;
+                    }
+                    return null;
                 }
+
+                baseShader = g.IsRadial
+                    ? (g.Focus == g.Center
+                        ? SKShader.CreateRadialGradient(
+                            g.Center, g.Radius, g.Colors, g.Positions, g.Mode)
+                        : SKShader.CreateTwoPointConicalGradient(
+                            g.Focus, 0f, g.Center, g.Radius,
+                            g.Colors, g.Positions, g.Mode))
+                    : SKShader.CreateLinearGradient(
+                        g.P1, g.P2, g.Colors, g.Positions, g.Mode);
+                if (baseShader == null)
+                {
+                    return null;
+                }
+                var finalMatrix = SKMatrix.Concat(matrix, g.Transform);
+                var shader = baseShader.WithLocalMatrix(finalMatrix);
+                if (!ReferenceEquals(shader, baseShader))
+                {
+                    baseShader.Dispose();
+                }
+                disposeShaderAfterAssignment = shader != null;
+                return shader;
+            }
+
+            if (baseShader == null)
+            {
                 return null;
             }
-
-            SKShader baseShader = g.IsRadial
-                ? SKShader.CreateRadialGradient(g.Center, g.Radius, g.Colors, g.Positions, g.Mode)
-                : SKShader.CreateLinearGradient(g.P1, g.P2, g.Colors, g.Positions, g.Mode);
-
-            var gtText = fragment != null && _doc.ElementsById.TryGetValue(fragment, out var s2)
-                ? s2.GetAttribute("gradientTransform")
-                : null;
-            SKMatrix extra = SKMatrix.Identity;
-            if (!string.IsNullOrWhiteSpace(gtText) &&
-                !SvgValues.TryParseTransformList(gtText.AsSpan(), out extra))
+            if (!g.Transform.IsIdentity)
             {
-                baseShader.Dispose();
-                return null;
+                var transformed = baseShader.WithLocalMatrix(g.Transform);
+                if (!ReferenceEquals(transformed, baseShader))
+                {
+                    baseShader.Dispose();
+                }
+                baseShader = transformed;
             }
-
-            var finalMatrix = SKMatrix.Concat(matrix, extra);
-            var shader = baseShader.WithLocalMatrix(finalMatrix);
-            if (!ReferenceEquals(shader, baseShader))
-            {
-                baseShader.Dispose();
-            }
-            disposeShaderAfterAssignment = shader != null;
-            return shader;
+            disposeShaderAfterAssignment = baseShader != null;
+            return baseShader;
         }
 
         private static bool TryResolvePaintFallbackColor(
@@ -483,9 +620,8 @@ namespace FenBrowser.FenEngine.Svg
             return (m, false);
         }
 
-        private SKShaderTileMode TileModeOf(SvgElement server)
+        private static SKShaderTileMode TileModeOf(string spread)
         {
-            var spread = server.GetAttribute("spreadMethod");
             if (string.Equals(spread, "repeat", System.StringComparison.OrdinalIgnoreCase))
             {
                 return SKShaderTileMode.Repeat;
@@ -494,33 +630,7 @@ namespace FenBrowser.FenEngine.Svg
             {
                 return SKShaderTileMode.Mirror;
             }
-            return SKShaderTileMode.Clamp; // Default and unrecognized values.
-        }
-
-        private float GradientCoord(SvgElement server, string name, float defaultValue)
-        {
-            var raw = server.GetAttribute(name);
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return defaultValue;
-            }
-            if (!SvgValues.TryParseLength(raw.AsSpan(), out float v, out var unit))
-            {
-                return defaultValue;
-            }
-            return SvgValues.ResolveUnits(v, unit, DefaultFontSize, 1f);
-        }
-
-        private float GradientRadius(SvgElement server)
-        {
-            var raw = server.GetAttribute("r");
-            if (string.IsNullOrWhiteSpace(raw) ||
-                !SvgValues.TryParseLength(raw.AsSpan(), out float v, out var unit))
-            {
-                return 0.5f;
-            }
-            float resolved = SvgValues.ResolveUnits(v, unit, DefaultFontSize, 1f);
-            return SvgValues.ClampCoord(resolved);
+            return SKShaderTileMode.Clamp;
         }
 
         /// <summary>
@@ -550,9 +660,11 @@ namespace FenBrowser.FenEngine.Svg
         private (float offset, SKColor color)[] CollectStops(SvgElement server, InheritedStyle style, HashSet<SvgElement> visited)
         {
             visited ??= new HashSet<SvgElement>();
-            if (visited.Contains(server) || visited.Count >= _maxReferenceDepth)
+            CheckDeadline();
+            if (server.Name is not ("linearGradient" or "radialGradient") ||
+                visited.Contains(server) || visited.Count >= _maxReferenceDepth)
             {
-                _report.Warn("gradient reference chain cyclic or too deep");
+                _report.RequireFallback("SVG paint server gradient stop template requires compatibility fallback");
                 return System.Array.Empty<(float, SKColor)>();
             }
             visited.Add(server);
@@ -561,6 +673,7 @@ namespace FenBrowser.FenEngine.Svg
             var children = server.Children;
             for (int i = 0; i < children.Count; i++)
             {
+                if ((i & 0xF) == 0) CheckDeadline();
                 if (children[i].Name != "stop")
                 {
                     continue;
@@ -586,7 +699,7 @@ namespace FenBrowser.FenEngine.Svg
 
                 var colorRaw = stop.GetPresentationProperty("stop-color") ?? "black";
                 var color = SKColors.Black;
-                if (colorRaw.Equals("currentColor", System.StringComparison.OrdinalIgnoreCase))
+                if (colorRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase))
                 {
                     color = style.CurrentColor;
                 }
@@ -613,20 +726,24 @@ namespace FenBrowser.FenEngine.Svg
                 return own.ToArray();
             }
 
-            // No local stops: follow template link (cycle-guarded, bounded).
             string href = server.GetAttribute("href") ?? server.GetLookup("xlink:href");
-            if (SvgValues.TryParseLocalReference(href, out string id) &&
-                _doc.ElementsById.TryGetValue(id, out var template) &&
-                (template.Name == "linearGradient" || template.Name == "radialGradient"))
+            if (string.IsNullOrWhiteSpace(href))
             {
-                var inheritedStops = CollectStops(template, style, visited);
-                if (inheritedStops.Length > 0)
-                {
-                    return inheritedStops;
-                }
+                return System.Array.Empty<(float, SKColor)>();
+            }
+            if (!SvgValues.TryParseLocalReference(href, out string id))
+            {
+                _report.RejectResource("SVG gradient external stop template rejected");
+                return System.Array.Empty<(float, SKColor)>();
+            }
+            if (!_doc.ElementsById.TryGetValue(id, out var template) ||
+                template.Name is not ("linearGradient" or "radialGradient"))
+            {
+                _report.RequireFallback("SVG paint server gradient stop template is invalid or unsupported");
+                return System.Array.Empty<(float, SKColor)>();
             }
 
-            return System.Array.Empty<(float, SKColor)>();
+            return CollectStops(template, style, visited);
         }
 
     }

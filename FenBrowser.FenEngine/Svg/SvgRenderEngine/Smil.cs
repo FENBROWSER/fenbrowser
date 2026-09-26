@@ -228,7 +228,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private void ApplySetSnapshot(SvgElement animation)
         {
-            SvgElement target = animation.Parent;
+            SvgElement target = ResolveSmilTarget(animation);
             string attributeName = animation.GetAttribute("attributeName")?.Trim();
             string value = animation.GetAttribute("to");
             string attributeType = animation.GetAttribute("attributeType")?.Trim();

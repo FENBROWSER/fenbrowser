@@ -14,7 +14,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private void DrawChildren(SvgElement container, SKCanvas canvas, ViewportContext viewport, InheritedStyle inherited)
         {
-            if (!PassesRequiredExtensions(container)) return;
+            if (!PassesConditionalProcessing(container)) return;
             var children = container.Children;
             for (int i = 0; i < children.Count; i++)
             {
@@ -52,13 +52,55 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
+        private void ReportUnsupportedMaskHref(SvgElement element)
+        {
+            string raw = element.GetPresentationProperty("mask");
+            if (!SvgValues.TryParsePaint(
+                    raw.AsSpan(), out var kind, out _, out string fragment, out _) ||
+                kind != SvgValues.PaintKind.ServerRef || fragment == null ||
+                !_doc.ElementsById.TryGetValue(fragment, out var mask) ||
+                mask.Name != "mask")
+                return;
+
+            var visited = new HashSet<SvgElement>();
+            SvgElement current = mask;
+            bool hasHref = false;
+            while (current != null)
+            {
+                CheckDeadline();
+                if (current.Name != "mask" || !visited.Add(current) ||
+                    visited.Count > _maxReferenceDepth)
+                {
+                    _report.RequireFallback("SVG mask href cycle or depth budget exceeded");
+                    return;
+                }
+                string href = current.GetAttribute("href") ?? current.GetLookup("xlink:href");
+                if (href == null) break;
+                hasHref = true;
+                if (!SvgValues.TryParseLocalReference(href, out string id))
+                {
+                    _report.RejectResource("SVG mask external href rejected by SVG resource policy");
+                    return;
+                }
+                if (!_doc.ElementsById.TryGetValue(id, out current))
+                {
+                    _report.Warn("SVG mask href reference unresolved");
+                    _report.RequireFallback("SVG mask href reference requires compatibility fallback");
+                    return;
+                }
+            }
+            if (hasHref)
+                _report.RequireFallback("SVG mask href inheritance requires compatibility fallback");
+        }
+
         private void DrawElementInner(
             SvgElement el,
             SKCanvas canvas,
             ViewportContext viewport,
             InheritedStyle inherited)
         {
-            if (!PassesRequiredExtensions(el)) return;
+            if (!PassesConditionalProcessing(el)) return;
+            ReportUnsupportedMaskHref(el);
 
             switch (el.Name)
             {
@@ -268,13 +310,24 @@ namespace FenBrowser.FenEngine.Svg
 
             using var scope = new CanvasState(canvas);
             ApplyElementTransform(el, canvas, outer, inherited);
+            float x = ResolveGeometryCoordinate(el, "x", outer, outer.Width);
+            float y = ResolveGeometryCoordinate(el, "y", outer, outer.Height);
+            if (x != 0f || y != 0f)
+                canvas.Translate(x, y);
+            if (!ApplyNestedSvgViewport(
+                    el, canvas, inner, hasViewBox, vbX, vbY, vbW, vbH))
+                return;
+            var userViewport = hasViewBox
+                ? new ViewportContext(vbW, vbH)
+                : inner;
+            ApplyClipPath(el, canvas, userViewport, inherited);
             DrawWithEffects(el, canvas, inner, () =>
             {
                 if (TryBeginGroupOpacity(el, canvas, out var layerPaint))
                 {
                     try
                     {
-                        DrawNestedSvgBody(el, canvas, inner, inherited, hasViewBox, vbX, vbY, vbW, vbH);
+                        DrawNestedSvgBody(el, canvas, userViewport, inherited);
                     }
                     finally
                     {
@@ -285,7 +338,7 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 else
                 {
-                    DrawNestedSvgBody(el, canvas, inner, inherited, hasViewBox, vbX, vbY, vbW, vbH);
+                    DrawNestedSvgBody(el, canvas, userViewport, inherited);
                 }
             });
         }
@@ -297,6 +350,20 @@ namespace FenBrowser.FenEngine.Svg
         /// leaving XML attribute/default sizing in charge. Negative results are
         /// invalid per spec and likewise return false.
         /// </summary>
+        private float ResolveGeometryCoordinate(
+            SvgElement element,
+            string property,
+            ViewportContext viewport,
+            float percentReference)
+        {
+            ResolveGeometryFontContext(element, out float fontSize, out float rootFontSize);
+            return TryResolveGeometryLength(
+                element, property, viewport, percentReference, fontSize, rootFontSize,
+                out float value)
+                ? value
+                : 0f;
+        }
+
         private static bool TryResolveNestedSvgCssSizing(
             SvgElement element,
             string property,
@@ -305,10 +372,7 @@ namespace FenBrowser.FenEngine.Svg
             out float value)
         {
             value = 0f;
-            if (element.CascadedDeclarations == null ||
-                !element.CascadedDeclarations.ContainsKey(property))
-                return false;
-            string resolved = element.GetPresentationProperty(property);
+            string resolved = element.GetCascadedPresentationProperty(property);
             if (string.IsNullOrWhiteSpace(resolved) ||
                 resolved.Length > SvgMarkupParser.MaxAttributeValueChars)
                 return false;
@@ -341,11 +405,10 @@ namespace FenBrowser.FenEngine.Svg
                    value >= 0f;
         }
 
-        private void DrawNestedSvgBody(
+        private bool ApplyNestedSvgViewport(
             SvgElement el,
             SKCanvas canvas,
             ViewportContext inner,
-            InheritedStyle inherited,
             bool hasViewBox,
             float vbX, float vbY, float vbW, float vbH)
         {
@@ -355,34 +418,41 @@ namespace FenBrowser.FenEngine.Svg
                 System.StringComparison.OrdinalIgnoreCase);
             if (!overflowVisible)
                 canvas.ClipRect(new SKRect(0f, 0f, inner.Width, inner.Height));
-            if (hasViewBox)
-            {
-                ApplyViewportTransform(canvas, inner, hasViewBox, vbX, vbY, vbW, vbH, el.GetAttribute("preserveAspectRatio"));
-            }
+            return !hasViewBox ||
+                ApplyViewportTransform(
+                    canvas, inner, true, vbX, vbY, vbW, vbH,
+                    el.GetAttribute("preserveAspectRatio"));
+        }
+
+        private void DrawNestedSvgBody(
+            SvgElement el,
+            SKCanvas canvas,
+            ViewportContext userViewport,
+            InheritedStyle inherited)
+        {
             var next = inherited.ResolveOverrides(el, _report);
-            var userViewport = hasViewBox
-                ? new ViewportContext(vbW, vbH)
-                : inner;
             DrawChildren(el, canvas, userViewport, next);
         }
 
         private void DrawSwitch(SvgElement el, SKCanvas canvas, ViewportContext viewport, InheritedStyle inherited)
         {
-            // Direct-rendering-child selection: v1 picks the first child that is
-            // a known drawable element (required* features are treated as pass).
+            SvgElement selected = null;
             var children = el.Children;
             for (int i = 0; i < children.Count; i++)
             {
+                CheckDeadline();
                 var child = children[i];
-                if (!PassesRequiredExtensions(child)) continue;
+                if (!PassesConditionalProcessing(child)) continue;
                 switch (child.Name)
                 {
                     case "title":
                     case "desc":
+                    case "metadata":
                         continue;
                     case "g":
                     case "a":
                     case "svg":
+                    case "switch":
                     case "use":
                     case "path":
                     case "rect":
@@ -393,19 +463,104 @@ namespace FenBrowser.FenEngine.Svg
                     case "polygon":
                     case "text":
                     case "image":
-                        DrawElement(child, canvas, viewport, inherited);
-                        return;
+                        selected = child;
+                        break;
                     default:
                         continue;
                 }
+                if (selected != null) break;
             }
+            if (selected == null) return;
+
+            using var scope = new CanvasState(canvas);
+            ApplyElementTransform(el, canvas, viewport, inherited);
+            ApplyClipPath(el, canvas, viewport, inherited);
+            var next = inherited.ResolveOverrides(el, _report);
+            DrawWithEffects(el, canvas, viewport, () =>
+            {
+                bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
+                try
+                {
+                    DrawElement(selected, canvas, viewport, next);
+                }
+                finally
+                {
+                    if (layered)
+                    {
+                        canvas.Restore();
+                        _activeLayers--;
+                        layerPaint.Dispose();
+                    }
+                }
+            });
+        }
+
+        private static bool PassesConditionalProcessing(SvgElement element)
+        {
+            return PassesRequiredExtensions(element) && PassesRequiredFeatures(element);
         }
 
         private static bool PassesRequiredExtensions(SvgElement element)
         {
-            // The isolated renderer does not implement any extension namespace.
-            // Presence therefore fails the conditional, including an empty list.
             return element.GetAttribute("requiredExtensions") == null;
+        }
+
+        private static bool PassesRequiredFeatures(SvgElement element)
+        {
+            string required = element.GetAttribute("requiredFeatures");
+            if (required == null) return true;
+            var tokenizer = SvgValues.CreateTokenizer(required.AsSpan());
+            bool any = false;
+            while (tokenizer.Next(out var token))
+            {
+                if (!IsSupportedRequiredFeature(token)) return false;
+                any = true;
+            }
+            return any;
+        }
+
+        private static bool IsSupportedRequiredFeature(ReadOnlySpan<char> token)
+        {
+            string value = token.ToString();
+            const string svg11 = "http://www.w3.org/TR/SVG11/feature#";
+            const string svg11Https = "https://www.w3.org/TR/SVG11/feature#";
+            const string svg2 = "http://www.w3.org/TR/SVG2/feature#";
+            const string svg2Https = "https://www.w3.org/TR/SVG2/feature#";
+            string feature = null;
+            if (value.StartsWith(svg11, StringComparison.OrdinalIgnoreCase))
+                feature = value.Substring(svg11.Length);
+            else if (value.StartsWith(svg11Https, StringComparison.OrdinalIgnoreCase))
+                feature = value.Substring(svg11Https.Length);
+            else if (value.StartsWith(svg2, StringComparison.OrdinalIgnoreCase))
+                feature = value.Substring(svg2.Length);
+            else if (value.StartsWith(svg2Https, StringComparison.OrdinalIgnoreCase))
+                feature = value.Substring(svg2Https.Length);
+            if (feature == null) return false;
+
+            return feature.Equals("SVG", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Structure", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("BasicStructure", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("ContainerAttribute", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("ConditionalProcessing", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Image", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Style", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("ViewportAttribute", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Shape", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("BasicText", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Text", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("PaintAttribute", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("BasicPaintAttribute", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("GraphicsAttribute", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("BasicGraphicsAttribute", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("OpacityAttribute", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Gradient", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Pattern", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Clip", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("BasicClip", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Mask", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Filter", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("Marker", StringComparison.OrdinalIgnoreCase) ||
+                feature.Equals("XlinkAttribute", StringComparison.OrdinalIgnoreCase);
         }
 
         // ------------------------------------------------------------------ use
@@ -416,6 +571,7 @@ namespace FenBrowser.FenEngine.Svg
             ViewportContext viewport,
             InheritedStyle inherited)
         {
+            CheckDeadline();
             string href = el.GetAttribute("href") ?? el.GetLookup("xlink:href");
             if (!SvgValues.TryParseLocalReference(href, out string id))
             {
@@ -430,25 +586,27 @@ namespace FenBrowser.FenEngine.Svg
                 return; // Dangling reference: silently nothing (browser behavior).
             }
 
-            // Cycle defense: an id may not instantiate itself transitively.
             _activeUseIds ??= new HashSet<string>(System.StringComparer.Ordinal);
-            if (_activeUseIds.Contains(id) || _activeUseIds.Count >= _maxReferenceDepth)
+            _activeUseElements ??= new HashSet<SvgElement>();
+            if (_activeUseIds.Contains(id) || _activeUseElements.Contains(target) ||
+                _activeUseIds.Count >= _maxReferenceDepth || _depth >= MaxRenderDepth)
             {
-                _report.Warn("use reference cycle detected; instance skipped");
+                _report.Warn("use reference cycle or depth budget exceeded; instance skipped");
                 return;
             }
+            _activeUseIds.Add(id);
+            _activeUseElements.Add(target);
 
             using var scope = new CanvasState(canvas);
             ApplyElementTransform(el, canvas, viewport, inherited);
             ApplyClipPath(el, canvas, viewport, inherited);
-            float ux = ResolveCoord(el.GetAttribute("x"), viewport.Width);
-            float uy = ResolveCoord(el.GetAttribute("y"), viewport.Height);
+            float ux = ResolveGeometryCoordinate(el, "x", viewport, viewport.Width);
+            float uy = ResolveGeometryCoordinate(el, "y", viewport, viewport.Height);
             if (ux != 0f || uy != 0f)
             {
                 canvas.Translate(ux, uy);
             }
 
-            _activeUseIds.Add(id);
             try
             {
                 var next = inherited.ResolveOverrides(el, _report);
@@ -491,10 +649,12 @@ namespace FenBrowser.FenEngine.Svg
             finally
             {
                 _activeUseIds.Remove(id);
+                _activeUseElements.Remove(target);
             }
         }
 
         private HashSet<string> _activeUseIds;
+        private HashSet<SvgElement> _activeUseElements;
 
         private void DrawSymbolInstance(
             SvgElement symbol,
@@ -503,6 +663,7 @@ namespace FenBrowser.FenEngine.Svg
             InheritedStyle inherited,
             SvgElement instance)
         {
+            if (IsDisplayNone(symbol)) return;
             string instanceWidth = instance?.GetPresentationProperty("width");
             string instanceHeight = instance?.GetPresentationProperty("height");
             string width = !string.IsNullOrWhiteSpace(instanceWidth)
@@ -529,7 +690,13 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             using var scope = new CanvasState(canvas);
-            DrawNestedSvgBody(symbol, canvas, inner, inherited, hasViewBox, vbX, vbY, vbW, vbH);
+            if (!ApplyNestedSvgViewport(
+                    symbol, canvas, inner, hasViewBox, vbX, vbY, vbW, vbH))
+                return;
+            var userViewport = hasViewBox
+                ? new ViewportContext(vbW, vbH)
+                : inner;
+            DrawNestedSvgBody(symbol, canvas, userViewport, inherited);
         }
 
         // --------------------------------------------------------------- shapes
@@ -549,12 +716,10 @@ namespace FenBrowser.FenEngine.Svg
             InheritedStyle inherited)
         {
             ApplyCssZoom(el, canvas);
-            if (el.CascadedDeclarations != null &&
-                el.CascadedDeclarations.TryGetValue("transform", out string css) &&
-                !string.IsNullOrWhiteSpace(css))
+            string cssTransform = el.GetCascadedPresentationProperty("transform");
+            if (!string.IsNullOrWhiteSpace(cssTransform))
             {
-                // GetPresentationProperty applies custom-property substitution.
-                ApplyCssTransform(el, el.GetPresentationProperty("transform"), canvas, viewport, inherited);
+                ApplyCssTransform(el, cssTransform, canvas, viewport, inherited);
                 return;
             }
             ApplyAttributeTransform(el, canvas, viewport, inherited);
@@ -562,15 +727,23 @@ namespace FenBrowser.FenEngine.Svg
 
         private void ApplyCssZoom(SvgElement element, SKCanvas canvas)
         {
+            if (!TryResolveCssZoomMatrix(element, out var matrix)) return;
+            if (!matrix.IsIdentity)
+                canvas.Concat(matrix);
+        }
+
+        private bool TryResolveCssZoomMatrix(SvgElement element, out SKMatrix matrix)
+        {
+            matrix = SKMatrix.Identity;
             string raw = element.GetPresentationProperty("zoom");
-            if (string.IsNullOrWhiteSpace(raw)) return;
+            if (string.IsNullOrWhiteSpace(raw)) return true;
             string value = raw.Trim();
-            if (value.Equals("normal", StringComparison.OrdinalIgnoreCase)) return;
+            if (value.Equals("normal", StringComparison.OrdinalIgnoreCase)) return true;
 
             float zoom;
             if (value.EndsWith("%", StringComparison.Ordinal))
             {
-                if (!SvgValues.TryParseNumber(value.AsSpan(0, value.Length - 1), out zoom)) return;
+                if (!SvgValues.TryParseNumber(value.AsSpan(0, value.Length - 1), out zoom)) return true;
                 zoom *= 0.01f;
             }
             else if (!SvgValues.TryParseNumber(value.AsSpan(), out zoom))
@@ -579,18 +752,22 @@ namespace FenBrowser.FenEngine.Svg
                     value.StartsWith("min(", StringComparison.OrdinalIgnoreCase) ||
                     value.StartsWith("max(", StringComparison.OrdinalIgnoreCase) ||
                     value.StartsWith("clamp(", StringComparison.OrdinalIgnoreCase))
+                {
                     _report.RequireFallback("SVG CSS zoom math requires compatibility fallback");
-                return;
+                    return false;
+                }
+                return true;
             }
 
-            if (!float.IsFinite(zoom) || zoom < 0f) return;
+            if (!float.IsFinite(zoom) || zoom < 0f) return true;
             if (zoom > 4096f)
             {
                 _report.RequireFallback("SVG CSS zoom exceeds the bounded scale limit");
-                return;
+                return false;
             }
             if (zoom != 1f)
-                canvas.Concat(SKMatrix.CreateScale(zoom, zoom));
+                matrix = SKMatrix.CreateScale(zoom, zoom);
+            return SvgValues.IsFinite(matrix);
         }
 
         /// <summary>
@@ -611,6 +788,7 @@ namespace FenBrowser.FenEngine.Svg
             }
             if (!SvgValues.TryParseTransformList(t.AsSpan(), out var matrix))
             {
+                _report.RequireFallback("SVG transform attribute requires compatibility fallback");
                 return;
             }
 
@@ -646,6 +824,12 @@ namespace FenBrowser.FenEngine.Svg
                     matrix = SKMatrix.Concat(
                         SKMatrix.Concat(SKMatrix.CreateTranslation(origin.X, origin.Y), matrix),
                         SKMatrix.CreateTranslation(-origin.X, -origin.Y));
+                    if (!SvgValues.TryNormalizeMatrix(matrix, out SKMatrix normalized))
+                    {
+                        _report.RequireFallback("SVG transform origin composition is not finite");
+                        return;
+                    }
+                    matrix = normalized;
                 }
             }
             if (!matrix.IsIdentity)
@@ -802,6 +986,7 @@ namespace FenBrowser.FenEngine.Svg
 
         /// <summary>Ids currently being resolved as clip paths (cycle guard).</summary>
         private HashSet<string> _activeClipIds;
+        private HashSet<SvgElement> _activeObjectBounds;
 
         /// <summary>
         /// Applies the element's clip-path attribute, if any. Must be called
@@ -810,6 +995,60 @@ namespace FenBrowser.FenEngine.Svg
         /// shapes; direct shape children of &lt;clipPath&gt; (plus one level of
         /// use-to-shape). Everything else degrades to "no clip" with a warning.
         /// </summary>
+        private bool TryResolveClipPathDefinition(
+            SvgElement clip,
+            out SvgElement contentOwner,
+            out string clipPathUnits,
+            out SvgElement transformOwner)
+        {
+            contentOwner = null;
+            clipPathUnits = null;
+            transformOwner = null;
+            var visited = new HashSet<SvgElement>();
+            SvgElement current = clip;
+            while (current != null)
+            {
+                CheckDeadline();
+                if (current.Name != "clipPath" || !visited.Add(current) ||
+                    visited.Count > _maxReferenceDepth)
+                {
+                    _report.Warn("clipPath href cycle or depth budget exceeded");
+                    _report.RequireFallback("SVG clipPath href cycle or depth budget exceeded");
+                    return false;
+                }
+                if (clipPathUnits == null)
+                    clipPathUnits = current.GetAttribute("clipPathUnits");
+                if (transformOwner == null && current.GetAttribute("transform") != null)
+                    transformOwner = current;
+                if (contentOwner == null)
+                {
+                    foreach (var child in current.Children)
+                    {
+                        if (child.Name is not ("title" or "desc" or "metadata"))
+                        {
+                            contentOwner = current;
+                            break;
+                        }
+                    }
+                }
+
+                string href = current.GetAttribute("href") ?? current.GetLookup("xlink:href");
+                if (href == null) break;
+                if (!SvgValues.TryParseLocalReference(href, out string id))
+                {
+                    _report.RejectResource("clipPath external href rejected by SVG resource policy");
+                    return false;
+                }
+                if (!_doc.ElementsById.TryGetValue(id, out var next) || next.Name != "clipPath")
+                {
+                    _report.Warn("clipPath href reference unresolved");
+                    break;
+                }
+                current = next;
+            }
+            return true;
+        }
+
         private void ApplyClipPath(
             SvgElement el,
             SKCanvas canvas,
@@ -824,6 +1063,8 @@ namespace FenBrowser.FenEngine.Svg
 
             if (!SvgValues.TryParsePaint(raw.AsSpan(), out var kind, out _, out var fragment, out _))
             {
+                if (!raw.Equals("none", StringComparison.OrdinalIgnoreCase))
+                    _report.RequireFallback("SVG clip-path value requires compatibility fallback");
                 return;
             }
             if (kind != SvgValues.PaintKind.ServerRef || fragment == null)
@@ -832,7 +1073,9 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
             if (!_doc.ElementsById.TryGetValue(fragment, out var clipEl) ||
-                clipEl.Name != "clipPath")
+                clipEl.Name != "clipPath" ||
+                !TryResolveClipPathDefinition(
+                    clipEl, out _, out string clipPathUnits, out _))
             {
                 _report.Warn("clip-path reference unresolved");
                 return;
@@ -848,7 +1091,7 @@ namespace FenBrowser.FenEngine.Svg
             try
             {
                 bool isObjectBoundingBox = string.Equals(
-                    clipEl.GetAttribute("clipPathUnits"),
+                    clipPathUnits,
                     "objectBoundingBox",
                     System.StringComparison.Ordinal);
 
@@ -893,6 +1136,153 @@ namespace FenBrowser.FenEngine.Svg
             ViewportContext viewport,
             out SKRect bounds)
         {
+            CheckDeadline();
+            _activeObjectBounds ??= new HashSet<SvgElement>();
+            if (element == null || _activeObjectBounds.Contains(element) ||
+                _activeObjectBounds.Count >= _maxReferenceDepth)
+            {
+                _report.Warn("object-bounds reference cycle or depth budget exceeded");
+                bounds = default;
+                return false;
+            }
+
+            _activeObjectBounds.Add(element);
+            try
+            {
+                return TryResolveObjectBoundsCore(element, viewport, out bounds);
+            }
+            finally
+            {
+                _activeObjectBounds.Remove(element);
+            }
+        }
+
+        private bool TryResolveObjectBoundsTransform(
+            SvgElement element,
+            ViewportContext viewport,
+            out SKMatrix matrix)
+        {
+            CheckDeadline();
+            matrix = SKMatrix.Identity;
+            if (!TryResolveCssZoomMatrix(element, out var zoom))
+            {
+                matrix = SKMatrix.Identity;
+                return false;
+            }
+            string cssTransform = element.GetCascadedPresentationProperty("transform");
+            if (string.IsNullOrWhiteSpace(cssTransform) &&
+                string.IsNullOrWhiteSpace(element.GetAttribute("transform")))
+            {
+                matrix = zoom;
+                return SvgValues.IsFinite(matrix);
+            }
+            if (!string.IsNullOrWhiteSpace(cssTransform) &&
+                cssTransform.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                matrix = zoom;
+                return SvgValues.IsFinite(matrix);
+            }
+
+            ResolveGeometryFontContext(element, out float fontSize, out float rootFontSize);
+            if (!string.IsNullOrWhiteSpace(cssTransform))
+            {
+                string boxRaw = element.GetPresentationProperty("transform-box");
+                if (!TryBuildTransformFillBox(element, viewport, boxRaw, out SKRect? fillBox))
+                    return false;
+                bool originUsesAttributeSyntax =
+                    element.CascadedDeclarations == null ||
+                    !element.CascadedDeclarations.ContainsKey("transform-origin");
+                var status = SvgCssTransform.TryResolve(
+                    cssTransform,
+                    element.GetPresentationProperty("transform-origin"),
+                    boxRaw,
+                    viewport.Width,
+                    viewport.Height,
+                    fontSize,
+                    rootFontSize,
+                    fillBox,
+                    originUsesAttributeSyntax,
+                    out matrix,
+                    out _);
+                if (status == SvgCssTransformStatus.Unsupported)
+                {
+                    _report.RequireFallback(
+                        $"SVG CSS transform '{cssTransform.Trim()}' requires compatibility fallback");
+                    return false;
+                }
+                matrix = SKMatrix.Concat(zoom, matrix);
+                if (!SvgValues.IsFinite(matrix))
+                {
+                    _report.RequireFallback("SVG transform is not finite and bounded");
+                    return false;
+                }
+                return true;
+            }
+
+            string transformText = element.GetAttribute("transform");
+            if (string.IsNullOrWhiteSpace(transformText))
+            {
+                matrix = zoom;
+                return SvgValues.IsFinite(matrix);
+            }
+            if (!SvgValues.TryParseTransformList(transformText.AsSpan(), out matrix))
+            {
+                _report.RequireFallback("SVG transform attribute requires compatibility fallback");
+                return false;
+            }
+
+            string originText = element.GetPresentationProperty("transform-origin");
+            string boxText = element.GetPresentationProperty("transform-box");
+            if (!string.IsNullOrWhiteSpace(originText) || !string.IsNullOrWhiteSpace(boxText))
+            {
+                if (!TryBuildTransformFillBox(element, viewport, boxText, out SKRect? fillBox))
+                    return false;
+                bool originUsesAttributeSyntax =
+                    element.CascadedDeclarations == null ||
+                    !element.CascadedDeclarations.ContainsKey("transform-origin");
+                var originStatus = SvgCssTransform.TryResolveReferenceOrigin(
+                    originText,
+                    boxText,
+                    viewport.Width,
+                    viewport.Height,
+                    fontSize,
+                    rootFontSize,
+                    fillBox,
+                    originUsesAttributeSyntax,
+                    out var origin);
+                if (originStatus == SvgCssTransformStatus.Unsupported)
+                {
+                    _report.RequireFallback("SVG transform origin/box requires compatibility fallback");
+                    return false;
+                }
+                if (origin.X != 0f || origin.Y != 0f)
+                {
+                    matrix = SKMatrix.Concat(
+                        SKMatrix.Concat(SKMatrix.CreateTranslation(origin.X, origin.Y), matrix),
+                        SKMatrix.CreateTranslation(-origin.X, -origin.Y));
+                    if (!SvgValues.TryNormalizeMatrix(matrix, out SKMatrix normalized))
+                    {
+                        _report.RequireFallback("SVG transform origin composition is not finite");
+                        return false;
+                    }
+                    matrix = normalized;
+                }
+            }
+            matrix = SKMatrix.Concat(zoom, matrix);
+            if (!SvgValues.IsFinite(matrix))
+            {
+                _report.RequireFallback("SVG transform is not finite and bounded");
+                return false;
+            }
+            return true;
+        }
+
+        private bool TryResolveObjectBoundsCore(
+            SvgElement element,
+            ViewportContext viewport,
+            out SKRect bounds)
+        {
+            CheckDeadline();
             switch (element.Name)
             {
                 case "path":
@@ -907,20 +1297,17 @@ namespace FenBrowser.FenEngine.Svg
                         if (geometry != null && !geometry.IsEmpty)
                         {
                             bounds = geometry.TightBounds;
-                            return bounds.Width > 0f && bounds.Height > 0f;
+                            return SvgValues.IsFinite(bounds.Left) &&
+                                SvgValues.IsFinite(bounds.Top) &&
+                                SvgValues.IsFinite(bounds.Right) &&
+                                SvgValues.IsFinite(bounds.Bottom) &&
+                                bounds.Width > 0f && bounds.Height > 0f;
                         }
                     }
                     break;
                 case "image":
-                    float x = ResolveCoord(element.GetAttribute("x"), viewport.Width);
-                    float y = ResolveCoord(element.GetAttribute("y"), viewport.Height);
-                    float width = ResolveCoord(element.GetAttribute("width"), viewport.Width);
-                    float height = ResolveCoord(element.GetAttribute("height"), viewport.Height);
-                    if (width > 0f && height > 0f)
-                    {
-                        bounds = new SKRect(x, y, x + width, y + height);
+                    if (TryResolveImageBox(element, viewport, 0f, 0f, out bounds))
                         return true;
-                    }
                     break;
                 case "svg":
                     bounds = new SKRect(0f, 0f, viewport.Width, viewport.Height);
@@ -932,18 +1319,31 @@ namespace FenBrowser.FenEngine.Svg
                         useTarget.Name is not ("svg" or "symbol") &&
                         TryResolveObjectBounds(useTarget, viewport, out bounds))
                     {
-                        string targetTransform = useTarget.GetPresentationProperty("transform");
-                        if (!string.IsNullOrWhiteSpace(targetTransform))
+                        if (!TryResolveObjectBoundsTransform(
+                                useTarget, viewport, out var targetTransform) ||
+                            !TryResolveObjectBoundsTransform(
+                                element, viewport, out _))
                         {
-                            if (!SvgValues.TryParseTransformList(
-                                    targetTransform.AsSpan(), out var matrix))
+                            bounds = default;
+                            return false;
+                        }
+                        bounds = targetTransform.MapRect(bounds);
+                        float useX = ResolveGeometryCoordinate(element, "x", viewport, viewport.Width);
+                        float useY = ResolveGeometryCoordinate(element, "y", viewport, viewport.Height);
+                        if (useX != 0f || useY != 0f)
+                        {
+                            if (!SvgValues.IsFinite(useX) || !SvgValues.IsFinite(useY))
                             {
                                 bounds = default;
                                 return false;
                             }
-                            bounds = matrix.MapRect(bounds);
+                            bounds = SKMatrix.CreateTranslation(useX, useY).MapRect(bounds);
                         }
-                        return bounds.Width > 0f && bounds.Height > 0f;
+                        return SvgValues.IsFinite(bounds.Left) &&
+                            SvgValues.IsFinite(bounds.Top) &&
+                            SvgValues.IsFinite(bounds.Right) &&
+                            SvgValues.IsFinite(bounds.Bottom) &&
+                            bounds.Width > 0f && bounds.Height > 0f;
                     }
                     break;
                 case "g":
@@ -952,25 +1352,26 @@ namespace FenBrowser.FenEngine.Svg
                     SKRect combined = default;
                     foreach (var child in element.Children)
                     {
+                        CheckDeadline();
                         if (!TryResolveObjectBounds(child, viewport, out var childBounds))
                             continue;
 
-                        string transformText = child.GetPresentationProperty("transform");
-                        if (!string.IsNullOrWhiteSpace(transformText))
+                        SKMatrix childTransform = SKMatrix.Identity;
+                        if (!TryResolveObjectBoundsTransform(
+                                child, viewport, out childTransform))
                         {
-                            if (!SvgValues.TryParseTransformList(
-                                    transformText.AsSpan(), out var childTransform))
-                            {
-                                bounds = default;
-                                return false;
-                            }
-                            childBounds = childTransform.MapRect(childBounds);
+                            bounds = default;
+                            return false;
                         }
+                        if (!childTransform.IsIdentity)
+                            childBounds = childTransform.MapRect(childBounds);
 
                         combined = hasBounds ? SKRect.Union(combined, childBounds) : childBounds;
                         hasBounds = true;
                     }
-                    if (hasBounds && combined.Width > 0f && combined.Height > 0f)
+                    if (hasBounds && combined.Width > 0f && combined.Height > 0f &&
+                        SvgValues.IsFinite(combined.Left) && SvgValues.IsFinite(combined.Top) &&
+                        SvgValues.IsFinite(combined.Right) && SvgValues.IsFinite(combined.Bottom))
                     {
                         bounds = combined;
                         return true;
@@ -982,15 +1383,49 @@ namespace FenBrowser.FenEngine.Svg
             return false;
         }
 
-        /// <summary>Union of direct shape children (plus one-level use refs).</summary>
+        private string ResolveInheritedClipRule(
+            SvgElement shape,
+            SvgElement reference,
+            SvgElement clipRoot)
+        {
+            if (TryGetClipRule(shape, out string rule)) return rule;
+            if (reference != null && !ReferenceEquals(reference, shape) &&
+                TryGetClipRule(reference, out rule)) return rule;
+            for (SvgElement current = shape; current != null; current = current.Parent)
+            {
+                if (TryGetClipRule(current, out rule)) return rule;
+                if (ReferenceEquals(current, clipRoot)) break;
+            }
+            for (SvgElement current = clipRoot; current != null; current = current.Parent)
+                if (TryGetClipRule(current, out rule)) return rule;
+            return null;
+        }
+
+        private static bool TryGetClipRule(SvgElement element, out string rule)
+        {
+            rule = element?.GetPresentationProperty("clip-rule");
+            if (string.IsNullOrWhiteSpace(rule))
+                rule = element?.GetPresentationProperty("fill-rule");
+            return !string.IsNullOrWhiteSpace(rule) &&
+                (rule.Equals("evenodd", StringComparison.OrdinalIgnoreCase) ||
+                 rule.Equals("nonzero", StringComparison.OrdinalIgnoreCase));
+        }
+
         private SKPath BuildClipGeometry(SvgElement clipEl, ViewportContext viewport)
         {
+            if (!TryResolveClipPathDefinition(
+                    clipEl, out var contentOwner, out _, out var transformOwner) ||
+                contentOwner == null)
+                return null;
+
             using var combinedBuilder = new SKPathBuilder();
             bool hasGeometry = false;
             bool evenOdd = false;
 
-            foreach (var child in clipEl.Children)
+            foreach (var child in contentOwner.Children)
             {
+                CheckDeadline();
+                if (!PassesConditionalProcessing(child)) continue;
                 SvgElement shapeEl = child;
                 if (child.Name == "use")
                 {
@@ -1026,8 +1461,8 @@ namespace FenBrowser.FenEngine.Svg
                 ApplyPathTransform(shapeEl, childPath);
                 if (child.Name == "use")
                 {
-                    float useX = ResolveCoord(child.GetAttribute("x"), viewport.Width);
-                    float useY = ResolveCoord(child.GetAttribute("y"), viewport.Height);
+                    float useX = ResolveGeometryCoordinate(child, "x", viewport, viewport.Width);
+                    float useY = ResolveGeometryCoordinate(child, "y", viewport, viewport.Height);
                     if (useX != 0f || useY != 0f)
                     {
                         childPath.Transform(SKMatrix.CreateTranslation(useX, useY));
@@ -1038,9 +1473,9 @@ namespace FenBrowser.FenEngine.Svg
                 hasGeometry = true;
 
                 if (string.Equals(
-                        shapeEl.GetPresentationProperty("clip-rule") ?? shapeEl.GetPresentationProperty("fill-rule"),
+                        ResolveInheritedClipRule(shapeEl, child, contentOwner),
                         "evenodd",
-                        System.StringComparison.OrdinalIgnoreCase))
+                        StringComparison.OrdinalIgnoreCase))
                 {
                     evenOdd = true;
                 }
@@ -1052,7 +1487,7 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             var combined = combinedBuilder.Detach();
-            ApplyPathTransform(clipEl, combined);
+            ApplyPathTransform(transformOwner ?? clipEl, combined);
             if (evenOdd)
             {
                 combined.FillType = SKPathFillType.EvenOdd;
@@ -1062,22 +1497,80 @@ namespace FenBrowser.FenEngine.Svg
 
         private void ApplyPathTransform(SvgElement element, SKPath path)
         {
-            if (element.CascadedDeclarations != null &&
-                element.CascadedDeclarations.TryGetValue("transform", out string css) &&
-                !string.IsNullOrWhiteSpace(css))
+            string css = element.GetCascadedPresentationProperty("transform");
+            if (!string.IsNullOrWhiteSpace(css))
             {
-                // CSS transforms do apply to clipPath children in browsers;
-                // ignoring them here would misclip silently.
                 _report.RequireFallback(
                     "SVG CSS transform on clipPath content requires compatibility fallback");
                 return;
             }
             var transformText = element.GetAttribute("transform");
-            if (!string.IsNullOrWhiteSpace(transformText) &&
-                SvgValues.TryParseTransformList(transformText.AsSpan(), out var transform))
+            if (!string.IsNullOrWhiteSpace(transformText))
             {
+                if (!SvgValues.TryParseTransformList(transformText.AsSpan(), out var transform))
+                {
+                    _report.RequireFallback("SVG clipPath transform requires compatibility fallback");
+                    return;
+                }
                 path.Transform(transform);
             }
+        }
+
+        private bool TryResolveImageBox(
+            SvgElement element,
+            ViewportContext viewport,
+            float defaultWidth,
+            float defaultHeight,
+            out SKRect box)
+        {
+            ResolveGeometryFontContext(element, out float fontSize, out float rootFontSize);
+            float x = TryResolveGeometryLength(
+                element, "x", viewport, viewport.Width, fontSize, rootFontSize, out float xValue)
+                ? xValue
+                : 0f;
+            float y = TryResolveGeometryLength(
+                element, "y", viewport, viewport.Height, fontSize, rootFontSize, out float yValue)
+                ? yValue
+                : 0f;
+
+            string widthText = element.GetPresentationProperty("width");
+            string heightText = element.GetPresentationProperty("height");
+            float width;
+            if (widthText == null || widthText.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                width = defaultWidth;
+            }
+            else if (!TryResolveGeometryLength(
+                         element, "width", viewport, viewport.Width, fontSize, rootFontSize,
+                         out width) || width <= 0f)
+            {
+                box = default;
+                return false;
+            }
+
+            float height;
+            if (heightText == null || heightText.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                height = defaultHeight;
+            }
+            else if (!TryResolveGeometryLength(
+                         element, "height", viewport, viewport.Height, fontSize, rootFontSize,
+                         out height) || height <= 0f)
+            {
+                box = default;
+                return false;
+            }
+
+            if (!SvgValues.IsFinite(x) || !SvgValues.IsFinite(y) ||
+                !SvgValues.IsFinite(width) || !SvgValues.IsFinite(height) ||
+                width <= 0f || height <= 0f ||
+                !SvgValues.IsFinite(x + width) || !SvgValues.IsFinite(y + height))
+            {
+                box = default;
+                return false;
+            }
+            box = new SKRect(x, y, x + width, y + height);
+            return true;
         }
 
         // --------------------------------------------------------------- images
@@ -1222,13 +1715,10 @@ namespace FenBrowser.FenEngine.Svg
                     return;
                 }
 
-                float x = ResolveCoord(element.GetPresentationProperty("x"), viewport.Width);
-                float y = ResolveCoord(element.GetPresentationProperty("y"), viewport.Height);
-                float width = ResolveCoord(element.GetPresentationProperty("width"), viewport.Width);
-                float height = ResolveCoord(element.GetPresentationProperty("height"), viewport.Height);
-                if (width <= 0f) width = sourceWidth;
-                if (height <= 0f) height = sourceHeight;
-                if (width <= 0f || height <= 0f || sourceWidth <= 0f || sourceHeight <= 0f) return;
+                if (sourceWidth <= 0f || sourceHeight <= 0f ||
+                    !TryResolveImageBox(
+                        element, viewport, sourceWidth, sourceHeight, out var imageViewport))
+                    return;
 
                 var style = inherited.ResolveOverrides(element, _report);
                 if (!style.Visibility) return;
@@ -1236,13 +1726,13 @@ namespace FenBrowser.FenEngine.Svg
                 try
                 {
                     using var state = new CanvasState(canvas);
-                    var imageViewport = new SKRect(x, y, x + width, y + height);
                     string preserveAspectRatio = element.GetAttribute("preserveAspectRatio");
                     if (string.IsNullOrWhiteSpace(preserveAspectRatio))
                         preserveAspectRatio = nestedPreserveAspectRatio;
                     var destination = ResolveImageDestination(
                         imageViewport, sourceWidth, sourceHeight,
                         preserveAspectRatio);
+                    if (destination.IsEmpty) return;
                     canvas.ClipRect(imageViewport);
                     canvas.Translate(destination.Left, destination.Top);
                     canvas.Scale(destination.Width / sourceWidth, destination.Height / sourceHeight);
@@ -1301,6 +1791,12 @@ namespace FenBrowser.FenEngine.Svg
             out SvgResolvedResource resource)
         {
             resource = default;
+            if (!_limits.AllowExternalReferences)
+            {
+                _report.RejectResource(
+                    "external SVG reference rejected because external references are disabled");
+                return false;
+            }
             if (_baseUri == null || _resourceResolver == null ||
                 !Uri.TryCreate(_baseUri, reference, out var absolute) || !absolute.IsAbsoluteUri)
             {
@@ -1356,12 +1852,12 @@ namespace FenBrowser.FenEngine.Svg
             InheritedStyle inherited,
             SKBitmap bitmap)
         {
-            float x = ResolveCoord(el.GetPresentationProperty("x"), viewport.Width);
-            float y = ResolveCoord(el.GetPresentationProperty("y"), viewport.Height);
-            float w = ResolveCoord(el.GetPresentationProperty("width"), viewport.Width);
-            float h = ResolveCoord(el.GetPresentationProperty("height"), viewport.Height);
-            if (w <= 0f) w = bitmap.Width;
-            if (h <= 0f) h = bitmap.Height;
+            if (!TryResolveImageBox(
+                    el, viewport, bitmap.Width, bitmap.Height, out var imageViewport))
+            {
+                bitmap.Dispose();
+                return;
+            }
 
             var style = inherited.ResolveOverrides(el, _report);
             bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
@@ -1370,11 +1866,11 @@ namespace FenBrowser.FenEngine.Svg
                 using var state = new CanvasState(canvas);
                 using var paint = new SKPaint { IsAntialias = true };
                 paint.Color = style.Visibility ? SKColors.Black : SKColors.Transparent;
-                var imageViewport = new SKRect(x, y, x + w, y + h);
                 var source = new SKRect(0f, 0f, bitmap.Width, bitmap.Height);
                 var destination = ResolveImageDestination(
                     imageViewport, bitmap.Width, bitmap.Height,
                     el.GetAttribute("preserveAspectRatio"));
+                if (destination.IsEmpty) return;
                 canvas.ClipRect(imageViewport);
                 canvas.DrawBitmap(bitmap, source, destination, SKSamplingOptions.Default, paint);
             }
@@ -1537,7 +2033,14 @@ namespace FenBrowser.FenEngine.Svg
             string preserveAspectRatio)
         {
             ParsePreserveAspectRatio(preserveAspectRatio, out var align, out var meet);
-            if (align == ParAlign.None || sourceWidth <= 0f || sourceHeight <= 0f)
+            if (!SvgValues.IsFinite(viewport.Left) || !SvgValues.IsFinite(viewport.Top) ||
+                !SvgValues.IsFinite(viewport.Right) || !SvgValues.IsFinite(viewport.Bottom) ||
+                !SvgValues.IsFinite(sourceWidth) || !SvgValues.IsFinite(sourceHeight) ||
+                sourceWidth <= 0f || sourceHeight <= 0f || viewport.Width <= 0f || viewport.Height <= 0f)
+            {
+                return SKRect.Empty;
+            }
+            if (align == ParAlign.None)
             {
                 return viewport;
             }
@@ -1549,6 +2052,10 @@ namespace FenBrowser.FenEngine.Svg
                 : System.Math.Min(scaleX, scaleY);
             float width = sourceWidth * scale;
             float height = sourceHeight * scale;
+            if (!SvgValues.IsFinite(scaleX) || !SvgValues.IsFinite(scaleY) ||
+                !SvgValues.IsFinite(scale) || !SvgValues.IsFinite(width) ||
+                !SvgValues.IsFinite(height) || width <= 0f || height <= 0f)
+                return SKRect.Empty;
             float x = viewport.Left;
             float y = viewport.Top;
 
@@ -1557,6 +2064,9 @@ namespace FenBrowser.FenEngine.Svg
             if ((align & ParAlign.YMid) != 0) y += (viewport.Height - height) / 2f;
             else if ((align & ParAlign.YMax) != 0) y += viewport.Height - height;
 
+            if (!SvgValues.IsFinite(x) || !SvgValues.IsFinite(y) ||
+                !SvgValues.IsFinite(x + width) || !SvgValues.IsFinite(y + height))
+                return SKRect.Empty;
             return new SKRect(x, y, x + width, y + height);
         }
 

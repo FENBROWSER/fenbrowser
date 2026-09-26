@@ -3,6 +3,29 @@ using FenBrowser.FenEngine.Adapters;
 
 namespace FenBrowser.FenEngine.Svg
 {
+    internal static class SvgDiagnosticText
+    {
+        public const int MaxFatalChars = 256;
+        public const int MaxIdentifierChars = 64;
+
+        public static string Bounded(string value, int maxChars)
+        {
+            if (string.IsNullOrEmpty(value) || maxChars <= 0 || value.Length <= maxChars)
+            {
+                return value;
+            }
+
+            int cut = maxChars;
+            if (char.IsHighSurrogate(value[cut - 1]))
+            {
+                cut--;
+            }
+            return value.Substring(0, cut);
+        }
+
+        public static string Identifier(string value) => Bounded(value, MaxIdentifierChars);
+    }
+
     /// <summary>
     /// Hand-written, sandboxed parser for the XML subset required by standalone SVG.
     ///
@@ -29,11 +52,12 @@ namespace FenBrowser.FenEngine.Svg
         internal const int MaxAttributeValueChars = 256 * 1024;
         internal const int MaxTextContentChars = 256 * 1024;
         internal const int MaxIdChars = 512;
+        private const string SvgNamespace = "http://www.w3.org/2000/svg";
 
         // Subtrees consumed raw rather than interpreted as SVG markup. Style text
         // is retained under the same hard text cap for the shared CSS parser;
         // script/title/desc/metadata content remains discarded.
-        private static readonly HashSet<string> IgnoredSubtrees = new HashSet<string>
+        private static readonly HashSet<string> IgnoredSubtrees = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase)
         {
             "style", "script", "h:script", "html:script", "title", "desc", "metadata"
         };
@@ -104,6 +128,8 @@ namespace FenBrowser.FenEngine.Svg
                 if (candidate != null)
                 {
                     root = candidate;
+                    if (state.PendingNamespaceFrame != null)
+                        state.NamespaceStack.Add(state.PendingNamespaceFrame);
                     break;
                 }
                 // Invalid start-tag attempt: cursor advanced; keep scanning.
@@ -114,9 +140,13 @@ namespace FenBrowser.FenEngine.Svg
                 fatalReason = "SVG has no root element";
                 return false;
             }
-            if (!string.Equals(root.Name, "svg", System.StringComparison.Ordinal))
+            if (!string.Equals(root.Name, "svg", System.StringComparison.Ordinal) ||
+                (!string.IsNullOrEmpty(root.NamespaceUri) &&
+                 !string.Equals(root.NamespaceUri, SvgNamespace, System.StringComparison.Ordinal)))
             {
-                fatalReason = $"SVG root element must be 'svg', got '{root.Name}'";
+                fatalReason = SvgDiagnosticText.Bounded(
+                    $"SVG root element must be 'svg', got '{SvgDiagnosticText.Identifier(root.Name)}'",
+                    SvgDiagnosticText.MaxFatalChars);
                 return false;
             }
 
@@ -209,6 +239,8 @@ namespace FenBrowser.FenEngine.Svg
 
                 AddChild(openStack[openStack.Count - 1], child);
                 openStack.Add(child);
+                if (state.PendingNamespaceFrame != null)
+                    state.NamespaceStack.Add(state.PendingNamespaceFrame);
             }
 
             SvgFeatureSupport.InspectHierarchy(root, state.Report);
@@ -218,12 +250,34 @@ namespace FenBrowser.FenEngine.Svg
 
         // ---------------------------------------------------------------- state
 
+        private sealed class NamespaceFrame
+        {
+            public readonly Dictionary<string, string> Bindings;
+            public readonly bool IsSvgNamespace;
+            public readonly string ResolvedName;
+            public readonly string NamespaceUri;
+
+            public NamespaceFrame(
+                Dictionary<string, string> bindings,
+                bool isSvgNamespace,
+                string resolvedName,
+                string namespaceUri)
+            {
+                Bindings = bindings;
+                IsSvgNamespace = isSvgNamespace;
+                ResolvedName = resolvedName;
+                NamespaceUri = namespaceUri;
+            }
+        }
+
         private sealed class ParseState
         {
             public readonly string Source;
             public int Pos;
             public readonly SvgParseReport Report;
             public int FilterCount;
+            public readonly List<NamespaceFrame> NamespaceStack = new List<NamespaceFrame>();
+            public NamespaceFrame PendingNamespaceFrame;
 
             public ParseState(string source, SvgParseReport report)
             {
@@ -285,6 +339,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private static SvgElement TryReadStartTag(ParseState state, bool allowEmptyName)
         {
+            state.PendingNamespaceFrame = null;
             // Caller guarantees the cursor sits AFTER an already-consumed '<'
             // (both prolog and body paths consume it before calling).
             SkipWhitespace(state);
@@ -357,8 +412,76 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             element.Attributes = attributes.ToArray();
+            state.PendingNamespaceFrame = BuildNamespaceFrame(state, name, attributes);
+            element.Name = state.PendingNamespaceFrame.ResolvedName;
+            element.NamespaceUri = state.PendingNamespaceFrame.NamespaceUri;
             return element;
         }
+
+        private static NamespaceFrame BuildNamespaceFrame(
+            ParseState state,
+            string rawName,
+            List<KeyValuePair<string, string>> attributes)
+        {
+            var current = state.NamespaceStack.Count == 0
+                ? null
+                : state.NamespaceStack[state.NamespaceStack.Count - 1];
+            var bindings = current == null
+                ? new Dictionary<string, string>(System.StringComparer.Ordinal)
+                : new Dictionary<string, string>(current.Bindings, System.StringComparer.Ordinal);
+            foreach (var attribute in attributes)
+            {
+                if (string.Equals(attribute.Key, "xmlns", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    bindings[string.Empty] = (attribute.Value ?? string.Empty).Trim();
+                }
+                else if (attribute.Key.StartsWith("xmlns:", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    string prefix = attribute.Key.Substring(6).Trim();
+                    if (prefix.Length != 0)
+                        bindings[prefix] = (attribute.Value ?? string.Empty).Trim();
+                }
+            }
+
+            string namespaceUri = null;
+            bool isSvg = false;
+            string localName = rawName;
+            int colon = rawName.IndexOf(':');
+            if (colon > 0 && colon < rawName.Length - 1)
+            {
+                string prefix = rawName.Substring(0, colon);
+                localName = rawName.Substring(colon + 1);
+                if (bindings.TryGetValue(prefix, out string boundNamespace))
+                {
+                    namespaceUri = boundNamespace;
+                    isSvg = string.Equals(boundNamespace, SvgNamespace, System.StringComparison.Ordinal);
+                }
+            }
+            else if (bindings.TryGetValue(string.Empty, out string defaultNamespace))
+            {
+                namespaceUri = defaultNamespace;
+                isSvg = string.Equals(defaultNamespace, SvgNamespace, System.StringComparison.Ordinal);
+            }
+            else if (current != null && current.IsSvgNamespace)
+            {
+                namespaceUri = SvgNamespace;
+                isSvg = true;
+            }
+            else if (rawName.Equals("svg", System.StringComparison.Ordinal))
+            {
+                isSvg = true;
+            }
+
+            string resolvedName = isSvg
+                ? localName
+                : namespaceUri == null || namespaceUri.Length == 0 || colon >= 0
+                    ? rawName
+                    : "{" + namespaceUri + "}" + rawName;
+            return new NamespaceFrame(bindings, isSvg, resolvedName, namespaceUri);
+        }
+
+        private static string ResolveCloseName(ParseState state, string rawName) =>
+            BuildNamespaceFrame(state, rawName, new List<KeyValuePair<string, string>>()).ResolvedName;
 
         private static void ReadAttribute(
             ParseState state,
@@ -435,7 +558,8 @@ namespace FenBrowser.FenEngine.Svg
             else
             {
                 state.Report.SawDuplicateAttribute = true;
-                state.Report.Warn($"duplicate attribute '{attrName}' ignored (first wins)");
+                state.Report.Warn(
+                    $"duplicate attribute '{SvgDiagnosticText.Identifier(attrName)}' ignored (first wins)");
             }
         }
 
@@ -550,11 +674,16 @@ namespace FenBrowser.FenEngine.Svg
                 return; // "</>" - ignore.
             }
 
+            string resolvedName = ResolveCloseName(state, name);
             for (int i = openStack.Count - 1; i >= 0; i--)
             {
-                if (string.Equals(openStack[i].Name, name, System.StringComparison.Ordinal))
+                if (string.Equals(openStack[i].Name, resolvedName, System.StringComparison.Ordinal) ||
+                    string.Equals(openStack[i].Name, name, System.StringComparison.Ordinal))
                 {
-                    openStack.RemoveRange(i, openStack.Count - i);
+                    int removeCount = openStack.Count - i;
+                    openStack.RemoveRange(i, removeCount);
+                    if (state.NamespaceStack.Count >= removeCount)
+                        state.NamespaceStack.RemoveRange(state.NamespaceStack.Count - removeCount, removeCount);
                     return;
                 }
             }
@@ -574,6 +703,17 @@ namespace FenBrowser.FenEngine.Svg
             {
                 parent.Content.Add(new SvgContentPart(child));
             }
+        }
+
+        private static bool SameIgnoredName(string first, string second)
+        {
+            if (string.Equals(first, second, System.StringComparison.OrdinalIgnoreCase)) return true;
+            int firstColon = first?.IndexOf(':') ?? -1;
+            int secondColon = second?.IndexOf(':') ?? -1;
+            if (firstColon < 0 || secondColon < 0) return false;
+            return string.Equals(
+                first.Substring(firstColon + 1), second.Substring(secondColon + 1),
+                System.StringComparison.OrdinalIgnoreCase);
         }
 
         private static void SkipIgnoredSubtree(ParseState state, SvgElement element)
@@ -606,12 +746,12 @@ namespace FenBrowser.FenEngine.Svg
                     string closed = state.Source.Substring(nameStart, state.Pos - nameStart);
                     SkipWhitespace(state);
                     state.Match('>');
-                    if (string.Equals(closed, name, System.StringComparison.Ordinal))
+                    if (SameIgnoredName(closed, name))
                     {
                         depth--;
                         if (depth == 0)
                         {
-                            if (string.Equals(name, "style", System.StringComparison.Ordinal))
+                            if (string.Equals(name, "style", System.StringComparison.OrdinalIgnoreCase))
                             {
                                 int length = markupStart - contentStart;
                                 if (length > MaxTextContentChars)
@@ -639,7 +779,7 @@ namespace FenBrowser.FenEngine.Svg
                     }
                     string opened = state.Source.Substring(nameStart, state.Pos - nameStart);
                     bool selfClosing = ScanPastTagEnd(state);
-                    if (!selfClosing && string.Equals(opened, name, System.StringComparison.Ordinal))
+                    if (!selfClosing && SameIgnoredName(opened, name))
                     {
                         depth++;
                     }
@@ -1075,7 +1215,8 @@ namespace FenBrowser.FenEngine.Svg
             if (doc.ElementsById.TryGetValue(id, out _))
             {
                 doc.Report.SawDuplicateId = true;
-                doc.Report.Warn($"duplicate id '{id}' ignored (first wins)");
+                doc.Report.Warn(
+                    $"duplicate id '{SvgDiagnosticText.Identifier(id)}' ignored (first wins)");
                 return;
             }
 

@@ -69,6 +69,10 @@ namespace FenBrowser.FenEngine.Svg
         {
             public PaintSpec Fill = PaintSpec.Black;      // spec default: black
             public PaintSpec Stroke = PaintSpec.None;     // spec default: none
+            public float FillOpacity = 1f;
+            public float StrokeOpacity = 1f;
+            public float InheritedFillOpacity = 1f;
+            public float InheritedStrokeOpacity = 1f;
             public float StrokeWidth = 1f;
             public SKStrokeCap Cap = SKStrokeCap.Butt;
             public SKStrokeJoin Join = SKStrokeJoin.Miter;
@@ -108,6 +112,9 @@ namespace FenBrowser.FenEngine.Svg
                     currentColor = cc;
                 }
 
+                bool hasOwnFillOpacity = TryParseOpacity(Attr("fill-opacity"), out float ownFillOpacity);
+                bool hasOwnStrokeOpacity = TryParseOpacity(Attr("stroke-opacity"), out float ownStrokeOpacity);
+
                 var s = new InheritedStyle
                 {
                     CurrentColor = currentColor,
@@ -115,6 +122,10 @@ namespace FenBrowser.FenEngine.Svg
                     ContextStroke = ContextStroke,
                     Fill = ParsePaintSpec(Attr("fill"), this, report) ?? Fill,
                     Stroke = ParsePaintSpec(Attr("stroke"), this, report) ?? Stroke,
+                    FillOpacity = hasOwnFillOpacity ? ownFillOpacity : FillOpacity,
+                    StrokeOpacity = hasOwnStrokeOpacity ? ownStrokeOpacity : StrokeOpacity,
+                    InheritedFillOpacity = hasOwnFillOpacity ? 1f : FillOpacity,
+                    InheritedStrokeOpacity = hasOwnStrokeOpacity ? 1f : StrokeOpacity,
                     StrokeWidth = StrokeWidth,
                     Cap = Cap,
                     Join = Join,
@@ -122,7 +133,7 @@ namespace FenBrowser.FenEngine.Svg
                     Dash = Dash,
                     DashOffset = DashOffset,
                     Visibility = Visibility,
-                    FontSize = ResolveFontSize(Attr("font-size"), FontSize),
+                    FontSize = ResolveFontSize(Attr("font-size"), FontSize, report),
                     RootFontSize = RootFontSize,
                     PaintOrder = ResolvePaintOrder(Attr("paint-order"), PaintOrder)
                 };
@@ -132,6 +143,10 @@ namespace FenBrowser.FenEngine.Svg
                 bool changed = !s.CurrentColor.Equals(CurrentColor) ||
                                !s.Fill.Equals(Fill) ||
                                !s.Stroke.Equals(Stroke) ||
+                               s.FillOpacity != FillOpacity ||
+                               s.StrokeOpacity != StrokeOpacity ||
+                               s.InheritedFillOpacity != InheritedFillOpacity ||
+                               s.InheritedStrokeOpacity != InheritedStrokeOpacity ||
                                s.FontSize != FontSize ||
                                s.RootFontSize != RootFontSize ||
                                !s.PaintOrder.Equals(PaintOrder);
@@ -353,6 +368,59 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 return paint;
             }
+        }
+
+        private static bool TryParseOpacity(string raw, out float opacity)
+        {
+            opacity = 1f;
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            ReadOnlySpan<char> value = raw.AsSpan().Trim();
+            if (value.Equals("inherit", System.StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("revert", System.StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("unset", System.StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            if (value.Equals("initial", System.StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (!SvgValues.TryParseLength(value, out float parsed, out var unit) ||
+                (unit != SvgValues.SvgUnit.User && unit != SvgValues.SvgUnit.Percent))
+            {
+                return false;
+            }
+            float resolved = unit == SvgValues.SvgUnit.Percent ? parsed * 0.01f : parsed;
+            if (!SvgValues.IsFinite(resolved))
+            {
+                return false;
+            }
+            opacity = System.Math.Clamp(resolved, 0f, 1f);
+            return true;
+        }
+
+        private static SKPaint ApplyInheritedFillOpacity(SKPaint paint, InheritedStyle style) =>
+            ScalePaintAlpha(paint, style.InheritedFillOpacity);
+
+        private static SKPaint ApplyInheritedStrokeOpacity(SKPaint paint, InheritedStyle style) =>
+            ScalePaintAlpha(paint, style.InheritedStrokeOpacity);
+
+        private static SKPaint ScalePaintAlpha(SKPaint paint, float inheritedOpacity)
+        {
+            if (paint == null) return null;
+            if (!(inheritedOpacity < 1f)) return paint;
+            if (inheritedOpacity > 0f)
+            {
+                SKColor color = paint.Color;
+                byte scaled = (byte)System.MathF.Round(color.Alpha * inheritedOpacity);
+                if (scaled > 0)
+                {
+                    paint.Color = color.WithAlpha(scaled);
+                    return paint;
+                }
+            }
+            paint.Dispose();
+            return null;
         }
 
         /// <summary>Scoped canvas Save/Restore (unwinds during exceptions).</summary>

@@ -5,17 +5,24 @@ using FenBrowser.FenEngine.Svg;
 namespace FenBrowser.FenEngine.Adapters
 {
     /// <summary>
-    /// First-party SVG renderer. Drop-in replacement for <see cref="SvgSkiaRenderer"/>
-    /// behind the same <see cref="ISvgRenderer"/> seam (RULE 5).
+    /// First-party SVG renderer: the only SVG backend in the product, behind the
+    /// same <see cref="ISvgRenderer"/> seam (RULE 5).
     ///
-    /// Contract parity with SvgSkiaRenderer:
+    /// Renderer contract:
     /// - Never throws; failures return Success=false + ErrorMessage.
     /// - Identical budget semantics and (byte-compatible) limit error messages:
     ///   source chars, element count, filter count, nesting depth, elapsed ms,
     ///   raster width/height/pixel caps before any bitmap allocation.
     /// - Bitmap is fully valid after return; ownership transfers to the caller.
     ///
-    /// Improvements over the legacy adapter:
+    /// Complete-renderer contract: a Success=true result is authoritative and
+    /// complete. When the engine reports RequiresFallback, a resource rejection,
+    /// or an unresolved resource, the result is failed closed - Success=false
+    /// with no Bitmap and no Picture - so this backend can never hand out
+    /// partial pixels. Routing signals are preserved so callers can explain the
+    /// rejection through SvgRenderResult.DescribeRejection.
+    ///
+    /// Structural guarantees:
     /// - Native picture state is kept internal; only an independently owned
     ///   bitmap crosses the adapter boundary.
     /// - No regex passes over untrusted source; parsing is a single O(n) scan.
@@ -25,6 +32,9 @@ namespace FenBrowser.FenEngine.Adapters
     /// </summary>
     public class FenSvgRenderer : ISvgRenderer
     {
+        internal const int MaxResultDiagnosticChars = 256;
+        internal const int MaxResultDiagnosticEntries = 32;
+
         public SvgRenderResult Render(string svgContent)
         {
             return Render(svgContent, SvgRenderLimits.Default);
@@ -36,6 +46,98 @@ namespace FenBrowser.FenEngine.Adapters
         }
 
         public SvgRenderResult Render(SvgRenderRequest request)
+        {
+            SvgRenderResult result = RenderCore(request);
+            EnforceCompleteRender(result);
+            BoundResultDiagnostics(result);
+            return result;
+        }
+
+        private static void EnforceCompleteRender(SvgRenderResult result)
+        {
+            if (result == null || SvgRenderResult.IsAdmissible(result))
+            {
+                return;
+            }
+
+            string reason = SvgRenderResult.DescribeRejection(result);
+            result.Dispose();
+            result.Success = false;
+            result.Width = 0f;
+            result.Height = 0f;
+            result.ErrorMessage = string.IsNullOrWhiteSpace(reason)
+                ? "SVG render is incomplete and was rejected"
+                : reason;
+        }
+
+        private static bool HasReasonCodes(IReadOnlyList<string> codes) =>
+            codes != null && codes.Count > 0;
+
+        private static SvgRenderResult RejectIncompleteRender(
+            bool requiresFallback,
+            bool resourceRejected,
+            IReadOnlyList<string> warnings,
+            IReadOnlyList<string> fallbackReasonCodes,
+            IReadOnlyList<string> resourceRejectionReasonCodes)
+        {
+            if (!requiresFallback && !resourceRejected &&
+                !HasReasonCodes(fallbackReasonCodes) &&
+                !HasReasonCodes(resourceRejectionReasonCodes))
+            {
+                return null;
+            }
+
+            var rejected = new SvgRenderResult
+            {
+                Success = false,
+                Warnings = warnings,
+                FallbackReasonCodes = fallbackReasonCodes,
+                ResourceRejectionReasonCodes = resourceRejectionReasonCodes,
+                Backend = SvgRendererBackend.FirstParty,
+                RequiresFallback = requiresFallback,
+                HadResourceRejection = resourceRejected
+            };
+            string reason = SvgRenderResult.DescribeRejection(rejected);
+            rejected.ErrorMessage = string.IsNullOrWhiteSpace(reason)
+                ? "SVG render is incomplete and was rejected"
+                : reason;
+            return rejected;
+        }
+
+        private static void BoundResultDiagnostics(SvgRenderResult result)
+        {
+            if (result == null)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(result.ErrorMessage))
+            {
+                result.ErrorMessage = SvgDiagnosticText.Bounded(result.ErrorMessage, MaxResultDiagnosticChars);
+            }
+
+            result.Warnings = BoundResultDiagnosticList(result.Warnings);
+            result.FallbackReasonCodes = BoundResultDiagnosticList(result.FallbackReasonCodes);
+            result.ResourceRejectionReasonCodes = BoundResultDiagnosticList(result.ResourceRejectionReasonCodes);
+        }
+
+        private static IReadOnlyList<string> BoundResultDiagnosticList(IReadOnlyList<string> values)
+        {
+            if (values == null || values.Count == 0)
+            {
+                return System.Array.Empty<string>();
+            }
+
+            int count = System.Math.Min(values.Count, MaxResultDiagnosticEntries);
+            var bounded = new string[count];
+            for (int i = 0; i < count; i++)
+            {
+                bounded[i] = SvgDiagnosticText.Bounded(values[i], MaxResultDiagnosticChars);
+            }
+            return bounded;
+        }
+
+        private SvgRenderResult RenderCore(SvgRenderRequest request)
         {
             if (request == null)
                 return new SvgRenderResult { Success = false, ErrorMessage = "SVG render request is null", Backend = SvgRendererBackend.FirstParty };
@@ -75,6 +177,8 @@ namespace FenBrowser.FenEngine.Adapters
             }
 
             var stopwatch = Stopwatch.StartNew();
+            SKPicture picture = null;
+            SKBitmap bitmap = null;
 
             try
             {
@@ -84,7 +188,7 @@ namespace FenBrowser.FenEngine.Adapters
                         request.BaseUri,
                         request.ResourceResolver,
                         request.DocumentTimeSeconds,
-                        out var picture,
+                        out picture,
                         out float naturalWidth,
                         out float naturalHeight,
                         out string error, out var warnings,
@@ -104,10 +208,14 @@ namespace FenBrowser.FenEngine.Adapters
                     };
                 }
 
-                // The picture is strictly an intermediate. A using boundary makes
-                // every failure path deterministic, including unexpected native
-                // allocation and logging failures.
-                using (picture)
+                SvgRenderResult incomplete = RejectIncompleteRender(
+                    requiresFallback, resourceRejected, warnings,
+                    fallbackReasonCodes, resourceRejectionReasonCodes);
+                if (incomplete != null)
+                {
+                    return incomplete;
+                }
+
                 {
                     var cullRect = picture.CullRect;
                     if (!float.IsFinite(cullRect.Width) || !float.IsFinite(cullRect.Height) ||
@@ -149,7 +257,7 @@ namespace FenBrowser.FenEngine.Adapters
                     int bitmapWidth = checked((int)rasterWidth);
                     int bitmapHeight = checked((int)rasterHeight);
 
-                    var bitmap = new SKBitmap();
+                    bitmap = new SKBitmap();
                     var bitmapInfo = new SKImageInfo(
                         bitmapWidth,
                         bitmapHeight,
@@ -157,7 +265,6 @@ namespace FenBrowser.FenEngine.Adapters
                         SKAlphaType.Premul);
                     if (!bitmap.TryAllocPixels(bitmapInfo))
                     {
-                        bitmap.Dispose();
                         return new SvgRenderResult
                         {
                             Success = false,
@@ -171,20 +278,16 @@ namespace FenBrowser.FenEngine.Adapters
                         };
                     }
 
-                    // S4/F4: if rasterization throws, the bitmap must not leak.
                     try
                     {
                         using (var canvas = new SKCanvas(bitmap))
                         {
                             canvas.Clear(SKColors.Transparent);
-                            // The picture is recorded with its viewport origin at
-                            // (0,0), so no cull-rect translation is required.
                             canvas.DrawPicture(picture);
                         }
                     }
                     catch (System.Exception drawEx)
                     {
-                        bitmap.Dispose();
                         return new SvgRenderResult
                         {
                             Success = false,
@@ -203,7 +306,7 @@ namespace FenBrowser.FenEngine.Adapters
                         $"{stopwatch.ElapsedMilliseconds}ms warnings={warnings.Count}",
                         FenBrowser.Core.Logging.LogCategory.Rendering);
 
-                    return new SvgRenderResult
+                    var result = new SvgRenderResult
                     {
                         Picture = null,
                         Bitmap = bitmap,
@@ -217,6 +320,8 @@ namespace FenBrowser.FenEngine.Adapters
                         RequiresFallback = requiresFallback,
                         HadResourceRejection = resourceRejected
                     };
+                    bitmap = null;
+                    return result;
                 }
             }
             catch (System.Exception ex)
@@ -227,6 +332,24 @@ namespace FenBrowser.FenEngine.Adapters
                     ErrorMessage = $"SVG render error: {ex.Message}",
                     Backend = SvgRendererBackend.FirstParty
                 };
+            }
+            finally
+            {
+                try
+                {
+                    bitmap?.Dispose();
+                }
+                catch (System.Exception)
+                {
+                }
+
+                try
+                {
+                    picture?.Dispose();
+                }
+                catch (System.Exception)
+                {
+                }
             }
         }
 

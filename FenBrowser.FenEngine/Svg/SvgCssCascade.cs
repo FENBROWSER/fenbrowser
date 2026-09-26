@@ -354,6 +354,8 @@ namespace FenBrowser.FenEngine.Svg
                 report.RejectResource("SVG CSS external resource reference rejected");
                 return;
             }
+            if (!isCustomProperty && IsDefinitelyInvalid(property, value))
+                return;
 
             if (isCustomProperty)
             {
@@ -369,6 +371,268 @@ namespace FenBrowser.FenEngine.Svg
             {
                 winners[property] = new Winner(value, key);
             }
+        }
+
+        internal static bool IsDefinitelyInvalid(string property, string value)
+        {
+            if (string.IsNullOrWhiteSpace(property) || string.IsNullOrWhiteSpace(value))
+                return true;
+
+            string v = value.Trim();
+            if (v.Length == 0) return true;
+            if (v.Equals("inherit", StringComparison.OrdinalIgnoreCase) ||
+                v.Equals("initial", StringComparison.OrdinalIgnoreCase) ||
+                v.Equals("unset", StringComparison.OrdinalIgnoreCase) ||
+                v.Equals("revert", StringComparison.OrdinalIgnoreCase) ||
+                v.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
+                return false;
+
+            switch (property.ToLowerInvariant())
+            {
+                case "color":
+                    return !v.Equals("currentColor", StringComparison.OrdinalIgnoreCase) &&
+                        !SvgValues.TryParseColor(v.AsSpan(), out _);
+                case "fill":
+                case "stroke":
+                    return !IsValidPaintValue(v);
+                case "opacity":
+                case "fill-opacity":
+                case "stroke-opacity":
+                case "flood-opacity":
+                case "stop-opacity":
+                    return !TryEvaluateNumericValue(v);
+                case "stroke-width":
+                    return !TryEvaluateLengthValue(v) && !TryEvaluateMathValue(v);
+                case "stroke-miterlimit":
+                    return !TryEvaluateNumericValue(v) && !TryEvaluateMathValue(v);
+                case "stroke-dasharray":
+                    return !IsValidDashValue(v);
+                case "stroke-linecap":
+                    return !v.Equals("butt", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("round", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("square", StringComparison.OrdinalIgnoreCase);
+                case "stroke-linejoin":
+                    return !v.Equals("miter", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("round", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("bevel", StringComparison.OrdinalIgnoreCase);
+                case "clip-rule":
+                case "fill-rule":
+                    return !v.Equals("nonzero", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("evenodd", StringComparison.OrdinalIgnoreCase);
+                case "visibility":
+                    return !v.Equals("visible", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("hidden", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("collapse", StringComparison.OrdinalIgnoreCase);
+                case "clip-path":
+                case "mask":
+                case "filter":
+                case "marker":
+                case "marker-start":
+                case "marker-mid":
+                case "marker-end":
+                    return v.StartsWith("url(", StringComparison.OrdinalIgnoreCase) &&
+                        !IsReferenceOrNoneValue(v);
+                case "x":
+                case "y":
+                case "width":
+                case "height":
+                case "cx":
+                case "cy":
+                case "r":
+                case "rx":
+                case "ry":
+                case "x1":
+                case "x2":
+                case "y1":
+                case "y2":
+                    return IsInvalidGeometryValue(property, v);
+                case "transform":
+                    return IsInvalidTransformValue(v);
+                case "d":
+                    return v.Equals("none", StringComparison.OrdinalIgnoreCase)
+                        ? false
+                        : v.StartsWith("path(", StringComparison.OrdinalIgnoreCase) &&
+                          !HasBalancedParentheses(v);
+                case "font-size":
+                    return !TryEvaluateLengthValue(v) && !TryEvaluateMathValue(v) &&
+                        !IsFontSizeKeyword(v);
+                case "font-weight":
+                    return !TryEvaluateNumericValue(v) && !TryEvaluateMathValue(v) &&
+                        !IsFontWeightKeyword(v);
+                case "font-style":
+                    return !v.Equals("normal", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("italic", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("oblique", StringComparison.OrdinalIgnoreCase);
+                case "text-anchor":
+                    return !v.Equals("start", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("middle", StringComparison.OrdinalIgnoreCase) &&
+                        !v.Equals("end", StringComparison.OrdinalIgnoreCase);
+                case "paint-order":
+                    return !IsValidPaintOrder(v);
+                case "stroke-dashoffset":
+                    return !TryEvaluateLengthValue(v) && !TryEvaluateMathValue(v);
+                case "letter-spacing":
+                    return !v.Equals("normal", StringComparison.OrdinalIgnoreCase) &&
+                        !TryEvaluateLengthValue(v) && !TryEvaluateMathValue(v);
+                default:
+                    return false;
+            }
+        }
+
+        private static bool IsValidPaintValue(string value)
+        {
+            if (value.Equals("context-fill", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("context-stroke", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (!SvgValues.TryParsePaint(
+                    value.AsSpan(), out var kind, out _, out _, out string fallback))
+                return false;
+            if (kind != SvgValues.PaintKind.ServerRef || string.IsNullOrWhiteSpace(fallback))
+                return true;
+            return fallback.Equals("none", StringComparison.OrdinalIgnoreCase) ||
+                fallback.Equals("currentColor", StringComparison.OrdinalIgnoreCase) ||
+                SvgValues.TryParseColor(fallback.AsSpan(), out _);
+        }
+
+        private static bool TryEvaluateNumericValue(string value)
+        {
+            return SvgValues.TryParseNumber(value.AsSpan(), out float number) &&
+                SvgValues.IsFinite(number);
+        }
+
+        private static bool TryEvaluateLengthValue(string value)
+        {
+            return SvgValues.TryParseLength(value.AsSpan(), out float length, out _) &&
+                SvgValues.IsFinite(length);
+        }
+
+        private static bool TryEvaluateMathValue(string value) =>
+            SvgCssLengthEvaluator.TryEvaluate(value, 1f, 16f, 16f, 1f, 1f, out _);
+
+        private static bool IsFontSizeKeyword(string value) =>
+            value.Equals("xx-small", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("x-small", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("small", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("medium", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("large", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("x-large", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("xx-large", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("smaller", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("larger", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsFontWeightKeyword(string value) =>
+            value.Equals("normal", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("bold", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("bolder", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("lighter", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsReferenceOrNoneValue(string value)
+        {
+            if (value.Equals("none", StringComparison.OrdinalIgnoreCase)) return true;
+            if (!value.StartsWith("url(", StringComparison.OrdinalIgnoreCase)) return false;
+            int close = value.LastIndexOf(')');
+            return close > 4;
+        }
+
+        private static bool IsValidPaintOrder(string value)
+        {
+            if (value.Equals("normal", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("initial", StringComparison.OrdinalIgnoreCase))
+                return true;
+            var tokenizer = SvgValues.CreateTokenizer(value.AsSpan());
+            bool fill = false;
+            bool stroke = false;
+            bool markers = false;
+            while (tokenizer.Next(out var token))
+            {
+                if (token.Equals("fill".AsSpan(), StringComparison.OrdinalIgnoreCase))
+                {
+                    if (fill) return false;
+                    fill = true;
+                }
+                else if (token.Equals("stroke".AsSpan(), StringComparison.OrdinalIgnoreCase))
+                {
+                    if (stroke) return false;
+                    stroke = true;
+                }
+                else if (token.Equals("markers".AsSpan(), StringComparison.OrdinalIgnoreCase))
+                {
+                    if (markers) return false;
+                    markers = true;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+            return fill || stroke || markers;
+        }
+
+        private static bool IsValidDashValue(string value)
+        {
+            if (value.Equals("none", StringComparison.OrdinalIgnoreCase)) return true;
+            var tokenizer = SvgValues.CreateTokenizer(value.AsSpan());
+            bool any = false;
+            while (tokenizer.Next(out var token))
+            {
+                if (!SvgValues.TryParseLength(token, out float dash, out _) ||
+                    dash < 0f || !SvgValues.IsFinite(dash))
+                    return false;
+                any = true;
+            }
+            return any;
+        }
+
+        private static bool IsInvalidGeometryValue(string property, string value)
+        {
+            if (SvgCssLengthEvaluator.IsNestedSvgSizingKeyword(value) ||
+                value.StartsWith("calc-size(", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (value.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (SvgValues.TryParseLength(value.AsSpan(), out float length, out var unit))
+            {
+                if (!SvgValues.IsFinite(length)) return true;
+                if (unit == SvgValues.SvgUnit.User && length != 0f) return true;
+                return false;
+            }
+            if (SvgCssLengthEvaluator.RequiresUnsupportedUnitSupport(value)) return false;
+            if (SvgCssLengthEvaluator.TryEvaluate(value, 1f, 16f, 16f, 1f, 1f, out _))
+                return false;
+            return true;
+        }
+
+        private static bool IsInvalidTransformValue(string value)
+        {
+            if (value.Equals("none", StringComparison.OrdinalIgnoreCase)) return false;
+            bool function = false;
+            int depth = 0;
+            foreach (char c in value)
+            {
+                if (c == '(')
+                {
+                    function = true;
+                    depth++;
+                    if (depth > 16) return true;
+                }
+                else if (c == ')')
+                {
+                    if (depth == 0) return true;
+                    depth--;
+                }
+            }
+            return !function || depth != 0;
+        }
+
+        private static bool HasBalancedParentheses(string value)
+        {
+            int depth = 0;
+            foreach (char c in value)
+            {
+                if (c == '(') depth++;
+                else if (c == ')' && --depth < 0) return false;
+            }
+            return depth == 0;
         }
 
         private static Specificity? GetMatchingSpecificity(
