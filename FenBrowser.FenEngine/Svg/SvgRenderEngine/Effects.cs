@@ -8,8 +8,10 @@ namespace FenBrowser.FenEngine.Svg
     {
         private const int MaxFilterPrimitives = 32;
         private const int MaxTileRepeats = 64;
+        private const int MaxFilterTargetStyles = 128;
         private HashSet<string> _activeFilterIds;
         private HashSet<string> _activeMaskIds;
+        private Dictionary<SvgElement, InheritedStyle> _filterTargetStyles;
 
         private sealed class ResolvedFilter
         {
@@ -642,22 +644,28 @@ namespace FenBrowser.FenEngine.Svg
                 else if (primitive.Name == "feBlend")
                 {
                     if (!TryResolveFilterInput(
-                            primitive.GetAttribute("in"), current, results, owned,
-                            primitive.Name, out var input) ||
+                            filterTemplate, primitive, primitive.GetAttribute("in"),
+                            target, viewport, filterRegion, current, results, owned,
+                            out var input) ||
                         !TryResolveFilterInput(
+                            filterTemplate, primitive,
                             primitive.GetAttribute("in2") ?? "SourceGraphic",
-                            current, results, owned, primitive.Name, out var input2))
+                            target, viewport, filterRegion, current, results, owned,
+                            out var input2))
                         return false;
                     next = BuildBlend(primitive, input, input2);
                 }
                 else if (primitive.Name == "feComposite")
                 {
                     if (!TryResolveFilterInput(
-                            primitive.GetAttribute("in"), current, results, owned,
-                            primitive.Name, out var input) ||
+                            filterTemplate, primitive, primitive.GetAttribute("in"),
+                            target, viewport, filterRegion, current, results, owned,
+                            out var input) ||
                         !TryResolveFilterInput(
+                            filterTemplate, primitive,
                             primitive.GetAttribute("in2") ?? "SourceGraphic",
-                            current, results, owned, primitive.Name, out var input2))
+                            target, viewport, filterRegion, current, results, owned,
+                            out var input2))
                         return false;
                     next = BuildComposite(
                         filterTemplate, primitive, target, viewport, filterRegion,
@@ -666,11 +674,14 @@ namespace FenBrowser.FenEngine.Svg
                 else if (primitive.Name == "feDisplacementMap")
                 {
                     if (!TryResolveFilterInput(
-                            primitive.GetAttribute("in"), current, results, owned,
-                            primitive.Name, out var input) ||
+                            filterTemplate, primitive, primitive.GetAttribute("in"),
+                            target, viewport, filterRegion, current, results, owned,
+                            out var input) ||
                         !TryResolveFilterInput(
+                            filterTemplate, primitive,
                             primitive.GetAttribute("in2") ?? "SourceGraphic",
-                            current, results, owned, primitive.Name, out var input2))
+                            target, viewport, filterRegion, current, results, owned,
+                            out var input2))
                         return false;
                     if (input2 == null)
                     {
@@ -683,13 +694,16 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 else if (primitive.Name == "feMerge")
                 {
-                    next = BuildMerge(primitive, current, results, owned);
+                    next = BuildMerge(
+                        filterTemplate, primitive, target, viewport, filterRegion,
+                        current, results, owned);
                 }
                 else
                 {
                     if (!TryResolveFilterInput(
-                            primitive.GetAttribute("in"), current, results, owned,
-                            primitive.Name, out var input))
+                            filterTemplate, primitive, primitive.GetAttribute("in"),
+                            target, viewport, filterRegion, current, results, owned,
+                            out var input))
                         return false;
                     next = primitive.Name switch
                     {
@@ -762,11 +776,15 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private bool TryResolveFilterInput(
+            ResolvedFilter filter,
+            SvgElement primitive,
             string raw,
+            SvgElement target,
+            ViewportContext viewport,
+            SKRect filterRegion,
             SKImageFilter current,
             Dictionary<string, SKImageFilter> results,
             List<SKImageFilter> owned,
-            string primitiveName,
             out SKImageFilter input)
         {
             input = current;
@@ -784,12 +802,212 @@ namespace FenBrowser.FenEngine.Svg
                 owned.Add(input);
                 return true;
             }
+            if (name.Equals("FillPaint", StringComparison.Ordinal) ||
+                name.Equals("StrokePaint", StringComparison.Ordinal))
+            {
+                if (!TryBuildPaintInput(
+                        filter, primitive, target, viewport, filterRegion,
+                        name[0] == 'S', out input))
+                {
+                    return false;
+                }
+                owned.Add(input);
+                return true;
+            }
             if (results.TryGetValue(name, out input)) return true;
+            if (name.Equals("BackgroundImage", StringComparison.Ordinal) ||
+                name.Equals("BackgroundAlpha", StringComparison.Ordinal))
+            {
+                _report.RequireFallback(
+                    $"SVG {primitive.Name} filter input '{name}' requires compatibility fallback: " +
+                    "the renderer paints each frame in a single pass and captures no document backdrop");
+                input = null;
+                return false;
+            }
 
             _report.RequireFallback(
-                $"SVG {primitiveName} filter input '{name}' requires compatibility fallback");
+                $"SVG {primitive.Name} filter input '{name}' requires compatibility fallback");
             input = null;
             return false;
+        }
+
+        /// <summary>
+        /// Resolved paint style of a filter target, reached by replaying the
+        /// ancestor chain from the document root exactly the way the render walk
+        /// accumulates it, so a paint keyword sees the same fill/stroke value the
+        /// target element itself paints with.
+        /// </summary>
+        private InheritedStyle ResolveFilterTargetStyle(SvgElement target)
+        {
+            if (target == null) return new InheritedStyle();
+            _filterTargetStyles ??= new Dictionary<SvgElement, InheritedStyle>();
+            if (_filterTargetStyles.TryGetValue(target, out var cached)) return cached;
+            var resolved = ResolvePatternContentStyle(target);
+            if (_filterTargetStyles.Count < MaxFilterTargetStyles)
+            {
+                _filterTargetStyles[target] = resolved;
+            }
+            return resolved;
+        }
+
+        /// <summary>
+        /// Builds the FillPaint/StrokePaint standard input: the target element's own
+        /// fill or stroke paint, with conceptually infinite extent, so the primitive
+        /// subregion (the filter region unless the primitive narrows it) is the only
+        /// clip. The paint is the element's own paint resolved through the shared
+        /// paint-server path, so a paint server lands on the target's object
+        /// bounding box and an unresolvable server fails closed rather than
+        /// guessing a colour.
+        /// </summary>
+        private bool TryBuildPaintInput(
+            ResolvedFilter filter,
+            SvgElement primitive,
+            SvgElement target,
+            ViewportContext viewport,
+            SKRect filterRegion,
+            bool stroke,
+            out SKImageFilter input)
+        {
+            input = null;
+            string keyword = stroke ? "StrokePaint" : "FillPaint";
+            string primitiveName = primitive.Name;
+
+            if (!TryResolvePrimitiveRegion(
+                    filter, primitive, target, viewport, filterRegion, out var region))
+            {
+                _report.RequireFallback(
+                    $"SVG {primitiveName} '{keyword}' input has an unusable primitive subregion");
+                return false;
+            }
+
+            InheritedStyle style = ResolveFilterTargetStyle(target);
+            var spec = stroke ? style.Stroke : style.Fill;
+            float opacity = ReadOwnPaintOpacity(target, stroke ? "stroke-opacity" : "fill-opacity");
+
+            if (spec.Kind == SvgValues.PaintKind.None)
+            {
+                input = BuildFlatPaintFilter(SKColors.Transparent, 1f, region);
+                return input != null;
+            }
+            if (stroke && !(style.StrokeWidth > 0f))
+            {
+                // A zero-width stroke paints no stroke, but the keyword names the
+                // stroke property value, which a zero width leaves ambiguous.
+                _report.RequireFallback(
+                    $"SVG {primitiveName} '{keyword}' input needs a resolvable stroke geometry");
+                return false;
+            }
+
+            if (spec.Kind == SvgValues.PaintKind.Color ||
+                spec.Kind == SvgValues.PaintKind.CurrentColor)
+            {
+                SKColor color = spec.Kind == SvgValues.PaintKind.CurrentColor
+                    ? style.CurrentColor
+                    : spec.Color;
+                input = BuildFlatPaintFilter(color, opacity, region);
+                if (input == null)
+                {
+                    _report.RequireFallback(
+                        $"SVG {primitiveName} '{keyword}' input could not be created");
+                }
+                return input != null;
+            }
+
+            if (spec.Kind != SvgValues.PaintKind.ServerRef)
+            {
+                _report.RequireFallback(
+                    $"SVG {primitiveName} '{keyword}' input has no resolvable paint");
+                return false;
+            }
+            if (!TryResolveObjectBounds(target, viewport, out var bounds))
+            {
+                _report.RequireFallback(
+                    $"SVG {primitiveName} '{keyword}' input requires resolvable object bounds");
+                return false;
+            }
+
+            SKShader shader;
+            bool ownsShader;
+            using (var boundsBuilder = new SKPathBuilder())
+            {
+                boundsBuilder.AddRect(bounds);
+                using var boundsPath = boundsBuilder.Detach();
+                shader = BuildServerShader(
+                    spec.Fragment, boundsPath, spec.Fallback, style, viewport,
+                    ResolveContextPaintFrame(spec.ContextSource, target, viewport),
+                    out SKColor? fallbackColor, out ownsShader);
+                if (shader == null && fallbackColor.HasValue)
+                {
+                    shader = SKShader.CreateColor(fallbackColor.Value);
+                    ownsShader = shader != null;
+                }
+            }
+            if (shader == null)
+            {
+                _report.RequireFallback(
+                    $"SVG {primitiveName} '{keyword}' input paint server is unresolvable");
+                return false;
+            }
+
+            try
+            {
+                input = BuildShaderPaintFilter(shader, opacity, region);
+            }
+            finally
+            {
+                if (ownsShader) shader.Dispose();
+            }
+            if (input == null)
+            {
+                _report.RequireFallback(
+                    $"SVG {primitiveName} '{keyword}' input could not be created");
+            }
+            return input != null;
+        }
+
+        private static SKImageFilter BuildFlatPaintFilter(
+            SKColor color,
+            float opacity,
+            SKRect region)
+        {
+            byte alpha = (byte)(color.Alpha * opacity);
+            using var shader = SKShader.CreateColor(
+                new SKColor(color.Red, color.Green, color.Blue, alpha));
+            return SKImageFilter.CreateShader(shader, false, region);
+        }
+
+        private static SKImageFilter BuildShaderPaintFilter(
+            SKShader shader,
+            float opacity,
+            SKRect region)
+        {
+            SKImageFilter paint = SKImageFilter.CreateShader(shader, false, region);
+            if (paint == null) return null;
+
+            // The paint-server path modulates a shader by the paint's own alpha,
+            // so the keyword's opacity is a plain premultiplied scale of alpha that
+            // leaves the colour channels untouched in either colour space.
+            byte alpha = (byte)(255f * opacity);
+            if (alpha == 255) return paint;
+            if (alpha == 0)
+            {
+                paint.Dispose();
+                using var clear = SKShader.CreateColor(SKColors.Transparent);
+                return SKImageFilter.CreateShader(clear, false, region);
+            }
+
+            var matrix = new float[]
+            {
+                0,0,0,0,0,
+                0,0,0,0,0,
+                0,0,0,0,0,
+                0,0,0,alpha / 255f,0
+            };
+            using var colorFilter = SKColorFilter.CreateColorMatrix(matrix);
+            SKImageFilter scaled = SKImageFilter.CreateColorFilter(colorFilter, paint);
+            if (scaled == null) return null;
+            paint.Dispose();
+            return scaled;
         }
 
         private static SKImageFilter BuildSourceAlpha()
@@ -1212,7 +1430,11 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private SKImageFilter BuildMerge(
+            ResolvedFilter filter,
             SvgElement merge,
+            SvgElement target,
+            ViewportContext viewport,
+            SKRect filterRegion,
             SKImageFilter current,
             Dictionary<string, SKImageFilter> results,
             List<SKImageFilter> owned)
@@ -1223,8 +1445,8 @@ namespace FenBrowser.FenEngine.Svg
                 if (node.Name is "title" or "desc" or "metadata") continue;
                 if (node.Name != "feMergeNode" ||
                     !TryResolveFilterInput(
-                        node.GetAttribute("in"), current, results, owned,
-                        node.Name, out var input))
+                        filter, node, node.GetAttribute("in"), target, viewport, filterRegion,
+                        current, results, owned, out var input))
                     return null;
 
                 // The merge API needs an explicit filter object for SourceGraphic.

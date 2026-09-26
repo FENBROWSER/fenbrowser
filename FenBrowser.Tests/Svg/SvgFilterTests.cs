@@ -806,6 +806,295 @@ namespace FenBrowser.Tests.Svg
             return opaque;
         }
 
+        private static SKColor Unpremultiply(SKColor premultiplied)
+        {
+            if (premultiplied.Alpha == 0) return SKColors.Transparent;
+            return new SKColor(
+                (byte)Math.Min(255, premultiplied.Red * 255 / premultiplied.Alpha),
+                (byte)Math.Min(255, premultiplied.Green * 255 / premultiplied.Alpha),
+                (byte)Math.Min(255, premultiplied.Blue * 255 / premultiplied.Alpha),
+                premultiplied.Alpha);
+        }
+
+        [Fact]
+        public void FillPaint_PaintsTheTargetFillAcrossTheWholeFilterRegion()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='40' height='40'><feOffset in='FillPaint'/></filter></defs>" +
+                "<rect x='15' y='15' width='10' height='10' fill='blue' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+
+            // Conceptually infinite extent: the fill paint is not clipped to the
+            // target geometry, so every pixel of the filter region is blue.
+            Assert.Equal(40 * 40, CountOpaquePixels(result));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(1, 1));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(38, 38));
+        }
+
+        [Fact]
+        public void StrokePaint_PaintsTheTargetStrokeAcrossTheWholeFilterRegion()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='40' height='40'><feOffset in='StrokePaint'/></filter></defs>" +
+                "<rect x='15' y='15' width='10' height='10' stroke='lime' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(40 * 40, CountOpaquePixels(result));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(1, 1));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(38, 38));
+        }
+
+        [Fact]
+        public void FillPaint_AppliesTheTargetsOwnFillOpacity()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='30' height='30'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='30' height='30'><feOffset in='FillPaint'/></filter></defs>" +
+                "<rect width='30' height='30' fill='red' fill-opacity='.5' " +
+                "filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            SKColor sampled = Unpremultiply(result.Bitmap.GetPixel(15, 15));
+            Assert.Equal(255, sampled.Red);
+            Assert.Equal(0, sampled.Green);
+            Assert.Equal(0, sampled.Blue);
+            Assert.InRange((int)sampled.Alpha, 126, 128);
+        }
+
+        [Fact]
+        public void FillPaint_ResolvesCurrentColorFromTheTargetChain()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='30' height='30' color='lime'><defs><filter id='f' " +
+                "filterUnits='userSpaceOnUse' x='0' y='0' width='30' height='30'>" +
+                "<feOffset in='FillPaint'/></filter></defs>" +
+                "<rect width='30' height='30' fill='currentColor' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(15, 15));
+        }
+
+        [Fact]
+        public void FillPaint_ResolvesAnObjectBoundingBoxGradientOnTheTargetBounds()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='60' height='40'><defs>" +
+                "<linearGradient id='g'><stop offset='0' stop-color='red'/>" +
+                "<stop offset='1' stop-color='blue'/></linearGradient>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='60' height='40'>" +
+                "<feOffset in='FillPaint'/></filter></defs>" +
+                "<rect x='20' y='10' width='20' height='20' fill='url(#g)' " +
+                "filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+
+            // The gradient's unit square maps onto the target's 20x20 object
+            // bounding box, so the filter region outside that box holds the pad
+            // colour of whichever end it is nearest.
+            Assert.True(result.Bitmap.GetPixel(22, 20).Red > 200, "centre-left stays red");
+            Assert.True(result.Bitmap.GetPixel(38, 20).Blue > 200, "centre-right turns blue");
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(1, 1));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(58, 38));
+        }
+
+        [Fact]
+        public void FillPaint_ResolvesAUserSpaceGradientInTargetUserSpace()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs>" +
+                "<linearGradient id='g' gradientUnits='userSpaceOnUse' " +
+                "x1='0' y1='0' x2='40' y2='0'>" +
+                "<stop offset='0' stop-color='red'/><stop offset='1' stop-color='blue'/>" +
+                "</linearGradient>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feOffset in='FillPaint'/></filter></defs>" +
+                "<rect x='10' y='10' width='20' height='20' fill='url(#g)' " +
+                "filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(result.Bitmap.GetPixel(1, 20).Red > 200, "left of the ramp is red");
+            Assert.True(result.Bitmap.GetPixel(38, 20).Blue > 200, "right of the ramp is blue");
+        }
+
+        [Fact]
+        public void FillPaint_RespectsAnExplicitPrimitiveSubregion()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='40' height='40' primitiveUnits='userSpaceOnUse'>" +
+                "<feOffset in='FillPaint' x='10' y='10' width='10' height='10'/></filter></defs>" +
+                "<rect x='15' y='15' width='10' height='10' fill='blue' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(15, 15));
+            Assert.Equal(0, result.Bitmap.GetPixel(5, 5).Alpha);
+            Assert.Equal(0, result.Bitmap.GetPixel(30, 30).Alpha);
+        }
+
+        [Fact]
+        public void FillPaint_NoneIsATransparentImage()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='30' height='30'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='30' height='30'><feOffset in='FillPaint'/></filter></defs>" +
+                "<rect width='30' height='30' fill='none' stroke='red' filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(0, CountOpaquePixels(result));
+        }
+
+        [Fact]
+        public void MergeNode_AcceptsFillPaintAsAStandardInput()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feMerge><feMergeNode in='SourceGraphic'/><feMergeNode in='FillPaint'/>" +
+                "</feMerge></filter></defs>" +
+                "<g fill='lime'><rect x='5' y='5' width='10' height='10' filter='url(#f)'/></g>" +
+                "</svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(10, 10));
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(35, 35));
+        }
+
+        [Theory]
+        [InlineData("StrokePaint", "k1='0' k2='1' k3='-1' k4='0'",
+            "fill='red' stroke='red'", 0, 0, 0, 0)]
+        [InlineData("FillPaint", "k1='0' k2='2' k3='-1.5' k4='0'",
+            "fill='#0F0' stroke='none'", 0, 255, 0, 128)]
+        [InlineData("StrokePaint", "k1='1' k2='-.5' k3='.2' k4='-.1'",
+            "fill='rgb(43,17,12)' stroke='rgb(32,42,37)'", 0, 0, 0, 153)]
+        [InlineData("StrokePaint", "k1='0' k2='10' k3='20' k4='0'",
+            "fill='rgb(0,127,0)' stroke='rgb(0,0,127)'", 0, 255, 255, 255)]
+        public void ArithmeticComposite_OverPaintInputsMatchesTheWptReferenceColours(
+            string secondInput,
+            string coefficients,
+            string targetPaint,
+            int red,
+            int green,
+            int blue,
+            int alpha)
+        {
+            // filters-composite-03-f-manual.svg states each expected result as an
+            // opaque reference stroke drawn over white, so the filtered result is
+            // the premultiplied value that composites onto #7FFF7F / #666 /
+            // #00FFFF. Only the infinite extent of the paint inputs makes the
+            // whole region carry that result, and the rect's own stroke width is
+            // deliberately not the document's default to pin that the keyword
+            // exposes the stroke paint rather than the stroke geometry.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='30' height='30'><defs>" +
+                "<filter id='f' x='0' y='0' width='1' height='1'>" +
+                "<feComposite operator='arithmetic' in='FillPaint' in2='" + secondInput + "' " +
+                coefficients + "/></filter></defs>" +
+                "<rect x='5' y='5' width='20' height='20' stroke-width='2' " +
+                targetPaint + " filter='url(#f)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            SKColor sampled = Unpremultiply(result.Bitmap.GetPixel(15, 15));
+            if (alpha == 0)
+            {
+                Assert.Equal(0, sampled.Alpha);
+                return;
+            }
+            Assert.Equal((byte)red, sampled.Red);
+            Assert.Equal((byte)green, sampled.Green);
+            Assert.Equal((byte)blue, sampled.Blue);
+            Assert.InRange((int)sampled.Alpha, alpha - 1, alpha + 1);
+        }
+
+        [Theory]
+        [InlineData("BackgroundImage")]
+        [InlineData("BackgroundAlpha")]
+        public void BackdropFilterInputs_FailClosedWithAnAccurateReason(string keyword)
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='30' height='30'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='30' height='30'><feOffset in='" + keyword + "'/></filter></defs>" +
+                "<g enable-background='new'><rect width='30' height='30' fill='red' " +
+                "filter='url(#f)'/></g></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings,
+                warning => warning.Contains(
+                    "filter input '" + keyword + "' requires compatibility fallback: " +
+                    "the renderer paints each frame in a single pass and captures no document backdrop",
+                    StringComparison.Ordinal));
+            Assert.Contains("filter-effects", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void FillPaint_WithAnUnresolvablePaintServer_FailsClosed()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='30' height='30'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='30' height='30'><feOffset in='FillPaint'/></filter></defs>" +
+                "<rect width='30' height='30' fill='url(#missing)' filter='url(#f)'/></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings,
+                warning => warning.Contains(
+                    "'FillPaint' input paint server is unresolvable", StringComparison.Ordinal));
+            Assert.Contains("paint-server", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void StrokePaint_WithAZeroStrokeWidth_FailsClosed()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='30' height='30'><defs><filter id='f' filterUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='30' height='30'><feOffset in='StrokePaint'/></filter></defs>" +
+                "<rect width='30' height='30' stroke='red' stroke-width='0' " +
+                "filter='url(#f)'/></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings,
+                warning => warning.Contains(
+                    "'StrokePaint' input needs a resolvable stroke geometry",
+                    StringComparison.Ordinal));
+            Assert.Contains("unsupported-feature", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void FilterPrimitiveBudget_StaysAtThirtyTwoPrimitives()
+        {
+            using var admitted = new FenSvgRenderer().Render(
+                FilterWithPrimitives(32));
+            using var exceeded = new FenSvgRenderer().Render(
+                FilterWithPrimitives(33));
+
+            Assert.True(admitted.Success, admitted.ErrorMessage);
+            Assert.False(admitted.RequiresFallback, string.Join("; ", admitted.Warnings));
+            AssertFailsClosed(exceeded);
+            Assert.Contains(exceeded.Warnings,
+                warning => warning.Contains("primitive budget", StringComparison.Ordinal));
+        }
+
+        private static string FilterWithPrimitives(int count)
+        {
+            var svg = new System.Text.StringBuilder(
+                "<svg width='20' height='20'><defs><filter id='f' " +
+                "filterUnits='userSpaceOnUse' x='0' y='0' width='20' height='20'>");
+            for (int i = 0; i < count; i++) svg.Append("<feOffset dx='0' dy='0'/>");
+            svg.Append("</filter></defs><rect width='20' height='20' fill='red' filter='url(#f)'/></svg>");
+            return svg.ToString();
+        }
+
         private static void AssertFailsClosed(SvgRenderResult result)
         {
             Assert.False(result.Success, result.ErrorMessage);
