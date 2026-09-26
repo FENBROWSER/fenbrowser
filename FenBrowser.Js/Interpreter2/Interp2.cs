@@ -1336,7 +1336,16 @@ internal sealed class Interp2
                     if (ins.A < ip - 1)
                     {
                         heap.CollectAtSafePointIfRequested();
-                        _backEdges++;
+                        if ((++_backEdges & OsrCheckMask) == 0 && layout.OsrLoopHeaders is not null &&
+                            TryFinishCompiled(ins.A, entryDepth, out var jumpExited, out var jumpResult))
+                        {
+                            if (jumpExited)
+                            {
+                                return jumpResult;
+                            }
+
+                            goto reload;
+                        }
                     }
 
                     ip = ins.A;
@@ -1348,7 +1357,16 @@ internal sealed class Interp2
                         if (ins.B < ip - 1)
                         {
                             heap.CollectAtSafePointIfRequested();
-                            _backEdges++;
+                            if ((++_backEdges & OsrCheckMask) == 0 && layout.OsrLoopHeaders is not null &&
+                                TryFinishCompiled(ins.B, entryDepth, out var branchExited, out var branchResult))
+                            {
+                                if (branchExited)
+                                {
+                                    return branchResult;
+                                }
+
+                                goto reload;
+                            }
                         }
 
                         ip = ins.B;
@@ -2729,6 +2747,93 @@ internal sealed class Interp2
     // back so the caller is not credited with its callee's loops. A frame left
     // by a throw or a suspension leaves its count to the frame below.
     private int _backEdges;
+
+    // On-stack replacement. A frame that loops long enough is handed to its
+    // compiled code at the loop header it is about to run, rather than only
+    // the next call being compiled - which a script's top level, or any body
+    // called once, never makes. The check is on a thousandth of back-edges,
+    // so the loop itself pays one increment and one mask.
+    private const int OsrCheckMask = 1023;
+
+    /// <summary>The back-edges a frame takes before it is worth compiling from under it.</summary>
+    private const int OsrBackEdgeThreshold = 4096;
+
+    /// <summary>OSR hand-offs this loop has made.</summary>
+    internal long OsrEntries { get; private set; }
+
+    /// <summary>
+    /// Finish the running frame in compiled code from <paramref name="loopHeader"/>,
+    /// when it has looped long enough, its body has compiled with that header
+    /// as an entry, and nothing about the frame is beyond what the hand-off
+    /// carries. The frame is then done, exactly as a Return leaves it:
+    /// <paramref name="exited"/> says this loop's entry frame returned, with
+    /// <paramref name="result"/>; otherwise the value is already in the
+    /// caller's register.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private bool TryFinishCompiled(int loopHeader, int entryDepth, out bool exited, out JsValue result)
+    {
+        exited = false;
+        result = JsValue.Undefined;
+#if PUBLISH_AOT
+        return false;
+#else
+        ref var frame = ref _frames[_depth - 1];
+        var layout = frame.Layout;
+        var function = layout.Function;
+        if (!JitCompiler.Enabled || frame.HandlerCount != 0 || frame.ScopeDepth != 0 ||
+            frame.Generator is not null || frame.AsyncContext is not null ||
+            _backEdges - frame.BackEdgeMark < OsrBackEdgeThreshold ||
+            !layout.OsrLoopHeaders!.Contains(loopHeader))
+        {
+            return false;
+        }
+
+        if (function.JitDelegate is not { } compiled)
+        {
+            // Compiled in the background; a later check finds it published.
+            JitCompiler.RequestLoopTierUp(function);
+            return false;
+        }
+
+        if (function.OsrEntryPoints is not { } entries || !entries.Contains(loopHeader))
+        {
+            return false;
+        }
+
+        OsrEntries++;
+        if (Interp2Options.Log)
+        {
+            Interp2Stats.RecordOsr();
+        }
+
+        var value = _host.Interp2RunCompiledFrom(
+            compiled, layout, frame.Callee, frame.This, frame.NewTarget, OuterEnvironmentOf(_depth - 1),
+            frame.Context, _stack, _tdz, frame.Base, loopHeader);
+
+        // What a Return does: the calls compiled code made may have moved the
+        // frame array, so the frame is found again.
+        frame = ref _frames[_depth - 1];
+        var returnSlot = frame.ReturnSlot;
+        var frameBase = frame.Base;
+        if (_backEdges != frame.BackEdgeMark)
+        {
+            SettleBackEdges(ref frame);
+        }
+
+        _depth--;
+        _stackTop = frameBase;
+        if (_depth == entryDepth)
+        {
+            exited = true;
+            result = value;
+            return true;
+        }
+
+        _stack[returnSlot] = value;
+        return true;
+#endif
+    }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private void SettleBackEdges(ref Frame frame)

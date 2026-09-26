@@ -53,6 +53,103 @@ public sealed partial class BytecodeInterpreter
         return Interp2Loop.Execute(callee, layout, in args, thisValue, newTarget);
     }
 
+#if !PUBLISH_AOT
+    /// <summary>
+    /// On-stack replacement: finish a register-window frame in its compiled
+    /// code, from the loop header it was about to run.
+    /// </summary>
+    /// <remarks>
+    /// Compiled code runs on an old-loop frame, so one is built holding what
+    /// the window holds: the registers as they are, and every variable the body
+    /// declares in the frame's record - the one closures already share when
+    /// there is one, a fresh one shaped as the old loop's prologue shapes it
+    /// otherwise. The caller has checked there is nothing else to carry over:
+    /// no handler, no block record, no suspension.
+    /// </remarks>
+    internal JsValue Interp2RunCompiledFrom(
+        JitCompiler.JitDelegate compiled,
+        FrameLayout layout,
+        JsFunctionObject? callee,
+        JsValue thisValue,
+        JsValue newTarget,
+        EnvironmentRecord? outerEnvironment,
+        DeclarativeEnvironmentRecord? context,
+        JsValue[] stack,
+        byte[] deadZone,
+        int windowBase,
+        int loopHeader)
+    {
+        var function = layout.Function;
+        EnvironmentRecord environment;
+        if (function.IsProgramCode)
+        {
+            // Program code keeps nothing of its own: its names are all in the
+            // environment it runs in.
+            environment = outerEnvironment!;
+        }
+        else
+        {
+            var record = context ?? Interp2CreateContext(function, callee!, thisValue, outerEnvironment, newTarget);
+            var slotBase = windowBase + layout.RegisterCount;
+            foreach (var slot in layout.OsrSlots)
+            {
+                var value = stack[slotBase + slot];
+                if (slot == layout.SelfNameSlot)
+                {
+                    record.DeclareFunctionNameAtSlot(slot, value);
+                    continue;
+                }
+
+                var isConst = (uint)slot < (uint)layout.SlotIsConst.Length && layout.SlotIsConst[slot];
+                if (layout.HasLexicalSlots && (uint)slot < (uint)layout.SlotIsLexical.Length && layout.SlotIsLexical[slot])
+                {
+                    record.DeclareUninitializedAtSlot(slot, immutable: isConst);
+                    if (deadZone[slotBase + slot] == 0)
+                    {
+                        record.InitializeAtSlot(slot, value, immutable: isConst);
+                    }
+
+                    continue;
+                }
+
+                record.DeclareAtSlot(slot, value, deletable: false, overwrite: true);
+            }
+
+            environment = record;
+        }
+
+        var frame = RentFrame(function, thisValue, environment, RentRegisterFile(function.RegisterCount));
+        frame.CalleeFunctionObject = callee;
+        // As the old loop's prologue: an arrow's and eval code's new.target is
+        // the enclosing function's.
+        frame.NewTarget = function.IsArrow || function.IsProgramCode
+            ? ResolveLexicalNewTarget(environment)
+            : newTarget;
+        if (environment is DeclarativeEnvironmentRecord own && own.OwnsSlotsOf(function))
+        {
+            frame.SlotEnvironment = own;
+            frame.SlotBindings = own.SlotBindingsFor(function);
+            frame.SlotPresence = own.SlotPresenceFor(function);
+        }
+
+        Array.Copy(stack, windowBase, frame.Registers, 0, function.RegisterCount);
+        frame.Interp2DepthAtEntry = _interp2?.Depth ?? 0;
+        _activeFrames.Push(frame);
+        try
+        {
+            return compiled(this, frame, loopHeader);
+        }
+        finally
+        {
+            // The record is not handed back to any pool: closures made before
+            // the hand-off may share it.
+            _activeFrames.Pop();
+            ReturnRegisterFile(frame.Registers);
+            ReturnFrame(frame);
+        }
+    }
+#endif
+
     // ------------------------------------------------------------- guard rails
 
     /// <summary>

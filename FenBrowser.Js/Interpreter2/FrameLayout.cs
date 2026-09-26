@@ -233,6 +233,23 @@ public sealed class FrameLayout
     public bool ScopedBlocks { get; private init; }
 
     /// <summary>
+    /// Loop headers at which a running frame of this body can be handed to its
+    /// compiled code (on-stack replacement), or null when none can: a
+    /// generator, an async body, a class constructor or a dynamic-scope body,
+    /// whose frames compiled code cannot take over. A header inside a block
+    /// kept in the window is left out - there the block's binding has no record
+    /// for compiled code to find it in.
+    /// </summary>
+    public HashSet<int>? OsrLoopHeaders { get; private init; }
+
+    /// <summary>
+    /// The slots such a hand-off moves out of the window into the frame's
+    /// record: every variable the body itself declares that lives in a
+    /// register. A block's binding kept in a register is not one of them.
+    /// </summary>
+    public int[] OsrSlots { get; private init; } = Array.Empty<int>();
+
+    /// <summary>
     /// Whether every name in this body is resolved through its records, as the
     /// specification describes, rather than through slots worked out here.
     /// </summary>
@@ -811,6 +828,24 @@ public sealed class FrameLayout
             selfNameSlot = selfSlotIndex;
         }
 
+        HashSet<int>? osrLoopHeaders = null;
+        var osrSlots = Array.Empty<int>();
+        if (!isGenerator && !isAsync && !dynamicScope && !function.IsClassConstructor)
+        {
+            osrLoopHeaders = LoopHeadersOutsideWindowBlocks(function.InstructionArray, blockScopes);
+            var moved = new List<int>();
+            for (var slot = 0; slot < slotCount; slot++)
+            {
+                if (bindingHomes[slot] == SlotHome.Register && slotNames[slot] is { } movedName &&
+                    declaredNames.Contains(movedName))
+                {
+                    moved.Add(slot);
+                }
+            }
+
+            osrSlots = moved.ToArray();
+        }
+
         var duplicateParameters = false;
         for (var i = 1; i < parameterWindowIndex.Length && !duplicateParameters; i++)
         {
@@ -848,9 +883,54 @@ public sealed class FrameLayout
             IsDerivedConstructor = constructsClass && function.IsDerivedConstructor,
             ScopedBlocks = scopedBlocks,
             DynamicScope = dynamicScope,
+            OsrLoopHeaders = osrLoopHeaders,
+            OsrSlots = osrSlots,
             ScopedFallback = scopedFallback,
             BindingHomes = bindingHomes,
         };
+    }
+
+    /// <summary>
+    /// The targets of the body's backward jumps that no window-kept block
+    /// encloses, or null when there are none.
+    /// </summary>
+    private static HashSet<int>? LoopHeadersOutsideWindowBlocks(
+        Instruction[] code, List<(int Slot, int Start, int End)>? windowBlocks)
+    {
+        HashSet<int>? headers = null;
+        for (var ip = 0; ip < code.Length; ip++)
+        {
+            var target = code[ip].OpCode switch
+            {
+                OpCode.Jump => code[ip].A,
+                OpCode.JumpIfFalse => code[ip].B,
+                _ => int.MaxValue,
+            };
+            if (target >= ip)
+            {
+                continue;
+            }
+
+            var enclosed = false;
+            if (windowBlocks is not null)
+            {
+                foreach (var (_, start, end) in windowBlocks)
+                {
+                    if (target >= start && target <= end)
+                    {
+                        enclosed = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!enclosed)
+            {
+                (headers ??= new HashSet<int>()).Add(target);
+            }
+        }
+
+        return headers;
     }
 
     /// <summary>Every slot an EnterScope in the body declares.</summary>

@@ -139,6 +139,7 @@ public static class Interp2Stats
     private static long _declinedFunctions;
     private static long _framesEntered;
     private static long _callsInLoop;
+    private static long _osrEntries;
     private static long _callsDelegated;
     private static long _callsDelegatedToDeclinedBody;
     private static long _propertyReadsCached;
@@ -196,6 +197,9 @@ public static class Interp2Stats
     }
 
     internal static void RecordCallInLoop() => _callsInLoop++;
+
+    /// <summary>A frame handed to its compiled code at a loop header.</summary>
+    internal static void RecordOsr() => _osrEntries++;
 
     /// <summary>
     /// Whether a property read was answered by its site's shape cache. A read
@@ -317,6 +321,7 @@ public static class Interp2Stats
         _eligibleFunctions = 0;
         _declinedFunctions = 0;
         _framesEntered = 0;
+        _osrEntries = 0;
         _callsInLoop = 0;
         _callsDelegated = 0;
         _callsDelegatedToDeclinedBody = 0;
@@ -350,6 +355,7 @@ public static class Interp2Stats
               .Append(" frames=").Append(_framesEntered)
               .Append(" maxDepth=").Append(_maxDepth)
               .Append(" maxStackSlots=").Append(_maxStackSlots)
+              .Append(" osr=").Append(_osrEntries)
               .AppendLine();
         report.Append("[interp2] calls=").Append(calls)
               .Append(" inLoop=").Append(_callsInLoop)
