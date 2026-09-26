@@ -4055,8 +4055,13 @@ namespace FenBrowser.FenEngine.Rendering
 
                     // Final containment correction: if the fitted line falls outside its parent
                     // content box after all adjustments, align it back using the parent's
-                    // effective text alignment.
-                    if (alignmentParentBox != null)
+                    // effective text alignment. A non-atomic inline parent is not a container
+                    // to fit into: its box is made of this very text, so it is always a
+                    // "tight fit" and the side-bearing inset below shoved every run inside a
+                    // <span> 3.5px right (w3schools' "Get your<span> own</span> website"
+                    // painted "ownwebsite"; each CodeMirror token overlapped the next).
+                    if (alignmentParentBox != null &&
+                        !string.Equals(alignmentStyle?.Display, "inline", StringComparison.OrdinalIgnoreCase))
                     {
                         var parentContent = alignmentParentBox.ContentBox;
                         float parentWidth = Math.Max(0f, parentContent.Width);
