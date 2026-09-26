@@ -1119,33 +1119,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (function.Kind == FunctionKind.Async)
             {
                 var capability = NewPromiseCapability();
-                var registers = new JsValue[function.RegisterCount];
-                for (var i = 0; i < registers.Length; i++)
-                    registers[i] = JsValue.Undefined;
-                var asyncCtx = new AsyncContext(function, registers, EnsureGlobalEnvironment())
-                {
-                    ThisValue = JsValue.FromObject(globalHandle)
-                };
-                var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
-                // The frame roots its async context through SelfHandle and
-                // nothing else, so leaving it unset means the context - and the
-                // capability handles below with it - is traced by nobody while
-                // the body runs. See ExecuteWithEnvironment for the failure that
-                // produced.
-                asyncCtx.SelfHandle = ctxHandle;
-                asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
-                    ? capability.Promise.AsObjectHandle() : null;
-                asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
-                    ? capability.Resolve.AsObjectHandle() : null;
-                asyncCtx.CapabilityReject = capability.Reject.Tag == JsValueTag.Object
-                    ? capability.Reject.AsObjectHandle() : null;
-
-                result = ExecuteInternal(
-                    function,
-                    Array.Empty<JsValue>(),
-                    JsValue.FromObject(globalHandle),
-                    frameEnvironment: EnsureGlobalEnvironment(),
-                    asyncContext: asyncCtx);
+                result = StartAsyncProgram(
+                    function, JsValue.FromObject(globalHandle), EnsureGlobalEnvironment(), capability, out var asyncCtx);
 
                 // If the body never suspended (no await encountered), settle the
                 // capability synchronously.
@@ -1378,38 +1353,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (function.Kind == FunctionKind.Async)
         {
             var capability = NewPromiseCapability();
-            var registers = new JsValue[function.RegisterCount];
-            for (var i = 0; i < registers.Length; i++)
-            {
-                registers[i] = JsValue.Undefined;
-            }
-
-            var asyncCtx = new AsyncContext(function, registers, environment)
-            {
-                ThisValue = JsValue.FromObject(globalHandle)
-            };
-            // SelfHandle is what roots this context: TraceRoots only reaches an
-            // async context via frame.AsyncContext?.SelfHandle. Discarding the
-            // handle here left the context untraced for the whole module body,
-            // so a minor collection swept the capability's resolve function -
-            // and settling the module at the end then dereferenced a freed cell
-            // ("Stale heap handle ... allocSite=CreateResolvingFunctions").
-            // github.com reproduced it on every load.
-            var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
-            asyncCtx.SelfHandle = ctxHandle;
-            asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
-                ? capability.Promise.AsObjectHandle() : null;
-            asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
-                ? capability.Resolve.AsObjectHandle() : null;
-            asyncCtx.CapabilityReject = capability.Reject.Tag == JsValueTag.Object
-                ? capability.Reject.AsObjectHandle() : null;
-
-            var asyncResult = ExecuteInternal(
-                function,
-                Array.Empty<JsValue>(),
-                JsValue.FromObject(globalHandle),
-                frameEnvironment: environment,
-                asyncContext: asyncCtx);
+            var asyncResult = StartAsyncProgram(
+                function, JsValue.FromObject(globalHandle), environment, capability, out var asyncCtx);
 
             // A body that never suspended settles its capability synchronously,
             // and its completion value is the module's evaluation result - the
@@ -1428,6 +1373,64 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var result = ExecuteProgram(function, JsValue.FromObject(globalHandle), environment);
         DrainPendingMicrotasks();
         return result;
+    }
+
+    /// <summary>
+    /// Module code, which compiles as async because a top-level await may
+    /// suspend it: an activation over <paramref name="environment"/> whose
+    /// completion settles <paramref name="capability"/>, and the body run
+    /// until it finishes or first suspends.
+    /// </summary>
+    private JsValue StartAsyncProgram(
+        BytecodeFunction function,
+        JsValue thisValue,
+        EnvironmentRecord environment,
+        PromiseCapability capability,
+        out AsyncContext asyncCtx)
+    {
+        // On the register-window loop the suspended state is a whole window,
+        // so the array is sized for one.
+        var layout = Interpreter2.Interp2Options.Enabled ? Interpreter2.FrameLayout.For(function) : null;
+        var runsOnRegisterWindow = layout is { AsyncEligible: true };
+        var registers = new JsValue[runsOnRegisterWindow
+            ? Math.Max(layout!.WindowSize, function.RegisterCount)
+            : function.RegisterCount];
+        for (var i = 0; i < registers.Length; i++)
+        {
+            registers[i] = JsValue.Undefined;
+        }
+
+        asyncCtx = new AsyncContext(function, registers, environment)
+        {
+            ThisValue = thisValue,
+            RunsOnRegisterWindow = runsOnRegisterWindow,
+        };
+        // SelfHandle is what roots this context: TraceRoots only reaches an
+        // async context via frame.AsyncContext?.SelfHandle. Discarding the
+        // handle here left the context untraced for the whole module body,
+        // so a minor collection swept the capability's resolve function -
+        // and settling the module at the end then dereferenced a freed cell
+        // ("Stale heap handle ... allocSite=CreateResolvingFunctions").
+        // github.com reproduced it on every load.
+        asyncCtx.SelfHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
+        asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
+            ? capability.Promise.AsObjectHandle() : null;
+        asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
+            ? capability.Resolve.AsObjectHandle() : null;
+        asyncCtx.CapabilityReject = capability.Reject.Tag == JsValueTag.Object
+            ? capability.Reject.AsObjectHandle() : null;
+
+        if (!runsOnRegisterWindow)
+        {
+            return ExecuteInternal(
+                function, Array.Empty<JsValue>(), thisValue, frameEnvironment: environment, asyncContext: asyncCtx);
+        }
+
+        EnsureNativeStack();
+        ValidateDeclarationInstantiation(function, environment);
+        InstantiateVarDeclarations(function, environment);
+        InstantiateLexicalDeclarations(function, environment);
+        return Interp2Loop.ExecuteProgram(layout!, environment, thisValue, asyncCtx);
     }
 
     public ModuleEnvironmentRecord CreateModuleEnvironment(string? importMetaUrl = null)

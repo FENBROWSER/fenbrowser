@@ -8,9 +8,6 @@ public enum Interp2Bailout
 {
     None = 0,
     NotOrdinaryFunction,
-
-    /// <summary>Module code, which may suspend at a top-level await.</summary>
-    ModuleCode,
     ClassConstructor,
     LexicalDeclarations,
     UnmappedSlot,
@@ -449,9 +446,9 @@ public sealed class FrameLayout
         var isGenerator = function.Kind is FunctionKind.Generator or FunctionKind.AsyncGenerator;
         // An async function suspends at an await and is resumed by a promise
         // job, which is the generator machinery pointed somewhere else. Module
-        // and script bodies compile as async too - top-level await is legal in
-        // one - and those are eval code, which the gate below refuses anyway.
-        var isAsync = function.Kind == FunctionKind.Async && !function.IsProgramCode;
+        // code compiles as async too - top-level await is legal in it - and
+        // suspends the same way.
+        var isAsync = function.Kind == FunctionKind.Async;
         // Script and eval code run in an environment their caller supplies,
         // where their declarations were instantiated by name: every name they
         // use resolves through it, as a free name does in a function.
@@ -461,8 +458,6 @@ public sealed class FrameLayout
         if (!isGenerator && !isAsync && !constructsClass &&
             function.Kind is not (FunctionKind.Ordinary or FunctionKind.Arrow or FunctionKind.Method))
             return new FrameLayout(function, Interp2Bailout.NotOrdinaryFunction);
-        if (isProgram && function.Kind != FunctionKind.Ordinary)
-            return new FrameLayout(function, Interp2Bailout.ModuleCode);
         // [[Call]] on a class constructor is a TypeError, raised before any frame
         // exists; only [[Construct]] (ForConstruct) runs one.
         if (function.IsClassConstructor && !constructsClass)
@@ -1079,6 +1074,9 @@ public sealed class FrameLayout
             OpCode.EnumerateValues, OpCode.ForOfNext, OpCode.IteratorClose,
             OpCode.EnumerateValuesAsync, OpCode.AsyncIterNext, OpCode.AsyncIterFinish,
             OpCode.NewObject, OpCode.NewArray, OpCode.NewRegExp,
+
+            // Modules.
+            OpCode.DynamicImport, OpCode.ImportMeta, OpCode.ImportSource, OpCode.ImportDefer,
 
             // Calls and construction.
             OpCode.Construct0, OpCode.Construct1, OpCode.ConstructN, OpCode.ConstructSpread,

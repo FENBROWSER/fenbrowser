@@ -310,7 +310,12 @@ internal sealed class Interp2
     /// names all resolve through <paramref name="environment"/> - where the
     /// host has already instantiated its declarations.
     /// </summary>
-    internal JsValue ExecuteProgram(FrameLayout layout, EnvironmentRecord environment, JsValue thisValue)
+    /// <param name="asyncContext">
+    /// Module code's activation, which a top-level await suspends into; null
+    /// for script and eval code.
+    /// </param>
+    internal JsValue ExecuteProgram(
+        FrameLayout layout, EnvironmentRecord environment, JsValue thisValue, AsyncContext? asyncContext = null)
     {
         var entryDepth = _depth;
         var entryTop = _stackTop;
@@ -338,7 +343,7 @@ internal sealed class Interp2
             frame.PendingReturn = JsValue.Undefined;
             frame.HasPendingReturn = false;
             frame.Generator = null;
-            frame.AsyncContext = null;
+            frame.AsyncContext = asyncContext;
             frame.Scope = null;
             frame.ScopeDepth = 0;
             if (Interp2Options.Log)
@@ -1025,6 +1030,34 @@ internal sealed class Interp2
                     }
 
                     break;
+
+                case OpCode.DynamicImport:
+                case OpCode.ImportSource:
+                case OpCode.ImportDefer:
+                {
+                    // ECMA-262 13.3.10.1 EvaluateImportCall: the referrer is the
+                    // module or script whose scope the call sits in.
+                    var referrer = _frames[_depth - 1].Scope ?? BaseScopeOf(_depth - 1);
+                    var importPromise = ins.OpCode switch
+                    {
+                        OpCode.DynamicImport => _host.HandleDynamicImport(
+                            stack[frameBase + ins.B], stack[frameBase + ins.C], referrer),
+                        OpCode.ImportSource => _host.HandleImportSource(
+                            stack[frameBase + ins.B], stack[frameBase + ins.C], referrer),
+                        _ => _host.HandleImportDefer(stack[frameBase + ins.B], stack[frameBase + ins.C], referrer),
+                    };
+                    stack = _stack;
+                    stack[frameBase + ins.A] = importPromise;
+                    break;
+                }
+
+                case OpCode.ImportMeta:
+                {
+                    var meta = _host.HandleImportMeta(_frames[_depth - 1].Scope ?? BaseScopeOf(_depth - 1));
+                    stack = _stack;
+                    stack[frameBase + ins.A] = meta;
+                    break;
+                }
 
                 case OpCode.PushWithEnvironment:
                 {

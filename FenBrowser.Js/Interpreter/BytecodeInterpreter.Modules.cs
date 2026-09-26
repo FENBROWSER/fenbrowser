@@ -1,4 +1,4 @@
-using FenBrowser.Js.Bytecode;
+﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
@@ -42,7 +42,7 @@ public sealed partial class BytecodeInterpreter
     /// </summary>
     public PromiseCapability CreatePromiseCapability() => NewPromiseCapability();
 
-    internal JsValue HandleDynamicImport(JsValue specifier, JsValue options, EnvironmentRecord environment)
+    internal JsValue HandleDynamicImport(JsValue specifier, JsValue options, EnvironmentRecord? environment)
         => ImportCall(specifier, options, environment, sourcePhase: false);
 
     // ECMA-262 13.3.10.1 EvaluateImportCall: ToString(specifier) and the options
@@ -129,7 +129,7 @@ public sealed partial class BytecodeInterpreter
         return null;
     }
 
-    internal JsValue HandleImportMeta(EnvironmentRecord environment)
+    internal JsValue HandleImportMeta(EnvironmentRecord? environment)
     {
         string url = string.Empty;
         for (var current = environment; current is not null; current = current.OuterEnv)
