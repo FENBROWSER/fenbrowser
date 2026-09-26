@@ -6053,13 +6053,19 @@ private static double? ExtractPx(string text, string prop)
                     }
                 }
 
-                // The typed text-transform was read from the map before inherited values were
-                // copied in, so a child of `li { text-transform: uppercase }` kept none: bing.com's
-                // scope bar links showed "All" and "Images" instead of "ALL" and "IMAGES".
-                if (string.IsNullOrEmpty(css.TextTransform))
-                {
-                    css.TextTransform = Safe(DictGet(css.Map, "text-transform"));
-                }
+                // The typed inherited fields were read from the map before inherited values
+                // were copied in, so a child of `li { text-transform: uppercase }` kept none
+                // (bing.com's scope bar showed "All" instead of "ALL"), and a <span> inside
+                // `pre { white-space: pre-wrap }` read as normal: its lone-space text was
+                // dropped, which ran every CodeMirror token into the next.
+                if (string.IsNullOrEmpty(css.TextTransform)) css.TextTransform = Safe(DictGet(css.Map, "text-transform"));
+                if (string.IsNullOrEmpty(css.WhiteSpace)) css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
+                if (string.IsNullOrEmpty(css.WordBreak)) css.WordBreak = Safe(DictGet(css.Map, "word-break"))?.ToLowerInvariant();
+                if (string.IsNullOrEmpty(css.OverflowWrap)) css.OverflowWrap = Safe(DictGet(css.Map, "overflow-wrap") ?? DictGet(css.Map, "word-wrap"))?.ToLowerInvariant();
+                if (string.IsNullOrEmpty(css.LineBreak)) css.LineBreak = Safe(DictGet(css.Map, "line-break"))?.ToLowerInvariant();
+                if (string.IsNullOrEmpty(css.Cursor)) css.Cursor = Safe(DictGet(css.Map, "cursor"));
+                if (string.IsNullOrEmpty(css.ListStyleType)) css.ListStyleType = Safe(DictGet(css.Map, "list-style-type"))?.ToLowerInvariant();
+                if (string.IsNullOrEmpty(css.ListStylePosition)) css.ListStylePosition = Safe(DictGet(css.Map, "list-style-position"))?.ToLowerInvariant();
             }
 
             return css;
