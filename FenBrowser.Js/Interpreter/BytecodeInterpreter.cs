@@ -343,10 +343,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 tracer.TraceRoot("interp.frame.pendingException", pe.AsObjectHandle());
             if (frame.PendingReturn is { } pr && pr.Tag == JsValueTag.Object)
                 tracer.TraceRoot("interp.frame.pendingReturn", pr.AsObjectHandle());
-            // Audit JSRT-004: while an async frame is active, its context must be
-            // rooted even though no promise reaction holds it yet.
-            if (frame.AsyncContext?.SelfHandle is { } asyncCtxHandle)
-                tracer.TraceRoot("interp.frame.asyncContext", asyncCtxHandle);
             // The callee's own cell can otherwise become unreachable while its
             // body runs: the caller's register that held it is the only heap
             // edge, and top-level invocations (microtask drain, timer callbacks)
@@ -1173,39 +1169,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
     }
 
-    // ECMA-262 27.5.1.3 GeneratorYield — save frame execution state into the
-    // owner generator so a subsequent .next()/resume can continue from this point.
-    private static void SaveGeneratorState(InterpreterFrame frame, int yieldDestReg)
-    {
-        if (frame.OwnerGenerator is not { } gen)
-            return;
-
-        gen.InstructionPointer = frame.InstructionPointer;
-        Array.Copy(frame.Registers, gen.Registers, frame.Registers.Length);
-        foreach (var register in frame.Registers)
-        {
-            gen.BarrierInternalSlot(register);
-        }
-        gen.Environment = frame.Environment;
-        gen.State = GeneratorState.Suspended;
-        gen.YieldDestReg = yieldDestReg;
-
-        // Preserve exception handler stack so try/catch blocks survive yield.
-        gen.SavedCatchHandlers = frame.CatchHandlers.ToArray();
-		gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
-		gen.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
-		gen.PendingException = frame.PendingException;
-		if (frame.PendingException is { } suspendedPendingException)
-		{
-			gen.BarrierInternalSlot(suspendedPendingException);
-		}
-		gen.PendingReturn = frame.PendingReturn;
-		if (frame.PendingReturn is { } suspendedPendingReturn)
-		{
-			gen.BarrierInternalSlot(suspendedPendingReturn);
-		}
-    }
-
     // ECMA-262 27.5.1.2 — execute (or resume) a generator function body.
     public JsValue ExecuteGenerator(GeneratorObject gen, JsValue sentValue)
     {
@@ -1213,27 +1176,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         gen.SentValue = sentValue;
         gen.BarrierInternalSlot(sentValue);
 
-        // First call: let ExecuteInternalCore create a proper DeclarativeEnvironmentRecord
-        // chained to the outer scope. Resume: reuse the saved frame environment so local
-        // bindings from the first call are still visible.
-        var isResume = gen.InstructionPointer > 0;
-        // First call: pass the initial parameters that were bound when the
-        // generator function was called (stored in gen.Registers[1..n]).
-        // Resume: pass no args — the saved registers and env already hold
-        // all local state.
-        var initialArgs = isResume ? Array.Empty<JsValue>() : gen.GetInitialParameters();
-        // A generator runs on the loop it was created for: the two lay a frame
-        // out differently, so the window one suspended cannot be resumed by the
-        // other.
-        var result = gen.RunsOnRegisterWindow
-            ? Interp2RunGenerator(gen)
-            : ExecuteInternal(
-                gen.Function,
-                initialArgs,
-                gen.ThisValue,
-                gen.OuterEnvironment,
-                frameEnvironment: isResume ? gen.Environment : null,
-                ownerGenerator: gen);
+        var result = Interp2RunGenerator(gen);
 
         // If Yield didn't set state to Suspended, the generator body completed
         // (return or fell off end). Wrap the raw return value into {value, done: true}
@@ -1250,32 +1193,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return result;
     }
 
-    // ECMA-262 27.7.5.2 Await — save frame execution state into the async
-    // context so the promise reaction callback can resume from this point.
-    private static void SaveAsyncState(InterpreterFrame frame, int awaitDestReg)
-    {
-        if (frame.AsyncContext is not { } ctx)
-            return;
-
-        ctx.InstructionPointer = frame.InstructionPointer;
-        Array.Copy(frame.Registers, ctx.Registers, frame.Registers.Length);
-        foreach (var register in frame.Registers)
-        {
-            ctx.BarrierInternalSlot(register);
-        }
-        ctx.Environment = frame.Environment;
-        ctx.IsSuspended = true;
-        ctx.AwaitDestReg = awaitDestReg;
-        ctx.SavedCatchHandlers = frame.CatchHandlers.ToArray();
-		ctx.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
-		ctx.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
-		ctx.PendingException = frame.PendingException;
-		if (frame.PendingException is { } asyncPendingException)
-		{
-			ctx.BarrierInternalSlot(asyncPendingException);
-		}
-    }
-
     // ECMA-262 27.7.5.3 — resume an async function after the awaited promise
     // settles. Restores the saved frame state and continues execution from
     // the instruction pointer where Await suspended.
@@ -1287,22 +1204,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         ctx.IsRejectResume = isReject;
         ctx.IsSuspended = false;
 
-        var isResume = ctx.InstructionPointer > 0;
         var rootMark = _heap.RootCount;
 
         try
         {
-            // An async activation runs on the loop it was created for, for the
-            // same reason a generator does: the two lay a frame out differently.
-            var result = ctx.RunsOnRegisterWindow
-                ? Interp2ResumeAsync(ctx)
-                : ExecuteInternal(
-                    ctx.Function,
-                    Array.Empty<JsValue>(),
-                    ctx.ThisValue,
-                    ctx.OuterEnvironment,
-                    frameEnvironment: isResume ? ctx.Environment : null,
-                    asyncContext: ctx);
+            var result = Interp2ResumeAsync(ctx);
 
             if (ctx.IsSuspended)
             {
@@ -1388,22 +1294,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         PromiseCapability capability,
         out AsyncContext asyncCtx)
     {
-        // On the register-window loop the suspended state is a whole window,
-        // so the array is sized for one.
-        var layout = Interpreter2.Interp2Options.Enabled ? Interpreter2.FrameLayout.For(function) : null;
-        var runsOnRegisterWindow = layout is { AsyncEligible: true };
-        var registers = new JsValue[runsOnRegisterWindow
-            ? Math.Max(layout!.WindowSize, function.RegisterCount)
-            : function.RegisterCount];
-        for (var i = 0; i < registers.Length; i++)
-        {
-            registers[i] = JsValue.Undefined;
-        }
-
-        asyncCtx = new AsyncContext(function, registers, environment)
+        var layout = Interp2LayoutFor(function);
+        asyncCtx = new AsyncContext(function, NewSuspensionWindow(layout), environment)
         {
             ThisValue = thisValue,
-            RunsOnRegisterWindow = runsOnRegisterWindow,
         };
         // SelfHandle is what roots this context: TraceRoots only reaches an
         // async context via frame.AsyncContext?.SelfHandle. Discarding the
@@ -1420,17 +1314,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         asyncCtx.CapabilityReject = capability.Reject.Tag == JsValueTag.Object
             ? capability.Reject.AsObjectHandle() : null;
 
-        if (!runsOnRegisterWindow)
-        {
-            return ExecuteInternal(
-                function, Array.Empty<JsValue>(), thisValue, frameEnvironment: environment, asyncContext: asyncCtx);
-        }
-
         EnsureNativeStack();
         ValidateDeclarationInstantiation(function, environment);
         InstantiateVarDeclarations(function, environment);
         InstantiateLexicalDeclarations(function, environment);
-        return Interp2Loop.ExecuteProgram(layout!, environment, thisValue, asyncCtx);
+        return Interp2Loop.ExecuteProgram(layout, environment, thisValue, asyncCtx);
     }
 
     public ModuleEnvironmentRecord CreateModuleEnvironment(string? importMetaUrl = null)
@@ -1785,11 +1673,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         BytecodeFunction function,
         in CallArgs args,
         JsValue thisValue,
-        EnvironmentRecord? outerEnvironment = null,
-        EnvironmentRecord? frameEnvironment = null,
-        JsFunctionObject? callee = null,
-        GeneratorObject? ownerGenerator = null,
-        AsyncContext? asyncContext = null)
+        EnvironmentRecord? outerEnvironment,
+        JsFunctionObject callee)
     {
         if (_callDepth >= MaxCallDepth)
         {
@@ -1806,8 +1691,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var callTotalSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
         try
         {
-            var result = ExecuteInternalCore(
-                function, in args, thisValue, outerEnvironment, frameEnvironment, callee, ownerGenerator, asyncContext);
+            var result = ExecuteInternalCore(function, in args, thisValue, outerEnvironment, callee);
             return _tailCallRequested ? RunTailCallChain() : result;
         }
         finally
@@ -1873,44 +1757,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _tailArgs = null;
             _tailThis = default;
 
+            // A compiled callee continues the chain here, so a run of compiled
+            // tail calls takes no CLR stack; anything else is an ordinary call,
+            // and the register-window loop keeps its own tail calls flat.
             var target = ResolveObject(tailCallee);
-            if (target is not JsFunctionObject targetFunction ||
-                targetFunction.Kind is FunctionKind.Constructor or FunctionKind.Async or FunctionKind.Generator or FunctionKind.AsyncGenerator)
+            if (target is not JsFunctionObject { Kind: FunctionKind.Ordinary or FunctionKind.Arrow or FunctionKind.Method } targetFunction
+#if !PUBLISH_AOT
+                || !JitCompiler.PrefersCompiled(targetFunction.Function)
+#endif
+                )
             {
                 return CallFunction(tailCallee, tailArgs, tailThis);
             }
 
+            targetFunction.Function.Invocations++;
             var result = ExecuteInternalCore(
                 targetFunction.Function,
                 new CallArgs(tailArgs),
                 tailThis,
-                targetFunction.OuterEnvironment,
-                frameEnvironment: null,
-                callee: targetFunction,
-                ownerGenerator: null,
-                asyncContext: null);
+                ResolveFunctionOuterEnvironment(targetFunction),
+                targetFunction);
 
             if (!_tailCallRequested)
             {
                 return result;
             }
         }
-    }
-
-    // Why a frame is running on the old loop rather than the register-window
-    // one, for Interp2Stats. Eval, script and module code are refused outright;
-    // any other body carries its layout's reason.
-    private static string OldLoopReason(BytecodeFunction function, GeneratorObject? ownerGenerator, AsyncContext? asyncContext)
-    {
-        if (function.IsProgramCode)
-            return function.Kind == FunctionKind.Async ? "ModuleCode" : "ProgramCode";
-        var layout = function.IsClassConstructor ? Interpreter2.FrameLayout.ForConstruct(function) : Interpreter2.FrameLayout.For(function);
-        var reason = layout.Bailout == Interpreter2.Interp2Bailout.None ? "Eligible" : layout.Bailout.ToString();
-        if (layout.Bailout == Interpreter2.Interp2Bailout.UnsupportedOpCode && layout.BailoutOpCode is { } op)
-            reason += ":" + op;
-        if (ownerGenerator is not null)
-            return "Generator/" + reason;
-        return asyncContext is not null ? "Async/" + reason : reason;
     }
 
     /// <summary>
@@ -1960,1695 +1832,170 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(values), AllocationSite.Current()));
     }
 
+    /// <summary>
+    /// Enters a compiled body. Compiled code runs on an <see cref="InterpreterFrame"/>
+    /// whose variables live in the function's environment record, so this builds
+    /// that frame the way ECMA-262 10.2.1 PrepareForOrdinaryCall and 10.2.11
+    /// FunctionDeclarationInstantiation describe, then hands it to the delegate.
+    /// Only calls reach it - a class constructor, generator or async body is
+    /// never run compiled - and only when JitCompiler.PrefersCompiled said so.
+    /// </summary>
     private JsValue ExecuteInternalCore(
         BytecodeFunction function,
         in CallArgs args,
         JsValue thisValue,
-        EnvironmentRecord? outerEnvironment = null,
-        EnvironmentRecord? frameEnvironment = null,
-        JsFunctionObject? callee = null,
-        GeneratorObject? ownerGenerator = null,
-        AsyncContext? asyncContext = null)
+        EnvironmentRecord? outerEnvironment,
+        JsFunctionObject? callee)
     {
-        // B.6.4 — when the callee carries an outer EnvironmentRecord (set at
-        // CreateFunction time on JsFunctionObject), the new frame's env is a fresh
-        // declarative record chained to it so free identifier references walk the
-        // lexical scope chain through env records. Otherwise, fall back to the
-        // detached fresh env that InterpreterFrame would have allocated on its own.
-        // ECMA-262 10.2.1.3 OrdinaryCallBindThis:
-        //   Strict functions: `this` is passed through as-is (step 5).
-        //   Non-strict functions: null/undefined → global object (step 6),
-        //     any other primitive → boxed with ToObject (step 7).
-        // Arrow functions have no own `this`; derived constructors bind it via super().
-        var prologueSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-        var thisSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-        if (!function.IsArrow
-            && !function.IsDerivedConstructor)
+#if PUBLISH_AOT
+        throw new JsEngineFatalException($"'{function.Name}' has no compiled body in an AOT build.");
+#else
+        if (!JitCompiler.Enabled || function.JitDelegate is not { } compiled)
         {
-            if (function.IsStrictMode)
-            {
-                // Strict: pass through (including primitives).
-            }
-            else if (thisValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
+            throw new JsEngineFatalException($"'{function.Name}' was sent to compiled code without a compiled body.");
+        }
+
+        // ECMA-262 10.2.1.2 OrdinaryCallBindThis: a strict body takes its
+        // receiver as it comes, a sloppy one substitutes the global object for
+        // null/undefined and boxes any other primitive. An arrow has no `this`.
+        if (!function.IsArrow && !function.IsStrictMode)
+        {
+            if (thisValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
             {
                 thisValue = JsValue.FromObject(EnsureGlobalObject());
             }
             else if (thisValue.Tag != JsValueTag.Object)
             {
-                // Non-strict with a primitive (number, string, boolean, symbol, bigint):
-                // ECMA-262 10.2.1.3 step 7 — box it via ToObject so the receiver is
-                // always an object in sloppy mode.
                 thisValue = CreateObjectFromValue(thisValue);
             }
         }
 
-        if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.ThisBinding, thisSample);
-
         EnvironmentRecord? frameEnv;
-        if (frameEnvironment is not null)
-        {
-            frameEnv = frameEnvironment;
-        }
-        else if (outerEnvironment is null)
+        if (outerEnvironment is null)
         {
             frameEnv = null;
         }
-        else if (function.IsDerivedConstructor)
-        {
-            // `this` stays uninitialized until super(...) runs InitThisBinding.
-            frameEnv = StampEnvironment(new FunctionEnvironmentRecord(
-                ThisBindingStatus.Uninitialized,
-                callee?.SelfHandle is { } sh ? JsValue.FromObject(sh) : JsValue.Undefined,
-                JsValue.Undefined, callee?.HomeObject, outerEnvironment));
-            AttachFrameSlots(frameEnv, function);
-        }
         else if (function.IsArrow)
         {
-            // ECMA-262 9.1.1.3: arrow functions have no `this` binding of their
-            // own; a plain declarative record lets `this` resolve through the
-            // outer (enclosing function/global) environment.
+            // ECMA-262 9.1.1.3: an arrow has no `this` binding of its own; a
+            // plain declarative record lets `this` resolve outwards. It is
+            // still the arrow's variable environment, which a sloppy eval in
+            // the arrow must find rather than walking past it.
             var arrowEnv = StampEnvironment(new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
-            // It is still the arrow's variable environment, which a sloppy eval
-            // in the arrow must find rather than walking past to the enclosing
-            // function.
             arrowEnv.IsVariableScope = true;
+            AttachFrameSlots(arrowEnv, function);
             frameEnv = arrowEnv;
-            AttachFrameSlots(frameEnv, function);
         }
         else
         {
-            // Ordinary functions / methods bind `this` into a function
-            // environment record (10.2.1.2 OrdinaryCallBindThis) so that nested
-            // arrow functions — which read `this` via GetThisEnvironment — can
-            // observe it. Previously this lived only in frame.ThisValue, which
-            // is invisible to an inner arrow's own frame.
-            var envSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
+            // A function environment carries `this` (10.2.1.2), where an arrow
+            // inside reads it through GetThisEnvironment.
             var functionEnv = StampEnvironment(RentFunctionEnvironment(
                 callee?.SelfHandle is { } sh ? JsValue.FromObject(sh) : JsValue.Undefined,
                 callee?.HomeObject,
                 outerEnvironment));
-            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.EnvironmentCreate, envSample);
-
             // Attach before anything is bound: a binding created first would go
             // to the dictionary and then be shadowed by its own empty slot.
-            var slotSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
             AttachFrameSlots(functionEnv, function);
-            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.SlotAttach, slotSample);
-
-            var bindSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
             _ = functionEnv.BindThisValue(thisValue);
-            // ECMA-262 15.2.5: a named function expression binds its own name (immutably)
-            // in scope of its body so it can reference itself (e.g. for recursion).
-            var nameSelfHandle = callee?.SelfHandle ?? ownerGenerator?.SelfHandle;
-            if (function.BindsOwnNameInBody && function.Name is { Length: > 0 } selfName
-                && nameSelfHandle is { } selfHandle
-                && !BodyShadowsOwnName(function, selfName))
+            // ECMA-262 15.2.5: a named function expression binds its own name
+            // (immutably) in its body so it can refer to itself.
+            if (function.BindsOwnNameInBody && function.Name is { Length: > 0 } selfName &&
+                callee?.SelfHandle is { } selfHandle &&
+                !BodyShadowsOwnName(function, selfName))
             {
                 _ = functionEnv.CreateImmutableBinding(selfName, strict: function.IsStrictMode);
                 _ = functionEnv.InitializeBinding(selfName, JsValue.FromObject(selfHandle));
             }
-            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.BindThisAndName, bindSample);
+
             frameEnv = functionEnv;
         }
-        // Every call allocates a register file, and a JsValue is 32 bytes with a
-        // reference field in it, so this is both the bulk of the bytes a call
-        // costs and an array the CLR has to trace. Counting it is what turns
-        // "GC pauses dominate" into a number that can be attacked.
+
         _framesCreated++;
         _registerSlotsAllocated += function.RegisterCount;
-        var frameSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-        var frame = RentFrame(
-            function,
-            thisValue,
-            frameEnv,
-            RentRegisterFile(function.RegisterCount));
+        var frame = RentFrame(function, thisValue, frameEnv, RentRegisterFile(function.RegisterCount));
         frame.CalleeFunctionObject = callee;
-        frame.OwnerGenerator = ownerGenerator;
-        frame.AsyncContext = asyncContext;
-        // Safety net: cover frame environments created without StampEnvironment
-        // (InterpreterFrame's null-env fallback) so no store can miss the
-        // remembered-environment set.
+        // Cover an environment created without StampEnvironment (the frame's
+        // own fallback) so no store can miss the remembered-environment set.
         if (frame.Environment is { } frameEnvRecord && frameEnvRecord.OwnerHeap is null)
         {
             frameEnvRecord.OwnerHeap = _heap;
         }
 
-        if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.FrameCreate, frameSample);
-
-        // Resolve the slot arrays once for this activation. Every LoadVar and
-        // StoreVar in the body then reaches them through one reference compare.
-        if (frame.Environment is DeclarativeEnvironmentRecord ownSlots && ownSlots.OwnsSlotsOf(function))
+        // Compiled code reaches the slot arrays through the frame.
+        var slotEnvironment = frame.Environment as DeclarativeEnvironmentRecord;
+        if (slotEnvironment is not null && slotEnvironment.OwnsSlotsOf(function))
         {
-            frame.SlotEnvironment = ownSlots;
-            frame.SlotBindings = ownSlots.SlotBindingsFor(function);
-            frame.SlotPresence = ownSlots.SlotPresenceFor(function);
+            frame.SlotEnvironment = slotEnvironment;
+            frame.SlotBindings = slotEnvironment.SlotBindingsFor(function);
+            frame.SlotPresence = slotEnvironment.SlotPresenceFor(function);
         }
-        // Hoisted once per activation. Registers is a get-only property
-        // assigned in the frame's constructor, so the array cannot change
-        // underneath the loop; reloading it through the frame on every
-        // operand access is a field load the dispatch cannot afford at
-        // two or three accesses per instruction.
-        var registers = frame.Registers;
-        // Audit �1: pin this frame's registers/env into the GC root set for
-        // its execution lifetime. Dispose pops on every return path (normal
-        // return, exception, generator yield) via using-scope semantics.
-        using var _frameScope = new ActiveFrameScope(this, frame);
-        // H.5 - new.target: consume the one-shot pending slot set by
-        // ExecuteConstruct. Ordinary calls leave it Undefined.
-        if (_pendingNewTarget.Tag != JsValueTag.Undefined)
+        else
         {
-            frame.NewTarget = _pendingNewTarget;
-            _pendingNewTarget = JsValue.Undefined;
-            // ECMA-262 10.2.1.1 PrepareForOrdinaryCall: the function environment
-            // carries [[NewTarget]], which is where an arrow inside reads it.
-            if (frameEnvironment is null && !function.IsArrow &&
-                frame.Environment is FunctionEnvironmentRecord ownFunctionEnv)
-            {
-                ownFunctionEnv.SetNewTarget(frame.NewTarget);
-            }
+            slotEnvironment = null;
         }
 
-        // Arrow functions have no new.target of their own (ECMA-262 10.2.1):
-        // GetNewTarget reads it from GetThisEnvironment, the nearest enclosing
-        // function environment in the lexical chain - not from whoever called
-        // the arrow.
-        // Eval code resolves new.target the same way (ECMA-262 19.2.1.1
-        // PerformEval step 5 allows it wherever GetThisEnvironment is a function).
-        if (function.IsArrow || function.IsEvalCode)
+        // Pins the frame's registers and environment as GC roots until it returns.
+        using var frameScope = new ActiveFrameScope(this, frame);
+
+        // ECMA-262 10.2.1: an arrow's new.target is the enclosing function's.
+        // A call's is undefined, which the frame already holds.
+        if (function.IsArrow)
         {
             frame.NewTarget = ResolveLexicalNewTarget(frame.Environment);
         }
 
-        // Generator resume: restore saved execution state instead of fresh init.
-        // ECMA-262 27.5.1.2 Resume — the [[GeneratorContext]] holds IP, registers,
-        // and environment; we skip parameter binding and declaration instantiation
-        // because those were already done on the first .next() call.
-        if (ownerGenerator != null && ownerGenerator.InstructionPointer > 0)
+        // ECMA-262 10.2.11 FunctionDeclarationInstantiation: the formals, then
+        // the arguments object, then the body's declarations.
+        var parameterSlots = function.ParameterSlots;
+        for (var i = 0; i < function.ParameterNames.Count; i++)
         {
-            ResumeSuspendedFrame(frame, registers, ownerGenerator, asyncContext: null);
-        }
-        else if (asyncContext != null && asyncContext.InstructionPointer > 0)
-        {
-            ResumeSuspendedFrame(frame, registers, ownerGenerator: null, asyncContext);
-        }
-        else
-        {
-            var paramSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-            // Pre-create env bindings for locally-bound names that the spec mandates the
-            // function-environment record holds: each formal parameter, and `arguments`
-            // when the function gets its own arguments object. We deliberately do NOT
-            // pre-bind every VariableSlots entry: the inner compiler also allocates slots
-            // for free variable references, and creating local bindings for those would
-            // shadow the outer chain that LoadName/StoreName walks.
-            // Settled once for the activation rather than re-tested per
-            // parameter: a bundle whose functions take twenty of them paid a
-            // type test and an ownership call for each one.
-            var parameterSlots = function.ParameterSlots;
-            var slotEnvironment = frame.Environment as DeclarativeEnvironmentRecord;
-            if (slotEnvironment is not null && !slotEnvironment.OwnsSlotsOf(function))
+            JsValue parameterValue;
+            if (i == function.RestParameterIndex)
             {
-                slotEnvironment = null;
+                parameterValue = CreateRestArray(args, i);
+            }
+            else if (function.RestParameterIndex >= 0 && i > function.RestParameterIndex)
+            {
+                // The parser allows no formal after a rest parameter.
+                parameterValue = JsValue.Undefined;
+            }
+            else
+            {
+                parameterValue = i < args.Count ? args[i] : JsValue.Undefined;
             }
 
-            for (var i = 0; i < function.ParameterNames.Count; i++)
+            if (slotEnvironment is not null && (uint)i < (uint)parameterSlots.Length && parameterSlots[i] >= 0)
             {
-                var paramName = function.ParameterNames[i];
-                JsValue paramValue;
-                if (i == function.RestParameterIndex)
-                {
-                    paramValue = CreateRestArray(args, i);
-                }
-                else if (function.RestParameterIndex >= 0 && i > function.RestParameterIndex)
-                {
-                    // The parser disallows trailing parameters after a rest
-                    // parameter, but keep runtime behavior deterministic.
-                    paramValue = JsValue.Undefined;
-                }
-                else
-                {
-                    paramValue = i < args.Count ? args[i] : JsValue.Undefined;
-                }
-
-                if (slotEnvironment is not null &&
-                    (uint)i < (uint)parameterSlots.Length &&
-                    parameterSlots[i] >= 0)
-                {
-                    slotEnvironment.DeclareAtSlot(parameterSlots[i], paramValue, deletable: false, overwrite: true);
-                }
-                else
-                {
-                    _ = frame.Environment.CreateAndInitializeBinding(paramName, paramValue, deletable: false);
-                }
+                slotEnvironment.DeclareAtSlot(parameterSlots[i], parameterValue, deletable: false, overwrite: true);
             }
-
-            if (function.HasOwnArgumentsObject && !function.ArgumentsShadowedByParameter)
+            else
             {
-                var argumentsObject = CreateArgumentsObject(
-                    args,
-                    function.UsesRestrictedArgumentsObject,
-                    callee,
-                    function.UsesMappedArgumentsObject ? frame.Environment as DeclarativeEnvironmentRecord : null);
-                _ = frame.Environment.CreateAndInitializeBinding("arguments", argumentsObject, deletable: false);
+                _ = frame.Environment.CreateAndInitializeBinding(function.ParameterNames[i], parameterValue, deletable: false);
             }
-
-            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.ParameterBinding, paramSample);
-
-            var declSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-            ValidateDeclarationInstantiation(function, frame.Environment);
-            InstantiateVarDeclarations(function, frame.Environment);
-            InstantiateLexicalDeclarations(function, frame.Environment);
-            if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.Declarations, declSample);
         }
 
-        if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled) FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.Prologue, prologueSample);
-
-#if !PUBLISH_AOT
-        // Tier 4 #24: if a JIT delegate is available, run it instead of
-        // the dispatch loop. The delegate executes the entire function
-        // body and returns the function's return value. Exceptions
-        // propagate via JsThrownException same as the interpreter.
-        if (JitCompiler.Enabled && function.JitDelegate is { } jitFn)
+        if (function.HasOwnArgumentsObject && !function.ArgumentsShadowedByParameter)
         {
-            return jitFn(this, frame, 0);
+            var argumentsObject = CreateArgumentsObject(
+                args,
+                function.UsesRestrictedArgumentsObject,
+                callee,
+                function.UsesMappedArgumentsObject ? frame.Environment as DeclarativeEnvironmentRecord : null);
+            _ = frame.Environment.CreateAndInitializeBinding("arguments", argumentsObject, deletable: false);
         }
+
+        ValidateDeclarationInstantiation(function, frame.Environment);
+        InstantiateVarDeclarations(function, frame.Environment);
+        InstantiateLexicalDeclarations(function, frame.Environment);
+
+        if (FenBrowser.Js.Diagnostics.CompiledCodeCoverage.Enabled)
+        {
+            FenBrowser.Js.Diagnostics.CompiledCodeCoverage.RecordEntry(function);
+        }
+
+        return compiled(this, frame, 0);
 #endif
-
-        if (Interpreter2.Interp2Options.Log)
-        {
-            Interpreter2.Interp2Stats.RecordOldLoopFrame(OldLoopReason(function, ownerGenerator, asyncContext));
-        }
-
-        try
-        {
-        var instructions = function.InstructionArray;
-        // Only a generator or async frame can have an abrupt completion
-        // injected at a suspension point. Both are fixed when the frame is
-        // built, so an ordinary call need not re-test for one on every
-        // instruction it executes.
-        var mayResumeAbruptly = frame.OwnerGenerator is not null || frame.AsyncContext is not null;
-        // Plan §14.2: instruction budget and interrupt check.
-        var hasBudget = InstructionBudget > 0;
-        var hasWallClock = _wallClockDeadlineTicks != 0 || InterruptCallback is not null;
-        var checkBudgetAndWallClock = hasBudget || hasWallClock;
-        // The array is fixed for the life of the activation, so its length is a
-        // loop invariant the bounds check no longer has to re-derive.
-        var instructionCount = instructions.Length;
-        while (frame.InstructionPointer < instructionCount)
-        {
-            _heap.CollectAtSafePointIfRequested();
-            if (checkBudgetAndWallClock)
-            {
-                if (hasBudget && ++_instructionCount > InstructionBudget)
-                    throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded.")) { IsUncatchableByScript = true };
-                // Tier 5 #27: interrupt + wall-clock deadline, sampled every N
-                // instructions (WallClockCheckInterval=8192) to amortize the
-                // delegate invocation and TickCount64 read (a per-instruction
-                // delegate call is measurable on hot loops).
-                if (--_wallClockCheckCountdown <= 0)
-                {
-                    _wallClockCheckCountdown = WallClockCheckInterval;
-                    TraceMicrotaskExecutionProgressIfDue();
-                    if (InterruptCallback is { } cb && !cb())
-                        throw new JsThrownException(CreateRangeError("Execution interrupted.")) { IsUncatchableByScript = true };
-                    if (_wallClockDeadlineTicks != 0 && System.Environment.TickCount64 >= _wallClockDeadlineTicks)
-                        throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded.")) { IsUncatchableByScript = true };
-                }
-            }
-
-                // ECMA-262 27.5.1.5 GeneratorResumeAbrupt — inject a throw-mode
-            // completion into the resumed generator body. ThrowOrHandle routes
-            // through the frame's exception handler stack so try/catch blocks
-            // inside the generator can intercept the injected exception.
-            // YieldStar handles Throw/Return itself (ECMA-262 15.5.5 step 5).
-            if (mayResumeAbruptly && frame.OwnerGenerator is { } genFrame && genFrame.CompletionMode == GeneratorCompletionMode.Throw)
-            {
-                var nextIns = function.Instructions[frame.InstructionPointer];
-                if (nextIns.OpCode != OpCode.YieldStar)
-                {
-                    genFrame.CompletionMode = GeneratorCompletionMode.Normal;
-                    ThrowOrHandle(frame, genFrame.SentValue);
-                    continue;
-                }
-            }
-
-            // ECMA-262 27.5.3.3 GeneratorResumeAbrupt — inject a return-mode
-            // completion at the suspended yield. The body must NOT keep executing;
-            // only finally blocks covering the yield run (catch handlers never see
-            // a return completion). With no covering finally the generator
-            // completes immediately with the .return() argument.
-            if (mayResumeAbruptly && frame.OwnerGenerator is { } genReturn && genReturn.CompletionMode == GeneratorCompletionMode.Return)
-            {
-                var nextIns = function.Instructions[frame.InstructionPointer];
-                if (nextIns.OpCode != OpCode.YieldStar)
-                {
-                    genReturn.CompletionMode = GeneratorCompletionMode.Normal;
-                    var returnValue = genReturn.SentValue;
-                    if (!TryRouteReturnThroughFinally(frame, returnValue))
-                    {
-                        return returnValue;
-                    }
-
-                    continue;
-                }
-            }
-
-            // ECMA-262 27.7.5.3 AwaitRejected — when an awaited promise rejects,
-            // inject the rejection reason as a throw completion into the resumed
-            // async function body so `await rejectedPromise` throws.
-            if (mayResumeAbruptly && frame.AsyncContext is { } acFrame && acFrame.IsRejectResume)
-            {
-                acFrame.IsRejectResume = false;
-                ThrowOrHandle(frame, acFrame.SentValue);
-                continue;
-            }
-
-            ref readonly var ins = ref instructions[frame.InstructionPointer++];
-            TraceInstructionProgress(function, frame.InstructionPointer - 1, ins.OpCode);
-            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.Enabled)
-            {
-                FenBrowser.Js.Diagnostics.InterpreterProfiler.RecordOpCode(ins.OpCode, function);
-            }
-
-            if (FenBrowser.Js.Diagnostics.InterpreterProfiler.OpTimingEnabled)
-            {
-                FenBrowser.Js.Diagnostics.InterpreterProfiler.BeginOp(ins.OpCode);
-            }
-
-            switch (ins.OpCode)
-            {
-                case OpCode.LoadConst:
-                    registers[ins.A] = function.Constants[ins.B];
-                    break;
-                case OpCode.LoadVar:
-                    registers[ins.A] = LoadName(frame, ins.B, frame.InstructionPointer - 1);
-                    break;
-                case OpCode.LoadThis:
-                    // ECMA-262 9.1.2.5 GetThisEnvironment: walk the lexical
-                    // environment chain to the nearest record that provides a
-                    // `this` binding (a function or the global record). Arrow
-                    // functions create a declarative record with no own `this`,
-                    // so resolution must climb to the enclosing function's
-                    // FunctionEnvironmentRecord (or globalThis) rather than read
-                    // the call-site receiver, which is undefined for `arrow()`.
-                    var resolvedThisResult = ResolveThisBinding(frame.Environment, out var boundThis);
-                    if (resolvedThisResult == BindingOpResult.TdzAccess)
-                    {
-                        ThrowReferenceError(frame, "Must call super constructor in derived class before accessing 'this'.");
-                        break;
-                    }
-                    if (resolvedThisResult == BindingOpResult.Ok)
-                    {
-                        registers[ins.A] = boundThis;
-                    }
-                    else
-                    {
-                        registers[ins.A] = frame.ThisValue;
-                    }
-                    break;
-                case OpCode.StoreVar:
-                    StoreName(frame, ins.B, registers[ins.A], frame.InstructionPointer - 1);
-                    break;
-                case OpCode.InitVar:
-                    InitializeName(frame, ins.B, registers[ins.A]);
-                    break;
-                case OpCode.StoreVarTop:
-                    StoreNameInVariableEnvironment(frame, ins.B, registers[ins.A]);
-                    break;
-                case OpCode.LoadVarWithBase:
-                    try
-                    {
-                        registers[ins.A] = Interp2LoadFreeWithBase(
-                            frame.Environment, SlotNameTable.GetName(function, ins.B), function.IsStrictMode,
-                            out var withBase);
-                        registers[ins.C] = withBase;
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                    }
-
-                    break;
-                case OpCode.PreResolveVar:
-                    PreResolveBinding(frame, ins.B, frame.InstructionPointer - 1);
-                    break;
-                case OpCode.StoreResolvedVar:
-                    StoreToResolvedBinding(frame, ins.B, registers[ins.A], frame.InstructionPointer - 1);
-                    break;
-                case OpCode.Move:
-                    registers[ins.A] = registers[ins.B];
-                    break;
-                case OpCode.SetFunctionName:
-                    ApplyFunctionName(registers[ins.A], registers[ins.B], prefix: null);
-                    break;
-                case OpCode.SetElemDefine:
-                    // `{ [k]: v }`, a computed method name, and a class field (D bit 1),
-                    // defined the same way on both loops.
-                    try
-                    {
-                        Interp2DefineElement(registers[ins.A], registers[ins.B], registers[ins.C], ins.D);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                    }
-
-                    break;
-                case OpCode.StoreFieldKey:
-                    try { StoreComputedFieldKey(registers[ins.A], registers[ins.B]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.LoadFieldKey:
-                {
-                    // Load a pre-computed field key by index during
-                    // instance construction. Keys are stored on the
-                    // JsFunctionObject by StoreFieldKey at class definition time.
-                    var idx = ins.B;
-                    JsValue key = JsValue.Undefined;
-                    if (frame.Environment is FunctionEnvironmentRecord fen &&
-                        fen.FunctionObject.Tag == JsValueTag.Object)
-                    {
-                        var calleeObj = _heap.GetObject(fen.FunctionObject.AsObjectHandle());
-                        if (calleeObj is JsFunctionObject calleeFn &&
-                            idx < calleeFn.ComputedFieldKeys.Count)
-                        {
-                            key = calleeFn.ComputedFieldKeys[idx];
-                        }
-                    }
-                    registers[ins.A] = key;
-                    break;
-                }
-                case OpCode.Jump:
-                    // Tier-4 #24 (audit �3.2): a back-edge is a Jump
-                    // whose target precedes the source IP. Saturating add
-                    // so a tight inner loop in a runaway script can't
-                    // overflow into negative territory and reset
-                    // tier-up trigger logic.
-                    if (ins.A < frame.InstructionPointer - 1 && function.BackEdges < int.MaxValue)
-                    {
-                        function.BackEdges++;
-                        frame.InstructionPointer = ins.A;
-#if !PUBLISH_AOT
-                        if (TryTransferToCompiledCode(function, frame, ins.A, out var jumpResult))
-                        {
-                            return jumpResult;
-                        }
-#endif
-                        break;
-                    }
-
-                    frame.InstructionPointer = ins.A;
-                    break;
-                case OpCode.JumpIfFalse:
-                    if (!IsTruthy(registers[ins.A]))
-                    {
-                        if (ins.B < frame.InstructionPointer - 1 && function.BackEdges < int.MaxValue)
-                        {
-                            function.BackEdges++;
-                            frame.InstructionPointer = ins.B;
-#if !PUBLISH_AOT
-                            if (TryTransferToCompiledCode(function, frame, ins.B, out var branchResult))
-                            {
-                                return branchResult;
-                            }
-#endif
-                            break;
-                        }
-
-                        frame.InstructionPointer = ins.B;
-                    }
-                    break;
-                case OpCode.PushHandler:
-                    frame.CatchHandlers.Push(ins.A);
-					frame.FinallyHandlers.Push(ins.D);
-					frame.HandlerEnvironments.Push(frame.Environment);
-                    break;
-                case OpCode.PopHandler:
-                    if (frame.CatchHandlers.Count > 0)
-                    {
-                        frame.CatchHandlers.Pop(); frame.FinallyHandlers.Pop();
-                        if (frame.HandlerEnvironments.Count > 0) frame.HandlerEnvironments.Pop();
-                    }
-
-                    break;
-                case OpCode.Throw:
-                    ThrowOrHandle(frame, registers[ins.A]);
-                    break;
-                case OpCode.NewObject:
-                {
-                    var handle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
-                    registers[ins.A] = JsValue.FromObject(handle);
-                    break;
-                }
-                case OpCode.CopyDataProperties:
-                {
-                    // ECMA-262 13.2.5.5 object spread `{ ...src }`: copy own
-                    // enumerable string+symbol properties from the source into the
-                    // target object literal. null/undefined source is a no-op.
-                    CopyDataPropertiesInto(registers[ins.A], registers[ins.B]);
-                    break;
-                }
-                case OpCode.NewArray:
-                {
-                    var obj = CreateArrayObject(ins.B);
-                    var handle = _heap.AllocateObject(obj, AllocationSite.Current());
-                    registers[ins.A] = JsValue.FromObject(handle);
-                    break;
-                }
-                case OpCode.NewRegExp:
-                {
-                    var rawText = function.Constants[ins.B].AsString();
-                    registers[ins.A] = NewRegExpLiteral(rawText);
-                    break;
-                }
-                case OpCode.GetTemplateObject:
-                {
-                    registers[ins.A] = GetTemplateObject(function, ins.B);
-                    break;
-                }
-                case OpCode.DefineGetter:
-                case OpCode.DefineSetter:
-                    HandleDefineAccessor(frame, function, ins);
-                    break;
-                case OpCode.DefineGetterByReg:
-                case OpCode.DefineSetterByReg:
-                    HandleDefineAccessorByReg(frame, ins);
-                    break;
-                case OpCode.PrologueEnd:
-                    // ECMA-262 FunctionDeclarationInstantiation runs synchronously
-                    // before generator/async-generator construction returns to the
-                    // caller. When this frame is owned by a generator, treat the
-                    // marker like a value-less yield: persist the frame state and
-                    // hand control back to the call-site path so it can return the
-                    // newly-paused generator. For ordinary frames it is a Nop.
-                    if (frame.OwnerGenerator is not null)
-                    {
-                        SaveGeneratorState(frame, 0);
-                        return JsValue.Undefined;
-                    }
-                    break;
-                case OpCode.EnterFunctionBodyScope:
-                    EnterFunctionBodyScope(frame, function);
-                    break;
-                case OpCode.DefineMethod:
-                    HandleDefineMethod(frame, function, ins);
-                    break;
-                case OpCode.DefineMethodByReg:
-                    HandleDefineMethodByReg(frame, ins);
-                    break;
-                case OpCode.SetHomeObject:
-                    HandleSetHomeObject(frame, ins);
-                    break;
-                // Both of these can throw from user code - ToPropertyKey on the
-                // computed form runs a toString, and either can reach a getter
-                // on the base prototype. Unwrapped, that exception left the
-                // dispatch loop entirely instead of going to this frame's
-                // handler stack, so a `try` around `super[k]` never saw it.
-                case OpCode.LoadSuperProperty:
-                    try
-                    {
-                        HandleLoadSuperProperty(frame, function, ins);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                    }
-
-                    break;
-                case OpCode.LoadSuperElement:
-                    try
-                    {
-                        HandleLoadSuperElement(frame, ins);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                    }
-
-                    break;
-                case OpCode.DynamicImport:
-                    registers[ins.A] = HandleDynamicImport(registers[ins.B], registers[ins.C], frame.Environment);
-                    break;
-                case OpCode.ImportMeta:
-                    registers[ins.A] = HandleImportMeta(frame.Environment);
-                    break;
-                case OpCode.ImportSource:
-                    registers[ins.A] = HandleImportSource(registers[ins.B], registers[ins.C], frame.Environment);
-                    break;
-                case OpCode.ImportDefer:
-                    registers[ins.A] = HandleImportDefer(registers[ins.B], registers[ins.C], frame.Environment);
-                    break;
-                case OpCode.LoadSuperConstructor:
-                    HandleLoadSuperConstructor(frame, ins);
-                    break;
-                case OpCode.LoadNewTarget:
-                    registers[ins.A] = frame.NewTarget;
-                    break;
-                case OpCode.InitThisBinding:
-                    try
-                    {
-                        BindThisFromSuper(frame.Environment, registers[ins.A]);
-                        frame.ThisValue = registers[ins.A];
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                    }
-
-                    break;
-                case OpCode.SuperCall:
-                case OpCode.SuperCallSpread:
-                    try
-                    {
-                        var superArgs = ins.OpCode == OpCode.SuperCall
-                            ? CallArgs.FromRegisters(registers, ins.C, ins.D)
-                            : new CallArgs(SpreadArguments(registers[ins.C]));
-                        registers[ins.A] = SuperConstruct(registers[ins.B], superArgs, frame.NewTarget);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                    }
-
-                    break;
-                case OpCode.Yield:
-                {
-                    // ECMA-262 27.5.1.3 GeneratorYield — save frame state to the
-                    // owner generator so the next .next()/resume continues here.
-                    SaveGeneratorState(frame, ins.A);
-
-                    var resultObj = CreateOrdinaryObject();
-                    resultObj.DefineOwnProperty("value", new JsPropertyDescriptor(registers[ins.B], Writable: true, Enumerable: true, Configurable: true));
-                    resultObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
-                    return JsValue.FromObject(_heap.AllocateObject(resultObj, AllocationSite.Current()));
-                }
-                case OpCode.YieldStar:
-                {
-                    // ECMA-262 15.5.5 yield*: each resume re-runs this instruction,
-                    // which forwards the pending completion to the delegate.
-                    var gen = frame.OwnerGenerator!;
-                    YieldStarOutcome outcome;
-                    JsValue stepValue;
-                    try
-                    {
-                        outcome = YieldStarStep(gen, registers[ins.B], out stepValue);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                        break;
-                    }
-
-                    if (outcome == YieldStarOutcome.Done)
-                    {
-                        registers[ins.A] = stepValue;
-                        break;
-                    }
-
-                    if (outcome == YieldStarOutcome.Return)
-                    {
-                        if (!TryRouteReturnThroughFinally(frame, stepValue))
-                        {
-                            return stepValue;
-                        }
-
-                        break;
-                    }
-
-                    // Suspend with the IP back on this instruction.
-                    gen.YieldDestReg = ins.A;
-                    gen.InstructionPointer = frame.InstructionPointer - 1;
-                    Array.Copy(frame.Registers, gen.Registers, frame.Registers.Length);
-                    foreach (var register in frame.Registers)
-                    {
-                        gen.BarrierInternalSlot(register);
-                    }
-
-                    gen.Environment = frame.Environment;
-                    gen.State = GeneratorState.Suspended;
-                    gen.SavedCatchHandlers = frame.CatchHandlers.ToArray();
-                    gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
-                    gen.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
-                    gen.PendingException = frame.PendingException;
-                    if (frame.PendingException is { } yieldStarPendingException)
-                    {
-                        gen.BarrierInternalSlot(yieldStarPendingException);
-                    }
-
-                    return stepValue;
-                }
-                case OpCode.EnterScope:
-                    frame.Environment = CreateBlockScope(frame.Environment, function, ins);
-                    break;
-                case OpCode.LeaveScope:
-                {
-                    frame.Environment = frame.Environment.OuterEnv ?? frame.Environment;
-                    break;
-                }
-                case OpCode.Nop:
-                    break;
-                case OpCode.NextIterationEnv:
-                {
-                    CreatePerIterationEnvironment(frame, ins.A);
-                    break;
-                }
-                case OpCode.PushWithEnvironment:
-                {
-                    // ECMA-262 14.11.2 — ToObject(value), then push a with object
-                    // environment record so the body resolves names against it.
-                    // Catch the JsThrownException and route it through ThrowOrHandle
-                    // so the JS try/catch mechanism can intercept it.
-                    try
-                    {
-                        frame.Environment = CreateWithEnvironment(registers[ins.A], frame.Environment);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                    }
-                    break;
-                }
-                case OpCode.EndFinally:
-                {
-                    if (frame.PendingException is { } pending)
-                    {
-                        frame.PendingException = null;
-                        ThrowOrHandle(frame, pending);
-                    }
-                    else if (frame.PendingReturn is { } pendingReturn)
-                    {
-                        // A return completion finished this finally — forward it
-                        // to the next enclosing finally, or complete the function.
-                        frame.PendingReturn = null;
-                        if (!TryRouteReturnThroughFinally(frame, pendingReturn))
-                        {
-                            return pendingReturn;
-                        }
-                    }
-
-                    break;
-                }
-                case OpCode.Await:
-                {
-                    try
-                    {
-                        var result = AwaitValue(frame, registers[ins.B], ins.A);
-                        registers[ins.A] = result;
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                        break;
-                    }
-
-                    // If AwaitValue suspended the frame, return from the
-                    // interpreter loop so control flows back to CallFunction
-                    // which returns the async function's pending promise.
-                    if (frame.AsyncContext is { IsSuspended: true })
-                        return JsValue.Undefined;
-
-                    break;
-                }
-                case OpCode.SetPrototype:
-                    try { SetPrototypeFromCode(registers[ins.A], registers[ins.B], ins.D != 0); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.ValidateClassHeritage:
-                    try { ValidateClassHeritage(registers[ins.A]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.SetPropByName:
-                    try
-                    {
-                        // D=1 is an object literal's own property. ECMA-262
-                        // 13.2.5.5 creates it rather than assigning it, so an
-                        // inherited setter must not run and an own property has
-                        // to exist afterwards even when one is inherited.
-                        if (ins.D != 0)
-                        {
-                            DefineOwnDataProperty(
-                                registers[ins.A], function.PropertyNames[ins.B], registers[ins.C]);
-                            break;
-                        }
-
-                        SetPropertyByNameCore(
-                            function,
-                            frame.InstructionPointer - 1,
-                            registers[ins.A],
-                            function.PropertyNames[ins.B],
-                            registers[ins.C],
-                            function.IsStrictMode);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                    }
-
-                    break;
-                case OpCode.GetPropByName:
-                {
-                    var receiver = registers[ins.B];
-                    var prop = function.PropertyNames[ins.C];
-                    var icOffset = frame.InstructionPointer - 1;
-                    if (TryGetLoadIC(function, icOffset, receiver, prop, out var icResult))
-                    {
-                        registers[ins.A] = icResult;
-                        break;
-                    }
-                    try
-                    {
-                        registers[ins.A] = GetPropertyByNameMiss(function, icOffset, receiver, prop);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                    }
-                    break;
-                }
-                case OpCode.DeletePropByName:
-                {
-                    var receiver = registers[ins.B];
-                    // ECMA-262 13.5.1.2: delete of a property reference does
-                    // ToObject(base) first, so `delete null.x` / `delete undefined.x`
-                    // throw TypeError. Other primitives box harmlessly (delete of a
-                    // non-own property yields true).
-                    if (receiver.Tag is JsValueTag.Null or JsValueTag.Undefined)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError(
-                            "Cannot convert " + (receiver.Tag == JsValueTag.Null ? "null" : "undefined") + " to object."));
-                        break;
-                    }
-
-                    if (receiver.Tag != JsValueTag.Object)
-                    {
-                        registers[ins.A] = JsValue.FromBoolean(true);
-                        break;
-                    }
-
-                    var prop = function.PropertyNames[ins.C];
-                    var obj = ResolveObject(receiver);
-                    if (obj is ProxyObject proxyDel)
-                    {
-                        var deleted = ProxyDelete(proxyDel, prop);
-                        if (!deleted && function.IsStrictMode)
-                        {
-                            ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{prop}'."));
-                            break;
-                        }
-
-                        registers[ins.A] = JsValue.FromBoolean(deleted);
-                        break;
-                    }
-                    var deletedProp = obj.DeleteProperty(prop);
-                    if (!deletedProp && function.IsStrictMode)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{prop}'."));
-                        break;
-                    }
-
-                    registers[ins.A] = JsValue.FromBoolean(deletedProp);
-                    break;
-                }
-                case OpCode.SetElem:
-                    PerformSetElement(
-                        frame,
-                        registers[ins.A],
-                        registers[ins.B],
-                        registers[ins.C],
-                        function.IsStrictMode);
-                    break;
-                case OpCode.SetElemByIndex:
-                    PerformSetElementByIndex(
-                        frame,
-                        registers[ins.A],
-                        ins.B,
-                        registers[ins.C],
-                        function.IsStrictMode);
-                    break;
-                case OpCode.SpreadAppend:
-                {
-                    // ECMA-262 13.2.4.1 / 13.3.7.1 — expand the iterable in C into the
-                    // array in A starting at the numeric next-index held in B, then
-                    // write the updated index back to B.
-                    var targetHandle = ResolveObjectHandle(registers[ins.A]);
-                    var targetObj = _heap.GetObject(targetHandle);
-                    var startIndex = (int)registers[ins.B].AsNumber();
-                    var values = CollectSpreadValues(registers[ins.C]);
-
-                    var rootMark = _heap.RootCount;
-                    try
-                    {
-                        _heap.PushRoot(targetHandle);
-                        foreach (var v in values)
-                        {
-                            if (v.Tag == JsValueTag.Object)
-                            {
-                                _heap.PushRoot(v.AsObjectHandle());
-                            }
-                        }
-
-                        for (var k = 0; k < values.Count; k++)
-                        {
-                            var key = (startIndex + k).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                            _ = SetPropertyValue(targetHandle, targetObj, key, values[k], registers[ins.A]);
-                        }
-                    }
-                    finally
-                    {
-                        _heap.PopRootsTo(rootMark);
-                    }
-
-                    registers[ins.B] = JsValue.FromNumber(startIndex + values.Count);
-                    break;
-                }
-                case OpCode.DeleteElem:
-                {
-                    var receiver = registers[ins.B];
-                    // ECMA-262 13.5.1.2: ToObject(base) happens before the key is
-                    // coerced, so `delete null[x]` throws TypeError before x's
-                    // toString runs.
-                    if (receiver.Tag is JsValueTag.Null or JsValueTag.Undefined)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError(
-                            "Cannot convert " + (receiver.Tag == JsValueTag.Null ? "null" : "undefined") + " to object."));
-                        break;
-                    }
-
-                    if (receiver.Tag != JsValueTag.Object)
-                    {
-                        registers[ins.A] = JsValue.FromBoolean(true);
-                        break;
-                    }
-
-                    var obj = ResolveObject(receiver);
-                    var keyValueDel = registers[ins.C];
-                    if (keyValueDel.Tag == JsValueTag.Symbol)
-                    {
-                        var deletedSymbol = obj is ProxyObject deleteSymbolProxy
-                            ? ProxyDelete(deleteSymbolProxy, keyValueDel)
-                            : obj.DeleteSymbolProperty(keyValueDel.AsSymbolId());
-                        if (!deletedSymbol && function.IsStrictMode)
-                        {
-                            ThrowOrHandle(frame, CreateTypeError("Cannot delete symbol-keyed property."));
-                            break;
-                        }
-
-                        registers[ins.A] = JsValue.FromBoolean(deletedSymbol);
-                        break;
-                    }
-                    var key = ToPropertyKey(keyValueDel);
-                    var deletedKey = obj.DeleteProperty(key);
-                    if (!deletedKey && function.IsStrictMode)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{key}'."));
-                        break;
-                    }
-
-                    registers[ins.A] = JsValue.FromBoolean(deletedKey);
-                    break;
-                }
-                case OpCode.EnumerateKeys:
-                {
-                    registers[ins.A] = CreateForInIterator(registers[ins.B]);
-                    break;
-                }
-                case OpCode.EnumerateValues:
-                {
-                    // GetIterator runs the user @@iterator method, which can throw;
-                    // route it through the frame's handler stack like other
-                    // user-code-invoking opcodes.
-                    try
-                    {
-                        // C=1: strict GetIterator (destructuring) — array-likes
-                        // without @@iterator throw instead of falling back.
-                        registers[ins.A] = CreateForOfIteratorState(registers[ins.B], requireIterable: ins.C == 1);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                }
-                case OpCode.ForOfNext:
-                {
-                    // Lazy mode calls the user .next(), which can throw.
-                    try
-                    {
-                        var iter = ResolveObject(registers[ins.B]) as ForOfIteratorObject
-                            ?? throw new InvalidOperationException("Invalid for-of iterator object.");
-                        if (ForOfStepDone(iter, out var value))
-                        {
-                            frame.InstructionPointer = ins.C;
-                        }
-                        else
-                        {
-                            registers[ins.A] = value;
-                        }
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                }
-                case OpCode.EnumerateValuesAsync:
-                {
-                    // GetIterator(source, async) runs user code (@@asyncIterator and
-                    // the sync fallback alike), so it takes the handler stack route.
-                    try
-                    {
-                        registers[ins.A] = CreateForAwaitIteratorState(registers[ins.B]);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                }
-                case OpCode.AsyncIterNext:
-                    try
-                    {
-                        if (ForAwaitNext(registers[ins.B], out var nextValue))
-                            frame.InstructionPointer = ins.C;
-                        else
-                            registers[ins.A] = nextValue;
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.AsyncIterFinish:
-                    try
-                    {
-                        if (ForAwaitFinish(registers[ins.C], registers[ins.B], out var finishedValue))
-                            frame.InstructionPointer = ins.D;
-                        else
-                            registers[ins.A] = finishedValue;
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.IteratorClose:
-                {
-                    // ECMA-262 7.4.11 — emitted on the for-of break exit path and by
-                    // destructuring patterns. The iterator's return() method (and the
-                    // not-an-object TypeError) must be observable by an enclosing try.
-                    // C=1 is the throw-completion form (7.4.11 step 6: when closing
-                    // because of an existing abrupt completion, errors from return()
-                    // and a non-object result are swallowed so the original exception
-                    // wins).
-                    try
-                    {
-                        if (ResolveObject(registers[ins.B]) is ForOfIteratorObject closing)
-                        {
-                            CloseForOfIteratorState(closing, suppressErrors: ins.C == 1);
-                        }
-                    }
-                    catch (JsThrownException ex) when (!ex.IsUncatchableByScript)
-                    {
-                        if (ins.C != 1)
-                        {
-                            ThrowOrHandle(frame, ex.Value);
-                        }
-                    }
-                    break;
-                }
-                case OpCode.ForInNext:
-                {
-                    var iterator = ResolveObject(registers[ins.B]) as ForInIteratorObject
-                        ?? throw new InvalidOperationException("Invalid for-in iterator object.");
-                    if (!iterator.TryMoveNext(out var key))
-                    {
-                        frame.InstructionPointer = ins.C;
-                        break;
-                    }
-
-                    registers[ins.A] = JsValue.FromString(key);
-                    break;
-                }
-                // H.5 — private field ops with brand validation.
-                // ECMA-262 9.1.10 PrivateFieldAdd / PrivateFieldGet / PrivateFieldFind.
-                // Brand is a class-unique token stored in function.BrandTokens[ins.D].
-                case OpCode.DefinePrivateField:
-                    try { DefinePrivateField(function, registers[ins.A], function.PropertyNames[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.GetPrivateField:
-                {
-                    var objVal = registers[ins.B];
-                    var name = function.PropertyNames[ins.C];
-                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
-                    if (objVal.Tag == JsValueTag.HostObject)
-                    {
-                        try
-                        {
-                            if (!TryGetHostPrivateField(objVal, name, brand, out var hostPrivateValue))
-                            {
-                                ThrowOrHandle(frame, CreateTypeError("Cannot read private field from an object whose class did not declare it."));
-                                break;
-                            }
-                            registers[ins.A] = hostPrivateValue;
-                        }
-                        catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                        break;
-                    }
-                    if (objVal.Tag != JsValueTag.Object)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError("Cannot read private field from non-object."));
-                        break;
-                    }
-                    var obj = _heap.GetObject(objVal.AsObjectHandle());
-                    if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError("Cannot read private field from an object whose class did not declare it."));
-                        break;
-                    }
-                    if (!TryGetPropertyValue(obj, objVal, name, out var privateValue))
-                    {
-                        ThrowOrHandle(frame, CreateTypeError("Cannot read private field from an object whose class did not declare it."));
-                        break;
-                    }
-                    registers[ins.A] = privateValue;
-                    break;
-                }
-                case OpCode.SetPrivateField:
-                {
-                    var objVal = registers[ins.A];
-                    var name = function.PropertyNames[ins.B];
-                    var value = registers[ins.C];
-                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
-                    if (objVal.Tag == JsValueTag.HostObject)
-                    {
-                        try
-                        {
-                            if (!TrySetHostPrivateField(objVal, name, value, brand))
-                            {
-                                ThrowOrHandle(frame, CreateTypeError("Cannot write private field to an object whose class did not declare it."));
-                            }
-                        }
-                        catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                        break;
-                    }
-                    if (objVal.Tag != JsValueTag.Object)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError("Cannot write private field to non-object."));
-                        break;
-                    }
-                    var obj = _heap.GetObject(objVal.AsObjectHandle());
-                    if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError("Cannot write private field to an object whose class did not declare it."));
-                        break;
-                    }
-                    WritePrivateField(obj, objVal, name, value);
-                    break;
-                }
-                case OpCode.GetElem:
-                case OpCode.GetElemConst:
-                {
-                    var receiver = registers[ins.B];
-                    var keyValue = ins.OpCode == OpCode.GetElemConst
-                        ? function.Constants[ins.C]
-                        : registers[ins.C];
-                    try
-                    {
-                        ThrowIfNullishElementBase(receiver, keyValue);
-
-                        if (keyValue.Tag == JsValueTag.Symbol)
-                        {
-                            registers[ins.A] = GetReceiverSymbolProperty(receiver, keyValue.AsSymbolId());
-                        }
-                        else if (TryGetDenseElement(receiver, keyValue, out var denseElement))
-                        {
-                            // A dense array element is an own data property, so the
-                            // answer is the slot itself: no key to build, no table to
-                            // walk, no prototype chain to consider.
-                            registers[ins.A] = denseElement;
-                        }
-                        else
-                        {
-                            // Tier 4 #20: GetElem IC fast path for the common
-                            // `obj["foo"]` (string-keyed) form. Other key types
-                            // (Int32 indices into Arrays, Number, etc.) fall
-                            // through to the generic ToPropertyKey path.
-                            var icOffsetElem = frame.InstructionPointer - 1;
-                            if (keyValue.Tag == JsValueTag.String &&
-                                TryGetElemStringIC(function, icOffsetElem, receiver, keyValue.AsString(), out var elemResult))
-                            {
-                                registers[ins.A] = elemResult;
-                            }
-                            else
-                            {
-                                var propKey = ToPropertyKey(keyValue);
-                                registers[ins.A] = GetReceiverProperty(receiver, propKey);
-                                if (keyValue.Tag == JsValueTag.String)
-                                {
-                                    PopulateGetElemStringIC(function, icOffsetElem, receiver, propKey);
-                                }
-                            }
-                        }
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame))
-                    {
-                        ThrowOrHandle(frame, ex.Value);
-                    }
-
-                    break;
-                }
-                case OpCode.CreateFunction:
-                {
-                    var nested = function.NestedFunctions[ins.B];
-                    // Capture the current lexical EnvironmentRecord so closures
-                    // resolve free identifiers through the env chain.
-                    registers[ins.A] = CreateFunctionObject(nested, frame.Environment);
-                    break;
-                }
-                case OpCode.Call0:
-                {
-                    StoreCallResult(
-                        frame,
-                        ins.A,
-                        registers[ins.B],
-                        CallArgs.Empty,
-                        JsValue.Undefined,
-                        allowDirectEval: ins.E == DirectEvalCallFlag,
-                        icOffset: frame.InstructionPointer - 1);
-                    break;
-                }
-                case OpCode.Call1:
-                {
-                    StoreCallResult(
-                        frame,
-                        ins.A,
-                        registers[ins.B],
-                        new CallArgs(registers[ins.C]),
-                        JsValue.Undefined,
-                        allowDirectEval: ins.E == DirectEvalCallFlag,
-                        icOffset: frame.InstructionPointer - 1);
-                    break;
-                }
-                case OpCode.CallMethod0:
-                {
-                    StoreCallResult(frame, ins.A, registers[ins.B], CallArgs.Empty, registers[ins.C], icOffset: frame.InstructionPointer - 1);
-                    break;
-                }
-                case OpCode.CallMethod1:
-                {
-                    StoreCallResult(frame, ins.A, registers[ins.B], new CallArgs(registers[ins.D]), registers[ins.C], icOffset: frame.InstructionPointer - 1);
-                    break;
-                }
-                case OpCode.CallMethodN:
-                {
-                    var callArgs = CallArgs.FromRegisters(registers, ins.D, ins.E);
-
-                    StoreCallResult(frame, ins.A, registers[ins.B], callArgs, registers[ins.C], icOffset: frame.InstructionPointer - 1);
-                    break;
-                }
-                case OpCode.CallN:
-                {
-                    var argSample = FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled ? FenBrowser.Js.Diagnostics.CallPathProfiler.Begin() : default;
-                    var callArgs = CallArgs.FromRegisters(registers, ins.C, ins.D);
-
-                    if (FenBrowser.Js.Diagnostics.CallPathProfiler.Enabled)
-                    {
-                        FenBrowser.Js.Diagnostics.CallPathProfiler.End(FenBrowser.Js.Diagnostics.CallPathProfiler.Stage.ArgumentArray, argSample);
-                    }
-
-                    StoreCallResult(
-                        frame,
-                        ins.A,
-                        registers[ins.B],
-                        callArgs,
-                        JsValue.Undefined,
-                        allowDirectEval: ins.E == DirectEvalCallFlag,
-                        icOffset: frame.InstructionPointer - 1);
-                    break;
-                }
-                case OpCode.TailCall0:
-                    _tailCallRequested = true;
-                    _tailCallee = registers[ins.B];
-                    _tailArgs = Array.Empty<JsValue>();
-                    _tailThis = JsValue.Undefined;
-                    return JsValue.Undefined;
-                case OpCode.TailCall1:
-                    _tailCallRequested = true;
-                    _tailCallee = registers[ins.B];
-                    _tailArgs = new[] { registers[ins.C] };
-                    _tailThis = JsValue.Undefined;
-                    return JsValue.Undefined;
-                case OpCode.TailCallN:
-                {
-                    var tailArgs = new JsValue[ins.D];
-                    for (var i = 0; i < ins.D; i++)
-                    {
-                        tailArgs[i] = registers[ins.C + i];
-                    }
-                    _tailCallRequested = true;
-                    _tailCallee = registers[ins.B];
-                    _tailArgs = tailArgs;
-                    _tailThis = JsValue.Undefined;
-                    return JsValue.Undefined;
-                }
-                case OpCode.CallSpread:
-                {
-                    var unpackedArgs = SpreadArguments(registers[ins.C]);
-                    var thisVal = ins.D != 0 ? registers[ins.D] : JsValue.Undefined;
-                    StoreCallResult(
-                        frame,
-                        ins.A,
-                        registers[ins.B],
-                        unpackedArgs,
-                        thisVal,
-                        allowDirectEval: ins.E == DirectEvalCallFlag);
-                    break;
-                }
-                case OpCode.ConstructSpread:
-                {
-                    StoreConstructResult(frame, ins.A, registers[ins.B], SpreadArguments(registers[ins.C]));
-                    break;
-                }
-                case OpCode.Construct0:
-                {
-                    StoreConstructResult(frame, ins.A, registers[ins.B], Array.Empty<JsValue>());
-                    break;
-                }
-                case OpCode.Construct1:
-                {
-                    StoreConstructResult(frame, ins.A, registers[ins.B], new[] { registers[ins.C] });
-                    break;
-                }
-                case OpCode.ConstructN:
-                {
-                    var ctorArgs = new JsValue[ins.D];
-                    for (var i = 0; i < ins.D; i++)
-                    {
-                        ctorArgs[i] = registers[ins.C + i];
-                    }
-
-                    StoreConstructResult(frame, ins.A, registers[ins.B], ctorArgs);
-                    break;
-                }
-                case OpCode.Not:
-                    registers[ins.A] = JsValue.FromBoolean(!IsTruthy(registers[ins.B]));
-                    break;
-                case OpCode.Pos:
-                    try
-                    {
-                        registers[ins.A] = JsValue.FromNumberCompact(ToNumber(registers[ins.B]));
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.Neg:
-                    try
-                    {
-                        var numeric = ToNumericValue(registers[ins.B]);
-                        if (numeric.Tag == JsValueTag.BigInt)
-                            registers[ins.A] = JsValue.FromBigInt(-numeric.AsBigInt());
-                        else
-                            registers[ins.A] = JsValue.FromNumberCompact(-numeric.AsNumber());
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.Void:
-                    registers[ins.A] = JsValue.Undefined;
-                    break;
-                case OpCode.ToNumeric:
-                    // ToNumeric can run user code (valueOf/toString via ToPrimitive)
-                    // and a Symbol/BigInt mismatch throws — route through the
-                    // frame handler stack.
-                    try
-                    {
-                        registers[ins.A] = ToNumericValue(registers[ins.B]);
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.ToStringCoerce:
-                    // ToString runs user code (toString/valueOf via ToPrimitive) and may
-                    // throw — route through the frame handler stack.
-                    try
-                    {
-                        registers[ins.A] = JsValue.FromString(ToStringValue(registers[ins.B]));
-                    }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.Increment:
-                    registers[ins.A] = StepNumeric(registers[ins.B], +1);
-                    break;
-                case OpCode.Decrement:
-                    registers[ins.A] = StepNumeric(registers[ins.B], -1);
-                    break;
-                case OpCode.Delete:
-                    registers[ins.A] = DeleteName(frame, ins.B);
-                    break;
-                case OpCode.TypeOf:
-                    registers[ins.A] = JsValue.FromString(TypeOfValue(registers[ins.B]));
-                    break;
-                case OpCode.TypeOfName:
-                    registers[ins.A] = JsValue.FromString(TypeOfName(frame, ins.B));
-                    break;
-                case OpCode.Add:
-                {
-                    var addL = registers[ins.B];
-                    var addR = registers[ins.C];
-                    if (IsFastNumeric(addL) && IsFastNumeric(addR))
-                    {
-                        registers[ins.A] = FastNumberResult(addL.AsNumber() + addR.AsNumber());
-                        break;
-                    }
-
-                    try { registers[ins.A] = Add(addL, addR); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                }
-                case OpCode.Sub:
-                {
-                    var subL = registers[ins.B];
-                    var subR = registers[ins.C];
-                    if (IsFastNumeric(subL) && IsFastNumeric(subR))
-                    {
-                        registers[ins.A] = FastNumberResult(subL.AsNumber() - subR.AsNumber());
-                        break;
-                    }
-
-                    try { registers[ins.A] = BigIntArith(subL, subR, "subtraction", (a, b) => a - b, (a, b) => a - b); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                }
-                case OpCode.Mul:
-                {
-                    var mulL = registers[ins.B];
-                    var mulR = registers[ins.C];
-                    if (IsFastNumeric(mulL) && IsFastNumeric(mulR))
-                    {
-                        registers[ins.A] = FastNumberResult(mulL.AsNumber() * mulR.AsNumber());
-                        break;
-                    }
-
-                    try { registers[ins.A] = BigIntArith(mulL, mulR, "multiplication", (a, b) => a * b, (a, b) => a * b); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                }
-                case OpCode.Mod:
-                    try { registers[ins.A] = BigIntArith(registers[ins.B], registers[ins.C], "modulo", (a, b) => a % b, (a, b) => a % b); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.Div:
-                    try { registers[ins.A] = BigIntArith(registers[ins.B], registers[ins.C], "division", (a, b) => a / b, (a, b) => a / b); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.Exp:
-                    try { registers[ins.A] = ExponentiationOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.Eq:
-                    try { registers[ins.A] = JsValue.FromBoolean(AreEqual(registers[ins.B], registers[ins.C])); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.Neq:
-                    try { registers[ins.A] = JsValue.FromBoolean(!AreEqual(registers[ins.B], registers[ins.C])); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.StrictEq:
-                    registers[ins.A] = JsValue.FromBoolean(AreStrictlyEqual(registers[ins.B], registers[ins.C]));
-                    break;
-                case OpCode.StrictNeq:
-                    registers[ins.A] = JsValue.FromBoolean(!AreStrictlyEqual(registers[ins.B], registers[ins.C]));
-                    break;
-                case OpCode.In:
-                {
-                    var rhs = registers[ins.C];
-                    if (rhs.Tag != JsValueTag.Object && rhs.Tag != JsValueTag.HostObject)
-                    {
-                        ThrowTypeError(frame, $"Right-hand side of 'in' must be an object (got {rhs.Tag}).");
-                        break;
-                    }
-
-                    bool has;
-                    if (rhs.Tag == JsValueTag.HostObject)
-                    {
-                        var keyValue = registers[ins.B];
-                        if (keyValue.Tag == JsValueTag.Symbol)
-                        {
-                            // Symbols are unlikely on host objects; fall through to false.
-                            has = false;
-                        }
-                        else
-                        {
-                            var key = ToPropertyKey(keyValue);
-                            try
-                            {
-                                has = HasHostObjectProperty(rhs, key);
-                            }
-                            catch (JsThrownException ex) when (HasHandler(frame))
-                            {
-                                ThrowOrHandle(frame, ex.Value);
-                                break;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // A Proxy has-trap can throw, both for its own invariant
-                        // violations and from user code; without this the throw
-                        // escaped the interpreter uncaught, past any enclosing
-                        // JS try/catch.
-                        try
-                        {
-                            var obj = ResolveObject(rhs);
-                            var keyValue = registers[ins.B];
-                            has = keyValue.Tag == JsValueTag.Symbol
-                                ? HasSymbolProperty(obj, keyValue.AsSymbolId())
-                                : HasPropertyIncludingProxy(obj, ToPropertyKey(keyValue));
-                        }
-                        catch (JsThrownException ex) when (HasHandler(frame))
-                        {
-                            ThrowOrHandle(frame, ex.Value);
-                            break;
-                        }
-                    }
-                    registers[ins.A] = JsValue.FromBoolean(has);
-                    break;
-                }
-                case OpCode.InstanceOf:
-                {
-                    if (TryInstanceOf(frame, registers[ins.B], registers[ins.C], out var instanceOfResult))
-                    {
-                        registers[ins.A] = JsValue.FromBoolean(instanceOfResult);
-                    }
-
-                    break;
-                }
-                case OpCode.Lt:
-                {
-                    var ltL = registers[ins.B];
-                    var ltR = registers[ins.C];
-                    if (IsFastNumeric(ltL) && IsFastNumeric(ltR))
-                    {
-                        registers[ins.A] = JsValue.FromBoolean(ltL.AsNumber() < ltR.AsNumber());
-                        break;
-                    }
-
-                    try { registers[ins.A] = JsValue.FromBoolean(IsLessThan(ltL, ltR)); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                }
-                case OpCode.Gt:
-                    try { registers[ins.A] = JsValue.FromBoolean(IsGreaterThan(registers[ins.B], registers[ins.C])); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.Le:
-                    try { registers[ins.A] = JsValue.FromBoolean(IsLessThanOrEqual(registers[ins.B], registers[ins.C])); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.Ge:
-                    try { registers[ins.A] = JsValue.FromBoolean(IsGreaterThanOrEqual(registers[ins.B], registers[ins.C])); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.And:
-                    registers[ins.A] = IsTruthy(registers[ins.B]) ? registers[ins.C] : registers[ins.B];
-                    break;
-                case OpCode.Or:
-                    registers[ins.A] = IsTruthy(registers[ins.B]) ? registers[ins.B] : registers[ins.C];
-                    break;
-                case OpCode.BitAnd:
-                    try { registers[ins.A] = BitwiseAndOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.BitOr:
-                    try { registers[ins.A] = BitwiseOrOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.BitXor:
-                    try { registers[ins.A] = BitwiseXorOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.BitNot:
-                    try { registers[ins.A] = BitwiseNotOp(registers[ins.B]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.ShiftLeft:
-                    try { registers[ins.A] = LeftShiftOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.ShiftRight:
-                    try { registers[ins.A] = RightShiftOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.UnsignedShiftRight:
-                    try { registers[ins.A] = UnsignedRightShiftOp(registers[ins.B], registers[ins.C]); }
-                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                    break;
-                case OpCode.Return:
-                {
-                    var returnValue = registers[ins.A];
-                    if (function.IsDerivedConstructor &&
-                        !IsConstructorReturnObject(returnValue) &&
-                        returnValue.Tag != JsValueTag.Undefined)
-                    {
-                        // ECMA-262 10.2.2 [[Construct]] step 10.c: only undefined
-                        // falls back to `this`.
-                        ThrowOrHandle(frame, CreateTypeError("Derived constructors may only return object or undefined."));
-                        break;
-                    }
-
-                    if (function.IsDerivedConstructor &&
-                        !IsConstructorReturnObject(returnValue) &&
-                        frame.Environment is FunctionEnvironmentRecord derivedEnv)
-                    {
-                        var thisBindingResult = derivedEnv.GetThisBinding(out var derivedThis);
-                        if (thisBindingResult == BindingOpResult.Ok)
-                        {
-                            return derivedThis;
-                        }
-                        // ECMA-262 9.2.2 step 9: if thisBinding has not been
-                        // initialized by a super() call, throw ReferenceError.
-                        if (thisBindingResult == BindingOpResult.TdzAccess)
-                        {
-                            ThrowReferenceError(frame,
-                                "Must call super constructor in derived class before accessing 'this' or returning from derived constructor.");
-                            break;
-                        }
-                    }
-
-                    return returnValue;
-                }
-                default:
-                    throw new InvalidOperationException($"Unsupported opcode {ins.OpCode}.");
-            }
-        }
-
-        return JsValue.Undefined;
-        }
-        catch (JsEngineFatalException fex)
-        {
-            // Fatal heap errors (stale handles) are deterministic engine bugs.
-            // Enrich with the failing function/ip/nearby opcodes so the load
-            // that produced the dead handle can be located from logs alone.
-            var fatalIp = frame.InstructionPointer;
-            var ops = new System.Text.StringBuilder();
-            for (var i = Math.Max(0, fatalIp - 24); i < Math.Min(function.Instructions.Count, fatalIp + 3); i++)
-            {
-                var d = function.Instructions[i];
-                ops.Append(i).Append(':').Append(d.OpCode)
-                   .Append('(').Append(d.A).Append(',').Append(d.B).Append(',').Append(d.C).Append(')');
-                if ((d.OpCode == OpCode.GetPropByName || d.OpCode == OpCode.SetPropByName) &&
-                    d.C < function.PropertyNames.Count)
-                {
-                    ops.Append('<').Append(function.PropertyNames[d.C]).Append('>');
-                }
-
-                ops.Append(' ');
-            }
-
-            throw new JsEngineFatalException($"{fex.Message} [fatal-at fn={function.Name} ip={fatalIp} ops={ops}]");
-        }
     }
 
     private JsObject CreateOrdinaryObject()
@@ -3656,73 +2003,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var obj = new JsObject();
         obj.SetPrototype(EnsureObjectPrototype());
         return obj;
-    }
-
-    /// <summary>
-    /// Restores a generator or async frame to where it suspended: registers,
-    /// instruction pointer, the value the suspension was resumed with, and the
-    /// handler stacks a try block was standing in.
-    /// </summary>
-    /// <remarks>
-    /// Out of line on purpose. This is one call in many thousands, and its
-    /// locals would otherwise widen the stack frame every ordinary call sets up.
-    /// </remarks>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    private static void ResumeSuspendedFrame(
-        InterpreterFrame frame,
-        JsValue[] registers,
-        GeneratorObject? ownerGenerator,
-        AsyncContext? asyncContext)
-    {
-        JsValue[] savedRegisters;
-        int instructionPointer;
-        int destinationRegister;
-        JsValue sentValue;
-        int[] savedCatch;
-        int[] savedFinally;
-        EnvironmentRecord[] savedHandlerEnvironments;
-
-        if (ownerGenerator is not null)
-        {
-            savedRegisters = ownerGenerator.Registers;
-            instructionPointer = ownerGenerator.InstructionPointer;
-            destinationRegister = ownerGenerator.YieldDestReg;
-            sentValue = ownerGenerator.SentValue;
-            savedCatch = ownerGenerator.SavedCatchHandlers;
-            savedFinally = ownerGenerator.SavedFinallyHandlers;
-            savedHandlerEnvironments = ownerGenerator.SavedHandlerEnvironments;
-            ownerGenerator.YieldDestReg = -1;
-            frame.PendingException = ownerGenerator.PendingException;
-            frame.PendingReturn = ownerGenerator.PendingReturn;
-        }
-        else
-        {
-            savedRegisters = asyncContext!.Registers;
-            instructionPointer = asyncContext.InstructionPointer;
-            destinationRegister = asyncContext.AwaitDestReg;
-            sentValue = asyncContext.SentValue;
-            savedCatch = asyncContext.SavedCatchHandlers;
-            savedFinally = asyncContext.SavedFinallyHandlers;
-            savedHandlerEnvironments = asyncContext.SavedHandlerEnvironments;
-            asyncContext.AwaitDestReg = -1;
-            frame.PendingException = asyncContext.PendingException;
-        }
-
-        Array.Copy(savedRegisters, frame.Registers, frame.Registers.Length);
-        frame.InstructionPointer = instructionPointer;
-        if (destinationRegister >= 0) registers[destinationRegister] = sentValue;
-
-        // Saved top-first, so pushing in reverse rebuilds the original order.
-        for (var i = savedCatch.Length - 1; i >= 0; i--)
-        {
-            frame.CatchHandlers.Push(savedCatch[i]);
-            frame.FinallyHandlers.Push(savedFinally[i]);
-        }
-
-        for (var i = savedHandlerEnvironments.Length - 1; i >= 0; i--)
-        {
-            frame.HandlerEnvironments.Push(savedHandlerEnvironments[i]);
-        }
     }
 
     /// <summary>
@@ -7024,69 +5304,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // and name so a subsequent StoreResolvedVar can write through that same
     // resolution even if the binding becomes invisible in between.
 #if !PUBLISH_AOT
-    // A frame that is spinning in a loop is the one case tier-up by call count
-    // can never catch: the counter is only consulted when the function is
-    // called again, and a script's top level is called once. Reaching a loop
-    // header enough times is the same evidence, so compile there and hand the
-    // running frame over at that header.
-    private const int OsrBackEdgeThreshold = 4096;
 
-    // Read once: the decline path below is reached on every back-edge a
-    // non-compilable loop takes, and an environment lookup there would cost
-    // more than the check it is reporting on.
-    private static readonly bool OsrDisabled =
-        string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_NOOSR"), "1", StringComparison.Ordinal);
-
-    private static readonly bool OsrTraceEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("FEN_JIT_TRACE"), "1", StringComparison.Ordinal);
-
-    private bool TryTransferToCompiledCode(
-        BytecodeFunction function,
-        InterpreterFrame frame,
-        int targetIp,
-        out JsValue result)
-    {
-        result = JsValue.Undefined;
-        if (!JitCompiler.Enabled || OsrDisabled || function.BackEdges < OsrBackEdgeThreshold)
-        {
-            return false;
-        }
-
-        if (!function.JitCompileAttempted)
-        {
-            function.JitCompileAttempted = true;
-            JitCompiler.RequestCompile(function);
-        }
-
-        // Only a loop header the compiled body advertises is safe to enter:
-        // anywhere else the two would disagree about where execution resumes.
-        if (function.JitDelegate is not { } compiled ||
-            function.OsrEntryPoints is not { } entries ||
-            !entries.Contains(targetIp))
-        {
-            if (OsrTraceEnabled && function.BackEdges == OsrBackEdgeThreshold)
-            {
-                Console.Error.WriteLine(
-                    $"[jit] OSR declined for {function.Name ?? "<anon>"} at ip={targetIp}: " +
-                    $"compiled={function.JitDelegate is not null} " +
-                    $"entries={function.OsrEntryPoints?.Count ?? -1} " +
-                    $"rejections=[{JitCompiler.DescribeRejections()}] " +
-                    $"hasTarget={function.OsrEntryPoints?.Contains(targetIp) ?? false}");
-            }
-
-            return false;
-        }
-
-        if (OsrTraceEnabled)
-        {
-            Console.Error.WriteLine(
-                $"[jit] OSR into {function.Name ?? "<anon>"} at ip={targetIp} " +
-                $"backEdges={function.BackEdges} entries={function.OsrEntryPoints?.Count ?? 0}");
-        }
-
-        result = compiled(this, frame, targetIp);
-        return true;
-    }
 #endif
 
     /// <param name="ip">The PreResolveVar, which keys its free-variable site; -1 for none.</param>
@@ -7197,15 +5415,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Fallback: walk the chain like StoreName would.
         StoreName(frame, slot, value);
     }
-
-    // Annex B.3.3 web-compat (StoreVarTop): write `value` to the binding for the
-    // block-level function name in the running execution context's
-    // VariableEnvironment — the nearest function/global/module environment record,
-    // skipping intervening block (declarative) and `with` (object) scopes. The
-    // matching var binding was pre-created by InstantiateVarDeclarations; this
-    // assignment runs when the containing block's declarations are instantiated.
-    private void StoreNameInVariableEnvironment(InterpreterFrame frame, int slot, JsValue value)
-        => StoreInVariableEnvironment(frame.Environment, SlotNameTable.GetName(frame.Function, slot), value);
 
     /// <summary>
     /// Annex B.3.3.1: a block function's value assigned to the var of the same

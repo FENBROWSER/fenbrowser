@@ -11,15 +11,8 @@ namespace FenBrowser.Js.Tests;
 // `new.target`, `super` - and the other bodies the register-window loop used to
 // decline: a named function expression whose own name a closure reads, and a
 // frame wider than a fixed cap.
-[Collection(nameof(Interpreter2ParityTests))]
-public sealed class Interp2EnclosingBindingsTests : IDisposable
+public sealed class Interp2EnclosingBindingsTests
 {
-    private readonly bool _previousEngine = Interp2Options.Enabled;
-
-    public Interp2EnclosingBindingsTests() => Interp2Options.Enabled = true;
-
-    public void Dispose() => Interp2Options.Enabled = _previousEngine;
-
     private static BytecodeFunction Compile(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

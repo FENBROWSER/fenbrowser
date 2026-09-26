@@ -195,12 +195,7 @@ public sealed partial class BytecodeInterpreter
     /// </summary>
     private JsValue ExecuteProgram(BytecodeFunction function, JsValue thisValue, EnvironmentRecord environment)
     {
-        var layout = Interpreter2.FrameLayout.For(function);
-        if (!Interpreter2.Interp2Options.Enabled || !layout.Eligible)
-        {
-            return ExecuteInternal(function, Array.Empty<JsValue>(), thisValue, frameEnvironment: environment);
-        }
-
+        var layout = Interp2LayoutFor(function);
         EnsureNativeStack();
         ValidateDeclarationInstantiation(function, environment);
         InstantiateVarDeclarations(function, environment);
@@ -232,18 +227,6 @@ public sealed partial class BytecodeInterpreter
         return handle;
     }
 
-
-    // ECMA-262 10.2.1.3 FunctionDeclarationInstantiation steps 28 and 30, for a
-    // function whose parameter expressions create a closure or call eval: once the
-    // parameters are bound the body gets an environment of its own, so a closure
-    // made in a default value goes on seeing the parameters and the scope outside
-    // them, never the body's vars. Each body var starts as the value of the
-    // parameter of the same name - `arguments` too, when the function has its own
-    // - and otherwise as undefined; a let or const starts uninitialized. It is the
-    // body's variable environment, where a sloppy eval in the body puts its vars
-    // and an Annex B block function its binding.
-    private void EnterFunctionBodyScope(InterpreterFrame frame, BytecodeFunction function)
-        => frame.Environment = CreateFunctionBodyScope(function, frame.Environment);
 
     internal DeclarativeEnvironmentRecord CreateFunctionBodyScope(
         BytecodeFunction function, EnvironmentRecord parameterEnvironment)

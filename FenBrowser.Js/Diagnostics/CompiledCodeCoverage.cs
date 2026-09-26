@@ -50,11 +50,17 @@ public static class CompiledCodeCoverage
         Interlocked.Add(ref _compiledInstructions, instructionCount);
     }
 
-    /// <summary>Called the first time a given function is entered, never after.</summary>
-    public static void RecordFirstEntry(int instructionCount)
+    /// <summary>Counts <paramref name="function"/> as entered, the first time it is.</summary>
+    internal static void RecordEntry(FenBrowser.Js.Bytecode.BytecodeFunction function)
     {
+        if (function.CoverageEntryRecorded)
+        {
+            return;
+        }
+
+        function.CoverageEntryRecorded = true;
         Interlocked.Increment(ref _enteredFunctions);
-        Interlocked.Add(ref _reachableInstructions, instructionCount);
+        Interlocked.Add(ref _reachableInstructions, function.Instructions.Count);
     }
 
     public static void Reset()

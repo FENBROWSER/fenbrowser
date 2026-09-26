@@ -97,10 +97,6 @@ public sealed class InterpreterFrame
 
 	public JsValue NewTarget { get; set; } = JsValue.Undefined;
 
-	public GeneratorObject? OwnerGenerator { get; set; }
-
-	public AsyncContext? AsyncContext { get; set; }
-
 	internal void Reset(
 		BytecodeFunction function,
 		JsValue thisValue,
@@ -123,7 +119,5 @@ public sealed class InterpreterFrame
 		InstructionPointer = 0;
 		CalleeFunctionObject = null;
 		NewTarget = JsValue.Undefined;
-		OwnerGenerator = null;
-		AsyncContext = null;
 	}
 }

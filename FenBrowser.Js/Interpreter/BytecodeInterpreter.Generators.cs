@@ -11,49 +11,6 @@ namespace FenBrowser.Js.Interpreter;
 public sealed partial class BytecodeInterpreter
 {
 
-    // ECMA-262 27.7.5.2 Await(value).
-    // Await ALWAYS suspends. PerformPromiseThen queues the resumption as a
-    // microtask job even when the promise is already settled, so the code after
-    // an `await` never runs before the rest of the current synchronous script.
-    // The old settled fast-path returned the result inline, which made
-    //   async f(){ log(1); await 0; log(2); }  log(3); f(); log(4);
-    // print 3,1,2,4 instead of 3,1,4,2 - every microtask observer disagreed with
-    // us about ordering (audit JSRT-003).
-    private JsValue AwaitValue(InterpreterFrame frame, JsValue value, int destReg)
-    {
-        var awaitedPromise = PromiseResolveStatic(value);
-        if (awaitedPromise.Tag != JsValueTag.Object ||
-            _heap.GetObject(awaitedPromise.AsObjectHandle()) is not PromiseInstance instance)
-        {
-            return value;
-        }
-
-        if (frame.AsyncContext is null)
-        {
-            return AwaitWithNothingToSuspendInto(instance);
-        }
-
-        // Suspend the async frame and resume from the microtask job.
-        SaveAsyncState(frame, destReg);
-
-        var ctx = frame.AsyncContext!;
-        var onFulfilled = GetOrCreateAsyncResumeCallback(isReject: false, ctx);
-        var onRejected = GetOrCreateAsyncResumeCallback(isReject: true, ctx);
-        var onFulfilledHandle = _heap.AllocateObject(onFulfilled, AllocationSite.Current());
-        var onRejectedHandle = _heap.AllocateObject(onRejected, AllocationSite.Current());
-
-        // Attach handlers to the awaited promise.
-        PerformPromiseThen(
-            awaitedPromise.AsObjectHandle(),
-            instance.Promise,
-            JsValue.FromObject(onFulfilledHandle),
-            JsValue.FromObject(onRejectedHandle),
-            GetDummyCapability());
-
-        instance.Promise.IsHandled = true;
-        return JsValue.Undefined;
-    }
-
 
     // An await in a body with no async activation behind it, which is what an
     // async generator is here: the body runs as a plain generator and each

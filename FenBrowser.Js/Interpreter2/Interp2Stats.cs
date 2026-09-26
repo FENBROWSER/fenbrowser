@@ -7,12 +7,9 @@ namespace FenBrowser.Js.Interpreter2;
 /// only when <see cref="Interp2Options.Log"/> is set.
 /// </summary>
 /// <remarks>
-/// Two numbers decide whether this loop is worth anything on a real page, and
-/// neither is visible from a benchmark: how much of the code is eligible, and
-/// how many of the calls it makes it can enter without going back through the
-/// old one. Both are counted here, alongside the reason every declined function
-/// was declined - a ranked bailout table is the work queue for what to
-/// implement next.
+/// What a benchmark does not show: how many of the calls a page makes the loop
+/// enters as a window of its own rather than handing to a native or a
+/// generator, and how often its property caches answer.
 ///
 /// Every call site is behind the one flag, and the counters are plain statics
 /// rather than interlocked: an approximate count taken off the hot path is worth
@@ -127,21 +124,11 @@ public static class Interp2Stats
     private static readonly Dictionary<(int Function, int Offset), SiteProfile> ElementSiteProfiles = new();
 
 
-    private static readonly long[] BailoutCounts = new long[Enum.GetValues<Interp2Bailout>().Length];
-
-    private static readonly long[] DeclinedCallCounts = new long[Enum.GetValues<Interp2Bailout>().Length];
-
-    private static readonly Dictionary<FenBrowser.Js.Bytecode.OpCode, long> UnsupportedOpCodes = new();
-
-    private static readonly Dictionary<FenBrowser.Js.Objects.FunctionKind, long> NotOrdinaryKinds = new();
-
-    private static long _eligibleFunctions;
-    private static long _declinedFunctions;
+    private static long _functions;
     private static long _framesEntered;
     private static long _callsInLoop;
     private static long _osrEntries;
     private static long _callsDelegated;
-    private static long _callsDelegatedToDeclinedBody;
     private static long _propertyReadsCached;
     private static long _propertyReadsMissed;
     private static long _elementReadsCached;
@@ -150,44 +137,17 @@ public static class Interp2Stats
     private static long _maxDepth;
     private static long _maxStackSlots;
 
-    public static long EligibleFunctions => _eligibleFunctions;
-    public static long DeclinedFunctions => _declinedFunctions;
+    /// <summary>Function bodies laid out for the loop.</summary>
+    public static long Functions => _functions;
     public static long FramesEntered => _framesEntered;
 
     /// <summary>Calls entered as a new window on the same loop - the point of all this.</summary>
     public static long CallsInLoop => _callsInLoop;
 
-    /// <summary>Calls handed back to the old loop: natives, closures, everything declined.</summary>
+    /// <summary>Calls the loop hands to the host: natives, bound functions, proxies, generators, async bodies, compiled code.</summary>
     public static long CallsDelegated => _callsDelegated;
 
-    internal static void RecordLayout(FrameLayout layout)
-    {
-        // A generator body is eligible too; it is entered through the
-        // generator's resume path rather than by a call, which is what keeps it
-        // out of FrameLayout.Eligible. So is an async body, which the call's own
-        // path starts and the promise jobs its awaits queue resume.
-        if (layout.Eligible || layout.GeneratorEligible || layout.AsyncEligible)
-        {
-            _eligibleFunctions++;
-            return;
-        }
-
-        _declinedFunctions++;
-        BailoutCounts[(int)layout.Bailout]++;
-        if (layout.BailoutOpCode is { } op)
-        {
-            UnsupportedOpCodes[op] = UnsupportedOpCodes.TryGetValue(op, out var seen) ? seen + 1 : 1;
-        }
-
-        // "Not an ordinary function" is four different features wearing one
-        // name, and they are not the same size or the same work: a generator
-        // suspends, a method does not.
-        if (layout.Bailout == Interp2Bailout.NotOrdinaryFunction)
-        {
-            var kind = layout.Function.Kind;
-            NotOrdinaryKinds[kind] = NotOrdinaryKinds.TryGetValue(kind, out var kindSeen) ? kindSeen + 1 : 1;
-        }
-    }
+    internal static void RecordLayout(FrameLayout layout) => _functions++;
 
     internal static void RecordFrameEntered(int depth, int stackSlots)
     {
@@ -286,45 +246,15 @@ public static class Interp2Stats
         }
     }
 
-    /// <summary>
-    /// A call that had to leave the loop because the callee's body was
-    /// declined, counted against the reason it was declined.
-    /// </summary>
-    internal static void RecordDeclinedCall(Interp2Bailout reason) => DeclinedCallCounts[(int)reason]++;
-
-    // Frames the old loop interpreted, by why they were not this loop's: the
-    // number that has to reach zero before the old loop can go.
-    private static readonly Dictionary<string, long> OldLoopFrames = new(StringComparer.Ordinal);
-
-    /// <summary>A frame the old dispatch loop interpreted, and why it was not this loop's.</summary>
-    internal static void RecordOldLoopFrame(string reason)
-    {
-        lock (OldLoopFrames)
-        {
-            OldLoopFrames[reason] = OldLoopFrames.GetValueOrDefault(reason) + 1;
-        }
-    }
-
-    internal static void RecordCallDelegated(bool calleeIsJavaScript)
-    {
-        _callsDelegated++;
-        if (calleeIsJavaScript) _callsDelegatedToDeclinedBody++;
-    }
+    internal static void RecordCallDelegated() => _callsDelegated++;
 
     public static void Reset()
     {
-        Array.Clear(BailoutCounts);
-        Array.Clear(DeclinedCallCounts);
-        lock (OldLoopFrames) OldLoopFrames.Clear();
-        UnsupportedOpCodes.Clear();
-        NotOrdinaryKinds.Clear();
-        _eligibleFunctions = 0;
-        _declinedFunctions = 0;
+        _functions = 0;
         _framesEntered = 0;
         _osrEntries = 0;
         _callsInLoop = 0;
         _callsDelegated = 0;
-        _callsDelegatedToDeclinedBody = 0;
         _propertyReadsCached = 0;
         _propertyReadsMissed = 0;
         _elementReadsCached = 0;
@@ -347,11 +277,8 @@ public static class Interp2Stats
     public static string Report()
     {
         var report = new StringBuilder();
-        var functions = _eligibleFunctions + _declinedFunctions;
         var calls = _callsInLoop + _callsDelegated;
-        report.Append("[interp2] functions=").Append(functions)
-              .Append(" eligible=").Append(_eligibleFunctions)
-              .Append(Percent(_eligibleFunctions, functions))
+        report.Append("[interp2] functions=").Append(_functions)
               .Append(" frames=").Append(_framesEntered)
               .Append(" maxDepth=").Append(_maxDepth)
               .Append(" maxStackSlots=").Append(_maxStackSlots)
@@ -361,9 +288,6 @@ public static class Interp2Stats
               .Append(" inLoop=").Append(_callsInLoop)
               .Append(Percent(_callsInLoop, calls))
               .Append(" delegated=").Append(_callsDelegated)
-              .Append(" [toDeclinedBody=").Append(_callsDelegatedToDeclinedBody)
-              .Append(" toNative=").Append(_callsDelegated - _callsDelegatedToDeclinedBody)
-              .Append(']')
               .AppendLine();
 
         var propertyReads = _propertyReadsCached + _propertyReadsMissed;
@@ -474,78 +398,6 @@ public static class Interp2Stats
             // up its vector answers every later indexed read through a
             // string-keyed lookup, with the key built from the index first.
             report.Append("[interp2] arrays no longer dense: ").Append(materialised).AppendLine();
-        }
-
-        var ranked = new List<(Interp2Bailout Reason, long Count)>();
-        for (var i = 1; i < BailoutCounts.Length; i++)
-        {
-            if (BailoutCounts[i] > 0) ranked.Add(((Interp2Bailout)i, BailoutCounts[i]));
-        }
-
-        ranked.Sort(static (a, b) => b.Count.CompareTo(a.Count));
-        if (ranked.Count > 0)
-        {
-            report.Append("[interp2] declined bodies:");
-            foreach (var (reason, count) in ranked)
-            {
-                report.Append(' ').Append(reason).Append('=').Append(count);
-            }
-
-            report.AppendLine();
-        }
-
-        var declinedCalls = new List<(Interp2Bailout Reason, long Count)>();
-        for (var i = 1; i < DeclinedCallCounts.Length; i++)
-        {
-            if (DeclinedCallCounts[i] > 0) declinedCalls.Add(((Interp2Bailout)i, DeclinedCallCounts[i]));
-        }
-
-        declinedCalls.Sort(static (a, b) => b.Count.CompareTo(a.Count));
-        if (declinedCalls.Count > 0)
-        {
-            // The queue that matters. A reason costing 300 bodies entered twice
-            // each is worth less than one costing three bodies in the hot path,
-            // and only this line tells them apart.
-            report.Append("[interp2] declined calls:");
-            foreach (var (reason, count) in declinedCalls)
-            {
-                report.Append(' ').Append(reason).Append('=').Append(count);
-            }
-
-            report.AppendLine();
-        }
-
-        if (NotOrdinaryKinds.Count > 0)
-        {
-            report.Append("[interp2] not-ordinary kinds:");
-            foreach (var (kind, count) in NotOrdinaryKinds.OrderByDescending(static p => p.Value))
-            {
-                report.Append(' ').Append(kind).Append('=').Append(count);
-            }
-
-            report.AppendLine();
-        }
-
-        lock (OldLoopFrames)
-        {
-            report.Append("[interp2] old-loop frames=").Append(OldLoopFrames.Values.Sum());
-            foreach (var (reason, count) in OldLoopFrames.OrderByDescending(static pair => pair.Value))
-            {
-                report.Append(' ').Append(reason).Append('=').Append(count);
-            }
-
-            report.AppendLine();
-        }
-
-        if (UnsupportedOpCodes.Count > 0)
-        {
-            report.Append("[interp2] unimplemented:");
-            foreach (var (op, count) in UnsupportedOpCodes.OrderByDescending(static pair => pair.Value))
-            {
-                report.Append(' ').Append(op).Append('=').Append(count);
-            }
-
-            report.AppendLine();
         }
 
         return report.ToString();

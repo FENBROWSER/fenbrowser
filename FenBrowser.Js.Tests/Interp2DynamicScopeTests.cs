@@ -10,15 +10,8 @@ namespace FenBrowser.Js.Tests;
 // loop: `with` (ECMA-262 14.11), direct eval (19.2.1), a body variable
 // environment separate from the parameters' (10.2.11 steps 28-30), `delete`
 // of an identifier (13.5.1.2) and Annex B.3.3 block functions.
-[Collection(nameof(Interpreter2ParityTests))]
-public sealed class Interp2DynamicScopeTests : IDisposable
+public sealed class Interp2DynamicScopeTests
 {
-    private readonly bool _previousEngine = Interp2Options.Enabled;
-
-    public Interp2DynamicScopeTests() => Interp2Options.Enabled = true;
-
-    public void Dispose() => Interp2Options.Enabled = _previousEngine;
-
     private static BytecodeFunction Compile(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

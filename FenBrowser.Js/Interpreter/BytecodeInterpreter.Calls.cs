@@ -389,65 +389,20 @@ public sealed partial class BytecodeInterpreter
                 return CallAsyncGeneratorFunctionBody(value, fn, args, thisValue);
             }
 
-            // Tier 4 #24: tier-up counter. The JIT delegate is invoked
-            // from inside ExecuteInternalCore (after frame setup) so it
-            // can access frame.Registers, frame.Environment, and the
-            // interpreter's helper methods.
             var bcFn = fn.Function;
             bcFn.Invocations++;
 #if !PUBLISH_AOT
-            // Tier-4 #24 (audit §3.2): combined invocation + back-edge
-            // trigger. Either 1000 calls OR 100,000 cross-call loop
-            // iterations OR a balanced mix gets the function JIT-compiled.
-            // BackEdgeScale=100 keeps the legacy "100 invocations" cliff
-            // intact while letting one-call loop-heavy functions tier up.
-            // Default TierUpThreshold=100 avoids over-compilation on complex
-            // pages like reCAPTCHA (which compiled ~500 functions at the old
-            // threshold of 10 and ran slower overall than with JIT disabled).
-            //
-            // On the register-window loop a call count alone never earns a
-            // compile: compiled code is entered through this loop's frame setup,
-            // which costs more than the call it replaces unless the body loops.
-            // Interp2 asks for loop-heavy bodies itself (JitCompiler.RequestLoopTierUp).
-            const int BackEdgeScale = 100;
-            if (!Interpreter2.Interp2Options.Enabled &&
-                !bcFn.JitCompileAttempted &&
-                (long)bcFn.Invocations * BackEdgeScale + bcFn.BackEdges
-                    >= (long)JitCompiler.TierUpThreshold * BackEdgeScale)
+            // A loop-heavy body that has been compiled runs compiled; the
+            // register-window loop asks for those compiles itself
+            // (JitCompiler.RequestLoopTierUp). A call count alone never earns
+            // one: entering compiled code costs more than the call it replaces
+            // unless the body loops.
+            if (JitCompiler.PrefersCompiled(bcFn))
             {
-                bcFn.JitCompileAttempted = true;
-                JitCompiler.RequestCompile(bcFn);
+                return ExecuteInternal(bcFn, args, thisValue, ResolveFunctionOuterEnvironment(fn), callee: fn);
             }
 #endif
-            // The register-window loop, when it is switched on and this body is
-            // one it can run. Both loops read this same bytecode and share the
-            // heap, the builtins and the inline caches, so a call can cross
-            // between them in either direction at any depth - which is what lets
-            // test262 run on both and say exactly what the new one changes.
-            // A loop-heavy body that has been compiled runs compiled instead,
-            // through ExecuteInternal below.
-            if (Interpreter2.Interp2Options.Enabled
-#if !PUBLISH_AOT
-                && !JitCompiler.PrefersCompiled(bcFn)
-#endif
-                )
-            {
-                var layout = Interpreter2.FrameLayout.For(bcFn);
-                if (layout.Eligible)
-                {
-                    return Interp2Execute(fn, layout, args, thisValue);
-                }
-            }
-
-            if (FenBrowser.Js.Diagnostics.CompiledCodeCoverage.Enabled &&
-                !fn.Function.CoverageEntryRecorded)
-            {
-                fn.Function.CoverageEntryRecorded = true;
-                FenBrowser.Js.Diagnostics.CompiledCodeCoverage.RecordFirstEntry(
-                    fn.Function.Instructions.Count);
-            }
-
-            return ExecuteInternal(fn.Function, args, thisValue, ResolveFunctionOuterEnvironment(fn), callee: fn);
+            return Interp2Execute(fn, Interp2LayoutFor(bcFn), args, thisValue);
         }
 
         if (obj is NativeFunctionObject native)
@@ -468,21 +423,11 @@ public sealed partial class BytecodeInterpreter
 
         // Create an AsyncContext to hold suspended state. If the body
         // never awaits, the context is unused and the fast path applies.
-        // On the register-window loop the suspended state is a whole window,
-        // so the array is sized for one.
-        var windowLayout = Interpreter2.Interp2Options.Enabled
-            ? Interpreter2.FrameLayout.For(fn.Function)
-            : null;
-        var runsOnRegisterWindow = windowLayout is { AsyncEligible: true };
-        var registers = new JsValue[runsOnRegisterWindow
-            ? Math.Max(windowLayout!.WindowSize, fn.Function.RegisterCount)
-            : fn.Function.RegisterCount];
-        for (var i = 0; i < registers.Length; i++)
-            registers[i] = JsValue.Undefined;
-        var asyncCtx = new AsyncContext(fn.Function, registers, fn.OuterEnvironment)
+        // The suspended state is a whole register window, so the array is
+        // sized for one.
+        var asyncCtx = new AsyncContext(fn.Function, NewSuspensionWindow(Interp2LayoutFor(fn.Function)), fn.OuterEnvironment)
         {
             ThisValue = thisValue,
-            RunsOnRegisterWindow = runsOnRegisterWindow
         };
         var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
         asyncCtx.SelfHandle = ctxHandle;
@@ -501,9 +446,7 @@ public sealed partial class BytecodeInterpreter
 
         try
         {
-            var result = runsOnRegisterWindow
-                ? Interp2RunAsync(asyncCtx, fn, args as JsValue[] ?? System.Linq.Enumerable.ToArray(args), thisValue)
-                : ExecuteInternal(fn.Function, new CallArgs(args), thisValue, fn.OuterEnvironment, callee: fn, asyncContext: asyncCtx);
+            var result = Interp2RunAsync(asyncCtx, fn, args as JsValue[] ?? System.Linq.Enumerable.ToArray(args), thisValue);
 
             if (asyncCtx.IsSuspended)
             {
@@ -533,6 +476,18 @@ public sealed partial class BytecodeInterpreter
         return capability.Promise;
     }
 
+    /// <summary>
+    /// Where a generator or async body keeps its state while suspended: its
+    /// whole register window, the bytecode registers and the body's variables
+    /// in one array.
+    /// </summary>
+    private static JsValue[] NewSuspensionWindow(Interpreter2.FrameLayout layout)
+    {
+        var window = new JsValue[Math.Max(layout.WindowSize, layout.Function.RegisterCount)];
+        Array.Fill(window, JsValue.Undefined);
+        return window;
+    }
+
     // ECMA-262 27.5.1.1 generator [[Call]] - returns a GeneratorObject.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private JsValue CallGeneratorFunctionBody(JsValue value, JsFunctionObject fn, IReadOnlyList<JsValue> args, JsValue thisValue)
@@ -542,22 +497,9 @@ public sealed partial class BytecodeInterpreter
         // including destructuring) synchronously before returning the
         // generator. If the function carries a PrologueEnd marker we run
         // the prologue here and let the generator suspend at the marker.
-        // On the register-window loop a suspended generator holds a whole
-        // window - the bytecode registers and the body's variables - so the
-        // array it is saved into is sized for one. The loop binds the
-        // parameters itself when it enters the body, from InitialArgs.
-        var windowLayout = Interpreter2.Interp2Options.Enabled && fn.SelfHandle is not null
-            ? Interpreter2.FrameLayout.For(fn.Function)
-            : null;
-        var runsOnRegisterWindow = windowLayout is { GeneratorEligible: true };
-        var registers = new JsValue[runsOnRegisterWindow
-            ? Math.Max(windowLayout!.WindowSize, fn.Function.RegisterCount)
-            : fn.Function.RegisterCount];
-        for (var i = 0; i < registers.Length; i++)
-            registers[i] = JsValue.Undefined;
-
-        var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
-        genObj.RunsOnRegisterWindow = runsOnRegisterWindow;
+        // The register-window loop binds the parameters itself when it
+        // enters the body, from InitialArgs.
+        var genObj = new GeneratorObject(fn.Function, NewSuspensionWindow(Interp2LayoutFor(fn.Function)), fn.OuterEnvironment);
         genObj.ThisValue = thisValue;
         genObj.InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args);
         genObj.SelfHandle = fn.SelfHandle;
@@ -585,23 +527,10 @@ public sealed partial class BytecodeInterpreter
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private JsValue CallAsyncGeneratorFunctionBody(JsValue value, JsFunctionObject fn, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
-        // Sized to hold a whole register window when the new loop runs it, for
-        // the same reason a sync generator's is - see CallGeneratorFunctionBody.
-        var windowLayout = Interpreter2.Interp2Options.Enabled && fn.SelfHandle is not null
-            ? Interpreter2.FrameLayout.For(fn.Function)
-            : null;
-        var runsOnRegisterWindow = windowLayout is { GeneratorEligible: true };
-        var registers = new JsValue[runsOnRegisterWindow
-            ? Math.Max(windowLayout!.WindowSize, fn.Function.RegisterCount)
-            : fn.Function.RegisterCount];
-        for (var i = 0; i < registers.Length; i++)
-            registers[i] = JsValue.Undefined;
-
-        var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment)
+        var genObj = new GeneratorObject(fn.Function, NewSuspensionWindow(Interp2LayoutFor(fn.Function)), fn.OuterEnvironment)
         {
             ThisValue = thisValue,
             IsAsyncGenerator = true,
-            RunsOnRegisterWindow = runsOnRegisterWindow,
             InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args),
             SelfHandle = fn.SelfHandle
         };
@@ -1312,27 +1241,11 @@ public sealed partial class BytecodeInterpreter
             defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
         }
 
-        // An ordinary constructor runs on the register-window loop like any
-        // other call, with newTarget carried on its frame (and on its record,
-        // for an arrow inside to read), instead of always paying the old loop's
-        // frame setup - which made `new F()` with an empty F cost four times a
-        // call.
-        JsValue result;
-        var layout = Interpreter2.Interp2Options.Enabled
-            ? Interpreter2.FrameLayout.ForConstruct(callee.Function)
-            : null;
-        if (layout is { Eligible: true })
-        {
-            callee.Function.Invocations++;
-            result = Interp2Execute(callee, layout, args, defaultInstance, newTarget);
-            ApplyDefaultHostObjectPrototypeIfUnset(result, newTarget);
-            return IsConstructorReturnObject(result) ? result : defaultInstance;
-        }
-
-        _pendingNewTarget = newTarget.Tag == JsValueTag.Undefined
-            ? JsValue.Undefined
-            : newTarget;
-        result = ExecuteInternal(callee.Function, args, defaultInstance, ResolveFunctionOuterEnvironment(callee), callee: callee);
+        // A constructor runs on the register-window loop like any other call,
+        // with newTarget carried on its frame (and on its record, for an arrow
+        // inside to read).
+        callee.Function.Invocations++;
+        var result = Interp2Execute(callee, Interp2ConstructLayoutFor(callee.Function), args, defaultInstance, newTarget);
         ApplyDefaultHostObjectPrototypeIfUnset(result, newTarget);
         return IsConstructorReturnObject(result) ? result : defaultInstance;
     }

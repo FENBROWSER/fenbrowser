@@ -40,15 +40,35 @@ public sealed partial class BytecodeInterpreter
     /// </summary>
     internal Interp2? Interp2State => _interp2;
 
+    /// <summary>The layout a call runs <paramref name="function"/> with.</summary>
+    internal static FrameLayout Interp2LayoutFor(BytecodeFunction function)
+        => RequireLayout(FrameLayout.For(function));
+
+    /// <summary>The layout [[Construct]] runs <paramref name="function"/> with.</summary>
+    internal static FrameLayout Interp2ConstructLayoutFor(BytecodeFunction function)
+        => RequireLayout(FrameLayout.ForConstruct(function));
+
     /// <summary>
-    /// Entry from <c>CallFunctionCore</c>: run an eligible body on the new loop.
+    /// Every body the compiler emits has a layout the register-window loop can
+    /// run, and nothing else runs one, so a declined layout is an engine
+    /// defect: it is reported as one rather than run some other way.
+    /// </summary>
+    private static FrameLayout RequireLayout(FrameLayout layout)
+        => layout.Bailout == Interp2Bailout.None
+            ? layout
+            : throw new JsEngineFatalException(
+                $"The register-window loop declined '{layout.Function.Name}': {layout.Bailout}" +
+                (layout.BailoutOpCode is { } op ? $" ({op})" : string.Empty));
+
+    /// <summary>
+    /// Entry from a call, a construct or a native: run a body on the loop.
     /// </summary>
     /// <param name="newTarget">[[Construct]]'s newTarget; undefined for a call.</param>
     internal JsValue Interp2Execute(
         JsFunctionObject callee, FrameLayout layout, in CallArgs args, JsValue thisValue, JsValue newTarget = default)
     {
         // Calls inside the loop stay on its own frame stack; only a re-entry
-        // like this one, from a native or the old loop, spends CLR stack.
+        // like this one, from a native or compiled code, spends CLR stack.
         EnsureNativeStack();
         return Interp2Loop.Execute(callee, layout, in args, thisValue, newTarget);
     }

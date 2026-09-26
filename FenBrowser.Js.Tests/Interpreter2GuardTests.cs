@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
-using FenBrowser.Js.Interpreter2;
 using FenBrowser.Js.Source;
 using Xunit;
 
@@ -22,7 +21,6 @@ namespace FenBrowser.Js.Tests;
 /// the loop is re-entered for every call, so nothing accumulates inside one
 /// entry and there is no back edge to hang a check on.
 /// </remarks>
-[Collection(nameof(Interpreter2ParityTests))]
 public sealed class Interpreter2GuardTests
 {
     private const int DeadlineMs = 400;
@@ -47,29 +45,16 @@ public sealed class Interpreter2GuardTests
                 "Array.prototype.lastIndexOf.call(p, 'never-there');")]
     public void TheDeadlineStopsIt(string source)
     {
-        foreach (var onNewLoop in new[] { false, true })
-        {
-            var previous = Interp2Options.Enabled;
-            Interp2Options.Enabled = onNewLoop;
-            try
-            {
-                var function = new BytecodeCompiler().CompileScript(new SourceText(source));
-                new BytecodeVerifier().Verify(function);
-                var interpreter = new BytecodeInterpreter { WallClockTimeoutMs = DeadlineMs };
+        var function = new BytecodeCompiler().CompileScript(new SourceText(source));
+        new BytecodeVerifier().Verify(function);
+        var interpreter = new BytecodeInterpreter { WallClockTimeoutMs = DeadlineMs };
 
-                var watch = Stopwatch.StartNew();
-                Assert.ThrowsAny<Exception>(() => interpreter.Execute(function));
-                watch.Stop();
+        var watch = Stopwatch.StartNew();
+        Assert.ThrowsAny<Exception>(() => interpreter.Execute(function));
+        watch.Stop();
 
-                Assert.True(
-                    watch.ElapsedMilliseconds < AllowedMs,
-                    $"{(onNewLoop ? "new" : "old")} loop ran {watch.ElapsedMilliseconds}ms " +
-                    $"against a {DeadlineMs}ms deadline");
-            }
-            finally
-            {
-                Interp2Options.Enabled = previous;
-            }
-        }
+        Assert.True(
+            watch.ElapsedMilliseconds < AllowedMs,
+            $"ran {watch.ElapsedMilliseconds}ms against a {DeadlineMs}ms deadline");
     }
 }

@@ -10,15 +10,8 @@ namespace FenBrowser.Js.Tests;
 // ScriptEvaluation, 19.2.1.1 PerformEval): the frame has no callee and no
 // record of its own, and every name resolves through the environment the
 // declarations were instantiated into.
-[Collection(nameof(Interpreter2ParityTests))]
-public sealed class Interp2ProgramCodeTests : IDisposable
+public sealed class Interp2ProgramCodeTests
 {
-    private readonly bool _previousEngine = Interp2Options.Enabled;
-
-    public Interp2ProgramCodeTests() => Interp2Options.Enabled = true;
-
-    public void Dispose() => Interp2Options.Enabled = _previousEngine;
-
     private static BytecodeFunction Compile(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

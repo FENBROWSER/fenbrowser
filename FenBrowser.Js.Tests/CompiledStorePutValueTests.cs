@@ -11,34 +11,28 @@ namespace FenBrowser.Js.Tests;
 // returns false throws a TypeError in strict code, and a null or undefined base
 // is a TypeError about setting. The compiled store's slow paths used to drop
 // the [[Set]] result, so a strict write to a read-only property in a function
-// hot enough to compile was silently lost. Each case compiles `write` and runs
-// it on the dispatch loop, which calls a compiled function's delegate.
-[Collection(nameof(Interpreter2ParityTests))]
+// hot enough to compile was silently lost. Each case compiles `write`, whose
+// loop is what makes a call run it compiled, and calls it.
 public sealed class CompiledStorePutValueTests
 {
     private static string RunWithCompiledWrite(string source)
     {
-        var previous = Interp2Options.Enabled;
-        Interp2Options.Enabled = false;
-        try
-        {
-            var script = new BytecodeCompiler().CompileScript(new SourceText(source));
-            var write = script.NestedFunctions.Single(f => f.Name == "write");
-            var compiled = Assert.IsType<JitCompiler.JitDelegate>(JitCompiler.TryCompile(write));
-            typeof(BytecodeFunction)
-                .GetField("JitDelegate", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .SetValue(write, compiled);
-            return new BytecodeInterpreter().Execute(script).AsString();
-        }
-        finally
-        {
-            Interp2Options.Enabled = previous;
-        }
+        var script = new BytecodeCompiler().CompileScript(new SourceText(source));
+        var write = script.NestedFunctions.Single(f => f.Name == "write");
+        var compiled = Assert.IsType<JitCompiler.JitDelegate>(JitCompiler.TryCompile(write));
+        typeof(BytecodeFunction)
+            .GetField("JitDelegate", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(write, compiled);
+        // A call runs a compiled body only when the body loops enough to be
+        // worth it (JitCompiler.PrefersCompiled); say that it has.
+        write.BackEdges = 1 << 20;
+        Assert.True(JitCompiler.PrefersCompiled(write), "the call would not run the compiled body");
+        return new BytecodeInterpreter().Execute(script).AsString();
     }
 
     private static string Attempt(string strictness, string setup, string target) => RunWithCompiledWrite($@"
         {strictness}
-        function write(o, v) {{ o.p = v; }}
+        function write(o, v) {{ for (var i = 0; i < 1; i++) {{ }} o.p = v; }}
         {setup}
         var r = 'no-throw';
         try {{ write({target}, 1); write({target}, 2); }} catch (e) {{ r = e.constructor.name + ': ' + e.message; }}

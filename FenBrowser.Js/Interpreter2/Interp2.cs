@@ -129,6 +129,25 @@ internal sealed class Interp2
     internal int Depth => _depth;
 
     /// <summary>
+    /// For a watchdog on another thread: the innermost frame's function, the
+    /// instruction pointer it last saved (at its latest call or suspension)
+    /// and the frame depth. Unsynchronised, so a torn or stale answer is
+    /// possible - enough to name the function a job has been stuck in.
+    /// </summary>
+    internal (BytecodeFunction? Function, int Ip, int Depth) DiagnosticTopFrame()
+    {
+        var frames = _frames;
+        var depth = Volatile.Read(ref _depth);
+        if (depth <= 0 || depth > frames.Length)
+        {
+            return (null, -1, depth);
+        }
+
+        ref readonly var frame = ref frames[depth - 1];
+        return (frame.Layout?.Function, frame.Ip, depth);
+    }
+
+    /// <summary>
     /// The function and instruction pointer of the frame at
     /// <paramref name="index"/> (0 is the outermost), for a stack trace.
     /// </summary>
@@ -2225,15 +2244,14 @@ internal sealed class Interp2
     /// <summary>
     /// Perform one call. Returns true when the callee was entered as a new
     /// window on this loop, in which case the caller reloads and keeps going;
-    /// false when the call was completed by the old loop and its result has
-    /// already been stored.
+    /// false when the host completed the call and its result has already been
+    /// stored.
     /// </summary>
     /// <remarks>
     /// Capacity and depth failures throw rather than returning false. Returning
-    /// false would send an eligible callee back through the old loop's
-    /// <c>CallFunction</c>, which routes eligible functions straight back here -
-    /// so a stack that is full would recurse instead of reporting that it is
-    /// full.
+    /// false would send the callee through the host's <c>CallFunction</c>,
+    /// which routes it straight back here - so a stack that is full would
+    /// recurse instead of reporting that it is full.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool Call(JsValue calleeValue, JsValue thisValue, int argStart, int argCount, int returnSlot)
@@ -2246,7 +2264,6 @@ internal sealed class Interp2
     private bool CallFrom(
         JsValue calleeValue, JsValue thisValue, JsValue[] argSource, int argStart, int argCount, int returnSlot)
     {
-        var calleeIsJavaScript = false;
         if (calleeValue.Tag == JsValueTag.Object)
         {
             var target = _host.Heap.GetObject(calleeValue.AsObjectHandle());
@@ -2256,26 +2273,18 @@ internal sealed class Interp2
                 if (layout.Eligible
 #if !PUBLISH_AOT
                     // A loop-heavy body that has been compiled runs compiled,
-                    // entered through the old loop's CallFunction below.
+                    // entered through the host's CallFunction below.
                     && !JitCompiler.PrefersCompiled(fn.Function)
 #endif
                     )
                 {
                     if (Interp2Options.Log) Interp2Stats.RecordCallInLoop();
-                    // Counted here only: a call handed to the old loop is
-                    // counted by CallFunction.
+                    // Counted here only: a call handed to the host is counted
+                    // by CallFunction.
                     fn.Function.Invocations++;
                     PushFrame(fn, layout, argSource, argStart, argCount, thisValue, returnSlot);
                     return true;
                 }
-
-                calleeIsJavaScript = true;
-
-                // Which reason is costing calls, not which is costing bodies.
-                // 332 bodies were declined for one reason and 97 for another,
-                // and clearing the 332 moved the delegated calls by 0.7%: the
-                // work queue has to be weighted by how often a body is entered.
-                if (Interp2Options.Log) Interp2Stats.RecordDeclinedCall(layout.Bailout);
             }
             else if (target is NativeFunctionObject native)
             {
@@ -2283,7 +2292,7 @@ internal sealed class Interp2
                 // and the callee has just been resolved. Going back through the
                 // general entry would resolve it a second time and walk the
                 // proxy/bound/generator ladder to arrive here anyway.
-                if (Interp2Options.Log) Interp2Stats.RecordCallDelegated(calleeIsJavaScript: false);
+                if (Interp2Options.Log) Interp2Stats.RecordCallDelegated();
                 var nativeResult = _host.Interp2CallNative(
                     native, CallArgs.FromRegisters(argSource, argStart, argCount), thisValue);
                 _stack[returnSlot] = nativeResult;
@@ -2291,14 +2300,12 @@ internal sealed class Interp2
             }
         }
 
-        // Splitting the delegated calls says which of two very different things
-        // to do about them: a JavaScript body this loop declined is coverage
-        // still to win, a native is not.
-        if (Interp2Options.Log) Interp2Stats.RecordCallDelegated(calleeIsJavaScript);
+        if (Interp2Options.Log) Interp2Stats.RecordCallDelegated();
 
-        // Natives, bound functions, proxies, generators, async bodies and every
-        // function this loop declined: the old loop knows all of them, and the
-        // arguments it needs are already contiguous in this frame's window.
+        // Bound functions, proxies, generators, async bodies, compiled code and
+        // a class constructor called without `new` (which throws): the host
+        // knows all of them, and the arguments it needs are already contiguous
+        // in this frame's window.
         var result = _host.Interp2Call(
             calleeValue, CallArgs.FromRegisters(argSource, argStart, argCount), thisValue);
 
@@ -2589,6 +2596,11 @@ internal sealed class Interp2
         if (layout.BindsThisLoosely && thisValue.Tag != JsValueTag.Object)
         {
             thisValue = _host.Interp2CoerceReceiver(thisValue);
+        }
+
+        if (FenBrowser.Js.Diagnostics.CompiledCodeCoverage.Enabled)
+        {
+            FenBrowser.Js.Diagnostics.CompiledCodeCoverage.RecordEntry(layout.Function);
         }
 
         ref var frame = ref _frames[_depth++];

@@ -9,15 +9,8 @@ namespace FenBrowser.Js.Tests;
 // ECMA-262 15.5.5 yield* and 14.7.5 for-await-of on the register-window loop.
 // yield* is one delegation step per resume: the generator re-runs the
 // instruction, forwarding the completion it was resumed with to the delegate.
-[Collection(nameof(Interpreter2ParityTests))]
-public sealed class Interp2GeneratorDelegationTests : IDisposable
+public sealed class Interp2GeneratorDelegationTests
 {
-    private readonly bool _previousEngine = Interp2Options.Enabled;
-
-    public Interp2GeneratorDelegationTests() => Interp2Options.Enabled = true;
-
-    public void Dispose() => Interp2Options.Enabled = _previousEngine;
-
     private static BytecodeFunction Compile(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

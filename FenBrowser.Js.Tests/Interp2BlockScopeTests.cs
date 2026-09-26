@@ -11,15 +11,8 @@ namespace FenBrowser.Js.Tests;
 // cannot - a closure captures a block binding, a loop gives every turn its own
 // copy, an early exit leaves several blocks at once - keeps them as records,
 // pushed and popped as the bytecode says. Both used to be declined.
-[Collection(nameof(Interpreter2ParityTests))]
-public sealed class Interp2BlockScopeTests : IDisposable
+public sealed class Interp2BlockScopeTests
 {
-    private readonly bool _previousEngine = Interp2Options.Enabled;
-
-    public Interp2BlockScopeTests() => Interp2Options.Enabled = true;
-
-    public void Dispose() => Interp2Options.Enabled = _previousEngine;
-
     private static BytecodeFunction Compile(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

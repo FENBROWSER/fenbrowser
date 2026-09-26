@@ -11,15 +11,8 @@ namespace FenBrowser.Js.Tests;
 // constructor use - heritage, private and computed fields, SetFunctionName.
 // Each case defines its classes inside a function so the definition itself
 // runs on this loop too.
-[Collection(nameof(Interpreter2ParityTests))]
-public sealed class Interp2ClassTests : IDisposable
+public sealed class Interp2ClassTests
 {
-    private readonly bool _previousEngine = Interp2Options.Enabled;
-
-    public Interp2ClassTests() => Interp2Options.Enabled = true;
-
-    public void Dispose() => Interp2Options.Enabled = _previousEngine;
-
     private static BytecodeFunction Compile(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

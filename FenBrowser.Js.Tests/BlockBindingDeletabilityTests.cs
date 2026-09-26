@@ -127,12 +127,13 @@ public sealed class BlockBindingDeletabilityTests
     [Fact]
     public void BlockAndCatchBindingsHoldUpPastTheTierUpThreshold()
     {
-        // Enough calls to compile g, so the JIT's own scope entry - which takes
-        // the catch flag as an extra argument - is what runs.
+        // g loops enough to be compiled and then run compiled, so the JIT's own
+        // scope entry - which takes the catch flag as an extra argument - is
+        // what runs once it has been.
         Assert.Equal(
             "12497500",
             RunString(
-                "function g(i) { try { throw i; } catch (e) { { let b = e; return b; } } }" +
+                "function g(i) { for (var k = 0; k < 40; k++) { } try { throw i; } catch (e) { { let b = e; return b; } } }" +
                 "var s = 0; for (var i = 0; i < 5000; i++) { s += g(i); } String(s);"));
     }
 }

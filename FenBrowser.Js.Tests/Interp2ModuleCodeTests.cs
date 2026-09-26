@@ -11,15 +11,8 @@ namespace FenBrowser.Js.Tests;
 // Module code on the register-window loop: an async program body over the
 // module's environment, suspending at a top-level await like an async
 // function (ECMA-262 16.2.1.6.5 ExecuteModule), and the import opcodes.
-[Collection(nameof(Interpreter2ParityTests))]
-public sealed class Interp2ModuleCodeTests : IDisposable
+public sealed class Interp2ModuleCodeTests
 {
-    private readonly bool _previousEngine = Interp2Options.Enabled;
-
-    public Interp2ModuleCodeTests() => Interp2Options.Enabled = true;
-
-    public void Dispose() => Interp2Options.Enabled = _previousEngine;
-
     private static (BytecodeInterpreter, ModuleEvaluator) Setup()
     {
         var interpreter = new BytecodeInterpreter();

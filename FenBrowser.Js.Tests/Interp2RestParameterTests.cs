@@ -10,15 +10,8 @@ namespace FenBrowser.Js.Tests;
 // to a new array of every argument from its position on. The register-window
 // loop used to decline any body with one, which on a real library was the
 // largest share of calls still running on the old loop.
-[Collection(nameof(Interpreter2ParityTests))]
-public sealed class Interp2RestParameterTests : IDisposable
+public sealed class Interp2RestParameterTests
 {
-    private readonly bool _previousEngine = Interp2Options.Enabled;
-
-    public Interp2RestParameterTests() => Interp2Options.Enabled = true;
-
-    public void Dispose() => Interp2Options.Enabled = _previousEngine;
-
     private static BytecodeFunction Compile(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

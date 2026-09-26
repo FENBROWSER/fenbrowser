@@ -81,17 +81,6 @@ public sealed class FunctionEnvironmentRecord : DeclarativeEnvironmentRecord
         }
     }
 
-    // [[NewTarget]] is known only once the call is set up: the interpreter
-    // creates the record before it takes the pending construct target.
-    internal void SetNewTarget(JsValue newTarget)
-    {
-        NewTarget = newTarget;
-        if (newTarget.Tag == JsValueTag.Object)
-        {
-            RememberBindingStore(newTarget.AsObjectHandle());
-        }
-    }
-
     public override bool HasThisBinding => ThisBindingStatus != ThisBindingStatus.Lexical;
 
     public override bool HasSuperBinding => HasThisBinding && HomeObject is not null;

@@ -14,21 +14,11 @@ public sealed class AsyncContext : JsObject
 	public EnvironmentRecord? OuterEnvironment { get; set; }
 	public JsValue ThisValue { get; set; }
 	public int InstructionPointer { get; set; }
-	public int[] SavedCatchHandlers { get; set; } = Array.Empty<int>();
-	public int[] SavedFinallyHandlers { get; set; } = Array.Empty<int>();
-	public FenBrowser.Js.Environments.EnvironmentRecord[] SavedHandlerEnvironments { get; set; } = Array.Empty<FenBrowser.Js.Environments.EnvironmentRecord>();
 	public JsValue? PendingException { get; set; }
 	public int AwaitDestReg { get; set; } = -1;
 	public JsValue SentValue { get; set; } = JsValue.Undefined;
 	public bool IsRejectResume { get; set; }
 	public bool IsSuspended { get; set; }
-
-	/// <summary>
-	/// Set when this body runs on the register-window loop, whose window - the
-	/// bytecode registers and the body's variables in one span - is what
-	/// <see cref="Registers"/> then holds, sized to match.
-	/// </summary>
-	public bool RunsOnRegisterWindow { get; set; }
 
 	/// <summary>
 	/// The block records a register-window frame had pushed at the await,
@@ -86,9 +76,6 @@ public sealed class AsyncContext : JsObject
 			Environment?.Trace(tracer);
 			if (!ReferenceEquals(OuterEnvironment, Environment))
 				OuterEnvironment?.Trace(tracer);
-
-			foreach (var handlerEnvironment in SavedHandlerEnvironments)
-				handlerEnvironment?.Trace(tracer);
 
 			BlockScope?.Trace(tracer);
 		}

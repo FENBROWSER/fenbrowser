@@ -8,15 +8,8 @@ namespace FenBrowser.Js.Tests;
 
 // Spread calls, spread construction and strict-mode tail calls on the
 // register-window loop, which used to decline any body containing one.
-[Collection(nameof(Interpreter2ParityTests))]
-public sealed class Interp2CallFormTests : IDisposable
+public sealed class Interp2CallFormTests
 {
-    private readonly bool _previousEngine = Interp2Options.Enabled;
-
-    public Interp2CallFormTests() => Interp2Options.Enabled = true;
-
-    public void Dispose() => Interp2Options.Enabled = _previousEngine;
-
     private static BytecodeFunction Compile(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

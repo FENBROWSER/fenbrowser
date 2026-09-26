@@ -30,42 +30,6 @@ namespace FenBrowser.Js.Bytecode;
 // opcodes are added by extending TryEmitOpcode below.
 public static class JitCompiler
 {
-    // How much a function must have done before it is worth compiling.
-    // Compiling one costs single-digit milliseconds of Expression.Compile, and
-    // the compiled body runs about a quarter faster than the dispatch loop, so
-    // a function has to spend well over a hundred milliseconds interpreted
-    // before the trade pays. Ten calls of a bootstrap utility is nowhere near
-    // that: on reCAPTCHA's bundle it compiled ~500 functions and the page ran
-    // slower overall than with the JIT switched off.
-    //
-    // FEN_JIT_TIERUP overrides it, so the trade can be measured against a real
-    // page rather than argued about.
-    //
-    // Measured on google.com/recaptcha/api2/demo, one run per threshold:
-    //
-    //   threshold  compiled  compileMs  queueWait  neverCalled  postCompileCalls
-    //         100       329      12356     276.7s     74 (22%)         2,366,847
-    //        1000       116       5067      25.3s      5 (4.3%)        2,328,620
-    //        5000        82       3792       4.8s      1 (1.2%)        1,970,622
-    //
-    // 1000 keeps 98.4% of the calls that ever reach compiled code for 41% of
-    // the compile cost, and cuts the aggregate queue wait by 91% - which is
-    // what a genuinely hot function actually feels, because at 100 it waited
-    // behind a queue of functions that would be called a handful of times or,
-    // for 74 of them, never again.
-    //
-    // The floor is this low only because compiled code is barely faster than
-    // the interpreter. Measured on a 40-op function called 100k times:
-    // interpreter 1207ms, compiled 1176ms - a 10% gain on execution against a
-    // 90ms compile, which puts true break-even near 79,000 calls. Raising the
-    // threshold that far would compile almost nothing; the real fix is better
-    // codegen, and until then this is the knee of the curve rather than the
-    // point where compilation pays for itself.
-    public static readonly int TierUpThreshold =
-        int.TryParse(Environment.GetEnvironmentVariable("FEN_JIT_TIERUP"), out var configured) && configured > 0
-            ? configured
-            : 1000;
-
     /// <summary>
     /// Set FEN_JIT_DISABLE=1 to keep everything on the dispatch loop. Having a
     /// switch makes a JIT change measurable against the interpreter it is

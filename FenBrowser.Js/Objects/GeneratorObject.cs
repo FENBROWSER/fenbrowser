@@ -19,20 +19,8 @@ public sealed class GeneratorObject : JsObject
     public int YieldDestReg { get; set; } = -1;
     public GeneratorCompletionMode CompletionMode { get; set; } = GeneratorCompletionMode.Normal;
 
-    public int[] SavedCatchHandlers { get; set; } = Array.Empty<int>();
-    public int[] SavedFinallyHandlers { get; set; } = Array.Empty<int>();
-    public EnvironmentRecord[] SavedHandlerEnvironments { get; set; } = Array.Empty<EnvironmentRecord>();
     public JsValue? PendingException { get; set; }
     public JsValue? PendingReturn { get; set; }
-
-    /// <summary>
-    /// Set when this body runs on the register-window loop, whose window - the
-    /// bytecode registers and the body's variables in one span - is what
-    /// <see cref="Registers"/> then holds, sized to match. The two loops lay a
-    /// frame out differently, so a generator that starts on one always resumes
-    /// on it.
-    /// </summary>
-    public bool RunsOnRegisterWindow { get; set; }
 
     /// <summary>
     /// The frame's open try entries at the suspension, as the (catch ip,
@@ -116,9 +104,6 @@ public sealed class GeneratorObject : JsObject
             Environment?.Trace(tracer);
             if (!ReferenceEquals(OuterEnvironment, Environment))
                 OuterEnvironment?.Trace(tracer);
-
-            foreach (var handlerEnvironment in SavedHandlerEnvironments)
-                handlerEnvironment?.Trace(tracer);
 
             BlockScope?.Trace(tracer);
         }

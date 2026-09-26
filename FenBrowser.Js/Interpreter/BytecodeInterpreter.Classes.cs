@@ -182,33 +182,6 @@ public sealed partial class BytecodeInterpreter
     }
 
 
-    // ECMA-262 15.7.13 / 7.3.6 CreateMethodProperty: install a data property with
-    // { [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: true }.
-    internal void HandleDefineMethod(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
-    {
-        try
-        {
-            DefineMethodCore(
-                frame.Registers[ins.A], function.PropertyNames[ins.B], JsValue.Undefined, frame.Registers[ins.C]);
-        }
-        catch (JsThrownException ex) when (HasHandler(frame))
-        {
-            ThrowOrHandle(frame, ex.Value);
-        }
-    }
-
-    internal void HandleDefineMethodByReg(InterpreterFrame frame, Instruction ins)
-    {
-        try
-        {
-            DefineMethodCore(frame.Registers[ins.A], name: null, frame.Registers[ins.B], frame.Registers[ins.C]);
-        }
-        catch (JsThrownException ex) when (HasHandler(frame))
-        {
-            ThrowOrHandle(frame, ex.Value);
-        }
-    }
-
     // H.4 / H.5 - an accessor on an object literal or a class, by constant name
     // or by a key computed into a register. This core throws rather than routing
     // to a frame: the Handle* wrappers above catch and hand the exception to the

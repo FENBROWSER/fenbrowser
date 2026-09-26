@@ -10,15 +10,8 @@ namespace FenBrowser.Js.Tests;
 // enough finishes in its compiled code from the loop header, carrying its
 // registers and variables across. Each case compiles the looping body up front
 // so the hand-off does not depend on when a background compile lands.
-[Collection(nameof(Interpreter2ParityTests))]
-public sealed class Interp2OsrTests : IDisposable
+public sealed class Interp2OsrTests
 {
-    private readonly bool _previousEngine = Interp2Options.Enabled;
-
-    public Interp2OsrTests() => Interp2Options.Enabled = true;
-
-    public void Dispose() => Interp2Options.Enabled = _previousEngine;
-
     private static BytecodeFunction Compile(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

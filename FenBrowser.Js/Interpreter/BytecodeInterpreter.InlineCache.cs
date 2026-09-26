@@ -310,36 +310,16 @@ public sealed partial class BytecodeInterpreter
         var bcFn = fn.Function;
 
         // The monomorphic call cache is a second door into an ordinary function
-        // body, so the register-window loop has to be reachable through it too -
-        // otherwise a call site would run one loop before it warmed up and the
-        // other afterwards. The same rules as CallFunction decide between it
-        // and a compiled body.
+        // body, so the same rules as CallFunction decide between the
+        // register-window loop and a compiled body.
         bcFn.Invocations++;
-        if (Interpreter2.Interp2Options.Enabled
 #if !PUBLISH_AOT
-            && !JitCompiler.PrefersCompiled(bcFn)
-#endif
-            )
+        if (JitCompiler.PrefersCompiled(bcFn))
         {
-            var layout = Interpreter2.FrameLayout.For(bcFn);
-            if (layout.Eligible)
-            {
-                return Interp2Execute(fn, layout, args, thisValue);
-            }
-        }
-
-#if !PUBLISH_AOT
-        const int BackEdgeScale = 100;
-        if (!Interpreter2.Interp2Options.Enabled &&
-            !bcFn.JitCompileAttempted &&
-            (long)bcFn.Invocations * BackEdgeScale + bcFn.BackEdges
-                >= (long)JitCompiler.TierUpThreshold * BackEdgeScale)
-        {
-            bcFn.JitCompileAttempted = true;
-            JitCompiler.RequestCompile(bcFn);
+            return ExecuteInternal(bcFn, args, thisValue, ResolveFunctionOuterEnvironment(fn), callee: fn);
         }
 #endif
-        return ExecuteInternal(bcFn, args, thisValue, ResolveFunctionOuterEnvironment(fn), callee: fn);
+        return Interp2Execute(fn, Interp2LayoutFor(bcFn), args, thisValue);
     }
 
     private void PopulateCallIC(BytecodeFunction fn, int offset, JsValue callee)

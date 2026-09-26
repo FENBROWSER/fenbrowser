@@ -1,32 +1,19 @@
 ﻿using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
-using FenBrowser.Js.Interpreter2;
 using FenBrowser.Js.Source;
 using Xunit;
 
 namespace FenBrowser.Js.Tests;
 
 /// <summary>
-/// The register-window loop must produce what the dispatch loop produces.
+/// Programs that exercise the register-window loop's own machinery rather than
+/// the language, and which a test262 slice would only catch by accident.
 /// </summary>
 /// <remarks>
-/// <para>
-/// test262 is where that is checked at scale, through
-/// <c>scripts/interp2_ab.sh</c>, and it is where the interesting failures have
-/// come from. These are the cases worth pinning here as well: the ones that
-/// exercise the new loop's own machinery rather than the language, and which a
-/// slice would only catch by accident.
-/// </para>
-/// <para>
-/// The programs run twice in the same process, once on each loop, and the two
-/// answers are compared. Flipping the engine per test rather than per process
-/// means the default <c>dotnet test</c> run covers both, with no environment
-/// variable to remember.
-/// </para>
+/// Each expected value is the answer the old dispatch loop gave while the two
+/// loops ran side by side; the old loop is gone, the answers are not.
 /// </remarks>
-[Collection(nameof(Interpreter2ParityTests))]
-[CollectionDefinition(nameof(Interpreter2ParityTests), DisableParallelization = true)]
-public sealed class Interpreter2ParityTests
+public sealed class RegisterWindowLoopTests
 {
     [Theory]
     // Where a frame's variables live: registers, and the window's clear.
@@ -276,14 +263,8 @@ public sealed class Interpreter2ParityTests
                 "var it = g(); it.next(); var r = it.next(); String(r.value) + ':' + String(r.done);", "9:true")]
     // yield* stays on the old loop for now.
     [InlineData("function* g() { yield* [1, 2]; } [...g()].join(',');", "1,2")]
-    public void BothLoopsAgree(string source, string expected)
-    {
-        var onOldLoop = RunOn(engine2: false, source);
-        var onNewLoop = RunOn(engine2: true, source);
-
-        Assert.Equal(expected, onOldLoop);
-        Assert.Equal(onOldLoop, onNewLoop);
-    }
+    public void RunsAsTheOldLoopDid(string source, string expected)
+        => Assert.Equal(expected, Run(source));
 
     /// <summary>
     /// The same comparison for a body that suspends at an await. An async
@@ -398,34 +379,19 @@ public sealed class Interpreter2ParityTests
     // A throw before the first yield rejects the promise next() handed back.
     [InlineData("var out; async function* g() { throw new Error('ag'); }" +
                 "g().next().catch(function (e) { out = e.message; });", "out;", "ag")]
-    public void BothLoopsAgreeAfterTheJobQueueDrains(string source, string reader, string expected)
-    {
-        var onOldLoop = RunThenReadOn(engine2: false, source, reader);
-        var onNewLoop = RunThenReadOn(engine2: true, source, reader);
-
-        Assert.Equal(expected, onOldLoop);
-        Assert.Equal(onOldLoop, onNewLoop);
-    }
+    public void RunsAsTheOldLoopDidAfterTheJobQueueDrains(string source, string reader, string expected)
+        => Assert.Equal(expected, RunThenRead(source, reader));
 
     /// <summary>
     /// Run a program, then read what it left behind. <c>Execute</c> drains the
     /// job queue before it returns, so the second script sees every await
     /// resumption the first one queued.
     /// </summary>
-    private static string RunThenReadOn(bool engine2, string source, string reader)
+    private static string RunThenRead(string source, string reader)
     {
-        var previous = Interp2Options.Enabled;
-        Interp2Options.Enabled = engine2;
-        try
-        {
-            var interpreter = new BytecodeInterpreter();
-            Execute(interpreter, source);
-            return Describe(interpreter, Execute(interpreter, reader));
-        }
-        finally
-        {
-            Interp2Options.Enabled = previous;
-        }
+        var interpreter = new BytecodeInterpreter();
+        Execute(interpreter, source);
+        return Describe(interpreter, Execute(interpreter, reader));
     }
 
     private static Runtime.JsValue Execute(BytecodeInterpreter interpreter, string source)
@@ -435,21 +401,10 @@ public sealed class Interpreter2ParityTests
         return interpreter.Execute(function);
     }
 
-    private static string RunOn(bool engine2, string source)
+    private static string Run(string source)
     {
-        var previous = Interp2Options.Enabled;
-        Interp2Options.Enabled = engine2;
-        try
-        {
-            var function = new BytecodeCompiler().CompileScript(new SourceText(source));
-            new BytecodeVerifier().Verify(function);
-            var interpreter = new BytecodeInterpreter();
-            return Describe(interpreter, interpreter.Execute(function));
-        }
-        finally
-        {
-            Interp2Options.Enabled = previous;
-        }
+        var interpreter = new BytecodeInterpreter();
+        return Describe(interpreter, Execute(interpreter, source));
     }
 
     private static string Describe(BytecodeInterpreter interpreter, Runtime.JsValue value) => value.Tag switch

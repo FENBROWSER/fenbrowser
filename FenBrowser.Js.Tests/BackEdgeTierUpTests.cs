@@ -5,11 +5,11 @@ using Xunit;
 
 namespace FenBrowser.Js.Tests;
 
-// Audit doc §3.2. Tier-4 #24 baseline JIT triggered tier-up only on the
-// invocation counter. A hot loop inside a function called once
-// therefore never benefited from JIT. Combined trigger:
-//   Invocations * 100 + BackEdges >= TierUpThreshold * 100
-// fires after 100 calls OR 10,000 cross-call loop iterations OR a mix.
+// A function earns a compile by looping, not by being called: the loop counts
+// its back-edges on the function across calls and asks for a compile once they
+// reach JitCompiler.LoopTierUpBackEdges (Interp2.SettleBackEdges). A call count
+// alone never does - entering compiled code costs more than the call it
+// replaces unless the body loops.
 public class BackEdgeTierUpTests
 {
     private static BytecodeFunction Compile(string src)
@@ -65,17 +65,16 @@ public class BackEdgeTierUpTests
     }
 
     [Fact]
-    public void RepeatedCalls_StillTriggerJitAtInvocationThreshold()
+    public void RepeatedCallsAloneNeverAskForACompile()
     {
-        // Regression: pure invocation-count path (no loops at all) must
-        // still tier up at TierUpThreshold calls.
         var fn = Compile(@"
             function noop() { return 1; }
             var r = 0;
-            for (var i = 0; i < 250; i++) r = noop();
+            for (var i = 0; i < 5000; i++) r = noop();
             r;
         ");
         Assert.Equal(1.0, new BytecodeInterpreter().Execute(fn).AsNumber());
+        Assert.False(fn.NestedFunctions[0].JitCompileWasAttempted);
     }
 
     [Fact]
