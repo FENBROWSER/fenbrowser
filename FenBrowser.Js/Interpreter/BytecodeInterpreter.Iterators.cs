@@ -115,6 +115,9 @@ public sealed partial class BytecodeInterpreter
     // many direct callers still rely on TryMoveNext). Pulling lazily is what
     // makes `for (x of infiniteIterator) break;` terminate and lets the loop run
     // IteratorClose on the break.
+    // ECMA-262 7.4.6 IteratorComplete: ToBoolean(? Get(result, "done")).
+    private bool IteratorResultDone(JsValue result) => IsTruthy(GetReceiverProperty(result, "done"));
+
     private JsValue CreateForOfIteratorState(JsValue source, bool requireIterable = false)
     {
         if (source.Tag == JsValueTag.HostObject &&

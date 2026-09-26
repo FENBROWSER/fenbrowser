@@ -16993,26 +16993,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return resultValue;
         }, length: 1);
 
-        // ECMA-262 2024 Array.fromAsync(items[, mapFn[, thisArg]]). Returns a Promise
-        // that resolves to a new Array. Basic implementation using Array.from internally.
-        DefineIntrinsicFunction(constructorHandle, constructor, "fromAsync", (_, args) =>
-        {
-            var promiseCap = NewPromiseCapability();
-            try
-            {
-                // Get Array.from from the constructor and call it.
-                var fromFn = JsValue.Undefined;
-                if (constructor.TryGetOwnProperty("from", out var fromDesc))
-                    fromFn = fromDesc.Value;
-                var result = CallFunction(fromFn, args, JsValue.FromObject(constructorHandle));
-                CallFunction(promiseCap.Resolve, new[] { result }, JsValue.Undefined);
-            }
-            catch (JsThrownException ex)
-            {
-                CallFunction(promiseCap.Reject, new[] { ex.Value }, JsValue.Undefined);
-            }
-            return promiseCap.Promise;
-        }, length: 1);
+        // ECMA-262 23.1.2.2 Array.fromAsync (see BytecodeInterpreter.ArrayFromAsync.cs).
+        DefineIntrinsicFunction(constructorHandle, constructor, "fromAsync", ArrayFromAsync, length: 1);
 
         // ECMA-262 23.1.2.2 Array.isArray(arg) delegates to IsArray, including
         // proxy target recursion and revoked-proxy TypeError behavior.
