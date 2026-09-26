@@ -538,7 +538,27 @@ namespace FenBrowser.Tests.Svg
         [InlineData("href")]
         [InlineData("xlink:href")]
         [InlineData("style")]
-        public void StructurallyUnsupportedAttributes_FailClosedEvenWhenNotLive(string attributeName)
+        public void StructurallyUnsupportedAttributes_FailClosedWhenTheIntervalIsLive(
+            string attributeName)
+        {
+            string svg = "<svg width='40' height='20'><rect width='10' height='20' fill='green'>" +
+                "<animate attributeName='" + attributeName + "' to='other' begin='0s' dur='1s'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, .5d);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Contains("smil-animation", result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("class")]
+        [InlineData("href")]
+        [InlineData("xlink:href")]
+        [InlineData("style")]
+        public void StructurallyUnsupportedAttributes_AreIrrelevantOutsideTheirInterval(
+            string attributeName)
         {
             string svg = "<svg width='40' height='20'><rect width='10' height='20' fill='green'>" +
                 "<animate attributeName='" + attributeName + "' to='other' begin='10s' dur='1s'/>" +
@@ -546,9 +566,178 @@ namespace FenBrowser.Tests.Svg
 
             using var result = RenderAt(svg, 0d);
 
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(5, 10));
+        }
+
+        [Fact]
+        public void FutureSet_OnAClassTarget_DoesNotSelectTheRuleItWouldHaveSet()
+        {
+            const string svg =
+                "<svg width='20' height='20' fill='blue'><style>.v { fill: green }</style>" +
+                "<g><set attributeName='class' to='v' begin='1s'/>" +
+                "<rect width='20' height='20'/></g></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void FutureSet_FreezeOutsideItsIntervalDoesNotResurrectTheValue()
+        {
+            const string svg =
+                "<svg width='20' height='20'><rect width='20' height='20' fill='blue'>" +
+                "<set attributeName='class' to='v' begin='1s' dur='1s' fill='freeze'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void FutureClassAnimation_LeavesTheBaseFrameUntouched()
+        {
+            const string svg =
+                "<svg width='20' height='20'><circle cx='10' cy='10' r='8' fill='blue' class='start'>" +
+                "<set attributeName='class' attributeType='XML' to='midway' begin='2s' dur='2s' " +
+                "fill='freeze'/>" +
+                "<animate attributeName='class' attributeType='XML' from='midway' " +
+                "to='final midway' begin='3s' dur='4s' fill='freeze'/>" +
+                "</circle></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void FutureUnclassifiableSet_LeavesTheFrameUntouched()
+        {
+            const string svg =
+                "<svg width='20' height='20'><rect width='20' height='20' fill='blue'>" +
+                "<set attributeName='in' to='SourceGraphic' begin='3s' dur='1s' fill='freeze'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void FutureSet_WithUnusableComposition_LeavesTheFrameUntouched()
+        {
+            const string svg =
+                "<svg width='20' height='20'><rect width='20' height='20' fill='blue'>" +
+                "<set attributeName='class' to='v' attributeType='bogus' begin='1s' dur='1s'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void FutureAnimate_WithUnusableComposition_LeavesTheFrameUntouched()
+        {
+            const string svg =
+                "<svg width='20' height='20'><rect width='20' height='20' fill='blue'>" +
+                "<animate attributeName='x' from='0' to='20' additive='multiply' " +
+                "begin='10s' dur='1s'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
+        public void FutureAnimateTransform_OnANonTransformableTarget_LeavesTheFrameUntouched()
+        {
+            const string svg = "<svg width='20' height='20'><filter id='f'><feFlood flood-color='green'/>" +
+                "<animateTransform attributeName='transform' type='translate' from='0' to='10' " +
+                "begin='10s' dur='1s'/>" +
+                "</filter></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+        }
+
+        [Fact]
+        public void FutureImageHrefSet_LeavesTheFrameUntouched()
+        {
+            const string svg =
+                "<svg width='20' height='20'><rect width='20' height='20' fill='blue'/>" +
+                "<image width='10' height='10'>" +
+                "<set attributeName='xlink:href' to='other.png' begin='2s'/>" +
+                "</image></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(15, 15));
+        }
+
+        [Fact]
+        public void LiveClassAnimation_FailsClosed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><rect width='20' height='20' fill='blue'>" +
+                "<set attributeName='class' to='v' dur='1s'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, .5d);
+
             AssertFailsClosed(result);
             Assert.True(result.RequiresFallback, string.Join("; ", result.Warnings));
-            Assert.Contains("smil-animation", result.FallbackReasonCodes);
+            Assert.Contains(result.Warnings, warning => warning.Contains("set target or attribute"));
+        }
+
+        [Fact]
+        public void LiveHrefSet_OnADataUrl_FailsClosed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><use>" +
+                "<set attributeName='href' to='data:image/svg+xml;base64,PHN2Zy8+#r'/>" +
+                "</use></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Contains(result.Warnings, warning => warning.Contains("set target or attribute"));
+        }
+
+        [Fact]
+        public void LiveSet_OnAUseHref_FailsClosed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><use>" +
+                "<set attributeName='xlink:href' to='#target' dur='1s'/>" +
+                "</use><rect id='target' width='20' height='20' fill='green'/></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Contains(result.Warnings, warning => warning.Contains("set target or attribute"));
         }
 
         [Fact]

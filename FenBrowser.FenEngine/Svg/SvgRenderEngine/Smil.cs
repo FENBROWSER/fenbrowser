@@ -120,6 +120,12 @@ namespace FenBrowser.FenEngine.Svg
         private void ApplyAnimateSnapshot(SvgElement animation)
         {
             SvgElement target = ResolveSmilTarget(animation);
+            // An interval that is not live at the sampled document time cannot
+            // alter the frame, so the sampled value and the target form are not
+            // demanded. Only a live interval has to be honoured exactly.
+            if (!TryResolveSmilTiming(animation, true, out SmilTiming timing))
+                return;
+            if (!timing.Contributing) return;
             string attributeName = animation.GetAttribute("attributeName")?.Trim();
             if (target == null || string.IsNullOrEmpty(attributeName) ||
                 !TryClassifySmilAttribute(attributeName, out SmilValueKind kind) ||
@@ -134,8 +140,6 @@ namespace FenBrowser.FenEngine.Svg
                 RequireSmilFallback("animate composition");
                 return;
             }
-            if (!TryResolveSmilTiming(animation, true, out SmilTiming timing))
-                return;
             if (!IsDefaultMotionAttribute(animation, "accumulate", "none") &&
                 !(timing.Iterations == 1d &&
                   IsDefaultMotionAttribute(animation, "accumulate", "sum")))
@@ -143,7 +147,6 @@ namespace FenBrowser.FenEngine.Svg
                 RequireSmilFallback("animate accumulate mode");
                 return;
             }
-            if (!timing.Contributing) return;
 
             string calcMode = animation.GetAttribute("calcMode")?.Trim();
             bool linear = calcMode == null || calcMode.Length == 0 ||
@@ -225,6 +228,9 @@ namespace FenBrowser.FenEngine.Svg
         {
             CheckDeadline();
             SvgElement target = ResolveSmilTarget(animation);
+            if (!TryResolveSmilTiming(animation, true, out SmilTiming timing))
+                return;
+            if (!timing.Contributing) return;
             string attributeName = animation.GetAttribute("attributeName")?.Trim();
             if (target == null || attributeName == null ||
                 !attributeName.Equals("transform", StringComparison.OrdinalIgnoreCase) ||
@@ -240,8 +246,6 @@ namespace FenBrowser.FenEngine.Svg
                 RequireSmilFallback("animateTransform target element");
                 return;
             }
-            if (!TryResolveSmilTiming(animation, true, out SmilTiming timing))
-                return;
             if (!IsDefaultMotionAttribute(animation, "accumulate", "none") &&
                 !(timing.Iterations == 1d &&
                   IsDefaultMotionAttribute(animation, "accumulate", "sum")))
@@ -249,7 +253,6 @@ namespace FenBrowser.FenEngine.Svg
                 RequireSmilFallback("animateTransform accumulate mode");
                 return;
             }
-            if (!timing.Contributing) return;
             if (!TryParseSmilTransformKind(animation.GetAttribute("type"), out var kind))
             {
                 RequireSmilFallback("animateTransform type");
@@ -308,6 +311,11 @@ namespace FenBrowser.FenEngine.Svg
         private void ApplySetSnapshot(SvgElement animation)
         {
             SvgElement target = ResolveSmilTarget(animation);
+            // A set that is not live at the sampled document time holds nothing,
+            // so neither its target form nor its value has to be representable.
+            if (!TryResolveSmilTiming(animation, false, out SmilTiming timing))
+                return;
+            if (!timing.Contributing) return;
             string attributeName = animation.GetAttribute("attributeName")?.Trim();
             string value = animation.GetAttribute("to");
             if (target == null || string.IsNullOrEmpty(attributeName) ||
@@ -320,9 +328,6 @@ namespace FenBrowser.FenEngine.Svg
                 RequireSmilFallback("set target or attribute");
                 return;
             }
-            if (!TryResolveSmilTiming(animation, false, out SmilTiming timing))
-                return;
-            if (!timing.Contributing) return;
 
             value = BindSmilCurrentColor(target, kind, value);
 
