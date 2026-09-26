@@ -15,6 +15,7 @@ namespace FenBrowser.Tests.Core;
 public sealed class FenJsFingerprintProbeTests
 {
     [Theory]
+    [InlineData("String(window.frames === window) + String(frames === self)", "truetrue")]
     [InlineData("typeof window.chrome", "object")]
     [InlineData("typeof window.chrome.runtime", "object")]
     [InlineData("navigator.plugins.length > 0", "true")]

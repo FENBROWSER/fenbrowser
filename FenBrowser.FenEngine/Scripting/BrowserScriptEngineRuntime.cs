@@ -7183,6 +7183,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         _fenJsGlobalThis = globalThisValue;
         _interpreter.RegisterGlobalValue("window", globalThisValue);
         _interpreter.RegisterGlobalValue("self", globalThisValue);
+        // HTML §7.2.2: window.frames returns the WindowProxy itself. Consent stubs such
+        // as w3schools' fast-cmp probe `window.frames["__tcfapiLocator"]` unguarded.
+        _interpreter.RegisterGlobalValue("frames", globalThisValue);
         _interpreter.RegisterGlobalValue("top", globalThisValue);
         _interpreter.RegisterGlobalValue("parent", globalThisValue);
         _interpreter.RegisterGlobalValue("name", JsValue.FromString(string.Empty));
