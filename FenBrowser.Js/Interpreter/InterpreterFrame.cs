@@ -97,12 +97,6 @@ public sealed class InterpreterFrame
 
 	public JsValue NewTarget { get; set; } = JsValue.Undefined;
 
-	// Set by LoadSuperConstructor to the base-class constructor handle so the
-	// immediately-following super(...) call can route a NATIVE base constructor
-	// through [[Construct]] (with this frame's NewTarget) instead of [[Call]],
-	// which native abstract bases like Iterator reject. Cleared once consumed.
-	public ObjectHandle? SuperConstructorHandle { get; set; }
-
 	public GeneratorObject? OwnerGenerator { get; set; }
 
 	public AsyncContext? AsyncContext { get; set; }
@@ -129,7 +123,6 @@ public sealed class InterpreterFrame
 		InstructionPointer = 0;
 		CalleeFunctionObject = null;
 		NewTarget = JsValue.Undefined;
-		SuperConstructorHandle = null;
 		OwnerGenerator = null;
 		AsyncContext = null;
 	}

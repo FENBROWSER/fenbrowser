@@ -1855,7 +1855,9 @@ public sealed class BytecodeCompiler
             // ECMA-262 15.10.3 IsInTailPosition: strict code only, never inside a
             // generator or async body, and not inside a try block or before a
             // pending finally.
-            if (_isStrictMode && !hasPendingFinally && _tryBlockDepth == 0 &&
+            // A class constructor's completion is checked by [[Construct]] (a
+            // derived one's falls back to `this`), so its frame is kept.
+            if (_isStrictMode && !hasPendingFinally && _tryBlockDepth == 0 && !_isClassConstructor &&
                 _currentFunctionKind is not (FunctionKind.Generator or FunctionKind.Async or FunctionKind.AsyncGenerator) &&
                 TryConvertLastCallToTailCall(reg))
             {
@@ -1879,6 +1881,48 @@ public sealed class BytecodeCompiler
         }
 
         _instructions.Add(new Instruction(OpCode.Return, 0, 0, 0));
+    }
+
+    /// <summary>
+    /// ECMA-262 13.3.7.1 SuperCall: the parent constructor (GetSuperConstructor,
+    /// before the arguments), the arguments, Construct with the running
+    /// function's new.target, then BindThisValue on the result.
+    /// </summary>
+    private int CompileSuperCall(CallExpressionNode call)
+    {
+        var superConstructor = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.LoadSuperConstructor, superConstructor, 0, 0));
+        var dest = AllocateRegister();
+
+        var hasSpread = false;
+        foreach (var argument in call.Arguments)
+        {
+            hasSpread |= argument is SpreadElementExpressionNode;
+        }
+
+        if (hasSpread)
+        {
+            var spread = BuildSpreadArray(call.Arguments);
+            _instructions.Add(new Instruction(OpCode.SuperCallSpread, dest, superConstructor, spread, 0));
+        }
+        else
+        {
+            var argStart = AllocateRegister();
+            for (var i = 0; i < call.Arguments.Count; i++)
+            {
+                var argReg = CompileExpression(call.Arguments[i]);
+                _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
+                if (i + 1 < call.Arguments.Count)
+                {
+                    _ = AllocateRegister();
+                }
+            }
+
+            _instructions.Add(new Instruction(OpCode.SuperCall, dest, superConstructor, argStart, call.Arguments.Count));
+        }
+
+        _instructions.Add(new Instruction(OpCode.InitThisBinding, dest, 0, 0));
+        return dest;
     }
 
     private bool TryConvertLastCallToTailCall(int resultRegister)
@@ -3911,19 +3955,12 @@ public sealed class BytecodeCompiler
                 var isMethodCall = false;
                 var isDirectEvalCall = false;
 
-                // H.3.2 - super(args) call. The base constructor is loaded via
-                // LoadSuperConstructor; we pass the current frame's `this` as the
-                // receiver so base-class field initialisation (this.x = ...)
-                // surfaces on the derived instance.
                 if (call.Callee is SuperExpressionNode)
                 {
-                    calleeReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.LoadSuperConstructor, calleeReg, 0, 0));
-                    thisReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
-                    isMethodCall = true;
+                    return CompileSuperCall(call);
                 }
-                else if (call.Callee is MemberExpressionNode memberCallee)
+
+                if (call.Callee is MemberExpressionNode memberCallee)
                 {
                     ThrowIfPrivateMemberAccess(memberCallee);
                     // H.3 - super.method(args): callee comes from LoadSuperProperty,
@@ -4059,7 +4096,6 @@ public sealed class BytecodeCompiler
                     isDirectEvalCall = IsDirectEvalCallCallee(call.Callee);
                 }
 
-                var isSuperCall = call.Callee is SuperExpressionNode;
                 var dest = AllocateRegister();
 
                 // ECMA-262 13.3.7.1 — any spread argument (...args), in any position,
@@ -4085,7 +4121,6 @@ public sealed class BytecodeCompiler
                         spreadArg,
                         thisReg,
                         !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
-                    if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                     return dest;
                 }
 
@@ -4095,7 +4130,6 @@ public sealed class BytecodeCompiler
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg)
                             : new Instruction(OpCode.Call0, dest, calleeReg, 0, 0, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
-                        if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     case 1:
                     {
@@ -4103,7 +4137,6 @@ public sealed class BytecodeCompiler
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0)
                             : new Instruction(OpCode.Call1, dest, calleeReg, arg0, 0, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
-                        if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     }
                     default:
@@ -4122,7 +4155,6 @@ public sealed class BytecodeCompiler
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, call.Arguments.Count)
                             : new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
-                        if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     }
                 }

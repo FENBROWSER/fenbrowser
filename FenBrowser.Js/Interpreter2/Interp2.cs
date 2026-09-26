@@ -190,6 +190,13 @@ internal sealed class Interp2
         /// <summary>[[Construct]]'s newTarget for this activation; undefined for a call.</summary>
         public JsValue NewTarget;
 
+        /// <summary>
+        /// A derived constructor's `this` before super() binds it. A frame with
+        /// a function record keeps the binding there instead, where an arrow
+        /// that calls super() can reach it.
+        /// </summary>
+        public bool ThisUninitialized;
+
         public bool OuterEnvResolved;
         public int Base;
         public int Ip;
@@ -499,6 +506,7 @@ internal sealed class Interp2
         frame.Generator = null;
         frame.AsyncContext = context;
         frame.NewTarget = JsValue.Undefined;
+        frame.ThisUninitialized = false;
         frame.Scope = context.BlockScope;
         frame.ScopeDepth = context.BlockScopeDepth;
 
@@ -617,6 +625,7 @@ internal sealed class Interp2
         frame.Generator = generator;
         frame.AsyncContext = null;
         frame.NewTarget = JsValue.Undefined;
+        frame.ThisUninitialized = false;
         frame.Scope = generator.BlockScope;
         frame.ScopeDepth = generator.BlockScopeDepth;
 
@@ -805,6 +814,14 @@ internal sealed class Interp2
                             OuterEnvironmentOf(_depth - 1), _frames[_depth - 1].This);
                         stack = _stack;
                         stack[frameBase + ins.A] = receiver;
+                        break;
+                    }
+
+                    if (layout.IsDerivedConstructor)
+                    {
+                        var derivedThis = DerivedThis();
+                        stack = _stack;
+                        stack[frameBase + ins.A] = derivedThis;
                         break;
                     }
 
@@ -1209,6 +1226,11 @@ internal sealed class Interp2
                 case OpCode.Return:
                 {
                     var returnValue = stack[frameBase + ins.A];
+                    if (layout.IsDerivedConstructor)
+                    {
+                        returnValue = DerivedConstructorResult(returnValue);
+                    }
+
                     ref var returning = ref _frames[_depth - 1];
                     var returnSlot = returning.ReturnSlot;
                     if (_backEdges != returning.BackEdgeMark)
@@ -1425,6 +1447,76 @@ internal sealed class Interp2
                     break;
                 }
 
+                case OpCode.LoadSuperConstructor:
+                {
+                    // An arrow's super() is the enclosing constructor's.
+                    var superConstructor = layout.ResolvesThisOutwards
+                        ? _host.GetSuperConstructor(null, OuterEnvironmentOf(_depth - 1))
+                        : _host.GetSuperConstructor(_frames[_depth - 1].Callee, null);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = superConstructor;
+                    break;
+                }
+
+                case OpCode.SuperCall:
+                case OpCode.SuperCallSpread:
+                {
+                    var superNewTarget = layout.ResolvesThisOutwards
+                        ? _host.Interp2ResolveNewTarget(OuterEnvironmentOf(_depth - 1))
+                        : _frames[_depth - 1].NewTarget;
+                    _frames[_depth - 1].Ip = ip;
+                    var superArgs = ins.OpCode == OpCode.SuperCall
+                        ? CallArgs.FromRegisters(stack, frameBase + ins.C, ins.D)
+                        : new CallArgs(_host.SpreadArguments(stack[frameBase + ins.C]));
+                    var constructed = _host.SuperConstruct(stack[frameBase + ins.B], superArgs, superNewTarget);
+                    stack = _stack;
+                    stack[frameBase + ins.A] = constructed;
+                    heap.CollectAtSafePointIfRequested();
+                    break;
+                }
+
+                case OpCode.InitThisBinding:
+                    BindThisAfterSuper(layout, stack[frameBase + ins.A]);
+                    stack = _stack;
+                    break;
+
+                case OpCode.SetPrototype:
+                    _host.SetPrototypeFromCode(stack[frameBase + ins.A], stack[frameBase + ins.B], ins.D != 0);
+                    stack = _stack;
+                    break;
+
+                case OpCode.ValidateClassHeritage:
+                    _host.ValidateClassHeritage(stack[frameBase + ins.A]);
+                    stack = _stack;
+                    break;
+
+                case OpCode.SetFunctionName:
+                    _host.Interp2SetFunctionName(stack[frameBase + ins.A], stack[frameBase + ins.B]);
+                    stack = _stack;
+                    break;
+
+                case OpCode.DefinePrivateField:
+                    _host.DefinePrivateField(
+                        function, stack[frameBase + ins.A], function.PropertyNames[ins.B], stack[frameBase + ins.C]);
+                    stack = _stack;
+                    break;
+
+                case OpCode.StoreFieldKey:
+                    _host.StoreComputedFieldKey(stack[frameBase + ins.A], stack[frameBase + ins.B]);
+                    stack = _stack;
+                    break;
+
+                case OpCode.LoadFieldKey:
+                {
+                    // The constructor's computed field names, fixed when the class
+                    // was defined; a field initializer runs in the constructor.
+                    var fieldKeys = _frames[_depth - 1].Callee?.ComputedFieldKeys;
+                    stack[frameBase + ins.A] = fieldKeys is not null && (uint)ins.B < (uint)fieldKeys.Count
+                        ? fieldKeys[ins.B]
+                        : JsValue.Undefined;
+                    break;
+                }
+
                 case OpCode.InstanceOf:
                 {
                     var isInstance = _host.Interp2InstanceOf(
@@ -1491,12 +1583,18 @@ internal sealed class Interp2
                         : stack[frameBase + ins.B];
 
                     // An arrow's `super` and `this` are the enclosing method's.
+                    // ECMA-262 13.3.7.1 step 2 / 9.1.1.3.4: `this` is read first, so a
+                    // derived constructor before super() throws.
                     EnvironmentRecord? superEnvironment = null;
                     var superThis = _frames[_depth - 1].This;
                     if (layout.ResolvesThisOutwards)
                     {
                         superEnvironment = OuterEnvironmentOf(_depth - 1);
                         superThis = _host.Interp2ResolveThis(superEnvironment, superThis);
+                    }
+                    else if (layout.IsDerivedConstructor)
+                    {
+                        superThis = DerivedThis();
                     }
 
                     var superValue = _host.Interp2LoadSuper(
@@ -2227,6 +2325,7 @@ internal sealed class Interp2
         frame.OuterEnvResolved = needsOuterNow;
         frame.This = thisValue;
         frame.NewTarget = newTarget;
+        frame.ThisUninitialized = layout.IsDerivedConstructor;
         frame.Base = window;
         frame.Ip = 0;
         frame.BackEdgeMark = _backEdges;
@@ -2462,6 +2561,79 @@ internal sealed class Interp2
         }
 
         return false;
+    }
+
+    // ------------------------------------------------ derived constructors
+
+    /// <summary>
+    /// ECMA-262 9.1.1.3.4 GetThisBinding in a derived constructor: a
+    /// ReferenceError until super() has bound it.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private JsValue DerivedThis()
+    {
+        ref var frame = ref _frames[_depth - 1];
+        if (frame.Context is { } record)
+        {
+            return _host.Interp2ResolveThis(record, frame.This);
+        }
+
+        if (frame.ThisUninitialized)
+        {
+            _host.Interp2ThrowThisBeforeSuper();
+        }
+
+        return frame.This;
+    }
+
+    /// <summary>
+    /// ECMA-262 13.3.7.1 SuperCall steps 7-8: bind the constructed object as
+    /// `this`, in the constructor's record when it keeps one (an arrow inside
+    /// may be what called super()), and on the frame.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void BindThisAfterSuper(FrameLayout layout, JsValue value)
+    {
+        if (layout.ResolvesThisOutwards)
+        {
+            _host.BindThisFromSuper(OuterEnvironmentOf(_depth - 1), value);
+            return;
+        }
+
+        ref var frame = ref _frames[_depth - 1];
+        if (frame.Context is { } record)
+        {
+            _host.BindThisFromSuper(record, value);
+        }
+        else if (!frame.ThisUninitialized)
+        {
+            _host.Interp2ThrowSuperCalledTwice();
+        }
+
+        frame = ref _frames[_depth - 1];
+        frame.This = value;
+        frame.ThisUninitialized = false;
+    }
+
+    /// <summary>
+    /// ECMA-262 10.2.2 [[Construct]] steps 10-12 for a derived constructor: an
+    /// object it returns is the result; undefined falls back to `this`, which
+    /// must have been bound; anything else is a TypeError.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private JsValue DerivedConstructorResult(JsValue returned)
+    {
+        if (_host.Interp2IsConstructorResult(returned))
+        {
+            return returned;
+        }
+
+        if (returned.Tag != JsValueTag.Undefined)
+        {
+            _host.Interp2ThrowDerivedReturn();
+        }
+
+        return DerivedThis();
     }
 
     // ---------------------------------------------------------- scoped blocks

@@ -195,6 +195,13 @@ public sealed class FrameLayout
     public bool RestrictedArguments { get; private init; }
 
     /// <summary>
+    /// A derived class constructor being constructed: `this` is uninitialized
+    /// until super() binds it, and the completion goes through [[Construct]]'s
+    /// checks (ECMA-262 10.2.2).
+    /// </summary>
+    public bool IsDerivedConstructor { get; private init; }
+
+    /// <summary>
     /// Whether the arguments object is bound by name in the frame's record: a
     /// nested arrow reads it, and the body's own bytecode never names it, so it
     /// has no slot.
@@ -337,12 +344,12 @@ public sealed class FrameLayout
     /// instance as `this`, and its field initializers are compiled into the
     /// body. Only [[Call]] must never reach it - calling a class constructor is
     /// a TypeError - which is why it is kept apart from <see cref="For"/>, the
-    /// layout calls consult. A derived constructor, whose `this` only exists
-    /// once super() returns, is refused either way.
+    /// layout calls consult. A derived constructor runs with `this`
+    /// uninitialized until super() binds it (<see cref="IsDerivedConstructor"/>).
     /// </summary>
     public static FrameLayout ForConstruct(BytecodeFunction function)
     {
-        if (!function.IsClassConstructor || function.IsDerivedConstructor)
+        if (!function.IsClassConstructor)
         {
             return For(function);
         }
@@ -396,13 +403,15 @@ public sealed class FrameLayout
         var isAsync = function.Kind == FunctionKind.Async && !function.IsEvalCode &&
             GeneratorBodySupported(function);
         var constructsClass = asConstructor && function.Kind == FunctionKind.Constructor &&
-            function.IsClassConstructor && !function.IsDerivedConstructor;
+            function.IsClassConstructor;
         if (!isGenerator && !isAsync && !constructsClass &&
             function.Kind is not (FunctionKind.Ordinary or FunctionKind.Arrow or FunctionKind.Method))
             return new FrameLayout(function, Interp2Bailout.NotOrdinaryFunction);
         if (function.IsEvalCode)
             return new FrameLayout(function, Interp2Bailout.EvalCode);
-        if (function.IsDerivedConstructor || (function.IsClassConstructor && !constructsClass))
+        // [[Call]] on a class constructor is a TypeError, raised before any frame
+        // exists; only [[Construct]] (ForConstruct) runs one.
+        if (function.IsClassConstructor && !constructsClass)
             return new FrameLayout(function, Interp2Bailout.ClassConstructor);
         // An arrow reaching outwards for the enclosing `arguments` resolves it by
         // name, like any free identifier: the function around it keeps the
@@ -751,6 +760,7 @@ public sealed class FrameLayout
             SlotIsLexical = slotIsLexical,
             HasLexicalSlots = hasLexicalSlots,
             SelfNameSlot = selfNameSlot,
+            IsDerivedConstructor = constructsClass && function.IsDerivedConstructor,
             ScopedBlocks = scopedBlocks,
             ScopedFallback = scopedFallback,
             BindingHomes = bindingHomes,
@@ -989,6 +999,9 @@ public sealed class FrameLayout
             OpCode.SetElemDefine, OpCode.SpreadAppend, OpCode.CopyDataProperties,
             OpCode.GetTemplateObject,
             OpCode.SetHomeObject, OpCode.LoadSuperProperty, OpCode.LoadSuperElement,
+            OpCode.LoadSuperConstructor, OpCode.SuperCall, OpCode.SuperCallSpread, OpCode.InitThisBinding,
+            OpCode.SetPrototype, OpCode.ValidateClassHeritage, OpCode.SetFunctionName,
+            OpCode.DefinePrivateField, OpCode.StoreFieldKey, OpCode.LoadFieldKey,
             OpCode.DefineGetter, OpCode.DefineSetter, OpCode.DefineGetterByReg, OpCode.DefineSetterByReg,
             OpCode.DefineMethod, OpCode.DefineMethodByReg,
 

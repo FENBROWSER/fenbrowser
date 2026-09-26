@@ -685,7 +685,6 @@ internal static class BaselineCompiler
                     BeginSetRegister(ins.A);
                     il.Arg(0);
                     il.Arg(1);
-                    il.Int(ip);
                     il.Call(MiLoadThis);
                     EndSetRegister(ins.A);
                     return true;
@@ -716,10 +715,16 @@ internal static class BaselineCompiler
                     return true;
 
                 case OpCode.InitThisBinding:
-                    il.Arg(0);
-                    il.Arg(1);
-                    il.Call(MiInitThisBinding);
-                    return true;
+                    if (!Register(ins.A)) return false;
+                    return EmitVoidCall(MiInitThisBinding, ins.A);
+
+                case OpCode.SuperCall:
+                    if (!Register(ins.A) || !Register(ins.B)) return false;
+                    return EmitVoidCall(MiSuperCall, ins.A, ins.B, ins.C, ins.D);
+
+                case OpCode.SuperCallSpread:
+                    if (!Register(ins.A) || !Register(ins.B) || !Register(ins.C)) return false;
+                    return EmitVoidCall(MiSuperCallSpread, ins.A, ins.B, ins.C);
 
                 case OpCode.EnterScope:
                     il.Arg(0);

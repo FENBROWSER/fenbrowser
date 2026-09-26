@@ -296,6 +296,24 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
             case OpCode.InitThisBinding:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                break;
+            case OpCode.SuperCall:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                if (ins.D < 0)
+                {
+                    throw new InvalidOperationException($"Invalid SuperCall arg count {ins.D} at ip {ip}.");
+                }
+                if (ins.C < 0 || ins.C + Math.Max(0, ins.D - 1) >= function.RegisterCount)
+                {
+                    throw new InvalidOperationException($"Invalid SuperCall arg register window start={ins.C} count={ins.D} at ip {ip}.");
+                }
+                break;
+            case OpCode.SuperCallSpread:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
             case OpCode.Yield:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

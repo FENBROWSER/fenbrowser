@@ -1148,28 +1148,6 @@ public sealed partial class BytecodeInterpreter
             _directEvalInFieldInitializer = frame.Function.IsInFieldInitializer(frame.InstructionPointer - 1);
         }
 
-        // ECMA-262 super(...): route through [[Construct]] with this frame's
-        // NewTarget rather than [[Call]] so the base constructor receives the
-        // correct new.target (subclass) value.
-        if (callee.Tag == JsValueTag.Object &&
-            frame.SuperConstructorHandle is { } superHandle &&
-            callee.AsObjectHandle() == superHandle)
-        {
-            frame.SuperConstructorHandle = null;
-            try
-            {
-                var superResult = ConstructFunction(callee, args, frame.NewTarget);
-                if (IsConstructorReturnObject(superResult))
-                    frame.ThisValue = superResult;
-                frame.Registers[destinationRegister] = superResult;
-            }
-            catch (JsThrownException ex) when (HasHandler(frame))
-            {
-                ThrowOrHandle(frame, ex.Value);
-            }
-            return;
-        }
-
         try
         {
             // Function.prototype.call is a transparent call trampoline. Once
@@ -1292,7 +1270,7 @@ public sealed partial class BytecodeInterpreter
         // frame setup - which made `new F()` with an empty F cost four times a
         // call.
         JsValue result;
-        var layout = Interpreter2.Interp2Options.Enabled && !isDerived
+        var layout = Interpreter2.Interp2Options.Enabled
             ? Interpreter2.FrameLayout.ForConstruct(callee.Function)
             : null;
         if (layout is { Eligible: true })

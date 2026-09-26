@@ -2342,27 +2342,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     registers[ins.A] = LoadName(frame, ins.B, frame.InstructionPointer - 1);
                     break;
                 case OpCode.LoadThis:
-                    if (function.IsDerivedConstructor &&
-                        frame.Environment is FunctionEnvironmentRecord fenDerived &&
-                        fenDerived.ThisBindingStatus == ThisBindingStatus.Uninitialized)
-                    {
-                        // Allow the compiler-emitted receiver load for `super(...)`.
-                        // Any other `this` access before super must throw.
-                        var currentIp = frame.InstructionPointer - 1;
-                        var isSuperReceiverLoad = currentIp > 0 &&
-                                                  function.Instructions[currentIp - 1].OpCode == OpCode.LoadSuperConstructor;
-                        if (isSuperReceiverLoad)
-                        {
-                            registers[ins.A] = frame.ThisValue;
-                            break;
-                        }
-                        else
-                        {
-                            ThrowReferenceError(frame, "Must call super constructor in derived class before accessing 'this'.");
-                            break;
-                        }
-                    }
-
                     // ECMA-262 9.1.2.5 GetThisEnvironment: walk the lexical
                     // environment chain to the nearest record that provides a
                     // `this` binding (a function or the global record). Arrow
@@ -2420,29 +2399,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                     break;
                 case OpCode.StoreFieldKey:
-                {
-                    // Push the computed property key onto the constructor
-                    // function's ComputedFieldKeys list during class definition.
-                    // ECMA-262 15.7.10 step 27: convert to property key via
-                    // ToPropertyKey so errors (ReferenceError, TypeError from
-                    // @@toPrimitive) surface at class-definition time.
-                    var rawKey = registers[ins.A];
-                    var propKey = ToPropertyKey(rawKey);
-                    var keyValue = rawKey.Tag == JsValueTag.Symbol
-                        ? rawKey
-                        : JsValue.FromString(propKey);
-                    var ctorValue = registers[ins.B];
-                    if (ctorValue.Tag == JsValueTag.Object)
-                    {
-                        var ctorObj = _heap.GetObject(ctorValue.AsObjectHandle());
-                        if (ctorObj is JsFunctionObject ctorFn)
-                        {
-                            ctorFn.ComputedFieldKeys.Add(keyValue);
-                            ctorFn.BarrierInternalSlot(keyValue);
-                        }
-                    }
+                    try { StoreComputedFieldKey(registers[ins.A], registers[ins.B]); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
-                }
                 case OpCode.LoadFieldKey:
                 {
                     // Load a pre-computed field key by index during
@@ -2630,25 +2589,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     registers[ins.A] = frame.NewTarget;
                     break;
                 case OpCode.InitThisBinding:
-                {
-                    // ECMA-262 8.1.1.3.1 BindThisValue: walk the environment chain to
-                    // find the enclosing derived constructor's FunctionEnvironmentRecord
-                    // (arrow functions and eval inherit the enclosing method's this binding).
-                    var initEnv = (EnvironmentRecord?)frame.Environment;
-                    while (initEnv is not null)
+                    try
                     {
-                        if (initEnv is FunctionEnvironmentRecord fenInit)
-                        {
-                            if (fenInit.ThisBindingStatus == ThisBindingStatus.Uninitialized)
-                                fenInit.BindThisValue(frame.ThisValue);
-                            else if (fenInit.ThisBindingStatus == ThisBindingStatus.Initialized)
-                                ThrowReferenceError(frame, "super() called twice in derived class constructor.");
-                            break;
-                        }
-                        initEnv = initEnv.OuterEnv;
+                        BindThisFromSuper(frame.Environment, registers[ins.A]);
+                        frame.ThisValue = registers[ins.A];
                     }
+                    catch (JsThrownException ex) when (HasHandler(frame))
+                    {
+                        ThrowOrHandle(frame, ex.Value);
+                    }
+
                     break;
-                }
+                case OpCode.SuperCall:
+                case OpCode.SuperCallSpread:
+                    try
+                    {
+                        var superArgs = ins.OpCode == OpCode.SuperCall
+                            ? CallArgs.FromRegisters(registers, ins.C, ins.D)
+                            : new CallArgs(SpreadArguments(registers[ins.C]));
+                        registers[ins.A] = SuperConstruct(registers[ins.B], superArgs, frame.NewTarget);
+                    }
+                    catch (JsThrownException ex) when (HasHandler(frame))
+                    {
+                        ThrowOrHandle(frame, ex.Value);
+                    }
+
+                    break;
                 case OpCode.Yield:
                 {
                     // ECMA-262 27.5.1.3 GeneratorYield — save frame state to the
@@ -3000,51 +2966,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 }
                 case OpCode.SetPrototype:
-                {
-                    var childValue = registers[ins.A];
-                    var parentValue = registers[ins.B];
-                    if (childValue.Tag != JsValueTag.Object)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError("SetPrototype requires an object target."));
-                        break;
-                    }
-                    // D=1: object literal __proto__ setter (B.3.1) — no-op for
-                    // non-Object, non-Null values instead of TypeError.
-                    if (ins.D != 0 && parentValue.Tag != JsValueTag.Object && parentValue.Tag != JsValueTag.Null)
-                        break;
-
-                    var childHandle = childValue.AsObjectHandle();
-                    var childObj = _heap.GetObject(childHandle);
-
-                    if (parentValue.Tag == JsValueTag.Null)
-                    {
-                        childObj.SetPrototype(null);
-                    }
-                    else if (parentValue.Tag == JsValueTag.Object)
-                    {
-                        var parentHandle = parentValue.AsObjectHandle();
-                        childObj.SetPrototype(parentHandle);
-                        _heap.WriteBarrier(childHandle, parentHandle);
-                    }
-                    else
-                    {
-                        ThrowOrHandle(frame, CreateTypeError("SetPrototype value must be Object or null."));
-                    }
-
+                    try { SetPrototypeFromCode(registers[ins.A], registers[ins.B], ins.D != 0); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
-                }
                 case OpCode.ValidateClassHeritage:
-                {
-                    var heritage = registers[ins.A];
-                    if (heritage.Tag != JsValueTag.Null &&
-                        (heritage.Tag != JsValueTag.Object ||
-                         !IsConstructableTarget(heritage.AsObjectHandle())))
-                    {
-                        ThrowOrHandle(frame, CreateTypeError("Class extends value is not a constructor or null."));
-                    }
-
+                    try { ValidateClassHeritage(registers[ins.A]); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
-                }
                 case OpCode.SetPropByName:
                     try
                     {
@@ -3389,27 +3317,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 // ECMA-262 9.1.10 PrivateFieldAdd / PrivateFieldGet / PrivateFieldFind.
                 // Brand is a class-unique token stored in function.BrandTokens[ins.D].
                 case OpCode.DefinePrivateField:
-                {
-                    var target = registers[ins.A];
-                    var name = function.PropertyNames[ins.B];
-                    var value = registers[ins.C];
-                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
-                    if (target.Tag == JsValueTag.HostObject)
-                    {
-                        try { DefineHostPrivateField(target, name, value, brand); }
-                        catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
-                        break;
-                    }
-                    if (target.Tag != JsValueTag.Object)
-                    {
-                        ThrowOrHandle(frame, CreateTypeError("Cannot define private field on non-object."));
-                        break;
-                    }
-                    var targetObj = _heap.GetObject(target.AsObjectHandle());
-                    targetObj.PrivateBrand = targetObj.PrivateBrand != 0 ? targetObj.PrivateBrand : brand;
-                    targetObj.DefineOwnProperty(name, new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false));
+                    try { DefinePrivateField(function, registers[ins.A], function.PropertyNames[ins.B], registers[ins.C]); }
+                    catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
                     break;
-                }
                 case OpCode.GetPrivateField:
                 {
                     var objVal = registers[ins.B];
@@ -3918,6 +3828,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.Return:
                 {
                     var returnValue = registers[ins.A];
+                    if (function.IsDerivedConstructor &&
+                        !IsConstructorReturnObject(returnValue) &&
+                        returnValue.Tag != JsValueTag.Undefined)
+                    {
+                        // ECMA-262 10.2.2 [[Construct]] step 10.c: only undefined
+                        // falls back to `this`.
+                        ThrowOrHandle(frame, CreateTypeError("Derived constructors may only return object or undefined."));
+                        break;
+                    }
+
                     if (function.IsDerivedConstructor &&
                         !IsConstructorReturnObject(returnValue) &&
                         frame.Environment is FunctionEnvironmentRecord derivedEnv)
@@ -24620,39 +24540,48 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return JsValue.FromObject(handle);
     }
 
-    internal void InitThisBindingForJit(InterpreterFrame frame)
+    internal void InitThisBindingForJit(InterpreterFrame frame, int valueReg)
     {
-        if (frame.Environment is FunctionEnvironmentRecord fenInit &&
-            fenInit.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+        try
         {
-            fenInit.BindThisValue(frame.ThisValue);
+            BindThisFromSuper(frame.Environment, frame.Registers[valueReg]);
+            frame.ThisValue = frame.Registers[valueReg];
+        }
+        catch (JsThrownException ex) when (HasHandler(frame))
+        {
+            ThrowOrHandle(frame, ex.Value);
         }
     }
 
-    // Tier 4 #24: JIT-callable helper that mirrors the LoadThis opcode
-    // case. Caller passes the current instruction-pointer position so
-    // the derived-constructor receiver-load check has the same context
-    // as in the interpreter switch.
-    internal JsValue LoadThisForJit(InterpreterFrame frame, int currentIp)
+    internal void SuperCallForJit(InterpreterFrame frame, int destReg, int calleeReg, int argStart, int argCount)
     {
-        var function = frame.Function;
-        if (function.IsDerivedConstructor &&
-            frame.Environment is FunctionEnvironmentRecord fenDerived &&
-            fenDerived.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+        try
         {
-            var isSuperReceiverLoad = currentIp > 0 &&
-                                      function.Instructions[currentIp - 1].OpCode == OpCode.LoadSuperConstructor;
-            if (isSuperReceiverLoad)
-            {
-                return frame.ThisValue;
-            }
-            else
-            {
-                ThrowReferenceError(frame, "Must call super constructor in derived class before accessing 'this'.");
-                return JsValue.Undefined;
-            }
+            frame.Registers[destReg] = SuperConstruct(
+                frame.Registers[calleeReg], CallArgs.FromRegisters(frame.Registers, argStart, argCount), frame.NewTarget);
         }
+        catch (JsThrownException ex) when (HasHandler(frame))
+        {
+            ThrowOrHandle(frame, ex.Value);
+        }
+    }
 
+    internal void SuperCallSpreadForJit(InterpreterFrame frame, int destReg, int calleeReg, int spreadReg)
+    {
+        try
+        {
+            frame.Registers[destReg] = SuperConstruct(
+                frame.Registers[calleeReg], new CallArgs(SpreadArguments(frame.Registers[spreadReg])), frame.NewTarget);
+        }
+        catch (JsThrownException ex) when (HasHandler(frame))
+        {
+            ThrowOrHandle(frame, ex.Value);
+        }
+    }
+
+    // Tier 4 #24: JIT-callable helper that mirrors the LoadThis opcode case.
+    internal JsValue LoadThisForJit(InterpreterFrame frame)
+    {
         // 9.1.2.5 GetThisEnvironment — walk to the nearest this-providing record
         // so arrow functions resolve the enclosing function/global `this`.
         var thisBindingResult = ResolveThisBinding(frame.Environment, out var boundThis);

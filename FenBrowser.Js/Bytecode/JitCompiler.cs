@@ -1197,7 +1197,7 @@ public static class JitCompiler
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 body.Add(Expression.Assign(
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
-                    Expression.Call(interp, MiLoadThis, frame, Expression.Constant(ip))));
+                    Expression.Call(interp, MiLoadThis, frame)));
                 return true;
             case OpCode.LoadNewTarget:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
@@ -1219,7 +1219,8 @@ public static class JitCompiler
                     Expression.Call(interp, MiNewArray, Expression.Constant(ins.B))));
                 return true;
             case OpCode.InitThisBinding:
-                body.Add(Expression.Call(interp, MiInitThisBinding, frame));
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiInitThisBinding, frame, Expression.Constant(ins.A)));
                 return true;
             case OpCode.EnterScope:
                 body.Add(Expression.Call(interp, MiEnterScope, frame,

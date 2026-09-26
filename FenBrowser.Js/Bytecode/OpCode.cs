@@ -213,8 +213,9 @@ public enum OpCode : byte
     // H.5 - LoadNewTarget(A=dest reg). Reads the current frame's NewTarget.
     LoadNewTarget,
 
-    // H.5 - InitThisBinding. Transitions the frame's FunctionEnvironmentRecord
-    // ThisBindingStatus from Uninitialized to Initialized.
+    // ECMA-262 13.3.7.1 SuperCall steps 7-8: GetThisEnvironment().BindThisValue
+    // (register A, the object super(...) constructed). A second super() in the
+    // same constructor is a ReferenceError.
     InitThisBinding,
 
     // ECMA-262 15.5 — Yield(A=dest, B=value). Suspends generator execution and
@@ -362,4 +363,12 @@ public enum OpCode : byte
 		// starting as the same-named parameter's value, or undefined - and its let
 		// and const. Emitted once, right after PrologueEnd. No operands.
 		EnterFunctionBodyScope,
+
+		// ECMA-262 13.3.7.1 SuperCall: Construct(B, arguments, new.target) after
+		// IsConstructor(B), into A. B is LoadSuperConstructor's result; the
+		// arguments are registers C..C+D-1. InitThisBinding follows.
+		SuperCall,
+
+		// SuperCall with a spread argument list: C holds the gathered array.
+		SuperCallSpread,
 	}

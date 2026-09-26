@@ -197,7 +197,13 @@ public sealed partial class BytecodeInterpreter
             callee.HomeObject,
             outerEnvironment));
         context.AttachSlotStorage(function, function.VariableSlots, function.SlotNames.Length);
-        _ = context.BindThisValue(thisValue);
+
+        // A derived constructor's `this` stays uninitialized until super().
+        if (!function.IsDerivedConstructor)
+        {
+            _ = context.BindThisValue(thisValue);
+        }
+
         return context;
     }
 
@@ -313,6 +319,25 @@ public sealed partial class BytecodeInterpreter
     internal static void Interp2InitializeContextSlot(
         DeclarativeEnvironmentRecord context, int slot, JsValue value, bool isConst)
         => context.InitializeAtSlot(slot, value, immutable: isConst);
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    internal void Interp2ThrowThisBeforeSuper()
+        => throw new JsThrownException(CreateReferenceError(
+            "Must call super constructor in derived class before accessing 'this' or returning from derived constructor."));
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    internal void Interp2ThrowSuperCalledTwice()
+        => throw new JsThrownException(CreateReferenceError("super() called twice in derived class constructor."));
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    internal void Interp2ThrowDerivedReturn()
+        => throw new JsThrownException(CreateTypeError("Derived constructors may only return object or undefined."));
+
+    /// <summary>What [[Construct]] accepts as a constructor's own result.</summary>
+    internal bool Interp2IsConstructorResult(JsValue value) => IsConstructorReturnObject(value);
+
+    /// <summary>ECMA-262 10.2.9 SetFunctionName from a runtime key.</summary>
+    internal void Interp2SetFunctionName(JsValue function, JsValue key) => ApplyFunctionName(function, key, prefix: null);
 
     /// <summary>ECMA-262 9.4.5 GetNewTarget for an arrow: the enclosing function's.</summary>
     internal JsValue Interp2ResolveNewTarget(EnvironmentRecord? environment)

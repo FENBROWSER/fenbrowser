@@ -424,15 +424,171 @@ public sealed partial class BytecodeInterpreter
             return;
         }
 
-        var homeObj = _heap.GetObject(activeFunction);
-        if (homeObj.PrototypeHandle is not { } baseHandle)
+        // Null when the active function has no prototype: SuperCall reports it,
+        // after the arguments have been evaluated.
+        frame.Registers[ins.A] = _heap.GetObject(activeFunction).PrototypeHandle is { } baseHandle
+            ? JsValue.FromObject(baseHandle)
+            : JsValue.Null;
+    }
+
+    /// <summary>
+    /// ECMA-262 13.3.7.2 GetSuperConstructor: the [[GetPrototypeOf]] of the
+    /// function GetThisEnvironment finds - <paramref name="active"/> for the
+    /// constructor itself, the one in <paramref name="lexicalEnvironment"/> for
+    /// an arrow inside it. Null when that function has no prototype.
+    /// </summary>
+    internal JsValue GetSuperConstructor(JsFunctionObject? active, EnvironmentRecord? lexicalEnvironment)
+    {
+        JsObject? function = active;
+        if (function is null)
         {
-            ThrowOrHandle(frame, CreateTypeError("super constructor is not callable (no base class)."));
+            for (var env = lexicalEnvironment; env is not null; env = env.OuterEnv)
+            {
+                if (!env.HasThisBinding)
+                {
+                    continue;
+                }
+
+                if (env is FunctionEnvironmentRecord { FunctionObject.Tag: JsValueTag.Object } record)
+                {
+                    function = _heap.GetObject(record.FunctionObject.AsObjectHandle());
+                }
+
+                break;
+            }
+        }
+
+        if (function is null)
+        {
+            throw new JsThrownException(CreateSyntaxError("'super' keyword unexpected here."));
+        }
+
+        return function.PrototypeHandle is { } parent ? JsValue.FromObject(parent) : JsValue.Null;
+    }
+
+    /// <summary>
+    /// SetPrototype: a class wiring its heritage (ECMA-262 15.7.14 steps 5-8), or
+    /// with <paramref name="fromLiteral"/> an object literal's `__proto__: v`
+    /// (B.3.1), where anything but an object or null is ignored.
+    /// </summary>
+    internal void SetPrototypeFromCode(JsValue child, JsValue parent, bool fromLiteral)
+    {
+        if (child.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("SetPrototype requires an object target."));
+        }
+
+        if (fromLiteral && parent.Tag != JsValueTag.Object && parent.Tag != JsValueTag.Null)
+        {
             return;
         }
 
-        frame.Registers[ins.A] = JsValue.FromObject(baseHandle);
-        frame.SuperConstructorHandle = baseHandle;
+        var childHandle = child.AsObjectHandle();
+        var childObject = _heap.GetObject(childHandle);
+        if (parent.Tag == JsValueTag.Null)
+        {
+            childObject.SetPrototype(null);
+        }
+        else if (parent.Tag == JsValueTag.Object)
+        {
+            var parentHandle = parent.AsObjectHandle();
+            childObject.SetPrototype(parentHandle);
+            _heap.WriteBarrier(childHandle, parentHandle);
+        }
+        else
+        {
+            throw new JsThrownException(CreateTypeError("SetPrototype value must be Object or null."));
+        }
+    }
+
+    /// <summary>ECMA-262 15.7.14 step 8.e: the heritage must be null or a constructor.</summary>
+    internal void ValidateClassHeritage(JsValue heritage)
+    {
+        if (heritage.Tag != JsValueTag.Null &&
+            (heritage.Tag != JsValueTag.Object || !IsConstructableTarget(heritage.AsObjectHandle())))
+        {
+            throw new JsThrownException(CreateTypeError("Class extends value is not a constructor or null."));
+        }
+    }
+
+    /// <summary>
+    /// ECMA-262 7.3.34 DefineField for a private name (PrivateFieldAdd): the
+    /// field is added under the class's brand.
+    /// </summary>
+    internal void DefinePrivateField(BytecodeFunction function, JsValue target, string name, JsValue value)
+    {
+        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+        if (target.Tag == JsValueTag.HostObject)
+        {
+            DefineHostPrivateField(target, name, value, brand);
+            return;
+        }
+
+        if (target.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Cannot define private field on non-object."));
+        }
+
+        var targetObject = _heap.GetObject(target.AsObjectHandle());
+        targetObject.PrivateBrand = targetObject.PrivateBrand != 0 ? targetObject.PrivateBrand : brand;
+        targetObject.DefineOwnProperty(name, new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false));
+    }
+
+    /// <summary>
+    /// ECMA-262 15.7.10 step 27 ClassFieldDefinitionEvaluation: a computed field
+    /// name is converted with ToPropertyKey when the class is defined, so its
+    /// errors surface then, and kept on the constructor for LoadFieldKey.
+    /// </summary>
+    internal void StoreComputedFieldKey(JsValue rawKey, JsValue constructor)
+    {
+        var propertyKey = ToPropertyKey(rawKey);
+        var keyValue = rawKey.Tag == JsValueTag.Symbol ? rawKey : JsValue.FromString(propertyKey);
+        if (constructor.Tag == JsValueTag.Object &&
+            _heap.GetObject(constructor.AsObjectHandle()) is JsFunctionObject constructorFunction)
+        {
+            constructorFunction.ComputedFieldKeys.Add(keyValue);
+            constructorFunction.BarrierInternalSlot(keyValue);
+        }
+    }
+
+    /// <summary>
+    /// ECMA-262 13.3.7.1 SuperCall steps 4-6: IsConstructor, then Construct
+    /// with the running function's new.target. Shared by both loops and
+    /// compiled code.
+    /// </summary>
+    internal JsValue SuperConstruct(JsValue superConstructor, in CallArgs args, JsValue newTarget)
+    {
+        if (superConstructor.Tag != JsValueTag.Object || !IsConstructableTarget(superConstructor.AsObjectHandle()))
+        {
+            throw new JsThrownException(CreateTypeError("Super constructor is not a constructor."));
+        }
+
+        return ConstructFunction(superConstructor, args, newTarget);
+    }
+
+    /// <summary>
+    /// ECMA-262 13.3.7.1 SuperCall steps 7-8: GetThisEnvironment().BindThisValue.
+    /// The environment that binds `this` is the derived constructor's own, also
+    /// when super() runs in an arrow inside it; binding it twice is a
+    /// ReferenceError.
+    /// </summary>
+    internal void BindThisFromSuper(EnvironmentRecord? environment, JsValue value)
+    {
+        for (var env = environment; env is not null; env = env.OuterEnv)
+        {
+            if (!env.HasThisBinding)
+            {
+                continue;
+            }
+
+            if (env is FunctionEnvironmentRecord function &&
+                function.BindThisValue(value) == BindingOpResult.AlreadyDeclared)
+            {
+                throw new JsThrownException(CreateReferenceError("super() called twice in derived class constructor."));
+            }
+
+            return;
+        }
     }
 
     // Locates the function object that provides the current `super` binding, using

@@ -36,6 +36,10 @@ internal static class JsRuntimeBindings
         .GetMethod(nameof(BytecodeInterpreter.NewArrayForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     internal static readonly MethodInfo MiInitThisBinding = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.InitThisBindingForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    internal static readonly MethodInfo MiSuperCall = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.SuperCallForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    internal static readonly MethodInfo MiSuperCallSpread = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.SuperCallSpreadForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     internal static readonly MethodInfo MiEnterScope = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.EnterScopeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     internal static readonly MethodInfo MiLeaveScope = typeof(BytecodeInterpreter)
