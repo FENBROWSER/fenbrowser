@@ -1136,17 +1136,13 @@ public sealed partial class BytecodeInterpreter
         bool allowDirectEval = false,
         int icOffset = -1)
     {
-        // ECMA-262 19.2.1.1 â€” direct eval uses the calling frame's lexical environment.
-        if (allowDirectEval &&
-            callee.Tag == JsValueTag.Object &&
-            _heap.GetObject(callee.AsObjectHandle()) is NativeFunctionObject native &&
-            string.Equals(native.Name, "eval", StringComparison.Ordinal))
-        {
-            _directEvalEnv = frame.Environment;
-            _directEvalStrictMode = frame.Function.IsStrictMode;
-            // The pointer is already past the call instruction.
-            _directEvalInFieldInitializer = frame.Function.IsInFieldInitializer(frame.InstructionPointer - 1);
-        }
+        // ECMA-262 19.2.1.1 - direct eval uses the calling frame's lexical environment.
+        // The pointer is already past the call instruction.
+        var armedDirectEval = allowDirectEval && ArmDirectEval(
+            callee,
+            frame.Environment,
+            frame.Function.IsStrictMode,
+            frame.Function.IsInFieldInitializer(frame.InstructionPointer - 1));
 
         try
         {
@@ -1186,6 +1182,42 @@ public sealed partial class BytecodeInterpreter
         {
             ThrowOrHandle(frame, ex.Value);
         }
+        finally
+        {
+            if (armedDirectEval)
+            {
+                DisarmDirectEval();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Readies the next entry to %eval% as a direct eval in
+    /// <paramref name="environment"/> (ECMA-262 13.3.6.1 step 6), when the
+    /// callee is %eval% at all. The caller disarms it once the call returns,
+    /// however it returns: Eval consumes it on entry, but a call that never
+    /// reaches Eval must not leave it for the next, indirect one.
+    /// </summary>
+    internal bool ArmDirectEval(JsValue callee, EnvironmentRecord environment, bool strict, bool inFieldInitializer)
+    {
+        if (callee.Tag != JsValueTag.Object ||
+            _heap.GetObject(callee.AsObjectHandle()) is not NativeFunctionObject native ||
+            !string.Equals(native.Name, "eval", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        _directEvalEnv = environment;
+        _directEvalStrictMode = strict;
+        _directEvalInFieldInitializer = inFieldInitializer;
+        return true;
+    }
+
+    internal void DisarmDirectEval()
+    {
+        _directEvalEnv = null;
+        _directEvalStrictMode = false;
+        _directEvalInFieldInitializer = false;
     }
 
     private void StoreCallResult(

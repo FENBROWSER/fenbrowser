@@ -7320,6 +7320,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue Eval(IReadOnlyList<JsValue> args)
     {
+        // Whether this entry is a direct eval is decided by the call that made
+        // it, and only this entry: taken before anything can return, so an
+        // eval(1) cannot leave it behind for a later indirect eval to run in
+        // the caller's scope.
+        var directEvalEnvironment = _directEvalEnv;
+        var directEvalStrictMode = _directEvalStrictMode;
+        var directEvalInFieldInitializer = _directEvalInFieldInitializer;
+        DisarmDirectEval();
+
         if (args.Count == 0)
         {
             return JsValue.Undefined;
@@ -7337,13 +7346,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             throw new JsThrownException(CreateError("Refused to evaluate a string as JavaScript because 'unsafe-eval' is not allowed by the policy."));
         }
-
-        var directEvalEnvironment = _directEvalEnv;
-        var directEvalStrictMode = _directEvalStrictMode;
-        var directEvalInFieldInitializer = _directEvalInFieldInitializer;
-        _directEvalEnv = null;
-        _directEvalStrictMode = false;
-        _directEvalInFieldInitializer = false;
 
         // ECMA-262 19.2.1.1: parsing/early-error failures of the eval source must
         // throw a SyntaxError (a catchable JS error), not a raw host exception.
