@@ -1540,13 +1540,14 @@ public sealed partial class BytecodeInterpreter
         => CreateFunctionObject(nested, outerEnvironment);
 
     /// <summary>
-    /// ECMA-262 10.4.4 CreateUnmappedArgumentsObject. This engine builds the
-    /// mapped form the same way - as a snapshot of the arguments rather than as
-    /// an alias of the parameter bindings - which is what lets a parameter stay
-    /// in a register in a body that has one.
+    /// ECMA-262 10.4.4.6 CreateUnmappedArgumentsObject, or 10.4.4.7
+    /// CreateMappedArgumentsObject over the parameters in
+    /// <paramref name="mappedContext"/> - which the layout keeps there, out of
+    /// the window, for a body that has a mapped one.
     /// </summary>
-    internal JsValue Interp2CreateArguments(in CallArgs args, bool restricted, JsFunctionObject callee)
-        => CreateArgumentsObject(args, restricted, callee);
+    internal JsValue Interp2CreateArguments(
+        in CallArgs args, bool restricted, JsFunctionObject callee, DeclarativeEnvironmentRecord? mappedContext)
+        => CreateArgumentsObject(args, restricted, callee, mappedContext);
 
     /// <summary>ECMA-262 13.10.2 `instanceof`.</summary>
     internal JsValue Interp2InstanceOf(JsValue left, JsValue right)

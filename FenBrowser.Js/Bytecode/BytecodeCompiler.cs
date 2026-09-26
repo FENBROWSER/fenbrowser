@@ -508,6 +508,8 @@ public sealed class BytecodeCompiler
             BindsOwnNameInBody = bindOwnNameInBody && name is { Length: > 0 },
             HasOwnArgumentsObject = needsOwnArgumentsObject,
             UsesRestrictedArgumentsObject = needsOwnArgumentsObject && (_isStrictMode || !hasSimpleParameterList),
+            UsesMappedArgumentsObject = needsOwnArgumentsObject && !_isStrictMode && hasSimpleParameterList &&
+                                        _parameterNames.Count > 0,
             UsesOuterArguments = !hasOwnArgumentsObject && referencesArguments,
             NestedFunctions = _nestedFunctions.ToArray(),
             RegisterCount = NoteRegisterFile(Math.Max(2, _highWaterRegister)),

@@ -343,6 +343,30 @@ public class JsObject : ITraceable
 
     // ECMA-262 9.1.6 [[DefineOwnProperty]].
     public virtual bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
+        => OrdinaryDefineOwnProperty(key, descriptor);
+
+    /// <summary>
+    /// Puts a property an exotic object has been answering from outside its
+    /// shape into the shape, as it stands. The property already exists as far
+    /// as the program can tell, so the object having been made non-extensible
+    /// since does not stop it (ECMA-262 10.1.6.3 applies to new properties).
+    /// </summary>
+    private protected bool MoveIntoShape(string key, JsPropertyDescriptor descriptor)
+    {
+        var extensible = Extensible;
+        Extensible = true;
+        try
+        {
+            return OrdinaryDefineOwnProperty(key, descriptor);
+        }
+        finally
+        {
+            Extensible = extensible;
+        }
+    }
+
+    // ECMA-262 10.1.6.1 OrdinaryDefineOwnProperty.
+    private protected bool OrdinaryDefineOwnProperty(string key, JsPropertyDescriptor descriptor)
     {
         if (_shape.TryGetSlot(key, out var existingSlot) &&
             TryReadSlot(existingSlot, out var current))

@@ -778,6 +778,20 @@ public sealed class FrameLayout
             }
         }
 
+        // ECMA-262 10.4.4.7: a mapped arguments object aliases the parameters,
+        // and reaches them in the frame's record, so that is where they live.
+        if (function.UsesMappedArgumentsObject && !dynamicScope)
+        {
+            foreach (var parameterSlot in function.ParameterSlots)
+            {
+                if ((uint)parameterSlot < (uint)slotCount && slotHomes[parameterSlot] == SlotHome.Register)
+                {
+                    slotHomes[parameterSlot] = SlotHome.Context;
+                    hasContext = true;
+                }
+            }
+        }
+
         var bindingHomes = slotHomes;
         if (scopedBlocks)
         {

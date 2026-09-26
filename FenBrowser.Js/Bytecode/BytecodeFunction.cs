@@ -147,6 +147,12 @@ public sealed class BytecodeFunction
     public bool HasOwnArgumentsObject { get; init; }
     public bool UsesRestrictedArgumentsObject { get; init; }
 
+    // ECMA-262 10.2.11 step 22.f: a sloppy body with a simple parameter list
+    // gets a mapped arguments object, whose indices alias the parameters. The
+    // parameters then have to live in the function's record, where the object
+    // reaches them.
+    public bool UsesMappedArgumentsObject { get; init; }
+
     // True only for an arrow-like function that resolves `arguments` through
     // its enclosing environment. The compiler propagates this through nested
     // arrows so the nearest ordinary function retains its arguments object.
@@ -598,6 +604,7 @@ public sealed class BytecodeFunction
             BindsOwnNameInBody = BindsOwnNameInBody,
             HasOwnArgumentsObject = HasOwnArgumentsObject,
             UsesRestrictedArgumentsObject = UsesRestrictedArgumentsObject,
+            UsesMappedArgumentsObject = UsesMappedArgumentsObject,
             UsesOuterArguments = UsesOuterArguments,
             IsArrow = IsArrow,
             Kind = Kind,

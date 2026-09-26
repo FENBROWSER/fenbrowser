@@ -2515,18 +2515,19 @@ internal sealed class Interp2
         in CallArgs args)
     {
         var slot = layout.ArgumentsSlot;
+        var mappedContext = layout.Function.UsesMappedArgumentsObject ? context : null;
         if (slot < 0)
         {
             if (layout.ArgumentsByName)
             {
                 _host.Interp2BindArgumentsByName(
-                    context!, _host.Interp2CreateArguments(args, layout.RestrictedArguments, callee));
+                    context!, _host.Interp2CreateArguments(args, layout.RestrictedArguments, callee, mappedContext));
             }
 
             return;
         }
 
-        var argumentsObject = _host.Interp2CreateArguments(args, layout.RestrictedArguments, callee);
+        var argumentsObject = _host.Interp2CreateArguments(args, layout.RestrictedArguments, callee, mappedContext);
         if (context is not null && layout.BindingHomes[slot] == SlotHome.Context)
         {
             BytecodeInterpreter.Interp2DeclareContextSlot(context, slot, argumentsObject);

@@ -2203,7 +2203,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             if (function.HasOwnArgumentsObject && !function.ArgumentsShadowedByParameter)
             {
-                var argumentsObject = CreateArgumentsObject(args, function.UsesRestrictedArgumentsObject, callee);
+                var argumentsObject = CreateArgumentsObject(
+                    args,
+                    function.UsesRestrictedArgumentsObject,
+                    callee,
+                    function.UsesMappedArgumentsObject ? frame.Environment as DeclarativeEnvironmentRecord : null);
                 _ = frame.Environment.CreateAndInitializeBinding("arguments", argumentsObject, deletable: false);
             }
 
@@ -3721,9 +3725,36 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
     }
 
-    private JsValue CreateArgumentsObject(IReadOnlyList<JsValue> args, bool restricted, JsFunctionObject? callee)
+    /// <summary>
+    /// ECMA-262 10.4.4.6 CreateUnmappedArgumentsObject, or 10.4.4.7
+    /// CreateMappedArgumentsObject when <paramref name="mappedEnvironment"/> is
+    /// the record holding the callee's parameters.
+    /// </summary>
+    private JsValue CreateArgumentsObject(
+        IReadOnlyList<JsValue> args,
+        bool restricted,
+        JsFunctionObject? callee,
+        DeclarativeEnvironmentRecord? mappedEnvironment = null)
     {
-        var obj = CreateOrdinaryObject();
+        MappedArgumentsObject? mapped = null;
+        JsObject obj;
+        if (mappedEnvironment is not null && callee is not null)
+        {
+            // A record without the callee's slot storage holds its parameters by name.
+            var function = callee.Function;
+            mapped = new MappedArgumentsObject(
+                mappedEnvironment,
+                function.ParameterNames,
+                mappedEnvironment.OwnsSlotsOf(function) ? function.ParameterSlots : Array.Empty<int>(),
+                args.Count);
+            mapped.SetPrototype(EnsureObjectPrototype());
+            obj = mapped;
+        }
+        else
+        {
+            obj = CreateOrdinaryObject();
+        }
+
         obj.ToStringTagSlot = BuiltinTagSlot.Arguments;
         var handle = _heap.AllocateObject(obj, AllocationSite.Current());
 
@@ -3737,6 +3768,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         for (var i = 0; i < args.Count; i++)
         {
+            if (mapped is not null && mapped.IsMapped(i))
+            {
+                continue;
+            }
+
             var descriptor = new JsPropertyDescriptor(
                 args[i],
                 Writable: true,
