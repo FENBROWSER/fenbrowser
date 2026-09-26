@@ -1056,15 +1056,17 @@ public sealed partial class BytecodeInterpreter
 
         if (obj is JsFunctionObject fn)
         {
-            if (fn.Kind is FunctionKind.Generator or FunctionKind.AsyncGenerator)
-                throw new JsThrownException(CreateTypeError("Generator functions cannot be used as constructors."));
-            // Arrow functions have no [[Construct]] internal method (ECMA-262 10.2.1).
-            if (fn.Function.IsArrow)
-                throw new JsThrownException(CreateTypeError("Arrow functions cannot be used as constructors."));
-            // Concise methods and accessors (FunctionKind.Method) are not
-            // constructors (ECMA-262 15.4 — MethodDefinitions have no [[Construct]]).
-            if (fn.Kind == FunctionKind.Method)
-                throw new JsThrownException(CreateTypeError("Function is not a constructor."));
+            if (!HasConstruct(fn))
+            {
+                throw new JsThrownException(CreateTypeError(fn.Kind switch
+                {
+                    FunctionKind.Generator or FunctionKind.AsyncGenerator => "Generator functions cannot be used as constructors.",
+                    FunctionKind.Async => "Async functions cannot be used as constructors.",
+                    _ when fn.Function.IsArrow => "Arrow functions cannot be used as constructors.",
+                    _ => "Function is not a constructor.",
+                }));
+            }
+
             return ExecuteConstruct(fn, new CallArgs(args), newTarget);
         }
 
@@ -1254,6 +1256,16 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+
+    /// <summary>
+    /// Whether the function has a [[Construct]] internal method. ECMA-262
+    /// 15.2.4 and 15.7.14 give one to function declarations and expressions
+    /// (MakeConstructor) and to class constructors; arrows (15.3.4), methods
+    /// and accessors (15.4.4), generators (15.5.4, 15.6.4) and async functions
+    /// (15.8.4) never have one.
+    /// </summary>
+    internal static bool HasConstruct(JsFunctionObject fn)
+        => fn.Kind is FunctionKind.Ordinary or FunctionKind.Constructor && !fn.Function.IsArrow;
 
     [MayExecuteJs]
     // ECMA-262 10.2.2 [[Construct]] â€” the prototype of the created object

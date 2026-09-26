@@ -10114,7 +10114,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var targetObj = _heap.GetObject(targetHandle);
         return targetObj switch
         {
-            JsFunctionObject jsFn => jsFn.Kind is not (FunctionKind.Generator or FunctionKind.AsyncGenerator),
+            JsFunctionObject jsFn => HasConstruct(jsFn),
             NativeFunctionObject nativeFn => nativeFn.IsConstructor,
             BoundFunctionObject bound when bound.TargetFunction.Tag == JsValueTag.Object =>
                 IsConstructableTarget(bound.TargetFunction.AsObjectHandle(), visited),
