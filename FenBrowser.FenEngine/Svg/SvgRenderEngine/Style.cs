@@ -15,18 +15,25 @@ namespace FenBrowser.FenEngine.Svg
         /// </summary>
         private readonly struct PaintSpec
         {
-            public PaintSpec(SvgValues.PaintKind kind, SKColor color, string fragment, string fallback)
+            public PaintSpec(
+                SvgValues.PaintKind kind,
+                SKColor color,
+                string fragment,
+                string fallback,
+                SvgElement contextSource = null)
             {
                 Kind = kind;
                 Color = color;
                 Fragment = fragment;
                 Fallback = fallback;
+                ContextSource = contextSource;
             }
 
             public SvgValues.PaintKind Kind { get; }
             public SKColor Color { get; }
             public string Fragment { get; }
             public string Fallback { get; }
+            public SvgElement ContextSource { get; }
 
             public static readonly PaintSpec Black =
                 new(SvgValues.PaintKind.Color, SKColors.Black, null, null);
@@ -82,6 +89,7 @@ namespace FenBrowser.FenEngine.Svg
             public SKColor CurrentColor = SKColors.Black;
             public PaintSpec? ContextFill;
             public PaintSpec? ContextStroke;
+            public SvgElement ContextSource;
             public bool Visibility = true;
             public float FontSize = DefaultFontSize;
             public float RootFontSize = DefaultFontSize;
@@ -120,8 +128,9 @@ namespace FenBrowser.FenEngine.Svg
                     CurrentColor = currentColor,
                     ContextFill = ContextFill,
                     ContextStroke = ContextStroke,
-                    Fill = ParsePaintSpec(Attr("fill"), this, report) ?? Fill,
-                    Stroke = ParsePaintSpec(Attr("stroke"), this, report) ?? Stroke,
+                    ContextSource = el.Name == "use" ? el : ContextSource,
+                    Fill = ParsePaintSpec(Attr("fill"), this) ?? Fill,
+                    Stroke = ParsePaintSpec(Attr("stroke"), this) ?? Stroke,
                     FillOpacity = hasOwnFillOpacity ? ownFillOpacity : FillOpacity,
                     StrokeOpacity = hasOwnStrokeOpacity ? ownStrokeOpacity : StrokeOpacity,
                     InheritedFillOpacity = hasOwnFillOpacity ? 1f : FillOpacity,
@@ -149,14 +158,18 @@ namespace FenBrowser.FenEngine.Svg
                                s.InheritedStrokeOpacity != InheritedStrokeOpacity ||
                                s.FontSize != FontSize ||
                                s.RootFontSize != RootFontSize ||
+                               !ReferenceEquals(s.ContextSource, ContextSource) ||
                                !s.PaintOrder.Equals(PaintOrder);
+
+                float viewportDiagonal = 0f;
 
                 var swRaw = Attr("stroke-width");
                 if (!string.IsNullOrWhiteSpace(swRaw) &&
                     SvgValues.TryParseLength(swRaw.AsSpan(), out float swv, out var swu) &&
                     swv >= 0f)
                 {
-                    s.StrokeWidth = SvgValues.ClampCoord(SvgValues.ResolveUnits(swv, swu, DefaultFontSize, 1f));
+                    s.StrokeWidth = SvgValues.ClampCoord(
+                        ResolveStrokeLength(el, swv, swu, ref viewportDiagonal));
                     changed |= s.StrokeWidth != StrokeWidth;
                     // Negative: invalid per spec -> keep inherited value.
                 }
@@ -193,7 +206,7 @@ namespace FenBrowser.FenEngine.Svg
                 var dashRaw = Attr("stroke-dasharray");
                 if (dashRaw != null)
                 {
-                    var dashes = ParseDashArray(dashRaw);
+                    var dashes = ParseDashArray(el, dashRaw, ref viewportDiagonal);
                     if (!ReferenceEquals(dashes, InvalidDash))
                     {
                         s.Dash = dashes;
@@ -203,7 +216,8 @@ namespace FenBrowser.FenEngine.Svg
                         if (!string.IsNullOrWhiteSpace(doffRaw) &&
                             SvgValues.TryParseLength(doffRaw.AsSpan(), out float dov, out var dou))
                         {
-                            s.DashOffset = System.Math.Max(0f, SvgValues.ResolveUnits(dov, dou, DefaultFontSize, 1f));
+                            s.DashOffset = SvgValues.ClampCoord(
+                                ResolveStrokeLength(el, dov, dou, ref viewportDiagonal));
                             changed |= s.DashOffset != DashOffset;
                         }
                     }
@@ -225,6 +239,101 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             private static readonly float[] InvalidDash = System.Array.Empty<float>();
+
+            private static float ResolveStrokeLength(
+                SvgElement element,
+                float value,
+                SvgValues.SvgUnit unit,
+                ref float viewportDiagonal)
+            {
+                if (unit == SvgValues.SvgUnit.Percent)
+                {
+                    if (viewportDiagonal <= 0f)
+                    {
+                        viewportDiagonal = NormalizedViewportDiagonal(element);
+                    }
+                    return (float)((double)value * 0.01 * viewportDiagonal);
+                }
+                return SvgValues.ResolveUnits(
+                    value,
+                    unit,
+                    DefaultFontSize,
+                    1f);
+            }
+
+            private static float NormalizedViewportDiagonal(SvgElement element)
+            {
+                if (!TryResolveViewportSize(element, out float width, out float height)) return 1f;
+                double squared = (double)width * width + (double)height * height;
+                if (!(squared > 0d) || double.IsInfinity(squared)) return 1f;
+                float diagonal = (float)System.Math.Sqrt(squared * 0.5d);
+                return SvgValues.IsFinite(diagonal) && diagonal > 0f ? diagonal : 1f;
+            }
+
+            private static bool TryResolveViewportSize(
+                SvgElement element,
+                out float width,
+                out float height)
+            {
+                width = 0f;
+                height = 0f;
+                for (SvgElement current = element; current != null; current = current.Parent)
+                {
+                    if (current.Name is not ("svg" or "symbol")) continue;
+                    if (TryParseViewBox(
+                            current.GetAttribute("viewBox"),
+                            out _,
+                            out _,
+                            out float boxWidth,
+                            out float boxHeight,
+                            out _) &&
+                        boxWidth > 0f && boxHeight > 0f)
+                    {
+                        width = boxWidth;
+                        height = boxHeight;
+                        return true;
+                    }
+                    if (TryReadViewportDimension(current, "width", isVertical: false, out width) &&
+                        TryReadViewportDimension(current, "height", isVertical: true, out height) &&
+                        width > 0f && height > 0f)
+                    {
+                        return true;
+                    }
+                    return TryResolveViewportSize(current.Parent, out width, out height);
+                }
+                return false;
+            }
+
+            private static bool TryReadViewportDimension(
+                SvgElement element,
+                string name,
+                bool isVertical,
+                out float value)
+            {
+                value = 0f;
+                if (!SvgValues.TryParseLength(
+                        element.GetPresentationProperty(name).AsSpan(), out float parsed, out var unit) ||
+                    !SvgValues.IsFinite(parsed))
+                {
+                    return false;
+                }
+                if (unit == SvgValues.SvgUnit.Percent)
+                {
+                    if (!TryResolveViewportSize(
+                            element.Parent, out float parentWidth, out float parentHeight))
+                    {
+                        return false;
+                    }
+                    float reference = isVertical ? parentHeight : parentWidth;
+                    if (!(reference > 0f)) return false;
+                    value = parsed * 0.01f * reference;
+                }
+                else
+                {
+                    value = SvgValues.ResolveUnits(parsed, unit, DefaultFontSize, 1f);
+                }
+                return SvgValues.IsFinite(value);
+            }
 
             private static SvgPaintOrder ResolvePaintOrder(string raw, SvgPaintOrder inherited)
             {
@@ -274,7 +383,10 @@ namespace FenBrowser.FenEngine.Svg
                 return new SvgPaintOrder(phases[0], phases[1], phases[2]);
             }
 
-            private static float[] ParseDashArray(string raw)
+            private static float[] ParseDashArray(
+                SvgElement element,
+                string raw,
+                ref float viewportDiagonal)
             {
                 if (string.IsNullOrWhiteSpace(raw) ||
                     string.Equals(raw.Trim(), "none", System.StringComparison.OrdinalIgnoreCase))
@@ -295,7 +407,7 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         return InvalidDash; // Any invalid entry kills the whole list.
                     }
-                    list.Add(SvgValues.ResolveUnits(v, u, DefaultFontSize, 1f));
+                    list.Add(ResolveStrokeLength(element, v, u, ref viewportDiagonal));
                 }
 
                 if (list.Count == 0)
@@ -303,17 +415,20 @@ namespace FenBrowser.FenEngine.Svg
                     return InvalidDash;
                 }
 
-                if (list.Count == 1)
+                if ((list.Count & 1) != 0)
                 {
-                    list.Add(list[0]); // Spec: odd counts are duplicated.
+                    int baseCount = list.Count;
+                    for (int i = 0; i < baseCount; i++)
+                    {
+                        list.Add(list[i]);
+                    }
                 }
                 return list.ToArray();
             }
 
             private static PaintSpec? ParsePaintSpec(
                 string raw,
-                InheritedStyle inherited,
-                SvgParseReport report)
+                InheritedStyle inherited)
             {
                 if (raw == null)
                 {
@@ -323,11 +438,13 @@ namespace FenBrowser.FenEngine.Svg
                 ReadOnlySpan<char> value = raw.AsSpan().Trim();
                 if (value.Equals("context-fill", System.StringComparison.OrdinalIgnoreCase))
                 {
-                    return ResolveContextPaint(inherited.ContextFill, report);
+                    return ResolveContextPaint(
+                        inherited.ContextFill, inherited.ContextSource);
                 }
                 if (value.Equals("context-stroke", System.StringComparison.OrdinalIgnoreCase))
                 {
-                    return ResolveContextPaint(inherited.ContextStroke, report);
+                    return ResolveContextPaint(
+                        inherited.ContextStroke, inherited.ContextSource);
                 }
 
                 if (!SvgValues.TryParsePaint(
@@ -357,16 +474,20 @@ namespace FenBrowser.FenEngine.Svg
 
             private static PaintSpec ResolveContextPaint(
                 PaintSpec? contextPaint,
-                SvgParseReport report)
+                SvgElement contextSource)
             {
                 if (!contextPaint.HasValue) return PaintSpec.None;
                 PaintSpec paint = contextPaint.Value;
-                if (paint.Kind == SvgValues.PaintKind.ServerRef)
+                if (paint.Kind != SvgValues.PaintKind.ServerRef)
                 {
-                    report.RequireFallback("paint-server context paint requires compatibility fallback");
-                    return PaintSpec.None;
+                    return paint;
                 }
-                return paint;
+                return new PaintSpec(
+                    SvgValues.PaintKind.ServerRef,
+                    default,
+                    paint.Fragment,
+                    paint.Fallback,
+                    contextSource);
             }
         }
 
