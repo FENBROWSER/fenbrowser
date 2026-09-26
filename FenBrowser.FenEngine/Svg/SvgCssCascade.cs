@@ -110,6 +110,47 @@ namespace FenBrowser.FenEngine.Svg
             "padding", "padding-top", "padding-right", "padding-bottom", "padding-left"
         };
 
+        // What each rejected property would need from the engine, so an operator can
+        // tell a missing text-layout subsystem apart from a missing paint detail
+        // instead of reading one indistinguishable "requires compatibility fallback"
+        // for every unknown name. Each entry names a capability this file cannot
+        // grant on its own: a value here is only honest while the stated consumer
+        // still does not exist.
+        private static readonly Dictionary<string, string> UnimplementedCssCapabilities =
+            new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["direction"] =
+                "sets the bidi base direction of a run; the text model lays every run out left to right",
+            ["font-size-adjust"] =
+                "rescales the used font size by the font x-height ratio; the text model resolves no x-height metric",
+            ["inline-size"] =
+                "establishes a block box the run wraps in; the text model has one line box per text element and no block-size resolution",
+            ["line-spacing"] =
+                "is not a CSS property; the cascade has no property-name registry that could tell an unknown name from an unimplemented one",
+            ["shape-inside"] =
+                "wraps the run in an exclusion shape; the text model has no line breaking and no shape boundary",
+            ["shape-margin"] =
+                "grows a shape exclusion boundary; the text model has no shape boundary",
+            ["shape-padding"] =
+                "grows a shape exclusion boundary inward; the text model has no shape boundary",
+            ["shape-subtract"] =
+                "removes a shape from the run's exclusion area; the text model has no shape boundary",
+            ["text-align"] =
+                "aligns lines inside an established inline-size; the text model has no block-size to align against",
+            ["text-decoration-color"] =
+                "paints the decoration from a per-run colour; the text model resolves decoration line styles only",
+            ["text-orientation"] =
+                "rotates glyphs for a vertical block flow; the text model has one horizontal line box per text element",
+            ["unicode-bidi"] =
+                "embeds or overrides bidi reordering; the text model resolves no isolate or override run",
+            ["white-space"] =
+                "selects newline preservation and line wrapping; the text normaliser maps every newline to a space and never breaks a line",
+            ["writing-mode"] =
+                "selects a vertical block flow; the text model has one horizontal line box per text element",
+            ["z-index"] =
+                "reorders painting into a stacking context; the draw walk paints strictly in document order"
+        };
+
         public static void Apply(
             SvgParsedDocument document,
             float viewportWidth,
@@ -907,7 +948,7 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     return;
                 }
-                report.RequireFallback($"SVG CSS property '{property}' requires compatibility fallback");
+                report.RequireFallback(UnsupportedPropertyReason(property));
                 return;
             }
             if (isFontShorthand)
@@ -916,7 +957,8 @@ namespace FenBrowser.FenEngine.Svg
                 if (status == FontShorthandStatus.Unsupported)
                 {
                     report.RequireFallback(
-                        "SVG CSS property 'font' requires compatibility fallback");
+                        "SVG CSS property 'font' shorthand value does not expand to the font longhands " +
+                        "the text model resolves; requires compatibility fallback");
                 }
                 else if (status == FontShorthandStatus.Expanded)
                 {
@@ -957,6 +999,12 @@ namespace FenBrowser.FenEngine.Svg
                 winners[property] = new Winner(value, key);
             }
         }
+
+        private static string UnsupportedPropertyReason(string property) =>
+            UnimplementedCssCapabilities.TryGetValue(property, out string missingCapability)
+                ? $"SVG CSS property '{property}' cannot be honoured because it {missingCapability}; " +
+                    "requires compatibility fallback"
+                : $"SVG CSS property '{property}' requires compatibility fallback";
 
         private static bool EstablishesViewport(SvgElement element) =>
             element.Name is "svg" or "marker";
@@ -1386,7 +1434,13 @@ namespace FenBrowser.FenEngine.Svg
             SkipFontWhitespace(span, ref position);
             if (position >= span.Length)
             {
-                return FontShorthandStatus.Unsupported;
+                // <'font-family'># is not optional in the font shorthand grammar, so a
+                // value that stops after the size does not parse at all. The canonical
+                // CSS cascade drops it for the same reason, and every engine drops it,
+                // so the declaration is discarded rather than routed to a fallback: the
+                // document paints at the inherited size, which is what an engine that
+                // dropped the declaration paints.
+                return FontShorthandStatus.Invalid;
             }
             ReadOnlySpan<char> family = span.Slice(position);
             if (!IsFontFamilyList(family)) return FontShorthandStatus.Invalid;
@@ -1568,7 +1622,7 @@ namespace FenBrowser.FenEngine.Svg
                 SelectorSupport support = ClassifyChain(element, chain, 0);
                 if (support == SelectorSupport.Unsupported)
                 {
-                    report.RequireFallback("SVG unsupported selector requires compatibility fallback");
+                    report.RequireFallback(UnsupportedSelectorReason(element, chain));
                     continue;
                 }
                 if (support == SelectorSupport.NotApplicable) continue;
@@ -1656,6 +1710,34 @@ namespace FenBrowser.FenEngine.Svg
 
         private static bool HostsStyledText(SvgElement element) =>
             element != null && element.Name is "text" or "tspan" or "textPath";
+
+        private static string UnsupportedSelectorReason(SvgElement element, SelectorChain chain)
+        {
+            // A painted pseudo-element on a text host is the one rejected selector whose
+            // missing piece is nameable: it repaints part of a run, and naming which
+            // pseudo-element and which text model gap is what separates it from an
+            // unknown pseudo-class the cascade simply cannot answer.
+            if (HostsStyledText(element))
+            {
+                foreach (var segment in chain.Segments)
+                {
+                    if (!HasPaintedPseudoElement(segment)) continue;
+                    return
+                        $"SVG CSS pseudo-element '::{PaintedPseudoElementName(segment)}' repaints a chunk of " +
+                        "the first formatted line; requires compatibility fallback";
+                }
+            }
+            return "SVG unsupported selector requires compatibility fallback";
+        }
+
+        private static string PaintedPseudoElementName(SelectorSegment segment)
+        {
+            foreach (var pseudo in segment.PseudoElements)
+            {
+                if (PaintedPseudoElements.Contains(pseudo.Name)) return pseudo.Name;
+            }
+            return string.Empty;
+        }
 
         private static SelectorSupport ClassifyArguments(SvgElement element, PseudoSelector pseudo, int depth)
         {

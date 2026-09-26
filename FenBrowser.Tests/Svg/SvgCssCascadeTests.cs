@@ -1395,7 +1395,6 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData("font: 18px")]
         [InlineData("text-decoration-color: red")]
         [InlineData("direction: rtl")]
         [InlineData("writing-mode: tb-rl")]
@@ -1422,6 +1421,49 @@ namespace FenBrowser.Tests.Svg
 
             AssertFailsClosed(result);
             Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("inline-size", "320px", "line box")]
+        [InlineData("writing-mode", "tb-rl", "vertical block flow")]
+        [InlineData("text-align", "center", "block-size")]
+        [InlineData("white-space", "pre-line", "newline")]
+        [InlineData("z-index", "1", "document order")]
+        [InlineData("text-decoration-color", "red", "per-run colour")]
+        [InlineData("font-size-adjust", "1", "x-height")]
+        [InlineData("font-size-adjust", "from-font", "x-height")]
+        [InlineData("font-size-adjust", "0.5", "x-height")]
+        [InlineData("shape-inside", "url(#s)", "exclusion shape")]
+        [InlineData("line-spacing", "1.25", "not a CSS property")]
+        public void RejectedProperty_ReportsTheCapabilityItWouldNeed(
+            string property,
+            string value,
+            string expected)
+        {
+            string svg =
+                "<svg width='20' height='20'><style>text {" + property + ": " + value +
+                "}</style><text x='0' y='12' font-size='8'>hi</text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+            Assert.Contains($"SVG CSS property '{property}'", string.Join("\n", result.Warnings));
+            Assert.Contains(expected, string.Join("\n", result.Warnings));
+        }
+
+        [Fact]
+        public void FirstLetterPseudoElement_ReportsTheTextModelGapItWouldNeed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style>text::first-letter { fill: green }" +
+                "</style><text x='0' y='12' font-size='8'>hi</text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+            Assert.Contains("'::first-letter'", string.Join("\n", result.Warnings));
         }
 
         [Fact]
@@ -2020,7 +2062,6 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData("18px")]
         [InlineData("caption")]
         [InlineData("menu")]
         [InlineData("small-caps 18px serif")]
@@ -2033,7 +2074,6 @@ namespace FenBrowser.Tests.Svg
         [InlineData("calc(10px + 8px) serif")]
         [InlineData("var(--stack)")]
         [InlineData("inherit")]
-        [InlineData("italic 18px")]
         public void FontShorthand_ThatCannotPaintFaithfully_FailsClosed(string shorthand)
         {
             using var result = new FenSvgRenderer().Render(TextDocument($"text {{ font: {shorthand} }}"));
@@ -2050,6 +2090,9 @@ namespace FenBrowser.Tests.Svg
         [InlineData("18px 2px serif")]
         [InlineData("bold bold 18px serif")]
         [InlineData("18px Arial, , serif")]
+        [InlineData("18px")]
+        [InlineData("italic 18px")]
+        [InlineData("18px/1.5")]
         public void FontShorthand_ThatIsNotValidCss_IsDroppedLikeCssDropsIt(string shorthand)
         {
             AssertSamePixels(
