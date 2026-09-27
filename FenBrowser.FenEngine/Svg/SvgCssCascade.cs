@@ -35,7 +35,7 @@ namespace FenBrowser.FenEngine.Svg
             "flood-color", "flood-opacity",
             "stop-color", "stop-opacity",
             "font-family", "font-size", "font-style", "font-weight", "letter-spacing", "text-anchor",
-            "text-decoration",
+            "text-decoration", "direction", "unicode-bidi",
             "transform", "transform-origin", "transform-box", "zoom",
             "x", "y", "width", "height", "cx", "cy", "r", "rx", "ry", "d", "path-length",
             "paint-order"
@@ -119,10 +119,8 @@ namespace FenBrowser.FenEngine.Svg
         private static readonly Dictionary<string, string> UnimplementedCssCapabilities =
             new(StringComparer.OrdinalIgnoreCase)
         {
-            ["direction"] =
-                "sets the bidi base direction of a run; the text model lays every run out left to right",
             ["font-size-adjust"] =
-                "rescales the used font size by the font x-height ratio; the text model resolves no x-height metric",
+                "rescales the used font size to a requested x-height ratio; the text model sizes every run from font-size alone and never applies the ratio",
             ["inline-size"] =
                 "establishes a block box the run wraps in; the text model has one line box per text element and no block-size resolution",
             ["line-spacing"] =
@@ -141,8 +139,6 @@ namespace FenBrowser.FenEngine.Svg
                 "paints the decoration from a per-run colour; the text model resolves decoration line styles only",
             ["text-orientation"] =
                 "rotates glyphs for a vertical block flow; the text model has one horizontal line box per text element",
-            ["unicode-bidi"] =
-                "embeds or overrides bidi reordering; the text model resolves no isolate or override run",
             ["white-space"] =
                 "selects newline preservation and line wrapping; the text normaliser maps every newline to a space and never breaks a line",
             ["writing-mode"] =
@@ -979,6 +975,16 @@ namespace FenBrowser.FenEngine.Svg
             if (!isCustomProperty && IsUnrenderableTextValue(property, value))
             {
                 report.RequireFallback($"SVG CSS property '{property}' requires compatibility fallback");
+                return;
+            }
+            if (!isCustomProperty &&
+                property.Equals("unicode-bidi", StringComparison.OrdinalIgnoreCase) &&
+                SvgFeatureSupport.IsUnimplementedUnicodeBidi(value))
+            {
+                report.RequireFallback(
+                    $"SVG CSS property '{property}' cannot be honoured for value '{value}' because it " +
+                    "isolates the run sequence from the surrounding paragraph and the text model " +
+                    "computes no isolating run sequence; requires compatibility fallback");
                 return;
             }
             if (!isCustomProperty && IsDefinitelyInvalid(property, value))

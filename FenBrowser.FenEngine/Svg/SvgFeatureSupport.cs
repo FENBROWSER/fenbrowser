@@ -42,7 +42,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private static readonly HashSet<string> AdvancedTextAttributes = new(StringComparer.OrdinalIgnoreCase)
         {
-            "textLength", "lengthAdjust", "rotate", "writing-mode", "direction",
+            "textLength", "lengthAdjust", "rotate", "writing-mode",
             "unicode-bidi", "glyph-orientation-horizontal", "glyph-orientation-vertical",
             "dominant-baseline", "alignment-baseline", "baseline-shift",
             "word-spacing", "text-decoration", "text-rendering", "font", "font-stretch",
@@ -209,10 +209,8 @@ namespace FenBrowser.FenEngine.Svg
         {
             if (key.Equals("writing-mode", StringComparison.OrdinalIgnoreCase))
                 return !IsInertWritingMode(value);
-            if (key.Equals("direction", StringComparison.OrdinalIgnoreCase))
-                return !IsInertDirection(value);
             if (key.Equals("unicode-bidi", StringComparison.OrdinalIgnoreCase))
-                return !IsInertUnicodeBidi(value);
+                return IsUnimplementedUnicodeBidi(value);
             if (key.Equals("text-decoration", StringComparison.OrdinalIgnoreCase))
                 return !IsSupportedTextDecoration(value);
             if (key.Equals("text-rendering", StringComparison.OrdinalIgnoreCase))
@@ -255,21 +253,12 @@ namespace FenBrowser.FenEngine.Svg
                    keyword.Equals("lr-tb", StringComparison.OrdinalIgnoreCase);
         }
 
-        internal static bool IsInertDirection(string value)
+        internal static bool IsUnimplementedUnicodeBidi(string value)
         {
-            if (string.IsNullOrWhiteSpace(value)) return true;
+            if (string.IsNullOrWhiteSpace(value)) return false;
             var keyword = value.AsSpan().Trim();
-            return IsInheritedKeyword(keyword) ||
-                   keyword.Equals("ltr", StringComparison.OrdinalIgnoreCase);
-        }
-
-        internal static bool IsInertUnicodeBidi(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value)) return true;
-            var keyword = value.AsSpan().Trim();
-            return IsInheritedKeyword(keyword) ||
-                   keyword.Equals("normal", StringComparison.OrdinalIgnoreCase) ||
-                   keyword.Equals("isolate", StringComparison.OrdinalIgnoreCase);
+            return keyword.Equals("isolate", StringComparison.OrdinalIgnoreCase) ||
+                   keyword.Equals("isolate-override", StringComparison.OrdinalIgnoreCase);
         }
 
         internal static bool IsSupportedTextDecoration(string value)
