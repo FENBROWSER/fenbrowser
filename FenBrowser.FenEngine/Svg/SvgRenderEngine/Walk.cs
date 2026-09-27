@@ -322,26 +322,15 @@ namespace FenBrowser.FenEngine.Svg
                 el, "width", outer.Width, outer.Height, out float cssWidth);
             bool hasCssHeight = TryResolveNestedSvgCssSizing(
                 el, "height", outer.Width, outer.Height, out float cssHeight);
-            string widthAttribute = el.GetAttribute("width");
-            string heightAttribute = el.GetAttribute("height");
-            string instanceWidth = instance?.GetAttribute("width");
-            string instanceHeight = instance?.GetAttribute("height");
-            bool hasInstanceWidth = !string.IsNullOrWhiteSpace(instanceWidth);
-            bool hasInstanceHeight = !string.IsNullOrWhiteSpace(instanceHeight);
-            float w = hasInstanceWidth
-                ? ResolveViewportLength(instanceWidth, outer.Width)
-                : hasCssWidth
-                ? cssWidth
-                : string.IsNullOrWhiteSpace(widthAttribute)
-                    ? outer.Width
-                    : ResolveViewportLength(widthAttribute, outer.Width);
-            float h = hasInstanceHeight
-                ? ResolveViewportLength(instanceHeight, outer.Height)
-                : hasCssHeight
-                ? cssHeight
-                : string.IsNullOrWhiteSpace(heightAttribute)
-                    ? outer.Height
-                    : ResolveViewportLength(heightAttribute, outer.Height);
+            bool resolvedWidth = TryResolveViewportBoxExtent(
+                instance?.GetAttribute("width"), hasCssWidth, cssWidth,
+                el.GetAttribute("width"), outer.Width, outer.Width,
+                "nested <svg>", "width", out float w);
+            bool resolvedHeight = TryResolveViewportBoxExtent(
+                instance?.GetAttribute("height"), hasCssHeight, cssHeight,
+                el.GetAttribute("height"), outer.Height, outer.Height,
+                "nested <svg>", "height", out float h);
+            if (!resolvedWidth || !resolvedHeight) return;
             if (w <= 0f || h <= 0f)
             {
                 return;
@@ -395,6 +384,80 @@ namespace FenBrowser.FenEngine.Svg
             });
         }
 
+        private bool TryResolveViewportBoxExtent(
+            string instanceAttribute,
+            bool hasCssSizing,
+            float cssSizing,
+            string attribute,
+            float percentReference,
+            float defaultExtent,
+            string subject,
+            string property,
+            out float value)
+        {
+            if (IsSpecifiedViewportLength(instanceAttribute))
+                return TryResolveViewportExtent(
+                    instanceAttribute, percentReference, subject, property, out value);
+            if (hasCssSizing)
+            {
+                value = cssSizing;
+                return true;
+            }
+            if (!IsSpecifiedViewportLength(attribute))
+            {
+                value = defaultExtent;
+                return true;
+            }
+            return TryResolveViewportExtent(
+                attribute, percentReference, subject, property, out value);
+        }
+
+        private static bool IsSpecifiedViewportLength(string value) =>
+            !string.IsNullOrWhiteSpace(value) &&
+            !value.Equals("auto", StringComparison.OrdinalIgnoreCase);
+
+        private bool TryResolveViewportExtent(
+            string raw,
+            float parentDim,
+            string subject,
+            string property,
+            out float value)
+        {
+            if (TryResolveViewportLength(raw, parentDim, out value)) return true;
+            if (string.IsNullOrWhiteSpace(raw) ||
+                raw.Length > SvgMarkupParser.MaxAttributeValueChars ||
+                SvgCssLengthEvaluator.HasViewportUnitDimension(raw))
+                return false;
+            RejectsIntrinsicReplacedSizing(subject, property, raw);
+            return false;
+        }
+
+        private void RejectsIntrinsicReplacedSizing(
+            string subject,
+            string property,
+            string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) ||
+                value.Length > SvgMarkupParser.MaxAttributeValueChars)
+                return;
+            _report.RequireFallback(
+                $"SVG {subject} sizing property '{property}: {value.Trim()}' requires intrinsic " +
+                "replaced-element sizing that this renderer does not compute");
+        }
+
+        private void RejectsUnresolvedGeometrySizing(
+            string subject,
+            string property,
+            string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) ||
+                value.Length > SvgMarkupParser.MaxAttributeValueChars ||
+                SvgCssLengthEvaluator.HasViewportUnitDimension(value) ||
+                SvgCssLengthEvaluator.RequiresUnsupportedUnitSupport(value))
+                return;
+            RejectsIntrinsicReplacedSizing(subject, property, value);
+        }
+
         private float ResolveGeometryCoordinate(
             SvgElement element,
             string property,
@@ -415,7 +478,7 @@ namespace FenBrowser.FenEngine.Svg
         /// for every other value, leaving XML attribute/default sizing in charge.
         /// Negative results are invalid per spec and likewise return false.
         /// </summary>
-        private static bool TryResolveNestedSvgCssSizing(
+        private bool TryResolveNestedSvgCssSizing(
             SvgElement element,
             string property,
             float viewportWidth,
@@ -441,11 +504,13 @@ namespace FenBrowser.FenEngine.Svg
             if (!SvgCssLengthEvaluator.HasViewportUnitDimension(trimmed))
                 return false;
             ResolveGeometryFontContext(element, out float fontSize, out float rootFontSize);
-            return SvgCssLengthEvaluator.TryEvaluate(
+            if (SvgCssLengthEvaluator.TryEvaluate(
                        trimmed, property == "width" ? viewportWidth : viewportHeight,
                        fontSize, rootFontSize,
-                       viewportWidth, viewportHeight, out value) &&
-                   value >= 0f;
+                       viewportWidth, viewportHeight, out value))
+                return value >= 0f;
+            RejectsIntrinsicReplacedSizing("nested <svg>", property, trimmed);
+            return false;
         }
 
         private bool ApplyNestedSvgViewport(
@@ -1151,18 +1216,15 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement instance)
         {
             if (IsDisplayNone(symbol)) return;
-            string instanceWidth = instance?.GetAttribute("width");
-            string instanceHeight = instance?.GetAttribute("height");
-            string width = !string.IsNullOrWhiteSpace(instanceWidth)
-                ? instanceWidth
-                : symbol.GetAttribute("width");
-            string height = !string.IsNullOrWhiteSpace(instanceHeight)
-                ? instanceHeight
-                : symbol.GetAttribute("height");
-            float w = ResolveViewportLength(width, viewport.Width);
-            if (string.IsNullOrWhiteSpace(width)) w = viewport.Width;
-            float h = ResolveViewportLength(height, viewport.Height);
-            if (string.IsNullOrWhiteSpace(height)) h = viewport.Height;
+            bool resolvedWidth = TryResolveViewportBoxExtent(
+                instance?.GetAttribute("width"), false, 0f,
+                symbol.GetAttribute("width"), viewport.Width, viewport.Width,
+                "symbol", "width", out float w);
+            bool resolvedHeight = TryResolveViewportBoxExtent(
+                instance?.GetAttribute("height"), false, 0f,
+                symbol.GetAttribute("height"), viewport.Height, viewport.Height,
+                "symbol", "height", out float h);
+            if (!resolvedWidth || !resolvedHeight) return;
             if (w <= 0f || h <= 0f) return;
 
             var inner = new ViewportContext(w, h);
@@ -2040,12 +2102,6 @@ namespace FenBrowser.FenEngine.Svg
 
             string widthText = element.GetPresentationProperty("width");
             string heightText = element.GetPresentationProperty("height");
-            if (RejectsIntrinsicImageSizing("width", widthText) ||
-                RejectsIntrinsicImageSizing("height", heightText))
-            {
-                box = default;
-                return false;
-            }
             bool widthIsAuto = widthText == null ||
                                widthText.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase);
             bool heightIsAuto = heightText == null ||
@@ -2057,7 +2113,13 @@ namespace FenBrowser.FenEngine.Svg
             }
             else if (!TryResolveGeometryLength(
                          element, "width", viewport, viewport.Width, fontSize, rootFontSize,
-                         out width) || width <= 0f)
+                         out width))
+            {
+                RejectsUnresolvedGeometrySizing("image", "width", widthText);
+                box = default;
+                return false;
+            }
+            else if (!(width > 0f))
             {
                 box = default;
                 return false;
@@ -2070,7 +2132,13 @@ namespace FenBrowser.FenEngine.Svg
             }
             else if (!TryResolveGeometryLength(
                          element, "height", viewport, viewport.Height, fontSize, rootFontSize,
-                         out height) || height <= 0f)
+                         out height))
+            {
+                RejectsUnresolvedGeometrySizing("image", "height", heightText);
+                box = default;
+                return false;
+            }
+            else if (!(height > 0f))
             {
                 box = default;
                 return false;
@@ -2092,38 +2160,6 @@ namespace FenBrowser.FenEngine.Svg
             box = new SKRect(x, y, x + width, y + height);
             return true;
         }
-
-        private static readonly string[] ImageSizingFunctionNames =
-            { "fit-content", "calc-size", "anchor-size" };
-
-        private bool RejectsIntrinsicImageSizing(string property, string value)
-        {
-            if (!IsIntrinsicImageSizingValue(value))
-                return false;
-            _report.RequireFallback(
-                $"SVG image sizing property '{property}: {value.Trim()}' requires intrinsic " +
-                "replaced-element sizing that this renderer does not compute");
-            return true;
-        }
-
-        private static bool IsIntrinsicImageSizingValue(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value) ||
-                value.Length > SvgMarkupParser.MaxAttributeValueChars)
-                return false;
-            string trimmed = value.Trim();
-            if (SvgCssLengthEvaluator.IsNestedSvgSizingKeyword(trimmed))
-                return true;
-            for (int i = 0; i < ImageSizingFunctionNames.Length; i++)
-                if (IsImageSizingFunction(trimmed, ImageSizingFunctionNames[i]))
-                    return true;
-            return false;
-        }
-
-        private static bool IsImageSizingFunction(string value, string name) =>
-            value.Length > name.Length &&
-            value.StartsWith(name, StringComparison.OrdinalIgnoreCase) &&
-            value[name.Length] == '(';
 
         // --------------------------------------------------------------- images
 

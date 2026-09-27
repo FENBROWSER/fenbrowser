@@ -243,13 +243,40 @@ namespace FenBrowser.FenEngine.Svg
             ResolveGeometryFontContext(root, out float fontSize, out float rootFontSize);
             var viewport = new ViewportContext(width, height);
             if (TryResolveGeometryLength(
-                    root, "width", viewport, width, fontSize, rootFontSize, out float cssWidth) &&
-                cssWidth >= 0f)
-                width = cssWidth;
+                    root, "width", viewport, width, fontSize, rootFontSize, out float cssWidth))
+            {
+                if (cssWidth >= 0f) width = cssWidth;
+            }
+            else
+                RejectsUnresolvedGeometrySizing(
+                    "root <svg>", "width", root.GetPresentationProperty("width"));
             if (TryResolveGeometryLength(
-                    root, "height", viewport, height, fontSize, rootFontSize, out float cssHeight) &&
-                cssHeight >= 0f)
-                height = cssHeight;
+                    root, "height", viewport, height, fontSize, rootFontSize, out float cssHeight))
+            {
+                if (cssHeight >= 0f) height = cssHeight;
+            }
+            else
+                RejectsUnresolvedGeometrySizing(
+                    "root <svg>", "height", root.GetPresentationProperty("height"));
+        }
+
+        private static bool IsSubstitutableRootViewportLength(string value) =>
+            !IsSpecifiedViewportLength(value) ||
+            SvgValues.TryParseLength(value.AsSpan(), out _, out _);
+
+        private bool TryResolveRootViewportLength(
+            string raw,
+            string property,
+            out float value)
+        {
+            if (TryResolveViewportLength(raw, 0f, out value)) return true;
+            if (string.IsNullOrWhiteSpace(raw) ||
+                raw.Length > SvgMarkupParser.MaxAttributeValueChars ||
+                IsSubstitutableRootViewportLength(raw) ||
+                SvgCssLengthEvaluator.HasViewportUnitDimension(raw))
+                return false;
+            RejectsIntrinsicReplacedSizing("root <svg>", property, raw);
+            return false;
         }
 
         private void RenderRoot(out SKPicture picture, out float width, out float height)
@@ -258,8 +285,8 @@ namespace FenBrowser.FenEngine.Svg
 
             string rootWidth = root.GetAttribute("width");
             string rootHeight = root.GetAttribute("height");
-            bool hasRootWidth = TryResolveViewportLength(rootWidth, 0f, out width);
-            bool hasRootHeight = TryResolveViewportLength(rootHeight, 0f, out height);
+            bool hasRootWidth = TryResolveRootViewportLength(rootWidth, "width", out width);
+            bool hasRootHeight = TryResolveRootViewportLength(rootHeight, "height", out height);
             if (!hasRootWidth) width = 0f;
             if (!hasRootHeight) height = 0f;
 

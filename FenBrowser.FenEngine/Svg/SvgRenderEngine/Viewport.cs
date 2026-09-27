@@ -300,8 +300,5 @@ namespace FenBrowser.FenEngine.Svg
             return SvgValues.IsFinite(value) && value >= 0f;
         }
 
-        private float ResolveViewportLength(string raw, float parentDim) =>
-            TryResolveViewportLength(raw, parentDim, out float value) ? value : 0f;
-
     }
 }
