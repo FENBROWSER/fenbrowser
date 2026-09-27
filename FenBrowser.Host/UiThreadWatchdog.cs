@@ -15,6 +15,11 @@ namespace FenBrowser.Host;
 ///   Call UiThreadWatchdog.Instance.Heartbeat() from the UI thread each frame.
 ///   The watchdog fires a background timer and logs a warning if the heartbeat
 ///   has not been updated within the configured threshold.
+///
+/// The window loop sleeps while nothing needs presenting, so a quiet UI thread
+/// produces no frames. Initialize takes a wake callback that each poll uses to
+/// poke the loop: an idle thread answers at once and keeps beating, while a
+/// thread stuck in work cannot, which is exactly the stall being measured.
 /// </summary>
 public sealed class UiThreadWatchdog : IDisposable
 {
@@ -38,6 +43,7 @@ public sealed class UiThreadWatchdog : IDisposable
     // Set via Initialize() — captured once so the watchdog can read it without
     // touching potentially-blocked UI-thread state.
     private Func<(string Status, int ActiveTabId, long CompositorFrameSeq, int TabCount)> _telemetryProvider;
+    private Action _wakeUiThread;
 
     private UiThreadWatchdog()
     {
@@ -53,7 +59,8 @@ public sealed class UiThreadWatchdog : IDisposable
     public void Initialize(
         TimeSpan? stallThreshold = null,
         TimeSpan? pollInterval = null,
-        Func<(string Status, int ActiveTabId, long CompositorFrameSeq, int TabCount)> telemetryProvider = null)
+        Func<(string Status, int ActiveTabId, long CompositorFrameSeq, int TabCount)> telemetryProvider = null,
+        Action wakeUiThread = null)
     {
         lock (_lock)
         {
@@ -69,6 +76,7 @@ public sealed class UiThreadWatchdog : IDisposable
                 pollInterval ?? TimeSpan.FromMilliseconds(50),
                 TimeSpan.FromMilliseconds(50));
             _telemetryProvider = telemetryProvider;
+            _wakeUiThread = wakeUiThread;
 
             _running = true;
             _heartbeatTimestamp = Stopwatch.GetTimestamp();
@@ -83,7 +91,7 @@ public sealed class UiThreadWatchdog : IDisposable
     }
 
     /// <summary>
-    /// Called from the UI thread every frame render. Extremely cheap —
+    /// Called from the UI thread on every wake-up of the window loop. Extremely cheap —
     /// just a monotonic timestamp plus a single interlocked write.
     /// </summary>
     public void Heartbeat()
@@ -130,6 +138,9 @@ public sealed class UiThreadWatchdog : IDisposable
             var now = Stopwatch.GetTimestamp();
             var lastBeat = Interlocked.Read(ref _heartbeatTimestamp);
             var elapsed = Stopwatch.GetElapsedTime(lastBeat, now);
+
+            // Poke the loop so the next poll sees a fresh beat from an idle thread.
+            _wakeUiThread?.Invoke();
 
             if (elapsed <= _stallThreshold)
             {

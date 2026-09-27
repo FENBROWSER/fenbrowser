@@ -5,6 +5,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.Host.Theme;
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace FenBrowser.Host;
 
@@ -22,6 +23,7 @@ public class Compositor : IDisposable
     private readonly List<CompositorLayer> _layers = new();
     private readonly object _layerLock = new();
     private bool _disposed;
+    private long _frameVersion;
 
     public Compositor(Widget root)
     {
@@ -32,6 +34,14 @@ public class Compositor : IDisposable
     /// Current DPI scale factor.
     /// </summary>
     public float DpiScale { get; set; } = 1.0f;
+
+    /// <summary>
+    /// Advances whenever the composited output changes: the retained widget frame
+    /// was repainted or the layer set changed. Both the compositor thread and the
+    /// window loop composite through this instance, so the window loop compares
+    /// this against what it last presented to notice frames it did not draw.
+    /// </summary>
+    public long FrameVersion => Interlocked.Read(ref _frameVersion);
 
     /// <summary>
     /// Snapshot of the current compositor layers.
@@ -124,6 +134,7 @@ public class Compositor : IDisposable
 
             _frameSnapshot?.Dispose();
             _frameSnapshot = _frameSurface.Snapshot();
+            Interlocked.Increment(ref _frameVersion);
         }
 
         if (_frameSnapshot != null)
@@ -187,6 +198,8 @@ public class Compositor : IDisposable
             _layers.Add(layer);
             _layers.Sort((a, b) => a.ZIndex.CompareTo(b.ZIndex));
         }
+
+        Interlocked.Increment(ref _frameVersion);
     }
 
     public void RemoveLayer(CompositorLayer layer)
@@ -199,8 +212,13 @@ public class Compositor : IDisposable
 
         lock (_layerLock)
         {
-            _layers.Remove(layer);
+            if (!_layers.Remove(layer))
+            {
+                return;
+            }
         }
+
+        Interlocked.Increment(ref _frameVersion);
     }
 
     public void ClearLayers()
@@ -210,6 +228,11 @@ public class Compositor : IDisposable
         {
             layers = _layers.ToArray();
             _layers.Clear();
+        }
+
+        if (layers.Length > 0)
+        {
+            Interlocked.Increment(ref _frameVersion);
         }
 
         // Layer disposal is arbitrary/re-entrant native/user code. Do not invoke it

@@ -229,6 +229,8 @@ internal sealed class LinuxPlatformHost : IPlatformHost
             }
         });
 
+        // The window loop sleeps until an event arrives; wake it for this work.
+        _window?.SilkWindow.ContinueEvents();
         tcs.Task.Wait();
     }
 

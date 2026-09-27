@@ -74,6 +74,11 @@ namespace FenBrowser.Host
         private long _pendingHostPresentedCaptureAfterFrameSequence;
         private string _pendingInitialTabUrl;
         private bool _initialTabCreationScheduled;
+        private long _presentedCompositorFrameVersion = -1;
+
+        // The first frame after the window loop slept carries the whole sleep as its
+        // delta; scroll physics must not integrate that as one step.
+        private const double MaxScrollPhysicsStepSeconds = 1.0 / 30.0;
 
         private ChromeManager() { }
 
@@ -100,7 +105,8 @@ namespace FenBrowser.Host
                         CompositorFrameSeq: _compositorThread?.LastCommittedFrameSequence ?? 0,
                         TabCount: TabManager.Instance.Tabs.Count
                     );
-                });
+                },
+                wakeUiThread: WindowManager.Instance.WakeMainLoop);
 
             InitializeWidgets(initialUrl);
             InitializeDevTools();
@@ -119,6 +125,7 @@ namespace FenBrowser.Host
             _compositor = new Compositor(_root);
             _compositor.DpiScale = WindowManager.Instance.DpiScale;
             _root.Invalidated += OnRootInvalidated;
+            WindowManager.Instance.PendingPresentation = HasPendingPresentation;
 
             _compositorThread = new CompositorThread(_compositor);
             _compositorThread.SetPointerMoveDispatcher(DispatchCoalescedPointerMove);
@@ -409,16 +416,40 @@ namespace FenBrowser.Host
         {
             _root?.InvalidateLayout();
             _compositorThread?.RequestFrame();
+            WindowManager.Instance.RequestPresent();
         }
 
         private void OnRootInvalidated()
         {
             _compositorThread?.RequestFrame();
+            WindowManager.Instance.RequestPresent();
         }
 
         internal void RequestCompositorFrame()
         {
             _compositorThread?.RequestFrame();
+            WindowManager.Instance.RequestPresent();
+        }
+
+        /// <summary>
+        /// Visual state the window has not presented yet, for changes that reached
+        /// the widget tree or the compositor without a present request. The
+        /// compositor thread repaints the shared retained frame on its own, so a
+        /// clean widget tree does not mean the window is up to date.
+        /// </summary>
+        private bool HasPendingPresentation()
+        {
+            var compositor = _compositor;
+            var root = _root;
+            if (compositor == null || root == null)
+            {
+                return false;
+            }
+
+            return compositor.FrameVersion != Interlocked.Read(ref _presentedCompositorFrameVersion) ||
+                   root.IsLayoutDirty ||
+                   root.DirtyRect.HasValue ||
+                   _pendingHostPresentedScreenshotReason != null;
         }
 
         private void OnNavigate(string url)
@@ -674,7 +705,7 @@ namespace FenBrowser.Host
         private void Render(SKCanvas canvas, double deltaTime)
         {
             if (_compositor == null) return;
-            TabManager.Instance.ActiveTab?.Browser.UpdateScrollPhysics(deltaTime);
+            TabManager.Instance.ActiveTab?.Browser.UpdateScrollPhysics(Math.Min(deltaTime, MaxScrollPhysicsStepSeconds));
             var logicalSize = new SKSize(WindowManager.Instance.LogicalWidth, WindowManager.Instance.LogicalHeight);
 
             // Always clear the host surface before compositing.
@@ -690,15 +721,13 @@ namespace FenBrowser.Host
                 lock (_compositor)
                 {
                     _compositor.Composite(canvas, logicalSize);
+                    Interlocked.Exchange(ref _presentedCompositorFrameVersion, _compositor.FrameVersion);
                 }
             });
 
             DrawTooltip(canvas);
             TryCaptureHostPresentedScreenshotAfterFramePresent();
             ScheduleInitialTabCreationAfterBootstrapFrame();
-
-            // Heartbeat for the UI-thread watchdog: one tick per host frame.
-            UiThreadWatchdog.Instance.Heartbeat();
         }
 
         private void ScheduleInitialTabCreationAfterBootstrapFrame()
@@ -745,7 +774,9 @@ namespace FenBrowser.Host
             var currentCommittedSequence = compositorThread.LastCommittedFrameSequence;
             if (currentCommittedSequence <= _pendingHostPresentedCaptureAfterFrameSequence)
             {
+                // Keep presenting until the compositor commits the frame to capture.
                 compositorThread.RequestFrame();
+                WindowManager.Instance.RequestPresent();
                 return;
             }
 
@@ -794,6 +825,19 @@ namespace FenBrowser.Host
 
         private void OnMouseDown(IMouse m, MouseButton b)
         {
+            var tooltipBefore = CurrentTooltipText();
+            try
+            {
+                OnMouseDownCore(m, b);
+            }
+            finally
+            {
+                PresentIfTooltipAffected(tooltipBefore);
+            }
+        }
+
+        private void OnMouseDownCore(IMouse m, MouseButton b)
+        {
             ClearPageTooltip();
             _mouse = m; // Cache for other logic
             float dpi = WindowManager.Instance.DpiScale;
@@ -823,6 +867,19 @@ namespace FenBrowser.Host
 
         private void OnMouseUp(IMouse m, MouseButton b)
         {
+            var tooltipBefore = CurrentTooltipText();
+            try
+            {
+                OnMouseUpCore(m, b);
+            }
+            finally
+            {
+                PresentIfTooltipAffected(tooltipBefore);
+            }
+        }
+
+        private void OnMouseUpCore(IMouse m, MouseButton b)
+        {
              float dpi = WindowManager.Instance.DpiScale;
              float x = m.Position.X / dpi;
              float y = m.Position.Y / dpi;
@@ -843,6 +900,19 @@ namespace FenBrowser.Host
         }
 
         private void OnMouseMove(IMouse m, System.Numerics.Vector2 pos)
+        {
+            var tooltipBefore = CurrentTooltipText();
+            try
+            {
+                OnMouseMoveCore(m, pos);
+            }
+            finally
+            {
+                PresentIfTooltipAffected(tooltipBefore);
+            }
+        }
+
+        private void OnMouseMoveCore(IMouse m, System.Numerics.Vector2 pos)
         {
             _mouse = m;
             float dpi = WindowManager.Instance.DpiScale;
@@ -1051,7 +1121,7 @@ namespace FenBrowser.Host
             }
         }
 
-        private void DrawTooltip(SKCanvas canvas)
+        private string CurrentTooltipText()
         {
             var widgetText = (_hoveredWidget != null && !_isDragging && !(_mouse != null && _mouse.IsButtonPressed(MouseButton.Left)))
                 ? _hoveredWidget.HelpText
@@ -1060,7 +1130,26 @@ namespace FenBrowser.Host
                 ? _pageTooltipText
                 : null;
             var text = !string.IsNullOrEmpty(widgetText) ? widgetText : pageText;
-            if (string.IsNullOrEmpty(text)) return;
+            return string.IsNullOrEmpty(text) ? null : text;
+        }
+
+        /// <summary>
+        /// The tooltip is drawn at the pointer straight onto the window, outside the
+        /// widget tree, so no widget invalidation covers it. Present while one is
+        /// shown (it follows the pointer) and when it appears or disappears.
+        /// </summary>
+        private void PresentIfTooltipAffected(string tooltipBefore)
+        {
+            if (tooltipBefore != null || CurrentTooltipText() != null)
+            {
+                WindowManager.Instance.RequestPresent();
+            }
+        }
+
+        private void DrawTooltip(SKCanvas canvas)
+        {
+            var text = CurrentTooltipText();
+            if (text == null) return;
 
             var theme = ThemeManager.Current;
             using var font = new SKFont(SKTypeface.Default, 12);
@@ -1091,6 +1180,8 @@ namespace FenBrowser.Host
              {
                  _root.Invalidated -= OnRootInvalidated;
              }
+
+             WindowManager.Instance.PendingPresentation = null;
 
              _compositorThread?.Dispose();
              _compositorThread = null;

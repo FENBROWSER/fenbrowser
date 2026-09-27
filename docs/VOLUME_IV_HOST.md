@@ -37,7 +37,7 @@ A Singleton that manages the native window lifecycle.
   2. Wraps it in a Skia `GRContext`.
   3. Creates an `SKSurface` backed by the OpenGL Framebuffer (`GRBackendRenderTarget`).
 - **Input Proxying**: Bridges Silk.NET input events (Keyboard/Mouse) to the internal `InputManager`.
-- **Main Loop**: Drives the application refresh loop (`Window.Render` event).
+- **Main Loop**: Drives the application refresh loop (`Window.Render` event). The loop is event-driven and presents on demand; see "On-Demand Host Presentation (2026-09-27)".
 
 ### 3.3 The Integration Layer (`BrowserIntegration.cs`)
 
@@ -1685,3 +1685,34 @@ Verification:
 - Verification: the focused animation/frame-coalescing slice passes `10/10`; the
   live `anim_probe2.html` shorthand/longhand rotation probe produces continuous
   no-input `RendererChild.AnimationTick` commits with `Animation` invalidation.
+
+## On-Demand Host Presentation (2026-09-27)
+
+- Problem: the window loop presented a frame on every vsync whether or not
+  anything changed. On the NVIDIA WGL driver the vsync wait is a spin inside
+  `GRContext.Flush`, so an idle browser pinned a whole core on every page
+  (about:blank idle: 10312 ms CPU per 10 s; the same page through ANGLE: 359 ms).
+- `WindowManager` now runs Silk in event-driven mode (`IsEventDriven = true`,
+  `ShouldSwapAutomatically = false`). Both are set in `Load`, not before `Run()`:
+  Silk's `Initialize()` copies them back from the creation options just before
+  raising `Load`. `Close()` turns event-driven mode off again, because Silk pumps
+  events once more after its loop ends and a blocking wait there never returns.
+- Each wake-up runs `WindowManager.Render`: heartbeat, main-thread queue, then
+  `PresentScheduler.TryBeginPresent()`. Only a present draws, flushes and swaps.
+- Present sources: `WindowManager.RequestPresent()` (thread-safe; wakes the loop
+  once until consumed) from root-widget invalidation, layout, resize, window
+  state/focus changes, tooltip changes and the pending host screenshot; and the
+  pull check `ChromeManager.HasPendingPresentation()` - `Compositor.FrameVersion`
+  moved since the last present (the compositor thread repaints the shared retained
+  frame on its own), or the root widget is layout/paint dirty.
+- Wake sources: `RunOnMainThread`, platform-host `InvokeOnMainThread`, OS input,
+  and the `UiThreadWatchdog` poll (50 ms), which pokes the loop so an idle thread
+  keeps its heartbeat and a stuck one is still reported. That poll also bounds a
+  missed present request to one poll interval.
+- Scroll physics clamps its step to 1/30 s: the first frame after a sleep carries
+  the whole idle time as its delta.
+- Verification: idle host CPU on about:blank 31 ms / 10 s (was 10312 ms), x.com
+  141 ms / 10 s; typing, Ctrl+A, toolbar tooltips and wheel scrolling match the
+  pre-change build on the same inputs; close-to-exit 191 ms (baseline 192 ms).
+  `FenBrowser.Tests/Host/PresentSchedulerTests.cs` covers the scheduler and
+  `Compositor.FrameVersion`.
