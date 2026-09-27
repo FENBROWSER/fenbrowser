@@ -20587,21 +20587,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private JsValue GetOrCreateIFrameContentDocument(Element iframe)
     {
-        foreach (var child in iframe.ChildNodes)
+        if (FindFrameContentDocument(iframe) is { } activeDocument)
         {
-            if (child is Document frameDocument)
-            {
-                var frameDocumentValue = ToHostOrNull(frameDocument, HostObjectKind.DomDocument);
-                SetStoredHostProperty(iframe, "__fenIframeContentDocument", frameDocumentValue);
-                return frameDocumentValue;
-            }
-
-            if (child is Element frameRoot && frameRoot.OwnerDocument != null)
-            {
-                var frameOwnerDocumentValue = ToHostOrNull(frameRoot.OwnerDocument, HostObjectKind.DomDocument);
-                SetStoredHostProperty(iframe, "__fenIframeContentDocument", frameOwnerDocumentValue);
-                return frameOwnerDocumentValue;
-            }
+            var activeDocumentValue = ToHostOrNull(activeDocument, HostObjectKind.DomDocument);
+            SetStoredHostProperty(iframe, "__fenIframeContentDocument", activeDocumentValue);
+            return activeDocumentValue;
         }
 
         var cached = GetStoredHostPropertyOrUndefined(iframe, "__fenIframeContentDocument");
@@ -21867,22 +21857,27 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     /// the element: the element is shared by every realm that can see the frame,
     /// so a handle cached from one heap would be read back from another.
     /// </summary>
+    /// <remarks>
+    /// The most recently attached document is the active one. A frame's window, and with
+    /// it its initial about:blank document, exists before any script runs, so a document
+    /// attached later (by a load, or directly by an embedder) has to win over it.
+    /// </remarks>
     private static Document FindFrameContentDocument(Element frame)
     {
+        Document active = null;
         for (var child = frame.FirstChild; child != null; child = child.NextSibling)
         {
             if (child is Document frameDocument)
             {
-                return frameDocument;
+                active = frameDocument;
             }
-
-            if (child is Element frameRoot && frameRoot.OwnerDocument != null)
+            else if (child is Element frameRoot && frameRoot.OwnerDocument != null)
             {
-                return frameRoot.OwnerDocument;
+                active = frameRoot.OwnerDocument;
             }
         }
 
-        return null;
+        return active;
     }
 
     /// <summary>
