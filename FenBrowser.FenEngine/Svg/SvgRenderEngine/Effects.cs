@@ -55,7 +55,7 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 if (wantsMask)
                 {
-                    TryEnterReference(maskRaw, "mask", ref _activeMaskIds, out maskId, out maskElement);
+                    TryEnterMaskReference(maskRaw, ref _activeMaskIds, out maskId, out maskElement);
                 }
 
                 bool maskLayer = maskElement != null;
@@ -262,14 +262,36 @@ namespace FenBrowser.FenEngine.Svg
         {
             id = null;
             referenced = null;
-            if (TryResolveLocalReference(raw, out string candidate) &&
-                (!_doc.ElementsById.TryGetValue(candidate, out SvgElement target) ||
-                 target.Name != "filter"))
-            {
-                return;
-            }
+            if (IsUnresolvedLocalReference(raw, "filter")) return;
             TryEnterReference(raw, "filter", ref active, out id, out referenced);
         }
+
+        /// <summary>
+        /// A 'mask' property that is a local IRI naming nothing, or naming something
+        /// that is not a 'mask', is an unresolved reference rather than an unsupported
+        /// feature: browsers ignore the property and paint the element unmasked, so
+        /// this leaves the target null and reports nothing. Only the external-URL
+        /// rejection and the cycle/reference-depth budget of
+        /// <see cref="TryEnterReference"/> still apply. Kept separate from
+        /// <see cref="TryEnterFilterReference"/> because an unresolved 'filter'
+        /// reference is established separately and must not be changed by a mask rule.
+        /// </summary>
+        private void TryEnterMaskReference(
+            string raw,
+            ref HashSet<string> active,
+            out string id,
+            out SvgElement referenced)
+        {
+            id = null;
+            referenced = null;
+            if (IsUnresolvedLocalReference(raw, "mask")) return;
+            TryEnterReference(raw, "mask", ref active, out id, out referenced);
+        }
+
+        private bool IsUnresolvedLocalReference(string raw, string expectedElement) =>
+            TryResolveLocalReference(raw, out string candidate) &&
+            (!_doc.ElementsById.TryGetValue(candidate, out SvgElement target) ||
+             target.Name != expectedElement);
 
         private static bool IsExternalEffectReference(string raw)
         {

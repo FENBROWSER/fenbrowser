@@ -67,12 +67,27 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData("url(#missing)")]
-        [InlineData("url(https://example.test/mask.svg#m)")]
-        public void InvalidOrExternalMask_NeverSilentlyCountsAsSupported(string mask)
+        [InlineData("url(#missing)", "")]
+        [InlineData("url(#notamask)", "<rect id='notamask' width='20' height='20' fill='black'/>")]
+        [InlineData("url(#notagroup)", "<g id='notagroup'><rect width='20' height='20' fill='black'/></g>")]
+        public void UnresolvedLocalMaskReference_PaintsTheTargetUnmasked(string mask, string defs)
         {
             using var result = new FenSvgRenderer().Render(
-                $"<svg width='20' height='20'><rect width='20' height='20' mask='{mask}'/></svg>");
+                $"<svg width='20' height='20'><defs>{defs}</defs>" +
+                $"<rect width='20' height='20' fill='red' mask='{mask}'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.False(result.HadResourceRejection);
+            Assert.Equal(255, result.Bitmap.GetPixel(10, 10).Alpha);
+        }
+
+        [Fact]
+        public void ExternalMaskReference_NeverSilentlyCountsAsSupported()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='20' height='20'>" +
+                "<rect width='20' height='20' mask='url(https://example.test/mask.svg#m)'/></svg>");
 
             AssertFailsClosed(result);
             Assert.True(result.RequiresFallback || result.HadResourceRejection);
@@ -88,6 +103,21 @@ namespace FenBrowser.Tests.Svg
             AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains(result.Warnings, warning => warning.Contains("object bounds"));
+        }
+
+        [Fact]
+        public void MaskReferenceCycle_FailsClosed()
+        {
+            const string svg =
+                "<svg width='30' height='30'><defs><mask id='m'>" +
+                "<rect width='20' height='20' mask='url(#m)'/></mask></defs>" +
+                "<rect width='30' height='30' mask='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("reference-depth budget"));
         }
 
         [Fact]
