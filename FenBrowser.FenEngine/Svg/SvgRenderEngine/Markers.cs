@@ -598,27 +598,43 @@ namespace FenBrowser.FenEngine.Svg
 
         /// <summary>
         /// Establishes the `overflow: hidden` marker viewport clip.
+        ///
+        /// Skia resolves an axis aligned <c>ClipRect</c> as an exact bounds test,
+        /// so a marker viewport edge on a fractional device pixel dropped the
+        /// straddling pixel whole - 650 differing pixels against the
+        /// browser-authored <c>painting/marker-005</c> oracle, every one of them
+        /// on a marker viewport edge, all of them at the 0.6 group scale. The
+        /// oracle establishes the same boundary with a `clipPath`, which Skia
+        /// antialiases, so the marker clip has to be antialiased on those terms
+        /// too: the axis aligned case goes through <c>ClipPath</c>, and the
+        /// sampled case already did, because Skia cannot express a rotated rect
+        /// clip as bounds.
         /// </summary>
         private static void ClipMarkerViewport(SKCanvas canvas, float width, float height)
         {
             var viewport = new SKRect(0f, 0f, width, height);
-            if (!MapsToAxisAlignedDeviceRect(canvas.TotalMatrix))
+            if (MapsToAxisAlignedDeviceRect(canvas.TotalMatrix))
             {
-                viewport = BiasClipForPixelSampling(canvas, viewport);
+                using var builder = new SKPathBuilder();
+                builder.AddRect(viewport);
+                using var clip = builder.Detach();
+                canvas.ClipPath(clip, SKClipOperation.Intersect, antialias: true);
+                return;
             }
-            canvas.ClipRect(viewport);
+            canvas.ClipRect(BiasClipForPixelSampling(canvas, viewport));
         }
 
         /// <summary>
         /// Whether a rect in the current local space still lands on a device
-        /// axis aligned rect. Skia resolves an axis aligned clip as a bounds
-        /// test, which is exact; any other rect has to be sampled per pixel, and
-        /// a sample that lands outside drops the pixel's own antialiased
-        /// coverage. So the boundary only needs biasing in the sampled case:
-        /// sampling the pixel's inner edge instead is the box-filter consistent
-        /// reading of the same boundary, and it keeps content that lies on the
-        /// viewport edge from losing coverage while still clipping content that
-        /// spills further than half a pixel.
+        /// axis aligned rect, and so can be sampled per pixel. A sample that
+        /// lands outside drops the pixel's own antialiased coverage, so the
+        /// sampled case biases the boundary: sampling the pixel's inner edge
+        /// instead is the box-filter consistent reading of the same boundary,
+        /// and it keeps content that lies on the viewport edge from losing
+        /// coverage while still clipping content that spills further than half
+        /// a pixel. The axis aligned case is not biased because it is not
+        /// sampled - its clip is antialiased at the true boundary, so biasing it
+        /// would over-paint up to half a pixel outside the viewport.
         /// </summary>
         private static SKRect BiasClipForPixelSampling(SKCanvas canvas, SKRect rect)
         {

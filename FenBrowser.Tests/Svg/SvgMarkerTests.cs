@@ -381,6 +381,37 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void MarkerDefaultOverflow_AntialiasesAnAxisAlignedViewportEdgeOnAFractionalDevicePixel()
+        {
+            // The marker viewport is 8 units square and its content is twice that,
+            // so the clip is the only thing that bounds the marker's coverage. The
+            // viewport is placed at x=10.25, which puts its left edge a quarter of
+            // the way into device pixel 10 and its right edge a quarter of the way
+            // out of device pixel 18. An exact bounds clip hands both straddling
+            // pixels to the marker whole or not at all, which is the frame a
+            // browser does not paint: the same boundary a `clipPath` draws covers
+            // each of them in proportion to how much of the pixel it holds.
+            const string svg =
+                "<svg width='40' height='24'><defs>" +
+                "<marker id='m' markerWidth='8' markerHeight='8' refX='0' refY='0' " +
+                "markerUnits='userSpaceOnUse'>" +
+                "<rect width='16' height='16' fill='red'/></marker></defs>" +
+                "<line x1='10.25' y1='6' x2='30' y2='6' stroke='none' marker-start='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            // The viewport's top and bottom edges are whole device pixels, so this
+            // row is covered vertically and reports the horizontal edge coverage.
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(14, 8));
+            Assert.InRange(result.Bitmap.GetPixel(10, 8).Alpha, 128, 254);
+            Assert.InRange(result.Bitmap.GetPixel(18, 8).Alpha, 1, 127);
+            Assert.Equal(0, result.Bitmap.GetPixel(19, 8).Alpha);
+            Assert.Equal(0, result.Bitmap.GetPixel(9, 8).Alpha);
+        }
+
+        [Fact]
         public void MarkerDefaultOverflow_StillClipsContentBeyondTheViewport()
         {
             const string svg =
