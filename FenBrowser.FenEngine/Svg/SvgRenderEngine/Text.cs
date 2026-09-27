@@ -1506,6 +1506,7 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             ValidateTextDirection(element);
+            ValidateUnicodeBidi(element);
             ValidateTextWritingMode(element);
             bool rightToLeft = ResolveTextDirection(element, inherited.RightToLeft);
             UnicodeBidi bidi = ResolveUnicodeBidi(element, inherited.Bidi);
@@ -1673,6 +1674,14 @@ namespace FenBrowser.FenEngine.Svg
             value.Equals("unset", StringComparison.OrdinalIgnoreCase) ||
             value.Equals("revert", StringComparison.OrdinalIgnoreCase);
 
+        private static bool IsCssWideInheritedKeyword(ReadOnlySpan<char> value) =>
+            value.Equals("inherit", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("unset", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsCssWideInitialKeyword(ReadOnlySpan<char> value) =>
+            value.Equals("initial", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("revert", StringComparison.OrdinalIgnoreCase);
+
         /// <summary>
         /// Reports a <c>direction</c> value the paragraph resolver cannot read.
         /// The value is inherited from any ancestor, so the bounded parse, which
@@ -1688,6 +1697,15 @@ namespace FenBrowser.FenEngine.Svg
             if (keyword.Equals("ltr", StringComparison.OrdinalIgnoreCase)) return;
             if (keyword.Equals("rtl", StringComparison.OrdinalIgnoreCase)) return;
             _report.RequireFallback("SVG text direction value requires compatibility fallback");
+        }
+
+        private void ValidateUnicodeBidi(SvgElement element)
+        {
+            string raw = element.GetPresentationProperty("unicode-bidi");
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            if (!SvgFeatureSupport.IsUnimplementedUnicodeBidi(raw)) return;
+            _report.RequireFallback(
+                "SVG unicode-bidi isolating run sequence requires compatibility fallback");
         }
 
         /// <summary>
@@ -1717,7 +1735,8 @@ namespace FenBrowser.FenEngine.Svg
             string raw = element.GetPresentationProperty("direction");
             if (string.IsNullOrWhiteSpace(raw)) return inherited;
             var keyword = raw.AsSpan().Trim();
-            if (IsCssWideKeyword(keyword)) return inherited;
+            if (IsCssWideInheritedKeyword(keyword)) return inherited;
+            if (IsCssWideInitialKeyword(keyword)) return false;
             if (keyword.Equals("rtl", StringComparison.OrdinalIgnoreCase)) return true;
             if (keyword.Equals("ltr", StringComparison.OrdinalIgnoreCase)) return false;
             return inherited;
@@ -1728,14 +1747,11 @@ namespace FenBrowser.FenEngine.Svg
             string raw = element.GetPresentationProperty("unicode-bidi");
             if (string.IsNullOrWhiteSpace(raw)) return inherited;
             var keyword = raw.AsSpan().Trim();
-            if (IsCssWideKeyword(keyword)) return inherited;
+            if (IsCssWideInheritedKeyword(keyword)) return inherited;
+            if (IsCssWideInitialKeyword(keyword)) return UnicodeBidi.Normal;
             if (keyword.Equals("normal", StringComparison.OrdinalIgnoreCase)) return UnicodeBidi.Normal;
             if (keyword.Equals("plaintext", StringComparison.OrdinalIgnoreCase)) return UnicodeBidi.Plaintext;
-            if (keyword.Equals("embed", StringComparison.OrdinalIgnoreCase) ||
-                keyword.Equals("inline", StringComparison.OrdinalIgnoreCase))
-            {
-                return UnicodeBidi.Embed;
-            }
+            if (keyword.Equals("embed", StringComparison.OrdinalIgnoreCase)) return UnicodeBidi.Embed;
             if (keyword.Equals("bidi-override", StringComparison.OrdinalIgnoreCase)) return UnicodeBidi.Override;
             return inherited;
         }
@@ -1758,8 +1774,7 @@ namespace FenBrowser.FenEngine.Svg
             string raw = element.GetPresentationProperty("unicode-bidi");
             if (string.IsNullOrWhiteSpace(raw)) return inherited;
             var keyword = raw.AsSpan().Trim();
-            bool embed = keyword.Equals("embed", StringComparison.OrdinalIgnoreCase) ||
-                         keyword.Equals("inline", StringComparison.OrdinalIgnoreCase);
+            bool embed = keyword.Equals("embed", StringComparison.OrdinalIgnoreCase);
             bool over = keyword.Equals("bidi-override", StringComparison.OrdinalIgnoreCase);
             if (!embed && !over) return inherited;
             return new BidiFrame(inherited, rightToLeft, over);

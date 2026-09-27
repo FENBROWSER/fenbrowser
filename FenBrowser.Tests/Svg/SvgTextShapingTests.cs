@@ -1497,6 +1497,212 @@ namespace FenBrowser.Tests.Svg
                 warning.Contains("bidirectional", StringComparison.Ordinal));
         }
 
+        [Theory]
+        [InlineData("isolate")]
+        [InlineData("isolate-override")]
+        public void AnIsolateSetOnTheTextElementFailsClosed(string value)
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><text x='10' y='40' unicode-bidi='" + value + "' " +
+                "font-family='monospace' font-size='20' fill='black'>" +
+                "abc &#x05D0;&#x05D1; def</text></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("isolating run sequence", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("isolate")]
+        [InlineData("isolate-override")]
+        public void AnIsolateDeliveredByASetAnimationFailsClosed(string value)
+        {
+            // A set delivers its value through AnimatedProperties, which
+            // GetPresentationProperty prefers over both the attribute and the
+            // cascade, so neither admission gate can see it.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><text x='10' y='40' font-family='monospace' " +
+                "font-size='20' fill='black'>abc &#x05D0;&#x05D1; def" +
+                "<set attributeName='unicode-bidi' to='" + value +
+                "' begin='0s' dur='1s' fill='freeze'/></text></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("isolating run sequence", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("isolate")]
+        [InlineData("isolate-override")]
+        public void AnIsolateAtTheSampledKeyframeFailsClosed(string value)
+        {
+            // The isolate is the first keyframe, so it is the value the document
+            // time samples and therefore the value the run is laid out with.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><text x='10' y='40' font-family='monospace' " +
+                "font-size='20' fill='black'>abc &#x05D0;&#x05D1; def" +
+                "<animate attributeName='unicode-bidi' from='" + value +
+                "' to='normal' begin='0s' dur='1s' fill='freeze'/></text></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("isolating run sequence", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("isolate")]
+        [InlineData("isolate-override")]
+        public void AnIsolateSetOnAnAncestorOfTheAnimationFailsClosed(string value)
+        {
+            // The isolate is delivered to a container, so only the inherited text
+            // style sees it.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><g><text x='10' y='40' font-family='monospace' " +
+                "font-size='20' fill='black'>abc &#x05D0;&#x05D1; def</text>" +
+                "<set attributeName='unicode-bidi' to='" + value +
+                "' begin='0s' dur='1s' fill='freeze'/></g></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("isolating run sequence", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("isolate")]
+        [InlineData("isolate-override")]
+        public void AnIsolateResolvedThroughACssVariableFailsClosed(string value)
+        {
+            // var() substitution happens inside GetPresentationProperty, so the
+            // substituted isolate reaches the same check.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><style>g{--b:" + value + ";unicode-bidi:var(--b)}</style>" +
+                "<g><text x='10' y='40' font-family='monospace' font-size='20' fill='black'>" +
+                "abc &#x05D0;&#x05D1; def</text></g></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("isolating run sequence", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void AnAnimateToAnIsolateFailsClosed()
+        {
+            // A to-only animate carries no sampleable value list, so the SMIL
+            // stage refuses it before the text pass runs. The document still must
+            // not paint, whatever the stage that catches it.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><text x='10' y='40' font-family='monospace' " +
+                "font-size='20' fill='black'>abc &#x05D0;&#x05D1; def" +
+                "<animate attributeName='unicode-bidi' to='isolate' begin='0s' dur='1s' fill='freeze'/></text></svg>");
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+        }
+
+        [Fact]
+        public void AnIsolateAnimatedOnlyAfterTheSampledTimeStaysAdmitted()
+        {
+            // The first keyframe is normal, so the sampled value at document time
+            // is a value the pass implements and the frame is painted.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><text x='10' y='40' font-family='monospace' " +
+                "font-size='20' fill='black'>abc" +
+                "<animate attributeName='unicode-bidi' from='normal' to='isolate' " +
+                "begin='0s' dur='1s' fill='freeze'/></text></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+        }
+
+        private const string RtlOuter =
+            "<svg width='400' height='60'><g direction='rtl'><g direction='@@'>" +
+            "<text x='10' y='40' font-family='monospace' font-size='20' fill='black'>abc</text>" +
+            "</g></g></svg>";
+
+        private const string PlainOuter =
+            "<svg width='400' height='60'><text x='10' y='40' font-family='monospace' " +
+            "font-size='20' fill='black'>abc</text></svg>";
+
+        private const string PlaintextOuter =
+            "<svg width='400' height='60'><g unicode-bidi='plaintext'><g unicode-bidi='@@'>" +
+            "<text x='10' y='40' font-family='monospace' font-size='20' fill='black'>" +
+            "&#x05D0;&#x05D1;&#x05D2; abc</text></g></g></svg>";
+
+        private const string PlaintextOnly =
+            "<svg width='400' height='60'><g unicode-bidi='plaintext'>" +
+            "<text x='10' y='40' font-family='monospace' font-size='20' fill='black'>" +
+            "&#x05D0;&#x05D1;&#x05D2; abc</text></g></svg>";
+
+        private const string HebrewPlain =
+            "<svg width='400' height='60'><text x='10' y='40' font-family='monospace' " +
+            "font-size='20' fill='black'>&#x05D0;&#x05D1;&#x05D2; abc</text></svg>";
+
+        private const string RtlOnly =
+            "<svg width='400' height='60'><g direction='rtl'>" +
+            "<text x='10' y='40' font-family='monospace' font-size='20' fill='black'>abc</text></g></svg>";
+
+        [Theory]
+        [InlineData("initial")]
+        [InlineData("revert")]
+        public void DirectionCssWideInitialKeywordsTakeTheInitialValueNotTheParent(string keyword)
+        {
+            // direction is inherited, but initial and revert resolve to the
+            // property's initial value ltr, which is what a browser lays out.
+            AssertSamePixels(RtlOuter.Replace("@@", keyword), PlainOuter);
+            AssertDifferentPixels(RtlOuter.Replace("@@", keyword), RtlOnly);
+        }
+
+        [Theory]
+        [InlineData("inherit")]
+        [InlineData("unset")]
+        public void DirectionCssWideInheritedKeywordsStillTakeTheParentValue(string keyword)
+        {
+            // Both properties are inherited, so unset is defined as inherit.
+            AssertSamePixels(RtlOuter.Replace("@@", keyword), RtlOnly);
+        }
+
+        [Theory]
+        [InlineData("initial")]
+        [InlineData("revert")]
+        [InlineData("normal")]
+        public void UnicodeBidiCssWideInitialKeywordsTakeNormalNotTheParent(string keyword)
+        {
+            AssertSamePixels(PlaintextOuter.Replace("@@", keyword), HebrewPlain);
+            AssertDifferentPixels(PlaintextOuter.Replace("@@", keyword), PlaintextOnly);
+        }
+
+        [Theory]
+        [InlineData("inherit")]
+        [InlineData("unset")]
+        public void UnicodeBidiCssWideInheritedKeywordsStillTakeTheParentValue(string keyword)
+        {
+            AssertSamePixels(PlaintextOuter.Replace("@@", keyword), PlaintextOnly);
+        }
+
+        [Fact]
+        public void UnicodeBidiInlineIsDroppedBecauseItIsNotACssKeyword()
+        {
+            // inline is not a unicode-bidi value, so the declaration is invalid and
+            // the property keeps the value it inherited. Treating it as embed used
+            // to reset a plaintext base level that a browser keeps.
+            AssertSamePixels(PlaintextOuter.Replace("@@", "inline"), PlaintextOnly);
+            AssertDifferentPixels(PlaintextOuter.Replace("@@", "inline"), HebrewPlain);
+        }
+
+        [Fact]
+        public void AnUnsupportedUnicodeBidiKeywordIsDroppedRatherThanPainted()
+        {
+            // An unrecognised value is invalid at parse time, so the run keeps the
+            // inherited value and no frame is invented for it.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><g unicode-bidi='bogus'>" +
+                "<text x='10' y='40' font-family='monospace' font-size='20' fill='black'>" +
+                "abc</text></g></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+        }
+
         [Fact]
         public void AVerticalWritingModeOnAnAncestorFailsClosed()
         {
