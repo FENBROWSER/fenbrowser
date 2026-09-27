@@ -1960,10 +1960,16 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             float workingContentHeight = _viewportHeight;
+            var extentExclusions = new Dictionary<Node, bool>();
             foreach (var rectEntry in mergedRects)
             {
                 if (styles.TryGetValue(rectEntry.Key, out var style) &&
                     string.Equals(LayoutStyleResolver.GetEffectivePosition(style), "fixed", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (LayoutEngine.IsExcludedFromDocumentExtent(rectEntry.Key, styles, extentExclusions))
                 {
                     continue;
                 }
