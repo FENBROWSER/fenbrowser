@@ -209,6 +209,74 @@ public sealed class BrokeredInputRoutingTests
     }
 
     [Fact]
+    public async Task Program_DispatchRendererInputAsync_ClickOnMediaControlsInsideAnIframePlays()
+    {
+        // w3schools' tryit page, as the renderer child sees it: the media element is written
+        // into an iframe, and layout lives on the child's own renderer.
+        const int viewportWidth = 480;
+        const int viewportHeight = 240;
+        const string html = """
+            <!doctype html>
+            <html><body style="margin:0">
+              <iframe id="frame" width="400" height="120" style="display:block;border:0;margin:20px"></iframe>
+              <script>
+                var d = document.getElementById('frame').contentWindow.document;
+                d.open(); d.write("<body style='margin:0'><audio id='a' controls></audio></body>"); d.close();
+              </script>
+            </body></html>
+            """;
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        FenBrowser.Host.Program.ConfigureRendererChildBrowser(host, renderer);
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/renderer-media-controls"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var frame = Assert.IsType<Element>(root.OwnerDocument?.GetElementById("frame"));
+        Element audio = null;
+        await WaitForAsync(
+            () => (audio = frame.ChildNodes.OfType<Document>().LastOrDefault()?.GetElementById("a")) != null,
+            "the written audio element did not appear");
+
+        using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
+        using var canvas = new SKCanvas(bitmap);
+        renderer.RenderFrame(new RenderFrameRequest
+        {
+            Root = root,
+            Canvas = canvas,
+            Styles = host.ComputedStyles,
+            Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+            BaseUrl = "https://fen.test/renderer-media-controls",
+            InvalidationReason = RenderFrameInvalidationReason.Input,
+            RequestedBy = nameof(Program_DispatchRendererInputAsync_ClickOnMediaControlsInsideAnIframePlays),
+            EmitVerificationReport = false
+        });
+        Assert.True(renderer.LastLayout.TryGetElementRect(audio, out var rect), "audio has no layout rect in the child's renderer");
+        var geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(rect.ToSKRect(), isVideo: false);
+        float x = geometry.PlayButton.MidX, y = geometry.PlayButton.MidY;
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseMove, X = x, Y = y });
+        await WaitForAsync(
+            () => FenBrowser.FenEngine.Media.MediaControls.GetHovered(audio) == FenBrowser.FenEngine.Media.MediaControlAction.TogglePlay,
+            "hovering the play button did not highlight it");
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseDown, X = x, Y = y, Button = 0 });
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseUp, X = x, Y = y, Button = 0, EmitClick = true });
+        await WaitForAsync(
+            () => string.Equals(host.Engine.ScriptEngine?.Evaluate("String(document.getElementById('frame').contentDocument.getElementById('a').paused)")?.ToString(), "false", StringComparison.Ordinal),
+            "clicking the play button did not start playback");
+    }
+
+    [Fact]
     public async Task Program_DispatchRendererInputAsync_MouseMoveRunsIframeBoundaryHandlerWhenRealmIsBusy()
     {
         const int viewportWidth = 320;

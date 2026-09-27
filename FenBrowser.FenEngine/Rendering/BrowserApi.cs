@@ -9957,8 +9957,10 @@ pre {{
                 return false;
             }
 
+            // The renderer that painted the page has the layout: in a brokered renderer
+            // child that is the active renderer, and the engine's own snapshot stays empty.
             SkiaSharp.SKRect box;
-            var layout = _engine?.LastLayout;
+            var layout = _activeRenderer?.LastLayout ?? _engine?.LastLayout;
             if (layout != null && layout.TryGetElementRect(element, out var geo))
             {
                 box = geo.ToSKRect();
