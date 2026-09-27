@@ -942,7 +942,17 @@ namespace FenBrowser.FenEngine.Svg
                 return null;
             }
 
-            var glyphRun = SkiaFontService.ShapeWithTypeface(text, typeface, textStyle.FontSize);
+            float usedFontSize = textStyle.FontSize;
+            if (textStyle.FontSizeAdjust != 0f &&
+                !TryResolveAdjustedFontSize(
+                    typeface, usedFontSize, textStyle.FontSizeAdjust, out usedFontSize))
+            {
+                _report.RequireFallback(
+                    "SVG font-size-adjust x-height ratio requires compatibility fallback");
+                return null;
+            }
+
+            var glyphRun = SkiaFontService.ShapeWithTypeface(text, typeface, usedFontSize);
             if (glyphRun.Count == 0)
             {
                 _report.RequireFallback("SVG text shaping produced no glyphs");
@@ -1003,6 +1013,7 @@ namespace FenBrowser.FenEngine.Svg
             run.GlyphRotations = rotations;
             run.LogicalText = text;
             run.Font = textStyle.Font;
+            run.FontSizeAdjust = textStyle.FontSizeAdjust;
             run.Frame = textStyle.Frame;
             run.PerCharacterPositioned = positions.HasPerCharacterLists;
             runs.Add(run);
@@ -1512,9 +1523,11 @@ namespace FenBrowser.FenEngine.Svg
             bool rightToLeft = ResolveTextDirection(element, inherited.RightToLeft);
             UnicodeBidi bidi = ResolveUnicodeBidi(element, inherited.Bidi);
             BidiFrame frame = ResolveBidiFrame(element, inherited.Frame, rightToLeft, bidi);
+            float fontSizeAdjust = ResolveFontSizeAdjust(element, inherited.FontSizeAdjust);
             return new TextStyle(
                 string.IsNullOrWhiteSpace(family) ? inherited.Family : family,
                 fontSize,
+                fontSizeAdjust,
                 ParseFontWeight(weightRaw, inherited.Weight),
                 ParseFontSlant(styleRaw, inherited.Slant),
                 ParseTextAnchor(anchorRaw, inherited.Anchor),
@@ -1631,6 +1644,84 @@ namespace FenBrowser.FenEngine.Svg
                 return inherited;
             }
             return SvgValues.ClampCoord(resolved);
+        }
+
+        /// <summary>
+        /// The x-height ratio the element asks its runs to be sized to, as a plain
+        /// number, and zero when the property is absent or names a keyword that
+        /// adjusts nothing. The ratio rescales the used size only, so it is
+        /// inherited like <c>font-size</c> and never feeds back into the length
+        /// resolution that produced the computed size. Every other value is
+        /// reported: a ratio the pass cannot read, or one that asks for a size no
+        /// browser would settle on, is not painted from a guess.
+        /// <para>
+        /// A ratio is refused when the same element also declares a length in a
+        /// font-relative unit. Whether such a length resolves against the computed
+        /// or the adjusted size is the one question the used-size model does not
+        /// settle, so a run whose spacing would differ between the two readings is
+        /// reported instead of being painted from one of them.
+        /// </para>
+        /// </summary>
+        private float ResolveFontSizeAdjust(SvgElement element, float inherited)
+        {
+            string raw = element.GetPresentationProperty("font-size-adjust");
+            if (string.IsNullOrWhiteSpace(raw)) return inherited;
+            var keyword = raw.AsSpan().Trim();
+            if (IsCssWideInheritedKeyword(keyword)) return inherited;
+            if (IsCssWideInitialKeyword(keyword)) return 0f;
+            if (keyword.Equals("none", StringComparison.OrdinalIgnoreCase) ||
+                keyword.Equals("from-font", StringComparison.OrdinalIgnoreCase))
+            {
+                return 0f;
+            }
+            if (!SvgValues.TryParseNumber(keyword, out float ratio) || !(ratio > 0f) ||
+                !SvgValues.IsFinite(ratio))
+            {
+                _report.RequireFallback("SVG font-size-adjust value requires compatibility fallback");
+                return inherited;
+            }
+            if (DeclaresFontRelativeLength(element))
+            {
+                _report.RequireFallback(
+                    "SVG font-size-adjust beside a font-relative length requires compatibility fallback");
+                return inherited;
+            }
+            return ratio;
+        }
+
+        /// <summary>
+        /// True when the element declares a length the text pass resolves against
+        /// the run's own font size, in a unit that moves when the used size moves.
+        /// A list longer than the value budget counts as a match: the list is
+        /// refused on its own, and this only decides whether a second capability
+        /// may be claimed on the same element.
+        /// </summary>
+        private static bool DeclaresFontRelativeLength(SvgElement element) =>
+            DeclaresFontRelativeUnit(element.GetPresentationProperty("letter-spacing")) ||
+            DeclaresFontRelativeUnit(element.GetPresentationProperty("word-spacing")) ||
+            DeclaresFontRelativeUnit(element.GetPresentationProperty("baseline-shift")) ||
+            DeclaresFontRelativeUnit(element.GetPresentationProperty("textLength")) ||
+            DeclaresFontRelativeUnit(element.GetAttribute("x")) ||
+            DeclaresFontRelativeUnit(element.GetAttribute("y")) ||
+            DeclaresFontRelativeUnit(element.GetAttribute("dx")) ||
+            DeclaresFontRelativeUnit(element.GetAttribute("dy")) ||
+            DeclaresFontRelativeUnit(element.GetAttribute("startOffset"));
+
+        private static bool DeclaresFontRelativeUnit(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            var tokenizer = SvgValues.CreateTokenizer(raw.AsSpan().Trim());
+            int inspected = 0;
+            while (tokenizer.Next(out var token))
+            {
+                if (++inspected > MaxTextPositionListValues) return true;
+                if (SvgValues.TryParseLength(token, out _, out var unit) &&
+                    unit is SvgValues.SvgUnit.Em or SvgValues.SvgUnit.Ex or SvgValues.SvgUnit.Ch)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private TextDecoration ResolveTextDecoration(SvgElement element, TextDecoration inherited)
@@ -1898,6 +1989,52 @@ namespace FenBrowser.FenEngine.Svg
 
         private static bool IsXmlWhitespace(char value) =>
             value is ' ' or '\t' or '\r' or '\n';
+
+        /// <summary>
+        /// The used font size a requested x-height ratio implies. The face's own
+        /// x-height ratio is measured at one em, so the answer does not depend on
+        /// the size being adjusted and cannot be skewed by the size the metrics
+        /// were sampled at. A face that reports no x-height is refused rather than
+        /// assumed: the normalized metrics carry a substituted x-height, and
+        /// sizing a run from a ratio the font never declared is a guess.
+        /// </summary>
+        private static bool TryResolveAdjustedFontSize(
+            SKTypeface typeface,
+            float fontSize,
+            float ratio,
+            out float adjusted)
+        {
+            adjusted = 0f;
+            if (!TryReadFaceXHeightRatio(typeface, out float faceRatio)) return false;
+
+            float value = fontSize * (ratio / faceRatio);
+            if (!SvgValues.IsFinite(value) || value < MinFontSize || value > MaxFontSize) return false;
+            adjusted = value;
+            return true;
+        }
+
+        private static bool TryReadFaceXHeightRatio(SKTypeface typeface, out float ratio)
+        {
+            ratio = 0f;
+            if (typeface == null) return false;
+            try
+            {
+                using var probe = new SKFont(typeface, 1f);
+                float xHeight = probe.Metrics.XHeight;
+                if (!(xHeight > 0f) || !SvgValues.IsFinite(xHeight)) return false;
+                ratio = xHeight;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool SharesFaceXHeightRatio(SKTypeface first, SKTypeface second) =>
+            TryReadFaceXHeightRatio(first, out float firstRatio) &&
+            TryReadFaceXHeightRatio(second, out float secondRatio) &&
+            MathF.Abs(firstRatio - secondRatio) <= 0.0001f;
 
         private static bool ContainsComplexText(string text)
         {
@@ -2328,6 +2465,17 @@ namespace FenBrowser.FenEngine.Svg
             // source run resolved to always covers it; the source face is the
             // answer only when the piece resolves to nothing of its own.
             SKTypeface typeface = source.Font.ResolveTypeface(segment.Text) ?? original.Typeface;
+            if (source.FontSizeAdjust != 0f && !ReferenceEquals(typeface, original.Typeface) &&
+                !SharesFaceXHeightRatio(typeface, original.Typeface))
+            {
+                // A piece the face fallback moves to is sized from that face's own
+                // x-height, and the source run is already shaped at the size the
+                // first face implied. One piece cannot be rescaled into the other
+                // without reshaping the source, so the run is reported instead.
+                _report.RequireFallback(
+                    "SVG font-size-adjust across a typeface change requires compatibility fallback");
+                return null;
+            }
             GlyphRun shaped = SkiaFontService.ShapeWithTypeface(
                 segment.Text, typeface, original.FontSize);
             if (shaped?.Glyphs == null || shaped.Glyphs.Length == 0) return null;
@@ -3010,6 +3158,7 @@ namespace FenBrowser.FenEngine.Svg
         private readonly record struct TextStyle(
             string Family,
             float FontSize,
+            float FontSizeAdjust,
             int Weight,
             SKFontStyleSlant Slant,
             TextAnchor Anchor,
@@ -3024,7 +3173,7 @@ namespace FenBrowser.FenEngine.Svg
             UnicodeBidi Bidi,
             BidiFrame Frame)
         {
-            public static TextStyle Default => new(null, DefaultFontSize, 400, SKFontStyleSlant.Upright, TextAnchor.Start, 0f, false, BaselineKind.Alphabetic, 0f, 0f, TextDecoration.None, null, false, UnicodeBidi.Normal, null);
+            public static TextStyle Default => new(null, DefaultFontSize, 0f, 400, SKFontStyleSlant.Upright, TextAnchor.Start, 0f, false, BaselineKind.Alphabetic, 0f, 0f, TextDecoration.None, null, false, UnicodeBidi.Normal, null);
 
             /// <summary>
             /// The properties that pick a face, kept on the run so a piece cut out
@@ -3086,6 +3235,7 @@ namespace FenBrowser.FenEngine.Svg
             public TextDecoration Decorations { get; }
             public float[] GlyphRotations { get; set; }
             public RunFont Font { get; set; }
+            public float FontSizeAdjust { get; set; }
             public ushort[] PathGlyphIds { get; set; }
             public SKRotationScaleMatrix[] PathTransforms { get; set; }
             public SKRect PathBounds { get; set; }

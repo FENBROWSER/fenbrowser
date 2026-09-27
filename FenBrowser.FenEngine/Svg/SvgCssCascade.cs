@@ -35,7 +35,7 @@ namespace FenBrowser.FenEngine.Svg
             "flood-color", "flood-opacity",
             "stop-color", "stop-opacity",
             "font-family", "font-size", "font-style", "font-weight", "letter-spacing", "text-anchor",
-            "text-decoration", "direction", "unicode-bidi",
+            "text-decoration", "direction", "unicode-bidi", "font-size-adjust",
             "transform", "transform-origin", "transform-box", "zoom",
             "x", "y", "width", "height", "cx", "cy", "r", "rx", "ry", "d", "path-length",
             "paint-order"
@@ -119,8 +119,6 @@ namespace FenBrowser.FenEngine.Svg
         private static readonly Dictionary<string, string> UnimplementedCssCapabilities =
             new(StringComparer.OrdinalIgnoreCase)
         {
-            ["font-size-adjust"] =
-                "rescales the used font size to a requested x-height ratio; the text model sizes every run from font-size alone and never applies the ratio",
             ["inline-size"] =
                 "establishes a block box the run wraps in; the text model has one line box per text element and no block-size resolution",
             ["line-spacing"] =
@@ -1048,7 +1046,8 @@ namespace FenBrowser.FenEngine.Svg
             if (property.Equals("font-size-adjust", StringComparison.OrdinalIgnoreCase))
             {
                 return IsCssWideValue(value) ||
-                       value.Equals("none", StringComparison.OrdinalIgnoreCase);
+                       value.Equals("none", StringComparison.OrdinalIgnoreCase) ||
+                       value.Equals("from-font", StringComparison.OrdinalIgnoreCase);
             }
             if (property.Equals("line-height", StringComparison.OrdinalIgnoreCase))
             {

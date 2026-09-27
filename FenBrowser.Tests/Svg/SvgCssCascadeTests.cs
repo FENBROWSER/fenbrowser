@@ -1409,7 +1409,6 @@ namespace FenBrowser.Tests.Svg
         [InlineData("shape-margin: 20px")]
         [InlineData("shape-padding: 5px")]
         [InlineData("shape-subtract: circle()")]
-        [InlineData("font-size-adjust: 1")]
         [InlineData("z-index: 1")]
         public void VisiblyRenderedProperties_StillFailClosed(string declaration)
         {
@@ -1431,9 +1430,6 @@ namespace FenBrowser.Tests.Svg
         [InlineData("white-space", "pre-line", "newline")]
         [InlineData("z-index", "1", "document order")]
         [InlineData("text-decoration-color", "red", "per-run colour")]
-        [InlineData("font-size-adjust", "1", "x-height")]
-        [InlineData("font-size-adjust", "from-font", "x-height")]
-        [InlineData("font-size-adjust", "0.5", "x-height")]
         [InlineData("shape-inside", "url(#s)", "exclusion shape")]
         [InlineData("line-spacing", "1.25", "not a CSS property")]
         public void RejectedProperty_ReportsTheCapabilityItWouldNeed(
@@ -2237,8 +2233,6 @@ namespace FenBrowser.Tests.Svg
         [InlineData("font-variant: small-caps")]
         [InlineData("font-stretch: condensed")]
         [InlineData("font-stretch: 75%")]
-        [InlineData("font-size-adjust: 0.5")]
-        [InlineData("font-size-adjust: from-font")]
         [InlineData("font-style: oblique 20deg")]
         [InlineData("font-style: oblique from-font")]
         [InlineData("font-style: oblique 0.5turn")]
