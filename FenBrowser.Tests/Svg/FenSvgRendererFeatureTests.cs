@@ -462,13 +462,17 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void Use_SelfCycle_TerminatesWithoutHang()
+        public void Use_SelfCycle_TerminatesAndFailsClosed()
         {
             using var result = _renderer.Render(
                 "<svg width=\"10\" height=\"10\"><g id=\"a\"><use href=\"#a\"/></g></svg>",
                 new SvgRenderLimits { MaxRenderTimeMs = 2000 });
 
-            Assert.True(result.Success, result.ErrorMessage); // must terminate
+            // A browser also stops instantiating the cycle, so the frame it paints
+            // is missing this instance. Terminating is necessary; reporting the
+            // partial frame as the finished one is the fail-open.
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Contains("reference-resolution", result.FallbackReasonCodes);
         }
 
         [Fact]

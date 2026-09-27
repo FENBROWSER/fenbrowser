@@ -46,7 +46,9 @@ namespace FenBrowser.FenEngine.Svg
             if (++_depth > MaxRenderDepth)
             {
                 _depth--;
-                _report.Warn("render depth budget exceeded; subtree skipped");
+                _report.RequireFallback(
+                    "SVG render depth budget exceeded; the subtree below this point " +
+                    "requires compatibility rendering");
                 return;
             }
 
@@ -148,7 +150,7 @@ namespace FenBrowser.FenEngine.Svg
                             {
                                 DrawChildren(el, canvas, viewport, next);
                             }
-                        });
+                        }, next);
                         return;
                     }
                 case "svg":
@@ -245,8 +247,9 @@ namespace FenBrowser.FenEngine.Svg
                         using var imgScope = new CanvasState(canvas);
                         ApplyElementTransform(el, canvas, viewport, inherited);
                         ApplyClipPath(el, canvas, viewport, inherited);
+                        var next = inherited.ResolveOverrides(el, _report);
                         DrawWithEffects(el, canvas, viewport,
-                            () => DrawImageElement(el, canvas, viewport, inherited));
+                            () => DrawImageElement(el, canvas, viewport, next), next);
                         return;
                     }
                 case "text":
@@ -362,13 +365,14 @@ namespace FenBrowser.FenEngine.Svg
                 ? new ViewportContext(vbW, vbH)
                 : inner;
             ApplyClipPath(el, canvas, userViewport, inherited);
+            var next = inherited.ResolveOverrides(el, _report);
             DrawWithEffects(el, canvas, inner, () =>
             {
                 if (TryBeginGroupOpacity(el, canvas, out var layerPaint))
                 {
                     try
                     {
-                        DrawNestedSvgBody(el, canvas, userViewport, inherited);
+                        DrawNestedSvgBody(el, canvas, userViewport, next);
                     }
                     finally
                     {
@@ -379,9 +383,9 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 else
                 {
-                    DrawNestedSvgBody(el, canvas, userViewport, inherited);
+                    DrawNestedSvgBody(el, canvas, userViewport, next);
                 }
-            });
+            }, next);
         }
 
         private bool TryResolveViewportBoxExtent(
@@ -536,10 +540,9 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement el,
             SKCanvas canvas,
             ViewportContext userViewport,
-            InheritedStyle inherited)
+            InheritedStyle style)
         {
-            var next = inherited.ResolveOverrides(el, _report);
-            DrawChildren(el, canvas, userViewport, next);
+            DrawChildren(el, canvas, userViewport, style);
         }
 
         // ------------------------------------------------------- foreignObject
@@ -796,7 +799,7 @@ namespace FenBrowser.FenEngine.Svg
                         layerPaint.Dispose();
                     }
                 }
-            });
+            }, next);
         }
 
         /// <summary>
@@ -1069,10 +1072,20 @@ namespace FenBrowser.FenEngine.Svg
 
             _activeUseIds ??= new HashSet<string>(System.StringComparer.Ordinal);
             _activeUseElements ??= new HashSet<SvgElement>();
-            if (_activeUseIds.Contains(id) || _activeUseElements.Contains(target) ||
-                _activeUseIds.Count >= _maxReferenceDepth || _depth >= MaxRenderDepth)
+            if (_activeUseIds.Contains(id) || _activeUseElements.Contains(target))
             {
-                _report.Warn("use reference cycle or depth budget exceeded; instance skipped");
+                // A cycle is not a budget: a browser stops instantiating it too, so
+                // the frame it paints is missing this instance. Reporting success
+                // would certify a frame with a hole in it.
+                _report.RequireFallback(
+                    "SVG use reference cycle; the instance requires compatibility rendering");
+                return;
+            }
+            if (_activeUseIds.Count >= _maxReferenceDepth || _depth >= MaxRenderDepth)
+            {
+                _report.RequireFallback(
+                    "SVG use reference depth budget exceeded; the instance requires " +
+                    "compatibility rendering");
                 return;
             }
             _activeUseIds.Add(id);
@@ -1127,7 +1140,7 @@ namespace FenBrowser.FenEngine.Svg
                             useLayer.Dispose();
                         }
                     }
-                });
+                }, next);
             }
             finally
             {
@@ -1245,7 +1258,7 @@ namespace FenBrowser.FenEngine.Svg
             var userViewport = hasViewBox
                 ? new ViewportContext(vbW, vbH)
                 : inner;
-            DrawNestedSvgBody(symbol, canvas, userViewport, inherited);
+            DrawNestedSvgBody(symbol, canvas, userViewport, inherited.ResolveOverrides(symbol, _report));
         }
 
         // --------------------------------------------------------------- shapes
@@ -2175,7 +2188,7 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement el,
             SKCanvas canvas,
             ViewportContext viewport,
-            InheritedStyle inherited)
+            InheritedStyle style)
         {
             var href = el.GetAttribute("href") ?? el.GetLookup("xlink:href");
             if (string.IsNullOrEmpty(href))
@@ -2189,7 +2202,7 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     return;
                 }
-                DrawResolvedImage(el, canvas, viewport, inherited, target, referenceFragment);
+                DrawResolvedImage(el, canvas, viewport, style, target, referenceFragment);
                 return;
             }
             if (IsSvgDataUri(href))
@@ -2199,7 +2212,7 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     return;
                 }
-                DrawEmbeddedSvgImage(el, canvas, viewport, inherited, payload, svgFragment);
+                DrawEmbeddedSvgImage(el, canvas, viewport, style, payload, svgFragment);
                 return;
             }
 
@@ -2222,7 +2235,7 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
-            DrawBorrowedImage(el, canvas, viewport, inherited, image);
+            DrawBorrowedImage(el, canvas, viewport, style, image);
         }
 
         private static void SplitReferenceFragment(string reference, out string target, out string fragment)
@@ -2243,7 +2256,7 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement element,
             SKCanvas canvas,
             ViewportContext viewport,
-            InheritedStyle inherited,
+            InheritedStyle style,
             string href,
             string fragment)
         {
@@ -2261,14 +2274,14 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
-            DrawSvgImageBytes(element, canvas, viewport, inherited, bytes, _baseUri, fragment);
+            DrawSvgImageBytes(element, canvas, viewport, style, bytes, _baseUri, fragment);
         }
 
         private void DrawSvgImageBytes(
             SvgElement element,
             SKCanvas canvas,
             ViewportContext viewport,
-            InheritedStyle inherited,
+            InheritedStyle style,
             byte[] bytes,
             Uri resourceUri,
             string fragment)
@@ -2321,7 +2334,6 @@ namespace FenBrowser.FenEngine.Svg
                         element, viewport, referenced.Width, referenced.Height, out var imageViewport))
                     return;
 
-                var style = inherited.ResolveOverrides(element, _report);
                 if (!style.Visibility) return;
                 bool layered = TryBeginGroupOpacity(element, canvas, out var layerPaint);
                 try
@@ -2499,7 +2511,7 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement element,
             SKCanvas canvas,
             ViewportContext viewport,
-            InheritedStyle inherited,
+            InheritedStyle style,
             string reference,
             string fragment)
         {
@@ -2517,7 +2529,7 @@ namespace FenBrowser.FenEngine.Svg
                          LooksLikeSvg(bytes);
             if (isSvg)
             {
-                DrawSvgImageBytes(element, canvas, viewport, inherited, bytes, resource.Uri, fragment);
+                DrawSvgImageBytes(element, canvas, viewport, style, bytes, resource.Uri, fragment);
                 return;
             }
 
@@ -2527,7 +2539,7 @@ namespace FenBrowser.FenEngine.Svg
                 _report.RejectResource(imageError);
                 return;
             }
-            DrawBorrowedImage(element, canvas, viewport, inherited, image);
+            DrawBorrowedImage(element, canvas, viewport, style, image);
         }
 
         private bool TryResolveResource(
@@ -2594,7 +2606,7 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement el,
             SKCanvas canvas,
             ViewportContext viewport,
-            InheritedStyle inherited,
+            InheritedStyle style,
             SKImage image)
         {
             if (!TryResolveImageBox(
@@ -2603,7 +2615,6 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
-            var style = inherited.ResolveOverrides(el, _report);
             bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
             try
             {

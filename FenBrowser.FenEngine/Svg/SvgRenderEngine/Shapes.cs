@@ -95,7 +95,7 @@ namespace FenBrowser.FenEngine.Svg
                         layerPaint.Dispose();
                     }
                 }
-            });
+            }, style);
         }
 
         private SKPath BuildGeometry(SvgElement element, ViewportContext viewport)

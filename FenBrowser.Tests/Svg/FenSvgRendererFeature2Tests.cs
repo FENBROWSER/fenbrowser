@@ -198,7 +198,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void DeepDistinctUseChain_TerminatesUnderBudget()
+        public void DeepDistinctUseChain_TerminatesAndFailsClosed()
         {
             var sb = new System.Text.StringBuilder("<svg width='10' height='10'>");
             for (int i = 0; i < 40; i++)
@@ -208,8 +208,13 @@ namespace FenBrowser.Tests.Svg
             }
             sb.Append("<use href='#s0'/></svg>");
 
+            // The chain is longer than the reference budget, and a browser expands
+            // all of it, so a frame holding only the instances inside the budget is
+            // not the frame a browser produces. Terminating is necessary; refusing
+            // is the part that has to hold.
             using var result = _renderer.Render(sb.ToString(), new SvgRenderLimits { MaxRenderTimeMs = 1500 });
-            Assert.True(result.Success, result.ErrorMessage);
+            AssertFailsClosed(result);
+            Assert.Contains("admission-budget", result.FallbackReasonCodes);
         }
 
         [Fact]

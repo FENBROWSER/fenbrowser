@@ -1071,33 +1071,120 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData("FillPaint", "fill='red'")]
-        [InlineData("StrokePaint", "stroke='red' stroke-width='2'")]
-        public void PaintInput_OnAUseInstanceTarget_FailsClosedRatherThanReplayingTheWrongPaint(
+        [InlineData("FillPaint", "fill='blue'")]
+        [InlineData("StrokePaint", "stroke='blue' stroke-width='2'")]
+        public void PaintInput_OnAUseTargetThatPaintsNothing_ResolvesTheInstantiationPaint(
             string keyword,
             string instancePaint)
         {
-            // The walk paints a 'use' instance with the instantiation's style, so
-            // the keyword must expose the paint the instance actually painted with.
-            // Reading it back off the target's document-tree ancestry instead
-            // yields the default black fill / absent stroke, and the render is
-            // then reported as settled with a filter input the element never
-            // painted with, which is unrecoverable once composited.
+            // A 'use' styles its whole referenced subtree, so a target that declares
+            // no paint of its own is painted with the instantiation's. The keyword
+            // names that paint: reading the target back off its document-tree
+            // ancestry yields the default black fill / absent stroke instead, which
+            // is a filter input the element never painted with, unrecoverable once
+            // composited. The walk already has the correct style, so the filter build
+            // takes it rather than replaying a chain that is not the one in force.
             using var result = new FenSvgRenderer().Render(
                 "<svg width='40' height='40'><defs>" +
-                "<rect id='r' x='15' y='15' width='10' height='10' " + instancePaint +
-                " filter='url(#f)'/>" +
+                "<rect id='r' x='15' y='15' width='10' height='10' filter='url(#f)'/>" +
                 "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
                 "<feOffset in='" + keyword + "'/></filter></defs>" +
                 "<use href='#r' " + instancePaint + "/></svg>");
 
-            AssertFailsClosed(result);
-            Assert.Contains(result.Warnings,
-                warning => warning.Contains(
-                    "'" + keyword + "' input needs the paint of a 'use' instance target, " +
-                    "which this renderer does not resolve",
-                    StringComparison.Ordinal));
-            Assert.Contains("unsupported-feature", result.FallbackReasonCodes);
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(40 * 40, CountOpaquePixels(result));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(1, 1));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(38, 38));
+        }
+
+        [Fact]
+        public void PaintInput_OnAUseTargetWithItsOwnPaint_KeepsTheTargetDeclaration()
+        {
+            // The threaded style is the one the walk paints the target with, not the
+            // instantiation's raw style: a declaration on the target itself is
+            // resolved on top of the instance and still wins.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs>" +
+                "<rect id='r' x='15' y='15' width='10' height='10' fill='red' filter='url(#f)'/>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feOffset in='FillPaint'/></filter></defs>" +
+                "<use href='#r' fill='blue'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(40 * 40, CountOpaquePixels(result));
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(20, 20));
+        }
+
+        [Fact]
+        public void PaintInput_OnAContainerUseInstanceTarget_ResolvesTheInstantiationPaint()
+        {
+            // A container paints nothing of its own, so its own filter region was
+            // the one case a browser rendered and this renderer used to refuse.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs>" +
+                "<g id='g' filter='url(#f)'><rect width='40' height='40'/></g>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feOffset in='FillPaint'/></filter></defs>" +
+                "<use href='#g' fill='blue'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(40 * 40, CountOpaquePixels(result));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(20, 20));
+        }
+
+        [Fact]
+        public void PaintInput_OnASwitchUseInstanceTarget_ResolvesTheInstantiationPaint()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs>" +
+                "<switch id='sw' filter='url(#f)'><rect width='40' height='40'/></switch>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feOffset in='FillPaint'/></filter></defs>" +
+                "<use href='#sw' fill='blue'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(40 * 40, CountOpaquePixels(result));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(20, 20));
+        }
+
+        [Fact]
+        public void PaintInput_OnAUseInstanceReachingAUse_ResolvesTheInstantiationPaint()
+        {
+            // The instantiated 'use' is itself the filter target, so the element the
+            // keyword names is styled by the outer instance.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs>" +
+                "<rect id='r' width='40' height='40'/>" +
+                "<use id='inner' href='#r' filter='url(#f)'/>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feOffset in='FillPaint'/></filter></defs>" +
+                "<use href='#inner' fill='blue'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(40 * 40, CountOpaquePixels(result));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(20, 20));
+        }
+
+        [Fact]
+        public void PaintInput_ONestedSvgUseInstanceTarget_ResolvesTheInstantiationPaint()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs>" +
+                "<svg id='n' width='40' height='40' filter='url(#f)'>" +
+                "<rect width='40' height='40'/></svg>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feOffset in='FillPaint'/></filter></defs>" +
+                "<use href='#n' fill='blue'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(40 * 40, CountOpaquePixels(result));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(20, 20));
         }
 
         [Fact]

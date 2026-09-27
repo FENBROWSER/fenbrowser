@@ -864,6 +864,13 @@ namespace FenBrowser.FenEngine.Svg
         /// target reached through a 'use' instance is painted with the
         /// instantiation's own style, which this replay cannot see, so callers
         /// must take the walk's threaded style or refuse the keyword.
+        ///
+        /// Every call site but two now threads the style the walk already holds,
+        /// so the replay no longer decides any of them. It is still the style of
+        /// record for a filtered 'text' element, whose draw body resolves the
+        /// element's own overrides inside itself, and for the document root,
+        /// whose own declarations the walk never threads. Deleting it strands
+        /// both on a default style that is not the one the element painted with.
         /// </summary>
         private InheritedStyle ResolveFilterTargetStyle(SvgElement target)
         {

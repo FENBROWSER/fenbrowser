@@ -304,8 +304,11 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void FirstPartyRenderer_ReferenceDepthBudget_SkipsChainedUseInstances()
+        public void FirstPartyRenderer_ReferenceDepthBudget_FailsClosed()
         {
+            // The budget is not a warning: a browser expands the whole chain, so a
+            // frame missing the instances past the budget is a frame a browser does
+            // not produce, and success would certify it.
             string source = BuildAcyclicReferenceChain(2048);
             var limits = new SvgRenderLimits
             {
@@ -315,9 +318,11 @@ namespace FenBrowser.Tests.Svg
 
             using var result = _renderer.Render(source, limits);
 
-            AssertAdmissible(result);
+            AssertFailClosedWithFallback(result);
             Assert.Contains(result.Warnings,
-                warning => warning.Contains("depth budget", StringComparison.OrdinalIgnoreCase));
+                warning => warning.Contains("use reference depth budget exceeded",
+                    StringComparison.OrdinalIgnoreCase));
+            Assert.Contains("admission-budget", result.FallbackReasonCodes);
         }
 
         [Fact]
@@ -337,8 +342,11 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void FirstPartyRenderer_ReferenceCycle_SkipsTheInstanceWithABoundedWarning()
+        public void FirstPartyRenderer_ReferenceCycle_FailsClosed()
         {
+            // A cycle is refused by the browser as well, so painting the rest of the
+            // frame and reporting it as settled would certify a frame with a hole
+            // where the cyclic instance belongs.
             string source = BuildCyclicReferenceChain(64);
             var limits = new SvgRenderLimits
             {
@@ -348,9 +356,10 @@ namespace FenBrowser.Tests.Svg
 
             using var result = _renderer.Render(source, limits);
 
-            AssertAdmissible(result);
+            AssertFailClosedWithFallback(result);
             Assert.Contains(result.Warnings,
-                warning => warning.Contains("cycle", StringComparison.OrdinalIgnoreCase));
+                warning => warning.Contains("use reference cycle", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains("reference-resolution", result.FallbackReasonCodes);
             Assert.All(result.Warnings,
                 warning => Assert.True(warning.Length <= FenSvgRenderer.MaxResultDiagnosticChars));
         }
@@ -479,6 +488,22 @@ namespace FenBrowser.Tests.Svg
                 reason.Length <=
                     SvgRenderResult.MaxRejectionDiagnosticChars + 3,
                 $"rejection reason was {reason.Length} chars");
+        }
+
+        private static void AssertFailClosedWithFallback(SvgRenderResult result)
+        {
+            Assert.False(result.Success, result.ErrorMessage);
+            Assert.Null(result.Bitmap);
+            Assert.Null(result.Picture);
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(0f, result.Height);
+            Assert.True(result.RequiresFallback);
+            Assert.NotEmpty(result.FallbackReasonCodes);
+            Assert.False(result.HadResourceRejection);
+            Assert.Empty(result.ResourceRejectionReasonCodes);
+            Assert.False(SvgRenderResult.IsAdmissible(result));
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
         }
 
         private static void AssertFailClosedWithResourceRejection(SvgRenderResult result)
