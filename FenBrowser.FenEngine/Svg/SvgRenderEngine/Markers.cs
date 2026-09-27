@@ -200,10 +200,7 @@ namespace FenBrowser.FenEngine.Svg
                     mappedRef = new SKPoint(refX, refY);
                 }
                 canvas.Translate(-mappedRef.X, -mappedRef.Y);
-                if (!string.Equals(
-                        marker.GetPresentationProperty("overflow")?.Trim(),
-                        "visible",
-                        StringComparison.OrdinalIgnoreCase))
+                if (MarkerOverflowClipsViewport(marker))
                 {
                     ClipMarkerViewport(canvas, markerWidth, markerHeight);
                 }
@@ -226,6 +223,31 @@ namespace FenBrowser.FenEngine.Svg
             {
                 _activeMarkerIds.Remove(id);
             }
+        }
+
+        /// <summary>
+        /// Decides the implicit marker viewport clip from <c>overflow</c>. The
+        /// clip is conditional, not "everything but visible": SVG 2 only
+        /// establishes it "if the overflow property on the <marker> element
+        /// indicates that the marker needs to be clipped to its SVG viewport",
+        /// and the browser-authored WPT oracle for <c>painting/marker-005</c>
+        /// splits the values three ways. Its <c>auto</c> column is drawn from
+        /// unclipped content - byte identical to its <c>visible</c> column -
+        /// while <c>hidden</c>, <c>scroll</c> and the unspecified initial value
+        /// are all drawn clipped to the viewport. So <c>auto</c> leaves the
+        /// viewport and <c>scroll</c> does not.
+        ///
+        /// The initial value is <c>hidden</c>, so an absent value clips, and so
+        /// does any spelling this cannot resolve: an unrecognised keyword
+        /// falls back to the initial value the same way CSS treats it, rather
+        /// than to the unpainted frame a wrong guess would emit.
+        /// </summary>
+        private static bool MarkerOverflowClipsViewport(SvgElement marker)
+        {
+            string value = marker.GetPresentationProperty("overflow")?.Trim();
+            if (string.IsNullOrEmpty(value)) return true;
+            return !value.Equals("visible", StringComparison.OrdinalIgnoreCase) &&
+                !value.Equals("auto", StringComparison.OrdinalIgnoreCase);
         }
 
         private void DrawLinearPathMarkers(

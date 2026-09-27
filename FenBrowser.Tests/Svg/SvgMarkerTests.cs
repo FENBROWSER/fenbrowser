@@ -542,6 +542,99 @@ namespace FenBrowser.Tests.Svg
             Assert.False(HasRed(result.Bitmap, 39, 11, 41, 29));
         }
 
+        [Theory]
+        [InlineData("visible")]
+        [InlineData("auto")]
+        public void MarkerOverflowUnclippedSpellings_PaintOutsideTheMarkerViewport(string overflow)
+        {
+            using var result = new FenSvgRenderer().Render(MarkerOverflowDocument(overflow));
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            SKColor overflowPixel = result.Bitmap.GetPixel(24, 10);
+            Assert.True(overflowPixel.Alpha > 200 && overflowPixel.Red > 200);
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("hidden")]
+        [InlineData("scroll")]
+        [InlineData("visible-please")]
+        [InlineData("clip")]
+        public void MarkerOverflowClippedSpellings_ClipToTheMarkerViewport(string overflow)
+        {
+            using var result = new FenSvgRenderer().Render(MarkerOverflowDocument(overflow));
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(0, result.Bitmap.GetPixel(24, 10).Alpha);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(21, 10));
+        }
+
+        [Fact]
+        public void MarkerOverflowSpellings_LandOnTheTwoFramesTheMarkerReferenceAsserts()
+        {
+            using var byVisible = new FenSvgRenderer().Render(MarkerOverflowDocument("visible"));
+            using var byAuto = new FenSvgRenderer().Render(MarkerOverflowDocument("auto"));
+            using var byDefault = new FenSvgRenderer().Render(MarkerOverflowDocument(string.Empty));
+            using var byHidden = new FenSvgRenderer().Render(MarkerOverflowDocument("hidden"));
+            using var byScroll = new FenSvgRenderer().Render(MarkerOverflowDocument("scroll"));
+
+            AssertFirstParty(byVisible);
+            AssertFirstParty(byAuto);
+            AssertFirstParty(byDefault);
+            AssertFirstParty(byHidden);
+            AssertFirstParty(byScroll);
+
+            AssertSameFrame(byVisible.Bitmap, byAuto.Bitmap);
+            AssertSameFrame(byDefault.Bitmap, byHidden.Bitmap);
+            AssertSameFrame(byDefault.Bitmap, byScroll.Bitmap);
+            Assert.NotEqual(byVisible.Bitmap.GetPixel(24, 10), byDefault.Bitmap.GetPixel(24, 10));
+        }
+
+        [Fact]
+        public void MarkerViewportClip_PaintsTheSameFrameAsAnExplicitClipPathOnThatViewport()
+        {
+            using var explicitClip = new FenSvgRenderer().Render(
+                "<svg width='40' height='20'><defs><clipPath id='vp'><rect width='4' height='4'/>" +
+                "</clipPath><marker id='dot' markerWidth='4' markerHeight='4' refX='2' refY='2' " +
+                "markerUnits='userSpaceOnUse' overflow='visible'>" +
+                "<circle cx='2' cy='2' r='6' fill='red' clip-path='url(#vp)'/></marker></defs>" +
+                "<line x1='5' y1='10' x2='20' y2='10' stroke='none' marker-end='url(#dot)'/></svg>");
+            using var implicitClip = new FenSvgRenderer().Render(MarkerOverflowDocument(string.Empty));
+
+            AssertFirstParty(explicitClip);
+            AssertFirstParty(implicitClip);
+            AssertSameFrame(explicitClip.Bitmap, implicitClip.Bitmap);
+        }
+
+        private static string MarkerOverflowDocument(string overflow)
+        {
+            string declaration = overflow.Length == 0
+                ? string.Empty
+                : " overflow='" + overflow + "'";
+            return
+                "<svg width='40' height='20'><defs><marker id='dot' markerWidth='4' markerHeight='4' " +
+                "refX='2' refY='2' markerUnits='userSpaceOnUse'" + declaration + ">" +
+                "<circle cx='2' cy='2' r='6' fill='red'/></marker></defs>" +
+                "<line x1='5' y1='10' x2='20' y2='10' stroke='none' marker-end='url(#dot)'/></svg>";
+        }
+
+        private static void AssertFirstParty(SvgRenderResult result)
+        {
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+        }
+
+        private static void AssertSameFrame(SKBitmap expected, SKBitmap actual)
+        {
+            Assert.Equal(expected.Width, actual.Width);
+            Assert.Equal(expected.Height, actual.Height);
+            for (int y = 0; y < expected.Height; y++)
+            for (int x = 0; x < expected.Width; x++)
+                Assert.Equal(expected.GetPixel(x, y), actual.GetPixel(x, y));
+        }
+
         private static string MarkerOrientDocument(string orient) =>
             "<svg width='80' height='80' xmlns='http://www.w3.org/2000/svg'><defs>" +
             "<marker id='m' refX='10' refY='20' markerWidth='20' markerHeight='40' " +
