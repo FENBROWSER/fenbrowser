@@ -78,6 +78,25 @@ namespace FenBrowser.Core.Network
                 return;
             }
 
+            // The request body is logged too: what a page posts to an error
+            // reporter (a Sentry envelope, say) is often the only record of an
+            // exception the page caught itself.
+            if (request.Content != null)
+            {
+                try
+                {
+                    var sent = await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    const int maxSentChars = 32768;
+                    LogManager.Log(LogCategory.Network, LogLevel.Info,
+                        $"[NetworkClient] Request body {request.Method} {url} ({sent.Length} chars): {(sent.Length > maxSentChars ? sent.Substring(0, maxSentChars) + "..." : sent)}");
+                }
+                catch (Exception ex)
+                {
+                    LogManager.Log(LogCategory.Network, LogLevel.Debug,
+                        $"[NetworkClient] Request body capture failed for {url}: {ex.Message}");
+                }
+            }
+
             try
             {
                 await response.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
