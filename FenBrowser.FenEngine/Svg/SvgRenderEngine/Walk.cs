@@ -1855,6 +1855,12 @@ namespace FenBrowser.FenEngine.Svg
 
             string widthText = element.GetPresentationProperty("width");
             string heightText = element.GetPresentationProperty("height");
+            if (RejectsIntrinsicImageSizing("width", widthText) ||
+                RejectsIntrinsicImageSizing("height", heightText))
+            {
+                box = default;
+                return false;
+            }
             bool widthIsAuto = widthText == null ||
                                widthText.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase);
             bool heightIsAuto = heightText == null ||
@@ -1901,6 +1907,38 @@ namespace FenBrowser.FenEngine.Svg
             box = new SKRect(x, y, x + width, y + height);
             return true;
         }
+
+        private static readonly string[] ImageSizingFunctionNames =
+            { "fit-content", "calc-size", "anchor-size" };
+
+        private bool RejectsIntrinsicImageSizing(string property, string value)
+        {
+            if (!IsIntrinsicImageSizingValue(value))
+                return false;
+            _report.RequireFallback(
+                $"SVG image sizing property '{property}: {value.Trim()}' requires intrinsic " +
+                "replaced-element sizing that this renderer does not compute");
+            return true;
+        }
+
+        private static bool IsIntrinsicImageSizingValue(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) ||
+                value.Length > SvgMarkupParser.MaxAttributeValueChars)
+                return false;
+            string trimmed = value.Trim();
+            if (SvgCssLengthEvaluator.IsNestedSvgSizingKeyword(trimmed))
+                return true;
+            for (int i = 0; i < ImageSizingFunctionNames.Length; i++)
+                if (IsImageSizingFunction(trimmed, ImageSizingFunctionNames[i]))
+                    return true;
+            return false;
+        }
+
+        private static bool IsImageSizingFunction(string value, string name) =>
+            value.Length > name.Length &&
+            value.StartsWith(name, StringComparison.OrdinalIgnoreCase) &&
+            value[name.Length] == '(';
 
         // --------------------------------------------------------------- images
 
