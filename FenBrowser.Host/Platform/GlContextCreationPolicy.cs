@@ -28,6 +28,13 @@ internal static class GlContextCreationPolicy
 {
     private const string EnvironmentVariable = "FEN_GL_CONTEXT_API";
 
+    /// <summary>
+    /// True once the main window's context was created through EGL (ANGLE). ANGLE keeps
+    /// one display for the whole process and is not safe to drive from a second render
+    /// thread, so nothing else may open a GL window on its own thread then.
+    /// </summary>
+    public static bool UsesEgl { get; private set; }
+
     public static void ApplyGlfwHints(bool headless)
     {
         if (!OperatingSystem.IsWindows())
@@ -57,6 +64,7 @@ internal static class GlContextCreationPolicy
             glfw.WindowHint(
                 WindowHintContextApi.ContextCreationApi,
                 useEgl ? ContextApi.EglContextApi : ContextApi.NativeContextApi);
+            UsesEgl = useEgl;
             EngineLogBridge.Info(
                 $"[GlContext] GLFW context creation API: {(useEgl ? "EGL (ANGLE)" : "native (WGL)")} " +
                 $"(headless={headless}, {EnvironmentVariable}='{requested}')",

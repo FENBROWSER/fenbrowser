@@ -33,6 +33,8 @@ namespace FenBrowser.FenEngine.Interaction
             var tag = element.TagName?.ToLowerInvariant() ?? string.Empty;
             if (tag is "input" or "button" or "select" or "textarea") return true;
             if (tag == "a" && element.GetAttribute("href") != null) return true;
+            // HTML §4.8.13: a media element showing its user agent controls is focusable.
+            if ((tag is "video" or "audio") && element.HasAttribute("controls")) return true;
 
             var contentEditable = element.GetAttribute("contenteditable");
             if (contentEditable != null &&

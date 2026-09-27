@@ -488,7 +488,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 var el = blockBox.SourceNode as FenBrowser.Core.Dom.V2.Element;
                 string t = el?.TagName?.ToUpperInvariant();
-                if (t == "IMG" || t == "SVG" || t == "CANVAS" || t == "VIDEO" || t == "IFRAME" || t == "EMBED" || t == "OBJECT" ||
+                if (t == "IMG" || t == "SVG" || t == "CANVAS" || t == "VIDEO" || t == "AUDIO" || t == "IFRAME" || t == "EMBED" || t == "OBJECT" ||
                     t == "INPUT" || t == "TEXTAREA" || t == "BUTTON" || t == "SELECT")
                 {
                     float w = blockBox.Geometry.ContentBox.Width;

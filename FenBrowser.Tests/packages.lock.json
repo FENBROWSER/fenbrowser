@@ -185,11 +185,6 @@
           "Silk.NET.Maths": "2.23.0"
         }
       },
-      "Silk.NET.OpenGLES.ANGLE.Native": {
-        "type": "Transitive",
-        "resolved": "2025.9.12",
-        "contentHash": "79A4SruVjCEMCh/CQv9oANQ9aFLHtrjbfuW3DB3H8Hx+qOucYJtuhwmS0kxeYgqh12HrAKKkpksgOrnYtIQY5Q=="
-      },
       "Silk.NET.OpenGLES.Extensions.EXT": {
         "type": "Transitive",
         "resolved": "2.23.0",
@@ -403,6 +398,10 @@
         "dependencies": {
           "FenBrowser.Core": "[1.0.0, )",
           "FenBrowser.Js": "[1.0.0, )",
+          "FenBrowser.Media": "[1.0.0, )",
+          "FenBrowser.Media.Audio": "[1.0.0, )",
+          "FenBrowser.Media.Codecs.Ffmpeg": "[1.0.0, )",
+          "FenBrowser.Media.Codecs.MediaFoundation": "[1.0.0, )",
           "HarfBuzzSharp": "[14.2.0, )",
           "SkiaSharp": "[4.148.0, )",
           "SkiaSharp.HarfBuzz": "[4.148.0, )",
@@ -420,7 +419,6 @@
           "FenBrowser.WebDriver": "[1.0.0, )",
           "Silk.NET.Input": "[2.23.0, )",
           "Silk.NET.OpenGLES": "[2.23.0, )",
-          "Silk.NET.OpenGLES.ANGLE.Native": "[2025.9.12, )",
           "Silk.NET.OpenGLES.Extensions.EXT": "[2.23.0, )",
           "Silk.NET.Windowing": "[2.23.0, )",
           "SkiaSharp": "[4.148.0, )",
@@ -436,6 +434,34 @@
         "dependencies": {
           "Microsoft.Extensions.Logging.Abstractions": "[10.0.9, )",
           "NodaTime": "[3.3.2, )"
+        }
+      },
+      "fenbrowser.media": {
+        "type": "Project"
+      },
+      "fenbrowser.media.audio": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )"
+        }
+      },
+      "fenbrowser.media.codecs.ffmpeg": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )"
+        }
+      },
+      "fenbrowser.media.codecs.mediafoundation": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )",
+          "FenBrowser.Media.Gpu": "[1.0.0, )"
+        }
+      },
+      "fenbrowser.media.gpu": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )"
         }
       },
       "fenbrowser.tooling": {

@@ -667,6 +667,23 @@ These libraries are pulled in automatically by our direct dependencies:
 
 ---
 
+## FenBrowser.Media.Codecs.Ffmpeg Dependencies
+
+### FFmpeg libavcodec / libavutil (dynamically linked, LGPL v2.1+)
+
+| Field | Value |
+| --- | --- |
+| **Purpose** | Software audio (Opus, Vorbis, FLAC, MP3) and video (VP8, VP9, AV1 through dav1d or libaom) decoding behind `IMediaDecoder<T>` (ADR-0001). H.264, AAC and HEVC are never requested from it (ADR-0002). Only elementary-stream packets that FenBrowser's own managed demuxers validated ever reach it; it sees no container bytes, no network, no files. |
+| **How it is reached** | `FenBrowser.Media.Codecs.Ffmpeg` — a P/Invoke layer FenBrowser owns (about twenty entry points). No generated bindings, no FFmpeg.AutoGen. Structures are read by documented offsets that are stable within a major version. |
+| **Pinned version** | libavcodec major **63**, libavutil major **61** (FFmpeg 9.0.1). `FfmpegLibrary.TryLoad` refuses any other major and the adapter then registers no decoders, so `canPlayType` answers `""` for Opus, Vorbis, FLAC, MP3, VP8, VP9 and AV1 and one `Media` log event says why. |
+| **Where it comes from (dev machines)** | winget package `Gyan.FFmpeg.Shared` 9.0.1 (`%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg.Shared_*fmpeg-*-sharedin`). Override with `FEN_FFMPEG_DIR`, or place the DLLs next to the application. |
+| **Checksums (SHA-256, 9.0.1 full_build-shared, win64)** | `avcodec-63.dll` `f958e8ae31ce50b58e228c354411e406cd46c0021a6d250e90cf007fe65740d3`, `avutil-61.dll` `e289456490e190e0d74aa34980aeaa68903a6656248e2e7ef830e17acd80eb49` |
+| **License** | LGPL v2.1 or later. Dynamic linking only; FenBrowser ships no modified FFmpeg source. The full build also bundles GPL components that FenBrowser never loads (only avcodec and avutil are resolved). A trimmed build with only the registered decoders is the shipping target (design §4 "native library hygiene"); until then the stock shared build is used and only its two libraries are loaded. |
+| **Security** | Decoders run in the media process (ADR-0004), with packet size ceilings and a per-decoder quarantine. Every call is bounded by the packet it was given; audio and pictures are copied out once into pooled memory (pictures through a span over libavcodec's plane that never outlives the `avcodec_receive_frame` call). Video decoding may use up to eight libavcodec frame threads. |
+| **Not used** | libavformat, libavfilter, libswresample, libswscale, libavdevice. Resampling and channel mapping are managed code in `AudioRenderer`. |
+
+---
+
 ## Future Considerations
 
 ### Potential Additions:

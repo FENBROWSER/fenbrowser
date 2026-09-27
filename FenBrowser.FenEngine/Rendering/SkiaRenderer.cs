@@ -847,6 +847,10 @@ namespace FenBrowser.FenEngine.Rendering
                 case ImagePaintNode image:
                     DrawImage(backend, image);
                     break;
+
+                case VideoPaintNode video:
+                    DrawVideo(backend, video);
+                    break;
                     
                 case ClipPaintNode clip:
                     // handled in DrawNode wrapper
@@ -943,6 +947,86 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 backend.DrawBoxShadow(drawRect, 0, 0, node.Blur, 0, node.Color);
             }
+        }
+
+        /// <summary>
+        /// One SKImage per presenter, rebuilt only when a newer picture has been published,
+        /// so the pixel upload happens once per frame however often the tree is painted.
+        /// </summary>
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<FenBrowser.Media.Video.VideoPresenter, VideoImageCache> s_videoImages = new();
+
+        private sealed class VideoImageCache
+        {
+            public long Sequence;
+            public SKImage Image;
+            public int Width;
+            public int Height;
+        }
+
+        /// <summary>
+        /// HTML §4.8.9: the element represents the frame of video for the current playback
+        /// position, fitted into the content box by object-fit. The picture is acquired for
+        /// the length of the upload and released; a black box stands in before the first one.
+        /// </summary>
+        private void DrawVideo(IRenderBackend backend, VideoPaintNode node)
+        {
+            if (node.Bounds.Width <= 0 || node.Bounds.Height <= 0 || node.Presenter == null)
+            {
+                return;
+            }
+
+            var cache = s_videoImages.GetValue(node.Presenter, _ => new VideoImageCache());
+            var picture = node.Presenter.Acquire();
+            if (picture == null)
+            {
+                backend.DrawRect(node.Bounds, SKColors.Black);
+                return;
+            }
+
+            try
+            {
+                if (cache.Image == null || cache.Sequence != picture.Sequence)
+                {
+                    // Colour conversion happens here, once per new picture, on the paint
+                    // thread: the media task only swapped a pointer.
+                    int stride = picture.Width * 4;
+                    int length = checked(stride * picture.Height);
+                    var pixels = System.Buffers.ArrayPool<byte>.Shared.Rent(length);
+                    SKImage image;
+                    try
+                    {
+                        picture.WriteBgra(pixels.AsSpan(0, length), stride);
+                        var info = new SKImageInfo(picture.Width, picture.Height, SKColorType.Bgra8888, SKAlphaType.Opaque);
+                        image = SKImage.FromPixelCopy(info, pixels.AsSpan(0, length), stride);
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(pixels);
+                    }
+
+                    if (image == null)
+                    {
+                        backend.DrawRect(node.Bounds, SKColors.Black);
+                        return;
+                    }
+
+                    cache.Image?.Dispose();
+                    cache.Image = image;
+                    cache.Sequence = picture.Sequence;
+                    cache.Width = picture.Width;
+                    cache.Height = picture.Height;
+                }
+            }
+            finally
+            {
+                picture.Release();
+            }
+
+            var srcRect = new SKRect(0, 0, cache.Width, cache.Height);
+            var destRect = CalculateDestRect(node.Bounds, srcRect, node.ObjectFit, node.ObjectPosition);
+            // The letterbox around a contained picture is the element's own background,
+            // which paints black by the UA stylesheet, not by the video node.
+            backend.DrawImage(cache.Image, destRect, srcRect);
         }
 
         private void DrawCustom(IRenderBackend backend, CustomPaintNode node)

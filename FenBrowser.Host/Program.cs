@@ -41,7 +41,8 @@ namespace FenBrowser.Host
             RendererChild,
             NetworkChild,
             GpuChild,
-            UtilityChild
+            UtilityChild,
+            MediaChild
         }
 
         public static StartupMode ResolveStartupMode(string[] args, Func<string, string> getEnvironmentVariable = null)
@@ -70,6 +71,12 @@ namespace FenBrowser.Host
                 string.Equals(getEnvironmentVariable("FEN_UTILITY_CHILD"), "1", StringComparison.Ordinal))
             {
                 return StartupMode.UtilityChild;
+            }
+
+            if (args.Any(a => string.Equals(a, "--media-child", StringComparison.OrdinalIgnoreCase)) ||
+                string.Equals(getEnvironmentVariable("FEN_MEDIA_CHILD"), "1", StringComparison.Ordinal))
+            {
+                return StartupMode.MediaChild;
             }
 
             return StartupMode.Browser;
@@ -248,6 +255,12 @@ namespace FenBrowser.Host
                 if (startupMode == StartupMode.UtilityChild)
                 {
                     await RunTargetChildLoopAsync(TargetProcessKind.Utility).ConfigureAwait(false);
+                    return;
+                }
+
+                if (startupMode == StartupMode.MediaChild)
+                {
+                    await RunTargetChildLoopAsync(TargetProcessKind.Media).ConfigureAwait(false);
                     return;
                 }
 
@@ -485,6 +498,16 @@ namespace FenBrowser.Host
             // socket handler.
             using var networkClient = new RendererNetworkClient(tabId, envelope => SendRendererEnvelope(writer, envelope));
             FenBrowser.Core.Network.HttpClientFactory.ConfigureRequestTransport(networkClient.SendAsync);
+
+            // Container parsing and codec decoding run in the media process (design
+            // §2.2, ADR-0004); the renderer keeps the element, the renderer and the
+            // device. Until BLOCK-PROC-002 gives the renderer a real sandbox it can
+            // launch that child itself; the child dies with the renderer's job.
+            using var mediaProcess = FenBrowser.Host.ProcessIsolation.Media.MediaProcessIpc.IsMediaProcessEnabled()
+                ? new FenBrowser.Host.ProcessIsolation.Media.MediaProcessClient()
+                : null;
+            FenBrowser.FenEngine.Media.MediaEngineServices.DecodeSources = mediaProcess;
+            FenBrowser.FenEngine.Media.MediaEngineServices.RemoteDecoders = mediaProcess?.CreateRemoteDecoders(FenBrowser.FenEngine.Media.MediaEngineServices.Decoders);
 
             using var browser = new FenBrowser.FenEngine.Rendering.BrowserHost();
             using var logForwarder = new ChildProcessLogForwarder("renderer", tabId);
@@ -1532,9 +1555,12 @@ namespace FenBrowser.Host
 
         private static async Task RunTargetChildLoopAsync(TargetProcessKind expectedKind)
         {
-            var contract = expectedKind == TargetProcessKind.Gpu
-                ? GpuProcessIpc.Contract
-                : UtilityProcessIpc.Contract;
+            var contract = expectedKind switch
+            {
+                TargetProcessKind.Gpu => GpuProcessIpc.Contract,
+                TargetProcessKind.Media => FenBrowser.Host.ProcessIsolation.Media.MediaProcessIpc.Contract,
+                _ => UtilityProcessIpc.Contract
+            };
             var pipeName = Environment.GetEnvironmentVariable("FEN_TARGET_PIPE_NAME");
             var authToken = Environment.GetEnvironmentVariable("FEN_TARGET_AUTH_TOKEN");
             var parentPidRaw = Environment.GetEnvironmentVariable("FEN_TARGET_PARENT_PID");
@@ -1575,6 +1601,12 @@ namespace FenBrowser.Host
             using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
             using var logForwarder = new ChildProcessLogForwarder(expectedKind.ToString().ToLowerInvariant(), 0);
+            using var mediaService = expectedKind == TargetProcessKind.Media
+                ? new FenBrowser.Host.ProcessIsolation.Media.MediaChildService(
+                    FenBrowser.FenEngine.Media.MediaEngineServices.Demuxers,
+                    FenBrowser.FenEngine.Media.MediaEngineServices.Decoders,
+                    FenBrowser.FenEngine.Media.MediaEngineServices.Log)
+                : null;
 
             var handshakeComplete = false;
             var running = true;
@@ -1718,6 +1750,12 @@ namespace FenBrowser.Host
                         await HandleFontResolveTypefaceRequest(writer, envelope).ConfigureAwait(false);
                         await HandleImageDecodeRequest(writer, envelope).ConfigureAwait(false);
                         await HandleSvgDecodeRequest(writer, envelope).ConfigureAwait(false);
+                    }
+
+                    if (mediaService != null &&
+                        await mediaService.HandleAsync(envelope, targetMessageType, response => SendTargetEnvelope(writer, response), CancellationToken.None).ConfigureAwait(false))
+                    {
+                        continue;
                     }
 
                     if (targetMessageType == TargetIpcMessageType.Shutdown)

@@ -6,6 +6,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.Core.Platform;
 using FenBrowser.Core.Security.Sandbox;
 using FenBrowser.Host.ProcessIsolation.Gpu;
+using FenBrowser.Host.ProcessIsolation.Media;
 using FenBrowser.Host.ProcessIsolation.Utility;
 
 namespace FenBrowser.Host.ProcessIsolation.Targets
@@ -30,11 +31,15 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             _contract = targetKind switch
             {
                 TargetProcessKind.Gpu => GpuProcessIpc.Contract,
+                TargetProcessKind.Media => MediaProcessIpc.Contract,
                 _ => UtilityProcessIpc.Contract
             };
-            _sandboxProfile = targetKind == TargetProcessKind.Gpu
-                ? OsSandboxProfile.GpuProcess
-                : OsSandboxProfile.UtilityProcess;
+            _sandboxProfile = targetKind switch
+            {
+                TargetProcessKind.Gpu => OsSandboxProfile.GpuProcess,
+                TargetProcessKind.Media => OsSandboxProfile.MediaProcess,
+                _ => OsSandboxProfile.UtilityProcess
+            };
             var readyTimeoutMs = Math.Clamp(
                 ParseIntEnv(_contract.ReadyTimeoutEnvKey, 5000),
                 MinReadyTimeoutMs,
@@ -43,6 +48,9 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         }
 
         public TargetProcessSession Session => _session;
+
+        /// <summary>The child's process id once started, or null.</summary>
+        public int? ChildProcessId => _childProcess?.Id;
 
         public bool TryStart()
         {
@@ -60,11 +68,9 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                     ["allowUnsandboxedFallback"] = allowUnsandboxedFallback
                 });
 
-            var exePath = Environment.ProcessPath;
-            if (string.IsNullOrWhiteSpace(exePath))
-            {
-                exePath = Process.GetCurrentProcess().MainModule?.FileName;
-            }
+            // The apphost beside the Host assembly, not the embedding process: under a
+            // test runner Environment.ProcessPath is testhost, which has no child modes.
+            var exePath = HostExecutablePathResolver.Resolve();
 
             if (string.IsNullOrWhiteSpace(exePath))
             {
@@ -89,6 +95,10 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 };
                 startInfo.ArgumentList.Add(_contract.LaunchArgument);
 
+                // A target may be launched by another child (the renderer starts the
+                // media process); the launcher's own wiring must not reach it, or the
+                // startup-mode dispatcher would take it for a renderer.
+                RemoveChildWiring(startInfo);
                 startInfo.Environment["FEN_TARGET_PARENT_PID"] = _parentPid.ToString();
                 startInfo.Environment["FEN_TARGET_PIPE_NAME"] = pipeName;
                 startInfo.Environment["FEN_TARGET_AUTH_TOKEN"] = authToken;
@@ -248,6 +258,26 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             catch (Exception ex)
             {
                 EngineLogBridge.Debug($"[{_targetKind}Process] Dispose failed for {resourceName}: {ex.Message}", LogCategory.ProcessIsolation);
+            }
+        }
+
+        private static void RemoveChildWiring(ProcessStartInfo startInfo)
+        {
+            var stale = new System.Collections.Generic.List<string>();
+            foreach (var key in startInfo.Environment.Keys)
+            {
+                if (key.StartsWith("FEN_RENDERER_", StringComparison.OrdinalIgnoreCase) ||
+                    key.StartsWith("FEN_NETWORK_", StringComparison.OrdinalIgnoreCase) ||
+                    key.StartsWith("FEN_TARGET_", StringComparison.OrdinalIgnoreCase) ||
+                    key.EndsWith("_CHILD", StringComparison.OrdinalIgnoreCase))
+                {
+                    stale.Add(key);
+                }
+            }
+
+            foreach (var key in stale)
+            {
+                startInfo.Environment.Remove(key);
             }
         }
 

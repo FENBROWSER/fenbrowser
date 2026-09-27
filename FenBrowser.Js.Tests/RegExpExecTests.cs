@@ -292,4 +292,19 @@ public sealed class RegExpExecTests
             """);
         Assert.True(result.AsBoolean());
     }
+
+    /// <summary>
+    /// An optional group whose body may match empty (a star inside) is not always
+    /// zero-width: the greedy path must still consume. url-toolkit's URL regex, which
+    /// hls.js runs on every URL, wraps such groups in lookaheads and backreferences.
+    /// </summary>
+    [Fact]
+    public void OptionalGroupAroundAStar_StillConsumesGreedily()
+    {
+        Assert.True(Run("/^((?:x*)?)/.exec('xx')[1] === 'xx';").AsBoolean());
+        Assert.True(Run(@"/^(?=((?:(?:a\/)*b)?))\1/.exec('a/b')[0] === 'a/b';").AsBoolean());
+        Assert.True(Run("/^((?:(?:xy)*)?)$/.exec('xyxy')[1] === 'xyxy';").AsBoolean());
+        Assert.True(Run("/^(x*)?$/.exec('')[0] === '';").AsBoolean());
+        Assert.True(Run(@"var m = /^(?=((?:[a-zA-Z0-9+\-.]+:)?))\1(?=((?:\/\/[^\/?#]*)?))\2(?=((?:(?:[^?#\/]*\/)*[^;?#\/]*)?))\3((?:;[^?#]*)?)(\?[^#]*)?(#[^]*)?$/.exec('https://h.test/a/b.m3u8?q#f'); m !== null && m[1] === 'https:' && m[2] === '//h.test' && m[3] === '/a/b.m3u8' && m[5] === '?q' && m[6] === '#f';").AsBoolean());
+    }
 }

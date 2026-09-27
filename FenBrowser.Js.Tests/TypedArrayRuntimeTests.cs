@@ -244,4 +244,37 @@ public sealed class TypedArrayRuntimeTests
             sum + first;
         ").AsNumber());
     }
+
+    // A typed array's keys/values/entries are a live CreateArrayIterator over the array
+    // (ECMA-262 23.2.3.19, .37, .7). They used to snapshot through the Array(...)
+    // constructor path, so a one-element array holding 5 iterated as five undefineds.
+    [Fact]
+    public void AOneElementTypedArrayIteratesItsOneElement()
+    {
+        Assert.Equal("5|0|0,5|7", Run(@"
+            var a = new Float32Array([5]);
+            var v = [], k = [], e = [];
+            for (var x of a) v.push(x);
+            for (var i of a.keys()) k.push(i);
+            for (var p of a.entries()) e.push(p.join(','));
+            var live = new Uint8Array([1]);
+            var it = live.values();
+            live[0] = 7;
+            [v.join(), k.join(), e.join(), it.next().value].join('|');
+        ").AsString());
+    }
+
+    [Fact]
+    public void IteratingADetachedTypedArrayThrows()
+    {
+        Assert.Equal("TypeError", Run(@"
+            var buf = new ArrayBuffer(8);
+            var ta = new Uint8Array(buf);
+            var it = ta.values();
+            buf.transfer();
+            var name = 'none';
+            try { it.next(); } catch (e) { name = e.name; }
+            name;
+        ").AsString());
+    }
 }

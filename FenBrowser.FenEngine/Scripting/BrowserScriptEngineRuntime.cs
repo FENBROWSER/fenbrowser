@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -788,6 +789,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             TraceJsRoots(tracer, entry.Value.Values);
         }
 
+        TraceMediaJsRoots(tracer);
+
         foreach (var (promise, diagnostic) in _pendingPromiseRejectionDiagnostics)
         {
             TraceJsRoot(tracer, promise);
@@ -1071,6 +1074,81 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         return policy.IsFeatureAllowed(feature, origin, origin);
+    }
+
+    /// <summary>
+    /// Permissions Policy §9.8 "Is feature enabled in document for origin?" for this realm's
+    /// document at its own origin. A frame's document inherits the policy of its container
+    /// (§9.7): disabled when the embedding document has the feature disabled, otherwise
+    /// what the iframe's allow attribute says when it names the feature, otherwise the
+    /// feature's default allowlist ("*", or "self" against the embedding document's
+    /// origin). The top-level document's own header then decides. A frame document's own
+    /// header is not consulted: frame realms carry their parent's security context.
+    /// </summary>
+    internal bool IsFeatureEnabledInDocument(FenBrowser.Core.Security.PolicyControlledFeature feature)
+    {
+        if (_parentRealmOwner is { } owner && _embeddingFrameElement is { } container)
+        {
+            // The embedding document is the container's node document. Every frame realm is
+            // created by the top realm today, so for a nested frame that is not the realm
+            // that created this one.
+            var root = owner;
+            while (root._parentRealmOwner is { } above)
+            {
+                root = above;
+            }
+
+            var parent = root.FindRealmOwningDocument(container.OwnerDocument) ?? owner;
+            string parentOrigin = parent.TryResolveCurrentOrigin(null);
+            if (!parent.IsFeatureEnabledInDocument(feature))
+            {
+                return false;
+            }
+
+            // about:blank and srcdoc documents take their creator's origin.
+            string origin = TryResolveCurrentOrigin(null);
+            if (string.IsNullOrEmpty(origin) || origin.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
+            {
+                origin = parentOrigin;
+            }
+
+            bool? declared = FenBrowser.Core.Security.PermissionsPolicy.EvaluateContainerAllow(
+                container.GetAttribute("allow"), feature, origin, parentOrigin);
+            return declared ?? FenBrowser.Core.Security.PermissionsPolicy.DefaultAllowlistAllows(feature, origin, parentOrigin);
+        }
+
+        var policy = DocumentSecurityContext?.PermissionsPolicy ?? PermissionsPolicyProvider?.Invoke();
+        if (policy == null)
+        {
+            return true;
+        }
+
+        string self = TryResolveCurrentOrigin(null);
+        return policy.IsFeatureAllowed(feature, self, self);
+    }
+
+    private FenJsBrowserScriptEngine FindRealmOwningDocument(Document document)
+    {
+        if (document == null)
+        {
+            return null;
+        }
+
+        if (ReferenceEquals(_currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument, document))
+        {
+            return this;
+        }
+
+        foreach (var entry in _iframeRealms)
+        {
+            var found = entry.Value?.FindRealmOwningDocument(document);
+            if (found != null)
+            {
+                return found;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1712,9 +1790,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     {
         var document = domRoot as Document ?? domRoot?.OwnerDocument;
         var frameElement = TryGetFrameElementForDocument(document);
-        return frameElement == null
-            ? SetDomAsyncCore(domRoot, baseUri, resetSession: false, restorePreviousContext: true)
-            : SetSubdocumentRealmAsync(frameElement, domRoot, baseUri, options);
+        if (frameElement == null)
+        {
+            return SetDomAsyncCore(domRoot, baseUri, resetSession: false, restorePreviousContext: true);
+        }
+
+        // HTML 7.3.1: a frame's browsing context is a child of the one whose document
+        // holds the frame element. The host hands every frame to the top realm, so a frame
+        // inside a frame goes to the realm of the document it sits in - otherwise its
+        // window.parent would be the top window.
+        var owner = FindRealmOwningDocument(frameElement.OwnerDocument) ?? this;
+        return owner.SetSubdocumentRealmAsync(frameElement, domRoot, baseUri, options);
     }
 
     private async Task SetSubdocumentRealmAsync(
@@ -1817,7 +1903,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 "iframe_diagnostics.txt",
                 $"{DateTimeOffset.UtcNow:O} TryGetFrameRealm: doc={document != null} frame={frame != null}");
         }
-        if (frame != null && _iframeRealms.TryGetValue(frame, out realm))
+        realm = FindRealmForFrame(frame);
+        if (realm != null)
         {
             if (DiagnosticPaths.IframeDiagnosticsEnabled)
             {
@@ -1955,6 +2042,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         EnsureImageLoadObserver();
         EnsureLinkLoadObserver();
         EnsureObjectLoadObserver();
+        EnsureMediaElementObserver();
 
         if (resetSession && _parentRealmOwner != null && _embeddingFrameElement != null)
         {
@@ -1977,6 +2065,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     ["descendantCount"] = domRoot.Descendants().Count()
                 });
             WireInlineEventHandlers(domRoot);
+            EnsureChildNavigableWindows(domRoot);
             await ExecutePageScriptsWithFenJsAsync(domRoot, baseUri).ConfigureAwait(false);
             // Images the parser created never went through the mutation
             // observer. Their requests start here, after the page's scripts
@@ -1984,7 +2073,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             // loads asynchronously during parsing would be seen.
             TrackImagesInSubtree(domRoot);
             TrackObjectsInSubtree(domRoot);
+            // Likewise media elements: a parser-created video with a src or
+            // source children starts resource selection once scripts have run.
+            TrackMediaElementsInSubtree(domRoot);
             ApplyScriptingEnabledSanitizer(domRoot);
+            // The media elements start selecting on the JS worker; let those tasks
+            // run before deciding whether anything delays the load event.
+            await FlushMediaTasksAsync().ConfigureAwait(false);
             var startupLinkLoads = StartStartupLinkLoads(domRoot);
             var loadingDocument = DispatchDomContentLoaded();
             if (loadingDocument != null)
@@ -3813,6 +3908,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             string code;
             Uri moduleUri = item.ModuleUri;
             bool isModule = item.IsModule;
+            if (string.Equals(batchLabel, "blocking", StringComparison.OrdinalIgnoreCase))
+            {
+                // The parser would have inserted, and started, every media
+                // element before this script by the time the script ran.
+                TrackMediaElementsBefore(item.ScriptElement);
+            }
+
             if (!string.Equals(batchLabel, "async", StringComparison.OrdinalIgnoreCase))
             {
                 var blockedFields = CreateScriptRecordFields(item.ScriptRecord);
@@ -3978,6 +4080,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     });
                     RecordMissingGlobalReference(desc ?? jte.Message, item.ScriptRecord, baseUri);
+                    ReportFenJsException(jte);
                     var scriptFailedFields = CreateScriptRecordFields(item.ScriptRecord);
                     scriptFailedFields["batch"] = batchLabel;
                     scriptFailedFields["origin"] = origin;
@@ -5003,6 +5106,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         UnsubscribeImageLoadObserver();
         UnsubscribeLinkLoadObserver();
         UnsubscribeObjectLoadObserver();
+        UnsubscribeMediaElementObserver();
 
         foreach (var childRealm in DetachFrameRealms())
         {
@@ -5247,6 +5351,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         {
             frameRealm.AbandonRealm();
         }
+
+        CloseAllWebAudioContexts();
 
         Interlocked.Increment(ref _fenJsSessionGeneration);
         RequestRender = null;
@@ -5898,6 +6004,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var transferred = args.Count > 2
             ? ExtractTransferredMessagePorts(args[2])
             : Array.Empty<MessagePortEndpoint>();
+        // The payload already holds its own copy; transferred buffers leave the sender.
+        if (args.Count > 2)
+            DetachTransferredArrayBuffers(args[2]);
         if (DiagnosticPaths.AppendEnabled)
         {
             DiagnosticPaths.AppendLogText(
@@ -5969,6 +6078,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var transferred = args != null && args.Count > 1 && worker.Realm != null
             ? worker.Realm.ExtractTransferredMessagePorts(args[1])
             : Array.Empty<MessagePortEndpoint>();
+        if (args != null && args.Count > 1 && worker.Realm != null)
+            worker.Realm.DetachTransferredArrayBuffers(args[1]);
         if (DiagnosticPaths.AppendEnabled)
         {
             DiagnosticPaths.AppendLogText(
@@ -6081,6 +6192,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             frameRealm.AbandonRealm();
         }
 
+        // A new document: the previous one's audio contexts stop and release their devices.
+        CloseAllWebAudioContexts();
+
         // Establish the large-stack worker BEFORE taking _fenJsLock. ResetFenJsSession
         // transitively calls InstallFenJsDomGlobals -> EvaluateWithFenJsRaw, which spawns
         // the large-stack thread. If we held _fenJsLock on a plain render thread and then
@@ -6166,6 +6280,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _fenJsPinScopes.Clear();
             _hostCallableCache = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
+            // Media bindings hold promise and error objects from the old heap.
+            _mediaElements.Clear();
+            System.Threading.Volatile.Write(ref _mediaElementCount, 0);
+            _mediaElementCursor = null;
+            _mediaElementCursorRoot = null;
+            _loadEventDelayCount = 0;
+            _loadEventDeferred = false;
+            _stickyUserActivation = false;
             _missingHostPropertyReads = new ConditionalWeakTable<object, HashSet<string>>();
             _elementEventListeners = new ConditionalWeakTable<object, List<BrowserEventListener>>();
             _iframeWindowEventListeners = new ConditionalWeakTable<Element, List<BrowserEventListener>>();
@@ -7188,6 +7310,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         _interpreter.RegisterGlobalValue("frames", globalThisValue);
         _interpreter.RegisterGlobalValue("top", globalThisValue);
         _interpreter.RegisterGlobalValue("parent", globalThisValue);
+        // HTML 7.2.2.4 dom-frames: the frames getter returns the window itself.
+        _interpreter.RegisterGlobalValue("frames", globalThisValue);
         _interpreter.RegisterGlobalValue("name", JsValue.FromString(string.Empty));
         _interpreter.RegisterGlobalValue(
             "getSelection",
@@ -7516,6 +7640,17 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsMutationObserver();
         InstallFenJsBrowserUiApis(baseUri);
         InstallFenJsRemainingWebApis();
+        InstallFenJsTextTracks();
+        InstallFenJsMediaSource();
+        InstallFenJsMediaSession();
+        InstallFenJsMediaCapabilities();
+        InstallFenJsWebCodecs();
+        InstallFenJsEme();
+        InstallFenJsPictureInPicture();
+        InstallFenJsMediaStream();
+        InstallFenJsAudioOutputDevices();
+        InstallFenJsPermissionsPolicyApi();
+        InstallFenJsWebAudio();
         InstallFenJsDocumentAll();
         // Last: this only publishes members nothing else has claimed, so it has to
         // see the finished surface.
@@ -7539,6 +7674,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 (_, args) => SetAdoptedStyleSheets(args),
                 length: 2));
         InstallFenJsBrowserSurfaceFillers();
+        InstallFenJsErrorReporting();
         InstallTopWindowPostMessageBridge(globalThisValue);
     }
 
@@ -7606,6 +7742,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 ["removeEventListener"] = _interpreter.AllocateNativeFunction("removeEventListener", (_, _) => JsValue.Undefined, length: 2),
                 ["ondevicechange"] = JsValue.Null
             }));
+        SetStoredHostProperty(
+            navigator,
+            "getAutoplayPolicy",
+            _interpreter.AllocateNativeFunction(
+                "getAutoplayPolicy",
+                (_, args) => GetAutoplayPolicy(args.Count > 0 ? args[0] : JsValue.Undefined),
+                length: 1));
         SetStoredHostProperty(
             navigator,
             "sendBeacon",
@@ -7708,9 +7851,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         });
     }
 
+    /// <summary>
+    /// Whether this realm is a secure context. Members that the specification marks
+    /// [SecureContext] - setSinkId and sinkId among them - exist only when it is true.
+    /// </summary>
+    internal bool IsSecureContextRealm { get; private set; }
+
     private void InstallFenJsBrowserUiApis(Uri baseUri)
     {
-        var secureContextLiteral = IsPotentiallyTrustworthyOrigin(baseUri) ? "true" : "false";
+        IsSecureContextRealm = IsPotentiallyTrustworthyOrigin(baseUri);
+        var secureContextLiteral = IsSecureContextRealm ? "true" : "false";
         var crossOriginIsolatedLiteral = IsCrossOriginIsolatedContext(baseUri) ? "true" : "false";
         EvaluateWithFenJsRaw(
             """
@@ -9303,8 +9453,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     ["jobIndex"] = trace.JobIndex,
                     ["jobKind"] = trace.JobKind,
                     ["detail"] = trace.Detail,
-                    ["pendingQueueMicrotasks"] = trace.PendingQueueMicrotasks,
-                    ["pendingPromiseJobs"] = trace.PendingPromiseJobs,
+                    ["pendingMicrotasks"] = trace.PendingMicrotasks,
                     ["pendingCleanupJobs"] = trace.PendingCleanupJobs,
                     ["instructions"] = trace.InstructionCount,
                     ["elapsedMs"] = trace.ElapsedMilliseconds,
@@ -10062,6 +10211,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 "microtask",
                                 string.Empty,
                                 exception);
+                            ReportFenJsException(exception);
                             attributedMicrotaskFailure = exception;
                         });
                         TraceFenJsCallbackStage("stage-5-microtask-checkpoint-complete", origin, callbackId, callbackProvenance);
@@ -10140,6 +10290,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         FenBrowser.Core.EngineLogCompat.Warn(
                             $"[FenJsTimers] {origin} callback failed: {ex.Message}",
                             FenBrowser.Core.Logging.LogCategory.JavaScript);
+                        ReportFenJsException(ex);
                     }
                 }
 
@@ -12318,6 +12469,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     'cloneNode',
                     'appendChild',
                     'insertBefore',
+                    'moveBefore',
                     'replaceChild',
                     'removeChild',
                     'append',
@@ -12560,6 +12712,71 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             length: 0);
         _interpreter.RegisterGlobalValue("__fenNativeImageCtor", imageConstructor);
 
+        JsValue CreateAudio(IReadOnlyList<JsValue> args)
+        {
+            // HTML 4.8.10 dom-audio: new Audio(src) is an audio element with
+            // preload="auto" and, when given, a src attribute - which starts
+            // the load algorithm like any other src.
+            var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument
+                ?? _parentRealmOwner?._currentDomRoot as Document ?? _parentRealmOwner?._currentDomRoot?.OwnerDocument
+                ?? new Document();
+
+            var audio = document.CreateElement("audio");
+            audio.SetAttribute("preload", "auto");
+            if (args.Count > 0 && args[0].Tag != JsValueTag.Undefined)
+            {
+                audio.SetAttribute("src", CoerceToHostString(args[0]) ?? string.Empty);
+            }
+
+            return ToHostNodeOrNull(audio);
+        }
+
+        var audioConstructor = _interpreter.AllocateNativeConstructor(
+            "Audio",
+            (_, args) => CreateAudio(args),
+            CreateAudio,
+            length: 0);
+        _interpreter.RegisterGlobalValue("__fenNativeAudioCtor", audioConstructor);
+
+        JsValue CreateOption(IReadOnlyList<JsValue> args)
+        {
+            // HTML 4.10.10 dom-option: new Option(text, value, defaultSelected, selected)
+            // is an option element with a text node child, a value attribute when one is
+            // given, a selected attribute for defaultSelected, and selectedness set.
+            var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument
+                ?? _parentRealmOwner?._currentDomRoot as Document ?? _parentRealmOwner?._currentDomRoot?.OwnerDocument
+                ?? new Document();
+
+            var option = document.CreateElement("option");
+            if (args.Count > 0 && args[0].Tag != JsValueTag.Undefined)
+            {
+                var text = CoerceToHostString(args[0]) ?? string.Empty;
+                if (text.Length > 0)
+                {
+                    option.AppendChild(document.CreateTextNode(text));
+                }
+            }
+
+            if (args.Count > 1 && args[1].Tag != JsValueTag.Undefined)
+            {
+                option.SetAttribute("value", CoerceToHostString(args[1]) ?? string.Empty);
+            }
+
+            if (args.Count > 2 && args[2].Tag switch { JsValueTag.Boolean => args[2].AsBoolean(), JsValueTag.Undefined or JsValueTag.Null => false, _ => true })
+            {
+                option.SetAttribute("selected", string.Empty);
+            }
+
+            return ToHostNodeOrNull(option);
+        }
+
+        var optionConstructor = _interpreter.AllocateNativeConstructor(
+            "Option",
+            (_, args) => CreateOption(args),
+            CreateOption,
+            length: 0);
+        _interpreter.RegisterGlobalValue("__fenNativeOptionCtor", optionConstructor);
+
         EvaluateWithFenJsRaw(
             """
             (function () {
@@ -12587,6 +12804,28 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     configurable: true
                 });
                 delete globalThis.__fenNativeImageCtor;
+
+                var nativeAudio = globalThis.__fenNativeAudioCtor;
+                if (globalThis.HTMLAudioElement && globalThis.HTMLAudioElement.prototype) {
+                    nativeAudio.prototype = globalThis.HTMLAudioElement.prototype;
+                }
+                Object.defineProperty(globalThis, 'Audio', {
+                    value: nativeAudio,
+                    writable: true,
+                    configurable: true
+                });
+                delete globalThis.__fenNativeAudioCtor;
+
+                var nativeOption = globalThis.__fenNativeOptionCtor;
+                if (globalThis.HTMLOptionElement && globalThis.HTMLOptionElement.prototype) {
+                    nativeOption.prototype = globalThis.HTMLOptionElement.prototype;
+                }
+                Object.defineProperty(globalThis, 'Option', {
+                    value: nativeOption,
+                    writable: true,
+                    configurable: true
+                });
+                delete globalThis.__fenNativeOptionCtor;
             })();
             """);
     }
@@ -13057,10 +13296,15 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     HTMLMediaElement: [['src', 'currentSrc', 'currentTime', 'duration',
                         'paused', 'ended', 'muted', 'volume', 'playbackRate', 'autoplay',
                         'loop', 'controls', 'preload', 'readyState', 'networkState',
-                        'buffered', 'seeking', 'crossOrigin', 'error'],
-                        ['play', 'pause', 'load', 'canPlayType', 'fastSeek']],
+                        'buffered', 'seeking', 'crossOrigin', 'error', 'defaultPlaybackRate',
+                        'preservesPitch', 'played', 'seekable', 'defaultMuted', 'textTracks',
+                        'audioTracks', 'videoTracks', 'sinkId'],
+                        ['play', 'pause', 'load', 'canPlayType', 'fastSeek', 'addTextTrack',
+                         'setSinkId']],
                     HTMLVideoElement: [['width', 'height', 'videoWidth', 'videoHeight',
-                        'poster', 'playsInline'], []],
+                        'poster', 'playsInline', 'disablePictureInPicture'],
+                        ['getVideoPlaybackQuality', 'requestVideoFrameCallback', 'cancelVideoFrameCallback',
+                         'requestPictureInPicture']],
                     HTMLAudioElement: [[], []],
                     HTMLTableElement: [['rows', 'tBodies', 'tHead', 'tFoot', 'caption'],
                         ['insertRow', 'deleteRow', 'createTHead', 'createTBody',
@@ -13091,7 +13335,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         'contentDocument', 'contentWindow'], []],
                     HTMLEmbedElement: [['src', 'type', 'width', 'height'], []],
                     HTMLSourceElement: [['src', 'srcset', 'sizes', 'type', 'media'], []],
-                    HTMLTrackElement: [['src', 'srclang', 'label', 'kind', 'default'], []],
+                    HTMLTrackElement: [['src', 'srclang', 'label', 'kind', 'default', 'track', 'readyState'], []],
                     HTMLAreaElement: [['alt', 'coords', 'shape', 'target', 'href',
                         'rel', 'relList'], []],
                     HTMLMapElement: [['name', 'areas'], []],
@@ -13210,7 +13454,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     EventTarget.prototype.addEventListener = function(type, callback) {
                         var delegate = fenGlobalEventMethod(this, 'addEventListener');
                         if (delegate) return delegate.apply(this, arguments);
-                        if (typeof callback !== 'function') return;
+                        // An EventListener is a function or an object with
+                        // handleEvent; only a null callback is ignored (DOM 2.7 step 2).
+                        if (callback === null || (typeof callback !== 'function' && typeof callback !== 'object')) return;
                         var flat = this._fenFlattenOptions(arguments[2]);
                         // DOM 2.7 step 2.
                         if (flat.signal && flat.signal.aborted) return;
@@ -13232,6 +13478,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         if (flat.signal && typeof flat.signal.addEventListener === 'function') {
                             var target = this;
                             flat.signal.addEventListener('abort', function () {
+                                entry.removed = true;
                                 var live = fenListenerMap(target)[type];
                                 if (!live) return;
                                 var at = live.indexOf(entry);
@@ -13247,27 +13494,75 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         if (!listeners) return;
                         for (var i = listeners.length - 1; i >= 0; i--) {
                             if (listeners[i].callback === callback &&
-                                listeners[i].capture === capture) listeners.splice(i, 1);
+                                listeners[i].capture === capture) {
+                                listeners[i].removed = true;
+                                listeners.splice(i, 1);
+                            }
                         }
                     };
+                    // DOM 2.9 "dispatch" for a target with no parent: the event
+                    // path is the target alone, so every listener runs AT_TARGET
+                    // with currentTarget set, and both are reset afterwards.
                     EventTarget.prototype.dispatchEvent = function(event) {
                         var delegate = fenGlobalEventMethod(this, 'dispatchEvent');
                         if (delegate) return delegate.apply(this, arguments);
                         if (!event || typeof event.type !== 'string') return true;
+                        // DOM 2.7 dispatchEvent() step 1.
+                        if (event._fenDispatching) {
+                            throw new DOMException("Failed to execute 'dispatchEvent' on 'EventTarget': The event is already being dispatched.", 'InvalidStateError');
+                        }
+                        event._fenDispatching = true;
                         event.target = this;
+                        event.srcElement = this;
+                        event.currentTarget = this;
+                        event.eventPhase = 2;
+                        event._fenPath = [this];
                         var map = fenListenerMap(this);
                         var listeners = (map[event.type] || []).slice();
-                        for (var i = 0; i < listeners.length; i++) {
-                            var entry = listeners[i];
-                            // DOM 2.9 step 5: a once listener is removed before it
-                            // is called, so a handler that dispatches the same
-                            // event again does not re-enter it.
-                            if (entry.once) {
-                                var live = map[event.type];
-                                var at = live ? live.indexOf(entry) : -1;
-                                if (at >= 0) live.splice(at, 1);
+                        try {
+                            for (var i = 0; i < listeners.length; i++) {
+                                var entry = listeners[i];
+                                // DOM 2.10 "inner invoke" steps: stop immediately
+                                // when asked to, and skip a listener removed by an
+                                // earlier one in this same dispatch.
+                                if (event._immediatePropagationStopped) break;
+                                if (entry.removed) continue;
+                                // A once listener is removed before it is called,
+                                // so a handler that dispatches the same event
+                                // again does not re-enter it.
+                                if (entry.once) {
+                                    entry.removed = true;
+                                    var live = map[event.type];
+                                    var at = live ? live.indexOf(entry) : -1;
+                                    if (at >= 0) live.splice(at, 1);
+                                }
+                                var callback = entry.callback;
+                                try {
+                                    if (typeof callback === 'function') {
+                                        callback.call(this, event);
+                                    } else {
+                                        var handleEvent = callback.handleEvent;
+                                        if (typeof handleEvent !== 'function') {
+                                            throw new TypeError('The listener object has no handleEvent method.');
+                                        }
+                                        handleEvent.call(callback, event);
+                                    }
+                                } catch (listenerError) {
+                                    // Web IDL "call a user object's operation":
+                                    // the exception is reported, not swallowed,
+                                    // and the next listener still runs.
+                                    if (typeof globalThis.reportError === 'function') {
+                                        try { globalThis.reportError(listenerError); } catch (_reportFailure) {}
+                                    }
+                                }
                             }
-                            try { entry.callback.call(this, event); } catch(e) {}
+                        } finally {
+                            event.eventPhase = 0;
+                            event.currentTarget = null;
+                            event._fenPath = null;
+                            event._fenDispatching = false;
+                            event._propagationStopped = false;
+                            event._immediatePropagationStopped = false;
                         }
                         return !event.defaultPrevented;
                     };
@@ -13370,6 +13665,54 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             globalThis[name] = HTMLEl;
                         })(_htmlEls[_i]);
                     }
+                    // HTML 4.8.9 / 4.8.10: HTMLVideoElement and HTMLAudioElement
+                    // inherit from HTMLMediaElement, which is where play(),
+                    // currentTime and the rest are published.
+                    if (typeof globalThis.HTMLMediaElement === 'function') {
+                        var _mediaSubclasses = ['HTMLVideoElement', 'HTMLAudioElement'];
+                        for (var _m = 0; _m < _mediaSubclasses.length; _m++) {
+                            var _sub = globalThis[_mediaSubclasses[_m]];
+                            if (typeof _sub === 'function' && _sub.prototype) {
+                                Object.setPrototypeOf(_sub.prototype, globalThis.HTMLMediaElement.prototype);
+                            }
+                        }
+                    }
+                    // WebIDL constants live on the interface object and its
+                    // prototype: HTMLMediaElement's network and ready states
+                    // (HTML 4.8.11.4, 4.8.11.7) and MediaError's codes
+                    // (4.8.11.1). TimeRanges (4.8.11.13) has no constants but
+                    // has to exist for instanceof and feature detection.
+                    function _defineConstants(ctor, constants) {
+                        for (var key in constants) {
+                            var descriptor = { value: constants[key], writable: false, enumerable: true, configurable: false };
+                            Object.defineProperty(ctor, key, descriptor);
+                            Object.defineProperty(ctor.prototype, key, descriptor);
+                        }
+                    }
+                    function _defineInterface(name, base) {
+                        if (typeof globalThis[name] === 'function') return globalThis[name];
+                        function Interface() { throw new TypeError("Illegal constructor"); }
+                        Interface.prototype = Object.create(base || Object.prototype);
+                        Object.defineProperty(Interface.prototype, 'constructor', {
+                            value: Interface, writable: true, configurable: true
+                        });
+                        Object.defineProperty(Interface.prototype, Symbol.toStringTag, {
+                            value: name, configurable: true
+                        });
+                        Object.defineProperty(Interface, 'name', { value: name, configurable: true });
+                        globalThis[name] = Interface;
+                        return Interface;
+                    }
+                    if (typeof globalThis.HTMLMediaElement === 'function') {
+                        _defineConstants(globalThis.HTMLMediaElement, {
+                            NETWORK_EMPTY: 0, NETWORK_IDLE: 1, NETWORK_LOADING: 2, NETWORK_NO_SOURCE: 3,
+                            HAVE_NOTHING: 0, HAVE_METADATA: 1, HAVE_CURRENT_DATA: 2, HAVE_FUTURE_DATA: 3, HAVE_ENOUGH_DATA: 4
+                        });
+                    }
+                    _defineConstants(_defineInterface('MediaError'), {
+                        MEDIA_ERR_ABORTED: 1, MEDIA_ERR_NETWORK: 2, MEDIA_ERR_DECODE: 3, MEDIA_ERR_SRC_NOT_SUPPORTED: 4
+                    });
+                    _defineInterface('TimeRanges');
                     // HTML: the document of an HTML page is an HTMLDocument.
                     if (typeof globalThis.Document === 'function' && typeof globalThis.HTMLDocument !== 'function') {
                         function HTMLDocument() { throw new TypeError("Illegal constructor"); }
@@ -14045,12 +14388,35 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return blobUrlStore.has(key) ? blobUrlStore.get(key) : null;
                 }
                 URL.createObjectURL = function (obj) {
+                    // WebIDL: the argument is a (File or Blob or MediaSource) union.
+                    if (obj === null || typeof obj !== 'object' ||
+                        !((typeof Blob === 'function' && obj instanceof Blob) || (typeof MediaSource === 'function' && obj instanceof MediaSource))) {
+                        throw new TypeError("Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.");
+                    }
                     var url = 'blob:' + blobUrlOrigin() + '/' + newBlobUuid();
                     blobUrlStore.set(url, obj);
                     return url;
                 };
                 URL.revokeObjectURL = function (url) {
                     blobUrlStore.delete(String(url == null ? '' : url));
+                };
+                // The text of a blob: URL's entry for engine-side loaders that read from
+                // this realm's blob URL store (a track element's src); null when unknown.
+                // The entry itself, for engine-side loaders that need the object (a media
+                // element whose src is a blob URL for a MediaSource).
+                globalThis.__fenResolveBlobUrlEntry = resolveBlobUrl;
+                // The bytes and type of a blob: URL's Blob, for engine-side loaders that
+                // fetch it (File API 8.3.2: the response's Content-Type is the blob's type);
+                // null when the URL names nothing or something that is not a Blob.
+                globalThis.__fenReadBlobUrlBytes = function (url) {
+                    var entry = resolveBlobUrl(url);
+                    if (!entry || !entry._parts) return null;
+                    return { bytes: blobBytes(entry), type: String(entry.type || '') };
+                };
+                globalThis.__fenReadBlobUrlText = function (url) {
+                    var entry = resolveBlobUrl(url);
+                    if (!entry || !entry._parts) return null;
+                    return __fenTextDecode(blobBytes(entry), false);
                 };
 
                 var _trustedPolicies = Object.create(null);
@@ -14236,8 +14602,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         this.defaultPrevented = true;
                     }
                 };
+                // DOM 2.2 composedPath(): the path of the dispatch in progress, and
+                // empty once it is over.
                 Event.prototype.composedPath = function () {
-                    return [];
+                    return this._fenPath ? this._fenPath.slice() : [];
                 };
                 Event.NONE = 0;
                 Event.CAPTURING_PHASE = 1;
@@ -14941,7 +15309,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                     ? (function () { try { return JSON.parse(self.responseText); } catch (e) { return null; } })()
                                     : self.responseText;
                             if (self.onreadystatechange) self.onreadystatechange();
-                            self._dispatch(self.status >= 200 && self.status < 400 ? 'load' : 'error');
+                            // XHR §4.6.6: any HTTP response is a load, whatever its status; only a
+                            // network error (status 0) is an error event.
+                            self._dispatch(self.status !== 0 ? 'load' : 'error');
                             self._dispatch('loadend');
                         });
                         return;
@@ -14957,7 +15327,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         self.responseText = result && result.responseText ? String(result.responseText) : '';
                         self.response = self.responseText;
                         if (self.onreadystatechange) self.onreadystatechange();
-                        self._dispatch(self.status >= 200 && self.status < 400 ? 'load' : 'error');
+                        self._dispatch(self.status !== 0 ? 'load' : 'error');
                         self._dispatch('loadend');
                         return;
                     }
@@ -15635,6 +16005,32 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     }
                 })();
 
+                // WebIDL "QuotaExceededError": a DOMException subclass whose name is fixed and
+                // that carries the optional quota and requested amounts (null when unknown).
+                globalThis.QuotaExceededError = function QuotaExceededError(message, options) {
+                    DOMException.call(this, message, 'QuotaExceededError');
+                    var quota = null, requested = null;
+                    if (options !== undefined && options !== null) {
+                        if (typeof options !== 'object') throw new TypeError("The 'options' argument is not an object.");
+                        if (options.quota !== undefined) {
+                            quota = Number(options.quota);
+                            if (!(quota >= 0) || !isFinite(quota)) throw new RangeError('quota must be a non-negative finite number.');
+                        }
+                        if (options.requested !== undefined) {
+                            requested = Number(options.requested);
+                            if (!(requested >= 0) || !isFinite(requested)) throw new RangeError('requested must be a non-negative finite number.');
+                        }
+                        if (quota !== null && requested !== null && requested < quota) throw new RangeError('requested must not be less than quota.');
+                    }
+                    Object.defineProperty(this, '_quota', { value: quota, writable: true, configurable: true });
+                    Object.defineProperty(this, '_requested', { value: requested, writable: true, configurable: true });
+                };
+                QuotaExceededError.prototype = Object.create(DOMException.prototype);
+                QuotaExceededError.prototype.constructor = QuotaExceededError;
+                Object.defineProperty(QuotaExceededError.prototype, 'quota', { get: function () { return this._quota === undefined ? null : this._quota; }, configurable: true, enumerable: true });
+                Object.defineProperty(QuotaExceededError.prototype, 'requested', { get: function () { return this._requested === undefined ? null : this._requested; }, configurable: true, enumerable: true });
+                Object.defineProperty(QuotaExceededError.prototype, Symbol.toStringTag, { value: 'QuotaExceededError', configurable: true });
+
                 // Minimal queued ReadableStream/reader implementation for site
                 // bootstrap code that constructs streams or checks the global.
                 function ReadableStreamDefaultController(stream) {
@@ -16064,7 +16460,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 globalThis.TextEncoder = function TextEncoder() {};
                 TextEncoder.prototype.encode = function (input) {
                     if (input == null) input = '';
-                    return __fenTextEncode(String(input));
+                    // The spec says Uint8Array, and pages check: a plain array fails
+                    // ArrayBuffer.isView and has no byteOffset, so anything treating the
+                    // result as a BufferSource rejects it.
+                    return Uint8Array.from(__fenTextEncode(String(input)));
                 };
                 TextEncoder.prototype.encoding = 'utf-8';
                 TextEncoder.prototype.encodeInto = function (source, destination) {
@@ -17023,6 +17422,34 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         for (var i = 0; i < bytes.Length; i++)
             elements[i] = JsValue.FromInt32(bytes[i]);
         return _interpreter.AllocateArray(elements);
+    }
+
+    /// <summary>
+    /// The Blob a blob: URL of this realm names, as bytes and type; null when the URL names
+    /// nothing, or a MediaSource. Runs on the realm's thread.
+    /// </summary>
+    internal (byte[] Bytes, string Type)? ReadBlobUrlBytes(string url)
+    {
+        if (_interpreter == null || _realmAbandoned || string.IsNullOrEmpty(url))
+        {
+            return null;
+        }
+
+        var reader = ReadGlobalValueOrUndefined("__fenReadBlobUrlBytes");
+        if (!_interpreter.CanCallValue(reader))
+        {
+            return null;
+        }
+
+        var result = _interpreter.InvokeFunction(reader, new[] { JsValue.FromString(url) }, JsValue.Undefined);
+        if (result.Tag != JsValueTag.Object ||
+            !_interpreter.TryGetObjectProperty(result, "bytes", out var bytes) ||
+            !_interpreter.TryGetObjectProperty(result, "type", out var type))
+        {
+            return null;
+        }
+
+        return (ExtractBytesFromArrayLike(bytes), type.Tag == JsValueTag.String ? CoerceToHostString(type) : string.Empty);
     }
 
     private byte[] ExtractBytesFromArrayLike(JsValue value)
@@ -18830,6 +19257,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (target == null || eventValue.Tag == JsValueTag.Undefined)
             return true;
 
+        // Listeners run arbitrary script between the reads of the event below, and a
+        // collection one of them triggers must not sweep the event under the dispatch.
+        using var eventPins = PinFenJsValues(eventValue);
+
         // Check if event bubbles
         var bubblesValue = ReadJsProperty(eventValue, "bubbles");
         var bubbles = bubblesValue.Tag == JsValueTag.Boolean && bubblesValue.AsBoolean();
@@ -18932,7 +19363,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     TryReadWindowEventHandler(windowTarget, type, out var winHandler) &&
                     _interpreter.CanCallValue(winHandler))
                 {
-                    TryInvokeFenJsEventCallback(winHandler, windowTarget, eventValue, type);
+                    InvokeWindowEventHandler(winHandler, windowTarget, eventValue, type);
                 }
             }
         }
@@ -18961,22 +19392,26 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var currentTarget = ToHostOrNull(element, HostObjectKind.DomElement);
         _interpreter.SetObjectProperty(eventValue, "currentTarget", currentTarget);
 
-        // Fire registered event listeners
+        // Fire registered event listeners. DOM §2.9 "inner invoke": the list is cloned
+        // before any listener runs, so one added during this dispatch waits for the next
+        // event (a test that registers an "unexpected seeked" guard inside its seeked
+        // handler must not see the same event) and one removed is skipped.
         if (_elementEventListeners.TryGetValue(element, out var allListeners) &&
             allListeners != null && allListeners.Count > 0)
         {
-            for (int i = 0; i < allListeners.Count; i++)
+            var snapshot = allListeners.ToArray();
+            for (int i = 0; i < snapshot.Length; i++)
             {
                 if (ReadImmediatePropagationStopped(eventValue, dispatchState))
                     break;
 
-                var listener = allListeners[i];
+                var listener = snapshot[i];
                 if (!string.Equals(listener.Type, type, StringComparison.Ordinal))
                     continue;
                 if (capture.HasValue && listener.Capture != capture.Value)
                     continue;
-
-                TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
+                if (!allListeners.Contains(listener))
+                    continue;
 
                 if (listener.Once)
                 {
@@ -18984,8 +19419,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         string.Equals(existing.Type, listener.Type, StringComparison.Ordinal) &&
                         existing.Capture == listener.Capture &&
                         existing.Callback.Equals(listener.Callback));
-                    i--; // Adjust index after removal
                 }
+
+                TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
             }
         }
 
@@ -19095,6 +19531,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private void DispatchWindowLoad(Document document)
     {
+        // HTML "the end" step 7: the load event waits until nothing in the
+        // document is delaying it (a media element fetching its resource).
+        if (TryDeferDocumentLoadCompletion())
+        {
+            return;
+        }
+
+        CompleteDocumentLoad(document);
+    }
+
+    /// <summary>Readiness "complete", then the load event (HTML "the end" steps 7-9).</summary>
+    private void CompleteDocumentLoad(Document document)
+    {
         SetDocumentReadyState("complete");
         FireDocumentReadyStateChange(document);
         InvokeBodyOnloadAttribute(document);
@@ -19147,13 +19596,43 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private JsValue CreateRejectedPromise(string message, string name)
     {
         var (promise, _, reject) = ((IBuiltinContext)_interpreter).CreatePromiseCapability();
-        var errorObj = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        _ = _interpreter.InvokeFunction(reject, new[] { CreateErrorValue(name, message) }, JsValue.Undefined);
+        return promise;
+    }
+
+    /// <summary>
+    /// A real error object of the named kind: one of the ECMAScript error constructors, or
+    /// a DOMException for the WebIDL error names. A page checks these with <c>instanceof</c>
+    /// as often as it reads <c>name</c>, and an object carrying the right two properties is
+    /// not the same thing.
+    /// </summary>
+    private JsValue CreateErrorValue(string name, string message)
+    {
+        name ??= "Error";
+        bool isEcmaScriptError = name is "Error" or "TypeError" or "RangeError" or "SyntaxError"
+            or "ReferenceError" or "EvalError" or "URIError";
+
+        var ctor = ReadGlobalValueOrUndefined(isEcmaScriptError ? name : "DOMException");
+        if (_interpreter.CanCallValue(ctor))
+        {
+            try
+            {
+                return isEcmaScriptError
+                    ? _interpreter.ConstructValue(ctor, new[] { JsValue.FromString(message ?? string.Empty) })
+                    : _interpreter.ConstructValue(ctor, new[] { JsValue.FromString(message ?? string.Empty), JsValue.FromString(name) });
+            }
+            catch
+            {
+                // A realm that has lost its constructors still gets something with the
+                // right shape below.
+            }
+        }
+
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
             ["message"] = JsValue.FromString(message ?? string.Empty),
-            ["name"] = JsValue.FromString(name ?? "Error")
+            ["name"] = JsValue.FromString(name)
         });
-        _ = _interpreter.InvokeFunction(reject, new[] { errorObj }, JsValue.Undefined);
-        return promise;
     }
 
     private JsValue CreateViewTransitionResult(JsValue updateArgument)
@@ -19319,6 +19798,37 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return string.Equals(element?.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// HTML 4.8.5: an iframe in a document has a content navigable from the moment it
+    /// is inserted, so its WindowProxy is reachable as window[n] and frames[n] (7.2.2
+    /// indexed access) before its document has loaded, and the same object stays once
+    /// it has. The page's scripts see every iframe the parser created, in tree order.
+    /// </summary>
+    private void EnsureChildNavigableWindows(Node domRoot)
+    {
+        if (domRoot == null || _fenJsGlobalThis.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        foreach (var node in domRoot.Descendants())
+        {
+            if (node is Element element && IsIFrameElement(element) && element.IsConnected)
+            {
+                try
+                {
+                    _ = GetOrCreateIFrameContentWindow(element);
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Warn(
+                        $"[FenJsBridge] Could not create the window for an iframe before scripts: {ex.GetType().Name}: {ex.Message}",
+                        LogCategory.JavaScript);
+                }
+            }
+        }
+    }
+
     internal static bool IsCanvasElement(Element element)
     {
         return string.Equals(element?.TagName, "canvas", StringComparison.OrdinalIgnoreCase);
@@ -19423,6 +19933,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (IsCanvasElement(element) && _canvasRenderingContexts.TryGetValue(element, out var context))
         {
             return context.Bitmap;
+        }
+
+        if (IsVideoElement(element))
+        {
+            return CopyCurrentVideoFrame(element);
         }
 
         if (string.Equals(element.TagName, "img", StringComparison.OrdinalIgnoreCase))
@@ -19615,12 +20130,45 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             FenBrowser.Core.EngineLogCompat.Info(
                 $"[FenJsBridge] srcdoc frame loaded root='{parsedRoot.TagName}'",
                 FenBrowser.Core.Logging.LogCategory.JavaScript);
+
+            // HTML: the iframe element gets a load event once its document is there. The
+            // src path already fires one; without this, a page that waits on iframe.onload
+            // before talking to a srcdoc frame waits for ever.
+            DispatchFrameElementLoadEvent(frameElement);
         }
         catch (Exception ex)
         {
             FenBrowser.Core.EngineLogCompat.Warn(
                 $"[FenJsBridge] srcdoc frame load failed: {ex.Message}",
                 FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+    }
+
+    /// <summary>
+    /// Fires <c>load</c> at an iframe element whose document has just been put in place.
+    /// It does not bubble and is not cancelable, as the specification says.
+    /// </summary>
+    private void DispatchFrameElementLoadEvent(Element frameElement)
+    {
+        if (frameElement is null || _realmAbandoned || _interpreter is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var eventValue = CreateBrowserDomEventValue(
+                frameElement,
+                "load",
+                new BrowserDomEventInit { Bubbles = false, Cancelable = false, Composed = false, IsTrusted = true },
+                out var dispatchState);
+            _ = DispatchEventFull(frameElement, "load", eventValue, dispatchState);
+        }
+        catch (Exception ex)
+        {
+            EngineLogCompat.Warn(
+                $"[FenJsBridge] srcdoc frame load event failed: {ex.Message}",
+                LogCategory.JavaScript);
         }
     }
 
@@ -20130,7 +20678,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         var href = ResolveIFrameWindowHref(iframe, frameDocument, frameUri);
 
         var frameWindowListeners = GetIFrameWindowListeners(iframe);
-        var window = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        var window = _interpreter.AllocateForwardingObject();
         var location = CreatePlainLocationObject(href);
 
         _interpreter.SetObjectProperty(window, "document", document);
@@ -20280,6 +20828,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         SetStoredHostProperty(iframe, "__fenIframeContentWindow", window);
+        ForwardContentWindowToFrameRealm(window, iframe);
         var defaultViewDocument = frameDocument;
         if (defaultViewDocument == null)
         {
@@ -22146,14 +22695,13 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             _interpreter.SetObjectProperty(parent, "frames", frames);
         }
 
-        if (!string.IsNullOrWhiteSpace(frameName))
+        // The real window finds its child frames by name through WindowProperties
+        // (HTML 7.2.2.3), live and in tree order; only the stand-in parent objects, which
+        // have no named properties object, carry them as plain properties.
+        if (!string.IsNullOrWhiteSpace(frameName) && !parent.Equals(_fenJsGlobalThis))
         {
             _interpreter.SetObjectProperty(frames, frameName, window);
             _interpreter.SetObjectProperty(parent, frameName, window);
-            if (_fenJsGlobalThis.Tag == JsValueTag.Object && !parent.Equals(_fenJsGlobalThis))
-            {
-                _interpreter.SetObjectProperty(_fenJsGlobalThis, frameName, window);
-            }
         }
 
         var frameIndex = ReadJsProperty(window, "__fenFrameIndex");
@@ -22615,7 +23163,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         // worker or a MessagePort (HTML 9.3.3, 9.4.4, 10.2.6), so the event is trusted
         // (DOM 2.5 isTrusted). Cloudflare Turnstile ignores untrusted messages, so its
         // widget never answered its own frame's handshake.
-        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        var messageEvent = _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
             ["type"] = JsValue.FromString("message"),
             ["isTrusted"] = JsValue.FromBoolean(true),
@@ -22634,6 +23182,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             ["defaultPrevented"] = JsValue.FromBoolean(false),
             ["timeStamp"] = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds)
         });
+
+        // It is a MessageEvent (HTML 9.3.3), so the Event methods - stopPropagation,
+        // stopImmediatePropagation, preventDefault, composedPath - come with it.
+        var messageEventConstructor = ReadGlobalValueOrUndefined("MessageEvent");
+        if (messageEventConstructor.Tag == JsValueTag.Object)
+        {
+            var prototype = ReadJsProperty(messageEventConstructor, "prototype");
+            if (prototype.Tag == JsValueTag.Object)
+            {
+                _interpreter.Heap.GetObject(messageEvent.AsObjectHandle()).SetPrototype(prototype.AsObjectHandle());
+            }
+        }
+
+        return messageEvent;
     }
 
     // HTML: postMessage(message, targetOrigin, transfer) and the newer
@@ -22668,6 +23230,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             overload = args.Count > 1 ? "targetOrigin" : "bare";
         }
 
+        DetachTransferredArrayBuffers(transfer);
+
         // A delivery probe can only report the transfer list it was handed, so a
         // dropped port and a call that never carried one read the same downstream.
         // Naming the overload here separates "the page sent no port" from "we
@@ -22680,6 +23244,48 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             $"transferTag={transfer.Tag} " +
             $"transferCount={(transfer.Tag == JsValueTag.Object ? ReadArrayLikeLength(transfer) : -1)}" +
             $"{Environment.NewLine}");
+    }
+
+    /// <summary>
+    /// HTML "StructuredSerializeWithTransfer" step 5 for ArrayBuffers in the transfer
+    /// list: an already detached (or shared) buffer is a DataCloneError; the others are
+    /// detached so the sender cannot read them after the call (mediasource-append-buffer
+    /// appends a neutered buffer to see an empty append). The receiver's copy is what the
+    /// message data carries; a buffer transferred but not referenced from the data is just
+    /// gone, as it would be elsewhere.
+    /// </summary>
+    private void DetachTransferredArrayBuffers(JsValue transfer)
+    {
+        if (transfer.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var length = ReadArrayLikeLength(transfer);
+        var buffers = new List<FenBrowser.Js.Objects.ArrayBufferObject>();
+        for (var index = 0; index < length; index++)
+        {
+            var item = ReadJsProperty(transfer, index.ToString(CultureInfo.InvariantCulture));
+            if (item.Tag != JsValueTag.Object)
+            {
+                continue;
+            }
+
+            if (_interpreter.Heap.GetObject(item.AsObjectHandle()) is FenBrowser.Js.Objects.ArrayBufferObject buffer)
+            {
+                if (buffer.IsDetached || buffer.IsSharedArrayBuffer || buffers.Contains(buffer))
+                {
+                    ThrowDomException("DataCloneError", "An ArrayBuffer is detached and could not be cloned.");
+                }
+
+                buffers.Add(buffer);
+            }
+        }
+
+        foreach (var buffer in buffers)
+        {
+            buffer.Detach();
+        }
     }
 
     private string NormalizeSelfPostMessageOrigin(string targetOrigin) =>
@@ -23137,7 +23743,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     private void RefreshFrameRealmViewport(Element frameElement)
     {
         if (!IsIFrameElement(frameElement) ||
-            !_iframeRealms.TryGetValue(frameElement, out var frameRealm))
+            FindRealmForFrame(frameElement) is not { } frameRealm)
         {
             return;
         }
@@ -23206,6 +23812,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (dispatchResize)
         {
             QueueOwnedWindowEvent("resize");
+            ScheduleMediaViewportCheck();
         }
     }
 
@@ -23254,6 +23861,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (changed)
         {
             QueueOwnedWindowEvent("scroll");
+            // A media element may have scrolled out of the viewport (design section 5).
+            ScheduleMediaViewportCheck();
         }
     }
 
@@ -23427,7 +24036,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         "focus", "blur", "focusin", "focusout",
         "scroll", "wheel",
         "load", "error", "abort",
-        "touchstart", "touchend", "touchmove", "touchcancel"
+        "touchstart", "touchend", "touchmove", "touchcancel",
+        // HTML §4.8.11.17 media events and §4.8.12 cuechange, all GlobalEventHandlers.
+        "loadstart", "progress", "suspend", "emptied", "stalled", "loadedmetadata", "loadeddata",
+        "canplay", "canplaythrough", "playing", "waiting", "seeking", "seeked", "ended",
+        "durationchange", "timeupdate", "play", "pause", "ratechange", "resize", "volumechange",
+        "cuechange",
+        // EME §5 HTMLMediaElement extensions: onencrypted and onwaitingforkey.
+        "encrypted", "waitingforkey"
     };
 
     private static readonly HashSet<string> InlineEventHandlerAttributeNames =
@@ -23565,6 +24181,12 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         foreach (var listener in callbacks)
         {
+            // DOM §2.10 "inner invoke": stop once a listener asked for it.
+            if (ReadImmediatePropagationStopped(eventValue, dispatchState))
+            {
+                break;
+            }
+
             // DOM §2.9: a listener removed by an earlier one in this dispatch is
             // skipped, and a once listener is removed before it is called.
             if (!listeners.Contains(listener))
@@ -23609,7 +24231,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (TryReadWindowEventHandler(target, type, out var handler) &&
             _interpreter.CanCallValue(handler))
         {
-            TryInvokeFenJsEventCallback(handler, target, eventValue, type);
+            InvokeWindowEventHandler(handler, target, eventValue, type);
         }
 
         return !ReadJsBoolProperty(eventValue, "defaultPrevented");
@@ -23673,6 +24295,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         if (grantsTransientActivation)
         {
             _transientUserActivationDepth++;
+            _stickyUserActivation = true;
+            // HTML "activation notification": the transient activation outlives the click
+            // handler, so an API called from a promise the click started still has one.
+            _lastTransientActivation = Stopwatch.GetTimestamp();
+            _transientActivationConsumed = false;
         }
 
         try
@@ -23708,6 +24335,33 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     }
 
     private int _transientUserActivationDepth;
+    private long _lastTransientActivation;
+    private bool _transientActivationConsumed;
+
+    /// <summary>How long a click keeps granting transient activation (HTML's default).</summary>
+    private static readonly TimeSpan TransientActivationDuration = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// HTML "transient activation": a recent interaction that has not been spent yet. This
+    /// is what an API that may only run because a person asked for it looks at, and it is
+    /// not the same as sticky activation, which never goes away.
+    /// </summary>
+    internal bool HasTransientActivation =>
+        !_transientActivationConsumed &&
+        (_transientUserActivationDepth > 0 ||
+         (_lastTransientActivation != 0 && Stopwatch.GetElapsedTime(_lastTransientActivation) < TransientActivationDuration));
+
+    /// <summary>
+    /// HTML "consume user activation". False when there was none to spend, so the caller
+    /// can refuse; a second API call in the same gesture then gets nothing.
+    /// </summary>
+    internal bool ConsumeTransientActivation()
+    {
+        if (!HasTransientActivation)
+            return false;
+        _transientActivationConsumed = true;
+        return true;
+    }
 
     private bool TryNormalizePopupUrl(string rawUrl, out string normalizedUrl)
     {
@@ -24004,6 +24658,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             EngineLogCompat.Warn(
                 $"[FenJsBridge] Event listener for '{eventType ?? string.Empty}' failed: {description ?? ex.Message}",
                 LogCategory.JavaScript);
+            ReportFenJsException(ex);
             return false;
         }
         catch (Exception ex)
@@ -24416,6 +25071,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
             TraceDynamicScriptExecutionFailure(scriptRecord, batchLabel, "JsThrownException", desc ?? jte.Message);
             RecordMissingGlobalReference(desc ?? jte.Message, scriptRecord, _currentBaseUri);
+            ReportFenJsException(jte);
             return false;
         }
         catch (Exception ex)
@@ -24627,7 +25283,22 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private void OpenDocumentForWrite(Document document)
     {
-        if (document?.Body is not ContainerNode body)
+        if (document == null)
+        {
+            return;
+        }
+
+        // HTML §8.4.1 "document open steps", step 13: the document's URL becomes the
+        // entry document's URL, so markup written into an about:blank frame resolves
+        // relative URLs the way it does in the page that wrote it.
+        var entryUrl = _currentBaseUri?.AbsoluteUri;
+        if (!string.IsNullOrWhiteSpace(entryUrl) && document.URL == "about:blank")
+        {
+            document.URL = entryUrl;
+            document.BaseURI = entryUrl;
+        }
+
+        if (document.Body is not ContainerNode body)
         {
             return;
         }
@@ -24810,6 +25481,22 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 UpgradeInsertedCustomElements(first, moved);
                 QueueFrameLoadsForTree(first);
                 return inserted;
+            }
+            case "moveBefore":
+            {
+                // DOM dom-node-movebefore; Node? child takes null or undefined.
+                Node reference = null;
+                if (args.Count > 1 && args[1].Tag != JsValueTag.Null && args[1].Tag != JsValueTag.Undefined)
+                {
+                    reference = ResolveHostObjectOrNull<Node>(args[1]);
+                    if (reference == null)
+                    {
+                        ThrowDomException("TypeError", "Failed to execute 'moveBefore' on 'Node': parameter 2 is not of type 'Node'.");
+                    }
+                }
+
+                container.MoveBefore(first, reference);
+                return JsValue.Undefined;
             }
             default:
             {
@@ -26878,13 +27565,18 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     {
         var obj = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
 
-        // closed â€” read-only getter
-        _interpreter.SetObjectProperty(obj, "closed",
-            _interpreter.AllocateNativeFunction("get closed", (_, _2) =>
-            {
-                var check = JsDialogBridge.IsPopupWindowClosed;
-                return JsValue.FromBoolean(check != null && check(handle));
-            }, length: 0));
+        // closed: a getter (HTML 7.2.2.1), so it answers for the window as it is now.
+        _interpreter.Heap.GetObject(obj.AsObjectHandle()).DefineOwnProperty(
+            "closed",
+            JsPropertyDescriptor.Accessor(
+                _interpreter.AllocateNativeFunction("get closed", (_, _2) =>
+                {
+                    var check = JsDialogBridge.IsPopupWindowClosed;
+                    return JsValue.FromBoolean(check != null && check(handle));
+                }, length: 0),
+                JsValue.Undefined,
+                Enumerable: true,
+                Configurable: true));
 
         // name
         _interpreter.SetObjectProperty(obj, "name", JsValue.FromString(name ?? ""));
@@ -27505,6 +28197,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     // sets __gwbp, __jsl, and other internal bookkeeping).
                     RecordAssignedHostApi(document, "Document", property);
                     _owner.SetStoredHostProperty(document, property, value);
+                    return true;
+                case Element element when IsMediaElement(element) && _owner.TrySetMediaElementProperty(element, property, value):
+                    return true;
+                case Element element when IsTrackElement(element) && _owner.TrySetTrackElementProperty(element, property, value):
                     return true;
                 case Element element when string.Equals(property, "className", StringComparison.Ordinal):
                     element.ClassName = CoerceToHostString(value);
@@ -28921,6 +29617,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case "appendChild":
                 case "insertBefore":
+                case "moveBefore":
                 case "replaceChild":
                 case "removeChild":
                     if (node is ContainerNode container)
@@ -29254,6 +29951,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         private bool TryGetElementProperty(Element element, string property, out JsValue value)
         {
+            if (IsMediaElement(element) && _owner.TryGetMediaElementProperty(element, property, out value))
+            {
+                return true;
+            }
+
+            if (IsTrackElement(element) && _owner.TryGetTrackElementProperty(element, property, out value))
+            {
+                return true;
+            }
+
             switch (property)
             {
                 case "id":
@@ -29330,6 +30037,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case "defaultSelected" when IsOptionElement(element):
                     value = JsValue.FromBoolean(element.HasAttribute("selected"));
+                    return true;
+                case "src" when IsSourceElement(element):
+                    // HTML 4.8.2 dom-source-src reflects as a URL: a whitespace-only
+                    // value is the document URL, as a media element's currentSrc reports.
+                    value = JsValue.FromString(ReflectUrlAttribute(element, "src"));
                     return true;
                 case "src":
                     value = JsValue.FromString(ResolveElementUrlProperty(element, "src"));
@@ -29710,7 +30422,21 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         value = _owner.GetOrCreateHostCallable(
                             element,
                             property,
-                            (_, _) => _owner.CreateResolvedPromise(JsValue.Undefined),
+                            (_, _) =>
+                            {
+                                // Fullscreen API "fullscreen element ready check": the
+                                // request needs a transient activation and spends it, so a
+                                // page that has already spent the same one - on
+                                // requestPictureInPicture(), say - is refused.
+                                if (!_owner.ConsumeTransientActivation())
+                                {
+                                    return _owner.CreateRejectedPromise(
+                                        "Failed to execute 'requestFullscreen': API can only be initiated by a user gesture.",
+                                        "TypeError");
+                                }
+
+                                return _owner.CreateResolvedPromise(JsValue.Undefined);
+                            },
                             length: 0);
                         return true;
                     }
@@ -30318,6 +31044,36 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         },
                         length: 2);
                     return true;
+                case "moveBefore":
+                    // DOM dom-node-movebefore: a state-preserving move within one tree.
+                    // Node? child takes null or undefined; anything else that is not a
+                    // node is a TypeError, as for insertBefore.
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "moveBefore",
+                        (_, args) =>
+                        {
+                            var node = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (node == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Failed to execute 'moveBefore' on 'Node': parameter 1 is not of type 'Node'.");
+                            }
+
+                            Node referenceChild = null;
+                            if (args.Count > 1 && args[1].Tag != JsValueTag.Null && args[1].Tag != JsValueTag.Undefined)
+                            {
+                                referenceChild = _owner.ResolveHostObjectOrNull<Node>(args[1]);
+                                if (referenceChild == null)
+                                {
+                                    _owner.ThrowDomException("TypeError", "Failed to execute 'moveBefore' on 'Node': parameter 2 is not of type 'Node'.");
+                                }
+                            }
+
+                            element.MoveBefore(node, referenceChild);
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
+                    return true;
                 case "removeChild":
                     value = _owner.GetOrCreateHostCallable(
                         element,
@@ -30774,9 +31530,19 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                             var title = args.Count > 0 && args[0].Tag != JsValueTag.Null
                                 ? CoerceToHostString(args[0])
                                 : null;
-                            return _owner.ToHostOrNull(
-                                Document.CreateHtmlDocument(title),
-                                HostObjectKind.DomDocument);
+                            var created = Document.CreateHtmlDocument(title);
+                            // The new document's URL is about:blank and it has no browsing
+                            // context, so its fallback base URL is the creator's base URL
+                            // (HTML "fallback base URL"): a relative media src in it resolves
+                            // as it would in the associated document.
+                            var creator = implementation.OwnerDocument;
+                            var creatorBase = creator?.BaseURI ?? creator?.URL;
+                            if (!string.IsNullOrWhiteSpace(creatorBase) && creatorBase != "about:blank")
+                            {
+                                created.BaseURI = creatorBase;
+                            }
+
+                            return _owner.ToHostOrNull(created, HostObjectKind.DomDocument);
                         },
                         length: 1);
                     return true;
@@ -32907,6 +33673,14 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 args.Count >= 3 ? (float)CanvasArg(args, 2, 0d) : 0f,
                                 destWidth,
                                 destHeight);
+
+                            // A video's frame is a copy made for this draw; a canvas or image
+                            // bitmap belongs to its owner.
+                            if (_owner.ResolveHostObjectOrNull<Element>(args[0]) is { } source && IsVideoElement(source))
+                            {
+                                bitmap.Dispose();
+                            }
+
                             return JsValue.Undefined;
                         },
                         length: 3);

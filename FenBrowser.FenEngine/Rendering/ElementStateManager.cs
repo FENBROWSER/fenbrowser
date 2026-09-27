@@ -656,6 +656,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        /// <summary>
+        /// The element Picture-in-Picture is showing, which is what <c>:picture-in-picture</c>
+        /// matches. It is the element itself, never a shadow host it is reported through.
+        /// </summary>
+        public Element PictureInPictureElement { get; set; }
+
         public bool IsVisited(Element element)
         {
             if (element == null)
@@ -1291,6 +1297,19 @@ namespace FenBrowser.FenEngine.Rendering
 
         public static bool IsPictureInPictureElement(Element element)
         {
+            if (element == null)
+            {
+                return false;
+            }
+
+            // The element Picture-in-Picture is actually showing, which the script engine
+            // sets as it enters and leaves. The attribute below is only a way for a test
+            // page to pose as one without a real Picture-in-Picture window.
+            if (ReferenceEquals(Instance.PictureInPictureElement, element))
+            {
+                return true;
+            }
+
             if (!IsMediaElement(element))
             {
                 return false;
@@ -2121,6 +2140,8 @@ namespace FenBrowser.FenEngine.Rendering
                     return IsActive(element);
                 case "visited":
                     return IsVisited(element);
+                case "picture-in-picture":
+                    return PictureInPictureElement != null && ReferenceEquals(PictureInPictureElement, element);
                 // checked, disabled, enabled are attribute-based - handled separately
                 default:
                     return false;

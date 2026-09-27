@@ -61,4 +61,30 @@ public sealed class StructuredCloneTests
     {
         Assert.Throws<JsThrownException>(() => Run("structuredClone(function(){});"));
     }
+    [Fact]
+    public void ArrayBufferBytesAreCopied()
+    {
+        Assert.Equal("7,4,false", Run(
+            "var b=new ArrayBuffer(4); new Uint8Array(b)[0]=7; var c=structuredClone(b);" +
+            "new Uint8Array(b)[0]=9; [new Uint8Array(c)[0], c.byteLength, c===b].join();").AsString());
+    }
+
+    [Fact]
+    public void TransferMovesTheBytesAndDetachesTheOriginal()
+    {
+        Assert.Equal("0,true,5,4", Run(
+            "var b=new ArrayBuffer(4); new Uint8Array(b)[0]=5;" +
+            "var c=structuredClone({x:b}, {transfer:[b]}).x;" +
+            "[b.byteLength, b.detached, new Uint8Array(c)[0], c.byteLength].join();").AsString());
+    }
+
+    [Fact]
+    public void TransferringADetachedOrRepeatedBufferThrowsDataCloneError()
+    {
+        Assert.Equal("DataCloneError,DataCloneError,4", Run(
+            "var r=[]; var b=new ArrayBuffer(4); var d=new ArrayBuffer(1); structuredClone(0,{transfer:[d]});" +
+            "try{structuredClone(0,{transfer:[d]})}catch(e){r.push(e.name)}" +
+            "try{structuredClone(0,{transfer:[b,b]})}catch(e){r.push(e.name)}" +
+            "r.push(b.byteLength); r.join();").AsString());
+    }
 }

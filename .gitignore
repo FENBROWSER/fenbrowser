@@ -49,6 +49,10 @@ bld/
 # test262 / WPT toolkits are tracked wholesale (scripts/test262/, scripts/wpt/)
 !scripts/test262/**
 !scripts/wpt/**
+!scripts/media/gen_fixtures.py
+!scripts/media/wpt_failures.py
+!scripts/media/webdriver_probe.py
+!scripts/media_wpt_report.py
 !scripts/acid3_probe.py
 !scripts/chrome_captcha_probe.py
 !scripts/fenlog.py
@@ -120,3 +124,7 @@ multi_page_profile*.log
 
 # Python bytecode from scripts/ helpers importing each other
 scripts/__pycache__/
+
+# wptrunner writes its manifest next to the metadata it is given
+tools/wptrunner-fenbrowser/metadata/MANIFEST.json
+!scripts/gen_html_entities.py

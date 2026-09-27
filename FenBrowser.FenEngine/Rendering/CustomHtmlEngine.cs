@@ -461,6 +461,20 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        /// <summary>HTML §4.8.13: the user activated a media element's user agent control.</summary>
+        public void ActivateMediaControl(Element element, FenBrowser.FenEngine.Media.MediaControlAction action, double seekFraction)
+        {
+            if (element == null || _activeJs is not FenJsBrowserScriptEngine realm) return;
+            try
+            {
+                realm.ActivateMediaControl(element, action, seekFraction);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn($"[CustomHtmlEngine] media control activation failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        }
+
         public bool DispatchPointerEvent(Element element, string eventType, BrowserDomEventInit eventInit = null)
         {
             if (element == null || _activeJs == null || string.IsNullOrWhiteSpace(eventType)) return true;

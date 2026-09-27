@@ -3,7 +3,9 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Collections.Generic;
 using FenBrowser.Core.Interop.Windows;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Security.Sandbox.Windows;
 
@@ -55,6 +57,9 @@ namespace FenBrowser.Core.Security.Sandbox.Windows;
 /// </remarks>
 public sealed class WindowsJobObjectSandbox : ISandbox
 {
+    private const int ErrorAccessDenied = 5;
+    private const int ErrorNotSupported = 50;
+
     private SafeJobObjectHandle _jobHandle;
     private bool _disposed;
     private readonly OsSandboxProfile _profile;
@@ -144,11 +149,39 @@ public sealed class WindowsJobObjectSandbox : ISandbox
         {
             int err = Marshal.GetLastWin32Error();
             // ERROR_ACCESS_DENIED (5) occurs when the process is already in a job on
-            // older Windows.  On Win8+ nested jobs are supported, so this is fatal.
+            // older Windows.  On Win8+ nested jobs are supported, so this is fatal,
+            // with one exception: a job with UI restrictions cannot head a nested
+            // hierarchy (ERROR_NOT_SUPPORTED, 50). A child launched from inside such
+            // a job (the renderer starting the media process) is already in the
+            // launcher's job, which keeps it under that job's limits and kills it
+            // with the launcher. That is what the profile asked for, so it is
+            // allowed and recorded rather than refused.
+            if ((err == ErrorNotSupported || err == ErrorAccessDenied) && LauncherIsInJob())
+            {
+                SecurityDecision.Allow(
+                        "sandbox-attach",
+                        "inherited-launcher-job",
+                        $"PID {process.Id} stays in the launcher's job: profile '{_profile.Kind}' could not be nested (error {err}).",
+                        new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            ["profile"] = _profile.Kind.ToString(),
+                            ["pid"] = process.Id,
+                            ["error"] = err
+                        })
+                    .Log(LogCategory.ProcessIsolation, LogLevel.Warn);
+                System.Threading.Interlocked.Increment(ref _activeProcessCount);
+                return;
+            }
+
             throw new Win32Exception(err, $"AssignProcessToJobObject failed for PID {process.Id} (error {err}).");
         }
 
         System.Threading.Interlocked.Increment(ref _activeProcessCount);
+    }
+
+    private static bool LauncherIsInJob()
+    {
+        return Kernel32Interop.IsProcessInJob(Kernel32Interop.GetCurrentProcess(), IntPtr.Zero, out var inJob) && inJob;
     }
 
     /// <inheritdoc/>

@@ -158,6 +158,34 @@
           "Microsoft.Extensions.Logging.Abstractions": "[10.0.9, )",
           "NodaTime": "[3.3.2, )"
         }
+      },
+      "fenbrowser.media": {
+        "type": "Project"
+      },
+      "fenbrowser.media.audio": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )"
+        }
+      },
+      "fenbrowser.media.codecs.ffmpeg": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )"
+        }
+      },
+      "fenbrowser.media.codecs.mediafoundation": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )",
+          "FenBrowser.Media.Gpu": "[1.0.0, )"
+        }
+      },
+      "fenbrowser.media.gpu": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Media": "[1.0.0, )"
+        }
       }
     }
   }

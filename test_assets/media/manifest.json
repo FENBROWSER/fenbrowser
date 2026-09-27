@@ -1,0 +1,373 @@
+{
+  "generator": "scripts/media/gen_fixtures.py",
+  "ffmpeg": "ffmpeg version 8.1.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers",
+  "fixtures": [
+    {
+      "file": "sine_mp3_noid3.mp3",
+      "bytes": 16718,
+      "sha256": "0fdb1cbe0998f1ba78dd8b44b11bdea349c631a518d48103b5a3527b2b9e1b8a",
+      "sniff": "audio/mpeg",
+      "note": "MPEG-1 Layer III frames from byte 0: the MP3-without-ID3 signature",
+      "container": "mp3",
+      "durationSeconds": 1.045,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "mp3",
+          "timeBase": "1/14112000",
+          "sampleRate": 44100,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "sine_mp3_id3.mp3",
+      "bytes": 17155,
+      "sha256": "b71fa5825997f5631b3ef5be9610c24812345654ca28074b5e1f2ede08d002b1",
+      "sniff": "audio/mpeg",
+      "note": "ID3v2 tag: the ID3 pattern row",
+      "container": "mp3",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "mp3",
+          "timeBase": "1/14112000",
+          "sampleRate": 44100,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "sine_mp3_mpeg2.mp3",
+      "bytes": 8568,
+      "sha256": "039f9a3b53b059db576d3b1602c69bec072fefb34a3532dbf006abdd104e6c36",
+      "sniff": "audio/mpeg",
+      "note": "MPEG-2 Layer III: half-rate tables and the 72 scale",
+      "container": "mp3",
+      "durationSeconds": 1.071,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "mp3",
+          "timeBase": "1/14112000",
+          "sampleRate": 22050,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "sine_opus.ogg",
+      "bytes": 5108,
+      "sha256": "ee8e4f6700624044c1a4e01a23a3848ef70c040799371e4226f8d38be25e56c2",
+      "sniff": "application/ogg",
+      "note": "OggS NUL pattern row",
+      "container": "ogg",
+      "durationSeconds": 1.006,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "opus",
+          "timeBase": "1/48000",
+          "sampleRate": 48000,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "sine_vorbis.ogg",
+      "bytes": 5361,
+      "sha256": "ce39863deca6512e8659410ec4ac31c40481771d3c19327a8f5f09b8bb558612",
+      "sniff": "application/ogg",
+      "note": "OggS NUL pattern row",
+      "container": "ogg",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "vorbis",
+          "timeBase": "1/48000",
+          "sampleRate": 48000,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "sine_flac.flac",
+      "bytes": 21449,
+      "sha256": "08b9eafb27c766f5b027d0f562a3b5ca9fce341c1eab60d70b9164d830433cf1",
+      "sniff": null,
+      "note": "fLaC is not in the sniffing table",
+      "container": "flac",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "flac",
+          "timeBase": "1/48000",
+          "sampleRate": 48000,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "sine_pcm16.wav",
+      "bytes": 96044,
+      "sha256": "4c137f3c622314f3382f41af7f454c3ccfe45739e7efa798fd8b4d41723d3883",
+      "sniff": "audio/wave",
+      "note": "RIFF WAVE pattern row",
+      "container": "wav",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "pcm_s16le",
+          "timeBase": "1/48000",
+          "sampleRate": 48000,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "sine_aac.m4a",
+      "bytes": 9265,
+      "sha256": "65dc71856b75f91f8ed7e7f169086484424a938756b5579112f8bfbdde78cd7d",
+      "sniff": null,
+      "note": "ftyp M4A with no brand starting mp4",
+      "container": "mov,mp4,m4a,3gp,3g2,mj2",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "aac",
+          "timeBase": "1/48000",
+          "sampleRate": 48000,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "sine_aac.aac",
+      "bytes": 8639,
+      "sha256": "f59d0ed61204bcdc962bc6db82ae677c0e189690e62a012422780b657f28eeb6",
+      "sniff": null,
+      "note": "ADTS frames: no signature in the sniffing table",
+      "container": "aac",
+      "durationSeconds": 1.024,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "aac",
+          "timeBase": "1/28224000",
+          "sampleRate": 48000,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "sine_opus.webm",
+      "bytes": 5671,
+      "sha256": "09f7ed9985124362e2d8943d3fd150841476100811796d63113741a98f9c8f0f",
+      "sniff": "video/webm",
+      "note": "EBML DocType webm (audio-only WebM still sniffs as video/webm)",
+      "container": "matroska,webm",
+      "durationSeconds": 1.008,
+      "streams": [
+        {
+          "index": 0,
+          "type": "audio",
+          "codec": "opus",
+          "timeBase": "1/1000",
+          "sampleRate": 48000,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "pattern_vp9.webm",
+      "bytes": 2336,
+      "sha256": "085d05dbd0d35f32f7f89b148c4667f57c411c99be6c4c83f26023df0896dde2",
+      "sniff": "video/webm",
+      "note": "EBML DocType webm",
+      "container": "matroska,webm",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "video",
+          "codec": "vp9",
+          "timeBase": "1/1000",
+          "width": 64,
+          "height": 48
+        }
+      ]
+    },
+    {
+      "file": "pattern_vp8_vorbis.webm",
+      "bytes": 8826,
+      "sha256": "be32b1780b25de75840733bd78a3b7e0e36a247c8a53b97e3766377d616e2e66",
+      "sniff": "video/webm",
+      "note": "EBML DocType webm, two tracks",
+      "container": "matroska,webm",
+      "durationSeconds": 1.003,
+      "streams": [
+        {
+          "index": 0,
+          "type": "video",
+          "codec": "vp8",
+          "timeBase": "1/1000",
+          "width": 64,
+          "height": 48
+        },
+        {
+          "index": 1,
+          "type": "audio",
+          "codec": "vorbis",
+          "timeBase": "1/1000",
+          "sampleRate": 48000,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "pattern_av1.webm",
+      "bytes": 2215,
+      "sha256": "f9f867d55eb2d82a94fc2878754164aef95c4e9c6d1d222446f7230601459d21",
+      "sniff": "video/webm",
+      "note": "EBML DocType webm",
+      "container": "matroska,webm",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "video",
+          "codec": "av1",
+          "timeBase": "1/1000",
+          "width": 64,
+          "height": 48
+        }
+      ]
+    },
+    {
+      "file": "pattern_vp9_720p.webm",
+      "bytes": 46969,
+      "sha256": "14b1aeb71b5a12e5ae5de95f30d5accc5dbe86caeba5d9e126e40943118e5f30",
+      "sniff": "video/webm",
+      "note": "720p so a hardware decoder will take it (M7)",
+      "container": "matroska,webm",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "video",
+          "codec": "vp9",
+          "timeBase": "1/1000",
+          "width": 1280,
+          "height": 720
+        }
+      ]
+    },
+    {
+      "file": "pattern_vp9.mkv",
+      "bytes": 2385,
+      "sha256": "9e51a4e3690d44d2e5e88725cc2520c72828b5889427a15ef1170d615989aa15",
+      "sniff": null,
+      "note": "EBML DocType matroska is not webm",
+      "container": "matroska,webm",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "video",
+          "codec": "vp9",
+          "timeBase": "1/1000",
+          "width": 64,
+          "height": 48
+        }
+      ]
+    },
+    {
+      "file": "pattern_h264_aac.mp4",
+      "bytes": 12140,
+      "sha256": "f366a6be275dc272f29e6d43fab18107e8c745aa9f2bbfd9e62cad2a9955ae40",
+      "sniff": "video/mp4",
+      "note": "ftyp isom with compatible brand mp41",
+      "container": "mov,mp4,m4a,3gp,3g2,mj2",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "video",
+          "codec": "h264",
+          "timeBase": "1/10240",
+          "width": 64,
+          "height": 48
+        },
+        {
+          "index": 1,
+          "type": "audio",
+          "codec": "aac",
+          "timeBase": "1/48000",
+          "sampleRate": 48000,
+          "channels": 1
+        }
+      ]
+    },
+    {
+      "file": "pattern_h264_faststart.mp4",
+      "bytes": 2940,
+      "sha256": "4cab4a2bc961d10feb3362caa6e2a889eb5c107cb407c32532003bae321cdc85",
+      "sniff": "video/mp4",
+      "note": "moov before mdat",
+      "container": "mov,mp4,m4a,3gp,3g2,mj2",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "video",
+          "codec": "h264",
+          "timeBase": "1/10240",
+          "width": 64,
+          "height": 48
+        }
+      ]
+    },
+    {
+      "file": "pattern_h264_fragmented.mp4",
+      "bytes": 2983,
+      "sha256": "382bed806c0308bda3180fd474a82be2571139fd0e1dd6c3db4647affcb85463",
+      "sniff": "video/mp4",
+      "note": "fragmented MP4 (MSE shape): 28-byte ftyp iso5, compatible mp41 at offset 24",
+      "container": "mov,mp4,m4a,3gp,3g2,mj2",
+      "durationSeconds": 1.0,
+      "streams": [
+        {
+          "index": 0,
+          "type": "video",
+          "codec": "h264",
+          "timeBase": "1/10240",
+          "width": 64,
+          "height": 48
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "file": "pattern_h264_ref.nv12",
+      "source": "pattern_h264_aac.mp4",
+      "bytes": 46080,
+      "sha256": "4210aa56c0204703110bb7e8732e0f54bda6f63638ea62074c389fadf6194769",
+      "note": "ffmpeg's decode of the H.264 track, 10 NV12 pictures of 64x48"
+    }
+  ]
+}

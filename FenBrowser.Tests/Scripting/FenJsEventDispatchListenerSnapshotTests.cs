@@ -50,6 +50,18 @@ public sealed class FenJsEventDispatchListenerSnapshotTests
             pic.dispatchEvent(new Event('pong'));
             pic.dispatchEvent(new Event('pong'));
             globalThis.__onceRuns = onceRuns;
+
+            // An element listener that registers a guard for the same event type: the
+            // guard sees the next dispatch, not the one that installed it
+            // (mediasource-redundant-seek's "Unexpected event 'seeked'").
+            var guardRuns = 0;
+            pic.addEventListener('seeked', function () {
+                pic.addEventListener('seeked', function () { guardRuns++; });
+            }, { once: true });
+            pic.dispatchEvent(new Event('seeked'));
+            globalThis.__guardAfterFirst = guardRuns;
+            pic.dispatchEvent(new Event('seeked'));
+            globalThis.__guardAfterSecond = guardRuns;
             </script></body></html>
             """,
             baseUri).Parse();
@@ -65,6 +77,8 @@ public sealed class FenJsEventDispatchListenerSnapshotTests
             Assert.Equal("3", engine.Evaluate("String(globalThis.__afterSecond)")?.ToString());
             Assert.Equal("false", engine.Evaluate("String(globalThis.__removedRan)")?.ToString());
             Assert.Equal("1", engine.Evaluate("String(globalThis.__onceRuns)")?.ToString());
+            Assert.Equal("0", engine.Evaluate("String(globalThis.__guardAfterFirst)")?.ToString());
+            Assert.Equal("1", engine.Evaluate("String(globalThis.__guardAfterSecond)")?.ToString());
         }
         finally
         {

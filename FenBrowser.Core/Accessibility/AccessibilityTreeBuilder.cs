@@ -14,8 +14,17 @@ namespace FenBrowser.Core.Accessibility
     /// Builds an <see cref="AccessibilityNode"/> tree from a <see cref="Document"/>.
     /// Follows the ARIA spec §4.1.2 inclusion/exclusion rules.
     /// </summary>
+    /// <summary>What a media element's user agent controls show, for their accessible nodes.</summary>
+    public sealed record MediaControlsAccessibility(bool Paused, bool Muted, double CurrentTime, double Duration);
+
     public static class AccessibilityTreeBuilder
     {
+        /// <summary>
+        /// Answers the state of a media element's user agent controls (HTML §4.8.13), so the
+        /// tree can expose them; the rendering engine installs it. Null means no controls.
+        /// </summary>
+        public static Func<Element, MediaControlsAccessibility> MediaControlsProvider { get; set; }
+
         /// <summary>
         /// Builds the accessibility tree rooted at <paramref name="doc"/>.
         /// Returns null when the document has no document element.
@@ -101,7 +110,48 @@ namespace FenBrowser.Core.Accessibility
                     AppendChild(ownedEl, doc, ariaOwnsMap, ownedElements, visited, parentHidden, result);
             }
 
+            AppendMediaControls(parent, parentHidden, result);
             return result;
+        }
+
+        /// <summary>
+        /// HTML §4.8.13: a media element showing its user agent controls exposes them as a
+        /// play/pause button, a seek slider and a mute button, the way the shipping engines'
+        /// shadow controls do. They have no elements of their own, so they point at the
+        /// media element and carry their state as ARIA properties.
+        /// </summary>
+        private static void AppendMediaControls(Element parent, bool parentHidden, List<AccessibilityNode> result)
+        {
+            var tag = parent.LocalName?.ToLowerInvariant();
+            if (tag != "video" && tag != "audio") return;
+            if (!parent.HasAttribute("controls")) return;
+            var state = MediaControlsProvider?.Invoke(parent) ?? new MediaControlsAccessibility(true, false, 0, double.NaN);
+
+            result.Add(new AccessibilityNode(parent, AriaRole.Button, state.Paused ? "Play" : "Pause", "", parentHidden,
+                new List<AccessibilityNode>(), new Dictionary<string, string>(StringComparer.Ordinal)));
+
+            var duration = double.IsNaN(state.Duration) || double.IsInfinity(state.Duration) ? 0 : state.Duration;
+            var slider = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["aria-valuemin"] = "0",
+                ["aria-valuemax"] = duration.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+                ["aria-valuenow"] = Math.Max(0, state.CurrentTime).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+                ["aria-valuetext"] = FormatMediaTime(state.CurrentTime) + " of " + FormatMediaTime(duration),
+            };
+            result.Add(new AccessibilityNode(parent, AriaRole.Slider, "Seek", "", parentHidden, new List<AccessibilityNode>(), slider));
+
+            result.Add(new AccessibilityNode(parent, AriaRole.Button, state.Muted ? "Unmute" : "Mute", "", parentHidden,
+                new List<AccessibilityNode>(), new Dictionary<string, string>(StringComparer.Ordinal)));
+        }
+
+        private static string FormatMediaTime(double seconds)
+        {
+            if (double.IsNaN(seconds) || double.IsInfinity(seconds) || seconds < 0) return "0:00";
+            long total = (long)Math.Floor(seconds);
+            long h = total / 3600, m = (total % 3600) / 60, s = total % 60;
+            return h > 0
+                ? string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0}:{1:00}:{2:00}", h, m, s)
+                : string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0}:{1:00}", m, s);
         }
 
         /// <summary>

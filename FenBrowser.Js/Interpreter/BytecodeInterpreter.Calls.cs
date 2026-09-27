@@ -420,6 +420,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue CallAsyncFunctionBody(JsFunctionObject fn, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
         var capability = NewPromiseCapability();
+        using var capabilityScope = PinPromiseCapability(capability);
 
         // Create an AsyncContext to hold suspended state. If the body
         // never awaits, the context is unused and the fast path applies.

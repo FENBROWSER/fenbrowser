@@ -55,6 +55,21 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 style.Display = "none";
             }
 
+            // HTML 15.5.x rendering of video: the poster frame and video frames are
+            // letterboxed into the content box (Chromium's html.css: video { object-fit: contain }).
+            // Audio without controls is not rendered at all.
+            if (tag == "VIDEO")
+            {
+                if (style == null) style = new CssComputed();
+                if (string.IsNullOrEmpty(style.ObjectFit)) style.ObjectFit = "contain";
+            }
+
+            if (tag == "AUDIO" && !node.HasAttribute("controls"))
+            {
+                if (style == null) style = new CssComputed();
+                style.Display = "none";
+            }
+
             // Dialog
             if (tag == "DIALOG")
             {

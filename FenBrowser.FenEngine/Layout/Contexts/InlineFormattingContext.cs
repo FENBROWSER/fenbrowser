@@ -1266,7 +1266,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
-            if (tag != "IMG" && tag != "SVG" && tag != "CANVAS" && tag != "IFRAME" && tag != "OBJECT" && tag != "VIDEO" &&
+            if (tag != "IMG" && tag != "SVG" && tag != "CANVAS" && tag != "IFRAME" && tag != "OBJECT" && tag != "VIDEO" && tag != "AUDIO" &&
                 tag != "INPUT" && tag != "TEXTAREA" && tag != "SELECT")
             {
                 return false;
@@ -2308,7 +2308,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                        tag == "CANVAS" ||
                        tag == "IFRAME" ||
                        tag == "OBJECT" ||
-                       tag == "VIDEO";
+                       tag == "VIDEO" ||
+                       tag == "AUDIO";
             }
 
             return false;

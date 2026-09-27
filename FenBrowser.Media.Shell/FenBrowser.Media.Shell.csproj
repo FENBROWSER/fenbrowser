@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- fenplay: work on the media engine without building or launching the browser. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>fenplay</AssemblyName>
+    <RootNamespace>FenBrowser.Media.Shell</RootNamespace>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\FenBrowser.Media\FenBrowser.Media.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Codecs.Ffmpeg\FenBrowser.Media.Codecs.Ffmpeg.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Codecs.MediaFoundation\FenBrowser.Media.Codecs.MediaFoundation.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Audio\FenBrowser.Media.Audio.csproj" />
+    <ProjectReference Include="..\FenBrowser.Media.Gpu\FenBrowser.Media.Gpu.csproj" />
+  </ItemGroup>
+</Project>

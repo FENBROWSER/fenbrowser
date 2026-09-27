@@ -59,6 +59,27 @@ public sealed class PromiseReactionJob : PromiseJob
     }
 }
 
+// HTML 8.1.7.3 "queue a microtask" from queueMicrotask(callback) or the host. It
+// shares the promise jobs' queue because HTML has a single microtask queue: a
+// callback queued between two reactions runs between them. Unlike a promise job,
+// an exception thrown by the callback is reported to the host.
+public sealed class HostCallbackJob : PromiseJob
+{
+    public HostCallbackJob(JsValue callback, int realmId)
+        : base(realmId)
+    {
+        Callback = callback;
+    }
+
+    public JsValue Callback { get; }
+
+    public override void Trace(IHeapTracer tracer)
+    {
+        ArgumentNullException.ThrowIfNull(tracer);
+        TraceValue(tracer, Callback);
+    }
+}
+
 // 27.2.2.2 NewPromiseResolveThenableJob ( promiseToResolve, thenable, then ). Used
 // when a promise resolves with a value that has a `then` method - the spec defers the
 // .then(...) call to a job so that the resolution observer sees the same ordering as

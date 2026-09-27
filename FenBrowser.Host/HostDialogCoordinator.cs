@@ -232,6 +232,16 @@ public static class HostDialogCoordinator
                 return;
             }
 
+            // Headless, nobody would see a popup window; under ANGLE its render thread
+            // would share ANGLE's one process-wide display with the main window's and
+            // corrupt it (a GRContext flush access violation on the next main frame).
+            // The popup's browsing context lives in the engine either way; only the
+            // OS window that paints it is left out.
+            if (WindowManager.Instance.IsHeadless || FenBrowser.Host.Platform.GlContextCreationPolicy.UsesEgl)
+            {
+                return;
+            }
+
             // The popup window is the only surface for window.open(). The previous
             // flow also created a main-window tab per popup, duplicating the load
             // and stealing active-tab focus; document.write popups surfaced only as

@@ -47,6 +47,45 @@ namespace FenBrowser.Tests.Dom
             Assert.True(target.Matches("[data-code='AbC' s]"));
         }
 
+        [Fact]
+        public void QuerySelector_ReadsCssEscapesInAnIdentifier()
+        {
+            // The form wptrunner builds every selector in: each character as a hex escape
+            // followed by a space. It has to find the same element the plain selector does.
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <button id='wpt-test-driver-bless-1'></button>
+    <p class='a.b'></p>
+</body></html>");
+
+            var escaped = "#" + string.Concat("wpt-test-driver-bless-1".Select(c => "\\" + ((int)c).ToString("x") + " "));
+            Assert.NotNull(doc.QuerySelector(escaped));
+            Assert.Same(doc.QuerySelector("#wpt-test-driver-bless-1"), doc.QuerySelector(escaped));
+
+            // A character that would otherwise be a selector of its own, escaped: the class
+            // here really is called "a.b".
+            Assert.NotNull(doc.QuerySelector(".a\\.b"));
+        }
+
+        [Fact]
+        public void QuerySelector_MatchesATypeSelectorInAnyNamespace()
+        {
+            // "*|button" is the form wptrunner names an element without an id in, so every
+            // test that asks for a click on one depends on it parsing.
+            var doc = Parse(@"
+<!doctype html>
+<html><body>
+    <p></p>
+    <button id='b'></button>
+</body></html>");
+
+            Assert.Same(doc.QuerySelector("#b"), doc.QuerySelector(":root > *|body:nth-child(2) > *|button:nth-child(2)"));
+            Assert.NotNull(doc.QuerySelector("|button"));
+            Assert.Equal(2, doc.QuerySelectorAll("*|body > *|*").Count());
+            Assert.Throws<DomException>(() => doc.QuerySelector("svg|rect"));
+        }
+
         private static Document Parse(string html)
         {
             var parser = new HtmlParser(html);
