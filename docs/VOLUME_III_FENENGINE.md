@@ -10669,7 +10669,7 @@ Verification: 117 focused tests (`FenBrowser.Tests/Svg`): parser security suite 
 | <image> data: URI rasters | supported | base64 only; encoded/decoded budgets; preserveAspectRatio meet/slice/none |
 | use/symbol (+ nested svg viewports) | supported | cycle guards |
 | currentColor inheritance | supported | including inside gradients, patterns, and filters |
-| switch | partial | first drawable child; requiredFeatures treated as pass |
+| switch | partial | first drawable child, `foreignObject` included; an unanswerable conditional-processing list is refused, not skipped |
 | direct and shaped text (tspan, textPath, complex scripts) | supported | bounded budgets; vertical writing modes are unsupported |
 | patterns / masks / markers / filters | supported when referenced | unused definitions do not force a rejection |
 | bounded document-time animation (`animate`, `set`, `animateMotion`) | supported | deterministic snapshot at a caller-supplied document time; unsupported timing is rejected |
@@ -11663,6 +11663,11 @@ Verification:
 - `requiredFeatures` and locale-dependent `systemLanguage` negotiation remain
   separate open work. The first-party renderer is now the only backend (2.177).
 
+Superseded in part by 2.178 "Conditional processing": the suppression rule above
+stays, but a `requiredExtensions` list this renderer cannot answer is now refused
+with a reason instead of being dropped, `requiredFeatures` and `systemLanguage` are
+decided by the same rule, and `switch` offers `foreignObject` as a branch.
+
 ## 2.163 First-Party SVG Pattern Paint Servers (2026-09-05)
 
 - The first-party paint pipeline now renders local `pattern` servers through
@@ -12190,6 +12195,66 @@ gate is to be replaced by. The refusal today is conservative in the safe
 direction, and the walk's value today is that a document which later drops the gate
 is already classified correctly rather than by a blanket "contains foreignObject".
 
+The gate is still load-bearing, and the two reasons are measured rather than
+asserted. Dropping it recovers nothing: over the 560 `struct`/`import`/
+`extensibility` documents the corpus admits 365 first-party, 27 comparable WPT
+references, and 0 reference failures with the gate in force, and 364/27/0 with it
+removed - the one-document difference there is a 250 ms timeout, not a document. But
+dropping it is unsafe, because the walk is not reached for a `foreignObject` nothing
+points at. A document whose only content is an unreferenced `foreignObject` inside
+`defs` renders as an admissible empty frame with no reason code at all once the gate
+is gone, and so does one that reaches its `foreignObject` through a `use` chain longer
+than `MaxReferenceDepth`, where the budget records a `Warn` that no reason code keys
+off. Both are blank frames where a browser paints the subtree. The two remaining
+budget paths - the render-depth budget in `DrawElement` and the use-chain budget in
+`DrawUse` - warn rather than refuse, so the gate stays until they do.
+
+### Conditional processing
+
+`requiredExtensions`, `requiredFeatures`, and `systemLanguage` each hold a list of
+identifiers from a namespace the specification owns, and each answers a question about
+the user agent. This renderer claims no SVG extension, declines a range of SVG
+features, and has no user language, so a list of identifiers from those namespaces
+asks a question it cannot answer. One rule covers all three:
+
+- Absent: the attribute is not a condition, so the element is not filtered.
+- Empty list: false for every user agent, so the element is filtered and the walk
+  continues. SVG 1.1 evaluates an empty `requiredExtensions`, `requiredFeatures`, or
+  `systemLanguage` to false, and `struct/reftests/requiredextensions-empty-string.svg`
+  is a reftest for it.
+- A list containing at least one identifier no user agent can be shown to implement:
+  false for every user agent, so the element is filtered and the walk continues. For
+  `requiredExtensions` and `requiredFeatures` that is one unrecognised identifier
+  settling the whole list, because both are satisfied only when every entry is. An
+  extension identifier outside the two the specification defines
+  (`http://www.w3.org/1999/xhtml`, `http://www.w3.org/1999/xlink`), a feature string
+  outside the SVG 1.1/2 feature namespace, and a language tag that is not well formed
+  are all in this class, and a document whose fallback branch is the correct frame
+  stays decidable and keeps rendering it.
+- A list made only of identifiers the engine cannot answer: fails closed, with a
+  reason naming the identifier, and no later branch is painted in its place. The
+  reasons are `SVG conditional processing attribute 'requiredExtensions' requires
+  compatibility fallback for unimplemented extension '<id>'` and the same wording
+  for `requiredFeatures` with `feature`, and for `systemLanguage` with `language
+  '<tag>' this renderer has no user language for`. They classify as
+  `unsupported-property`.
+
+The language-tag test is deliberately permissive - a non-empty run of ASCII
+alphanumerics and hyphens with no empty subtag - because a real tag rejected as
+malformed would let the walk paint a fallback branch a browser does not paint, while a
+malformed tag accepted as well formed only costs a refusal the walk could have decided.
+
+`switch` consumes the same decision for branch selection and stops the scan on the
+first unanswerable child instead of falling through to the next sibling. A `switch`
+whose first child is a `foreignObject` offers it as a branch: the branch list is the
+set of children the draw dispatch has a decision for, and a browser may select
+`foreignObject`, so omitting it made the walk paint the next sibling where a browser
+paints the branch it selected. Offering it costs nothing new, because
+`DrawForeignObject` decides the branch and records the reason it cannot be painted,
+and the switch has committed to the branch by then. Elements outside the list are the
+non-rendering kinds the draw dispatch already declines everywhere else, and are not
+re-decided here.
+
 ### Transform precision
 
 Angles stay in `double` through the unit conversion in both transform paths - the
@@ -12403,11 +12468,18 @@ conditional on the overflow value indicating that the marker needs clipping, and
 defers to CSS - where `auto` is a clipping value. The engine follows the oracle, so
 it deviates from the letter of the CSS definition for `auto` on purpose.
 
-The clip itself is an axis-aligned `ClipRect`. Skia resolves that as an exact bounds
-test; in the only case that is not true - a rect that no longer lands axis aligned
-in device space - the boundary is biased by half a device pixel so content lying on
-the viewport edge keeps its own antialiased coverage while content spilling further
-than half a pixel is still clipped.
+The clip is antialiased, because the oracle draws it with a clip path and Skia
+antialiases that. An axis-aligned rect that still lands axis aligned in device
+space goes through `ClipPath` rather than `ClipRect`, since Skia resolves the
+latter as an exact bounds test: on a marker viewport edge that lands on a
+fractional device pixel the exact test hands the straddling pixel to the marker
+whole or not at all. The one case Skia cannot express as bounds - a rect that no
+longer lands axis aligned in device space - was already sampled per pixel, and
+there the boundary is biased by half a device pixel so content lying on the
+viewport edge keeps its own antialiased coverage while content spilling further
+than half a pixel is still clipped. That case is not biased the other way round:
+biasing an antialiased boundary would paint up to half a pixel outside the
+viewport, which is the frame the oracle does not draw.
 
 ### The font fallback order is family, then generic, then the configured face
 
@@ -12482,6 +12554,48 @@ coverage-floored, and bit-for-bit repeatable, with the frame written to
 the discovery-derived count from the run rather than copying a count forward. The
 corpus and declared-reference evidence for this contract is in VOLUME_VI 6.244 and
 6.245.
+
+## 2.179 The Marker Viewport Clip Is Antialiased (2026-09-27)
+
+The implicit marker-viewport clip is established with `ClipPath` whenever the
+viewport still lands axis aligned in device space, and with a half-device-pixel
+biased `ClipRect` when it does not. The split is not cosmetic. Skia resolves an
+axis-aligned `ClipRect` as an exact bounds test, so a marker viewport edge landing
+on a fractional device pixel took the straddling pixel whole or dropped it whole,
+while the browser-authored oracle draws the same boundary with a clip path, which
+Skia antialiases. `painting/marker-005` groups every subtest at `scale(0.6)`, so
+every one of its marker viewport edges is fractional and every pixel on one was
+wrong.
+
+- `painting/marker-005.svg` goes from 650 differing pixels at maximum channel
+  difference 128 to 53 at 127. The 597 closed pixels are all on a marker viewport
+  boundary and are now byte-identical to the oracle, at both axis-aligned and
+  sampled orientations.
+- The 53 that remain are two named classes, neither of which the test document can
+  reach. 20 are in the `auto` column, where the oracle's `amarkerStart` draws a
+  `100x100` rect whose top-left corner sits exactly on the viewport origin under a
+  viewBox clip, so the oracle double-counts the boundary antialiasing relative to
+  the test document's single `15x15` rect with no clip. 33 are the deliberate
+  half-device-pixel bias over-covering the 45-degree marker boundary in the
+  `default`, `scroll` and `hidden` columns.
+- `painting/marker-006.svg` is unchanged at 32 differing pixels at maximum channel
+  difference 1, and marker-001 through -004, -007 through -009, marker-orient-001,
+  the `painting/reftests/marker-*` set and `text/reftests/text-context-fill.svg` stay
+  at zero.
+- `marker-006` is not reachable from here. All 32 pixels are the `+1` of coverage on
+  the antialiased edges of its one 45-degree marker, whose vertices are inscribed in
+  the marker viewport, so the clip is a geometric no-op and the reference draws the
+  triangle with no clip at all. Removing the clip entirely does reach zero, and costs
+  18307 and 27203 differing pixels on marker-007 and marker-008; widening the bias to
+  a whole and then to eight device pixels leaves marker-006 at exactly 32 while
+  taking marker-005 back to 515. The residual is the rasterization path Skia takes
+  when an antialiased mask is present at all, not the boundary's position, so no bias
+  magnitude reaches it.
+- `dotnet test FenBrowser.Tests --filter "FullyQualifiedName~FenBrowser.Tests.Svg"`: pass
+  (1932/1932) on 2026-09-27, including
+  `MarkerDefaultOverflow_KeepsAntialiasedCoverageOnTheViewportEdge` and the added
+  `MarkerDefaultOverflow_AntialiasesAnAxisAlignedViewportEdgeOnAFractionalDevicePixel`,
+  which fails against the exact bounds clip.
 
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 

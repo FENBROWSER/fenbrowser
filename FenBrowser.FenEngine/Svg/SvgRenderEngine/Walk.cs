@@ -534,14 +534,15 @@ namespace FenBrowser.FenEngine.Svg
         ///
         /// This decision governs only the foreignObjects the walk is reached for, so
         /// it is not a substitute for the parse-time gate in
-        /// SvgFeatureSupport.FallbackElements. A paintable foreignObject can be
-        /// skipped before it gets here - DrawSwitch does not offer 'foreignObject' as
-        /// a selectable branch, a requiredExtensions branch is dropped without a
-        /// reason, and the render-depth and use-chain budgets warn rather than
-        /// refuse. Any removal of that gate has to close those paths first, or
-        /// struct/reftests/requiredextensions-xhtml.tentative.svg paints a red
-        /// fallback rect where a browser paints green.
+        /// SvgFeatureSupport.FallbackElements. Two skip paths a foreignObject can
+        /// still be lost on are budgets that warn rather than refuse - the render
+        /// depth budget in DrawElement and the use-chain budget in DrawUse - so any
+        /// removal of that gate has to close those first. The switch branch list and
+        /// the conditional processing gate no longer lose one: DrawSwitch offers
+        /// 'foreignObject' as a branch, and a requiredExtensions branch this
+        /// renderer cannot answer is refused with a reason instead of being dropped.
         /// </summary>
+
         private void DrawForeignObject(
             SvgElement el,
             SKCanvas canvas,
@@ -645,6 +646,30 @@ namespace FenBrowser.FenEngine.Svg
             return false;
         }
 
+        /// <summary>
+        /// Draws a switch. A switch renders exactly one branch: the first direct
+        /// child whose conditional processing attributes all evaluate to true.
+        ///
+        /// The branch list is the set of children the draw dispatch has a
+        /// decision for - the graphics elements, the container elements, and
+        /// foreignObject. It is not the set the engine happens to be able to
+        /// paint: foreignObject is a container element, so a browser may select
+        /// it, and leaving it out made the switch skip past a branch a browser
+        /// renders and paint the next sibling instead. That is a wrong frame
+        /// reported as a clean render. Offering it costs nothing this walk did
+        /// not already do for a foreignObject reached any other way, because
+        /// DrawForeignObject decides the branch and records the reason it cannot
+        /// be painted, and the switch has already committed to the branch by
+        /// then, so no later sibling stands in for it.
+        ///
+        /// Elements outside the list are the same non-rendering kinds the draw
+        /// dispatch declines everywhere else - referenced-only content, metadata,
+        /// animation - and are handled by that same rule, not re-decided here.
+        ///
+        /// A branch whose conditional processing cannot be decided stops the
+        /// scan outright. The switch already recorded the reason, and painting
+        /// the next sibling would be the fail-open this engine exists to avoid.
+        /// </summary>
         private void DrawSwitch(SvgElement el, SKCanvas canvas, ViewportContext viewport, InheritedStyle inherited)
         {
             SvgElement selected = null;
@@ -653,7 +678,9 @@ namespace FenBrowser.FenEngine.Svg
             {
                 CheckDeadline();
                 var child = children[i];
-                if (!PassesConditionalProcessing(child)) continue;
+                var verdict = EvaluateConditionalProcessing(child);
+                if (verdict == ConditionalVerdict.Undecidable) return;
+                if (verdict != ConditionalVerdict.Selected) continue;
                 switch (child.Name)
                 {
                     case "title":
@@ -665,6 +692,7 @@ namespace FenBrowser.FenEngine.Svg
                     case "svg":
                     case "switch":
                     case "use":
+                    case "foreignObject":
                     case "path":
                     case "rect":
                     case "circle":
@@ -706,38 +734,192 @@ namespace FenBrowser.FenEngine.Svg
             });
         }
 
-        private static bool PassesConditionalProcessing(SvgElement element)
+        /// <summary>
+        /// The three conditional processing attributes, and the one rule they
+        /// share. requiredExtensions, requiredFeatures and systemLanguage each
+        /// hold a list of identifiers from an identifier namespace the
+        /// specification owns: an SVG extension identifier, an SVG feature
+        /// string, a language tag. An identifier from that namespace asks a
+        /// question about the user agent, and this renderer cannot answer it -
+        /// it declares no extension, it declines a feature, it has no user
+        /// language. Taking the next sibling for an unanswered question paints
+        /// a branch no browser picks and reports it as a clean render, so an
+        /// unanswerable list is refused with the identifier that made it
+        /// unanswerable.
+        ///
+        /// An identifier outside the namespace is a different question with a
+        /// settled answer: no user agent can be shown to implement an extension
+        /// the specification does not define, recognize a feature string that is
+        /// not in the feature namespace, or prefer a language tag that is not
+        /// well formed. The list is false for every user agent, so the branch is
+        /// rejected and the walk continues. That is the case a document relies
+        /// on when its fallback branch is the correct frame, and it stays
+        /// decidable.
+        ///
+        /// An empty list is false for every user agent as well - the SVG 1.1
+        /// conditional processing section and the SVG 1.1 test suite both
+        /// evaluate an empty requiredExtensions, requiredFeatures or
+        /// systemLanguage to false - so it is rejected rather than refused, and
+        /// an element that carries only an empty list still admits the frame a
+        /// browser paints.
+        /// </summary>
+        private enum ConditionalVerdict
         {
-            return PassesRequiredExtensions(element) && PassesRequiredFeatures(element);
+            Rejected,
+            Selected,
+            Undecidable
         }
 
-        private static bool PassesRequiredExtensions(SvgElement element)
+        private bool PassesConditionalProcessing(SvgElement element)
         {
-            return element.GetAttribute("requiredExtensions") == null;
+            return EvaluateConditionalProcessing(element) == ConditionalVerdict.Selected;
         }
 
-        private static bool PassesRequiredFeatures(SvgElement element)
+        private ConditionalVerdict EvaluateConditionalProcessing(SvgElement element)
         {
-            string required = element.GetAttribute("requiredFeatures");
-            if (required == null) return true;
+            var extensions = EvaluateRequiredExtensions(element);
+            if (extensions != ConditionalVerdict.Selected) return extensions;
+            var features = EvaluateRequiredFeatures(element);
+            if (features != ConditionalVerdict.Selected) return features;
+            return EvaluateSystemLanguage(element);
+        }
+
+        /// <summary>
+        /// requiredExtensions is satisfied only when every listed extension is
+        /// supported, so one identifier no user agent can be shown to implement
+        /// settles the whole list as false. A list made only of identifiers the
+        /// specification defines is a question about this user agent that this
+        /// renderer has to refuse: a browser implements both defined
+        /// extensions, so it selects the branch, and this renderer cannot render
+        /// the branch a browser selects.
+        /// </summary>
+        private ConditionalVerdict EvaluateRequiredExtensions(SvgElement element)
+        {
+            string required = element.GetAttribute("requiredExtensions");
+            if (required == null) return ConditionalVerdict.Selected;
             var tokenizer = SvgValues.CreateTokenizer(required.AsSpan());
             bool any = false;
+            string defined = null;
             while (tokenizer.Next(out var token))
             {
-                if (!IsSupportedRequiredFeature(token)) return false;
                 any = true;
+                if (!IsSpecifiedExtensionIdentifier(token)) return ConditionalVerdict.Rejected;
+                if (defined == null) defined = token.ToString();
             }
-            return any;
+            if (!any || defined == null) return ConditionalVerdict.Rejected;
+            _report.RequireFallback(
+                $"SVG conditional processing attribute 'requiredExtensions' requires compatibility fallback " +
+                $"for unimplemented extension '{defined}'");
+            return ConditionalVerdict.Undecidable;
         }
 
-        private static bool IsSupportedRequiredFeature(ReadOnlySpan<char> token)
+        /// <summary>
+        /// requiredFeatures is satisfied only when every listed feature is
+        /// supported, so an unrecognized feature string settles the whole list
+        /// as false. A feature string from the SVG feature namespace the engine
+        /// does not implement is refused rather than rejected, because a browser
+        /// implements features this renderer does not and would select the
+        /// branch.
+        /// </summary>
+        private ConditionalVerdict EvaluateRequiredFeatures(SvgElement element)
+        {
+            string required = element.GetAttribute("requiredFeatures");
+            if (required == null) return ConditionalVerdict.Selected;
+            var tokenizer = SvgValues.CreateTokenizer(required.AsSpan());
+            bool any = false;
+            string unimplemented = null;
+            while (tokenizer.Next(out var token))
+            {
+                any = true;
+                if (!TryGetSpecifiedFeature(token, out string feature)) return ConditionalVerdict.Rejected;
+                if (IsSupportedRequiredFeature(feature)) continue;
+                if (unimplemented == null) unimplemented = token.ToString();
+            }
+            if (!any) return ConditionalVerdict.Rejected;
+            if (unimplemented == null) return ConditionalVerdict.Selected;
+            _report.RequireFallback(
+                $"SVG conditional processing attribute 'requiredFeatures' requires compatibility fallback " +
+                $"for unimplemented feature '{unimplemented}'");
+            return ConditionalVerdict.Undecidable;
+        }
+
+        /// <summary>
+        /// systemLanguage is satisfied when any listed tag matches a user
+        /// language, so a well formed tag is a question about a user preference
+        /// this renderer does not have and is refused. Tags that are not well
+        /// formed match no user language, which settles the list as false for
+        /// every user agent.
+        /// </summary>
+        private ConditionalVerdict EvaluateSystemLanguage(SvgElement element)
+        {
+            string required = element.GetAttribute("systemLanguage");
+            if (required == null) return ConditionalVerdict.Selected;
+            var tokenizer = SvgValues.CreateTokenizer(required.AsSpan());
+            bool any = false;
+            string tag = null;
+            while (tokenizer.Next(out var token))
+            {
+                any = true;
+                if (!IsWellFormedLanguageTag(token)) continue;
+                if (tag == null) tag = token.ToString();
+            }
+            if (!any || tag == null) return ConditionalVerdict.Rejected;
+            _report.RequireFallback(
+                $"SVG conditional processing attribute 'systemLanguage' requires compatibility fallback " +
+                $"for language '{tag}' this renderer has no user language for");
+            return ConditionalVerdict.Undecidable;
+        }
+
+        /// <summary>
+        /// The extension identifiers the SVG specification defines. Both are
+        /// implemented by shipping browsers, so a branch that requires one is a
+        /// branch a browser selects.
+        /// </summary>
+        private static bool IsSpecifiedExtensionIdentifier(ReadOnlySpan<char> token)
+        {
+            string value = token.ToString();
+            return value.Equals("http://www.w3.org/1999/xhtml", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("http://www.w3.org/1999/xlink", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// A tag no user agent can hold in its preferred language list: a
+        /// non-empty run of ASCII alphanumerics and hyphens with no empty
+        /// subtag. The test is deliberately permissive, because a real tag
+        /// rejected here would let the walk paint a fallback branch a browser
+        /// does not paint; a malformed tag accepted here only costs a refusal
+        /// the walk could have decided.
+        /// </summary>
+        private static bool IsWellFormedLanguageTag(ReadOnlySpan<char> token)
+        {
+            if (token.IsEmpty) return false;
+            if (token[0] == '-' || token[token.Length - 1] == '-') return false;
+            bool afterHyphen = false;
+            for (int i = 0; i < token.Length; i++)
+            {
+                char c = token[i];
+                if (c == '-')
+                {
+                    if (afterHyphen) return false;
+                    afterHyphen = true;
+                    continue;
+                }
+                bool alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+                bool digit = c >= '0' && c <= '9';
+                if (!alpha && !digit) return false;
+                afterHyphen = false;
+            }
+            return true;
+        }
+
+        private static bool TryGetSpecifiedFeature(ReadOnlySpan<char> token, out string feature)
         {
             string value = token.ToString();
             const string svg11 = "http://www.w3.org/TR/SVG11/feature#";
             const string svg11Https = "https://www.w3.org/TR/SVG11/feature#";
             const string svg2 = "http://www.w3.org/TR/SVG2/feature#";
             const string svg2Https = "https://www.w3.org/TR/SVG2/feature#";
-            string feature = null;
+            feature = null;
             if (value.StartsWith(svg11, StringComparison.OrdinalIgnoreCase))
                 feature = value.Substring(svg11.Length);
             else if (value.StartsWith(svg11Https, StringComparison.OrdinalIgnoreCase))
@@ -746,8 +928,11 @@ namespace FenBrowser.FenEngine.Svg
                 feature = value.Substring(svg2.Length);
             else if (value.StartsWith(svg2Https, StringComparison.OrdinalIgnoreCase))
                 feature = value.Substring(svg2Https.Length);
-            if (feature == null) return false;
+            return feature != null;
+        }
 
+        private static bool IsSupportedRequiredFeature(string feature)
+        {
             return feature.Equals("SVG", StringComparison.OrdinalIgnoreCase) ||
                 feature.Equals("Structure", StringComparison.OrdinalIgnoreCase) ||
                 feature.Equals("BasicStructure", StringComparison.OrdinalIgnoreCase) ||

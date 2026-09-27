@@ -152,7 +152,7 @@ namespace FenBrowser.FenEngine.Svg
             {
                 return depth > MaxRenderDepth ? _maxActiveLayers + 1 : 0;
             }
-            if (IsDisplayNone(element) || !PassesRequiredExtensions(element) ||
+            if (IsDisplayNone(element) || !PassesConditionalProcessing(element) ||
                 string.Equals(element.GetPresentationProperty("visibility"), "hidden", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(element.GetPresentationProperty("visibility"), "collapse", StringComparison.OrdinalIgnoreCase))
             {

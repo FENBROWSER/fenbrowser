@@ -16,9 +16,10 @@ namespace FenBrowser.Tests.Svg
     /// foreign namespace and this engine has no box layout for it.
     ///
     /// These tests also pin the coupling to the parse-time gate. The walk only
-    /// governs the foreignObjects it is reached for, and several skip paths can pass
-    /// a paintable one by, so a non-rendering foreignObject is still condemned at
-    /// parse time. The gate must not be removed on the strength of the walk alone.
+    /// governs the foreignObjects it is reached for, and the render depth and
+    /// use-chain budgets still warn rather than refuse, so a non-rendering
+    /// foreignObject is still condemned at parse time. The gate must not be
+    /// removed on the strength of the walk alone.
     /// </summary>
     public sealed class SvgForeignObjectWalkTests
     {
@@ -259,7 +260,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void ForeignObject_RequiredExtensionsFalseBranchNeverReachesTheViewportDecision()
+        public void ForeignObject_RequiredExtensionsABranchThisRendererCannotAnswerFailsClosed()
         {
             using var rendered = Walk(
                 "<svg width='100' height='100' " + XhtmlDeclarations + ">" +
@@ -269,14 +270,21 @@ namespace FenBrowser.Tests.Svg
                 "<h:body><h:div/></h:body></foreignObject>" +
                 "<rect width='100' height='100' fill='red'/></switch></svg>");
 
-            Assert.True(IsRed(rendered.Bitmap.GetPixel(50, 50)));
+            Assert.Equal((byte)0, rendered.Bitmap.GetPixel(50, 50).Alpha);
             Assert.Contains(ParseGateReason, rendered.Warnings);
+            Assert.Contains(
+                rendered.Warnings,
+                warning => warning.Contains(
+                    "SVG conditional processing attribute 'requiredExtensions' requires compatibility " +
+                    "fallback for unimplemented extension 'http://www.w3.org/1999/xhtml'",
+                    StringComparison.Ordinal));
             Assert.DoesNotContain(UnmodelledReason, rendered.Warnings);
             Assert.Contains("unsupported-element", rendered.FallbackReasonCodes);
+            Assert.Contains("unsupported-property", rendered.FallbackReasonCodes);
         }
 
         [Fact]
-        public void ForeignObject_ConditionalProcessingSkipsTheWholeSubtree()
+        public void ForeignObject_ConditionalProcessingRefusesAnUnanswerableBranchAnywhere()
         {
             using var rendered = Walk(
                 "<svg width='100' height='100' " + XhtmlDeclarations + ">" +
@@ -286,7 +294,13 @@ namespace FenBrowser.Tests.Svg
 
             Assert.Equal((byte)0, rendered.Bitmap.GetPixel(20, 20).Alpha);
             Assert.True(IsRed(rendered.Bitmap.GetPixel(70, 70)));
-            AssertParseGateOnly(rendered);
+            Assert.Contains(ParseGateReason, rendered.Warnings);
+            Assert.Contains(
+                rendered.Warnings,
+                warning => warning.Contains(
+                    "SVG conditional processing attribute 'requiredExtensions' requires compatibility " +
+                    "fallback for unimplemented extension 'http://www.w3.org/1999/xhtml'",
+                    StringComparison.Ordinal));
         }
 
         [Fact]
@@ -407,7 +421,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void Switch_DoesNotOfferForeignObjectAsASelectableBranch()
+        public void Switch_OffersForeignObjectAsASelectableBranchAndNamesWhyItCannotPaint()
         {
             using var rendered = Walk(
                 "<svg width='100' height='100' " + XhtmlDeclarations + ">" +
@@ -417,8 +431,43 @@ namespace FenBrowser.Tests.Svg
                 "</foreignObject>" +
                 "<rect width='100' height='100' fill='red'/></switch></svg>");
 
-            Assert.True(IsRed(rendered.Bitmap.GetPixel(50, 50)), "the false branch is selected");
-            AssertParseGateOnly(rendered);
+            Assert.Equal((byte)0, rendered.Bitmap.GetPixel(50, 50).Alpha);
+            Assert.Contains(ParseGateReason, rendered.Warnings);
+            Assert.Contains(
+                rendered.Warnings,
+                warning => warning.Contains(
+                    "SVG foreignObject content 'h:body' needs XHTML box layout requires compatibility fallback",
+                    StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void Switch_ForeignObjectBranchWithNoAreaStopsTheScanWithoutPaintingTheSibling()
+        {
+            using var rendered = Walk(
+                "<svg width='100' height='100' " + XhtmlDeclarations + ">" +
+                "<switch>" +
+                "<foreignObject></foreignObject>" +
+                "<rect width='100' height='100' fill='red'/></switch></svg>");
+
+            Assert.Equal((byte)0, rendered.Bitmap.GetPixel(50, 50).Alpha);
+            Assert.Contains(ParseGateReason, rendered.Warnings);
+            AssertInvisible(rendered);
+        }
+
+        [Fact]
+        public void Switch_DisplayNoneForeignObjectBranchIsStillTheBranchTheSwitchTakes()
+        {
+            using var rendered = Walk(
+                "<svg width='100' height='100' " + XhtmlDeclarations + ">" +
+                "<switch>" +
+                "<foreignObject width='100' height='100' style='display: none'>" +
+                "<h:body><h:div style='width: 100px; height: 100px; background-color: green'/></h:body>" +
+                "</foreignObject>" +
+                "<rect width='100' height='100' fill='red'/></switch></svg>");
+
+            Assert.Equal((byte)0, rendered.Bitmap.GetPixel(50, 50).Alpha);
+            Assert.Contains(ParseGateReason, rendered.Warnings);
+            AssertInvisible(rendered);
         }
 
         private static void AssertInvisible(WalkRender rendered)
