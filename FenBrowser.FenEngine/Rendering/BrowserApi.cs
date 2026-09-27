@@ -3988,8 +3988,12 @@ pre {{
                 _lastClickTarget = inputEvent.Target;
                 _lastClickDefaultAllowed = true;
                 _suppressNextDomClickDispatchInHandleElementClick = false;
-                _lastClickPageX = (float)inputEvent.PageX;
-                _lastClickPageY = (float)inputEvent.PageY;
+                // Top-level document coordinates, the space the element boxes the media
+                // controls are laid out in use. inputEvent.PageX/Y are retargeted into the
+                // frame the target lives in, so for a video inside an iframe they missed
+                // every control.
+                _lastClickPageX = sourceX;
+                _lastClickPageY = sourceY;
                 _lastClickPagePointValid = true;
             }
 
@@ -4147,8 +4151,12 @@ pre {{
                 _lastClickTarget = inputEvent.Target;
                 _lastClickDefaultAllowed = true;
                 _suppressNextDomClickDispatchInHandleElementClick = false;
-                _lastClickPageX = (float)inputEvent.PageX;
-                _lastClickPageY = (float)inputEvent.PageY;
+                // Top-level document coordinates, the space the element boxes the media
+                // controls are laid out in use. inputEvent.PageX/Y are retargeted into the
+                // frame the target lives in, so for a video inside an iframe they missed
+                // every control.
+                _lastClickPageX = sourceX;
+                _lastClickPageY = sourceY;
                 _lastClickPagePointValid = true;
             }
 

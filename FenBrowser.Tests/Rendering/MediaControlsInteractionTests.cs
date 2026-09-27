@@ -62,6 +62,42 @@ public sealed class MediaControlsInteractionTests
         }
     }
 
+    [Fact]
+    public async Task ClickingTheControlsOfAMediaElementInsideAnIframeTogglesPlay()
+    {
+        // w3schools' tryit page: the video is document.write'd into an iframe.
+        var previousMode = MediaAutoplayPolicy.Default.Mode;
+        MediaAutoplayPolicy.Default.Mode = AutoplayPolicyMode.Allowed;
+        try
+        {
+            using var browser = new BrowserHost();
+            Assert.True(await browser.NavigateAsync(
+                "data:text/html,<body style='margin:0'><div style='height:40px'></div>" +
+                "<iframe id=f frameborder=0 style='display:block;margin-left:30px;width:400px;height:200px'></iframe>" +
+                "<script>var d=document.getElementById('f').contentWindow.document;d.open();" +
+                "d.write(\"<body style='margin:0'><audio id=a controls></audio></body>\");d.close();</script></body>"));
+            await browser.FlushPendingLayoutAsync();
+
+            const string framePaused = "String(document.getElementById('f').contentDocument.getElementById('a').paused)";
+            Assert.Equal("true", (await browser.ExecuteScriptAsync(framePaused))?.ToString());
+
+            // The audio's box in page space: the frame's box plus the frame body's margin.
+            var frame = await ElementRectAsync(browser, "f");
+            var margin = (await browser.ExecuteScriptAsync(
+                "parseFloat(getComputedStyle(document.getElementById('f').contentDocument.body).marginLeft) || 0"))?.ToString() ?? "0";
+            var inset = float.Parse(margin, System.Globalization.CultureInfo.InvariantCulture);
+            var audio = SkiaSharp.SKRect.Create(frame.Left + inset, frame.Top + inset, 300, 54);
+            var geometry = MediaControls.Layout(audio, isVideo: false);
+
+            await browser.DispatchClickAndActivate(geometry.PlayButton.MidX, geometry.PlayButton.MidY, 0);
+            Assert.Equal("false", await WaitForAsync(browser, framePaused, "false"));
+        }
+        finally
+        {
+            MediaAutoplayPolicy.Default.Mode = previousMode;
+        }
+    }
+
     private static async Task<SkiaSharp.SKRect> ElementRectAsync(BrowserHost browser, string id)
     {
         var text = (await browser.ExecuteScriptAsync($"(function () {{ var r = document.getElementById('{id}').getBoundingClientRect(); return [r.left, r.top, r.width, r.height].join(','); }})()"))?.ToString() ?? string.Empty;
