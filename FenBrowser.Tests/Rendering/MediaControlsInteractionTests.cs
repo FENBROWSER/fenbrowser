@@ -89,6 +89,14 @@ public sealed class MediaControlsInteractionTests
             var audio = SkiaSharp.SKRect.Create(frame.Left + inset, frame.Top + inset, 300, 54);
             var geometry = MediaControls.Layout(audio, isVideo: false);
 
+            // Hovering the play button highlights it; moving off the controls clears it.
+            var element = FindFrameAudio(browser);
+            Assert.NotNull(element);
+            browser.OnMouseMove(geometry.PlayButton.MidX, geometry.PlayButton.MidY);
+            Assert.True(await WaitUntilAsync(() => MediaControls.GetHovered(element) == MediaControlAction.TogglePlay), "play button hover");
+            browser.OnMouseMove(5, 5);
+            Assert.True(await WaitUntilAsync(() => MediaControls.GetHovered(element) == MediaControlAction.None), "hover cleared");
+
             await browser.DispatchClickAndActivate(geometry.PlayButton.MidX, geometry.PlayButton.MidY, 0);
             Assert.Equal("false", await WaitForAsync(browser, framePaused, "false"));
         }
@@ -96,6 +104,29 @@ public sealed class MediaControlsInteractionTests
         {
             MediaAutoplayPolicy.Default.Mode = previousMode;
         }
+    }
+
+    private static FenBrowser.Core.Dom.V2.Element FindFrameAudio(BrowserHost browser)
+    {
+        var dom = browser.GetDomRoot() as FenBrowser.Core.Dom.V2.Node;
+        return dom?.Descendants().OfType<FenBrowser.Core.Dom.V2.Element>()
+            .FirstOrDefault(e => string.Equals(e.TagName, "audio", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static async Task<bool> WaitUntilAsync(Func<bool> condition)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.ElapsedMilliseconds < 5000)
+        {
+            if (condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(25);
+        }
+
+        return condition();
     }
 
     private static async Task<SkiaSharp.SKRect> ElementRectAsync(BrowserHost browser, string id)

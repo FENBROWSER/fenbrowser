@@ -56,7 +56,29 @@ namespace FenBrowser.FenEngine.Media
         private static readonly SKColor BufferedColor = new(255, 255, 255, 110);
         private static readonly SKColor PlayedColor = new(255, 255, 255, 230);
 
+        private static readonly SKColor HoverColor = new(255, 255, 255, 48);
+
+        // The control under the pointer, per element, for the hover highlight. Written from
+        // input handling, read by paint; a weak table so a removed element takes it along.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Element, System.Runtime.CompilerServices.StrongBox<MediaControlAction>> s_hovered = new();
+
         public static bool ShowsControls(Element element) => element != null && element.HasAttribute("controls");
+
+        /// <summary>The control the pointer is over on <paramref name="element"/>, or None.</summary>
+        public static MediaControlAction GetHovered(Element element) =>
+            element != null && s_hovered.TryGetValue(element, out var box) ? box.Value : MediaControlAction.None;
+
+        /// <summary>Records the hovered control; true when that changes what is painted.</summary>
+        public static bool SetHovered(Element element, MediaControlAction action)
+        {
+            if (element == null)
+                return false;
+            var box = s_hovered.GetValue(element, static _ => new System.Runtime.CompilerServices.StrongBox<MediaControlAction>(MediaControlAction.None));
+            if (box.Value == action)
+                return false;
+            box.Value = action;
+            return true;
+        }
 
         /// <summary>Lays the controls out inside <paramref name="contentBox"/>.</summary>
         public static MediaControlsGeometry Layout(SKRect contentBox, bool isVideo)
@@ -133,6 +155,28 @@ namespace FenBrowser.FenEngine.Media
 
             nodes.Add(new BackgroundPaintNode { Bounds = geometry.Bar, SourceNode = element, Color = BarColor });
 
+            // Hover: a soft disc behind the button under the pointer.
+            var hovered = GetHovered(element);
+            var hoveredButton = hovered switch
+            {
+                MediaControlAction.TogglePlay => geometry.PlayButton,
+                MediaControlAction.ToggleMute => geometry.MuteButton,
+                _ => SKRect.Empty,
+            };
+            if (!hoveredButton.IsEmpty)
+            {
+                nodes.Add(new CustomPaintNode
+                {
+                    Bounds = hoveredButton,
+                    SourceNode = element,
+                    PaintAction = (canvas, bounds) =>
+                    {
+                        using var paint = new SKPaint { Color = HoverColor, Style = SKPaintStyle.Fill, IsAntialias = true };
+                        canvas.DrawCircle(bounds.MidX, bounds.MidY, bounds.Width * 0.6f, paint);
+                    },
+                });
+            }
+
             // Play / pause icon.
             var play = geometry.PlayButton;
             nodes.Add(new CustomPaintNode
@@ -194,7 +238,7 @@ namespace FenBrowser.FenEngine.Media
                         nodes.Add(new BackgroundPaintNode { Bounds = new SKRect(timeline.Left, y0, timeline.Left + timeline.Width * buffered, y1), SourceNode = element, Color = BufferedColor });
                     if (played > 0)
                         nodes.Add(new BackgroundPaintNode { Bounds = new SKRect(timeline.Left, y0, timeline.Left + timeline.Width * played, y1), SourceNode = element, Color = PlayedColor });
-                    float knob = TimelineHeight * 1.5f;
+                    float knob = TimelineHeight * (hovered == MediaControlAction.Seek ? 2.2f : 1.5f);
                     float kx = timeline.Left + timeline.Width * played;
                     nodes.Add(new BackgroundPaintNode
                     {

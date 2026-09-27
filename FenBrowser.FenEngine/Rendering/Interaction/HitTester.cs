@@ -49,6 +49,27 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 result = frameResult;
             }
 
+            // HTML §4.8.13: the user agent's media controls are buttons; over one the
+            // pointer is a hand, as over any other clickable control.
+            if (result.NativeElement is Element media &&
+                FenBrowser.FenEngine.Media.MediaControls.ShowsControls(media) &&
+                (string.Equals(media.TagName, "video", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(media.TagName, "audio", StringComparison.OrdinalIgnoreCase)) &&
+                ctx.Boxes != null && ctx.Boxes.TryGetValue(media, out var mediaBox) && mediaBox != null)
+            {
+                var geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(
+                    mediaBox.BorderBox,
+                    string.Equals(media.TagName, "video", StringComparison.OrdinalIgnoreCase));
+                if (FenBrowser.FenEngine.Media.MediaControls.HitTest(geometry, x, y, out _) != FenBrowser.FenEngine.Media.MediaControlAction.None)
+                {
+                    result = result with
+                    {
+                        Cursor = global::FenBrowser.FenEngine.Interaction.CursorType.Pointer,
+                        IsClickable = true
+                    };
+                }
+            }
+
             return true;
         }
 

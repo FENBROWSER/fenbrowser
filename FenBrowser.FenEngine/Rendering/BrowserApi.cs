@@ -3979,6 +3979,7 @@ pre {{
             {
                 DispatchPointerBoundaryEvents(_lastPointerEventTarget, inputEvent.Target, eventInit);
                 _lastPointerEventTarget = inputEvent.Target;
+                UpdateMediaControlsHover(inputEvent.Target, sourceX, sourceY);
             }
 
             var isClick = string.Equals(type, "click", StringComparison.OrdinalIgnoreCase);
@@ -4141,6 +4142,7 @@ pre {{
             {
                 var previousTarget = _lastPointerEventTarget;
                 _lastPointerEventTarget = inputEvent.Target;
+                UpdateMediaControlsHover(inputEvent.Target, sourceX, sourceY);
                 await DispatchPointerBoundaryEventsAsync(previousTarget, inputEvent.Target, eventInit).ConfigureAwait(false);
             }
 
@@ -9925,13 +9927,36 @@ pre {{
 
             var pointValid = _lastClickPagePointValid;
             _lastClickPagePointValid = false;
-            if (!pointValid || !FenBrowser.FenEngine.Media.MediaControls.ShowsControls(element))
+            if (!pointValid || !TryGetMediaControlsGeometry(element, tag, out var geometry))
             {
                 return false;
             }
 
-            // The element's box: the layout snapshot when there is one, else the visual
-            // rect the script side keeps (both are page space, like the click point).
+            var action = FenBrowser.FenEngine.Media.MediaControls.HitTest(geometry, _lastClickPageX, _lastClickPageY, out var fraction);
+            if (action == FenBrowser.FenEngine.Media.MediaControlAction.None)
+            {
+                return false;
+            }
+
+            SetFocusedElementState(element);
+            _engine.ActivateMediaControl(element, action, fraction);
+            TryInvokeRepaintReady(_engine.GetActiveDom());
+            return true;
+        }
+
+        /// <summary>
+        /// The controls of a media element with a controls attribute, laid out over its box:
+        /// the layout snapshot when there is one, else the visual rect the script side keeps.
+        /// Both are top-level page space, like the pointer coordinates they are tested with.
+        /// </summary>
+        private bool TryGetMediaControlsGeometry(Element element, string tag, out FenBrowser.FenEngine.Media.MediaControlsGeometry geometry)
+        {
+            geometry = FenBrowser.FenEngine.Media.MediaControlsGeometry.Empty;
+            if ((tag != "video" && tag != "audio") || !FenBrowser.FenEngine.Media.MediaControls.ShowsControls(element))
+            {
+                return false;
+            }
+
             SkiaSharp.SKRect box;
             var layout = _engine?.LastLayout;
             if (layout != null && layout.TryGetElementRect(element, out var geo))
@@ -9947,17 +9972,42 @@ pre {{
                 return false;
             }
 
-            var geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(box, tag == "video");
-            var action = FenBrowser.FenEngine.Media.MediaControls.HitTest(geometry, _lastClickPageX, _lastClickPageY, out var fraction);
-            if (action == FenBrowser.FenEngine.Media.MediaControlAction.None)
+            geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(box, tag == "video");
+            return !geometry.IsEmpty;
+        }
+
+        private Element _mediaControlsHoverElement;
+
+        /// <summary>
+        /// Tracks which media control the pointer is over so paint can highlight it. Leaving
+        /// an element clears its highlight; a change repaints.
+        /// </summary>
+        private void UpdateMediaControlsHover(Element target, float pageX, float pageY)
+        {
+            var action = FenBrowser.FenEngine.Media.MediaControlAction.None;
+            var tag = target?.TagName?.ToLowerInvariant();
+            if (target != null && TryGetMediaControlsGeometry(target, tag, out var geometry))
             {
-                return false;
+                action = FenBrowser.FenEngine.Media.MediaControls.HitTest(geometry, pageX, pageY, out _);
             }
 
-            SetFocusedElementState(element);
-            _engine.ActivateMediaControl(element, action, fraction);
-            TryInvokeRepaintReady(_engine.GetActiveDom());
-            return true;
+            var changed = false;
+            if (_mediaControlsHoverElement != null && !ReferenceEquals(_mediaControlsHoverElement, target))
+            {
+                changed |= FenBrowser.FenEngine.Media.MediaControls.SetHovered(_mediaControlsHoverElement, FenBrowser.FenEngine.Media.MediaControlAction.None);
+                _mediaControlsHoverElement = null;
+            }
+
+            if (target != null && (tag == "video" || tag == "audio"))
+            {
+                changed |= FenBrowser.FenEngine.Media.MediaControls.SetHovered(target, action);
+                _mediaControlsHoverElement = target;
+            }
+
+            if (changed)
+            {
+                TryInvokeRepaintReady(_engine.GetActiveDom());
+            }
         }
 
         /// <summary>Keyboard operation of focused media controls: space/k play, arrows seek, m mute.</summary>
