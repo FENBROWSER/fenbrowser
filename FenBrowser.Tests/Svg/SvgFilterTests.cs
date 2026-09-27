@@ -1070,6 +1070,57 @@ namespace FenBrowser.Tests.Svg
             Assert.Contains("unsupported-feature", result.FallbackReasonCodes);
         }
 
+        [Theory]
+        [InlineData("FillPaint", "fill='red'")]
+        [InlineData("StrokePaint", "stroke='red' stroke-width='2'")]
+        public void PaintInput_OnAUseInstanceTarget_FailsClosedRatherThanReplayingTheWrongPaint(
+            string keyword,
+            string instancePaint)
+        {
+            // The walk paints a 'use' instance with the instantiation's style, so
+            // the keyword must expose the paint the instance actually painted with.
+            // Reading it back off the target's document-tree ancestry instead
+            // yields the default black fill / absent stroke, and the render is
+            // then reported as settled with a filter input the element never
+            // painted with, which is unrecoverable once composited.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs>" +
+                "<rect id='r' x='15' y='15' width='10' height='10' " + instancePaint +
+                " filter='url(#f)'/>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feOffset in='" + keyword + "'/></filter></defs>" +
+                "<use href='#r' " + instancePaint + "/></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings,
+                warning => warning.Contains(
+                    "'" + keyword + "' input needs the paint of a 'use' instance target, " +
+                    "which this renderer does not resolve",
+                    StringComparison.Ordinal));
+            Assert.Contains("unsupported-feature", result.FallbackReasonCodes);
+        }
+
+        [Fact]
+        public void FillPaint_ReachedThroughAPattern_StillResolvesTheContentStyle()
+        {
+            // The pattern path resolves its content style with the same resolver the
+            // filter input uses and hands that very style to the content walk, so
+            // the two agree by construction. Only 'use' instantiation styles a
+            // target from outside its own ancestry.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='40'><defs>" +
+                "<pattern id='p' patternUnits='userSpaceOnUse' width='40' height='40'>" +
+                "<rect width='40' height='40' fill='blue' filter='url(#f)'/>" +
+                "<filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='40' height='40'>" +
+                "<feOffset in='FillPaint'/></filter></pattern></defs>" +
+                "<rect width='40' height='40' fill='url(#p)'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.Equal(40 * 40, CountOpaquePixels(result));
+            Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(20, 20));
+        }
+
         [Fact]
         public void FilterPrimitiveBudget_StaysAtThirtyTwoPrimitives()
         {

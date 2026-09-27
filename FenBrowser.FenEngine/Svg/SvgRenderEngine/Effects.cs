@@ -30,7 +30,8 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement element,
             SKCanvas canvas,
             ViewportContext viewport,
-            Action drawSource)
+            Action drawSource,
+            InheritedStyle elementStyle = null)
         {
             string filterRaw = element.GetPresentationProperty("filter");
             string maskRaw = element.GetPresentationProperty("mask");
@@ -73,7 +74,8 @@ namespace FenBrowser.FenEngine.Svg
                 }
 
                 if (filterElement != null &&
-                    !TryBuildFilter(filterElement, element, viewport, owned, out imageFilter))
+                    !TryBuildFilter(
+                        filterElement, element, viewport, owned, elementStyle, out imageFilter))
                 {
                     imageFilter = null;
                 }
@@ -563,6 +565,7 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement target,
             ViewportContext viewport,
             List<SKImageFilter> owned,
+            InheritedStyle elementStyle,
             out SKImageFilter current)
         {
             current = null;
@@ -667,12 +670,12 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     if (!TryResolveFilterInput(
                             filterTemplate, primitive, primitive.GetAttribute("in"),
-                            target, viewport, filterRegion, current, results, owned,
+                            target, elementStyle, viewport, filterRegion, current, results, owned,
                             out var input) ||
                         !TryResolveFilterInput(
                             filterTemplate, primitive,
                             primitive.GetAttribute("in2") ?? "SourceGraphic",
-                            target, viewport, filterRegion, current, results, owned,
+                            target, elementStyle, viewport, filterRegion, current, results, owned,
                             out var input2))
                         return false;
                     next = BuildBlend(primitive, input, input2);
@@ -681,12 +684,12 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     if (!TryResolveFilterInput(
                             filterTemplate, primitive, primitive.GetAttribute("in"),
-                            target, viewport, filterRegion, current, results, owned,
+                            target, elementStyle, viewport, filterRegion, current, results, owned,
                             out var input) ||
                         !TryResolveFilterInput(
                             filterTemplate, primitive,
                             primitive.GetAttribute("in2") ?? "SourceGraphic",
-                            target, viewport, filterRegion, current, results, owned,
+                            target, elementStyle, viewport, filterRegion, current, results, owned,
                             out var input2))
                         return false;
                     next = BuildComposite(
@@ -697,12 +700,12 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     if (!TryResolveFilterInput(
                             filterTemplate, primitive, primitive.GetAttribute("in"),
-                            target, viewport, filterRegion, current, results, owned,
+                            target, elementStyle, viewport, filterRegion, current, results, owned,
                             out var input) ||
                         !TryResolveFilterInput(
                             filterTemplate, primitive,
                             primitive.GetAttribute("in2") ?? "SourceGraphic",
-                            target, viewport, filterRegion, current, results, owned,
+                            target, elementStyle, viewport, filterRegion, current, results, owned,
                             out var input2))
                         return false;
                     if (input2 == null)
@@ -717,14 +720,14 @@ namespace FenBrowser.FenEngine.Svg
                 else if (primitive.Name == "feMerge")
                 {
                     next = BuildMerge(
-                        filterTemplate, primitive, target, viewport, filterRegion,
+                        filterTemplate, primitive, target, elementStyle, viewport, filterRegion,
                         current, results, owned);
                 }
                 else
                 {
                     if (!TryResolveFilterInput(
                             filterTemplate, primitive, primitive.GetAttribute("in"),
-                            target, viewport, filterRegion, current, results, owned,
+                            target, elementStyle, viewport, filterRegion, current, results, owned,
                             out var input))
                         return false;
                     next = primitive.Name switch
@@ -802,6 +805,7 @@ namespace FenBrowser.FenEngine.Svg
             SvgElement primitive,
             string raw,
             SvgElement target,
+            InheritedStyle elementStyle,
             ViewportContext viewport,
             SKRect filterRegion,
             SKImageFilter current,
@@ -828,7 +832,7 @@ namespace FenBrowser.FenEngine.Svg
                 name.Equals("StrokePaint", StringComparison.Ordinal))
             {
                 if (!TryBuildPaintInput(
-                        filter, primitive, target, viewport, filterRegion,
+                        filter, primitive, target, elementStyle, viewport, filterRegion,
                         name[0] == 'S', out input))
                 {
                     return false;
@@ -854,10 +858,12 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         /// <summary>
-        /// Resolved paint style of a filter target, reached by replaying the
-        /// ancestor chain from the document root exactly the way the render walk
-        /// accumulates it, so a paint keyword sees the same fill/stroke value the
-        /// target element itself paints with.
+        /// Resolved paint style of a filter target, replaying the ancestor chain
+        /// from the document root exactly the way the render walk accumulates it.
+        /// Sound only while the walk threads that same root-relative chain: a
+        /// target reached through a 'use' instance is painted with the
+        /// instantiation's own style, which this replay cannot see, so callers
+        /// must take the walk's threaded style or refuse the keyword.
         /// </summary>
         private InheritedStyle ResolveFilterTargetStyle(SvgElement target)
         {
@@ -873,6 +879,26 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         /// <summary>
+        /// True when <paramref name="element"/> is being painted as part of a
+        /// 'use' instance, in which case the style the walk threads is the
+        /// instantiation's rather than the one its document-tree ancestry
+        /// replays. A descendant of the referenced element counts: the
+        /// instantiation styles the whole referenced subtree.
+        /// </summary>
+        private bool IsReachedThroughUseInstance(SvgElement element)
+        {
+            if (element == null || _activeUseElements == null || _activeUseElements.Count == 0)
+            {
+                return false;
+            }
+            for (SvgElement current = element; current != null; current = current.Parent)
+            {
+                if (_activeUseElements.Contains(current)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
         /// Builds the FillPaint/StrokePaint standard input: the target element's own
         /// fill or stroke paint, with conceptually infinite extent, so the primitive
         /// subregion (the filter region unless the primitive narrows it) is the only
@@ -885,6 +911,7 @@ namespace FenBrowser.FenEngine.Svg
             ResolvedFilter filter,
             SvgElement primitive,
             SvgElement target,
+            InheritedStyle elementStyle,
             ViewportContext viewport,
             SKRect filterRegion,
             bool stroke,
@@ -902,7 +929,19 @@ namespace FenBrowser.FenEngine.Svg
                 return false;
             }
 
-            InheritedStyle style = ResolveFilterTargetStyle(target);
+            if (elementStyle == null && IsReachedThroughUseInstance(target))
+            {
+                // The walk painted this target with the instantiation's style,
+                // which the document-tree replay does not reproduce, and no
+                // caller has threaded the walk's style here. Guessing would
+                // composite a filter input the element never painted with.
+                _report.RequireFallback(
+                    $"SVG {primitiveName} '{keyword}' input needs the paint of a " +
+                    "'use' instance target, which this renderer does not resolve");
+                return false;
+            }
+
+            InheritedStyle style = elementStyle ?? ResolveFilterTargetStyle(target);
             var spec = stroke ? style.Stroke : style.Fill;
             float opacity = ReadOwnPaintOpacity(target, stroke ? "stroke-opacity" : "fill-opacity");
 
@@ -1460,6 +1499,7 @@ namespace FenBrowser.FenEngine.Svg
             ResolvedFilter filter,
             SvgElement merge,
             SvgElement target,
+            InheritedStyle elementStyle,
             ViewportContext viewport,
             SKRect filterRegion,
             SKImageFilter current,
@@ -1472,8 +1512,8 @@ namespace FenBrowser.FenEngine.Svg
                 if (node.Name is "title" or "desc" or "metadata") continue;
                 if (node.Name != "feMergeNode" ||
                     !TryResolveFilterInput(
-                        filter, node, node.GetAttribute("in"), target, viewport, filterRegion,
-                        current, results, owned, out var input))
+                        filter, node, node.GetAttribute("in"), target, elementStyle, viewport,
+                        filterRegion, current, results, owned, out var input))
                     return null;
 
                 // The merge API needs an explicit filter object for SourceGraphic.
