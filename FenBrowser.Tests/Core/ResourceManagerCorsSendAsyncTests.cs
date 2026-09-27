@@ -8,10 +8,12 @@ using FenBrowser.Core.Network;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Security;
+using FenBrowser.Tests.Logging;
 using Xunit;
 
 namespace FenBrowser.Tests.Core
 {
+    [Collection(EngineLogTestCollection.Name)]
     public class ResourceManagerCorsSendAsyncTests
     {
         [Fact]

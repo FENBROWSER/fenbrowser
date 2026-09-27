@@ -5,6 +5,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.Core;
 
+[Collection(ImageLoaderTestCollection.Name)]
 public sealed class ImageLoaderCssFunctionTests
 {
     [Fact]

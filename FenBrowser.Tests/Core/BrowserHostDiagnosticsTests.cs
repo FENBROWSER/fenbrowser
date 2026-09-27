@@ -18,6 +18,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.Core
 {
+    [Collection(ImageLoaderTestCollection.Name)]
     public class BrowserHostDiagnosticsTests
     {
         [Fact]

@@ -10,6 +10,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.Layout
 {
+    [Collection(ImageLoaderTestCollection.Name)]
     public class ReplacedElementSizingTests
     {
         [Fact]
