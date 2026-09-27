@@ -5423,11 +5423,12 @@ and files that are a declared reference target of some other test but declare no
 reference of their own. In the current checkout that removes 252 of the 1,307
 `.svg` files under the SVG corpus root, leaving 1,055 tests.
 
-The report records this as `wptExcludedReferenceFiles`, next to
-`wptManifestPath`, `wptManifestVersion`, `wptManifestItems`, and
-`wptUnclassifiedFiles`; the Markdown report prints the manifest path, its version,
-the indexed SVG item count, the exclusion count, and the count of files absent
-from the manifest. The summary schema is version 5 for this reason.
+The report records this as `wptExcludedReferenceFiles`, next to `wptManifestPath`,
+`wptManifestVersion`, `wptManifestItems`, and `wptUnclassifiedFiles`; the Markdown
+report prints the manifest path, its version, the indexed SVG item count, the
+exclusion count, and the count of files absent from the manifest. The summary schema
+is version 6: the manifest classification took it to 5, and the source-provenance
+fields below took it to 6.
 
 State the consequence plainly: **a WPT pass rate recorded before this change and
 one recorded after it are not directly comparable unless both runs used the same
@@ -5460,7 +5461,44 @@ per-file source SHA-256 - and it cannot tie a report to a source revision.
 Treat it as a cache key, not as provenance. Record the commit, the dirty state of
 the working tree, the manifest parameters, and the runner options alongside any
 report you intend to cite, and record them again for the baseline it is compared
-against.
+against. The report now carries that provenance itself, so it no longer has to be
+reconstructed by hand - see the next subsection.
+
+### Source provenance: the fingerprint and the git fields
+
+`RendererBuildId` is not the only identity in a report. A report also carries a
+content fingerprint of the renderer sources and the git state they were read at, so
+two reports can be compared for *what produced the pixels* rather than for a GUID:
+
+- `RendererSourceHash` is a SHA-256 over the renderer sources in the three hashed
+  roots - `FenBrowser.FenEngine/Svg`, `FenBrowser.FenEngine/Adapters` and
+  `scripts/BenchSvg` - with `bin`/`obj` excluded, files sorted and de-duplicated, a
+  format tag first, and every field length-prefixed. Content is normalised before
+  hashing: a BOM is dropped and CRLF is folded to LF, so the same source hashes the
+  same on either line-ending convention. Two builds of identical source share this
+  hash, which is the property the build id lacks.
+- `RendererSourceRoots` and `RendererSourceFiles` name what went into it, so a
+  fingerprint can be checked against a checkout instead of trusted.
+- `GitRevision` is `git rev-parse --verify HEAD` and `GitShortRevision` is its first
+  ten characters.
+- `GitTreeDirty` is whether `git status --porcelain` reports anything for the whole
+  tree, counting untracked files.
+- `SourcesMatchGitRevision` is whether `git status --porcelain` is clean when
+  restricted to the three hashed roots. It is the field that answers the question
+  `GitTreeDirty` cannot: a dirty tree elsewhere in the repository does not
+  invalidate a fingerprint, but a dirty hashed root does.
+
+All three git fields are nullable, and null means git could not be read - no
+revision, a git that is not on `PATH`, or a command that did not finish inside its
+10-second budget. Null is not the same as false, and a report whose git fields are
+null cannot be tied to a revision at all.
+
+The Markdown report prints all of it: renderer source hash, roots, files hashed,
+git revision, dirty state, and whether the hashed sources match the revision. Read
+`gitTreeDirty` and `sourcesMatchGitRevision` before quoting a number. A report with
+`sourcesMatchGitRevision: false` is measuring a working tree, not the revision it
+names, and a report with `rendererSourceHash: unavailable` has no fingerprint to
+compare against.
 
 ### Selection truncation and per-experiment output
 
@@ -5497,10 +5535,12 @@ diagnosing a build failure.
 The runner has no default corpus location: it discovers the manifest by walking
 upward from `--corpus`, so the corpus root must always be given explicitly and
 must sit at or below a checkout containing `MANIFEST.json`. `AGENTS.md` records
-the WPT root as `C:\Users\udayk\Videos\wpt`; on the current machine the checkout
-is at `D:\wpt` and the SVG corpus root is `D:\wpt\svg`. Use the path that exists
-on the machine you are running on, and confirm `wptManifestPath` in the report
-names the manifest you expected.
+the WPT root as `C:\Users\udayk\Videos\wpt`, and that path does not exist on this
+machine - the checkout is at `D:\wpt` and the SVG corpus root is `D:\wpt\svg`. A
+run that uses the `AGENTS.md` path fails on a corpus directory that does not exist
+before it evaluates a document, so do not treat that as a runner fault. Use the
+path that exists on the machine you are running on, and confirm `wptManifestPath`
+in the report names the manifest you expected.
 
 Verification:
 
@@ -5508,12 +5548,99 @@ Verification:
 dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release -- --corpus D:\wpt\svg --corpus-kind wpt --max-files 10000 --output Results/svg/wpt-full
 ```
 
-Read back from the generated `corpus-report.json`: `schemaVersion` 5,
+Read back from the generated `corpus-report.json`: `schemaVersion` 6,
 `wptManifestVersion` 9, `wptManifestItems`, `wptExcludedReferenceFiles`,
 `selectionTruncated` false, and `selectedFiles`. `wptUnclassifiedFiles` is 0 when
 the selection is covered by the manifest; treat a non-zero value as selection
-outside manifest coverage, not as a rounding artifact. Add `--gate` to make a
-truncated selection, a read or oversize skip, an inadmissible document, a
-comparable reference failure, an unresolved declared reference, or a missing
-manifest a non-zero exit. Record the numbers, the commit, and the dirty state
-together; do not quote a rate from a run that lacks them.
+outside manifest coverage, not as a rounding artifact. Read
+`rendererSourceHash`, `rendererSourceRoots`, `rendererSourceFiles`,
+`gitRevision`, `gitShortRevision`, `gitTreeDirty` and
+`sourcesMatchGitRevision` as well, and do not cite a report that lacks them. Add
+`--gate` to make a truncated selection, a read or oversize skip, an inadmissible
+document, a comparable reference failure, an unresolved declared reference, or a
+missing manifest a non-zero exit. Record the numbers, the commit, and the dirty
+state together; do not quote a rate from a run that lacks them.
+
+## 6.245 The Corpus Harness Now Resolves What It Claims To (2026-09-27)
+
+Two harness settings decide what a WPT corpus run can actually measure, and both
+were wrong until now. Neither is an engine change: the engine default for the first
+is still `false`, and the second is a substitution rule inside the runner. The
+consequence is that a chunk of the numbers recorded earlier in this document was
+measuring the harness rather than the renderer, so this section says which, and
+how to read a rate that predates it.
+
+### The runner now asks the resolver for the subresource
+
+The runner built its render request from `SvgRenderLimits.Default` while also
+supplying a base URI and a resource resolver. The walk gates resolution on
+`AllowExternalReferences`, so the resolver was constructed, passed, and never
+called: every external image reference in the corpus was recorded as a policy
+refusal rather than as a lookup that was attempted and missed. The worker now sets
+that flag when, and only when, a resolver is present, which is what the document
+pipeline does. The engine default stays `false`, and `SvgRenderLimits.Default` still
+means no external references; a caller that wants a different default changes the
+engine, not the runner.
+
+The effect on a recorded rate is large and it is worth being blunt about it: **47
+documents stopped being recorded as policy refusals.** Of those, 2 now render
+because their subresource is on disk in the checkout. The other 45 are not fixed
+and were never going to be - the references they make resolve inside the WPT root,
+and the referenced legacy binaries are not in the tree, because W3C removed them for
+those SVG 1.1 tests years ago. They now fail in the resolver instead of in
+the policy check, which is the honest classification. Their reason code changes
+from `external-resource` to `resource-rejected`, so the document-level
+`ResourceRejections` count falls by only 6 while the reason mix moves by 45; the
+diagnostic the resolver emits for a file it cannot supply is a path complaint,
+because its path check runs before its existence check, so a missing file reads as
+a path error in the report.
+
+State the consequence plainly: **a `ResourceRejections` figure, and a
+first-party/render-failure figure, recorded before this change and one recorded
+after it are not comparable.** The earlier figure counted 47 documents that the
+harness never let the engine look at. Quote the revision and the provenance fields
+next to any rate, as 6.244 requires, and treat any earlier resource-rejection count
+as a harness artefact rather than as a policy decision.
+
+### The runner points the typeface resolver at the WPT test face
+
+The WPT text references are rasterised with the Ahem face, which is not installed
+on a normal machine. Without it the runner substitutes a proportional face and
+reports every Ahem document as an engine failure, which is a statement about the
+machine, not about the renderer. For `--corpus-kind wpt` the runner now looks for
+`fonts/Ahem.ttf` at the corpus root and each of its ancestors, and points
+`FEN_SVG_FONT_PATH` at the first one it finds, before any worker is launched; the
+workers inherit the environment. A caller that has already set
+`FEN_SVG_FONT_PATH` keeps its own value, and the substitution is skipped entirely
+for a corpus kind that is not `wpt`, or when the checkout has no test face.
+
+This is only safe because the resolver's order was corrected in the same change: a
+named family that is installed wins first, a list of only generic keywords resolves
+to the platform substitution, and the configured face is consulted only for a
+family that is not installed. Injecting the test face before that correction
+replaced the platform's monospace in a document that names `monospace`, and broke
+the reference comparison it was meant to repair. Together the two changes took the
+text selection from six comparable reference failures to one, on an unchanged
+denominator: both runs selected the same 99 files, with 42 comparable and 28
+blocked.
+
+The general rule for reading a text rate: a font-related failure is only evidence
+about the renderer if the report was produced with the test face the reference was
+rasterised with. The runner does that now, so a rate from an earlier run that
+predates it needs re-running before it means anything.
+
+Verification:
+
+```bash
+dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release -- --corpus D:\wpt\svg --corpus-kind wpt --max-files 10000 --output Results/svg/wpt-full
+```
+
+Confirm from the report that `ResourceRejections` is counted from resolver
+outcomes rather than from pre-resolver refusals, and read
+`warningMessages` on any document that still fails to classify: `local WPT
+resource ...` is the resolver declining to supply a file, not a policy decision.
+For the font path, confirm the substitution happened by checking that Ahem
+documents are no longer counted as first-party failures, and re-run any
+font-sensitive comparison with `FEN_SVG_FONT_PATH` set explicitly to confirm the
+result does not depend on the caller's environment. The engine-side contract these
+runs measure is in `docs/VOLUME_III_FENENGINE.md` 2.178.

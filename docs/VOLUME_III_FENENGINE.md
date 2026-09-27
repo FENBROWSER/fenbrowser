@@ -11434,7 +11434,9 @@ Verification:
 - The first-party SVG cascade accepts `overflow` only for marker elements.
   Marker rendering preserves the existing bounded marker-viewport clip
   by default and removes only that local clip when the marker's own resolved value
-  is explicitly `visible`; outer canvas clips and render budgets remain unchanged.
+  is `visible` or `auto`; outer canvas clips and render budgets remain unchanged.
+  `overflow: auto` joined `visible` later, on the three-way split the WPT oracle
+  asserts; the current contract is in 2.178.
 - Focused tests cover visible overflow beyond the marker viewport, default
   clipping, and continued fallback for nested-SVG overflow; the complete 26-file
   Release SVG test namespace passes 364/364.
@@ -11444,6 +11446,8 @@ Verification:
   failure, timeout, maximum-channel difference, or differing pixels.
 - This closes marker `overflow:visible` for the isolated SVG image renderer; it
   does not claim general nested-SVG overflow layout or close the remaining gaps.
+  The unconditional-visible rule recorded above was narrowed later, when
+  `overflow:auto` was found to leave the marker viewport (2.178).
 
 ## 2.149 Bounded Non-Scaling SVG Strokes (2026-09-04)
 
@@ -11631,11 +11635,15 @@ Verification:
 
 ## 2.161 SVG Local-Reference Whitespace Processing (2026-09-04)
 
-- Local fragment references now use one bounded parser that strips leading and
-  trailing whitespace before checking `#fragment`, and trims the fragment itself
-  along with the token, so `url(# red )` resolves the id `red` rather than the id
-  ` red`. Internal whitespace remains part of the fragment and is not normalized
-  into a different identifier.
+- Local fragment references use one bounded parser that strips leading and trailing
+  whitespace around the whole token before checking `#fragment`, and trims nothing
+  inside it: `url(# red )` names the id ` red`, not `red`, so it does not resolve.
+  WPT settles this in both directions. `linking/reftests/url-processing-whitespace-003`
+  expects a gradient whose `href` is ` # red ` to paint the surrounding green, and
+  `url-processing-whitespace-002` expects ` # red ` not to resolve at all. An earlier
+  change trimmed the fragment as well, which made the first case paint a quadrant a
+  browser leaves alone; the outer trim, which covers whitespace around the reference
+  itself, was always correct.
 - The rule is shared by `use`, gradient templates, text paths, motion paths, and
   clip-path `use` geometry. Quoted paint `url(...)` inspection applies the same
   post-quote trimming, preventing valid local paint references from being
@@ -12114,6 +12122,44 @@ tag, within a 1 MiB lookahead budget shared by the whole parse.
 engine now explicitly instantiates nothing and the document stays admissible,
 rather than painting a subtree a browser would not paint.
 
+### A `data:` `use` reference resolves to nothing
+
+A `use` naming a `data:` URL is not same-origin, and the `use` href is same-origin
+only, so the reference resolves to no element rather than to a resource this
+document declined to fetch. That is also what every engine does: Safari has never
+resolved one, Firefox stopped in 122 and Chrome in 120, both behind a pref or a
+policy because the reference was an XSS and a Trusted Types bypass. Both WPT
+documents for this assert the target is not painted.
+
+A `data:` reference therefore paints nothing, with one bounded warning, and the
+payload is never decoded - so no admission cap is reached because none is ever
+spent, and hostile input is never looked at. This is a same-form declaration at
+each of the two gates that can see such a value, not a call from one to the other:
+`SvgFeatureSupport.Inspect` admits a `use` href or `xlink:href` that is a `data:`
+URI, and `Smil.TryApplySmilReference` records one as an animated `href` value so
+the animation resolves and the recorded reference then reaches the draw walk's
+no-op branch. The parse stage must not be able to reach a draw-walk decision, so
+neither gate delegates to the other.
+
+A relative or cross-origin `use` reference still fails closed, as a resource
+rejection at the parse stage and as an `animated reference resolution` fallback
+when it is animated. So does an animated reference on a target that is not a
+`use`, on the `animated reference target` branch, which is decided before the
+value is examined. Only a `data:` URI is a reference to nothing;
+`dat:`, `not-data:`, a bare relative path, an absolute path, and an absolute
+same-origin or cross-origin URL are all still resources.
+
+`SvgResourceDiscovery` is deliberately unchanged. It is a network preload for
+absolute same-origin image URIs and already skips `data:`; admitting one there
+would hand a native surface to the draw walk outside the resource accounting.
+
+A `use` with no `href` at all is the third no-op case and is not one of these. It
+is a legal element that instantiates nothing, so the draw walk returns before it
+looks for a reference, no reason code is recorded, and the rest of the document
+paints. It used to be recorded as an external reference rejected by policy, which
+poisoned the frame for an element every engine renders as nothing. A dangling
+local fragment is the fourth: nothing is painted and nothing is reported.
+
 ### foreignObject
 
 A `foreignObject` establishes a viewport from its `x`/`y`/`width`/`height`
@@ -12201,10 +12247,223 @@ class that begins at 1s no longer condemns a document rendered at t=0. This is t
 same order the rest of the snapshot application already uses.
 
 The relaxation is bounded to animations that provably do not apply at the
-document's base time. A live set on a structurally unsupported attribute, a live
-set on an external href, a syncbase begin, an event-based begin, and the
+document's base time. A live set on a structurally unsupported attribute, a
+live set on an external href, a syncbase begin, an event-based begin, and the
 out-of-range spline and paced-motion cases all still fail closed. A not-live
-animation is skipped, never approximated.
+animation is skipped, never approximated. "External" here means a relative or
+cross-origin value: a `data:` value is a reference to nothing, as the preceding
+section states, and is recorded rather than condemned.
+
+### Bidi is a paragraph pass over the shaped runs
+
+Runs are shaped in logical order, and the visual order is resolved afterwards, per
+text chunk - the unit an anchored `x` starts. A chunk's paragraph embedding level
+comes from the inherited `direction` (`rtl` is level 1), or, under
+`unicode-bidi: plaintext`, from the first strong character in the chunk. The
+algorithm then runs the weak, neutral and implicit rules over the chunk's
+concatenated logical characters, and rule L2 reverses from the highest level down to
+the lowest odd level. The paragraph embedding level counts as a level on the line
+even when no character resolves to it, which is what lets a left-to-right island
+inside a right-to-left paragraph move to the other side of its neighbours.
+
+`embed` and `bidi-override` open an embedding frame whose parent is the frame the
+element inherits, and an explicit directional control character in the text opens
+one from the paragraph's own stack; the stack is replayed per run, so a frame
+declared on an ancestor applies to the runs inside it. `text-anchor` follows the
+resolved base level per chunk: on an odd level `start` and `end` swap, so a
+right-to-left chunk anchors its start edge on the right and its end edge on the
+left, while `middle` is unaffected.
+
+The resolved level run is cut back into the painted runs at every level change, at
+every source-run change, and at every point where the level run stops walking its
+source characters monotonically. Each piece is shaped from its own substring rather
+than cut out of the run the shaper already produced, which is the granularity a
+browser shapes a directional run at. The shaper derives its own direction from the
+first strong character of the buffer it is given, so a piece whose level disagrees
+with that guess has its glyph sequence reversed, which is the same operation the
+shaper performs for the other direction. Letter and word spacing survive because
+the advances are re-accumulated from the source positions rather than copied.
+
+`direction` and `unicode-bidi` are inherited properties, so neither admission gate
+can decide them at attribute sight: the bounded parse only inspects `text` and
+`tspan` attributes, and a live animated value outranks both the attribute and the
+cascade. They are validated in the text layout pass instead, which reads the
+resolved presentation property. `initial` and `revert` take the initial value -
+left-to-right, and `normal` - because no user-agent or user origin sets either
+property; `inherit` and `unset` take the parent value.
+
+The two properties then part company on a value they cannot read. An unrecognised
+`direction` value fails closed, because a base direction guessed from an unknown
+keyword would reorder the paragraph silently. An unrecognised `unicode-bidi` value
+is dropped and leaves the inherited value in place, because it opens no frame; that
+includes `inline`, which is not a CSS keyword and so is not a synonym for `embed`.
+The exception in the other direction is that `isolate` and `isolate-override` fail
+closed even though `isolate` also opens no frame here: they are refused at the
+layout pass and by value in the cascade, with a diagnostic naming the isolating run
+sequence the pass does not compute. That refusal therefore holds for a value
+inherited from an ancestor, delivered by the cascade, delivered through a CSS
+variable, or delivered by a live animation, at any sampled keyframe. The same value
+authored as a `text` or `tspan` attribute is refused at attribute sight by the
+parse-time text gate as well, so all three stages fail closed. An `isolate`
+animation that is not live at the sampled document time is skipped, so it does not
+condemn a document rendered before it applies.
+
+The fail-closed remainder, stated honestly rather than implied:
+
+- The paired-bracket table, rule N0, is not implemented. Every paired bracket is
+  refused, because a bracket resolved as a plain neutral would silently misorder a
+  paragraph rather than report it.
+- Character classification is per UTF-16 code unit and stops at U+FFFD, so every
+  astral character is refused. Astral text does not reach the paragraph at all.
+- A point in a right-to-left range that the tables do not positively identify is
+  refused rather than treated as a neutral. Inside those ranges a combining mark
+  takes the type of the character it follows; a point that is neither a letter nor
+  such a mark is the refusal case.
+- Vertical writing modes are still a separate refusal in the same pass. A
+  `writing-mode` that is not horizontal fails closed, and a paragraph that needs
+  reordering next to a `textPath`, per-glyph positioning, or `textLength` fails
+  closed with its own reason.
+- The paragraph is bounded at 1,024 characters and the embedding stack at 125
+  frames. Over either bound the paragraph is reported, not laid out.
+
+### Text decorations paint in the run's paint order
+
+A decoration band takes the run's own fill and stroke. It used to take one paint
+chosen by a null check, so a run carrying both a fill and a stroke lost the stroke
+band entirely. The oracle for that case is
+`painting/reftests/paint-order-text-decorations.svg`, whose browser-authored
+reference is a per-layer decomposition: each paint order is rebuilt as one `<text>`
+element per phase with `fill="none"` on the phases that are not the fill, so the
+missing stroke band was the whole of the pixel difference.
+
+Each band is now painted once per `paint-order` phase, in phase order, using that
+phase's paint. The markers phase paints no band, and the text pass paints no
+markers at all: a `marker` property on a `text` element is accepted by the cascade
+and contributes nothing to the frame, which is a separate open gap that this
+ordering does not close. Underline and overline are painted before the foreground,
+in the same phase order; line-through is painted after it. Thickness and position
+come from the typeface metrics - underline thickness and position for both the
+underline and the overline, strikeout thickness for the line-through - falling back
+to a font-size-derived default when a metric is absent, non-positive, or not
+finite.
+
+`text-decoration-color` remains a refused declaration: there is no per-run
+decoration colour channel, so a colour a browser would paint the band in is painted
+in the run's fill or stroke instead. That gap entry in the capability table is
+still correct.
+
+### An unresolved local mask reference paints the target unmasked
+
+A `mask` whose value is a local IRI naming nothing, or naming something that is
+not a `<mask>`, is an unresolved reference rather than an unsupported feature. The
+target paints unmasked, with no reason code, which is what a browser does; both
+cases - a mask naming an absent id, and a mask naming a rect or a group - were
+verified against a headless browser. The specification's error-processing letter,
+render up to but not including the first element in error, is not what engines do,
+and following it would have refused a document every engine paints.
+
+Everything else about mask references is unchanged and still fails closed: an
+external mask reference is a resource rejection, and a cycle or a reference past the
+depth budget is a fallback. A wrong-typed target is not in that list: it is one of
+the two unresolved cases above, and it paints unmasked.
+
+The asymmetry with the filter path is deliberate and is the reason the two are
+separate entry points. `TryEnterReference` is the shared validating primitive for
+both and reports one reason for three situations - unresolvable, external, and
+past a budget - so a mask now goes through a named wrapper that leaves an
+unresolved local reference alone, mirroring the wrapper the filter path already
+had. The shared primitive is untouched, which keeps the filter behaviour that was
+established separately against browsers and WPT unchangeable by a mask rule, and
+keeps the external-URL rejection and the cycle and depth budgets running for both,
+along with the filter path's own refusal of a wrong-typed target. Two named wrappers
+over one shared test, rather than one call site, is what makes a blanket edit
+impossible to make by accident later.
+
+Reference parsing itself is unchanged: a local reference is trimmed around the whole
+token and never inside the fragment (2.161).
+
+### The marker viewport clip is conditional on `overflow`
+
+`overflow` decides the implicit marker-viewport clip, and it is not "everything but
+`visible`". `auto` behaves as `visible`: it leaves the viewport. `hidden`, `scroll`
+and the initial value all clip. So does any spelling the engine cannot resolve,
+because an unrecognised keyword falls back to the initial value the way CSS treats
+it rather than to the unpainted frame a wrong guess would emit.
+
+The oracle is the browser-authored WPT reference for `painting/marker-005`, which
+draws all five columns from `overflow="visible"` markers plus an explicit clip path
+so the expected picture is stated declaratively. Its `auto` column is built from
+unclipped content exactly as its `visible` column is, while the unspecified,
+`scroll` and `hidden` columns are built from content clipped to the marker
+viewBox. That is the whole three-way split, and it is the reference the engine
+follows.
+
+The tension is worth recording rather than resolving. SVG 2 makes the clip
+conditional on the overflow value indicating that the marker needs clipping, and
+defers to CSS - where `auto` is a clipping value. The engine follows the oracle, so
+it deviates from the letter of the CSS definition for `auto` on purpose.
+
+The clip itself is an axis-aligned `ClipRect`. Skia resolves that as an exact bounds
+test; in the only case that is not true - a rect that no longer lands axis aligned
+in device space - the boundary is biased by half a device pixel so content lying on
+the viewport edge keeps its own antialiased coverage while content spilling further
+than half a pixel is still clipped.
+
+### The font fallback order is family, then generic, then the configured face
+
+The configured font path is a fallback, not an override. The order is:
+
+- The first author-named, non-generic family in the list that is actually installed
+  and covers the run. An installed family wins even when a configured path is
+  present, which is the case the configured path used to hijack.
+- The platform substitution, for a list that carries only generic keywords. A
+  generic keyword is not a family, so a list of only generics is not a family list
+  and resolves to the substitution a browser would perform.
+- The configured face from `FEN_SVG_FONT_PATH`, for a document that names a specific
+  family which is not installed. That is exactly the case the WPT Ahem documents
+  are in, and it is why injecting the test face into a harness is safe: a document
+  naming `monospace` keeps the platform's monospace.
+- A typeface installed for a run's declared language, and only for content the
+  platform default cannot draw on its own, so a language never re-shapes text the
+  default already renders.
+- The platform default, if it covers the run.
+
+The family list is bounded at eight comma-separated entries inspected per run. A
+run no stage can cover resolves to no typeface, and the run is reported rather than
+painted in a face that cannot draw it. SVG source can never select a file path; the
+configured path is process-level only.
+
+### The supported set, the capability reasons, and what the cascade drops
+
+`direction` and `unicode-bidi` are supported properties. Both used to be refused
+twice - at attribute sight by the parse-time text gate and again by the cascade,
+with a reason claiming the text model lays every run out left to right. Neither
+refusal remains, and neither property carries a capability reason any more.
+
+A property outside the supported set fails closed with the capability reason for
+its name when it has one, so an operator can tell a missing text-layout subsystem
+from a missing paint detail instead of reading one indistinguishable refusal. The
+names that carry a reason are `font-size-adjust`, `inline-size`, `line-spacing`,
+`shape-inside`, `shape-margin`, `shape-padding`, `shape-subtract`, `text-align`,
+`text-decoration-color`, `text-orientation`, `white-space`, `writing-mode` and
+`z-index`. `font-size-adjust` is worded the way it behaves: the x-height metric is
+resolved, and the requested ratio is simply never applied to the used size.
+
+A declaration that is not valid CSS is dropped without a reason code, and the rest
+of the declaration block still applies. That includes a `font` shorthand with no
+family: `<font-family>#` is not optional in the grammar, so a value that stops
+after the size does not parse at all, the declaration is discarded, and the run
+paints at the inherited size - which is what an engine that dropped the declaration
+paints.
+
+The effect-reference properties are the exception, and the split is not uniform
+enough to leave implicit. The definitely-invalid test for `filter`, `mask` and the
+`marker-*` properties recognises only a malformed `url(...)`, so a bare filter
+function list such as `filter: blur(2px)` is kept by the cascade and refused where
+it is consumed: at the draw walk, naming the element that carries it, as `SVG
+filter reference is invalid or unresolved`. It is not dropped, and it does not
+condemn a rule whose selector does not match the element, because a rule is only
+ever considered for an element it matches.
 
 Verification: the behaviour in this section is pinned by the Release
 `FullyQualifiedName~FenBrowser.Tests.Svg` slice, including
@@ -12212,12 +12471,17 @@ Verification: the behaviour in this section is pinned by the Release
 `Svg/SvgForeignObjectWalkTests`, `Svg/SvgMarkupParserSecurityTests`,
 `Svg/SvgCssCascadeTests`, `Svg/SvgCssTransformTests`,
 `Svg/FenSvgRendererSandboxParityTests`, `Svg/SvgFilterTests`,
-`Svg/SvgSmilAnimationTests`, and `Svg/SvgVisualShowcaseTests` (one showcase
+`Svg/SvgSmilAnimationTests`, `Svg/SvgMotionAnimationTests`,
+`Svg/SvgUseDataUrlReferenceTests`, `Svg/SvgUseDataUrlParseAdmissionTests`,
+`Svg/SvgTextShapingTests`, `Svg/SvgMarkerTests`, `Svg/SvgMaskTests`,
+`Svg/SvgValuesTests`, and
+`Svg/SvgVisualShowcaseTests` (one showcase
 document combining the hardest supported cases, asserted admissible, warning-free,
 coverage-floored, and bit-for-bit repeatable, with the frame written to
 `logs/svg-hardest-showcase.png` so a regression is visible as a picture). Report
 the discovery-derived count from the run rather than copying a count forward. The
-corpus and declared-reference evidence for this contract is in VOLUME_VI 6.244.
+corpus and declared-reference evidence for this contract is in VOLUME_VI 6.244 and
+6.245.
 
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
