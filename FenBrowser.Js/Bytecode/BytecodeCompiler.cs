@@ -84,6 +84,15 @@ public sealed class BytecodeCompiler
     private sealed record FieldInitializer(string Name, int ComputedIndex, ExpressionNode Initializer);
     private bool _inFieldInitializer;
 
+    // A derived constructor's instance field initializers. ECMA-262 13.3.7.1
+    // SuperCall runs InitializeInstanceElements as part of super() itself, so
+    // CompileSuperCall emits them right after the this binding, wherever the
+    // call sits (`super(), this.#x = 1` included). If the constructor's own code
+    // never compiles a super() - it is only reached through an arrow - they are
+    // emitted at the end of the body instead.
+    private List<StatementNode>? _derivedFieldInitializers;
+    private bool _derivedFieldInitializersEmitted;
+
     // Script, module or eval code (see BytecodeFunction.IsProgramCode).
     private bool _isProgramCode;
 
@@ -455,6 +464,13 @@ public sealed class BytecodeCompiler
                 if (bodyFuncDecls.Count > 0)
                     HoistFunctionDeclarations(bodyFuncDecls);
             }
+        }
+
+        // A derived constructor whose own code has no super() (it is called from
+        // an arrow, which does not carry the initializers): run them at the end.
+        if (!_derivedFieldInitializersEmitted)
+        {
+            EmitDerivedFieldInitializers();
         }
 
         SettleFunctionBodyScope(prologueEndIp);
@@ -1408,36 +1424,13 @@ public sealed class BytecodeCompiler
             instanceFieldInits.Add(fieldStatement);
             fieldInitializers[fieldStatement] = new FieldInitializer(member.Name, computedIndex, member.Function);
         }
-        if (instanceFieldInits.Count > 0)
+        // A derived constructor runs its field initializers from each super() call
+        // (see _derivedFieldInitializers); a base constructor runs them on entry.
+        if (instanceFieldInits.Count > 0 && !isDerived)
         {
-            IReadOnlyList<StatementNode> combined;
-            if (isDerived)
-            {
-                // Inject after the first top-level `super(...)` ExpressionStatement.
-                // If none is found, append at end (constructors that never call
-                // super are a spec error we don't enforce here).
-                var stmts = new List<StatementNode>(constructorFn.Body.Statements);
-                int insertAt = stmts.Count;
-                for (int i = 0; i < stmts.Count; i++)
-                {
-                    if (stmts[i] is ExpressionStatementNode es
-                        && es.Expression is CallExpressionNode call
-                        && call.Callee is SuperExpressionNode)
-                    {
-                        insertAt = i + 1;
-                        break;
-                    }
-                }
-                stmts.InsertRange(insertAt, instanceFieldInits);
-                combined = stmts;
-            }
-            else
-            {
-                var list = new List<StatementNode>(instanceFieldInits.Count + constructorFn.Body.Statements.Count);
-                list.AddRange(instanceFieldInits);
-                list.AddRange(constructorFn.Body.Statements);
-                combined = list;
-            }
+            var combined = new List<StatementNode>(instanceFieldInits.Count + constructorFn.Body.Statements.Count);
+            combined.AddRange(instanceFieldInits);
+            combined.AddRange(constructorFn.Body.Statements);
             var newBody = new BlockStatementNode(combined, constructorFn.Body.Span);
             constructorFn = new FunctionExpressionNode(
                 constructorFn.Name,
@@ -1464,8 +1457,11 @@ public sealed class BytecodeCompiler
         _isClassConstructor = true;
         var savedFieldInitializers = _fieldInitializerStatements;
         _fieldInitializerStatements = instanceFieldInits.Count > 0 ? fieldInitializers : null;
+        var savedDerivedFieldInitializers = _derivedFieldInitializers;
+        _derivedFieldInitializers = isDerived && instanceFieldInits.Count > 0 ? instanceFieldInits : null;
         var constructorIndex = _nestedFunctions.Count;
         var classReg = CompileFunctionExpressionToRegister(constructorFn, FunctionKind.Constructor);
+        _derivedFieldInitializers = savedDerivedFieldInitializers;
         // ECMA-262 15.7.14 step 18: the class's [[SourceText]] is the whole
         // ClassDeclaration or ClassExpression, so Function.prototype.toString on
         // a class shows the class, not just its constructor method.
@@ -1719,7 +1715,7 @@ public sealed class BytecodeCompiler
         // function nested in a class body - a field initializer's class, its
         // methods, an arrow - a class constructor that [[Call]] must refuse.
         var compilesConstructor = explicitKind == FunctionKind.Constructor;
-        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = compilesConstructor && this._isDerivedConstructor, _isClassConstructor = compilesConstructor && this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _fieldInitializerStatements = this._fieldInitializerStatements, _rawSource = _rawSource, _sourcePath = _sourcePath };
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = compilesConstructor && this._isDerivedConstructor, _isClassConstructor = compilesConstructor && this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames, _fieldInitializerStatements = this._fieldInitializerStatements, _derivedFieldInitializers = compilesConstructor ? this._derivedFieldInitializers : null, _rawSource = _rawSource, _sourcePath = _sourcePath };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
@@ -1949,7 +1945,27 @@ public sealed class BytecodeCompiler
         }
 
         _instructions.Add(new Instruction(OpCode.InitThisBinding, dest, 0, 0));
+        EmitDerivedFieldInitializers();
         return dest;
+    }
+
+    // ECMA-262 13.3.7.1 SuperCall steps 8-10: after BindThisValue,
+    // InitializeInstanceElements(result, F) - the fields exist before anything
+    // after the super() call, even in the same expression, can touch them.
+    private void EmitDerivedFieldInitializers()
+    {
+        // super() inside a field initializer is an early error the validator
+        // reports; emitting the initializers from there would recurse into it.
+        if (_derivedFieldInitializers is null || _inFieldInitializer)
+        {
+            return;
+        }
+
+        _derivedFieldInitializersEmitted = true;
+        foreach (var initializer in _derivedFieldInitializers)
+        {
+            CompileStatement(initializer);
+        }
     }
 
     private bool TryConvertLastCallToTailCall(int resultRegister)
