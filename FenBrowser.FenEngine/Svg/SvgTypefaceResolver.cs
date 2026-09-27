@@ -62,15 +62,21 @@ namespace FenBrowser.FenEngine.Svg
             int weight,
             SKFontStyleSlant slant)
         {
+            if (TryResolveNamedFamily(family, text, weight, slant, out SKTypeface named))
+            {
+                return named;
+            }
+
+            if (IsGenericFamilyList(family))
+            {
+                var substituted = TextLayoutHelper.ResolveTypeface(family, text, weight, slant);
+                if (Supports(substituted, text)) return substituted;
+            }
+
             var configured = ConfiguredFallback.Value;
             if (configured != null && Supports(configured, text))
             {
                 return configured;
-            }
-
-            if (TryResolveNamedFamily(family, text, weight, slant, out SKTypeface named))
-            {
-                return named;
             }
 
             SKTypeface languageTypeface = ResolveLanguageTypeface(language, text, weight, slant);
@@ -78,6 +84,17 @@ namespace FenBrowser.FenEngine.Svg
 
             var resolved = TextLayoutHelper.ResolveTypeface(family, text, weight, slant);
             return Supports(resolved, text) ? resolved : null;
+        }
+
+        private static bool IsGenericFamilyList(string family)
+        {
+            if (string.IsNullOrWhiteSpace(family)) return false;
+            foreach (string candidate in family.Split(','))
+            {
+                string token = candidate.Trim().Trim('"', '\'');
+                if (token.Length != 0 && !IsGenericFamily(token)) return false;
+            }
+            return true;
         }
 
         /// <summary>
