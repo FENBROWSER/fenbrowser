@@ -410,7 +410,9 @@ namespace FenBrowser.FenEngine.Svg
                 RequireSmilFallback("animated reference precedence");
                 return false;
             }
-            if (value == null || !SvgValues.TryParseLocalReference(value, out _))
+            if (value == null ||
+                (!SvgValues.TryParseLocalReference(value, out _) &&
+                 !SvgFeatureSupport.ResolvesToNoElement(value)))
             {
                 RequireSmilFallback("animated reference resolution");
                 return false;

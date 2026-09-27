@@ -82,7 +82,8 @@ namespace FenBrowser.FenEngine.Svg
                     (string.Equals(attribute.Key, "href", StringComparison.OrdinalIgnoreCase) ||
                      string.Equals(attribute.Key, "xlink:href", StringComparison.OrdinalIgnoreCase)) &&
                     !string.IsNullOrWhiteSpace(attribute.Value) &&
-                    !SvgValues.TryParseLocalReference(attribute.Value, out _))
+                    !SvgValues.TryParseLocalReference(attribute.Value, out _) &&
+                    !ResolvesToNoElement(attribute.Value))
                 {
                     report.RejectResource($"SVG {element.Name} external reference rejected");
                     continue;
@@ -340,6 +341,10 @@ namespace FenBrowser.FenEngine.Svg
             }
             return false;
         }
+
+        internal static bool ResolvesToNoElement(string value) =>
+            !string.IsNullOrWhiteSpace(value) &&
+            value.TrimStart().StartsWith("data:", StringComparison.OrdinalIgnoreCase);
 
         internal static bool SupportsNonScalingStroke(SvgElement element, string value)
         {

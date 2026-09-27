@@ -711,19 +711,78 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void LiveHrefSet_OnADataUrl_FailsClosed()
+        public void LiveHrefSet_OnADataUrl_ResolvesToNoElement()
         {
             const string svg =
-                "<svg width='20' height='20'><use>" +
+                "<svg width='20' height='20'><rect width='20' height='20' fill='green'/>" +
+                "<use>" +
                 "<set attributeName='href' to='data:image/svg+xml;base64,PHN2Zy8+#r'/>" +
                 "</use></svg>";
 
             using var result = RenderAt(svg, 0d);
 
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.False(result.HadResourceRejection);
+            Assert.Equal(SKColors.Green, result.Bitmap.GetPixel(10, 10));
+            Assert.Contains(result.Warnings, warning => warning.Contains("data: URL"));
+            Assert.DoesNotContain(result.Warnings,
+                warning => warning.Contains("animated reference resolution"));
+            foreach (string warning in result.Warnings)
+                Assert.DoesNotContain("base64", warning, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void LiveHrefSet_OnARelativeValue_FailsClosed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><rect width='20' height='20' fill='green'/>" +
+                "<use>" +
+                "<set attributeName='href' to='other.svg#r'/>" +
+                "</use></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
             AssertFailsClosed(result);
-            Assert.True(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("smil-animation", result.FallbackReasonCodes);
             Assert.Contains(result.Warnings,
                 warning => warning.Contains("animated reference resolution"));
+        }
+
+        [Fact]
+        public void LiveHrefSet_OnACrossOriginValue_FailsClosed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><rect width='20' height='20' fill='green'/>" +
+                "<use>" +
+                "<set attributeName='href' to='https://other.example/x.svg#r'/>" +
+                "</use></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("smil-animation", result.FallbackReasonCodes);
+            Assert.Contains(result.Warnings,
+                warning => warning.Contains("animated reference resolution"));
+        }
+
+        [Fact]
+        public void LiveHrefSet_OnADataUrl_TargetingANonUse_FailsClosed()
+        {
+            const string svg =
+                "<svg width='20' height='20'><rect width='20' height='20' fill='green'>" +
+                "<set attributeName='href' to='data:image/svg+xml;base64,PHN2Zy8+#r'/>" +
+                "</rect></svg>";
+
+            using var result = RenderAt(svg, 0d);
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("smil-animation", result.FallbackReasonCodes);
+            Assert.Contains(result.Warnings,
+                warning => warning.Contains("animated reference target"));
         }
 
         [Fact]
