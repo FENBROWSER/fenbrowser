@@ -74,18 +74,24 @@ internal sealed class LocalWptSvgResourceResolver : ISvgResourceResolver
             return false;
         }
         if (!path.StartsWith(_rootWithSeparator, PathComparison) ||
-            ContainsReparsePoint(path) || !HasExactUrlPathCase(path))
+            ContainsReparsePoint(path))
         {
             error = "local WPT resource escaped the authorized root";
+            return false;
+        }
+
+        if (!HasExactUrlPathCase(path) || !File.Exists(path))
+        {
+            error = "local WPT resource is not present under the authorized root [resolver-miss]";
             return false;
         }
 
         try
         {
             var info = new FileInfo(path);
-            if (!info.Exists || info.Length <= 0 || info.Length > HardMaxResourceBytes)
+            if (info.Length <= 0 || info.Length > HardMaxResourceBytes)
             {
-                error = "local WPT resource is missing or exceeds the hard byte limit";
+                error = "local WPT resource is empty or exceeds the hard byte limit";
                 return false;
             }
             byte[] content = File.ReadAllBytes(path);

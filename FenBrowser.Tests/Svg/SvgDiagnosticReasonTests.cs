@@ -1,4 +1,5 @@
 using FenBrowser.FenEngine.Adapters;
+using FenBrowser.FenEngine.Svg;
 using Xunit;
 
 namespace FenBrowser.Tests.Svg
@@ -244,6 +245,32 @@ namespace FenBrowser.Tests.Svg
             AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
             Assert.Contains("unsupported-element", result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("local WPT resource escaped the authorized root", "resource-rejected")]
+        [InlineData(
+            "local WPT resource is not present under the authorized root [resolver-miss]",
+            "resolver-miss")]
+        [InlineData("local WPT resource is empty or exceeds the hard byte limit", "resource-budget")]
+        [InlineData("local WPT resource could not be read", "resource-rejected")]
+        [InlineData("local WPT resource path is invalid", "invalid-resource")]
+        public void LocalWptResolverRefusals_MapToTheIntendedReasonCode(
+            string resolverError, string expectedCode)
+        {
+            Assert.Equal(
+                expectedCode, SvgDiagnosticClassifier.ClassifyResourceRejection(resolverError));
+        }
+
+        [Fact]
+        public void ResolverMissToken_OutranksTheBudgetBranchAndSurvivesAReword()
+        {
+            const string token = "[resolver-miss]";
+
+            Assert.Equal("resolver-miss", SvgDiagnosticClassifier.ClassifyResourceRejection(
+                "the harness declined that one " + token));
+            Assert.Equal("resource-budget", SvgDiagnosticClassifier.ClassifyResourceRejection(
+                "the harness declined that one and it exceeds the limit"));
         }
 
         private static void AssertFailsClosed(SvgRenderResult result)
