@@ -1224,8 +1224,10 @@ namespace FenBrowser.FenEngine.Svg
                     scaled = true;
                 }
 
-                if (run.Decorations != TextDecoration.None)
-                    PaintTextDecorations(canvas, run, metrics, fillPaint ?? strokePaint);
+                TextDecoration underOrOver = run.Decorations &
+                    (TextDecoration.Underline | TextDecoration.Overline);
+                if (underOrOver != TextDecoration.None)
+                    PaintTextDecorations(canvas, run, metrics, fillPaint, strokePaint, underOrOver);
 
                 for (int i = 0; i < 3; i++)
                 {
@@ -1238,6 +1240,12 @@ namespace FenBrowser.FenEngine.Svg
                             canvas.DrawText(blob, 0f, 0f, strokePaint);
                             break;
                     }
+                }
+
+                if ((run.Decorations & TextDecoration.LineThrough) != 0)
+                {
+                    PaintTextDecorations(
+                        canvas, run, metrics, fillPaint, strokePaint, TextDecoration.LineThrough);
                 }
 
                 if (scaled) canvas.Restore();
@@ -1286,27 +1294,48 @@ namespace FenBrowser.FenEngine.Svg
             SKCanvas canvas,
             TextPaintRun run,
             SKFontMetrics metrics,
-            SKPaint paint)
+            SKPaint fillPaint,
+            SKPaint strokePaint,
+            TextDecoration bands)
         {
-            if (paint == null) return;
+            for (int i = 0; i < 3; i++)
+            {
+                SKPaint paint = run.PaintStyle.PaintOrder.At(i) switch
+                {
+                    PaintPhase.Fill => fillPaint,
+                    PaintPhase.Stroke => strokePaint,
+                    _ => null
+                };
+                if (paint == null) continue;
+                PaintDecorationBands(canvas, run, metrics, paint, bands);
+            }
+        }
+
+        private void PaintDecorationBands(
+            SKCanvas canvas,
+            TextPaintRun run,
+            SKFontMetrics metrics,
+            SKPaint paint,
+            TextDecoration bands)
+        {
             float fontSize = run.GlyphRun.FontSize;
             float defaultThickness = Math.Max(1f, fontSize / 16f);
             bool rotated = run.GlyphRotations != null && run.PathTransforms != null;
 
-            if ((run.Decorations & TextDecoration.Underline) != 0)
+            if ((bands & TextDecoration.Underline) != 0)
             {
                 float thickness = metrics.UnderlineThickness ?? defaultThickness;
                 if (!(thickness > 0f) || !SvgValues.IsFinite(thickness)) thickness = defaultThickness;
                 float y = metrics.UnderlinePosition ?? fontSize * 0.1f;
                 PaintDecorationBand(canvas, run, paint, y, thickness, rotated);
             }
-            if ((run.Decorations & TextDecoration.Overline) != 0)
+            if ((bands & TextDecoration.Overline) != 0)
             {
                 float thickness = metrics.UnderlineThickness ?? defaultThickness;
                 if (!(thickness > 0f) || !SvgValues.IsFinite(thickness)) thickness = defaultThickness;
                 PaintDecorationBand(canvas, run, paint, metrics.Ascent, thickness, rotated);
             }
-            if ((run.Decorations & TextDecoration.LineThrough) != 0)
+            if ((bands & TextDecoration.LineThrough) != 0)
             {
                 float thickness = metrics.StrikeoutThickness ?? defaultThickness;
                 if (!(thickness > 0f) || !SvgValues.IsFinite(thickness)) thickness = defaultThickness;

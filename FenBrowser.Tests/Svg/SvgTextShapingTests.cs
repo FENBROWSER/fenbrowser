@@ -1219,10 +1219,8 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData("direction='rtl'")]
-        [InlineData("unicode-bidi='embed'")]
-        [InlineData("unicode-bidi='bidi-override'")]
-        [InlineData("unicode-bidi='plaintext'")]
+        [InlineData("unicode-bidi='isolate'")]
+        [InlineData("unicode-bidi='isolate-override'")]
         [InlineData("writing-mode='vertical-rl'")]
         [InlineData("dominant-baseline='mathematical'")]
         [InlineData("dominant-baseline='use-script'")]
@@ -1247,7 +1245,6 @@ namespace FenBrowser.Tests.Svg
         [Theory]
         [InlineData("direction='ltr'")]
         [InlineData("unicode-bidi='normal'")]
-        [InlineData("unicode-bidi='isolate'")]
         [InlineData("writing-mode='horizontal-tb'")]
         [InlineData("writing-mode='lr'")]
         [InlineData("text-rendering='auto'")]
@@ -1269,6 +1266,24 @@ namespace FenBrowser.Tests.Svg
         public void InertAdvancedTextValues_AreAdmittedAndPaintIdentically(string declarations)
         {
             AssertSamePixels(Baseline(declarations), Baseline(string.Empty));
+        }
+
+        [Theory]
+        [InlineData("unicode-bidi='embed'")]
+        [InlineData("unicode-bidi='inline'")]
+        [InlineData("unicode-bidi='bidi-override'")]
+        [InlineData("unicode-bidi='plaintext'")]
+        public void BidiFrameValues_AreAdmittedAndPaintIdenticallyAtTheBaseLevel(
+            string declarations)
+        {
+            AssertSamePixels(Baseline(declarations), Baseline(string.Empty));
+        }
+
+        [Fact]
+        public void DirectionAttribute_ReachesTheLayoutPassAndSwapsTheChunkAnchors()
+        {
+            AssertSamePixels(
+                Baseline("direction='rtl'"), Baseline("text-anchor='end'"));
         }
 
         private const string BidirectionalFont = "font-family='monospace' font-size='20'";
@@ -1705,6 +1720,100 @@ namespace FenBrowser.Tests.Svg
             AssertDifferentPixels(
                 Baseline("text-decoration='underline'"),
                 Baseline("text-decoration='line-through'"));
+        }
+
+        private const string DecorationGlyphs = "test";
+
+        private const string DecorationFillLayer =
+            "fill='blue' stroke-width='4' stroke-opacity='0.5' style='marker:url(#m)'";
+
+        private const string DecorationStrokeLayer =
+            "fill='none' stroke='lime' stroke-width='4' stroke-opacity='0.5'";
+
+        private const string DecorationMarkerLayer =
+            "fill='none' style='marker:url(#m)'";
+
+        private const string DecorationMarker =
+            "<marker id='m' refX='5' refY='5' viewBox='0 0 10 10' overflow='visible'>" +
+            "<circle cx='5' cy='5' r='3' fill='black' stroke='black' fill-opacity='0.5'/>" +
+            "</marker>";
+
+        private static string DecorationSheet(string layers) =>
+            "<svg width='340' height='140'><defs>" + DecorationMarker + "</defs>" + layers + "</svg>";
+
+        private static string DecorationLayer(string paintOrder, string layer) =>
+            $"<text y='95' font-family='monospace' font-size='48' paint-order='{paintOrder}' " +
+            $"text-decoration='underline' {layer}>{DecorationGlyphs}</text>";
+
+        /// <summary>
+        /// The reference for WPT svg/painting/reftests/paint-order-text-decorations.svg
+        /// splits one underlined text element carrying a fill and a stroke into one
+        /// element per paint layer, ordered by paint-order, so a band is emitted by
+        /// whichever layer owns the phase it is painted in. A single element that
+        /// drops the stroke band, or paints the two bands in a fixed order, breaks
+        /// the equivalence the reference encodes.
+        /// </summary>
+        [Theory]
+        [InlineData("fill stroke markers", "fill|stroke|markers")]
+        [InlineData("fill markers stroke", "fill|markers|stroke")]
+        [InlineData("stroke fill markers", "stroke|fill|markers")]
+        [InlineData("stroke markers fill", "stroke|markers|fill")]
+        [InlineData("markers fill stroke", "markers|fill|stroke")]
+        [InlineData("markers stroke fill", "markers|stroke|fill")]
+        public void TextDecoration_EveryPaintOrderMatchesItsLayeredDecomposition(
+            string paintOrder, string layerOrder)
+        {
+            string single = DecorationLayer(
+                paintOrder,
+                "fill='blue' stroke='lime' stroke-width='4' stroke-opacity='0.5' " +
+                "style='marker:url(#m)'");
+            var builder = new System.Text.StringBuilder();
+            foreach (string layer in layerOrder.Split('|'))
+            {
+                builder.Append(DecorationLayer(
+                    paintOrder,
+                    layer switch
+                    {
+                        "fill" => DecorationFillLayer,
+                        "stroke" => DecorationStrokeLayer,
+                        _ => DecorationMarkerLayer
+                    }));
+            }
+
+            AssertSamePixels(DecorationSheet(single), DecorationSheet(builder.ToString()));
+        }
+
+        [Fact]
+        public void TextDecoration_BandsShareTheRunSpanAndStraddleTheBaseline()
+        {
+            using var plain = new FenSvgRenderer().Render(Baseline(string.Empty));
+            using var underlined = new FenSvgRenderer().Render(
+                Baseline("text-decoration='underline'"));
+            using var overlined = new FenSvgRenderer().Render(
+                Baseline("text-decoration='overline'"));
+            using var struck = new FenSvgRenderer().Render(
+                Baseline("text-decoration='line-through'"));
+
+            Assert.True(underlined.Success, underlined.ErrorMessage);
+            Assert.False(underlined.RequiresFallback, string.Join("; ", underlined.Warnings));
+            Assert.True(TryGetInkBounds(plain.Bitmap, out var plainBounds));
+            Assert.True(TryGetInkBounds(underlined.Bitmap, out var underlineBounds));
+            Assert.True(TryGetInkBounds(overlined.Bitmap, out var overlineBounds));
+            Assert.True(TryGetInkBounds(struck.Bitmap, out var strikeBounds));
+
+            Assert.Equal(plainBounds.Left, underlineBounds.Left);
+            Assert.Equal(underlineBounds.Left, overlineBounds.Left);
+            Assert.Equal(underlineBounds.Left, strikeBounds.Left);
+            Assert.Equal(underlineBounds.Right, overlineBounds.Right);
+            Assert.Equal(underlineBounds.Right, strikeBounds.Right);
+            Assert.True(overlineBounds.Top < plainBounds.Top,
+                "the overline must sit above the glyph ink");
+            Assert.True(underlineBounds.Bottom > plainBounds.Bottom,
+                "the underline must sit below the glyph ink");
+            Assert.True(strikeBounds.Bottom >= plainBounds.Bottom,
+                "the strikeout must not start below the glyph ink");
+            Assert.True(strikeBounds.Bottom < underlineBounds.Bottom,
+                "the strikeout must stop above the underline");
         }
 
         [Fact]
