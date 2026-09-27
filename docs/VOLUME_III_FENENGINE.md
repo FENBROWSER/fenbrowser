@@ -10666,10 +10666,10 @@ Verification: 117 focused tests (`FenBrowser.Tests/Svg`): parser security suite 
 | inline style="" (shadowing presentation attrs) | supported | definitely-invalid declarations are dropped, later valid ones win |
 | stylesheet CSS (<style>) | supported | shared CSS engine: selectors, specificity, layers, calc(), zoom, variables |
 | clipPath + clip-path (userSpaceOnUse; shape children + 1-level use) | partial | objectBoundingBox is exact for shapes/images; container clips are unsupported |
-| <image> data: URI rasters | supported | base64 only; encoded/decoded budgets; preserveAspectRatio meet/slice/none |
+| <image> data: URI rasters | supported | base64 only; encoded/decoded budgets; preserveAspectRatio meet/slice/none; content-based sizing keywords are refused (2.180) |
 | use/symbol (+ nested svg viewports) | supported | cycle guards |
 | currentColor inheritance | supported | including inside gradients, patterns, and filters |
-| switch | partial | first drawable child, `foreignObject` included; an unanswerable conditional-processing list is refused, not skipped |
+| switch | partial | first branch the draw dispatch decides, `foreignObject` included; an unanswerable conditional-processing list is refused, not skipped |
 | direct and shaped text (tspan, textPath, complex scripts) | supported | bounded budgets; vertical writing modes are unsupported |
 | patterns / masks / markers / filters | supported when referenced | unused definitions do not force a rejection |
 | bounded document-time animation (`animate`, `set`, `animateMotion`) | supported | deterministic snapshot at a caller-supplied document time; unsupported timing is rejected |
@@ -11288,19 +11288,27 @@ Verification:
   cascaded `width: 10vw` on a rect resolves exactly like `width="10%"`.
 - Nested `<svg>` elements participate in CSS sizing only for forms whose
   resolution requires layout context, matching the tentative WPT interop
-  position: `stretch`, `fit-content`, `min-content`, and `max-content` resolve
-  to the containing viewport extent (an SVG viewport has no intrinsic size),
-  `calc-size(<base>, <calc-sum>)` evaluates with keyword bases and the `size`
-  substitution token, and viewport-unit-bearing values resolve against the
-  nearest viewport. Plain length, percentage, `calc()`, `auto`, `inherit`, and
-  `initial` declarations still never override nested-svg XML geometry.
-- Invalid or malformed sizing input stays distinct from compatibility routing:
-  malformed `calc-size()` grammar, negative results, depth/operation budget
-  overflow, values beyond the bounded attribute-value cap, and non-finite
-  results are ignored deterministically without fallback codes, keeping
-  first-party routing honest. All evaluation remains bounded by the existing
-  depth (16) and operation (128) ceilings plus per-call parsers; no shared
-  mutable state was added.
+  position: viewport-unit-bearing values resolve against the nearest viewport,
+  and plain length, percentage, `calc()`, `auto`, `inherit`, and `initial`
+  declarations still never override nested-svg XML geometry. The fill-available
+  sizing keywords - `stretch`, `fit-content`, `min-content`, and `max-content` -
+  and `calc-size(<base>, <calc-sum>)` are the exception and are declined. An SVG
+  viewport has no intrinsic size, so there is nothing for them to size against,
+  and resolving them to the containing viewport extent silently overrode the
+  authored `width`/`height`; they are declined so the geometry attributes stay in
+  charge. Corrected 2026-09-26, and the same keywords on an `<image>` are a
+  refusal rather than a decline - both are stated in 2.180.
+- Invalid or malformed sizing input stays distinct from compatibility routing at
+  the evaluator: malformed `calc-size()` grammar, negative results,
+  depth/operation budget overflow, values beyond the bounded attribute-value cap,
+  and non-finite results are ignored deterministically without fallback codes,
+  keeping first-party routing honest. All evaluation remains bounded by the
+  existing depth (16) and operation (128) ceilings plus per-call parsers; no
+  shared mutable state was added. The cascade nevertheless keeps every
+  `calc-size()` form, well-formed or not, as a valid geometry value, so a
+  malformed one is decided by the consumer that asked for it rather than by the
+  evaluator: a nested `<svg>` declines it with the keywords above, and an
+  `<image>` refuses it (2.180).
 
 Verification:
 
@@ -12222,15 +12230,16 @@ asks a question it cannot answer. One rule covers all three:
   continues. SVG 1.1 evaluates an empty `requiredExtensions`, `requiredFeatures`, or
   `systemLanguage` to false, and `struct/reftests/requiredextensions-empty-string.svg`
   is a reftest for it.
-- A list containing at least one identifier no user agent can be shown to implement:
-  false for every user agent, so the element is filtered and the walk continues. For
-  `requiredExtensions` and `requiredFeatures` that is one unrecognised identifier
-  settling the whole list, because both are satisfied only when every entry is. An
-  extension identifier outside the two the specification defines
+- A list no user agent can be shown to satisfy: false for every user agent, so the
+  element is filtered and the walk continues. For `requiredExtensions` and
+  `requiredFeatures` that is one unrecognised identifier settling the whole list,
+  because both are satisfied only when every entry is; for `systemLanguage`, which
+  is satisfied by any one of its tags, it is the whole list that has to be
+  unanswerable. An extension identifier outside the two the specification defines
   (`http://www.w3.org/1999/xhtml`, `http://www.w3.org/1999/xlink`), a feature string
   outside the SVG 1.1/2 feature namespace, and a language tag that is not well formed
-  are all in this class, and a document whose fallback branch is the correct frame
-  stays decidable and keeps rendering it.
+  are the identifiers in this class, and a document whose fallback branch is the
+  correct frame stays decidable and keeps rendering it.
 - A list made only of identifiers the engine cannot answer: fails closed, with a
   reason naming the identifier, and no later branch is painted in its place. The
   reasons are `SVG conditional processing attribute 'requiredExtensions' requires
@@ -12349,6 +12358,27 @@ with that guess has its glyph sequence reversed, which is the same operation the
 shaper performs for the other direction. Letter and word spacing survive because
 the advances are re-accumulated from the source positions rather than copied.
 
+The same cut is where a piece gets its typeface, and that is a second reason the
+piece is re-shaped rather than sliced. It used to be re-shaped in the single face
+the whole source run had resolved to, so in a mixed-script run the Latin pieces
+inherited the Hebrew-capable face: wrong outlines, wrong advances, and, because
+the cursor is re-accumulated from the pieces' own extents, every piece after them
+shifted. A browser falls back per character, so a level run cannot be shaped in a
+face its own characters do not live in.
+
+Each piece therefore resolves a typeface for its own characters, from the family,
+language, weight and slant the run was shaped with. Those four properties are
+carried on the run for exactly that purpose; the size is not carried, because a
+piece is never shaped at another size than the run it came from. When the piece
+resolves to nothing of its own it falls back to the source run's face, and that
+is a fallback rather than a second opinion: a piece is a subset of the source
+run's characters, so the source face always covers it. The order inside that
+resolution is the fallback order below, unchanged, with the coverage test each
+stage applies taken over the piece's own characters instead of the run's. A
+mixed-script paragraph therefore splits by script the way the same document
+splits when the characters are separated by `tspan` elements rather than by the
+paragraph.
+
 `direction` and `unicode-bidi` are inherited properties, so neither admission gate
 can decide them at attribute sight: the bounded parse only inspects `text` and
 `tspan` attributes, and a live animated value outranks both the attribute and the
@@ -12360,18 +12390,43 @@ property; `inherit` and `unset` take the parent value.
 The two properties then part company on a value they cannot read. An unrecognised
 `direction` value fails closed, because a base direction guessed from an unknown
 keyword would reorder the paragraph silently. An unrecognised `unicode-bidi` value
-is dropped and leaves the inherited value in place, because it opens no frame; that
-includes `inline`, which is not a CSS keyword and so is not a synonym for `embed`.
-The exception in the other direction is that `isolate` and `isolate-override` fail
-closed even though `isolate` also opens no frame here: they are refused at the
-layout pass and by value in the cascade, with a diagnostic naming the isolating run
-sequence the pass does not compute. That refusal therefore holds for a value
-inherited from an ancestor, delivered by the cascade, delivered through a CSS
-variable, or delivered by a live animation, at any sampled keyframe. The same value
-authored as a `text` or `tspan` attribute is refused at attribute sight by the
-parse-time text gate as well, so all three stages fail closed. An `isolate`
-animation that is not live at the sampled document time is skipped, so it does not
-condemn a document rendered before it applies.
+is dropped and leaves the inherited value in place, because no browser accepts it
+either, so the run keeps the value it would have kept anyway; that includes
+`inline`, which is not a CSS keyword and so is not a synonym for `embed`. The
+exception in the other direction is that `isolate` and `isolate-override` fail
+closed even though `isolate` also opens no frame here: an isolate opens no
+*embedding* frame but still takes the run out of the surrounding paragraph and
+resolves the paragraph level from the first strong character inside it, so dropping
+it is not neutral. They are refused at the layout pass and by value in the cascade,
+with a diagnostic naming the isolating run sequence the pass does not compute. That
+refusal therefore holds for a value inherited from an ancestor, delivered by the
+cascade, delivered through a CSS variable, or delivered by a live animation, at any
+sampled keyframe. The same value authored as a `text` or `tspan` attribute is
+refused at attribute sight by the parse-time text gate as well, so all three stages
+fail closed. An `isolate` animation that is not live at the sampled document time is
+skipped, so it does not condemn a document rendered before it applies.
+
+`unicode-bidi` is answered as a token set, not as one keyword: comparing the trimmed
+whole value against a single keyword is not the same question as asking what the
+value does, because `isolate plaintext` isolates the run and also takes the
+paragraph level from the first strong character and no whole-value comparison
+matches it. The shared predicate `SvgFeatureSupport.IsUnimplementedUnicodeBidi`
+therefore answers over the token set, inside the two-token budget the text model
+can reason about. It refuses any value carrying an `isolate` or `isolate-override`
+token whatever the case or spacing, refuses any run longer than that two-token
+budget because a longer value is one the text model cannot reason about at all,
+and refuses the two-token `plaintext` combinations - `embed plaintext`, `plaintext
+embed`, `bidi-override plaintext`, `plaintext bidi-override` - because a browser
+opens the embedding frame and takes the paragraph level from the first strong
+character, and no whole-value comparison in the text pass matches, so the frame
+would be dropped in silence. A two-token value of the mutually exclusive `embed
+bidi-override` pair is still admitted and dropped: no browser accepts that pair
+either, so both sides keep the inherited value and nothing is invented for it.
+What the predicate admits is a subset of what a browser accepts, and every
+refusal is on the far side of that difference - a value this engine cannot
+compute rather than one it has decided is false. All four delivery routes -
+attribute, cascade, `var()` substitution, and a live animated value - reach the
+one predicate, because each gate defers to it.
 
 The fail-closed remainder, stated honestly rather than implied:
 
@@ -12500,6 +12555,11 @@ The configured font path is a fallback, not an override. The order is:
   default already renders.
 - The platform default, if it covers the run.
 
+The unit the order is applied to is the piece, not the source run: a run the
+paragraph pass has cut resolves again for each of its own characters, with each
+stage's coverage test taken over that piece's characters, so a mixed-script
+paragraph does not force every piece into one face. See the bidi section above.
+
 The family list is bounded at eight comma-separated entries inspected per run. A
 run no stage can cover resolves to no typeface, and the run is reported rather than
 painted in a face that cannot draw it. SVG source can never select a file path; the
@@ -12596,6 +12656,79 @@ wrong.
   `MarkerDefaultOverflow_KeepsAntialiasedCoverageOnTheViewportEdge` and the added
   `MarkerDefaultOverflow_AntialiasesAnAxisAlignedViewportEdgeOnAFractionalDevicePixel`,
   which fails against the exact bounds clip.
+
+## 2.180 Content-Based Image Sizing Is Refused By Name (2026-09-27)
+
+An `<image>` is a replaced element: its used size is the content-based size of the
+resource, and `min-content`, `max-content`, `fit-content`, `stretch` and
+`calc-size()` ask for that size rather than for a length. The renderer computes no
+intrinsic replaced-element size, and it used to admit that by admitting nothing: the
+cascade deliberately lets these values through so a consumer can resolve them, the
+geometry resolver reports `auto` and unsupported units but not a keyword, so a
+keyword fell through the length path, the image box came back empty, and the
+element painted nothing while the render reported success. That is a missing image
+reported as a clean frame, so the image box resolver now refuses the value instead
+of dropping it, naming what it does not compute:
+
+    SVG image sizing property 'width: min-content' requires intrinsic
+    replaced-element sizing that this renderer does not compute
+
+The reason names the property and the value and classifies as
+`unsupported-property`. The check reads the resolved presentation property, so the
+presentation-attribute form and a cascaded declaration arrive the same way, and it
+runs on either axis before any `auto` or intrinsic-ratio arithmetic. Every image
+path goes through the one resolver, so a data-URI raster, a referenced SVG
+document, and an embedded SVG image refuse for the same reason.
+
+The boundaries below are separate contracts, and keeping them apart is what stops a
+refusal from landing where a browser paints:
+
+- `min-content`, `max-content`, `fit-content`, `stretch` and any `calc-size(` form
+  are refused on either axis. A malformed `calc-size()` is refused too rather than
+  dropped, because the cascade keeps every `calc-size()` form as a valid geometry
+  value and dropping one at the consumer would leave the image unsized under a
+  clean report.
+- `fit-content()` as a function, `anchor-size()`, `contain`, `fill-available`, and
+  any unrecognised value are classified as invalid geometry values by the cascade,
+  so they never reach the resolver and the image sizes from `auto` - the used
+  value a browser that rejects the declaration produces. That split is a cascade
+  grammar decision and it is currently inconsistent: `fit-content` is a
+  recognised keyword while `fit-content()` is not, so the keyword and the
+  function follow different paths. The resolver covers the keyword and both
+  function spellings, so the refusal holds if that grammar changes.
+- The same keywords on `x`/`y` resolve to zero and the image still paints. A
+  keyword is not a length the offset path can use, the offset falls back to
+  `auto`, and `auto` is already zero, so painting the image at the origin is the
+  frame and no refusal is warranted.
+- A shape's `width` is not a replaced-element size at all. The keyword is an
+  invalid declaration there and is dropped by the cascade like any other, so a
+  shape sized with one paints no fill.
+- `min-width`, `max-width`, `min-height` and `max-height` are honoured nowhere in
+  the picture renderer, so they are refused at the cascade with the `css-cascade`
+  code before any sizing is reached.
+- A nested `<svg>` is not a replaced element and gets neither answer. An SVG
+  viewport has no intrinsic size, so the fill-available keywords and `calc-size()`
+  do not apply to it, the geometry attributes stay in charge, and the declaration
+  is declined with no reason code. Section 2.140 recorded the opposite until
+  2026-09-26, and its nested-svg bullet now says so.
+
+Verification: the contract is pinned by the Release
+`FenBrowser.Tests/Svg/SvgImageSizingKeywordTests` class -
+`ImageSizingKeyword_FailsClosedNamingIntrinsicSizing` and
+`ImageSizingKeyword_OnEitherAxis_FailsClosed` for the refusal and its reason,
+`ImageSizingKeyword_AsPresentationAttribute_FailsClosed` for the attribute form,
+`ImageCalcSize_FailsClosedNamingIntrinsicSizing` and
+`MalformedCalcSize_FailsClosedRatherThanDroppingTheImage` for `calc-size()`,
+`EmbeddedSvgImageSizingKeyword_FailsClosedNamingIntrinsicSizing` for the
+referenced-document path, and `ImageFitContentFunction_IsDroppedByTheCascadeAndSizesFromAuto`,
+`ImageAnchorSize_IsDroppedByTheCascadeAndSizesFromAuto`,
+`UnrecognisedImageSizingValue_IsDroppedAndSizesFromAuto`,
+`ImageOffsetSizingKeyword_BehavesAsAutoAndStillPaints`,
+`NestedSvgSizingKeyword_KeepsAttributeSizingAndIsNotRefused`,
+`ShapeSizingKeyword_IsNotRoutedToIntrinsicSizingRefusal`, and
+`ImageSizeConstraint_FailsClosedAtTheCascade` for the boundaries that must not
+refuse. `dotnet test FenBrowser.Tests --configuration Release --filter
+"FullyQualifiedName~SvgImageSizingKeywordTests"`: pass (48/48) on 2026-09-27.
 
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
