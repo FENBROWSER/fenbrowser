@@ -7676,6 +7676,31 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsBrowserSurfaceFillers();
         InstallFenJsErrorReporting();
         InstallTopWindowPostMessageBridge(globalThisValue);
+        InstallDebugInitScript();
+    }
+
+    // FEN_DEBUG_INIT_SCRIPT=<path to .js>: evaluated in every new realm after the
+    // engine's own preludes and before any page script, so a diagnosis can wrap page
+    // APIs (an error reporter, a framework root) from the start. Local diagnostics
+    // only; the file is read from disk by the engine, never from the page.
+    private static readonly string DebugInitScriptPath =
+        Environment.GetEnvironmentVariable("FEN_DEBUG_INIT_SCRIPT");
+
+    private void InstallDebugInitScript()
+    {
+        if (string.IsNullOrWhiteSpace(DebugInitScriptPath))
+        {
+            return;
+        }
+
+        try
+        {
+            EvaluateWithFenJsRaw(File.ReadAllText(DebugInitScriptPath));
+        }
+        catch (Exception ex)
+        {
+            EngineLogCompat.Warn($"[FenJsBridge] FEN_DEBUG_INIT_SCRIPT failed: {ex.Message}", LogCategory.JavaScript);
+        }
     }
 
     private void SeedFenJsDocumentAndNavigatorProperties(Document document, BrowserSurfaceProfile navigator)
