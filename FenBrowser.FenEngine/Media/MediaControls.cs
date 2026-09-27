@@ -64,6 +64,30 @@ namespace FenBrowser.FenEngine.Media
 
         public static bool ShowsControls(Element element) => element != null && element.HasAttribute("controls");
 
+        /// <summary>
+        /// Where <paramref name="layoutBox"/> is drawn once its ancestors' scroll offsets are
+        /// applied: layout boxes do not move when a scroll container (or a frame, reached
+        /// through the frame document's parent) scrolls, but what is painted, and pointed at,
+        /// does. Controls tested against the unscrolled box missed by the scroll distance.
+        /// </summary>
+        public static SKRect ApplyAncestorScroll(SKRect layoutBox, Element element, IReadOnlyDictionary<Element, SKPoint> scrollOffsets)
+        {
+            if (element == null || scrollOffsets == null || scrollOffsets.Count == 0)
+                return layoutBox;
+
+            float dx = 0, dy = 0;
+            for (var node = element.ParentNode; node != null; node = node.ParentNode)
+            {
+                if (node is Element ancestor && scrollOffsets.TryGetValue(ancestor, out var offset))
+                {
+                    dx += offset.X;
+                    dy += offset.Y;
+                }
+            }
+
+            return dx == 0 && dy == 0 ? layoutBox : new SKRect(layoutBox.Left - dx, layoutBox.Top - dy, layoutBox.Right - dx, layoutBox.Bottom - dy);
+        }
+
         /// <summary>The control the pointer is over on <paramref name="element"/>, or None.</summary>
         public static MediaControlAction GetHovered(Element element) =>
             element != null && s_hovered.TryGetValue(element, out var box) ? box.Value : MediaControlAction.None;

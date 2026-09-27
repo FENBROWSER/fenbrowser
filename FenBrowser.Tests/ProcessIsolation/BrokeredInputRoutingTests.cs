@@ -277,6 +277,88 @@ public sealed class BrokeredInputRoutingTests
     }
 
     [Fact]
+    public async Task Program_DispatchRendererInputAsync_MediaControlsFollowAScrolledContainer()
+    {
+        // The wheel scrolls a container the page lays out as overflow:auto (w3schools'
+        // #container). Layout boxes stay put; the controls move on screen with the scroll.
+        const int viewportWidth = 480;
+        const int viewportHeight = 240;
+        const string html = """
+            <!doctype html>
+            <html><body style="margin:0">
+              <div id="scroller" style="overflow:auto;height:200px">
+                <div style="height:100px"></div>
+                <iframe id="frame" width="400" height="120" style="display:block;border:0;margin:20px"></iframe>
+                <div style="height:400px"></div>
+              </div>
+              <script>
+                var d = document.getElementById('frame').contentWindow.document;
+                d.open(); d.write("<body style='margin:0'><audio id='a' controls></audio></body>"); d.close();
+              </script>
+            </body></html>
+            """;
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        FenBrowser.Host.Program.ConfigureRendererChildBrowser(host, renderer);
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/renderer-media-scroll"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var scroller = Assert.IsType<Element>(root.OwnerDocument?.GetElementById("scroller"));
+        var frame = Assert.IsType<Element>(root.OwnerDocument?.GetElementById("frame"));
+        Element audio = null;
+        await WaitForAsync(
+            () => (audio = frame.ChildNodes.OfType<Document>().LastOrDefault()?.GetElementById("a")) != null,
+            "the written audio element did not appear");
+
+        using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
+        using var canvas = new SKCanvas(bitmap);
+        void Render() => renderer.RenderFrame(new RenderFrameRequest
+        {
+            Root = root,
+            Canvas = canvas,
+            Styles = host.ComputedStyles,
+            Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+            BaseUrl = "https://fen.test/renderer-media-scroll",
+            InvalidationReason = RenderFrameInvalidationReason.Input,
+            RequestedBy = nameof(Program_DispatchRendererInputAsync_MediaControlsFollowAScrolledContainer),
+            EmitVerificationReport = false
+        });
+
+        Render();
+        Assert.True(renderer.LastLayout.TryGetElementRect(audio, out var rect));
+        renderer.ScrollManager.SetScrollPosition(scroller, 0, 40);
+        Render();
+
+        var unscrolled = FenBrowser.FenEngine.Media.MediaControls.Layout(rect.ToSKRect(), isVideo: false).PlayButton;
+        var drawn = new SKPoint(unscrolled.MidX, unscrolled.MidY - 40);
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseMove, X = unscrolled.MidX, Y = unscrolled.MidY + 30 });
+        await Task.Delay(200);
+        Assert.Equal(FenBrowser.FenEngine.Media.MediaControlAction.None, FenBrowser.FenEngine.Media.MediaControls.GetHovered(audio));
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseMove, X = drawn.X, Y = drawn.Y });
+        await WaitForAsync(
+            () => FenBrowser.FenEngine.Media.MediaControls.GetHovered(audio) == FenBrowser.FenEngine.Media.MediaControlAction.TogglePlay,
+            "hovering the drawn play button did not highlight it");
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseDown, X = drawn.X, Y = drawn.Y, Button = 0 });
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseUp, X = drawn.X, Y = drawn.Y, Button = 0, EmitClick = true });
+        await WaitForAsync(
+            () => string.Equals(host.Engine.ScriptEngine?.Evaluate("String(document.getElementById('frame').contentDocument.getElementById('a').paused)")?.ToString(), "false", StringComparison.Ordinal),
+            "clicking the drawn play button did not start playback");
+    }
+
+    [Fact]
     public async Task Program_DispatchRendererInputAsync_MouseMoveRunsIframeBoundaryHandlerWhenRealmIsBusy()
     {
         const int viewportWidth = 320;

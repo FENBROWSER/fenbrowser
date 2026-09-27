@@ -9974,6 +9974,8 @@ pre {{
                 return false;
             }
 
+            box = FenBrowser.FenEngine.Media.MediaControls.ApplyAncestorScroll(
+                box, element, _activeRenderer?.ScrollManager?.SnapshotElementScrollOffsets());
             geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(box, tag == "video");
             return !geometry.IsEmpty;
         }

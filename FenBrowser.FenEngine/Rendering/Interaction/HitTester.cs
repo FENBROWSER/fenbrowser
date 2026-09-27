@@ -58,7 +58,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 ctx.Boxes != null && ctx.Boxes.TryGetValue(media, out var mediaBox) && mediaBox != null)
             {
                 var geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(
-                    mediaBox.BorderBox,
+                    FenBrowser.FenEngine.Media.MediaControls.ApplyAncestorScroll(mediaBox.BorderBox, media, ctx.ScrollOffsets),
                     string.Equals(media.TagName, "video", StringComparison.OrdinalIgnoreCase));
                 if (FenBrowser.FenEngine.Media.MediaControls.HitTest(geometry, x, y, out _) != FenBrowser.FenEngine.Media.MediaControlAction.None)
                 {
