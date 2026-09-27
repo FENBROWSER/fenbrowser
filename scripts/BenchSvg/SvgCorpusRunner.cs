@@ -115,6 +115,12 @@ internal static class SvgCorpusRunner
     {
         bool manifestValidated = false;
         Directory.CreateDirectory(options.OutputDirectory);
+        if (Environment.GetEnvironmentVariable("FEN_SVG_FONT_PATH") == null)
+        {
+            string? wptFont = WptTestFontPath(
+                options.CorpusKind == "wpt" ? options.CorpusDirectory : null);
+            if (wptFont != null) Environment.SetEnvironmentVariable("FEN_SVG_FONT_PATH", wptFont);
+        }
         string checkpointPath = Path.Combine(options.OutputDirectory, "corpus-checkpoint.jsonl");
         string rendererBuildId = typeof(SvgCorpusRunner).Assembly.ManifestModule.ModuleVersionId.ToString("D");
         RendererSourceProvenance provenance = RendererSourceProvenanceReader.Capture();
@@ -540,7 +546,7 @@ internal static class SvgCorpusRunner
             LocalWptSvgResourceResolver? wptResolver = wptRoot == null
                 ? null
                 : new LocalWptSvgResourceResolver(wptRoot);
-            var request = new SvgRenderRequest(source, SvgRenderLimits.Default)
+            var request = new SvgRenderRequest(source, CorpusLimits(wptResolver))
             {
                 BaseUri = wptResolver?.CreateDocumentUri(inputPath) ??
                           new Uri(Path.GetFullPath(inputPath)),
@@ -567,6 +573,30 @@ internal static class SvgCorpusRunner
             catch { }
             return 2;
         }
+    }
+
+    private static SvgRenderLimits CorpusLimits(LocalWptSvgResourceResolver? resolver)
+    {
+        SvgRenderLimits limits = SvgRenderLimits.Default;
+        if (resolver != null) limits.AllowExternalReferences = true;
+        return limits;
+    }
+
+    /// <summary>
+    /// The WPT text references are rasterised with the Ahem face, which is not
+    /// installed. Without it the runner substitutes a proportional face and
+    /// reports every Ahem document as an engine failure.
+    /// </summary>
+    private static string? WptTestFontPath(string? corpusRoot)
+    {
+        if (corpusRoot == null) return null;
+        var root = new DirectoryInfo(corpusRoot);
+        for (DirectoryInfo? dir = root; dir != null; dir = dir.Parent)
+        {
+            string candidate = Path.Combine(dir.FullName, "fonts", "Ahem.ttf");
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     private static void ParseWorkerArguments(
