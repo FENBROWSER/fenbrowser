@@ -202,7 +202,7 @@ Do not run large suites by default when a smaller proof is sufficient.
 The conformance test repositories are local checkouts. All test counts, file searches, result data, and conformance information come from these local paths — **never from GitHub, web search, or any remote source**:
 
 - **test262 root**: `C:\Users\udayk\Videos\test262`
-- **WPT root**: `C:\Users\udayk\Videos\wpt`
+- **WPT root**: `D:\wpt` (SVG corpus root `D:\wpt\svg`)
 
 Do not fetch test counts or repo info from github.com or anywhere else — use these local directories.
 

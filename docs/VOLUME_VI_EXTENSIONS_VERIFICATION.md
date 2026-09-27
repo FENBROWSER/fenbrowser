@@ -4971,9 +4971,15 @@ Verification:
   six were marker compatibility fallbacks; afterward all six route first-party
   with zero fallback, rejection, renderer/worker failure, or timeout.
 - Five of the six declared references pass exactly with alpha intersection-over-
-  union 1 and zero differing pixels. `marker-006.svg` remains open at alpha IoU
-  0.9993, mean RGB difference 0.1081, maximum channel difference 71, and 103
-  differing pixels. The oracle was not relaxed and the case is not counted green.
+  union 1 and zero differing pixels. `marker-006.svg` remains open, and the figure
+  recorded in this section is superseded: alpha IoU 0.9993, mean RGB difference
+  0.1081, maximum channel difference 71, and 103 differing pixels at this
+  checkpoint, against alpha IoU 1, mean RGB difference 0.0004, maximum channel
+  difference 1, and 32 differing pixels on a local `D:\wpt\svg` `painting` slice
+  at `f4755e3b` with renderer sources matching the revision. The axis-aligned
+  marker viewport clip is antialiased rather than resolved as a bounds test, and
+  that is what moved the figure (VOLUME_III 2.179). The oracle was not relaxed and
+  the case is not counted green.
 - This closes bounded linear path vertices, whole-path subpath roles, default
   orientation, and line middle-marker handling. Curved/arc marker tangents and the
   remaining marker-viewBox pixel mismatch are still Windows parity work; the
@@ -4987,9 +4993,13 @@ Verification:
   rejection, renderer/worker failure, or timeout.
 - Eight declared references pass at exact pixel equality, including closed and
   multi-subpath linear, cubic, and elliptical-arc markers. The only red result is
-  the unchanged `marker-006.svg` viewBox edge raster mismatch: alpha IoU 0.9993,
-  mean RGB difference 0.1081, maximum channel difference 71, and 103 differing
-  pixels.
+  the retained `marker-006.svg` marker-viewport raster residual, whose figure in
+  this section is superseded: alpha IoU 0.9993, mean RGB difference 0.1081,
+  maximum channel difference 71, and 103 differing pixels then, against alpha
+  IoU 1, mean RGB difference 0.0004, maximum channel difference 1, and 32
+  differing pixels on a local `painting` slice at `f4755e3b`. The axis-aligned
+  viewport clip is antialiased, which is what moved it; see 6.217 and
+  VOLUME_III 2.179.
 - The broader 152-file local painting slice moves from 131 to 134 first-party,
   15 to 12 legacy fallbacks, and 19 to 22 declared-reference passes. Its marker
   reason is now limited to the intentionally rejected external marker resource;
@@ -5098,9 +5108,53 @@ Verification:
   `struct/reftests/requiredextensions-empty-string.svg` moves from a fully
   painted mismatch to an exact transparent reference pass. It routes first-party
   with no fallback, rejection, failure, or timeout.
-- Focused coverage asserts suppression for both empty and unsupported nonempty
-  extension requirements, including a condition on the root SVG element. The
-  complete SVG test namespace passes 401/401.
+- The focused-coverage claim recorded here no longer describes the rule, and the
+  two classes of nonempty list now land on opposite sides of it. Conditional
+  processing is one tri-state decision, and it is not one question:
+  - A list containing an identifier no user agent can satisfy is false for every
+    user agent, so the element or branch is filtered and the walk continues. That
+    class covers an empty list, an extension identifier outside the two the
+    specification defines (`http://www.w3.org/1999/xhtml`,
+    `http://www.w3.org/1999/xlink`), a feature string outside the SVG 1.1/2
+    feature namespace, and a language tag that is not well formed. A document
+    whose fallback branch is the correct frame stays decidable and keeps painting
+    it, so suppression is still suppression - it is no longer what happens to
+    every nonempty extension requirement.
+  - A list made only of identifiers this renderer cannot answer fails closed, with
+    a reason naming the identifier, classified `unsupported-property`, and a
+    `switch` stops scanning rather than painting the next sibling in its place.
+  - The required-extension half and the system-language half settle on different
+    questions and must not be read as one. `requiredExtensions` and
+    `requiredFeatures` are satisfied only when every listed entry is, so one
+    unrecognised identifier settles the whole list as false. `systemLanguage` is
+    satisfied by any one of its tags, so it takes a list carrying no well-formed
+    tag at all to be false for every user agent, and one well-formed tag is
+    unanswerable here because the renderer has no user language to match it
+    against. A language tag that is not well formed matches no user language and
+    therefore skips rather than fails closed.
+- The class that pins this is `Svg/SvgSwitchConditionalProcessingTests`: the
+  `foreignObject` branch offered and selected, both defined extension identifiers,
+  an empty list, an unrecognised identifier, a supported feature beside an
+  unrecognised one, a well-formed beside a malformed language tag, and the
+  unanswerable branch that paints no sibling. `dotnet test FenBrowser.Tests
+  -c Release --filter "FullyQualifiedName~SvgSwitchConditionalProcessingTests"`:
+  pass (18/18) on 2026-09-27. The complete SVG test namespace passed 401/401 at
+  the 2026-09-04 checkpoint this section records.
+- Corpus consequence, local `D:\wpt\svg` `struct` slice at `f4755e3b` with
+  renderer sources matching the revision: the first bullet above still holds -
+  `struct/reftests/requiredextensions-empty-string.svg` is first-party with zero
+  warnings and its declared reference passes exactly. Its sibling
+  `struct/reftests/requiredextensions-xhtml.tentative.svg` moves from painting the
+  red fallback rect to `unsupported` with `unsupported-element,unsupported-property`
+  and two warnings, the parse-time `foreignObject` gate plus `SVG conditional
+  processing attribute 'requiredExtensions' requires compatibility fallback for
+  unimplemented extension 'http://www.w3.org/1999/xhtml'`. Its
+  `reference/green-100x100.svg` is no longer comparable because the document is
+  inadmissible rather than painted. A browser implements the XHTML extension and
+  selects the `foreignObject` branch, so the frame this renderer would have
+  painted is wrong either way and the honest result is to fail closed; the case is
+  a tracked gap, not a pass. No document in the local corpus carries a
+  `systemLanguage` value, so that half is covered by the focused class only.
 
 ## 6.228 Complete Windows SVG WPT Rebaseline (2026-09-04)
 
@@ -5534,13 +5588,13 @@ diagnosing a build failure.
 
 The runner has no default corpus location: it discovers the manifest by walking
 upward from `--corpus`, so the corpus root must always be given explicitly and
-must sit at or below a checkout containing `MANIFEST.json`. `AGENTS.md` records
-the WPT root as `C:\Users\udayk\Videos\wpt`, and that path does not exist on this
-machine - the checkout is at `D:\wpt` and the SVG corpus root is `D:\wpt\svg`. A
-run that uses the `AGENTS.md` path fails on a corpus directory that does not exist
-before it evaluates a document, so do not treat that as a runner fault. Use the
-path that exists on the machine you are running on, and confirm `wptManifestPath`
-in the report names the manifest you expected.
+must sit at or below a checkout containing `MANIFEST.json`. `AGENTS.md` and
+`CLAUDE.md` record the WPT root as `D:\wpt`, and the SVG corpus root is
+`D:\wpt\svg`. The `C:\Users\udayk\Videos\wpt` path this section previously
+recorded does not exist on this machine. A run pointed at a corpus directory that
+does not exist fails before it evaluates a document, so do not treat that as a
+runner fault. Use the path that exists on the machine you are running on, and
+confirm `wptManifestPath` in the report names the manifest you expected.
 
 Verification:
 
@@ -5644,3 +5698,87 @@ documents are no longer counted as first-party failures, and re-run any
 font-sensitive comparison with `FEN_SVG_FONT_PATH` set explicitly to confirm the
 result does not depend on the caller's environment. The engine-side contract these
 runs measure is in `docs/VOLUME_III_FENENGINE.md` 2.178.
+
+## 6.246 Content-Based Replaced-Element Sizing Refusal Verification (2026-09-27)
+
+A sizing value that asks for a content-based size was admitted and then resolved to
+something else - to nothing at all on a nested `<svg>`, a `<symbol>` and an
+`<image>`, and to a substituted default on the root `<svg>` - so every one of those
+was reported as a clean frame. The contract is VOLUME_III 2.180; what the
+verification surface can see is below. This section did not exist for the image-only
+refusal or for the generalization that followed it.
+
+- A content-based sizing value no longer produces a frame at all. `min-content`,
+  `max-content`, `fit-content`, `stretch`, an unrecognised sizing function and an
+  unknown keyword are refused with a reason naming the subject, the property and
+  the value - `SVG image sizing property 'width: min-content' requires intrinsic
+  replaced-element sizing that this renderer does not compute` - classified
+  `unsupported-property`. The observable difference from the previous behaviour is
+  the classification: the document is inadmissible and the render is not reported
+  as a success, instead of a frame that is quietly empty or substituted.
+- The refusal is no longer keyword enumeration on one element. One shared predicate
+  answers for every box that accepts the same value family, so a `width` on a nested
+  `<svg>`, on the root `<svg>`, on a `<symbol>` and on a `use` instance refuses for
+  the same reason with the subject named in the message, on either axis and in the
+  presentation-attribute form.
+- Two behaviours moved the other way as a consequence, and both are corrections
+  rather than new refusals: `auto` on a nested `<svg>` or a `<symbol>` now takes the
+  hundred-percent default - the initial value, and the same extent an omitted
+  dimension takes - instead of leaving the viewport unpainted, and `use width auto`
+  falls through to the referenced element's own extent instead of leaving the
+  instance unpainted. Both previously reported success while painting nothing.
+- Corpus consequence, local `D:\wpt\svg` `styling` slice at `f4755e3b` with
+  renderer sources matching the revision:
+  `styling/image-sizing-min-content.tentative.svg` is `unsupported` /
+  `unsupported-property` carrying the reason above, and all fifteen
+  `styling/nested-svg-sizing-*.svg` documents stay first-party with their declared
+  references passing. They are unaffected because they carry the keyword as a CSS
+  declaration, which the cascade declines in favour of the `width`/`height`
+  attributes, not as a geometry attribute. The generalization therefore moves no
+  corpus classification against the image-only stage: compared per file against a
+  `styling` slice captured at the image-only commit `9b921018` on a dirty tree,
+  every `styling/` entry is unchanged. Compare per file rather than by total,
+  because the two runs select different slices.
+- The negative side is pinned rather than inferred: `auto`, plain lengths,
+  percentages, `calc` with ordinary lengths, viewport units, `em` and `rem`, and the
+  `min` and `clamp` functions still resolve; a shape keeps its path where the value
+  is invalid so `auto` applies; and `min-width`/`max-width` are still refused at the
+  cascade. `dotnet test FenBrowser.Tests -c Release --filter
+  "FullyQualifiedName~SvgReplacedSizingRefusalTests"`: pass (69/69) on 2026-09-27,
+  and `--filter "FullyQualifiedName~SvgImageSizingKeywordTests"`: pass (48/48).
+
+## 6.247 unicode-bidi Token-Set Predicate Verification (2026-09-27)
+
+`unicode-bidi` combines keywords, and every gate compared the trimmed whole value
+against the two isolate literals, so a value such as `isolate plaintext` was
+recorded, opened no frame, and dropped the isolate in silence under a success
+report. The contract, including which value families are refused and why, is in
+VOLUME_III 2.178 under the bidi subsection. What the verification surface can see:
+
+- A combined value is refused at all three gates rather than recorded and narrowed,
+  and the refusal arrives through each delivery route - the attribute, the cascade,
+  a CSS variable and a live animated value - so a document cannot reach the text
+  pass holding a value the pass would have dropped.
+- The cascade reason is value-aware. A value carrying `isolate` or
+  `isolate-override` is refused because the text model computes no isolating run
+  sequence; a value that only combines keywords - `embed plaintext`,
+  `plaintext embed`, `bidi-override plaintext`, `plaintext bidi-override` - is
+  refused because the text model resolves no frame or paragraph level for it. A
+  diagnostic naming the isolating run sequence for a value that isolates nothing is
+  asserted not to occur, because it would send an operator to a stage the document
+  never reached.
+- A value longer than the two-token budget the text model can reason about is
+  refused rather than passed, and the mutually exclusive `embed bidi-override` pair
+  stays admitted and dropped, because no browser accepts that pair either. An
+  unrecognised single keyword such as `inline` is still dropped and leaves the
+  inherited value in place.
+- Corpus consequence: none, and this is stated rather than implied. No document in
+  the local `D:\wpt\svg` checkout carries a combined `unicode-bidi` value - the only
+  authored values are the single keywords `bidi-override` and `normal` in
+  `import/text-intro-02-b-manual.svg`, `import/text-intro-09-b-manual.svg` and the
+  `text/reftests/tspan-opacity-mixed-direction-ref.svg` reference - so no corpus
+  classification moves and the predicate is covered by the focused slice alone. An
+  unchanged corpus rate is not evidence that this path is exercised.
+- `dotnet test FenBrowser.Tests -c Release --filter "FullyQualifiedName~UnicodeBidi"`:
+  pass (64/64) on 2026-09-27, across `Svg/SvgCssCascadeTests` and
+  `Svg/SvgTextShapingTests`.
