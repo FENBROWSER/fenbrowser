@@ -114,12 +114,13 @@ public sealed class InterfacePrototypeMemberTests : IDisposable
     {
         // The mirror-image failure. Publishing an unimplemented member would make
         // the page take the supported branch and call something answering
-        // undefined, which is worse than reporting it absent.
+        // undefined, which is worse than reporting it absent. (HTMLMediaElement.play
+        // was the example until the media engine implemented it.)
         var engine = CreateEngine();
 
         Assert.Equal(
             "False",
-            engine.Evaluate("'play' in HTMLMediaElement.prototype")?.ToString());
+            engine.Evaluate("'setSelectionRange' in HTMLInputElement.prototype")?.ToString());
     }
 
     [Fact]
