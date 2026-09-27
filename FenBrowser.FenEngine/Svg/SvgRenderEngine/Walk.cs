@@ -784,11 +784,22 @@ namespace FenBrowser.FenEngine.Svg
         {
             CheckDeadline();
             string href = el.GetAttribute("href") ?? el.GetLookup("xlink:href");
+            if (string.IsNullOrWhiteSpace(href))
+            {
+                return; // No reference: the element is not rendered (browser behavior).
+            }
             if (!SvgValues.TryParseLocalReference(href, out string rawId))
             {
-                // Remote references have no code path here by construction; log
-                // and ignore (fail closed).
-                _report.RejectResource("use external reference rejected by SVG resource policy");
+                if (!IsOpaqueOriginUseReference(href))
+                {
+                    // A reference into another document is one a browser may paint,
+                    // so the frame cannot be settled without fetching it. Log and
+                    // fail closed rather than report Success for a document with a
+                    // hole in it.
+                    _report.RejectResource("use external reference rejected by SVG resource policy");
+                    return;
+                }
+                WarnOpaqueOriginUseReferenceOnce();
                 return;
             }
 
@@ -877,6 +888,29 @@ namespace FenBrowser.FenEngine.Svg
 
         private HashSet<string> _activeUseIds;
         private HashSet<SvgElement> _activeUseElements;
+        private bool _warnedOpaqueOriginUseReference;
+
+        /// <summary>
+        /// A data: URL is not a same-origin external document, and the use href is
+        /// same-origin only. Safari has never resolved one, Firefox stopped in 122
+        /// and Chrome in 120, both behind a pref or a policy because the reference
+        /// was an XSS and Trusted Types bypass. The reference is therefore a
+        /// reference that resolves to no element rather than a resource this
+        /// document declined to fetch, so the instance contributes nothing, the
+        /// same as a dangling fragment. The payload is never decoded, so no
+        /// admission cap is reached because none is ever spent.
+        /// </summary>
+        private static bool IsOpaqueOriginUseReference(string href) =>
+            href.TrimStart().StartsWith("data:", System.StringComparison.OrdinalIgnoreCase);
+
+        private void WarnOpaqueOriginUseReferenceOnce()
+        {
+            if (_warnedOpaqueOriginUseReference) return;
+            _warnedOpaqueOriginUseReference = true;
+            _report.Warn(
+                "use reference is a data: URL, which is not a same-origin external document; " +
+                "instance omitted");
+        }
 
         internal static string DecodeFragmentEscapes(string fragment)
         {
