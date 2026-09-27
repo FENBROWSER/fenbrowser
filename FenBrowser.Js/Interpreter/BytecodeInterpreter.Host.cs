@@ -162,10 +162,24 @@ public sealed partial class BytecodeInterpreter
         // hook; without the same order here, an accessor script defines on an
         // interface prototype (Document.prototype.adoptedStyleSheets) is skipped and
         // the host stores the value as an expando.
-        if (TryGetHostObjectPrototypeSetter(handle, key, out var inherited))
+        if (TryGetHostObjectPrototypeDescriptor(handle, key, out var inherited))
         {
-            _ = CallSetter(inherited, value, receiver);
-            return;
+            if (inherited.IsAccessor && inherited.Set.Tag != JsValueTag.Undefined)
+            {
+                _ = CallSetter(inherited, value, receiver);
+                return;
+            }
+
+            // A getter-only accessor or a read-only data property refuses the write
+            // (OrdinarySetWithOwnDescriptor steps 2.a and 7), unless the platform object
+            // implements the member itself and so decides below.
+            if ((inherited.IsAccessor || !inherited.Writable) &&
+                !_hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.InCheck, out _))
+            {
+                throw new JsThrownException(CreateTypeError(inherited.IsAccessor
+                    ? "Cannot set property '" + key + "' which has only a getter."
+                    : "Cannot assign to read-only property '" + key + "'."));
+            }
         }
 
         if (_hostHooks.TrySetHostProperty(handle, key, value))
@@ -532,16 +546,15 @@ public sealed partial class BytecodeInterpreter
         return TryGetPropertyValue(prototypeObject, receiver, key, out value);
     }
 
-    private bool TryGetHostObjectPrototypeSetter(
+    /// <summary>The first descriptor for <paramref name="key"/> on the host object's explicit prototype chain.</summary>
+    private bool TryGetHostObjectPrototypeDescriptor(
         HostObjectHandle handle,
         string key,
         out JsPropertyDescriptor descriptor)
     {
         var prototype = GetExplicitHostObjectPrototype(handle);
         if (prototype.Tag == JsValueTag.Object &&
-            _heap.GetObject(prototype.AsObjectHandle()).TryGetProperty(key, ResolvePrototypeDelegate, out descriptor) &&
-            descriptor.IsAccessor &&
-            descriptor.Set.Tag != JsValueTag.Undefined)
+            _heap.GetObject(prototype.AsObjectHandle()).TryGetProperty(key, ResolvePrototypeDelegate, out descriptor))
         {
             return true;
         }
