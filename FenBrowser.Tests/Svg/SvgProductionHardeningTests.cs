@@ -449,7 +449,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Theory]
-        [InlineData("<rect width='10' height='10' style='mask:url(#m)'/>")]
+        [InlineData("<text x='2' y='14' font-size='8' style='unicode-bidi:isolate-override'>hi</text>")]
         [InlineData("<path d='M0 0L10 10' marker-end='url(#m)'/>")]
         public void FirstParty_PartiallySupportedFeaturesFailClosedRatherThanDropSilently(string content)
         {

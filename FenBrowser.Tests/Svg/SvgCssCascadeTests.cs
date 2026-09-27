@@ -562,14 +562,15 @@ namespace FenBrowser.Tests.Svg
         {
             const string svg =
                 "<svg width='20' height='20'><style>" +
-                ".unused { filter: blur(2px) } .used { mask: url(#m) }" +
-                "</style><rect class='used' width='20' height='20'/></svg>";
+                ".unused { filter: blur(2px) } .used { unicode-bidi: isolate-override }" +
+                "</style><text class='used' x='0' y='12' font-size='8'>hi</text>" +
+                "<rect width='20' height='20' fill='blue'/></svg>";
 
             using var result = new FenSvgRenderer().Render(svg);
 
             AssertFailsClosed(result);
             Assert.True(result.RequiresFallback);
-            Assert.Contains(result.Warnings, warning => warning.Contains("mask", StringComparison.Ordinal));
+            Assert.Contains(result.Warnings, warning => warning.Contains("unicode-bidi", StringComparison.Ordinal));
             Assert.DoesNotContain(result.Warnings, warning => warning.Contains("filter", StringComparison.Ordinal));
         }
 
@@ -1396,9 +1397,9 @@ namespace FenBrowser.Tests.Svg
 
         [Theory]
         [InlineData("text-decoration-color: red")]
-        [InlineData("direction: rtl")]
         [InlineData("writing-mode: tb-rl")]
-        [InlineData("unicode-bidi: bidi-override")]
+        [InlineData("unicode-bidi: isolate")]
+        [InlineData("unicode-bidi: isolate-override")]
         [InlineData("line-spacing: 1.25")]
         [InlineData("white-space: pre-line")]
         [InlineData("text-align: center")]
@@ -1450,6 +1451,43 @@ namespace FenBrowser.Tests.Svg
             Assert.Contains("css-cascade", result.FallbackReasonCodes);
             Assert.Contains($"SVG CSS property '{property}'", string.Join("\n", result.Warnings));
             Assert.Contains(expected, string.Join("\n", result.Warnings));
+        }
+
+        [Theory]
+        [InlineData("isolate")]
+        [InlineData("isolate-override")]
+        public void UnicodeBidiIsolatingValue_ReportsTheRunSequenceItWouldNeed(string value)
+        {
+            string svg =
+                "<svg width='20' height='20'><style>text { unicode-bidi: " + value +
+                "}</style><text x='0' y='12' font-size='8'>hi</text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+            Assert.Contains("isolating run sequence", string.Join("\n", result.Warnings));
+        }
+
+        [Fact]
+        public void CssDirectionAndUnicodeBidi_ReachTheTextLayoutPass()
+        {
+            AssertSamePixels(
+                "<svg width='220' height='40'><style>text { direction: rtl }</style>" +
+                "<text x='100' y='28' font-size='20' fill='lime'>Ag</text></svg>",
+                "<svg width='220' height='40'>" +
+                "<text x='100' y='28' font-size='20' fill='lime' direction='rtl'>Ag</text></svg>");
+            AssertSamePixels(
+                "<svg width='220' height='40'><style>text { unicode-bidi: bidi-override }" +
+                "</style><text x='4' y='28' font-size='20' fill='lime'>Ag</text></svg>",
+                "<svg width='220' height='40'>" +
+                "<text x='4' y='28' font-size='20' fill='lime' unicode-bidi='bidi-override'>" +
+                "Ag</text></svg>");
+            AssertDifferentPixels(
+                "<svg width='220' height='40'><style>text { direction: rtl }</style>" +
+                "<text x='100' y='28' font-size='20' fill='lime'>Ag</text></svg>",
+                "<svg width='220' height='40'><style>text { direction: ltr }</style>" +
+                "<text x='100' y='28' font-size='20' fill='lime'>Ag</text></svg>");
         }
 
         [Fact]
