@@ -1469,6 +1469,79 @@ namespace FenBrowser.Tests.Svg
             Assert.Contains("isolating run sequence", string.Join("\n", result.Warnings));
         }
 
+        [Theory]
+        [InlineData("isolate plaintext")]
+        [InlineData("plaintext isolate")]
+        [InlineData("embed isolate")]
+        [InlineData("isolate bidi-override")]
+        [InlineData("embed plaintext")]
+        [InlineData("plaintext embed")]
+        [InlineData("bidi-override plaintext")]
+        [InlineData("embed bidi-override plaintext")]
+        public void ACombinedUnicodeBidiKeyword_ReportsTheRunSequenceItWouldNeed(string value)
+        {
+            // The declaration is a keyword set, so a whole-value comparison against
+            // "isolate" and "isolate-override" never sees it. Recording it instead
+            // paints a frame a browser never opens and still reports success.
+            string svg =
+                "<svg width='20' height='20'><style>text { unicode-bidi: " + value +
+                "}</style><text x='0' y='12' font-size='8'>hi</text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+            Assert.Contains("unicode-bidi", string.Join("\n", result.Warnings));
+            Assert.Contains(value, string.Join("\n", result.Warnings));
+        }
+
+        [Theory]
+        [InlineData("embed plaintext", "combines keywords")]
+        [InlineData("plaintext embed", "combines keywords")]
+        [InlineData("bidi-override plaintext", "combines keywords")]
+        [InlineData("embed bidi-override plaintext", "combines keywords")]
+        [InlineData("isolate plaintext", "isolating run sequence")]
+        [InlineData("embed isolate", "isolating run sequence")]
+        [InlineData("isolate-override plaintext", "isolating run sequence")]
+        public void AUnicodeBidiDiagnosticNamesTheGapThatActuallyApplies(string value, string expected)
+        {
+            // A value that isolates and a value that only combines keywords are
+            // refused for different reasons, and a diagnostic that named the
+            // isolating run sequence for a value that isolates nothing would send
+            // an operator looking for a stage the document never reached.
+            string svg =
+                "<svg width='20' height='20'><style>text { unicode-bidi: " + value +
+                "}</style><text x='0' y='12' font-size='8'>hi</text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            string warnings = string.Join("\n", result.Warnings);
+            Assert.Contains(expected, warnings);
+            if (expected == "combines keywords")
+            {
+                Assert.DoesNotContain("isolating run sequence", warnings);
+            }
+        }
+
+        [Theory]
+        [InlineData("unicode-bidi: isolate plaintext")]
+        [InlineData("unicode-bidi: embed isolate")]
+        [InlineData("unicode-bidi: embed plaintext")]
+        [InlineData("unicode-bidi: embed bidi-override plaintext")]
+        public void ACombinedUnicodeBidiKeyword_StillFailsClosed(string declaration)
+        {
+            string svg =
+                "<svg width='20' height='20'><style>text {" + declaration +
+                "} rect { fill: red }</style><text x='0' y='12' font-size='8'>hi</text>" +
+                "<rect width='20' height='20' fill='blue'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            AssertFailsClosed(result);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
         [Fact]
         public void CssDirectionAndUnicodeBidi_ReachTheTextLayoutPass()
         {

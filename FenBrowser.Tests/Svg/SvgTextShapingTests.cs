@@ -1608,6 +1608,251 @@ namespace FenBrowser.Tests.Svg
                 warning.Contains("isolating run sequence", StringComparison.Ordinal));
         }
 
+        private const string UnicodeBidiBody = "abc &#x05D0;&#x05D1; def";
+
+        private static string UnicodeBidiRtlBase(string declarations) =>
+            "<svg width='320' height='60'><g direction='rtl'><text x='10' y='40' " +
+            $"font-family='monospace' font-size='20' fill='black' {declarations}>" +
+            UnicodeBidiBody + "</text></g></svg>";
+
+        private static string UnicodeBidiRtlBaseWithTspan(string declarations) =>
+            "<svg width='320' height='60'><g direction='rtl'><text x='10' y='40' " +
+            $"font-family='monospace' font-size='20' fill='black'><tspan {declarations}>" +
+            UnicodeBidiBody + "</tspan></text></g></svg>";
+
+        [Theory]
+        [InlineData("isolate plaintext")]
+        [InlineData("plaintext isolate")]
+        [InlineData("embed isolate")]
+        [InlineData("isolate bidi-override")]
+        [InlineData("bidi-override isolate")]
+        [InlineData("isolate-override plaintext")]
+        [InlineData("normal isolate")]
+        [InlineData("isolate isolate")]
+        [InlineData("isolate  plaintext")]
+        [InlineData("Isolate PlainText")]
+        public void AnIsolateCombinedWithAnotherKeywordFailsClosed(string value)
+        {
+            // The grammar is a keyword set, not a single keyword, so comparing the
+            // trimmed whole value to "isolate" is not the same question as asking
+            // whether the value isolates. "isolate plaintext" isolates and takes
+            // the paragraph level from the first strong character; the run is laid
+            // out against the wrong level and still reports Success.
+            using var result = new FenSvgRenderer().Render(
+                UnicodeBidiRtlBase("unicode-bidi='" + value + "'"));
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("requires compatibility fallback", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("isolate plaintext")]
+        [InlineData("embed isolate")]
+        [InlineData("isolate-override plaintext")]
+        public void AnIsolateCombinedWithAnotherKeywordOnATspanFailsClosed(string value)
+        {
+            using var result = new FenSvgRenderer().Render(
+                UnicodeBidiRtlBaseWithTspan("unicode-bidi='" + value + "'"));
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+        }
+
+        [Theory]
+        [InlineData("embed bidi-override plaintext")]
+        [InlineData("plaintext plaintext")]
+        [InlineData("normal embed bidi-override")]
+        [InlineData("embed plaintext plaintext")]
+        public void AUnicodeBidiValueLongerThanTheGrammarFailsClosed(string value)
+        {
+            // A run of more tokens than the grammar admits is a value the text
+            // model cannot reason about at all, so it is refused rather than
+            // truncated to whichever prefix happens to match.
+            using var result = new FenSvgRenderer().Render(
+                UnicodeBidiRtlBase("unicode-bidi='" + value + "'"));
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+        }
+
+        [Theory]
+        [InlineData("embed plaintext")]
+        [InlineData("plaintext embed")]
+        [InlineData("bidi-override plaintext")]
+        [InlineData("plaintext bidi-override")]
+        public void AnEmbeddingKeywordCombinedWithPlaintextFailsClosed(string value)
+        {
+            // The one legal two-keyword run the engine cannot compute: a browser
+            // opens the embedding frame and takes the paragraph level from the
+            // first strong character, and no whole-value comparison here matches,
+            // so the frame is dropped in silence under a success report.
+            using var result = new FenSvgRenderer().Render(
+                UnicodeBidiRtlBase("unicode-bidi='" + value + "'"));
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+        }
+
+        [Theory]
+        [InlineData("isolate plaintext")]
+        [InlineData("embed bidi-override plaintext")]
+        [InlineData("embed plaintext")]
+        public void ACombinedIsolateFromTheStyleSheetFailsClosed(string value)
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><g direction='rtl'><style>text { unicode-bidi: " +
+                value + " }</style><text x='10' y='40' font-family='monospace' font-size='20' " +
+                "fill='black'>" + UnicodeBidiBody + "</text></g></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("requires compatibility fallback", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("isolate plaintext")]
+        [InlineData("embed plaintext")]
+        public void ACombinedIsolateResolvedThroughACssVariableFailsClosed(string value)
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><g direction='rtl'><style>g{--b:" + value +
+                ";unicode-bidi:var(--b)}</style><g><text x='10' y='40' font-family='monospace' " +
+                "font-size='20' fill='black'>" + UnicodeBidiBody + "</text></g></g></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("requires compatibility fallback", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("isolate plaintext")]
+        [InlineData("embed isolate")]
+        [InlineData("embed plaintext")]
+        public void ACombinedIsolateDeliveredByAnimationFailsClosed(string value)
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><g direction='rtl'><text x='10' y='40' " +
+                "font-family='monospace' font-size='20' fill='black'>" + UnicodeBidiBody +
+                "<animate attributeName='unicode-bidi' from='" + value +
+                "' to='normal' begin='0s' dur='1s' fill='freeze'/></text></g></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("isolating run sequence", StringComparison.Ordinal) ||
+                warning.Contains("requires compatibility fallback", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("isolate plaintext")]
+        [InlineData("embed isolate")]
+        [InlineData("plaintext embed")]
+        [InlineData("normal embed bidi-override")]
+        public void ACombinedIsolateInheritedFromAnAncestorFailsClosed(string value)
+        {
+            // The bounded parse only inspects text and tspan attributes, so on a
+            // container the inherited text style is the only thing that sees the
+            // value.
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='320' height='60'><g direction='rtl'><g unicode-bidi='" + value +
+                "'><text x='10' y='40' font-family='monospace' font-size='20' fill='black'>" +
+                UnicodeBidiBody + "</text></g></g></svg>");
+
+            AssertFailsClosed(result);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("isolating run sequence", StringComparison.Ordinal));
+        }
+
+        [Theory]
+        [InlineData("normal")]
+        [InlineData("embed")]
+        [InlineData("bidi-override")]
+        [InlineData("plaintext")]
+        [InlineData("embed bidi-override")]
+        [InlineData("bidi-override embed")]
+        [InlineData("embed  bidi-override")]
+        [InlineData("normal embed")]
+        [InlineData("embed embed")]
+        [InlineData("inherit")]
+        [InlineData("initial")]
+        [InlineData("unset")]
+        [InlineData("revert")]
+        [InlineData("bogus")]
+        [InlineData("inline")]
+        public void AUnicodeBidiValueTheTextModelComputesStaysAdmitted(string value)
+        {
+            using var result = new FenSvgRenderer().Render(
+                UnicodeBidiRtlBase("unicode-bidi='" + value + "'"));
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(HasForeground(result.Bitmap));
+        }
+
+        [Theory]
+        [InlineData("ISOLATE")]
+        [InlineData("Isolate")]
+        [InlineData("Isolate-Override")]
+        [InlineData("  isolate  ")]
+        [InlineData("plaintext isolate")]
+        [InlineData("isolate plaintext")]
+        [InlineData("embed isolate")]
+        [InlineData("embed plaintext")]
+        [InlineData("plaintext embed")]
+        [InlineData("bidi-override plaintext")]
+        [InlineData("embed bidi-override plaintext")]
+        public void AUnicodeBidiValueTheTextModelCannotComputeIsRefusedWhateverItsCaseOrSpacing(string value)
+        {
+            // An isolate carries no embedding frame but still changes the
+            // paragraph, which is why it is refused rather than dropped, and the
+            // refusal cannot be evaded by respelling or respacing the value.
+            using var result = new FenSvgRenderer().Render(
+                UnicodeBidiRtlBase("unicode-bidi='" + value + "'"));
+
+            AssertFailsClosed(result);
+            Assert.True(result.RequiresFallback);
+            Assert.NotEmpty(result.FallbackReasonCodes);
+        }
+
+        [Theory]
+        [InlineData("unicode-bidi=''")]
+        [InlineData("unicode-bidi='   '")]
+        [InlineData("unicode-bidi='bogus'")]
+        [InlineData("unicode-bidi='inline'")]
+        public void AnUnresolvableUnicodeBidiValueIsDroppedAndPaintsTheBaseDocument(string declaration)
+        {
+            // An empty, blank, or unrecognised value matches no keyword a browser
+            // accepts either, so the run keeps the inherited value on both sides.
+            AssertSamePixels(
+                UnicodeBidiRtlBase(declaration),
+                UnicodeBidiRtlBase(string.Empty));
+        }
+
+        [Fact]
+        public void AnAdmittedUnicodeBidiValueStillReachesTheTextPass()
+        {
+            // The first pair is the control that makes the second one meaningful:
+            // a plaintext declaration over a latin-first run takes the paragraph
+            // level from the first strong character, so it lands away from the
+            // inherited right-to-left base. The value therefore reaches the text
+            // pass and is honoured there, and the combined value on the same
+            // document matching that inherited base is a drop rather than a
+            // coincidence.
+            AssertDifferentPixels(
+                UnicodeBidiRtlBase("unicode-bidi='plaintext'"),
+                UnicodeBidiRtlBase(string.Empty));
+            AssertSamePixels(
+                UnicodeBidiRtlBase("unicode-bidi='embed bidi-override'"),
+                UnicodeBidiRtlBase(string.Empty));
+            AssertSamePixels(
+                UnicodeBidiRtlBase("unicode-bidi='bidi-override embed'"),
+                UnicodeBidiRtlBase(string.Empty));
+            AssertSamePixels(
+                UnicodeBidiRtlBase("unicode-bidi='  embed   bidi-override  '"),
+                UnicodeBidiRtlBase(string.Empty));
+        }
+
         [Fact]
         public void AnAnimateToAnIsolateFailsClosed()
         {

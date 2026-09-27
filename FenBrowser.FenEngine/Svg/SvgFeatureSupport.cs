@@ -254,12 +254,42 @@ namespace FenBrowser.FenEngine.Svg
                    keyword.Equals("lr-tb", StringComparison.OrdinalIgnoreCase);
         }
 
+        private const int MaxUnicodeBidiTokens = 2;
+
         internal static bool IsUnimplementedUnicodeBidi(string value)
         {
             if (string.IsNullOrWhiteSpace(value)) return false;
             var keyword = value.AsSpan().Trim();
-            return keyword.Equals("isolate", StringComparison.OrdinalIgnoreCase) ||
-                   keyword.Equals("isolate-override", StringComparison.OrdinalIgnoreCase);
+            if (IsIsolateKeyword(keyword)) return true;
+
+            int inspected = 0;
+            bool plaintext = false;
+            var tokenizer = SvgValues.CreateTokenizer(keyword);
+            while (tokenizer.Next(out var token))
+            {
+                if (++inspected > MaxUnicodeBidiTokens) return true;
+                if (IsIsolateKeyword(token)) return true;
+                if (token.Equals("plaintext", StringComparison.OrdinalIgnoreCase)) plaintext = true;
+            }
+            if (inspected < 2) return false;
+            return plaintext;
+        }
+
+        private static bool IsIsolateKeyword(ReadOnlySpan<char> keyword) =>
+            keyword.Equals("isolate", StringComparison.OrdinalIgnoreCase) ||
+            keyword.Equals("isolate-override", StringComparison.OrdinalIgnoreCase);
+
+        internal static bool CarriesIsolateKeyword(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            var keyword = value.AsSpan().Trim();
+            if (IsIsolateKeyword(keyword)) return true;
+            var tokenizer = SvgValues.CreateTokenizer(keyword);
+            while (tokenizer.Next(out var token))
+            {
+                if (IsIsolateKeyword(token)) return true;
+            }
+            return false;
         }
 
         internal static bool IsSupportedTextDecoration(string value)

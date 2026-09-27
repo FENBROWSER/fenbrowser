@@ -982,9 +982,13 @@ namespace FenBrowser.FenEngine.Svg
                 SvgFeatureSupport.IsUnimplementedUnicodeBidi(value))
             {
                 report.RequireFallback(
-                    $"SVG CSS property '{property}' cannot be honoured for value '{value}' because it " +
-                    "isolates the run sequence from the surrounding paragraph and the text model " +
-                    "computes no isolating run sequence; requires compatibility fallback");
+                    $"SVG CSS property '{property}' cannot be honoured for value '{value}' because " +
+                    (SvgFeatureSupport.CarriesIsolateKeyword(value)
+                        ? "it isolates the run sequence from the surrounding paragraph and the text " +
+                          "model computes no isolating run sequence"
+                        : "the text model resolves no frame or paragraph level for a value that " +
+                          "combines keywords") +
+                    "; requires compatibility fallback");
                 return;
             }
             if (!isCustomProperty && IsDefinitelyInvalid(property, value))
