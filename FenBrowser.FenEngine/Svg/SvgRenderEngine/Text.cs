@@ -1002,6 +1002,7 @@ namespace FenBrowser.FenEngine.Svg
                 state.CurrentChunk, applyOwnOpacity, state.ContainerOpacity, textStyle.Decorations);
             run.GlyphRotations = rotations;
             run.LogicalText = text;
+            run.Font = textStyle.Font;
             run.Frame = textStyle.Frame;
             run.PerCharacterPositioned = positions.HasPerCharacterLists;
             runs.Add(run);
@@ -2299,20 +2300,20 @@ namespace FenBrowser.FenEngine.Svg
 
         /// <summary>
         /// Produces the run that paints one piece, in visual order, from the
-        /// chunk cursor. The advances are re-accumulated from the source
-        /// positions rather than copied from the stored advance, so the letter
-        /// and word spacing already folded into those positions survives the
-        /// <summary>
-        /// Produces the run that paints one piece, in visual order, from the
         /// chunk cursor. The piece is shaped from its own characters, which is
         /// the granularity a browser shapes a directional run at, so the advance
-        /// the run carries is the one the visual order implies. The shaper
-        /// derives its direction from the first strong character of the buffer
-        /// it is given, and a piece whose level disagrees with that direction is
-        /// permuted: the shaper lays a right-to-left buffer out with the advances
-        /// its characters have in logical order and reverses the result, so
-        /// reversing the glyph sequence is the same operation the shaper would
-        /// have done for the other direction.
+        /// the run carries is the one the visual order implies. A piece is also
+        /// the granularity a browser resolves a typeface at, because fallback is
+        /// per character: a level run cannot be shaped in the face the whole
+        /// source run resolved to when its own characters live in a narrower
+        /// face, or the piece paints glyphs and an advance the browser never
+        /// asks for. The shaper derives its direction from the first strong
+        /// character of the buffer it is given, and a piece whose level
+        /// disagrees with that direction is permuted: the shaper lays a
+        /// right-to-left buffer out with the advances its characters have in
+        /// logical order and reverses the result, so reversing the glyph
+        /// sequence is the same operation the shaper would have done for the
+        /// other direction.
         /// </summary>
         private TextPaintRun SliceRun(
             TextPaintRun source,
@@ -2323,8 +2324,12 @@ namespace FenBrowser.FenEngine.Svg
             if (original?.Typeface == null || segment.Text == null) return null;
             if (segment.Text.Length == 0) return null;
 
+            // A piece is a subset of the source run's characters, so the face the
+            // source run resolved to always covers it; the source face is the
+            // answer only when the piece resolves to nothing of its own.
+            SKTypeface typeface = source.Font.ResolveTypeface(segment.Text) ?? original.Typeface;
             GlyphRun shaped = SkiaFontService.ShapeWithTypeface(
-                segment.Text, original.Typeface, original.FontSize);
+                segment.Text, typeface, original.FontSize);
             if (shaped?.Glyphs == null || shaped.Glyphs.Length == 0) return null;
             if (ShapedRightToLeft(segment.Text) != segment.LevelOdd) PermuteGlyphs(shaped);
 
@@ -2332,6 +2337,7 @@ namespace FenBrowser.FenEngine.Svg
                 source.Element, source.PaintStyle, shaped, source.Viewport, cursor, source.Y,
                 source.Chunk, source.ApplyOwnOpacity, source.ContainerOpacity, source.Decorations)
             {
+                Font = source.Font,
                 Frame = source.Frame,
                 LogicalText = source.LogicalText
             };
@@ -3019,6 +3025,28 @@ namespace FenBrowser.FenEngine.Svg
             BidiFrame Frame)
         {
             public static TextStyle Default => new(null, DefaultFontSize, 400, SKFontStyleSlant.Upright, TextAnchor.Start, 0f, false, BaselineKind.Alphabetic, 0f, 0f, TextDecoration.None, null, false, UnicodeBidi.Normal, null);
+
+            /// <summary>
+            /// The properties that pick a face, kept on the run so a piece cut out
+            /// of it can resolve a typeface for its own characters without
+            /// re-running the style resolution the run already went through.
+            /// </summary>
+            public RunFont Font => new(Family, Language, Weight, Slant);
+        }
+
+        /// <summary>
+        /// The font properties of one run, and the typeface they resolve to for a
+        /// given piece of text. The size is not carried because a piece is never
+        /// shaped at another size than the run it came from.
+        /// </summary>
+        private readonly record struct RunFont(
+            string Family,
+            string Language,
+            int Weight,
+            SKFontStyleSlant Slant)
+        {
+            public SKTypeface ResolveTypeface(string text) =>
+                SvgTypefaceResolver.Resolve(Family, text, Language, Weight, Slant);
         }
 
         private sealed class TextPaintRun
@@ -3057,6 +3085,7 @@ namespace FenBrowser.FenEngine.Svg
             public float ContainerOpacity { get; }
             public TextDecoration Decorations { get; }
             public float[] GlyphRotations { get; set; }
+            public RunFont Font { get; set; }
             public ushort[] PathGlyphIds { get; set; }
             public SKRotationScaleMatrix[] PathTransforms { get; set; }
             public SKRect PathBounds { get; set; }

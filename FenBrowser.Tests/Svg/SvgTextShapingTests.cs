@@ -1466,6 +1466,30 @@ namespace FenBrowser.Tests.Svg
                 "a right-to-left word reverses in place between its left-to-right neighbours");
         }
 
+        /// <summary>
+        /// WPT svg/text/reftests/tspan-opacity-mixed-direction.svg carries its
+        /// opacity on a <c>tspan</c> whose two glyphs the paragraph bidi pass
+        /// moves apart, and compares against a reference that splits the same
+        /// characters over two <c>tspan</c>s. Splitting changes nothing the
+        /// document asks for, so the two forms have to paint the same pixels:
+        /// the re-cut piece is a level run, and a level run is shaped in the
+        /// face its own characters resolve to rather than the face the whole
+        /// source run resolved to. The named face covers the Latin piece and
+        /// not the Hebrew one, so a piece that keeps the source run's face
+        /// paints the Latin glyphs too narrow and shifts every later glyph.
+        /// </summary>
+        [Fact]
+        public void MixedDirectionTspanResolvesATypefaceForEachReorderedPiece()
+        {
+            AssertSamePixels(
+                "<svg width='320' height='60'><text x='20' y='44' font-family='monospace' " +
+                "font-size='30' fill='black'><tspan style='opacity: 0.5'>a\u05D1</tspan>\u05D2b</text></svg>",
+                "<svg width='320' height='60'><text x='20' y='44' font-family='monospace' " +
+                "font-size='30' fill='black' style='direction: ltr; unicode-bidi: bidi-override'>" +
+                "<tspan style='opacity: 0.5'>a</tspan>\u05D2" +
+                "<tspan style='opacity: 0.5'>\u05D1</tspan>b</text></svg>");
+        }
+
         [Fact]
         public void RightToLeftScriptWithAnInheritedBaseDirectionIsAdmitted()
         {
