@@ -79,7 +79,8 @@ public enum LogSubsystem
     Verification,
     Security,
     Accessibility,
-    ProcessIsolation
+    ProcessIsolation,
+    Svg
 }
 
 public readonly record struct EngineLogContext(
@@ -495,6 +496,7 @@ public static class EngineLogCompatibility
             LogSubsystem.Accessibility => LogCategory.Accessibility,
             LogSubsystem.ProcessIsolation => LogCategory.ProcessIsolation,
             LogSubsystem.Img => LogCategory.Images,
+            LogSubsystem.Svg => LogCategory.Rendering,
             _ => LogCategory.General
         };
     }

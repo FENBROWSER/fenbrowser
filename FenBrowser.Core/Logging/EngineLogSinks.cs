@@ -551,6 +551,7 @@ internal sealed class DiagnosticTraceEngineLogSink : BufferedFileLogSink
             LogSubsystem.Security => "Security",
             LogSubsystem.ProcessIsolation => "Process",
             LogSubsystem.Img => "ResourceLoader",
+            LogSubsystem.Svg => "Svg",
             LogSubsystem.Verification => "Performance",
             _ => "Performance"
         };
