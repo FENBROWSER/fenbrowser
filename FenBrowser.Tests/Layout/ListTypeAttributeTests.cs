@@ -27,5 +27,28 @@ namespace FenBrowser.Tests.Layout
 
             Assert.Equal(expected, styles[document.GetElementById("t")].ListStyleType);
         }
+
+        // CSS Lists 3 §3.5 list-style: the parts in any order, a <string> type kept as
+        // written, and 'none' filling in whichever of image and type is not given.
+        [Theory]
+        [InlineData("list-style: \"- \" inside", "\"- \"", "none")]
+        [InlineData("list-style: none", "none", "none")]
+        [InlineData("list-style: none disc", "disc", "none")]
+        [InlineData("list-style: square linear-gradient(red, blue)", "square", "linear-gradient(red, blue)")]
+        [InlineData("list-style: none url(a.png)", "none", "url(a.png)")]
+        [InlineData("list-style-type: My-Style", "My-Style", "none")]
+        [InlineData("list-style-type: Lower-Roman", "lower-roman", "none")]
+        public async Task ListStyleValuesKeepStringsAndCustomNames(string declaration, string type, string image)
+        {
+            var uri = new Uri("https://lists.test/");
+            var document = new HtmlParser(
+                "<!doctype html><html><body><ul><li id=t style='" + declaration.Replace("'", "&#39;") + "'></ul></body></html>",
+                uri).Parse();
+            var styles = await CssLoader.ComputeAsync(document.DocumentElement, uri, null);
+            var style = styles[document.GetElementById("t")];
+
+            Assert.Equal(type, style.ListStyleType);
+            Assert.Equal(image, style.ListStyleImage?.Trim());
+        }
     }
 }

@@ -1996,23 +1996,30 @@ return computed;
                 return;
             }
 
+            // CSS Lists 3 §3.5: <position> || <image> || <type> in any order. A <string>
+            // type and an author counter-style name keep their text, and each 'none'
+            // fills in whichever of image and type is otherwise left unset.
             string type = null;
             string position = null;
             string image = null;
+            int noneCount = 0;
             foreach (var part in SplitCssValue(value))
             {
                 string keyword = part.ToLowerInvariant();
                 if (keyword == "inside" || keyword == "outside")
                     position = keyword;
-                else if (keyword.StartsWith("url(", StringComparison.Ordinal))
-                    image = part;
                 else if (keyword == "none")
-                {
-                    if (type == null) type = "none";
-                    else image = "none";
-                }
+                    noneCount++;
+                else if (IsListStyleImageValue(keyword))
+                    image = part;
                 else
-                    type = keyword;
+                    type = part;
+            }
+
+            if (noneCount > 0)
+            {
+                image ??= "none";
+                type ??= "none";
             }
 
             SetExpanded(computed, "list-style-type", type ?? "disc", source);
@@ -2756,12 +2763,19 @@ return computed;
             {
                 if (p == "inside" || p == "outside")
                     SetIfNotExplicit(computed, "list-style-position", p, decl);
-                else if (p.StartsWith("url("))
+                else if (IsListStyleImageValue(p.ToLowerInvariant()))
                     SetIfNotExplicit(computed, "list-style-image", p, decl);
                 else
                     SetIfNotExplicit(computed, "list-style-type", p, decl);
             }
         }
+
+        private static bool IsListStyleImageValue(string lowerCaseValue) =>
+            lowerCaseValue.StartsWith("url(", StringComparison.Ordinal) ||
+            lowerCaseValue.StartsWith("image-set(", StringComparison.Ordinal) ||
+            lowerCaseValue.StartsWith("-webkit-image-set(", StringComparison.Ordinal) ||
+            lowerCaseValue.StartsWith("image(", StringComparison.Ordinal) ||
+            lowerCaseValue.Contains("gradient(", StringComparison.Ordinal);
 
         private static void ExpandGapShorthand(Dictionary<string, CssDeclaration> computed)
         {
@@ -2938,12 +2952,20 @@ return computed;
             if (string.IsNullOrEmpty(value)) return Array.Empty<string>();
             // Handle function parentheses (don't split inside them)
             var parts = new List<string>();
+            // Quoted strings are single values too ("- " in list-style).
             int depth = 0;
             int start = 0;
+            char quote = '\0';
             for (int i = 0; i < value.Length; i++)
             {
                 char c = value[i];
-                if (c == '(') depth++;
+                if (quote != '\0')
+                {
+                    if (c == '\\') i++;
+                    else if (c == quote) quote = '\0';
+                }
+                else if (c == '"' || c == '\'') quote = c;
+                else if (c == '(') depth++;
                 else if (c == ')') depth--;
                 else if ((c == ' ' || c == '\t') && depth == 0)
                 {
