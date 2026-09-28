@@ -1944,3 +1944,20 @@ Verification:
 - `XmlDomParser` preserves qualified element and attribute names, including XHTML prefixes in SVG documents and `xlink`/`xmlns` attributes, instead of exposing LINQ-to-XML expanded-name syntax as DOM qualified names.
 - XML MIME detection uses the MIME essence, accepts parameters such as `charset`, and preserves the successful document content type. DTD processing remains prohibited and the XML resolver remains disabled.
 - Legal whitespace before and after the XML document element is ignored. Non-whitespace text outside the document element remains a hierarchy error and is converted to the normal XML parse-error document by the non-throwing entry point.
+
+### 1.97 SVG Names In HTML Foreign Content (2026-09-29)
+
+The HTML tokenizer lowercases tag and attribute names, and the tree builder only
+restored attribute names, from a partial table that also held three element names
+by mistake. So an inline `<linearGradient>`, `<radialGradient>`, `<clipPath>`,
+`<textPath>`, `<foreignObject>` or any `fe*` filter primitive entered the DOM
+lowercased, and the SVG renderer, which matches names case-sensitively as XML
+requires, refused the whole icon; five of 151 captured real-site SVGs on GitHub and
+X disappeared this way. `HtmlTreeBuilder.CreateElement` now applies the HTML
+13.2.6.5 "adjust SVG tag name" table (37 names) to SVG-namespace elements, the
+attribute table gained the 25 names it was missing (among them `clipPathUnits`,
+`spreadMethod`, `pathLength`, `patternContentUnits`, `systemLanguage`), and the
+HTML integration-point checks compare against `foreignObject`. End tags still close
+the adjusted elements because the open-element stack compares names
+case-insensitively. Covered by `Core/Parsing/HtmlSvgNameAdjustmentTests`; the
+html5lib tree-construction tests pass unchanged.
