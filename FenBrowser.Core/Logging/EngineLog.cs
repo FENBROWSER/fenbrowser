@@ -16,6 +16,7 @@ public static class EngineLog
     private static readonly ConcurrentDictionary<string, MutableDocumentCounter> DocumentCounters = new(StringComparer.Ordinal);
     private static int _compatibilityBufferCap = 5000;
     private static readonly ILogDeduplicator Deduplicator = new EngineLogDeduplicator();
+    private static readonly Dictionary<LogSubsystem, LogSeverity> EnsuredSubsystemLevels = new();
     private static event Action<EngineLogEvent> EngineEventWrittenInternal;
 
     // Re-entrancy guard: prevents recursive Write() calls from event handlers
@@ -144,6 +145,35 @@ public static class EngineLog
             _logger.EventWritten += OnEngineEvent;
             _compatibilityBufferCap = Math.Max(1000, _options.RingBufferCapacity);
             CompatibilityEventRecorder.ConfigureCapacity(_compatibilityBufferCap);
+        }
+    }
+
+    /// <summary>
+    /// Lets a subsystem's diagnostics flag widen what that subsystem logs without
+    /// touching other subsystems or rebuilding sinks. The request survives later
+    /// <see cref="Configure"/> and <see cref="ApplyPreset"/> calls; it never
+    /// narrows a level that is already more verbose.
+    /// </summary>
+    public static void EnsureSubsystemEnabled(LogSubsystem subsystem, LogSeverity minimumSeverity)
+    {
+        EnsureInitialized();
+        lock (Sync)
+        {
+            if (!EnsuredSubsystemLevels.TryGetValue(subsystem, out var existing) || minimumSeverity < existing)
+            {
+                EnsuredSubsystemLevels[subsystem] = minimumSeverity;
+            }
+
+            _logger.EnsureSubsystemEnabled(subsystem, minimumSeverity);
+        }
+    }
+
+    /// <summary>Test isolation: forgets every level requested through <see cref="EnsureSubsystemEnabled"/>.</summary>
+    internal static void ClearEnsuredSubsystemLevels()
+    {
+        lock (Sync)
+        {
+            EnsuredSubsystemLevels.Clear();
         }
     }
 
@@ -397,7 +427,13 @@ public static class EngineLog
         }
 
         var dispatcher = new EngineLogDispatcher(options.DispatcherQueueCapacity, sinks);
-        return new EngineLogger(options, dispatcher, ring);
+        var logger = new EngineLogger(options, dispatcher, ring);
+        foreach (var ensured in EnsuredSubsystemLevels)
+        {
+            logger.EnsureSubsystemEnabled(ensured.Key, ensured.Value);
+        }
+
+        return logger;
     }
 
     /// <summary>
