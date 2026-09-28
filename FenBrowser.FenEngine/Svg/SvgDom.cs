@@ -261,6 +261,11 @@ namespace FenBrowser.FenEngine.Svg
         public bool TruncatedPathData;
         public bool UnsupportedFeatureIgnored;
         public bool ResourceRejected;
+        /// <summary>
+        /// Mirrors <see cref="Adapters.SvgRenderLimits.LayOutTextAreasOnOneLine"/> for the
+        /// cascade, which receives only the report. Set by the engine before the cascade.
+        /// </summary>
+        public bool TextAreasOnOneLine;
         public int ElementCount;
 
         public void Warn(string message)

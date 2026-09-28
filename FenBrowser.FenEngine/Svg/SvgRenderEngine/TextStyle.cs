@@ -42,7 +42,7 @@ namespace FenBrowser.FenEngine.Svg
                 ParseFontSlant(styleRaw, inherited.Slant),
                 ParseTextAnchor(anchorRaw, inherited.Anchor),
                 letterSpacing,
-                string.IsNullOrWhiteSpace(xmlSpace) ? inherited.PreserveWhitespace : xmlSpace.Trim().Equals("preserve", StringComparison.OrdinalIgnoreCase),
+                ResolvePreserveWhitespace(element, xmlSpace, inherited.PreserveWhitespace),
                 ResolveBaselineKind(element, inherited.Baseline),
                 ResolveBaselineShiftValue(element, inherited.BaselineShift, fontSize),
                 ResolveWordSpacing(element, inherited.WordSpacing, fontSize),
@@ -51,6 +51,29 @@ namespace FenBrowser.FenEngine.Svg
                 rightToLeft,
                 bidi,
                 frame);
+        }
+
+        /// <summary>
+        /// Whether the run keeps its spaces. A white-space declaration wins over the
+        /// deprecated xml:space (SVG 2 §11.9 white-space processing): pre, pre-wrap and
+        /// break-spaces preserve spaces, the other values collapse them. Newlines stay
+        /// spaces either way because the text lays out on one line; the cascade only
+        /// admits white-space under single-line text layout.
+        /// </summary>
+        private static bool ResolvePreserveWhitespace(SvgElement element, string xmlSpace, bool inherited)
+        {
+            string whiteSpace = element.GetCascadedPresentationProperty("white-space")?.Trim();
+            if (!string.IsNullOrEmpty(whiteSpace) &&
+                !whiteSpace.Equals("inherit", StringComparison.OrdinalIgnoreCase) &&
+                !whiteSpace.Equals("unset", StringComparison.OrdinalIgnoreCase))
+            {
+                return whiteSpace.Equals("pre", StringComparison.OrdinalIgnoreCase) ||
+                       whiteSpace.Equals("pre-wrap", StringComparison.OrdinalIgnoreCase) ||
+                       whiteSpace.Equals("break-spaces", StringComparison.OrdinalIgnoreCase);
+            }
+            return string.IsNullOrWhiteSpace(xmlSpace)
+                ? inherited
+                : xmlSpace.Trim().Equals("preserve", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

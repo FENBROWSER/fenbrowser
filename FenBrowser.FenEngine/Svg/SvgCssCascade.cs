@@ -145,6 +145,17 @@ namespace FenBrowser.FenEngine.Svg
                 "reorders painting into a stacking context; the draw walk paints strictly in document order"
         };
 
+        /// <summary>
+        /// Text-in-an-area properties that have no effect when the text lays out on one
+        /// line, which is how Chromium paints SVG text that uses them
+        /// (<see cref="Adapters.SvgRenderLimits.LayOutTextAreasOnOneLine"/>).
+        /// </summary>
+        private static readonly HashSet<string> SingleLineAreaProperties = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "inline-size", "shape-inside", "shape-subtract", "shape-margin", "shape-padding",
+            "text-align", "line-spacing"
+        };
+
         public static void Apply(
             SvgParsedDocument document,
             float viewportWidth,
@@ -932,11 +943,17 @@ namespace FenBrowser.FenEngine.Svg
             }
             bool isFontShorthand = !isCustomProperty &&
                 property.Equals("font", StringComparison.OrdinalIgnoreCase);
+            // Single-line text layout honours white-space as space preservation in the
+            // text style, so the declaration is kept like any supported property.
+            bool singleLineWhiteSpace = report.TextAreasOnOneLine &&
+                property.Equals("white-space", StringComparison.OrdinalIgnoreCase);
             if (!isCustomProperty && !isFontShorthand && !SupportedProperties.Contains(property) &&
                 !supportedViewportOverflow && !inertOverflow && !supportedNonScalingStroke &&
-                !IsNoEffectProperty(property, value))
+                !singleLineWhiteSpace && !IsNoEffectProperty(property, value))
             {
                 if (EmbeddingOnlyProperties.Contains(property)) return;
+                // Single-line text layout drops the area properties: they have no effect.
+                if (report.TextAreasOnOneLine && SingleLineAreaProperties.Contains(property)) return;
                 if (NoneIsNoEffect.Contains(property) &&
                     value.Equals("none", StringComparison.OrdinalIgnoreCase))
                 {

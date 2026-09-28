@@ -438,6 +438,19 @@ namespace FenBrowser.FenEngine.Adapters
         /// not certify a pre-script frame as the document's rendering.
         /// </summary>
         public bool TreatScriptsAsInert { get; set; }
+
+        /// <summary>
+        /// Whether SVG 2 text-in-an-area properties this renderer does not lay out
+        /// (inline-size, shape-inside and its shape-* modifiers, text-align inside an
+        /// area, and the non-property line-spacing) are dropped so the text lays out on
+        /// one line, and white-space pre/pre-wrap/break-spaces preserve spaces with
+        /// newlines painted as spaces. That is how Chromium paints these documents, so
+        /// browser consumers set it rather than lose the whole image. False (default)
+        /// refuses them, for callers that must not report single-line text as the
+        /// wrapped layout the document asks for. Vertical writing-mode is refused either
+        /// way, because Chromium does lay it out vertically.
+        /// </summary>
+        public bool LayOutTextAreasOnOneLine { get; set; }
         
         /// <summary>
         /// Get default safe limits.

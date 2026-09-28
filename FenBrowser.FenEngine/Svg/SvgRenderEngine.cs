@@ -309,6 +309,7 @@ namespace FenBrowser.FenEngine.Svg
 
             // Apply author CSS after the intrinsic viewport is known so media
             // queries and percentage-aware values see the replaced-element size.
+            _report.TextAreasOnOneLine = _limits.LayOutTextAreasOnOneLine;
             SvgCssCascade.Apply(_doc, width, _report, CheckDeadline);
             ResolveRootCssViewportSize(root, ref width, ref height);
             width = System.Math.Min(width, 32767f);
