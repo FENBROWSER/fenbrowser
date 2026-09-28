@@ -1744,6 +1744,7 @@ internal sealed class Interp2
                 case OpCode.InitThisBinding:
                     BindThisAfterSuper(layout, stack[frameBase + ins.A]);
                     stack = _stack;
+                    _host.BrandInstanceAfterSuper(layout.Function, stack[frameBase + ins.A]);
                     break;
 
                 case OpCode.SetPrototype:
