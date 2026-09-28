@@ -8,8 +8,22 @@ using System;
 
 namespace FenBrowser.Tests.Privacy
 {
-    public class CookieIsolationTests
+    // These tests flip the process-wide BrowserSettings.Instance.BlockThirdPartyCookies.
+    // Run them apart from every other class and put the setting back afterwards, or a
+    // ResourceManager test running alongside sees third-party blocking switched on.
+    [CollectionDefinition(Name, DisableParallelization = true)]
+    public sealed class BrowserSettingsStateCollection
     {
+        public const string Name = "Browser Settings State";
+    }
+
+    [Collection(BrowserSettingsStateCollection.Name)]
+    public class CookieIsolationTests : IDisposable
+    {
+        private readonly bool _previousBlockThirdPartyCookies = BrowserSettings.Instance.BlockThirdPartyCookies;
+
+        public void Dispose() => BrowserSettings.Instance.BlockThirdPartyCookies = _previousBlockThirdPartyCookies;
+
         [Fact]
         public async Task PrivacyHandler_BlocksThirdPartyCookies()
         {
@@ -66,8 +80,23 @@ namespace FenBrowser.Tests.Privacy
             Assert.False(request.Headers.Contains("Cookie"), "Suffix-confusion domain should be treated as third-party");
         }
 
+        // Referrer Policy 8.3: the default strict-origin-when-cross-origin sends only the
+        // origin across origins, and a scheme change is cross-origin. The Referer is set by
+        // BrowserRequestHeaderPolicy for the request's policy; PrivacyHandler must not trim
+        // it again, or a page's unsafe-url policy would be overridden.
         [Fact]
-        public async Task PrivacyHandler_TrimsReferer_WhenCrossOriginByScheme()
+        public void DefaultReferrerPolicy_TrimsReferer_WhenCrossOriginByScheme()
+        {
+            var referrer = BrowserRequestHeaderPolicy.ComputeReferrer(
+                new Uri("http://example.com/path?q=1"),
+                new Uri("https://example.com/api"),
+                ReferrerPolicyDirective.StrictOriginWhenCrossOrigin);
+
+            Assert.Equal("http://example.com/", referrer?.AbsoluteUri);
+        }
+
+        [Fact]
+        public async Task PrivacyHandler_LeavesTheRefererToTheReferrerPolicy()
         {
             BrowserSettings.Instance.BlockThirdPartyCookies = false;
             var handler = new PrivacyHandler();
@@ -78,8 +107,7 @@ namespace FenBrowser.Tests.Privacy
             var context = new NetworkContext(request);
             await handler.HandleAsync(context, () => Task.CompletedTask, default);
 
-            Assert.NotNull(request.Headers.Referrer);
-            Assert.Equal("http://example.com/", request.Headers.Referrer!.AbsoluteUri);
+            Assert.Equal("http://example.com/path?q=1", request.Headers.Referrer?.AbsoluteUri);
         }
 
         [Fact]
@@ -98,20 +126,23 @@ namespace FenBrowser.Tests.Privacy
             Assert.False(request.Headers.Contains("Cookie"));
         }
 
+        // Fetch Metadata 2.1: Sec-Fetch-Site is cross-site, same-site, same-origin or none.
+        // Third-party cookie blocking is about sites, so a same-site request between two
+        // origins keeps its cookies.
         [Fact]
-        public async Task PrivacyHandler_BlocksCookie_WhenSecFetchSiteIsCrossOrigin()
+        public async Task PrivacyHandler_KeepsCookie_WhenSecFetchSiteIsSameSite()
         {
             BrowserSettings.Instance.BlockThirdPartyCookies = true;
             var handler = new PrivacyHandler();
 
-            var request = new HttpRequestMessage(HttpMethod.Get, "https://example.com/api");
+            var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example.com/data");
             request.Headers.Add("Cookie", "session=abc");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "cross-origin");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "same-site");
 
             var context = new NetworkContext(request);
             await handler.HandleAsync(context, () => Task.CompletedTask, default);
 
-            Assert.False(request.Headers.Contains("Cookie"));
+            Assert.True(request.Headers.Contains("Cookie"));
         }
 
         [Fact]
