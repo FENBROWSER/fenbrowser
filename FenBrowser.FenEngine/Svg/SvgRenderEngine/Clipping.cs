@@ -350,9 +350,22 @@ namespace FenBrowser.FenEngine.Svg
                     return true;
                 case "use":
                     string href = element.GetAttribute("href") ?? element.GetLookup("xlink:href");
-                    if (SvgValues.TryParseLocalReference(href, out string useId) &&
-                        _doc.ElementsById.TryGetValue(useId, out var useTarget) &&
-                        useTarget.Name is not ("svg" or "symbol") &&
+                    if (!SvgValues.TryParseLocalReference(href, out string useId) ||
+                        !_doc.ElementsById.TryGetValue(useId, out var useTarget))
+                    {
+                        break;
+                    }
+                    if (useTarget.Name == "symbol")
+                    {
+                        if (!TryResolveSymbolInstanceBounds(element, useTarget, viewport, out bounds) ||
+                            !TryResolveObjectBoundsTransform(element, viewport, out _))
+                        {
+                            bounds = default;
+                            return false;
+                        }
+                        return TryPlaceUseInstanceBounds(element, viewport, ref bounds);
+                    }
+                    if (useTarget.Name != "svg" &&
                         TryResolveObjectBounds(useTarget, viewport, out bounds))
                     {
                         if (!TryResolveObjectBoundsTransform(
@@ -364,66 +377,128 @@ namespace FenBrowser.FenEngine.Svg
                             return false;
                         }
                         bounds = targetTransform.MapRect(bounds);
-                        if (ReferenceEquals(element, _useInstanceSpace))
-                        {
-                            return SvgValues.IsFinite(bounds.Left) && SvgValues.IsFinite(bounds.Top) &&
-                                SvgValues.IsFinite(bounds.Right) && SvgValues.IsFinite(bounds.Bottom) &&
-                                bounds.Width > 0f && bounds.Height > 0f;
-                        }
-                        float useX = ResolveGeometryCoordinate(element, "x", viewport, viewport.Width);
-                        float useY = ResolveGeometryCoordinate(element, "y", viewport, viewport.Height);
-                        if (useX != 0f || useY != 0f)
-                        {
-                            if (!SvgValues.IsFinite(useX) || !SvgValues.IsFinite(useY))
-                            {
-                                bounds = default;
-                                return false;
-                            }
-                            bounds = SKMatrix.CreateTranslation(useX, useY).MapRect(bounds);
-                        }
-                        return SvgValues.IsFinite(bounds.Left) &&
-                            SvgValues.IsFinite(bounds.Top) &&
-                            SvgValues.IsFinite(bounds.Right) &&
-                            SvgValues.IsFinite(bounds.Bottom) &&
-                            bounds.Width > 0f && bounds.Height > 0f;
+                        return TryPlaceUseInstanceBounds(element, viewport, ref bounds);
                     }
                     break;
                 case "g":
                 case "a":
-                    bool hasBounds = false;
-                    SKRect combined = default;
-                    foreach (var child in element.Children)
-                    {
-                        CheckDeadline();
-                        if (!TryResolveObjectBounds(child, viewport, out var childBounds))
-                            continue;
-
-                        SKMatrix childTransform = SKMatrix.Identity;
-                        if (!TryResolveObjectBoundsTransform(
-                                child, viewport, out childTransform))
-                        {
-                            bounds = default;
-                            return false;
-                        }
-                        if (!childTransform.IsIdentity)
-                            childBounds = childTransform.MapRect(childBounds);
-
-                        combined = hasBounds ? SKRect.Union(combined, childBounds) : childBounds;
-                        hasBounds = true;
-                    }
-                    if (hasBounds && combined.Width > 0f && combined.Height > 0f &&
-                        SvgValues.IsFinite(combined.Left) && SvgValues.IsFinite(combined.Top) &&
-                        SvgValues.IsFinite(combined.Right) && SvgValues.IsFinite(combined.Bottom))
-                    {
-                        bounds = combined;
+                    if (TryResolveChildrenBounds(element, viewport, out bounds))
                         return true;
-                    }
                     break;
             }
 
             bounds = default;
             return false;
         }
+
+        /// <summary>
+        /// Union of the children's bounding boxes in the container's user space, each
+        /// mapped through its own transform. False when no child has a box.
+        /// </summary>
+        private bool TryResolveChildrenBounds(SvgElement container, ViewportContext viewport, out SKRect bounds)
+        {
+            bool hasBounds = false;
+            SKRect combined = default;
+            foreach (var child in container.Children)
+            {
+                CheckDeadline();
+                if (!TryResolveObjectBounds(child, viewport, out var childBounds))
+                    continue;
+
+                if (!TryResolveObjectBoundsTransform(child, viewport, out SKMatrix childTransform))
+                {
+                    bounds = default;
+                    return false;
+                }
+                if (!childTransform.IsIdentity)
+                    childBounds = childTransform.MapRect(childBounds);
+
+                combined = hasBounds ? SKRect.Union(combined, childBounds) : childBounds;
+                hasBounds = true;
+            }
+
+            bounds = combined;
+            return hasBounds && IsUsableBounds(combined);
+        }
+
+        /// <summary>
+        /// Bounding box of a symbol instantiated by <paramref name="instance"/>: its
+        /// content placed by the viewport the instance establishes (SVG 2 §5.6 and
+        /// §8.2), resolved exactly as <see cref="DrawSymbolInstance"/> draws it.
+        /// Like getBBox, the viewport clip does not shrink it.
+        /// </summary>
+        private bool TryResolveSymbolInstanceBounds(
+            SvgElement instance,
+            SvgElement symbol,
+            ViewportContext viewport,
+            out SKRect bounds)
+        {
+            bounds = default;
+            if (IsDisplayNone(symbol) ||
+                !TryResolveViewportBoxExtent(
+                    instance.GetAttribute("width"), false, 0f,
+                    symbol.GetAttribute("width"), viewport.Width, viewport.Width,
+                    "symbol", "width", out float width) ||
+                !TryResolveViewportBoxExtent(
+                    instance.GetAttribute("height"), false, 0f,
+                    symbol.GetAttribute("height"), viewport.Height, viewport.Height,
+                    "symbol", "height", out float height) ||
+                width <= 0f || height <= 0f)
+            {
+                return false;
+            }
+
+            var inner = new ViewportContext(width, height);
+            bool hasViewBox = TryParseViewBox(
+                symbol.GetAttribute("viewBox"),
+                out float vbX, out float vbY, out float vbW, out float vbH,
+                out bool viewBoxDisablesRendering);
+            if (viewBoxDisablesRendering)
+            {
+                return false;
+            }
+
+            var userViewport = hasViewBox ? new ViewportContext(vbW, vbH) : inner;
+            if (!TryResolveChildrenBounds(symbol, userViewport, out SKRect content) ||
+                !TryComputeViewportMatrix(
+                    inner, hasViewBox, vbX, vbY, vbW, vbH,
+                    symbol.GetAttribute("preserveAspectRatio"), out SKMatrix placement))
+            {
+                return false;
+            }
+
+            bounds = placement.MapRect(content);
+            return IsUsableBounds(bounds);
+        }
+
+        /// <summary>
+        /// Adds a use instance's x/y translation to bounds measured in its own
+        /// coordinate system, except while its own effects are built, when the
+        /// translation is already on the canvas (see <see cref="_useInstanceSpace"/>).
+        /// </summary>
+        private bool TryPlaceUseInstanceBounds(SvgElement element, ViewportContext viewport, ref SKRect bounds)
+        {
+            if (!ReferenceEquals(element, _useInstanceSpace))
+            {
+                float useX = ResolveGeometryCoordinate(element, "x", viewport, viewport.Width);
+                float useY = ResolveGeometryCoordinate(element, "y", viewport, viewport.Height);
+                if (useX != 0f || useY != 0f)
+                {
+                    if (!SvgValues.IsFinite(useX) || !SvgValues.IsFinite(useY))
+                    {
+                        bounds = default;
+                        return false;
+                    }
+                    bounds = SKMatrix.CreateTranslation(useX, useY).MapRect(bounds);
+                }
+            }
+            return IsUsableBounds(bounds);
+        }
+
+        private static bool IsUsableBounds(SKRect bounds) =>
+            SvgValues.IsFinite(bounds.Left) && SvgValues.IsFinite(bounds.Top) &&
+            SvgValues.IsFinite(bounds.Right) && SvgValues.IsFinite(bounds.Bottom) &&
+            bounds.Width > 0f && bounds.Height > 0f;
 
         private string ResolveInheritedClipRule(
             SvgElement shape,

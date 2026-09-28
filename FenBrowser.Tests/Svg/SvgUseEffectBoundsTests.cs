@@ -35,6 +35,33 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(new SKRectI(50, 0, 60, 10), Painted(result));
         }
 
+        private const string SymbolDefs =
+            "<defs><filter id='blur'><feGaussianBlur stdDeviation='1'/></filter>" +
+            "<filter id='flood' x='0' y='0' width='1' height='1'><feFlood flood-color='lime'/></filter>" +
+            "<symbol id='s' viewBox='0 0 4 4'><rect width='4' height='4' fill='lime'/></symbol></defs>";
+
+        [Fact]
+        public void FilteredSymbolInstance_RendersInsteadOfFailingClosed()
+        {
+            // Icon sprites filter the use of a symbol; its bounds used to be unresolvable.
+            using var result = Render(
+                "<use href='#s' x='2' y='2' width='8' height='8' filter='url(#blur)'/>", SymbolDefs);
+
+            // The default region is the 8x8 box grown by 10% on each side.
+            Assert.Equal(new SKRectI(1, 1, 11, 11), Painted(result));
+        }
+
+        [Fact]
+        public void SymbolInstanceBounds_FollowTheViewBoxPlacement()
+        {
+            // A 4x4 viewBox meets a 20x10 viewport: scale 2.5, centred at x=5. A flood
+            // filling the objectBoundingBox region paints exactly the bounding box.
+            using var result = Render(
+                "<use href='#s' width='20' height='10' filter='url(#flood)'/>", SymbolDefs);
+
+            Assert.Equal(new SKRectI(5, 0, 15, 10), Painted(result));
+        }
+
         internal static SvgRenderResult Render(string body, string defs = Defs)
         {
             var result = new FenSvgRenderer().Render(
