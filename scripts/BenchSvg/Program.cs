@@ -32,8 +32,12 @@ if (args.Length == 4 && args[0] == "--capture-sites" && args[2] == "--capture-ou
     }
     return;
 }
-if ((args.Length == 2 || args.Length == 4) && args[0] == "--inspect-svg")
+if ((args.Length == 2 || args.Length == 4) && args[0] is "--inspect-svg" or "--inspect-inline-svg")
 {
+    // --inspect-inline-svg treats the file as markup that appeared inline in an HTML
+    // page: it goes through the HTML parser (foreign-content namespace and attribute
+    // case adjustment) and renders with script inert, as the browser's inline path does.
+    bool inlineMarkup = args[0] == "--inspect-inline-svg";
     string inspectPath = Path.GetFullPath(args[1]);
     var inspectInfo = new FileInfo(inspectPath);
     if (!inspectInfo.Exists || inspectInfo.Length > SvgRenderLimits.Default.MaxSourceChars)
@@ -42,13 +46,20 @@ if ((args.Length == 2 || args.Length == 4) && args[0] == "--inspect-svg")
         Environment.ExitCode = 2;
         return;
     }
-    using var inspectResult = new FenSvgRenderer().Render(await File.ReadAllTextAsync(inspectPath));
+    string inspectSource = await File.ReadAllTextAsync(inspectPath);
+    var inspectLimits = SvgRenderLimits.Default;
+    if (inlineMarkup)
+    {
+        inspectSource = SerializeInlineSvg(inspectSource) ?? string.Empty;
+        inspectLimits.TreatScriptsAsInert = true;
+    }
+    using var inspectResult = new FenSvgRenderer().Render(inspectSource, inspectLimits);
     bool inspectAdmissible = SvgRenderResult.IsAdmissible(inspectResult);
     if (args.Length == 4)
     {
         if (args[2] != "--output-prefix")
         {
-            Console.Error.WriteLine("--inspect-svg optional argument must be --output-prefix <path>");
+            Console.Error.WriteLine($"{args[0]} optional argument must be --output-prefix <path>");
             Environment.ExitCode = 2;
             return;
         }
@@ -67,6 +78,28 @@ if ((args.Length == 2 || args.Length == 4) && args[0] == "--inspect-svg")
     }));
     Environment.ExitCode = inspectAdmissible ? 0 : 1;
     return;
+}
+
+static string? SerializeInlineSvg(string markup)
+{
+    var document = new FenBrowser.Core.Parsing.HtmlParser(
+        "<!doctype html><html><body>" + markup + "</body></html>").Parse();
+    var pending = new Stack<FenBrowser.Core.Dom.V2.Node>();
+    pending.Push(document);
+    while (pending.Count > 0)
+    {
+        var node = pending.Pop();
+        if (node is FenBrowser.Core.Dom.V2.Element element &&
+            string.Equals(element.LocalName, "svg", StringComparison.OrdinalIgnoreCase))
+        {
+            return element.ToHtml();
+        }
+        for (var child = node.LastChild; child != null; child = child.PreviousSibling)
+        {
+            pending.Push(child);
+        }
+    }
+    return null;
 }
 
 static void SaveBitmap(SKBitmap bitmap, string path)
