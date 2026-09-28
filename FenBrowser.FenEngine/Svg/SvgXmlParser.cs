@@ -204,7 +204,7 @@ namespace FenBrowser.FenEngine.Svg
             var doc = new SvgParsedDocument(documentReport) { Root = root };
             doc.ElementsById = new Dictionary<string, SvgElement>(System.StringComparer.Ordinal);
             RegisterElement(doc, root);
-            SvgFeatureSupport.Inspect(root, state.Report);
+            SvgFeatureSupport.Inspect(root, state.Report, limits.TreatScriptsAsInert);
 
             var openStack = new List<SvgElement> { root };
             state.Report.ElementCount = 1;
@@ -276,7 +276,7 @@ namespace FenBrowser.FenEngine.Svg
                 EnforceElementBudget(state, limits);
                 CountFilters(state, child, limits);
                 RegisterElement(doc, child);
-                SvgFeatureSupport.Inspect(child, state.Report);
+                SvgFeatureSupport.Inspect(child, state.Report, limits.TreatScriptsAsInert);
 
                 if (IgnoredSubtrees.Contains(child.Name))
                 {

@@ -411,7 +411,9 @@ namespace FenBrowser.FenEngine.Svg
         /// </summary>
         private void RequireLanguageStyleSupport()
         {
-            if (DocumentStylesByLanguage())
+            // Only a script that could still change lang makes language styling
+            // unsafe to paint; inert script never runs.
+            if (!_limits.TreatScriptsAsInert && DocumentStylesByLanguage())
             {
                 _report.RequireFallback(
                     "language-styled SVG text under a scripted DOM requires compatibility fallback");

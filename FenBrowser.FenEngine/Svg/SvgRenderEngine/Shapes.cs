@@ -193,7 +193,7 @@ namespace FenBrowser.FenEngine.Svg
         {
             SvgElement root = element;
             while (root.Parent != null) root = root.Parent;
-            return SvgFeatureSupport.InspectScriptAdmission(root, _report);
+            return SvgFeatureSupport.InspectScriptAdmission(root, _report, _limits.TreatScriptsAsInert);
         }
 
         private float Attr(

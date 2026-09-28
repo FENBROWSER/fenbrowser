@@ -426,6 +426,18 @@ namespace FenBrowser.FenEngine.Adapters
         /// and a same-origin target. Default: false (disabled for security).
         /// </summary>
         public bool AllowExternalReferences { get; set; }
+
+        /// <summary>
+        /// Whether script is inert for this render. An SVG document used as an image
+        /// is processed with scripting disabled (SVG Integration, secure animated
+        /// mode): script elements and event handler attributes never run and the
+        /// document paints as authored. An inline &lt;svg&gt; serialized from the live
+        /// DOM is likewise the state after the page's scripts ran. Nothing is ever
+        /// executed either way; false (default) refuses documents that declare
+        /// executable script, for callers such as conformance harnesses that must
+        /// not certify a pre-script frame as the document's rendering.
+        /// </summary>
+        public bool TreatScriptsAsInert { get; set; }
         
         /// <summary>
         /// Get default safe limits.

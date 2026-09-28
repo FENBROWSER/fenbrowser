@@ -14,6 +14,9 @@ namespace FenBrowser.FenEngine.Svg
             "SVG document declares a script element; the single-pass renderer never executes it " +
             "and refuses to paint the pre-script state";
 
+        internal const string InertScriptWarning =
+            "SVG script is inert in this context and was not executed; the document paints as authored";
+
         private static readonly HashSet<string> JavaScriptTypeEssences = new(StringComparer.OrdinalIgnoreCase)
         {
             "application/ecmascript", "application/javascript", "application/x-ecmascript",
@@ -56,14 +59,14 @@ namespace FenBrowser.FenEngine.Svg
             "text-after-edge", "after-edge", "text-bottom", "ideographic"
         };
 
-        public static void Inspect(SvgElement element, SvgParseReport report)
+        public static void Inspect(SvgElement element, SvgParseReport report, bool scriptsInert)
         {
             if (FallbackElements.Contains(element.Name))
             {
                 report.RequireFallback($"SVG feature '{element.Name}' requires compatibility fallback");
             }
 
-            InspectScriptedElement(element, report);
+            InspectScriptedElement(element, report, scriptsInert);
 
             var attributes = element.Attributes;
             if (attributes == null)
@@ -113,7 +116,7 @@ namespace FenBrowser.FenEngine.Svg
         /// document admitted by the parse reports the identical reason again here
         /// instead of a second, paint-stage invention.
         /// </summary>
-        public static bool InspectScriptAdmission(SvgElement root, SvgParseReport report)
+        public static bool InspectScriptAdmission(SvgElement root, SvgParseReport report, bool scriptsInert)
         {
             if (root == null)
             {
@@ -126,21 +129,28 @@ namespace FenBrowser.FenEngine.Svg
             while (pending.Count != 0)
             {
                 SvgElement current = pending.Pop();
-                rejected |= InspectScriptedElement(current, report);
+                rejected |= InspectScriptedElement(current, report, scriptsInert);
                 var children = current.Children;
                 for (int i = 0; i < children.Count; i++) pending.Push(children[i]);
             }
             return rejected;
         }
 
-        private static bool InspectScriptedElement(SvgElement element, SvgParseReport report)
+        private static bool InspectScriptedElement(SvgElement element, SvgParseReport report, bool scriptsInert)
         {
             var attributes = element.Attributes;
             bool rejected = false;
             if (IsScriptElementName(element.Name) && DeclaresExecutableScript(attributes))
             {
-                report.RequireFallback(ScriptElementReason);
-                rejected = true;
+                if (scriptsInert)
+                {
+                    report.Warn(InertScriptWarning);
+                }
+                else
+                {
+                    report.RequireFallback(ScriptElementReason);
+                    rejected = true;
+                }
             }
 
             if (attributes == null || !TimingElements.Contains(element.Name))
@@ -153,6 +163,11 @@ namespace FenBrowser.FenEngine.Svg
                 if (!TimingHandlerAttributes.Contains(attribute.Key) ||
                     string.IsNullOrWhiteSpace(attribute.Value))
                 {
+                    continue;
+                }
+                if (scriptsInert)
+                {
+                    report.Warn(InertScriptWarning);
                     continue;
                 }
                 report.RequireFallback(
