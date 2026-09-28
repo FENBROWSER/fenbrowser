@@ -2463,7 +2463,13 @@ namespace FenBrowser.Core.Parsing
         private Element CreateElement(StartTagToken token)
         {
             var namespaceUri = DetermineElementNamespace(token);
-            var el = new Element(token.TagName, _document, namespaceUri);
+            string localName = token.TagName;
+            if (string.Equals(namespaceUri, Namespaces.Svg, StringComparison.Ordinal) &&
+                _svgTagNameMap.TryGetValue(localName, out var adjustedName))
+            {
+                localName = adjustedName;
+            }
+            var el = new Element(localName, _document, namespaceUri);
             if (token.SourceOffset >= 0)
             {
                 el.SourceOffset = token.SourceOffset;
@@ -2576,7 +2582,7 @@ namespace FenBrowser.Core.Parsing
             if (string.Equals(element.NamespaceUri, Namespaces.Svg, StringComparison.Ordinal))
             {
                 var tag = element.LocalName;
-                return tag == "foreignobject" || tag == "desc" || tag == "title";
+                return tag == "foreignObject" || tag == "desc" || tag == "title";
             }
 
             return false;
@@ -2607,6 +2613,52 @@ namespace FenBrowser.Core.Parsing
              }
         }
 
+        /// <summary>
+        /// HTML §13.2.6.5 "adjust SVG tag name": the tokenizer lowercases tag names, so
+        /// SVG elements with camelCase names get their SVG spelling back when they are
+        /// created in the SVG namespace.
+        /// </summary>
+        private static readonly Dictionary<string, string> _svgTagNameMap = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            { "altglyph", "altGlyph" },
+            { "altglyphdef", "altGlyphDef" },
+            { "altglyphitem", "altGlyphItem" },
+            { "animatecolor", "animateColor" },
+            { "animatemotion", "animateMotion" },
+            { "animatetransform", "animateTransform" },
+            { "clippath", "clipPath" },
+            { "feblend", "feBlend" },
+            { "fecolormatrix", "feColorMatrix" },
+            { "fecomponenttransfer", "feComponentTransfer" },
+            { "fecomposite", "feComposite" },
+            { "feconvolvematrix", "feConvolveMatrix" },
+            { "fediffuselighting", "feDiffuseLighting" },
+            { "fedisplacementmap", "feDisplacementMap" },
+            { "fedistantlight", "feDistantLight" },
+            { "fedropshadow", "feDropShadow" },
+            { "feflood", "feFlood" },
+            { "fefunca", "feFuncA" },
+            { "fefuncb", "feFuncB" },
+            { "fefuncg", "feFuncG" },
+            { "fefuncr", "feFuncR" },
+            { "fegaussianblur", "feGaussianBlur" },
+            { "feimage", "feImage" },
+            { "femerge", "feMerge" },
+            { "femergenode", "feMergeNode" },
+            { "femorphology", "feMorphology" },
+            { "feoffset", "feOffset" },
+            { "fepointlight", "fePointLight" },
+            { "fespecularlighting", "feSpecularLighting" },
+            { "fespotlight", "feSpotLight" },
+            { "fetile", "feTile" },
+            { "feturbulence", "feTurbulence" },
+            { "foreignobject", "foreignObject" },
+            { "glyphref", "glyphRef" },
+            { "lineargradient", "linearGradient" },
+            { "radialgradient", "radialGradient" },
+            { "textpath", "textPath" },
+        };
+
         private static readonly Dictionary<string, string> _foreignAttributeMap = new Dictionary<string, string>
         {
             { "viewbox", "viewBox" },
@@ -2624,9 +2676,6 @@ namespace FenBrowser.Core.Parsing
             { "refy", "refY" },
             { "stop-color", "stop-color" }, // Keep as is
             { "stop-opacity", "stop-opacity" },
-            { "lineargradient", "linearGradient" },
-            { "radialgradient", "radialGradient" },
-            { "clippath", "clipPath" },
             { "textlength", "textLength" },
             { "startoffset", "startOffset" },
             { "stddeviation", "stdDeviation" },
@@ -2647,8 +2696,32 @@ namespace FenBrowser.Core.Parsing
             { "attributetype", "attributeType" },
             { "calcmode", "calcMode" },
             { "keytimes", "keyTimes" },
-            { "keysplines", "keySplines" }
-            // Add more as needed
+            { "keysplines", "keySplines" },
+            { "baseprofile", "baseProfile" },
+            { "clippathunits", "clipPathUnits" },
+            { "edgemode", "edgeMode" },
+            { "glyphref", "glyphRef" },
+            { "kernelunitlength", "kernelUnitLength" },
+            { "keypoints", "keyPoints" },
+            { "lengthadjust", "lengthAdjust" },
+            { "limitingconeangle", "limitingConeAngle" },
+            { "pathlength", "pathLength" },
+            { "patterncontentunits", "patternContentUnits" },
+            { "pointsatx", "pointsAtX" },
+            { "pointsaty", "pointsAtY" },
+            { "pointsatz", "pointsAtZ" },
+            { "preservealpha", "preserveAlpha" },
+            { "repeatcount", "repeatCount" },
+            { "repeatdur", "repeatDur" },
+            { "requiredextensions", "requiredExtensions" },
+            { "requiredfeatures", "requiredFeatures" },
+            { "spreadmethod", "spreadMethod" },
+            { "systemlanguage", "systemLanguage" },
+            { "tablevalues", "tableValues" },
+            { "viewtarget", "viewTarget" },
+            { "xchannelselector", "xChannelSelector" },
+            { "ychannelselector", "yChannelSelector" },
+            { "zoomandpan", "zoomAndPan" },
         };
         
         private Element InsertHtmlElement(StartTagToken token)
@@ -3070,7 +3143,7 @@ namespace FenBrowser.Core.Parsing
                     tag == "marquee" || tag == "object" || tag == "template" ||
                     tag == "mi" || tag == "mo" || tag == "mn" || tag == "ms" ||
                     tag == "mtext" || tag == "annotation-xml" ||
-                    tag == "foreignobject" || tag == "desc" || tag == "title")
+                    tag == "foreignObject" || tag == "desc" || tag == "title")
                     return false;
             }
             return false;
