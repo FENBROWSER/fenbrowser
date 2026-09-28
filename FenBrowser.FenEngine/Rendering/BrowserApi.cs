@@ -1369,6 +1369,15 @@ namespace FenBrowser.FenEngine.Rendering
             long navigationId = 0;
             TryLogDebug($"[BrowserHost] NavigateAsync called for: '{url}'", LogCategory.Navigation);
 
+            // HTML 7.4.2.2: a navigation the page starts (a link, a form, location.href) has
+            // the current document as its initiator; that is what Referer and Sec-Fetch-Site
+            // are computed from. Passing none made every page-started navigation look typed
+            // by the user (Sec-Fetch-Site: none), which Fetch Metadata CSRF defences trust.
+            // Typed URLs and history traversal are browser-initiated and have no initiator.
+            var initiatorDocument = requestKind == NavigationRequestKind.UserInput || _isNavigatingHistory
+                ? null
+                : _current;
+
             if (_disposed) return false;
                 if (string.IsNullOrWhiteSpace(url)) return false;
 
@@ -1530,7 +1539,7 @@ namespace FenBrowser.FenEngine.Rendering
                     result = await _navManager.NavigateAsync(
                         url,
                         requestKind,
-                        referer: null,
+                        referer: initiatorDocument,
                         method: method,
                         requestBody: requestBody,
                         requestContentType: requestContentType);
