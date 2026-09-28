@@ -28,7 +28,7 @@ public sealed class RequiredBrowserIntegrationDiscoveryTests
         ("FenBrowser.Tests.Scripting.BrowserFormInteractionAcceptanceTests", "WebDriverSubmitWithoutCancellation_NavigatesWithSuccessfulControls"),
         ("FenBrowser.Tests.Core.RendererIpcMetadataTests", "BrokerAllowlist_AcceptsMetadataChanged"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "ChildResponse_RetainsRequestIdentityAndHttpSemantics"),
-        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "CrossOriginResponse_IsRejectedByCapabilityLock"),
+        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "CrossOriginResponseUrl_IsAcceptedWithValidCapability"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "InvalidResponseCapabilityToken_IsRejected"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "MismatchedPayloadRequestId_IsRejected"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "MatchingCapabilityFetchFailure_IsPropagated"),
