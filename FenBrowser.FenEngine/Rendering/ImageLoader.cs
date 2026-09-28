@@ -822,8 +822,31 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// RULE 3 & 5: Render SVG content to bitmap using adapter with safety limits
         /// </summary>
+        // Rasters of SVGs with no natural size (no concrete root width/height). Their
+        // users size them with the default object size instead of the raster size.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SKBitmap, object> _sizelessImages = new();
+
+        /// <summary>
+        /// False for an image with no natural size, e.g. an SVG whose root element
+        /// sets no width and height (CSS Images 3 §4.1).
+        /// </summary>
+        public static bool HasNaturalSize(SKBitmap bitmap) =>
+            bitmap == null || !_sizelessImages.TryGetValue(bitmap, out _);
+
         private static SKBitmap RenderSvgToBitmap(string svgContent, int? targetWidth, int? targetHeight)
         {
+            var bitmap = RenderSvgToBitmapCore(svgContent, targetWidth, targetHeight, out bool hasNaturalSize);
+            if (bitmap != null && !hasNaturalSize)
+            {
+                _sizelessImages.AddOrUpdate(bitmap, null);
+            }
+
+            return bitmap;
+        }
+
+        private static SKBitmap RenderSvgToBitmapCore(string svgContent, int? targetWidth, int? targetHeight, out bool hasNaturalSize)
+        {
+            hasNaturalSize = true;
             // Ensure SVG Namespace (required for SkiaSharp.Svg)
             if (!svgContent.Contains("xmlns=\"http://www.w3.org/2000/svg\"") && 
                 !svgContent.Contains("xmlns='http://www.w3.org/2000/svg'"))
@@ -841,6 +864,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var result = _svgRenderer.Render(svgContent, SvgRenderLimits.Default);
+            hasNaturalSize = result.HasNaturalSize;
             
             // CRITICAL FIX: Check for pre-rendered bitmap first (avoids SKSvg disposal issues)
             if (!result.Success)

@@ -32,6 +32,35 @@ public sealed class SvgSkiaRendererTests
         Assert.True(BitmapHasVisiblePixels(result.Bitmap));
     }
 
+    // CSS Backgrounds 3 §2.11.2: the root element's background paints the SVG
+    // document's canvas. css/css-lists/list-style-image-gradients draws its
+    // reference markers from `<svg style='background: blue'>`.
+    [Fact]
+    public void RootBackgroundPaintsTheCanvas()
+    {
+        var result = new SvgSkiaRenderer().Render(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4' style='background: blue'></svg>");
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.True(result.HasNaturalSize);
+        Assert.Equal(SKColors.Blue, result.Bitmap.GetPixel(2, 2));
+    }
+
+    // CSS Images 3 §4.1: an SVG root without a concrete width and height has no
+    // natural size, so its users size it with the default object size.
+    [Theory]
+    [InlineData("<svg xmlns='http://www.w3.org/2000/svg'></svg>", false)]
+    [InlineData("<svg xmlns='http://www.w3.org/2000/svg' width='10'></svg>", false)]
+    [InlineData("<svg xmlns='http://www.w3.org/2000/svg' width='100%' height='100%'></svg>", false)]
+    [InlineData("<svg xmlns='http://www.w3.org/2000/svg' width='10' height='20'></svg>", true)]
+    public void NaturalSizeNeedsAConcreteWidthAndHeight(string svg, bool expected)
+    {
+        var result = new SvgSkiaRenderer().Render(svg);
+
+        Assert.True(result.Success, result.ErrorMessage);
+        Assert.Equal(expected, result.HasNaturalSize);
+    }
+
     private static bool BitmapHasVisiblePixels(SKBitmap bitmap)
     {
         for (int y = 0; y < bitmap.Height; y++)

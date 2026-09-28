@@ -55,6 +55,13 @@ namespace FenBrowser.FenEngine.Adapters
         /// Whether rendering succeeded.
         /// </summary>
         public bool Success { get; set; }
+
+        /// <summary>
+        /// False when the root &lt;svg&gt; gives no concrete width and height, so the
+        /// image has no natural size and takes its default object size where used
+        /// (CSS Images 3 §4.3 default sizing).
+        /// </summary>
+        public bool HasNaturalSize { get; set; } = true;
         
         /// <summary>
         /// Error message if failed.
