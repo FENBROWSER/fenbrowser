@@ -137,6 +137,10 @@ public sealed class ConvolverKernel : AudioNodeKernel
         private readonly Path[] _paths = new Path[4];
         private readonly double[] _workReal;
         private readonly double[] _workImag;
+        // Per response channel: the sum of |h|, which with the input's peak bounds the
+        // transform's roundoff.
+        private readonly double[] _responseL1;
+        private readonly double _roundoff;
 
         public Engine(float[][] response, int block)
         {
@@ -167,6 +171,17 @@ public sealed class ConvolverKernel : AudioNodeKernel
                 }
             }
 
+            _responseL1 = new double[Channels];
+            for (int c = 0; c < Channels; c++)
+            {
+                double sum = 0;
+                foreach (float v in response[c])
+                    sum += Math.Abs(v);
+                _responseL1[c] = sum;
+            }
+
+            // A generous multiple of the double transform's relative error (eps log2 n).
+            _roundoff = 64 * Math.Pow(2, -52) * Math.Log2(_fftSize);
             _workReal = new double[_fftSize];
             _workImag = new double[_fftSize];
             for (int i = 0; i < _paths.Length; i++)
@@ -182,6 +197,7 @@ public sealed class ConvolverKernel : AudioNodeKernel
         {
             var path = _paths[index];
             Array.Clear(path.Window);
+            Array.Clear(path.Peaks);
             foreach (var spectrum in path.SpectraReal)
                 Array.Clear(spectrum);
             foreach (var spectrum in path.SpectraImag)
@@ -201,6 +217,8 @@ public sealed class ConvolverKernel : AudioNodeKernel
             }
 
             b.Head = a.Head;
+            Array.Copy(a.Peaks, b.Peaks, a.Peaks.Length);
+            b.PeakHead = a.PeakHead;
         }
 
         /// <summary>Convolves one block of <paramref name="input"/> (null = silence) with a response channel.</summary>
@@ -220,6 +238,10 @@ public sealed class ConvolverKernel : AudioNodeKernel
 
             // Frequency-domain delay line of input spectra, newest first.
             path.Advance();
+            double peak = 0;
+            for (int i = 0; i < block; i++)
+                peak = Math.Max(peak, input.IsEmpty ? 0 : Math.Abs(input[i]));
+            path.PushPeak(peak);
             Array.Copy(_workReal, path.SpectraReal[path.Head], _fftSize);
             Array.Copy(_workImag, path.SpectraImag[path.Head], _fftSize);
 
@@ -243,10 +265,18 @@ public sealed class ConvolverKernel : AudioNodeKernel
 
             _fft.Inverse(_workReal, _workImag);
 
+            // What the transform cannot tell from zero is zero: output that should be exactly
+            // silent (past a pulse, or before one) does not carry roundoff noise.
+            double inputPeak = 0;
+            foreach (double p in path.Peaks)
+                inputPeak = Math.Max(inputPeak, p);
+            double floor = _roundoff * inputPeak * _responseL1[responseChannel];
+
             // The last block of the circular result is the linear convolution's output.
             for (int i = 0; i < block; i++)
             {
-                float v = (float)_workReal[_fftSize - block + i];
+                double value = _workReal[_fftSize - block + i];
+                float v = Math.Abs(value) <= floor ? 0f : (float)value;
                 output[i] = accumulate ? output[i] + v : v;
             }
         }
@@ -264,6 +294,8 @@ public sealed class ConvolverKernel : AudioNodeKernel
             public Path(int partitions, int fftSize)
             {
                 Window = new double[fftSize];
+                // One more than the partitions: the window reaches back one block further.
+                Peaks = new double[partitions + 1];
                 SpectraReal = new double[partitions][];
                 SpectraImag = new double[partitions][];
                 for (int i = 0; i < partitions; i++)
@@ -274,6 +306,16 @@ public sealed class ConvolverKernel : AudioNodeKernel
             }
 
             public double[] Window { get; }
+
+            public double[] Peaks { get; }
+
+            public int PeakHead { get; set; }
+
+            public void PushPeak(double peak)
+            {
+                PeakHead = (PeakHead + 1) % Peaks.Length;
+                Peaks[PeakHead] = peak;
+            }
 
             public double[][] SpectraReal { get; }
 

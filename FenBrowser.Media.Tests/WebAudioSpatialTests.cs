@@ -49,6 +49,35 @@ public class WebAudioSpatialTests
         Assert.Equal(0f, output[450], 3);
     }
 
+    // WA 1.14: the output is the convolution, and where that is zero - before the impulse
+    // arrives and after the signal has passed through - it is silence, not the FFT's
+    // roundoff. A page comparing the output with an exact zero sees the difference.
+    [Fact]
+    public void ConvolutionIsExactlySilentWhereTheResultIsZero()
+    {
+        var graph = new AudioGraph(Rate, 1);
+        var data = Enumerable.Range(1, 300).Select(i => (float)Math.Sin(i * 0.3)).ToArray();
+        var source = new BufferSourceKernel(graph) { Buffer = new AudioBufferData([data], Rate) };
+        var convolver = new ConvolverKernel(graph);
+        var impulse = new float[200];
+        impulse[150] = 1;
+        convolver.SetResponse([impulse]);
+        graph.Post(g =>
+        {
+            g.AddNode(source);
+            g.AddNode(convolver);
+            g.Connect(source, 0, convolver, 0);
+            g.Connect(convolver, 0, g.Destination, 0);
+            source.Start(0, 0, double.PositiveInfinity);
+        });
+
+        var output = new OfflineAudioRenderer(graph, 1, 1024).RenderAll()[0];
+        for (int i = 0; i < 150; i++)
+            Assert.Equal(0f, output[i]);
+        for (int i = 450; i < 1024; i++)
+            Assert.Equal(0f, output[i]);
+    }
+
     [Fact]
     public void ALongImpulseResponseMatchesDirectConvolution()
     {
