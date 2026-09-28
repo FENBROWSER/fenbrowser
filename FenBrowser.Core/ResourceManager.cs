@@ -2643,7 +2643,11 @@ public Uri LastTextResponseUri { get; private set; }
                 TopLevelDocumentUri = referrer,
                 Destination = GetHeaderValue(request.Headers, "Sec-Fetch-Dest") ?? "empty",
                 Mode = GetHeaderValue(request.Headers, "Sec-Fetch-Mode") ?? "cors",
-                CredentialsMode = "include",
+                // Fetch 5.4: a request's credentials mode defaults to "same-origin", which
+                // is also what the browser's own fetch path passes. Defaulting to "include"
+                // sent cookies cross-origin and demanded Access-Control-Allow-Credentials
+                // from every preflight.
+                CredentialsMode = CorsHandler.GetCredentialsMode(request),
                 Method = request.Method.Method
             });
         }
