@@ -4150,20 +4150,9 @@ namespace FenBrowser.FenEngine.Rendering
                     svgContent = Regex.Replace(svgContent, "currentColor", hexColor, RegexOptions.IgnoreCase);
                 }
 
-                if (!svgContent.Contains("xmlns=\"http://www.w3.org/2000/svg\"") && 
-                    !svgContent.Contains("xmlns='http://www.w3.org/2000/svg'"))
-                {
-                    if (svgContent.Contains("<svg "))
-                        svgContent = svgContent.Replace("<svg ", "<svg xmlns=\"http://www.w3.org/2000/svg\" ");
-                    else if (svgContent.Contains("<svg>"))
-                        svgContent = svgContent.Replace("<svg>", "<svg xmlns=\"http://www.w3.org/2000/svg\">");
-                }
-
-                // Normalization: SkiaSharp.Svg is case-sensitive for certain attributes
-                if (svgContent.Contains("viewbox="))
-                {
-                    svgContent = svgContent.Replace("viewbox=", "viewBox=");
-                }
+                // The HTML tree builder already put these elements in the SVG namespace
+                // and adjusted 'viewbox' to 'viewBox' (HTML §13.2.6.5 "adjust SVG
+                // attributes"), so the serialization needs no textual fix-ups.
 
                 // Re-rasterize with resolved colors
                  var bitmap = RenderSvgToCachedBitmap(elem, svgContent, box.ContentBox.Width, box.ContentBox.Height);

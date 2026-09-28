@@ -403,6 +403,40 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async System.Threading.Tasks.Task InlineSvgLowercaseViewbox_IsAdjustedByTheHtmlParser()
+        {
+            // HTML §13.2.6.5 "adjust SVG attributes" turns 'viewbox' into 'viewBox' on
+            // foreign content, so the rasterizer scales the 10x10 rect to the full box
+            // without any textual fix-up of the serialized markup.
+            ImageLoader.ClearCache();
+
+            const string html = @"
+<!doctype html>
+<html>
+<head><style>body { margin: 0; } svg { display: block; width: 20px; height: 20px; }</style></head>
+<body><svg id='icon' viewbox='0 0 10 10'><rect width='10' height='10' fill='lime'></rect></svg></body>
+</html>";
+
+            var doc = new HtmlParser(html).Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var computer = new LayoutEngineComputer(styles, 40, 40);
+            computer.Measure(doc, new SKSize(40, 40));
+            computer.Arrange(doc, new SKRect(0, 0, 40, 40));
+
+            var boxes = new ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
+            var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 40, 40, null);
+            var icon = doc.GetElementById("icon");
+            var image = Flatten(tree.Roots)
+                .OfType<ImagePaintNode>()
+                .FirstOrDefault(n => ReferenceEquals(n.SourceNode, icon));
+
+            Assert.NotNull(image);
+            Assert.NotNull(image.Bitmap);
+            Assert.Equal(SKColors.Lime, image.Bitmap.GetPixel(15, 15));
+        }
+
+        [Fact]
         public async System.Threading.Tasks.Task PseudoElements_WithLayoutBoxes_DoNotEmitFallbackPaintText()
         {
             const string html = @"
