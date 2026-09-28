@@ -6248,6 +6248,36 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Check for explicit list-style-image (URL)
             string listStyleImage = style?.ListStyleImage;
+            if (!string.IsNullOrEmpty(listStyleImage) &&
+                !listStyleImage.TrimStart().StartsWith("url(", StringComparison.OrdinalIgnoreCase) &&
+                listStyleImage.IndexOf("gradient(", StringComparison.OrdinalIgnoreCase) > 0)
+            {
+                // CSS Lists 3 §3.1 image markers: an image with no natural size (a
+                // gradient) takes the 1em x 1em default object size, sitting on the
+                // marker's baseline.
+                float em = (float)(style?.FontSize ?? 16.0);
+                var markerBox = markerLayoutBox.ContentBox;
+                float baseline = markerBox.Top + (markerLayoutBox.Baseline > 0f ? markerLayoutBox.Baseline : em * 0.85f);
+                // Snapped to whole pixels as image markers are, so edges stay crisp.
+                var square = new SKRect(
+                    MathF.Round(markerBox.Left),
+                    MathF.Round(baseline - em),
+                    MathF.Round(markerBox.Left + em),
+                    MathF.Round(baseline));
+                var shader = TryCreateGradient(listStyleImage.Trim(), square);
+                if (shader != null)
+                {
+                    return new BackgroundPaintNode
+                    {
+                        Bounds = square,
+                        SourceNode = markerTextNode,
+                        Gradient = shader,
+                        IsFocused = isFocused,
+                        IsHovered = isHovered
+                    };
+                }
+            }
+
             if (!string.IsNullOrEmpty(listStyleImage) && listStyleImage != "none")
             {
                 string url = listStyleImage.Trim();
@@ -6271,12 +6301,22 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (bitmap != null)
                 {
+                    // CSS Lists 3 §3.1: the image at its natural size, or the 1em x 1em
+                    // default object size when it has none, on the marker's baseline.
+                    float imageWidth = ImageLoader.HasNaturalSize(bitmap) ? bitmap.Width : markerSize;
+                    float imageHeight = ImageLoader.HasNaturalSize(bitmap) ? bitmap.Height : markerSize;
+                    float imageBaseline = markerBounds.Top +
+                        (markerLayoutBox.Baseline > 0f ? markerLayoutBox.Baseline : markerSize * 0.85f);
                     return new ImagePaintNode
                     {
                         SourceNode = markerTextNode,
-                        Bounds = markerBounds,
+                        Bounds = new SKRect(
+                            MathF.Round(markerBounds.Left),
+                            MathF.Round(imageBaseline - imageHeight),
+                            MathF.Round(markerBounds.Left + imageWidth),
+                            MathF.Round(imageBaseline)),
                         Bitmap = bitmap,
-                        ObjectFit = "contain",
+                        ObjectFit = "fill",
                         ObjectPosition = "50% 50%",
                         IsFocused = isFocused,
                         IsHovered = isHovered

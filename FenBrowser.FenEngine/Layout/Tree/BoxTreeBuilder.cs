@@ -945,7 +945,10 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 return null;
             }
 
-            if (string.IsNullOrEmpty(markerText))
+            // CSS Lists 3 §3.1: a list-style-image replaces the list-style-type text,
+            // so the marker box is the same whatever the type (the image is painted
+            // into this placeholder).
+            if (hasImage && !authoredContent)
             {
                 markerText = "■ ";
             }
