@@ -57,6 +57,40 @@ public sealed class BrokeredInputRoutingTests
         }
     }
 
+    // The page lives in the renderer child; the host-side BrowserHost never loaded it, so
+    // refreshing that one did nothing and the toolbar Refresh button, F5 and Ctrl+R were dead.
+    [Fact]
+    public async Task BrowserIntegration_Refresh_RenavigatesTheRendererToTheCommittedUrl()
+    {
+        var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
+        System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
+
+        var coordinator = new RecordingCoordinator();
+        ProcessIsolationRuntime.SetCoordinator(coordinator);
+
+        try
+        {
+            using var tab = new BrowserTab();
+            await tab.NavigateAsync("https://example.test/");
+            // The renderer commits after a redirect; refresh reloads what it committed.
+            const string committedUrl = "https://example.test/home";
+            tab.Browser.OnMetadataChangedFromRenderer(tab.Id, new RendererMetadataChangedPayload { Url = committedUrl });
+
+            await tab.Browser.RefreshAsync();
+
+            Assert.Equal(2, coordinator.Navigations.Count);
+            var reload = coordinator.Navigations[1];
+            Assert.Equal(tab.Id, reload.TabId);
+            Assert.Equal(committedUrl, reload.Url);
+            Assert.False(reload.IsUserInput);
+        }
+        finally
+        {
+            ProcessIsolationRuntime.SetCoordinator(null);
+            System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
+        }
+    }
+
     [Fact]
     public async Task BrowserIntegration_HandleKeyPress_RoutesTextToRendererOnlyInBrokeredMode()
     {
@@ -209,6 +243,156 @@ public sealed class BrokeredInputRoutingTests
     }
 
     [Fact]
+    public async Task Program_DispatchRendererInputAsync_ClickOnMediaControlsInsideAnIframePlays()
+    {
+        // w3schools' tryit page, as the renderer child sees it: the media element is written
+        // into an iframe, and layout lives on the child's own renderer.
+        const int viewportWidth = 480;
+        const int viewportHeight = 240;
+        const string html = """
+            <!doctype html>
+            <html><body style="margin:0">
+              <iframe id="frame" width="400" height="120" style="display:block;border:0;margin:20px"></iframe>
+              <script>
+                var d = document.getElementById('frame').contentWindow.document;
+                d.open(); d.write("<body style='margin:0'><audio id='a' controls></audio></body>"); d.close();
+              </script>
+            </body></html>
+            """;
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        FenBrowser.Host.Program.ConfigureRendererChildBrowser(host, renderer);
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/renderer-media-controls"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var frame = Assert.IsType<Element>(root.OwnerDocument?.GetElementById("frame"));
+        Element audio = null;
+        await WaitForAsync(
+            () => (audio = frame.ChildNodes.OfType<Document>().LastOrDefault()?.GetElementById("a")) != null,
+            "the written audio element did not appear");
+
+        using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
+        using var canvas = new SKCanvas(bitmap);
+        renderer.RenderFrame(new RenderFrameRequest
+        {
+            Root = root,
+            Canvas = canvas,
+            Styles = host.ComputedStyles,
+            Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+            BaseUrl = "https://fen.test/renderer-media-controls",
+            InvalidationReason = RenderFrameInvalidationReason.Input,
+            RequestedBy = nameof(Program_DispatchRendererInputAsync_ClickOnMediaControlsInsideAnIframePlays),
+            EmitVerificationReport = false
+        });
+        Assert.True(renderer.LastLayout.TryGetElementRect(audio, out var rect), "audio has no layout rect in the child's renderer");
+        var geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(rect.ToSKRect(), isVideo: false);
+        float x = geometry.PlayButton.MidX, y = geometry.PlayButton.MidY;
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseMove, X = x, Y = y });
+        await WaitForAsync(
+            () => FenBrowser.FenEngine.Media.MediaControls.GetHovered(audio) == FenBrowser.FenEngine.Media.MediaControlAction.TogglePlay,
+            "hovering the play button did not highlight it");
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseDown, X = x, Y = y, Button = 0 });
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseUp, X = x, Y = y, Button = 0, EmitClick = true });
+        await WaitForAsync(
+            () => string.Equals(host.Engine.ScriptEngine?.Evaluate("String(document.getElementById('frame').contentDocument.getElementById('a').paused)")?.ToString(), "false", StringComparison.Ordinal),
+            "clicking the play button did not start playback");
+    }
+
+    [Fact]
+    public async Task Program_DispatchRendererInputAsync_MediaControlsFollowAScrolledContainer()
+    {
+        // The wheel scrolls a container the page lays out as overflow:auto (w3schools'
+        // #container). Layout boxes stay put; the controls move on screen with the scroll.
+        const int viewportWidth = 480;
+        const int viewportHeight = 240;
+        const string html = """
+            <!doctype html>
+            <html><body style="margin:0">
+              <div id="scroller" style="overflow:auto;height:200px">
+                <div style="height:100px"></div>
+                <iframe id="frame" width="400" height="120" style="display:block;border:0;margin:20px"></iframe>
+                <div style="height:400px"></div>
+              </div>
+              <script>
+                var d = document.getElementById('frame').contentWindow.document;
+                d.open(); d.write("<body style='margin:0'><audio id='a' controls></audio></body>"); d.close();
+              </script>
+            </body></html>
+            """;
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        FenBrowser.Host.Program.ConfigureRendererChildBrowser(host, renderer);
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/renderer-media-scroll"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var scroller = Assert.IsType<Element>(root.OwnerDocument?.GetElementById("scroller"));
+        var frame = Assert.IsType<Element>(root.OwnerDocument?.GetElementById("frame"));
+        Element audio = null;
+        await WaitForAsync(
+            () => (audio = frame.ChildNodes.OfType<Document>().LastOrDefault()?.GetElementById("a")) != null,
+            "the written audio element did not appear");
+
+        using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
+        using var canvas = new SKCanvas(bitmap);
+        void Render() => renderer.RenderFrame(new RenderFrameRequest
+        {
+            Root = root,
+            Canvas = canvas,
+            Styles = host.ComputedStyles,
+            Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+            BaseUrl = "https://fen.test/renderer-media-scroll",
+            InvalidationReason = RenderFrameInvalidationReason.Input,
+            RequestedBy = nameof(Program_DispatchRendererInputAsync_MediaControlsFollowAScrolledContainer),
+            EmitVerificationReport = false
+        });
+
+        Render();
+        Assert.True(renderer.LastLayout.TryGetElementRect(audio, out var rect));
+        renderer.ScrollManager.SetScrollPosition(scroller, 0, 40);
+        Render();
+
+        var unscrolled = FenBrowser.FenEngine.Media.MediaControls.Layout(rect.ToSKRect(), isVideo: false).PlayButton;
+        var drawn = new SKPoint(unscrolled.MidX, unscrolled.MidY - 40);
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseMove, X = unscrolled.MidX, Y = unscrolled.MidY + 30 });
+        await Task.Delay(200);
+        Assert.Equal(FenBrowser.FenEngine.Media.MediaControlAction.None, FenBrowser.FenEngine.Media.MediaControls.GetHovered(audio));
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseMove, X = drawn.X, Y = drawn.Y });
+        await WaitForAsync(
+            () => FenBrowser.FenEngine.Media.MediaControls.GetHovered(audio) == FenBrowser.FenEngine.Media.MediaControlAction.TogglePlay,
+            "hovering the drawn play button did not highlight it");
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseDown, X = drawn.X, Y = drawn.Y, Button = 0 });
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(host, new RendererInputEvent { Type = RendererInputEventType.MouseUp, X = drawn.X, Y = drawn.Y, Button = 0, EmitClick = true });
+        await WaitForAsync(
+            () => string.Equals(host.Engine.ScriptEngine?.Evaluate("String(document.getElementById('frame').contentDocument.getElementById('a').paused)")?.ToString(), "false", StringComparison.Ordinal),
+            "clicking the drawn play button did not start playback");
+    }
+
+    [Fact]
     public async Task Program_DispatchRendererInputAsync_MouseMoveRunsIframeBoundaryHandlerWhenRealmIsBusy()
     {
         const int viewportWidth = 320;
@@ -217,7 +401,7 @@ public sealed class BrokeredInputRoutingTests
             <!doctype html>
             <html><body style="margin:0">
               <iframe id="frame" width="180" height="80" style="display:block;border:0;margin:20px"
-                srcdoc="<!doctype html><html><body style='margin:0'><span id='target' style='display:block;width:40px;height:40px'>box</span><script>var target=document.getElementById('target');target.addEventListener('mouseover',function(){target.className='recaptcha-checkbox-hover';});setInterval(function(){var total=0;for(var i=0;i&lt;250000;i++){total+=i;}window.__timerTotal=total;},0);</script></body></html>">
+                srcdoc="<!doctype html><html><body style='margin:0'><span id='target' style='display:block;width:40px;height:40px'>box</span><script>var target=document.getElementById('target');target.addEventListener('mouseover',function(){target.className='recaptcha-checkbox-hover';});document.body.setAttribute('data-listening','yes');setInterval(function(){var total=0;for(var i=0;i&lt;250000;i++){total+=i;}window.__timerTotal=total;},0);</script></body></html>">
               </iframe>
             </body></html>
             """;
@@ -243,6 +427,13 @@ public sealed class BrokeredInputRoutingTests
             "srcdoc iframe target did not load");
         var frameDocument = Assert.IsType<Document>(frame.FirstChild);
         var target = Assert.IsType<Element>(frameDocument.GetElementById("target"));
+        // The realm is also busy while the frame's own script is still starting, and
+        // an input event may run ahead of it - as it can in any browser, where a
+        // pointer crossing a frame before its scripts run finds no listener. Wait
+        // for the script to have registered its handler before moving the pointer.
+        await WaitForAsync(
+            () => string.Equals(frameDocument.Body?.GetAttribute("data-listening"), "yes", StringComparison.Ordinal),
+            "iframe script did not register its mouseover listener");
 
         using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
         using var canvas = new SKCanvas(bitmap);

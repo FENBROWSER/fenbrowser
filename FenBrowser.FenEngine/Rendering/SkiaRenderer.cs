@@ -1723,11 +1723,13 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static void LogRenderSummary(SKRect viewport, int nodeCount, RenderPassStats stats, string phase)
         {
-            if (stats == null) return;
+            // One record per render pass is timeline detail, so Debug (e07b630c's rule
+            // for per-frame records); and its fields are only built when asked for.
+            if (stats == null || !EngineLog.IsEnabled(LogSubsystem.Paint, LogSeverity.Debug)) return;
 
             EngineLog.Write(
                 LogSubsystem.Paint,
-                LogSeverity.Info,
+                LogSeverity.Debug,
                 "Renderer pass complete",
                 LogMarker.None,
                 default,

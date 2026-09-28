@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using FenBrowser.Core;
 using FenBrowser.Core.Cache;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 using SkiaSharp.HarfBuzz;
 
@@ -38,6 +39,34 @@ namespace FenBrowser.FenEngine.Typography
         private readonly BoundedLruCache<MetricsCacheKey, NormalizedFontMetrics> _metricsCache;
         private readonly BoundedLruCache<MeasureCacheKey, float> _widthCache;
         private readonly BoundedLruCache<MeasureCacheKey, GlyphRun> _glyphRunCache;
+
+        static SkiaFontService()
+        {
+            // A family that resolved to its system fallback while its @font-face file was
+            // still downloading must resolve again once the face is registered.
+            FontRegistry.FontLoaded += _ => ClearAllInstances();
+        }
+
+        private static void ClearAllInstances()
+        {
+            lock (s_instancesLock)
+            {
+                for (int i = s_instances.Count - 1; i >= 0; i--)
+                {
+                    if (s_instances[i].TryGetTarget(out var instance))
+                    {
+                        instance._typefaceCache.Clear();
+                        instance._metricsCache.Clear();
+                        instance._widthCache.Clear();
+                        instance._glyphRunCache.Clear();
+                    }
+                    else
+                    {
+                        s_instances.RemoveAt(i);
+                    }
+                }
+            }
+        }
 
         public SkiaFontService(RenderPerformanceConfiguration configuration = null)
         {
@@ -192,6 +221,15 @@ namespace FenBrowser.FenEngine.Typography
                 if (string.IsNullOrWhiteSpace(candidate))
                 {
                     continue;
+                }
+
+                // CSS Fonts 4 §5.1: a family named by @font-face rules is matched against
+                // those faces, not the system's. Paint already resolved them first, so
+                // skipping them here measured every web-font run in its system fallback.
+                typeface = FontRegistry.TryResolve(candidate, fontWeight, fontStyle);
+                if (typeface != null)
+                {
+                    break;
                 }
 
                 typeface = SKFontManager.Default.MatchFamily(candidate, style);

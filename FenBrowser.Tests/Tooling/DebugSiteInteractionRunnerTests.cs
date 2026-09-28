@@ -4,9 +4,19 @@ using FenBrowser.Tooling;
 
 namespace FenBrowser.Tests.Tooling;
 
+// The fixtures are local files, which the browser only opens when local-file navigation is
+// allowed (dcb8f39b) and the navigation is the user's own, as a URL given to debug-site is.
 [Collection("Engine Tests")]
-public sealed class DebugSiteInteractionRunnerTests
+public sealed class DebugSiteInteractionRunnerTests : IDisposable
 {
+    private readonly bool _previousAllowFileSchemeNavigation = FenBrowser.Core.BrowserSettings.Instance.AllowFileSchemeNavigation;
+
+    public DebugSiteInteractionRunnerTests() =>
+        FenBrowser.Core.BrowserSettings.Instance.AllowFileSchemeNavigation = true;
+
+    public void Dispose() =>
+        FenBrowser.Core.BrowserSettings.Instance.AllowFileSchemeNavigation = _previousAllowFileSchemeNavigation;
+
     [Fact]
     public async Task DebugSiteScreenshot_UsesASeparateArtifactFromTheLiveRenderer()
     {
@@ -15,7 +25,7 @@ public sealed class DebugSiteInteractionRunnerTests
         try
         {
             using var browser = Program.CreateDebugSiteBrowserHost();
-            Assert.True(await browser.NavigateAsync(GetCenteredViewportFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetCenteredViewportFixtureUri()));
 
             var capture = Program.CaptureDebugSiteScreenshot(
                 browser.GetDomRoot(),
@@ -40,7 +50,7 @@ public sealed class DebugSiteInteractionRunnerTests
         try
         {
             using var browser = Program.CreateDebugSiteBrowserHost();
-            Assert.True(await browser.NavigateAsync(GetCenteredViewportFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetCenteredViewportFixtureUri()));
 
             var targetId = await browser.FindElementAsync("css selector", "#target");
             var rect = await browser.GetElementRectAsync(targetId);
@@ -63,7 +73,7 @@ public sealed class DebugSiteInteractionRunnerTests
         try
         {
             using var browser = new BrowserHost();
-            Assert.True(await browser.NavigateAsync(GetChainedNavigationFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetChainedNavigationFixtureUri()));
 
             var result = await DebugSiteInteractionRunner.RunAsync(
                 browser,
@@ -89,7 +99,7 @@ public sealed class DebugSiteInteractionRunnerTests
         try
         {
             using var browser = new BrowserHost();
-            Assert.True(await browser.NavigateAsync(GetFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetFixtureUri()));
 
             const string nonce = "fen-tooling-private-nonce";
             var result = await DebugSiteInteractionRunner.RunAsync(

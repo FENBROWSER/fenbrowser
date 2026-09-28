@@ -1357,6 +1357,18 @@ namespace FenBrowser.Core.Parsing
                     PushActiveFormattingElement((Element)CurrentNode);
                     return true;
                 }
+
+                // HTML 13.2.6.4.7 "in body", start tag applet/marquee/object: these
+                // push a marker, so formatting elements opened before them are not
+                // reconstructed inside them or found by a later <a> - even once a
+                // </table> has popped a foster-parented one off the stack.
+                if (st.TagName == "applet" || st.TagName == "marquee" || st.TagName == "object")
+                {
+                    ReconstructActiveFormattingElements();
+                    InsertHtmlElement(st);
+                    _activeFormattingElements.Add(null); // Marker
+                    return true;
+                }
                 
                 if (st.TagName == "nobr" && HasElementInButtonScope("nobr"))
                 {
@@ -1503,6 +1515,21 @@ namespace FenBrowser.Core.Parsing
                      return true;
                 }
                 
+                // HTML 13.2.6.4.7 "in body", end tag applet/marquee/object: close the
+                // element and clear the formatting list back to its marker.
+                if (et.TagName == "applet" || et.TagName == "marquee" || et.TagName == "object")
+                {
+                    if (!InScope(et.TagName, DefaultScopeBoundaries))
+                    {
+                        return true; // Parse error: ignore the token.
+                    }
+
+                    GenerateImpliedEndTags();
+                    PopUntil(et.TagName);
+                    ClearActiveFormattingElementsMarker();
+                    return true;
+                }
+
                 // Formatting elements (Adoption Agency Algorithm)
                 // WHATWG HTML spec Â§13.2.6.4.7
                 if (IsFormattingElement(et.TagName))
@@ -2221,6 +2248,13 @@ namespace FenBrowser.Core.Parsing
             return false;
         }
         
+        // HTML 13.2.4.2 "has an element in scope": the default scope's boundaries.
+        private static readonly string[] DefaultScopeBoundaries =
+        {
+            "applet", "caption", "html", "table", "td", "th", "marquee", "object", "template",
+            "mi", "mo", "mn", "ms", "mtext", "annotation-xml", "foreignObject", "desc", "title",
+        };
+
         private bool InTableScope(string tagName)
         {
             return InScope(tagName, new[] { "html", "table", "template" }); // Table scope limits

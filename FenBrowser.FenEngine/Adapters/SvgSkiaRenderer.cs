@@ -65,6 +65,7 @@ namespace FenBrowser.FenEngine.Adapters
             {
                 // CRITICAL FIX: Inject default fill for paths without explicit fill
                 // Per SVG spec, the default fill is "black", but Svg.Skia renders unfilled paths as transparent
+                ReadRootPresentation(svgContent, out bool hasNaturalSize, out SKColor rootBackground);
                 svgContent = InjectDefaultFill(svgContent);
                 // Ensure intrinsic viewport size exists when only viewBox is provided.
                 // Some Svg.Skia code paths can produce empty output if width/height are missing.
@@ -133,7 +134,9 @@ namespace FenBrowser.FenEngine.Adapters
                 var bitmap = new SKBitmap(bitmapWidth, bitmapHeight);
                 using (var canvas = new SKCanvas(bitmap))
                 {
-                    canvas.Clear(SKColors.Transparent);
+                    // The root element's background paints the SVG document's canvas
+                    // (CSS Backgrounds 3 §2.11.2); Svg.Skia does not draw it.
+                    canvas.Clear(rootBackground);
                     // CullRect can have a non-zero origin (for example viewBox="0 -960 960 960").
                     // Shift into bitmap-local coordinates so geometry is not clipped away.
                     canvas.Translate(-cullRect.Left, -cullRect.Top);
@@ -146,6 +149,7 @@ namespace FenBrowser.FenEngine.Adapters
                     Bitmap = bitmap,
                     Width = cullRect.Width,
                     Height = cullRect.Height,
+                    HasNaturalSize = hasNaturalSize,
                     Success = true
                 };
             }
@@ -467,6 +471,48 @@ namespace FenBrowser.FenEngine.Adapters
             string normalizedSvgTag = "<svg" + attrs + ">";
             return svgContent.Remove(svgTagMatch.Index, svgTagMatch.Length)
                              .Insert(svgTagMatch.Index, normalizedSvgTag);
+        }
+
+        private static void ReadRootPresentation(string svgContent, out bool hasNaturalSize, out SKColor background)
+        {
+            hasNaturalSize = true;
+            background = SKColors.Transparent;
+            var svgTagMatch = Regex.Match(svgContent, @"<svg\b(?<attrs>[^>]*)>", RegexOptions.IgnoreCase | RegexOptions.Singleline, TimeSpan.FromMilliseconds(500));
+            if (!svgTagMatch.Success)
+            {
+                return;
+            }
+
+            string attrs = svgTagMatch.Groups["attrs"].Value;
+            hasNaturalSize = IsConcreteViewportLength(GetSvgRootAttribute(attrs, "width")) &&
+                             IsConcreteViewportLength(GetSvgRootAttribute(attrs, "height"));
+
+            string style = GetSvgRootAttribute(attrs, "style");
+            if (string.IsNullOrEmpty(style))
+            {
+                return;
+            }
+
+            foreach (var declaration in style.Split(';'))
+            {
+                int colon = declaration.IndexOf(':');
+                if (colon <= 0)
+                {
+                    continue;
+                }
+
+                string property = declaration.Substring(0, colon).Trim();
+                if (!property.Equals("background", StringComparison.OrdinalIgnoreCase) &&
+                    !property.Equals("background-color", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (FenBrowser.FenEngine.Rendering.CssLoader.TryColor(declaration.Substring(colon + 1).Trim()) is SKColor color)
+                {
+                    background = color;
+                }
+            }
         }
 
         private static string GetSvgRootAttribute(string attrs, string name)

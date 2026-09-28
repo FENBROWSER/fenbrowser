@@ -96,6 +96,11 @@ namespace FenBrowser.FenEngine.Rendering
             };
         }
 
+        // Layerization runs on every rebuilt paint tree; a fresh traversal stack grew
+        // to the tree's width each time (about 8KB for 512 siblings). Reused per
+        // thread and cleared after each pass so it holds no paint nodes between them.
+        [ThreadStatic] private static Stack<PaintNodeBase> t_traversal;
+
         private static void CollectLayers(
             IReadOnlyList<PaintNodeBase> nodes,
             IReadOnlyDictionary<Node, CssComputed> styles,
@@ -106,7 +111,24 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Layerization runs every rebuilt paint tree. Do not recurse on page depth;
             // preserve paint pre-order using an explicit stack.
-            var stack = new Stack<PaintNodeBase>();
+            var stack = t_traversal ??= new Stack<PaintNodeBase>();
+            try
+            {
+                CollectLayers(nodes, styles, stack, ref bySource, ref synthetic);
+            }
+            finally
+            {
+                stack.Clear();
+            }
+        }
+
+        private static void CollectLayers(
+            IReadOnlyList<PaintNodeBase> nodes,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            Stack<PaintNodeBase> stack,
+            ref Dictionary<Node, MutableLayer> bySource,
+            ref List<MutableLayer> synthetic)
+        {
             for (var i = nodes.Count - 1; i >= 0; i--)
             {
                 if (nodes[i] != null) stack.Push(nodes[i]);

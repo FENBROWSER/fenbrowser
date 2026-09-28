@@ -403,6 +403,32 @@ namespace FenBrowser.Tests.Core
             Assert.Equal(16, bitmap.Height);
         }
 
+        [Fact]
+        public void DecodeFavicon_ReturnsNullForBytesNoCodecRecognises()
+        {
+            var svg = System.Text.Encoding.UTF8.GetBytes("<svg xmlns='http://www.w3.org/2000/svg'/>");
+
+            Assert.Null(InvokePrivateStatic(typeof(BrowserHost), "DecodeFavicon", svg));
+        }
+
+        [Fact]
+        public void FaviconCandidates_MatchTheIconTokenOnly()
+        {
+            // w3schools' head: mask-icon (an SVG) is declared last.
+            var doc = ParseHtml(
+                "<html><head>" +
+                "<link rel='icon' href='/favicon.ico'>" +
+                "<link rel='apple-touch-icon' href='/apple-touch-icon.png'>" +
+                "<link rel='shortcut icon' href='/favicon-32x32.png'>" +
+                "<link rel='mask-icon' href='/safari-pinned-tab.svg'>" +
+                "</head><body></body></html>");
+
+            var candidates = (System.Collections.Generic.List<string>)InvokePrivateStatic(
+                typeof(BrowserHost), "SelectFaviconCandidates", doc);
+
+            Assert.Equal(new[] { "/favicon-32x32.png", "/favicon.ico", "/favicon.ico" }, candidates);
+        }
+
         private static Document ParseHtml(string html)
         {
             return new HtmlParser(html, new Uri("https://example.test/")).Parse();

@@ -3296,6 +3296,20 @@ private static bool EvaluateMediaQueryInternal(string query, double? viewportWid
     if (mh.HasValue && vpH < mh.Value) conditionMatches = false;
     if (xh.HasValue && vpH > xh.Value) conditionMatches = false;
 
+    // Media Queries 4 §4.4 (deprecated, still widely authored): device-width/height are
+    // the output device's rendering surface, which is the window here (screen.width
+    // reports the same). Unhandled, they read as matching: every desktop page applied
+    // its `(max-device-width: 480px)` phone rules, e.g. w3schools' CodeMirror font.
+    var mdw = ExtractPx(query, "min-device-width");
+    var xdw = ExtractPx(query, "max-device-width");
+    var mdh = ExtractPx(query, "min-device-height");
+    var xdh = ExtractPx(query, "max-device-height");
+
+    if (mdw.HasValue && vpW < mdw.Value) conditionMatches = false;
+    if (xdw.HasValue && vpW > xdw.Value) conditionMatches = false;
+    if (mdh.HasValue && vpH < mdh.Value) conditionMatches = false;
+    if (xdh.HasValue && vpH > xdh.Value) conditionMatches = false;
+
     // Range syntax support (width > 600px, width >= 600px, etc.)
     conditionMatches = conditionMatches && EvaluateRangeSyntax(query, "width", vpW);
     conditionMatches = conditionMatches && EvaluateRangeSyntax(query, "height", vpH);
@@ -5439,33 +5453,47 @@ private static double? ExtractPx(string text, string prop)
             if (!string.IsNullOrEmpty(bsLeftVal)) css.BorderStyleLeft = bsLeftVal.ToLowerInvariant();
             
             // List Properties
-            css.ListStyleType = Safe(DictGet(css.Map, "list-style-type"))?.ToLowerInvariant();
+            css.ListStyleType = NormalizeListStyleType(Safe(DictGet(css.Map, "list-style-type")));
             css.ListStylePosition = Safe(DictGet(css.Map, "list-style-position"))?.ToLowerInvariant();
             css.ListStyleImage = Safe(DictGet(css.Map, "list-style-image"));
             
-            // list-style shorthand: [type] [position] [image]
+            // list-style shorthand (CSS Lists 3 §3.5): <position> || <image> || <type>
+            // in any order; a 'none' sets whichever of image and type is not
+            // otherwise given.
             string listStyle = DictGet(css.Map, "list-style");
             if (!string.IsNullOrWhiteSpace(listStyle))
             {
-                var listParts = listStyle.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var lp in listParts)
+                int noneCount = 0;
+                string shorthandType = null;
+                string shorthandImage = null;
+                foreach (var lp in SplitCssShorthandTokens(listStyle.Trim()))
                 {
                     string safeP = lp.ToLowerInvariant();
                     if (safeP == "inside" || safeP == "outside")
                     {
                         if (string.IsNullOrEmpty(css.ListStylePosition)) css.ListStylePosition = safeP;
                     }
-                    else if (safeP.StartsWith("url("))
+                    else if (safeP == "none")
                     {
-                        if (string.IsNullOrEmpty(css.ListStyleImage)) css.ListStyleImage = lp;
+                        noneCount++;
+                    }
+                    else if (safeP.StartsWith("url(") || safeP.Contains("gradient(") || safeP.StartsWith("image-set("))
+                    {
+                        shorthandImage = lp;
                     }
                     else
                     {
-                        // Assume it's a type if not position or url (and not already set)
-                        // This is a simplification but covers standard cases like "disc", "decimal", etc.
-                        if (string.IsNullOrEmpty(css.ListStyleType)) css.ListStyleType = safeP;
+                        shorthandType = NormalizeListStyleType(lp);
                     }
                 }
+
+                if (noneCount > 0)
+                {
+                    shorthandImage ??= "none";
+                    shorthandType ??= "none";
+                }
+                if (string.IsNullOrEmpty(css.ListStyleImage) && shorthandImage != null) css.ListStyleImage = shorthandImage;
+                if (string.IsNullOrEmpty(css.ListStyleType) && shorthandType != null) css.ListStyleType = shorthandType;
             }
             
             // INHERITANCE: List properties are inherited by default
@@ -6053,13 +6081,19 @@ private static double? ExtractPx(string text, string prop)
                     }
                 }
 
-                // The typed text-transform was read from the map before inherited values were
-                // copied in, so a child of `li { text-transform: uppercase }` kept none: bing.com's
-                // scope bar links showed "All" and "Images" instead of "ALL" and "IMAGES".
-                if (string.IsNullOrEmpty(css.TextTransform))
-                {
-                    css.TextTransform = Safe(DictGet(css.Map, "text-transform"));
-                }
+                // The typed inherited fields were read from the map before inherited values
+                // were copied in, so a child of `li { text-transform: uppercase }` kept none
+                // (bing.com's scope bar showed "All" instead of "ALL"), and a <span> inside
+                // `pre { white-space: pre-wrap }` read as normal: its lone-space text was
+                // dropped, which ran every CodeMirror token into the next.
+                if (string.IsNullOrEmpty(css.TextTransform)) css.TextTransform = Safe(DictGet(css.Map, "text-transform"));
+                if (string.IsNullOrEmpty(css.WhiteSpace)) css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
+                if (string.IsNullOrEmpty(css.WordBreak)) css.WordBreak = Safe(DictGet(css.Map, "word-break"))?.ToLowerInvariant();
+                if (string.IsNullOrEmpty(css.OverflowWrap)) css.OverflowWrap = Safe(DictGet(css.Map, "overflow-wrap") ?? DictGet(css.Map, "word-wrap"))?.ToLowerInvariant();
+                if (string.IsNullOrEmpty(css.LineBreak)) css.LineBreak = Safe(DictGet(css.Map, "line-break"))?.ToLowerInvariant();
+                if (string.IsNullOrEmpty(css.Cursor)) css.Cursor = Safe(DictGet(css.Map, "cursor"));
+                if (string.IsNullOrEmpty(css.ListStyleType)) css.ListStyleType = NormalizeListStyleType(Safe(DictGet(css.Map, "list-style-type")));
+                if (string.IsNullOrEmpty(css.ListStylePosition)) css.ListStylePosition = Safe(DictGet(css.Map, "list-style-position"))?.ToLowerInvariant();
             }
 
             return css;
@@ -7271,7 +7305,12 @@ private static double? ExtractPx(string text, string prop)
 
         private static string ResolveFallback(string fallback, CssComputed current, Dictionary<string, string> rawCurrent, HashSet<string> seen)
         {
-            if (string.IsNullOrEmpty(fallback)) return GuaranteedInvalidCustomPropertyValue;
+            // CSS Variables 1 §3 (substitute a var()): only a var() with no fallback
+            // is guaranteed-invalid. `var(--x,)` has an empty fallback and substitutes
+            // nothing - Tailwind v4 builds `filter` from nine of them, so treating it as
+            // invalid dropped x.com's `dark:invert` from the whole declaration.
+            if (fallback == null) return GuaranteedInvalidCustomPropertyValue;
+            if (fallback.Length == 0) return string.Empty;
             return ResolveCustomPropertyReferences(fallback, current, rawCurrent, seen);
         }
 
@@ -7702,6 +7741,15 @@ private static double? ExtractPx(string text, string prop)
             if (tag.Contains("-", StringComparison.Ordinal))
             {
                 return "inline";
+            }
+
+            // HTML §15.3.1 `slot { display: contents }` - the HTML element only; a
+            // slot in another namespace is an ordinary element.
+            if (tag == "SLOT" &&
+                (string.IsNullOrEmpty(element.NamespaceUri) ||
+                 string.Equals(element.NamespaceUri, "http://www.w3.org/1999/xhtml", StringComparison.Ordinal)))
+            {
+                return "contents";
             }
 
             return tag switch
@@ -8652,6 +8700,22 @@ private static double? ExtractPx(string text, string prop)
             return boxes;
         }
 
+        // Predefined counter-style names match ASCII case-insensitively; author
+        // @counter-style names are case-sensitive and strings keep their text.
+        private static string NormalizeListStyleType(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return value;
+            value = value.Trim();
+            if (value[0] == '"' || value[0] == '\'') return value;
+            string lower = value.ToLowerInvariant();
+            return lower is "none" or "disc" or "circle" or "square" or "decimal" or "decimal-leading-zero" or
+                "lower-roman" or "upper-roman" or "lower-alpha" or "upper-alpha" or "lower-latin" or "upper-latin" or
+                "lower-greek" or "armenian" or "georgian" or "disclosure-open" or "disclosure-closed" or
+                "inherit" or "initial" or "unset" or "revert" or "revert-layer"
+                ? lower
+                : value;
+        }
+
         private static List<string> SplitCssShorthandTokens(string value)
         {
             var result = new List<string>();
@@ -8662,10 +8726,17 @@ private static double? ExtractPx(string text, string prop)
 
             int depth = 0;
             int start = 0;
+            char quote = '\0';
             for (int i = 0; i < value.Length; i++)
             {
                 char c = value[i];
-                if (c == '(') depth++;
+                if (quote != '\0')
+                {
+                    if (c == '\\') i++;
+                    else if (c == quote) quote = '\0';
+                }
+                else if (c == '"' || c == '\'') quote = c;
+                else if (c == '(') depth++;
                 else if (c == ')') depth = Math.Max(0, depth - 1);
                 else if (char.IsWhiteSpace(c) && depth == 0)
                 {

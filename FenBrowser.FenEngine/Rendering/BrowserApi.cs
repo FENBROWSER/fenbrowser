@@ -1369,6 +1369,15 @@ namespace FenBrowser.FenEngine.Rendering
             long navigationId = 0;
             TryLogDebug($"[BrowserHost] NavigateAsync called for: '{url}'", LogCategory.Navigation);
 
+            // HTML 7.4.2.2: a navigation the page starts (a link, a form, location.href) has
+            // the current document as its initiator; that is what Referer and Sec-Fetch-Site
+            // are computed from. Passing none made every page-started navigation look typed
+            // by the user (Sec-Fetch-Site: none), which Fetch Metadata CSRF defences trust.
+            // Typed URLs and history traversal are browser-initiated and have no initiator.
+            var initiatorDocument = requestKind == NavigationRequestKind.UserInput || _isNavigatingHistory
+                ? null
+                : _current;
+
             if (_disposed) return false;
                 if (string.IsNullOrWhiteSpace(url)) return false;
 
@@ -1530,7 +1539,7 @@ namespace FenBrowser.FenEngine.Rendering
                     result = await _navManager.NavigateAsync(
                         url,
                         requestKind,
-                        referer: null,
+                        referer: initiatorDocument,
                         method: method,
                         requestBody: requestBody,
                         requestContentType: requestContentType);
@@ -2716,74 +2725,47 @@ pre {{
                     return;
                 }
 
-                string iconUrl = null;
-                var dom = _engine.GetActiveDom();
-                
-                // 1. Try to find link tag in DOM
-                if (dom != null)
+                foreach (var iconUrl in SelectFaviconCandidates(_engine.GetActiveDom()))
                 {
-                    // Find <link rel="icon" ...>
-                    var links = dom
-                        .Descendants()
-                        .OfType<Element>()
-                        .Where(x => string.Equals(x.TagName, "link", StringComparison.OrdinalIgnoreCase) &&
-                                    x.HasAttribute("rel"));
-                    var iconLink = links.LastOrDefault(x => x.GetAttribute("rel")?.IndexOf("icon", StringComparison.OrdinalIgnoreCase) >= 0);
-                    
-                    if (iconLink != null && iconLink.HasAttribute("href"))
+                    if (!Uri.TryCreate(pageUrl, iconUrl, out var absoluteIconUri))
                     {
-                        iconUrl = iconLink.GetAttribute("href")?.Trim();
+                        continue;
                     }
-                }
-                
-                // 2. Fallback to /favicon.ico
-                if (string.IsNullOrEmpty(iconUrl))
-                {
-                    iconUrl = "/favicon.ico";
-                }
-                
-                // Resolve relative URL
-                Uri absoluteIconUri = null;
-                if (Uri.TryCreate(pageUrl, iconUrl, out absoluteIconUri))
-                {
+
                     if (!IsLatestNavigation(navigationId))
                     {
                         return;
                     }
 
-                    // 3. Fetch Image
                     using var stream = await _resources.FetchImageAsync(absoluteIconUri, pageUrl);
-                    if (stream != null)
+                    if (stream == null)
                     {
-                        // Decode
-                        // Copy to memory stream if needed for Skia
-                        using var ms = new System.IO.MemoryStream();
-                        await stream.CopyToAsync(ms);
-                        ms.Position = 0;
-                        
-                        var bytes = ms.ToArray();
-                        var bitmap = DecodeFavicon(bytes);
-                        if (bitmap != null)
-                        {
-                            if (!IsLatestNavigation(navigationId))
-                            {
-                                bitmap.Dispose();
-                                return;
-                            }
-
-                            // Resize if too large? Tab is small (16px), but keep quality High.
-                            // Set property and fire event
-                            Favicon = bitmap;
-                            FenBrowser.Core.EngineLogCompat.Info($"[BrowserHost] Favicon loaded for {pageUrl}", FenBrowser.Core.Logging.LogCategory.General);
-                            
-                            // Marshall to UI thread handled by consumers
-                            RepaintReady?.Invoke(this, null); // Trigger repaint? Or specific event
-                            FaviconChanged?.Invoke(this, bitmap);
-                            return;
-                        }
+                        continue;
                     }
+
+                    using var ms = new System.IO.MemoryStream();
+                    await stream.CopyToAsync(ms);
+                    var bitmap = DecodeFavicon(ms.ToArray());
+                    if (bitmap == null)
+                    {
+                        continue;
+                    }
+
+                    if (!IsLatestNavigation(navigationId))
+                    {
+                        bitmap.Dispose();
+                        return;
+                    }
+
+                    Favicon = bitmap;
+                    FenBrowser.Core.EngineLogCompat.Info($"[BrowserHost] Favicon loaded for {pageUrl}", FenBrowser.Core.Logging.LogCategory.General);
+
+                    // Marshall to UI thread handled by consumers
+                    RepaintReady?.Invoke(this, null);
+                    FaviconChanged?.Invoke(this, bitmap);
+                    return;
                 }
-                
+
                 // If failed, clear favicon?
                 // Favicon = null;
                 // FaviconChanged?.Invoke(this, null);
@@ -2824,6 +2806,46 @@ pre {{
             return titleNode?.TextContent?.Trim() ?? string.Empty;
         }
 
+        /// <summary>
+        /// HTML §4.6.7.8: a link is an icon when its rel has the "icon" keyword as a whole
+        /// token ("shortcut icon" included). A substring match also took apple-touch-icon and
+        /// mask-icon, and w3schools lists its mask-icon SVG last. The last declared icon is
+        /// preferred, earlier ones are fallbacks, and /favicon.ico is the last resort.
+        /// </summary>
+        private static List<string> SelectFaviconCandidates(Node dom)
+        {
+            var candidates = new List<string>();
+            if (dom != null)
+            {
+                foreach (var link in dom.Descendants().OfType<Element>())
+                {
+                    if (!string.Equals(link.TagName, "link", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var rel = link.GetAttribute("rel");
+                    var href = link.GetAttribute("href")?.Trim();
+                    if (string.IsNullOrEmpty(rel) || string.IsNullOrEmpty(href))
+                    {
+                        continue;
+                    }
+
+                    foreach (var token in rel.Split((char[])null, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (string.Equals(token, "icon", StringComparison.OrdinalIgnoreCase))
+                        {
+                            candidates.Insert(0, href);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            candidates.Add("/favicon.ico");
+            return candidates;
+        }
+
         private static SKBitmap DecodeFavicon(byte[] bytes)
         {
             if (bytes == null || bytes.Length == 0)
@@ -2831,10 +2853,19 @@ pre {{
                 return null;
             }
 
-            var bitmap = SKBitmap.Decode(bytes);
-            if (bitmap != null)
+            // SKBitmap.Decode(byte[]) throws rather than returning null when no codec
+            // recognises the bytes (an SVG icon, an HTML error page).
+            using (var data = SKData.CreateCopy(bytes))
+            using (var codec = SKCodec.Create(data))
             {
-                return bitmap;
+                if (codec != null)
+                {
+                    var bitmap = SKBitmap.Decode(codec);
+                    if (bitmap != null)
+                    {
+                        return bitmap;
+                    }
+                }
             }
 
             return DecodeIcoFavicon(bytes);
@@ -3957,6 +3988,7 @@ pre {{
             {
                 DispatchPointerBoundaryEvents(_lastPointerEventTarget, inputEvent.Target, eventInit);
                 _lastPointerEventTarget = inputEvent.Target;
+                UpdateMediaControlsHover(inputEvent.Target, sourceX, sourceY);
             }
 
             var isClick = string.Equals(type, "click", StringComparison.OrdinalIgnoreCase);
@@ -3966,8 +3998,12 @@ pre {{
                 _lastClickTarget = inputEvent.Target;
                 _lastClickDefaultAllowed = true;
                 _suppressNextDomClickDispatchInHandleElementClick = false;
-                _lastClickPageX = (float)inputEvent.PageX;
-                _lastClickPageY = (float)inputEvent.PageY;
+                // Top-level document coordinates, the space the element boxes the media
+                // controls are laid out in use. inputEvent.PageX/Y are retargeted into the
+                // frame the target lives in, so for a video inside an iframe they missed
+                // every control.
+                _lastClickPageX = sourceX;
+                _lastClickPageY = sourceY;
                 _lastClickPagePointValid = true;
             }
 
@@ -4115,6 +4151,7 @@ pre {{
             {
                 var previousTarget = _lastPointerEventTarget;
                 _lastPointerEventTarget = inputEvent.Target;
+                UpdateMediaControlsHover(inputEvent.Target, sourceX, sourceY);
                 await DispatchPointerBoundaryEventsAsync(previousTarget, inputEvent.Target, eventInit).ConfigureAwait(false);
             }
 
@@ -4125,8 +4162,12 @@ pre {{
                 _lastClickTarget = inputEvent.Target;
                 _lastClickDefaultAllowed = true;
                 _suppressNextDomClickDispatchInHandleElementClick = false;
-                _lastClickPageX = (float)inputEvent.PageX;
-                _lastClickPageY = (float)inputEvent.PageY;
+                // Top-level document coordinates, the space the element boxes the media
+                // controls are laid out in use. inputEvent.PageX/Y are retargeted into the
+                // frame the target lives in, so for a video inside an iframe they missed
+                // every control.
+                _lastClickPageX = sourceX;
+                _lastClickPageY = sourceY;
                 _lastClickPagePointValid = true;
             }
 
@@ -9472,6 +9513,45 @@ pre {{
 
         private int _cursorIndex = 0;
         private int _selectionAnchor = -1;
+        private int _adoptedSelectionVersion;
+
+        /// <summary>
+        /// Takes over a selection a script set on the focused text control
+        /// (setSelectionRange, select, a value assignment) since the editor last
+        /// published its own, so the next keystroke edits where the page put it.
+        /// </summary>
+        private void AdoptScriptSelection()
+        {
+            var element = _focusedElement;
+            if (element == null || !FormControlSelection.Applies(element))
+            {
+                return;
+            }
+
+            var version = FormControlSelection.ScriptVersion(element);
+            if (version == _adoptedSelectionVersion)
+            {
+                return;
+            }
+
+            _adoptedSelectionVersion = version;
+            var (start, end, direction) = FormControlSelection.Get(element);
+            if (start == end)
+            {
+                _cursorIndex = end;
+                _selectionAnchor = -1;
+            }
+            else if (direction == "backward")
+            {
+                _cursorIndex = start;
+                _selectionAnchor = end;
+            }
+            else
+            {
+                _cursorIndex = end;
+                _selectionAnchor = start;
+            }
+        }
 
         private void SetFocusedElementState(Element element, bool fromKeyboard = false)
         {
@@ -9493,6 +9573,9 @@ pre {{
                 _focusedElementValueAtFocus = IsTextEntryElement(element)
                     ? ReadEditableValue(element)
                     : null;
+                // A selection set while the control was unfocused is its own; the
+                // focusing path places the caret and publishes it from here on.
+                _adoptedSelectionVersion = FormControlSelection.ScriptVersion(element);
             }
 
             var ownerDocument = element?.OwnerDocument;
@@ -9514,6 +9597,19 @@ pre {{
                 ElementStateManager.Instance.UpdateTextCaret(
                     _focusedElement,
                     Math.Clamp(_cursorIndex, 0, value.Length));
+
+                // The control's own selection (selectionStart/End/Direction) follows
+                // the editor's caret; a backward selection has its anchor after it.
+                if (FormControlSelection.Applies(_focusedElement))
+                {
+                    int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
+                    int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
+                    string direction = _selectionAnchor == -1 || start == end
+                        ? "none"
+                        : (_selectionAnchor > _cursorIndex ? "backward" : "forward");
+                    FormControlSelection.Set(_focusedElement, start, end, direction, fromScript: false);
+                    _adoptedSelectionVersion = FormControlSelection.ScriptVersion(_focusedElement);
+                }
             }
             else
             {
@@ -9895,15 +9991,40 @@ pre {{
 
             var pointValid = _lastClickPagePointValid;
             _lastClickPagePointValid = false;
-            if (!pointValid || !FenBrowser.FenEngine.Media.MediaControls.ShowsControls(element))
+            if (!pointValid || !TryGetMediaControlsGeometry(element, tag, out var geometry))
             {
                 return false;
             }
 
-            // The element's box: the layout snapshot when there is one, else the visual
-            // rect the script side keeps (both are page space, like the click point).
+            var action = FenBrowser.FenEngine.Media.MediaControls.HitTest(geometry, _lastClickPageX, _lastClickPageY, out var fraction);
+            if (action == FenBrowser.FenEngine.Media.MediaControlAction.None)
+            {
+                return false;
+            }
+
+            SetFocusedElementState(element);
+            _engine.ActivateMediaControl(element, action, fraction);
+            TryInvokeRepaintReady(_engine.GetActiveDom());
+            return true;
+        }
+
+        /// <summary>
+        /// The controls of a media element with a controls attribute, laid out over its box:
+        /// the layout snapshot when there is one, else the visual rect the script side keeps.
+        /// Both are top-level page space, like the pointer coordinates they are tested with.
+        /// </summary>
+        private bool TryGetMediaControlsGeometry(Element element, string tag, out FenBrowser.FenEngine.Media.MediaControlsGeometry geometry)
+        {
+            geometry = FenBrowser.FenEngine.Media.MediaControlsGeometry.Empty;
+            if ((tag != "video" && tag != "audio") || !FenBrowser.FenEngine.Media.MediaControls.ShowsControls(element))
+            {
+                return false;
+            }
+
+            // The renderer that painted the page has the layout: in a brokered renderer
+            // child that is the active renderer, and the engine's own snapshot stays empty.
             SkiaSharp.SKRect box;
-            var layout = _engine?.LastLayout;
+            var layout = _activeRenderer?.LastLayout ?? _engine?.LastLayout;
             if (layout != null && layout.TryGetElementRect(element, out var geo))
             {
                 box = geo.ToSKRect();
@@ -9917,17 +10038,44 @@ pre {{
                 return false;
             }
 
-            var geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(box, tag == "video");
-            var action = FenBrowser.FenEngine.Media.MediaControls.HitTest(geometry, _lastClickPageX, _lastClickPageY, out var fraction);
-            if (action == FenBrowser.FenEngine.Media.MediaControlAction.None)
+            box = FenBrowser.FenEngine.Media.MediaControls.ApplyAncestorScroll(
+                box, element, _activeRenderer?.ScrollManager?.SnapshotElementScrollOffsets());
+            geometry = FenBrowser.FenEngine.Media.MediaControls.Layout(box, tag == "video");
+            return !geometry.IsEmpty;
+        }
+
+        private Element _mediaControlsHoverElement;
+
+        /// <summary>
+        /// Tracks which media control the pointer is over so paint can highlight it. Leaving
+        /// an element clears its highlight; a change repaints.
+        /// </summary>
+        private void UpdateMediaControlsHover(Element target, float pageX, float pageY)
+        {
+            var action = FenBrowser.FenEngine.Media.MediaControlAction.None;
+            var tag = target?.TagName?.ToLowerInvariant();
+            if (target != null && TryGetMediaControlsGeometry(target, tag, out var geometry))
             {
-                return false;
+                action = FenBrowser.FenEngine.Media.MediaControls.HitTest(geometry, pageX, pageY, out _);
             }
 
-            SetFocusedElementState(element);
-            _engine.ActivateMediaControl(element, action, fraction);
-            TryInvokeRepaintReady(_engine.GetActiveDom());
-            return true;
+            var changed = false;
+            if (_mediaControlsHoverElement != null && !ReferenceEquals(_mediaControlsHoverElement, target))
+            {
+                changed |= FenBrowser.FenEngine.Media.MediaControls.SetHovered(_mediaControlsHoverElement, FenBrowser.FenEngine.Media.MediaControlAction.None);
+                _mediaControlsHoverElement = null;
+            }
+
+            if (target != null && (tag == "video" || tag == "audio"))
+            {
+                changed |= FenBrowser.FenEngine.Media.MediaControls.SetHovered(target, action);
+                _mediaControlsHoverElement = target;
+            }
+
+            if (changed)
+            {
+                TryInvokeRepaintReady(_engine.GetActiveDom());
+            }
         }
 
         /// <summary>Keyboard operation of focused media controls: space/k play, arrows seek, m mute.</summary>
@@ -10147,7 +10295,8 @@ pre {{
              if (_focusedElement == null) return;
              var tag = _focusedElement.NodeName?.ToLowerInvariant();
              if (tag != "input" && tag != "textarea") return;
-             
+
+             AdoptScriptSelection();
              var val = GetTextEntryValue(_focusedElement);
              int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
              int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
@@ -10158,6 +10307,7 @@ pre {{
                  case "selectall":
                      _selectionAnchor = 0;
                      _cursorIndex = val.Length;
+                     PublishTextCaretState();
                      TryInvokeRepaintReady(_engine.GetActiveDom());
                      break;
                      
@@ -10173,6 +10323,7 @@ pre {{
                          _cursorIndex = start + data.Length;
                          _selectionAnchor = -1; // Clear selection
                          SetTextEntryValue(_focusedElement, val);
+                         PublishTextCaretState();
                          TryInvokeRepaintReady(_engine.GetActiveDom());
                      }
                      break;
@@ -10182,6 +10333,7 @@ pre {{
         public string GetSelectedText()
         {
              if (_focusedElement == null) return "";
+             AdoptScriptSelection();
              var val = GetTextEntryValue(_focusedElement);
              int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
              int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
@@ -10191,16 +10343,18 @@ pre {{
         public void DeleteSelection()
         {
              if (_focusedElement == null) return;
+             AdoptScriptSelection();
              var val = GetTextEntryValue(_focusedElement);
              int start = _selectionAnchor != -1 ? Math.Min(_selectionAnchor, _cursorIndex) : _cursorIndex;
              int end = _selectionAnchor != -1 ? Math.Max(_selectionAnchor, _cursorIndex) : _cursorIndex;
-             
+
              if (end > start)
              {
                  val = val.Remove(start, end - start);
                  _cursorIndex = start;
                  _selectionAnchor = -1;
                  SetTextEntryValue(_focusedElement, val);
+                 PublishTextCaretState();
                  TryInvokeRepaintReady(_engine.GetActiveDom());
              }
         }
@@ -12055,6 +12209,7 @@ pre {{
 
                 if (tag == "input" || tag == "textarea") // Added textarea support
                 {
+                    AdoptScriptSelection();
                     var val = GetTextEntryValue(_focusedElement);
                     
                     // Normalize selection indices

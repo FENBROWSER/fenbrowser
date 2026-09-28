@@ -95,6 +95,36 @@ public sealed class MediaControlsTests
     }
 
     [Fact]
+    public void TheHoveredButtonGetsAHighlightAndTheTimelineKnobGrows()
+    {
+        var doc = new HtmlParser("<video controls></video>", new Uri("https://example.test/")).Parse();
+        var video = doc.QuerySelector("video");
+        var box = new SKRect(0, 0, 400, 300);
+        var geometry = MediaControls.Layout(box, isVideo: true);
+        var state = new MediaControlsState(Paused: true, Ended: false, CurrentTime: 30, Duration: 120, Muted: false, Volume: 1, BufferedEnd: 60);
+
+        List<PaintNodeBase> Paint()
+        {
+            var nodes = new List<PaintNodeBase>();
+            MediaControls.BuildPaintNodes(video, box, isVideo: true, state, nodes);
+            return nodes;
+        }
+
+        Assert.True(MediaControls.SetHovered(video, MediaControlAction.TogglePlay));
+        Assert.False(MediaControls.SetHovered(video, MediaControlAction.TogglePlay));
+        var hovered = Paint();
+        // The highlight disc sits behind the play icon: a third custom node, on the play button.
+        Assert.Equal(3, hovered.OfType<CustomPaintNode>().Count());
+        Assert.Equal(geometry.PlayButton, hovered.OfType<CustomPaintNode>().First().Bounds);
+
+        Assert.True(MediaControls.SetHovered(video, MediaControlAction.None));
+        var knob = Paint().OfType<BackgroundPaintNode>().Last().Bounds.Width;
+        MediaControls.SetHovered(video, MediaControlAction.Seek);
+        Assert.True(Paint().OfType<BackgroundPaintNode>().Last().Bounds.Width > knob);
+        MediaControls.SetHovered(video, MediaControlAction.None);
+    }
+
+    [Fact]
     public void AccessibilityTreeExposesTheControls()
     {
         var previous = AccessibilityTreeBuilder.MediaControlsProvider;

@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Target: **100% pass rate**. Refresh batched store: `python scripts/test262/run.py full --fresh`
 
 ```
-test262: 49385/53586 = 92.16% (4201 fail)  [suite: tc39/test262 main 35d5666045]
+test262: 49402/53586 = 92.19% (4184 fail)  [suite: tc39/test262 main 35d5666045]
 Top clusters: intl402(681) staging(361) class(296+251) Temporal(260) module-code(188) Atomics(182) Iterator(166) Promise(151) TypedArray(145) import(120) Array(105) async-generator(103+54) TypedArrayCtors(98) dynamic-import(91) for-of(71) ShadowRealm(64)
 ```
 

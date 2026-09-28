@@ -184,7 +184,11 @@ public sealed class MediaWikiHorizontalListRegressionTests
     }
 
     [Fact]
-    public async Task TemplateStyleDedupeKey_IsIngestedOnlyOnceInDomOrder()
+    // data-mw-deduplicate is MediaWiki's own convention: its server and scripts
+    // drop repeated TemplateStyles, and the browser does not. 1d965b7a removed the
+    // renderer's imitation of it, so both sheets apply in document order and the
+    // later rule wins, as it does in other browsers.
+    public async Task TemplateStyleDedupeKey_IsNotABrowserFeature()
     {
         const string html = """
 <!doctype html>
@@ -209,8 +213,8 @@ public sealed class MediaWikiHorizontalListRegressionTests
         var result = await CssLoader.ComputeWithResultAsync(root, new Uri("https://example.test/"), null);
         var target = Assert.IsType<Element>(document.GetElementById("target"));
 
-        Assert.Single(result.Sources, source => source.CssText.Contains(".dedupe-target", StringComparison.Ordinal));
-        Assert.Equal<SKColor?>(SKColors.Red, result.Computed[target].ForegroundColor);
+        Assert.Equal(2, result.Sources.Count(source => source.CssText.Contains(".dedupe-target", StringComparison.Ordinal)));
+        Assert.Equal<SKColor?>(SKColors.Blue, result.Computed[target].ForegroundColor);
     }
 
     [Fact]

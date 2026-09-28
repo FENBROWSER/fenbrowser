@@ -21,8 +21,10 @@ public sealed class HtmlTokenizerAttributeFloodTests
     [Fact]
     public void UniqueAttributeFlood_PreservesValuesWithIndexedLookup()
     {
-        const int smallerAttributeCount = 8_000;
-        const int largerAttributeCount = 16_000;
+        // Both sizes stay under the tokenizer's 4096-attribute hard cap, which
+        // MaxAttributesPerTag clamps to; above it the overflow is dropped.
+        const int smallerAttributeCount = 2_000;
+        const int largerAttributeCount = 4_000;
         string smallerInput = BuildStartTag(smallerAttributeCount);
         string largerInput = BuildStartTag(largerAttributeCount);
 

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Network;
 using FenBrowser.Core.Parsing;
 using FenBrowser.Tests.Logging;
 
@@ -29,6 +30,10 @@ public class HtmlParserTraceTests
                 TraceFilePath = tracePath
             });
 
+            // Resource discovery is traced by the preload observer, which the parser
+            // attaches only when it has a prefetcher to feed - as the browser always
+            // gives it. example.test never resolves, so nothing is fetched.
+            using var prefetcher = new ResourcePrefetcher(new ResourceManager(new System.Net.Http.HttpClient(), false));
             using (EngineLogCompat.BeginCorrelationScope(navigationId, "test-parser", new Dictionary<string, object>
             {
                 ["navigationId"] = navigationId,
@@ -39,7 +44,8 @@ public class HtmlParserTraceTests
                     "<!doctype html><html><head><title>trace</title><link rel=\"stylesheet\" href=\"/site.css\"><script src=\"/app.js\"></script></head><body><p>ok</p></body></html>",
                     new HtmlParserOptions
                     {
-                        BaseUri = new Uri("https://example.test/")
+                        BaseUri = new Uri("https://example.test/"),
+                        Prefetcher = prefetcher
                     });
             }
 
@@ -73,12 +79,14 @@ public class HtmlParserTraceTests
                 sawCompleted |= category == "HTMLParser" &&
                                 eventName == "HTMLParsingCompleted" &&
                                 root.GetProperty("data").GetProperty("tokenCount").GetInt32() > 0;
+                // Discovery events log a resource's origin and path length, never
+                // its path, which can carry tokens.
                 sawStylesheet |= category == "ResourceLoader" &&
                                  eventName == "StylesheetDiscovered" &&
-                                 root.GetProperty("data").GetProperty("resourceUrl").GetString() == "https://example.test/site.css";
+                                 IsDiscovery(root, "stylesheet", "/site.css");
                 sawScript |= category == "ResourceLoader" &&
                              eventName == "ScriptDiscovered" &&
-                             root.GetProperty("data").GetProperty("resourceUrl").GetString() == "https://example.test/app.js";
+                             IsDiscovery(root, "script-src", "/app.js");
             }
 
             Assert.True(sawStarted);
@@ -93,5 +101,13 @@ public class HtmlParserTraceTests
                 File.Delete(tracePath);
             }
         }
+    }
+
+    private static bool IsDiscovery(JsonElement root, string discoveryType, string path)
+    {
+        var data = root.GetProperty("data");
+        return data.GetProperty("resourceUrl").GetString() == "https://example.test" &&
+               data.GetProperty("discoveryType").GetString() == discoveryType &&
+               data.GetProperty("resourcePathLength").GetInt32() == path.Length;
     }
 }

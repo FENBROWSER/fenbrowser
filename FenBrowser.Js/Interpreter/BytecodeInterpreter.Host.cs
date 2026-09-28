@@ -116,11 +116,10 @@ public sealed partial class BytecodeInterpreter
     }
 
     // Write a property on a host object. Resolves the handle first, then
-    // defers to IHostHooks.TrySetHostProperty. A false return becomes a
-    // TypeError so scripts can see refused writes; this matches the spec's
-    // "throw a TypeError" branch of OrdinarySet when the host vetoes.
-    // <paramref name="strict"/> is whether a false [[Set]] throws (PutValue in
-    // strict code, or Set(O, P, V, true) for the built-ins).
+    // defers to IHostHooks.TrySetHostProperty. A refused write - no setter, a
+    // read-only property, or the host saying no - is [[Set]] returning false,
+    // which ECMA-262 6.2.5.6 PutValue turns into a TypeError only in strict
+    // code; sloppy code carries on, as `el.offsetWidth = 1` does in browsers.
     private void SetHostObjectProperty(JsValue receiver, string key, JsValue value, bool strict)
     {
         _ = RequireHostObject(receiver, "set host property");
@@ -139,7 +138,7 @@ public sealed partial class BytecodeInterpreter
         {
             if (descriptor.IsAccessor)
             {
-                if (!CallSetter(descriptor, value, receiver))
+                if (!CallSetter(descriptor, value, receiver) && strict)
                 {
                     throw new JsThrownException(CreateTypeError(
                         "Cannot set property '" + key + "' on host object accessor without a setter."));
@@ -150,8 +149,13 @@ public sealed partial class BytecodeInterpreter
 
             if (!descriptor.Writable)
             {
-                throw new JsThrownException(CreateTypeError(
-                    "Cannot assign to read-only property '" + key + "' on host object."));
+                if (strict)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Cannot assign to read-only property '" + key + "' on host object."));
+                }
+
+                return;
             }
 
             DefineHostObjectProperty(handle, key, descriptor with { Value = value });
@@ -162,27 +166,31 @@ public sealed partial class BytecodeInterpreter
         // prototype chain decides, and an inherited setter is called with the host
         // object as receiver. Reads already let prototype members shadow the host
         // hook; without the same order here, an accessor script defines on an
-        // interface prototype (Document.prototype.adoptedStyleSheets,
-        // HTMLMediaElement.prototype, a polyfill's accessor) is skipped and the host
-        // stores the value as an expando.
-        if (TryGetHostObjectPrototypeSetter(handle, key, out var inheritedSetter))
+        // interface prototype (Document.prototype.adoptedStyleSheets) is skipped and
+        // the host stores the value as an expando.
+        if (TryGetHostObjectPrototypeDescriptor(handle, key, out var inherited))
         {
-            _ = CallSetter(inheritedSetter, value, receiver);
-            return;
-        }
+            if (inherited.IsAccessor && inherited.Set.Tag != JsValueTag.Undefined)
+            {
+                _ = CallSetter(inherited, value, receiver);
+                return;
+            }
 
-        // For a name the platform object does not implement itself, an inherited
-        // getter-only accessor or read-only data property makes OrdinarySet return
-        // false, which strict code sees as a TypeError. Sloppy code still leaves
-        // the write to the host, as it did before the prototype chain was consulted.
-        if (strict &&
-            TryGetHostObjectPrototypeDescriptor(handle, key, out var inherited) &&
-            (inherited.IsAccessor || !inherited.Writable) &&
-            !_hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.InCheck, out _))
-        {
-            throw new JsThrownException(CreateTypeError(inherited.IsAccessor
-                ? "Cannot set property '" + key + "' which has only a getter."
-                : "Cannot assign to read-only property '" + key + "'."));
+            // A getter-only accessor or a read-only data property refuses the write
+            // (OrdinarySetWithOwnDescriptor steps 2.a and 7), unless the platform object
+            // implements the member itself and so decides below.
+            if ((inherited.IsAccessor || !inherited.Writable) &&
+                !_hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.InCheck, out _))
+            {
+                if (strict)
+                {
+                    throw new JsThrownException(CreateTypeError(inherited.IsAccessor
+                        ? "Cannot set property '" + key + "' which has only a getter."
+                        : "Cannot assign to read-only property '" + key + "'."));
+                }
+
+                return;
+            }
         }
 
         if (_hostHooks.TrySetHostProperty(handle, key, value))
@@ -199,8 +207,11 @@ public sealed partial class BytecodeInterpreter
             return;
         }
 
-        throw new JsThrownException(CreateTypeError(
-            "Cannot set property '" + key + "' on host object (refused by embedder)."));
+        if (strict)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Cannot set property '" + key + "' on host object (refused by embedder)."));
+        }
     }
 
     private bool TryGetHostObjectDefinedProperty(
@@ -532,25 +543,6 @@ public sealed partial class BytecodeInterpreter
         return false;
     }
 
-    /// <summary>The first descriptor for <paramref name="key"/> on the host object's explicit prototype chain.</summary>
-    private bool TryGetHostObjectPrototypeDescriptor(HostObjectHandle handle, string key, out JsPropertyDescriptor descriptor)
-    {
-        var prototype = GetExplicitHostObjectPrototype(handle);
-        var current = prototype.Tag == JsValueTag.Object ? _heap.GetObject(prototype.AsObjectHandle()) : null;
-        while (current is not null)
-        {
-            if (current.TryGetOwnProperty(key, out descriptor))
-            {
-                return true;
-            }
-
-            current = current.PrototypeHandle is { } next ? _heap.GetObject(next) : null;
-        }
-
-        descriptor = default;
-        return false;
-    }
-
     private bool TryGetHostObjectPrototypeProperty(
         HostObjectHandle handle,
         JsValue receiver,
@@ -568,16 +560,15 @@ public sealed partial class BytecodeInterpreter
         return TryGetPropertyValue(prototypeObject, receiver, key, out value);
     }
 
-    private bool TryGetHostObjectPrototypeSetter(
+    /// <summary>The first descriptor for <paramref name="key"/> on the host object's explicit prototype chain.</summary>
+    private bool TryGetHostObjectPrototypeDescriptor(
         HostObjectHandle handle,
         string key,
         out JsPropertyDescriptor descriptor)
     {
         var prototype = GetExplicitHostObjectPrototype(handle);
         if (prototype.Tag == JsValueTag.Object &&
-            _heap.GetObject(prototype.AsObjectHandle()).TryGetProperty(key, ResolvePrototypeDelegate, out descriptor) &&
-            descriptor.IsAccessor &&
-            descriptor.Set.Tag != JsValueTag.Undefined)
+            _heap.GetObject(prototype.AsObjectHandle()).TryGetProperty(key, ResolvePrototypeDelegate, out descriptor))
         {
             return true;
         }
@@ -1026,7 +1017,7 @@ public sealed partial class BytecodeInterpreter
             throw new ArgumentException("An interface prototype object is required.", nameof(interfacePrototype));
 
         var target = _heap.GetObject(interfacePrototype.AsObjectHandle());
-        var named = new Objects.NamedPropertiesObject(resolve, _heap.GetObject);
+        var named = new Objects.NamedPropertiesObject(resolve);
         named.SetPrototype(target.PrototypeHandle);
 
         // WebIDL 3.7.4: the class string is "<Interface>Properties".

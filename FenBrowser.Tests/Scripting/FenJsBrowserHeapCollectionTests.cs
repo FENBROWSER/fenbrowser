@@ -87,7 +87,12 @@ public sealed class FenJsBrowserHeapCollectionTests
         // one happens. Pin the cadence they need rather than depending on the
         // engine's default nursery, which is sized for real pages and is far
         // larger than the burst below.
-        GetInterpreter(engine).Heap.YoungAllocationsPerMinorGc = 4096;
+        // The same goes for majors, which by default follow 512 minors or heap
+        // growth past a floor this burst never reaches; the listener and timer
+        // must survive a major collection too.
+        var heap = GetInterpreter(engine).Heap;
+        heap.YoungAllocationsPerMinorGc = 4096;
+        heap.MinorCollectionsPerMajorGc = 2;
         return engine;
     }
 

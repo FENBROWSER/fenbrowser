@@ -372,25 +372,6 @@ namespace FenBrowser.Core.Dom.V2
 
         internal int IdIndexFullRebuildCount => _treeScope?.FullRebuildCount ?? 0;
 
-        /// <summary>
-        /// HTML 7.2.2.3: the Window named objects called <paramref name="name"/> in this
-        /// document tree - embed, form, img and object elements with that name, and HTML
-        /// elements with that id - in tree order.
-        /// </summary>
-        public IReadOnlyList<Element> GetWindowNamedObjects(string name)
-        {
-            return _treeScope?.GetNamedObjects(name) ?? Array.Empty<Element>();
-        }
-
-        /// <summary>
-        /// The iframe or frame whose child navigable has target name <paramref name="name"/>
-        /// (first in tree order), or null.
-        /// </summary>
-        public Element GetNamedFrameContainer(string name)
-        {
-            return _treeScope?.GetNamedFrameContainer(name);
-        }
-
         // --- Collections ---
 
         /// <summary>

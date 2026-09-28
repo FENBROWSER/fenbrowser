@@ -77,6 +77,7 @@ public class PipelineAnimationTests
         var root = doc.DocumentElement;
         var target = doc.GetElementById("target");
         var styles = await CssLoader.ComputeAsync(root, uri, _ => Task.FromResult(string.Empty), 128, 128);
+        MarkCascaded(doc);
         var renderer = CreateRenderer();
         var engine = renderer.AnimationEngine;
         var now = new DateTime(2026, 9, 5, 0, 0, 0, DateTimeKind.Utc);
@@ -206,6 +207,59 @@ public class PipelineAnimationTests
         }
     }
 
+    // CSS Animations 1 §4: a finished animation does not run again while its name
+    // stays applied. The renderer offers every animated element to StartAnimation
+    // on each layout-dirty frame, so without this x.com's toast container replayed
+    // its one-shot slideUp - a `bottom` animation, so a full layout - forever.
+    [Fact]
+    public async Task CssAnimationEngine_FinishedAnimationDoesNotRestartWhileItsNameStillApplies()
+    {
+        const string htmlSource = "<!doctype html><html><head><style>@keyframes slideUp { from { bottom: 0; opacity: 0; } to { bottom: 16px; opacity: 1; } } #target { position: fixed; bottom: 16px; animation: slideUp 300ms ease-out; }</style></head><body><div id='target'></div></body></html>";
+        var now = new DateTime(2026, 9, 28, 0, 0, 0, DateTimeKind.Utc);
+        var previousNowProvider = CssAnimationEngine.NowProvider;
+        var engine = new CssAnimationEngine();
+
+        try
+        {
+            CssAnimationEngine.NowProvider = () => now;
+            var baseUri = new Uri("https://test.local/");
+            var doc = new HtmlParser(htmlSource, baseUri).Parse();
+            var html = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var target = doc.GetElementById("target");
+            var styles = await CssLoader.ComputeAsync(html, baseUri, _ => Task.FromResult(string.Empty), viewportWidth: 128, viewportHeight: 128);
+            target.SetComputedStyle(styles[target]);
+
+            engine.StartAnimation(target, styles[target]);
+            engine.Stop();
+            Assert.True(engine.HasActiveAnimations(target));
+
+            now = now.AddMilliseconds(400);
+            InvokeAnimationTick(engine);
+            Assert.False(engine.HasActiveAnimations(target));
+
+            // A later frame offers the element again with the same declaration.
+            engine.StartAnimation(target, styles[target]);
+            engine.Stop();
+            Assert.False(engine.HasActiveAnimations(target));
+            Assert.DoesNotContain(target, engine.GetAllActiveAnimationElements());
+
+            // Removing the name and applying it again starts a new animation.
+            styles[target].Map["animation-name"] = "none";
+            styles[target].Map.Remove("animation");
+            engine.StartAnimation(target, styles[target]);
+            styles[target].Map["animation"] = "slideUp 300ms ease-out";
+            styles[target].Map.Remove("animation-name");
+            engine.StartAnimation(target, styles[target]);
+            engine.Stop();
+            Assert.True(engine.HasActiveAnimations(target));
+        }
+        finally
+        {
+            engine.Stop();
+            CssAnimationEngine.NowProvider = previousNowProvider;
+        }
+    }
+
     [Fact]
     public async Task CssAnimationEngine_StylePlayStateChangesPreserveProgress()
     {
@@ -273,6 +327,19 @@ public class PipelineAnimationTests
         return animations[element];
     }
 
+    // The browser clears style invalidation once a cascade has produced the style
+    // map (CustomHtmlEngine.ClearStyleDirtyFlags); the renderer leaves it pending
+    // (7a1424e1). Tests that build or compute the map themselves do the same, or
+    // every frame sees a style-dirty tree and lays out again.
+    private static void MarkCascaded(Node root)
+    {
+        root.ClearDirty(InvalidationKind.Style);
+        foreach (var node in root.Descendants())
+        {
+            node.ClearDirty(InvalidationKind.Style);
+        }
+    }
+
     private static Dictionary<Node, CssComputed> CreateStyles(Element element,
         Dictionary<string, string> properties)
     {
@@ -307,7 +374,8 @@ public class PipelineAnimationTests
         Dictionary<Node, CssComputed> styles,
         float width = 800,
         float height = 600,
-        AnimationUpdateKind animKind = AnimationUpdateKind.None)
+        AnimationUpdateKind animKind = AnimationUpdateKind.None,
+        RenderFrameInvalidationReason? reason = null)
     {
         var surface = SKSurface.Create(new SKImageInfo((int)width, (int)height));
         return new SurfaceWrapper(surface, new RenderFrameRequest
@@ -317,9 +385,9 @@ public class PipelineAnimationTests
             Styles = styles,
             Viewport = new SKRect(0, 0, width, height),
             BaseUrl = "about:blank",
-            InvalidationReason = animKind != AnimationUpdateKind.None
+            InvalidationReason = reason ?? (animKind != AnimationUpdateKind.None
                 ? RenderFrameInvalidationReason.Animation
-                : RenderFrameInvalidationReason.Navigation,
+                : RenderFrameInvalidationReason.Navigation),
             RequestedBy = "PipelineTest",
             AnimationUpdateKind = animKind,
             CompositeDirtyElements = (animKind & AnimationUpdateKind.Composite) != 0
@@ -366,14 +434,18 @@ public class PipelineAnimationTests
         {
             ["display"] = "block"
         });
+        MarkCascaded(doc);
 
         using (var w1 = CreateRequest(doc, styles))
             renderer.RenderFrame(w1.Request);
-        using var w2 = CreateRequest(doc, styles, animKind: AnimationUpdateKind.None);
+        // A repeat frame with nothing changed is a timer-driven repaint; a
+        // Navigation frame always rebuilds the paint tree by design.
+        using var w2 = CreateRequest(doc, styles, reason: RenderFrameInvalidationReason.Timer);
         var result = renderer.RenderFrame(w2.Request);
 
         Assert.NotNull(result);
         Assert.False(result.Telemetry.LayoutUpdated);
+        Assert.Equal(PaintTreeRebuildReason.None, result.Telemetry.PaintTreeRebuildReason);
         Assert.False(result.Telemetry.PaintTreeRebuilt);
     }
 

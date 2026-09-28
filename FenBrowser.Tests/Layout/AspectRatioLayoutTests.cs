@@ -45,6 +45,29 @@ namespace FenBrowser.Tests.Layout
             Assert.InRange(carouselBox.Geometry.ContentBox.Height, expectedHeight - 1f, expectedHeight + 1f);
         }
 
+        [Fact]
+        public void BlockAutoHeight_WrapsAnEmptyChildSizedByMinHeight()
+        {
+            var root = new Element("div");
+            var wrapper = new Element("div");
+            var spacer = new Element("div");
+
+            wrapper.AppendChild(spacer);
+            root.AppendChild(wrapper);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 800, Height = 600 },
+                [wrapper] = new CssComputed { Display = "block" },
+                [spacer] = new CssComputed { Display = "block", MinHeight = 120 }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 800, 600);
+
+            Assert.InRange(FindBox(rootBox, spacer).Geometry.ContentBox.Height, 119f, 121f);
+            Assert.InRange(FindBox(rootBox, wrapper).Geometry.ContentBox.Height, 119f, 121f);
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);

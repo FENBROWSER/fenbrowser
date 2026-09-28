@@ -34,7 +34,10 @@ namespace FenBrowser.Tests.Performance
             }
 
             long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
-            Assert.True(allocated <= 11_450_000, $"Expected at most 11,450,000 allocated bytes, got {allocated}.");
+            // Measured 12.14MB (1.21MB per build): each text node gets its own inherited
+            // CssComputed, 2.8KB today, which has grown with the CSS properties it carries
+            // since this budget was set at 11.45MB.
+            Assert.True(allocated <= 12_500_000, $"Expected at most 12,500,000 allocated bytes, got {allocated}.");
         }
 
         [Fact]
@@ -62,7 +65,9 @@ namespace FenBrowser.Tests.Performance
             }
 
             long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
-            Assert.True(allocated <= 6_780_000, $"Expected at most 6,780,000 allocated bytes, got {allocated}.");
+            // Measured 5.07MB once LayoutBoxStore stopped preallocating 4096 slots per
+            // build (it was 10.5MB); the budget holds that gain.
+            Assert.True(allocated <= 5_300_000, $"Expected at most 5,300,000 allocated bytes, got {allocated}.");
         }
     }
 }

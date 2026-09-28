@@ -269,7 +269,14 @@ namespace FenBrowser.FenEngine.Scripting
                 return;
             }
 
-            var filtered = Array.FindAll(segments, s => s >= 0f && float.IsFinite(s));
+            // HTML setLineDash(): a negative or non-finite segment makes the whole call
+            // a no-op, rather than being dropped from the list.
+            if (Array.Exists(segments, s => s < 0f || !float.IsFinite(s)))
+            {
+                return;
+            }
+
+            var filtered = segments;
             if ((filtered.Length & 1) == 1)
             {
                 var doubled = new float[filtered.Length * 2];

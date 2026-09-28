@@ -32,28 +32,34 @@ namespace FenBrowser.Core.Storage
 
         public void ClearAll() => _storage.ClearAll();
 
-        public string GetDocumentCookieString(Uri documentUri, Uri topLevelDocumentUri = null)
+        public string GetDocumentCookieString(
+            Uri documentUri,
+            Uri topLevelDocumentUri = null,
+            bool blockThirdPartyCookies = false)
         {
             return BuildCookieString(
                 documentUri,
                 topLevelDocumentUri,
                 includeHttpOnly: false,
                 isTopLevelNavigation: false,
-                requestMethod: HttpMethod.Get.Method);
+                requestMethod: HttpMethod.Get.Method,
+                blockThirdPartyCookies);
         }
 
         public string GetRequestCookieHeader(
             Uri requestUri,
             Uri topLevelDocumentUri = null,
             bool isTopLevelNavigation = false,
-            string requestMethod = "GET")
+            string requestMethod = "GET",
+            bool blockThirdPartyCookies = false)
         {
             return BuildCookieString(
                 requestUri,
                 topLevelDocumentUri,
                 includeHttpOnly: true,
                 isTopLevelNavigation,
-                requestMethod);
+                requestMethod,
+                blockThirdPartyCookies);
         }
 
         public IReadOnlyDictionary<string, string> Snapshot(Uri documentUri, Uri topLevelDocumentUri = null)
@@ -78,7 +84,8 @@ namespace FenBrowser.Core.Storage
                 topLevelDocumentUri,
                 includeHttpOnly,
                 isTopLevelNavigation: false,
-                requestMethod: HttpMethod.Get.Method);
+                requestMethod: HttpMethod.Get.Method,
+                blockThirdPartyCookies: false);
         }
 
         public void SetDocumentCookie(
@@ -91,9 +98,6 @@ namespace FenBrowser.Core.Storage
                 return;
 
             var context = BuildContext(documentUri, topLevelDocumentUri);
-            if (blockThirdPartyCookies && context.IsThirdParty)
-                return;
-
             if (!TryParseCookie(
                     cookieString,
                     documentUri,
@@ -106,6 +110,17 @@ namespace FenBrowser.Core.Storage
                     documentUri,
                     cookieString,
                     "parse-failed-or-policy-blocked",
+                    fromScript: true,
+                    topLevelDocumentUri);
+                return;
+            }
+
+            if (IsBlockedThirdPartyCookie(cookie, context, blockThirdPartyCookies))
+            {
+                CookieDiagnostics.LogIngressRejected(
+                    documentUri,
+                    cookieString,
+                    "third-party-blocked",
                     fromScript: true,
                     topLevelDocumentUri);
                 return;
@@ -144,20 +159,6 @@ namespace FenBrowser.Core.Storage
 
             var responseUri = response.RequestMessage.RequestUri;
             var context = BuildContext(responseUri, topLevelDocumentUri);
-            if (blockThirdPartyCookies && context.IsThirdParty)
-            {
-                foreach (var blockedHeader in setCookieValues)
-                {
-                    CookieDiagnostics.LogIngressRejected(
-                        responseUri,
-                        blockedHeader,
-                        "third-party-blocked",
-                        fromScript: false,
-                        topLevelDocumentUri);
-                }
-                return;
-            }
-
             foreach (var headerValue in setCookieValues)
             {
                 if (!TryParseCookie(
@@ -172,6 +173,17 @@ namespace FenBrowser.Core.Storage
                         responseUri,
                         headerValue,
                         "parse-failed-or-policy-blocked",
+                        fromScript: false,
+                        topLevelDocumentUri);
+                    continue;
+                }
+
+                if (IsBlockedThirdPartyCookie(cookie, context, blockThirdPartyCookies))
+                {
+                    CookieDiagnostics.LogIngressRejected(
+                        responseUri,
+                        headerValue,
+                        "third-party-blocked",
                         fromScript: false,
                         topLevelDocumentUri);
                     continue;
@@ -198,7 +210,8 @@ namespace FenBrowser.Core.Storage
             Uri topLevelDocumentUri,
             bool includeHttpOnly,
             bool isTopLevelNavigation,
-            string requestMethod)
+            string requestMethod,
+            bool blockThirdPartyCookies)
         {
             if (requestUri == null)
                 return string.Empty;
@@ -208,7 +221,8 @@ namespace FenBrowser.Core.Storage
                 topLevelDocumentUri,
                 includeHttpOnly,
                 isTopLevelNavigation,
-                requestMethod);
+                requestMethod,
+                blockThirdPartyCookies);
 
             if (includeHttpOnly && matched is { Count: > 0 })
             {
@@ -239,7 +253,8 @@ namespace FenBrowser.Core.Storage
             Uri topLevelDocumentUri,
             bool includeHttpOnly,
             bool isTopLevelNavigation,
-            string requestMethod)
+            string requestMethod,
+            bool blockThirdPartyCookies)
         {
             if (requestUri == null)
                 return Array.Empty<Cookie>();
@@ -255,6 +270,11 @@ namespace FenBrowser.Core.Storage
 
             foreach (var cookie in candidates)
             {
+                if (IsBlockedThirdPartyCookie(cookie, context, blockThirdPartyCookies))
+                {
+                    continue;
+                }
+
                 if (!SecurityChecks.ShouldSendCookie(
                         ToSameSiteString(cookie.SameSite),
                         isSameSiteRequest,
@@ -270,6 +290,15 @@ namespace FenBrowser.Core.Storage
 
             return filtered;
         }
+
+        /// <summary>
+        /// Third-party cookie blocking withholds a site's unpartitioned cookies in a
+        /// cross-site context. A Partitioned cookie (CHIPS) is keyed to the top-level site
+        /// it was set under, so it cannot track across sites and is still set and sent;
+        /// that is what the attribute is for.
+        /// </summary>
+        private static bool IsBlockedThirdPartyCookie(Cookie cookie, CookieContext context, bool blockThirdPartyCookies) =>
+            blockThirdPartyCookies && context.IsThirdParty && !cookie.IsPartitioned;
 
         private bool WouldOverwriteHttpOnlyCookie(
             Uri documentUri,

@@ -324,7 +324,7 @@ namespace FenBrowser.Tooling
             bool navOk;
             try
             {
-                navOk = await host.NavigateAsync(url).ConfigureAwait(false);
+                navOk = await NavigateToCommandLineUrlAsync(host, url).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -463,6 +463,22 @@ namespace FenBrowser.Tooling
             return await CaptchaFlowRunner.RunAsync(host, url, readyMs, observeMs).ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// The URL on the command line is the developer's own choice, the way a typed
+        /// address is: it navigates as user input, and a file:// URL given there is allowed
+        /// even though the browser refuses local files by default (dcb8f39b). A page it
+        /// loads from the web still cannot navigate to local files.
+        /// </summary>
+        private static Task<bool> NavigateToCommandLineUrlAsync(FenBrowser.FenEngine.Rendering.BrowserHost host, string url)
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.IsFile)
+            {
+                FenBrowser.Core.BrowserSettings.Instance.AllowFileSchemeNavigation = true;
+            }
+
+            return host.NavigateUserInputAsync(url);
+        }
+
         internal static FenBrowser.FenEngine.Rendering.BrowserHost CreateDebugSiteBrowserHost()
         {
             var host = new FenBrowser.FenEngine.Rendering.BrowserHost();
@@ -529,7 +545,7 @@ namespace FenBrowser.Tooling
             string navigateException = null;
             try
             {
-                navOk = await host.NavigateAsync(url).ConfigureAwait(false);
+                navOk = await NavigateToCommandLineUrlAsync(host, url).ConfigureAwait(false);
             }
             catch (Exception ex)
             {

@@ -2077,10 +2077,10 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
             // source children starts resource selection once scripts have run.
             TrackMediaElementsInSubtree(domRoot);
             ApplyScriptingEnabledSanitizer(domRoot);
-            var startupLinkLoads = StartStartupLinkLoads(domRoot);
             // The media elements start selecting on the JS worker; let those tasks
             // run before deciding whether anything delays the load event.
             await FlushMediaTasksAsync().ConfigureAwait(false);
+            var startupLinkLoads = StartStartupLinkLoads(domRoot);
             var loadingDocument = DispatchDomContentLoaded();
             if (loadingDocument != null)
             {
@@ -2192,6 +2192,8 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         return ConvertFenJsValue(rawResult);
     }
 
+    private sealed class FenJsSessionResetException(string message) : InvalidOperationException(message);
+
     private JsValue EvaluateWithFenJsRaw(string script)
     {
         // Snapshot the session generation at dispatch time. If a navigation
@@ -2210,7 +2212,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     if (dispatchGeneration != _fenJsSessionGeneration ||
                         _compiler == null || _interpreter == null)
                     {
-                        throw new InvalidOperationException(
+                        throw new FenJsSessionResetException(
                             "[FenJsBridge] JS session was reset during evaluation dispatch " +
                             $"(dispatchGen={dispatchGeneration} currentGen={_fenJsSessionGeneration} " +
                             $"_compiler={_compiler != null} _interpreter={_interpreter != null}). " +
@@ -2252,10 +2254,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 }
             });
         }
-        catch (InvalidOperationException ex)
+        catch (FenJsSessionResetException ex)
         {
-            // Session-reset InvalidOperationException is expected after async
-            // navigation â€” surface it cleanly without a stack trace.
+            // Expected after async navigation: surface it cleanly without a stack trace.
             LogScriptLoading(
                 "ScriptEvaluationSkipped",
                 LogSeverity.Warn,
@@ -2263,6 +2264,24 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 new Dictionary<string, object>
                 {
                     ["scriptSample"] = TruncateForLog(script, 160),
+                    ["error"] = ex.Message
+                });
+            return JsValue.Undefined;
+        }
+        catch (InvalidOperationException ex)
+        {
+            // A script the compiler or verifier rejected. The page carries on with its
+            // next script as before, but this is an engine fault, not a navigation: it
+            // used to share the session-reset message above, which hid a compiler bug
+            // that dropped w3schools' resize-handler script.
+            LogScriptLoading(
+                "ScriptEvaluationInfrastructureFailed",
+                LogSeverity.Error,
+                $"[FenJsBridge] EvaluateWithFenJsRaw rejected script: {ex.Message}",
+                new Dictionary<string, object>
+                {
+                    ["scriptSample"] = TruncateForLog(script, 160),
+                    ["errorType"] = ex.GetType().Name,
                     ["error"] = ex.Message
                 });
             return JsValue.Undefined;
@@ -7286,6 +7305,9 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         _fenJsGlobalThis = globalThisValue;
         _interpreter.RegisterGlobalValue("window", globalThisValue);
         _interpreter.RegisterGlobalValue("self", globalThisValue);
+        // HTML §7.2.2: window.frames returns the WindowProxy itself. Consent stubs such
+        // as w3schools' fast-cmp probe `window.frames["__tcfapiLocator"]` unguarded.
+        _interpreter.RegisterGlobalValue("frames", globalThisValue);
         _interpreter.RegisterGlobalValue("top", globalThisValue);
         _interpreter.RegisterGlobalValue("parent", globalThisValue);
         // HTML 7.2.2.4 dom-frames: the frames getter returns the window itself.
@@ -7627,6 +7649,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         InstallFenJsPictureInPicture();
         InstallFenJsMediaStream();
         InstallFenJsAudioOutputDevices();
+        InstallFenJsUserMedia();
         InstallFenJsPermissionsPolicyApi();
         InstallFenJsWebAudio();
         InstallFenJsDocumentAll();
@@ -7652,8 +7675,35 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 (_, args) => SetAdoptedStyleSheets(args),
                 length: 2));
         InstallFenJsBrowserSurfaceFillers();
+        InstallFenJsConstraintValidation();
+        InstallFenJsTextSelection();
         InstallFenJsErrorReporting();
         InstallTopWindowPostMessageBridge(globalThisValue);
+        InstallDebugInitScript();
+    }
+
+    // FEN_DEBUG_INIT_SCRIPT=<path to .js>: evaluated in every new realm after the
+    // engine's own preludes and before any page script, so a diagnosis can wrap page
+    // APIs (an error reporter, a framework root) from the start. Local diagnostics
+    // only; the file is read from disk by the engine, never from the page.
+    private static readonly string DebugInitScriptPath =
+        Environment.GetEnvironmentVariable("FEN_DEBUG_INIT_SCRIPT");
+
+    private void InstallDebugInitScript()
+    {
+        if (string.IsNullOrWhiteSpace(DebugInitScriptPath))
+        {
+            return;
+        }
+
+        try
+        {
+            EvaluateWithFenJsRaw(File.ReadAllText(DebugInitScriptPath));
+        }
+        catch (Exception ex)
+        {
+            EngineLogCompat.Warn($"[FenJsBridge] FEN_DEBUG_INIT_SCRIPT failed: {ex.Message}", LogCategory.JavaScript);
+        }
     }
 
     private void SeedFenJsDocumentAndNavigatorProperties(Document document, BrowserSurfaceProfile navigator)
@@ -11132,6 +11182,16 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return decls;
                 }
 
+                // CSSOM 6.7: the camel-cased attribute (listStyleType), the
+                // webkit-cased one (webkitTransform) and cssFloat all name the dashed
+                // CSS property.
+                function __fenCssPropertyName(prop) {
+                    if (prop === 'cssFloat') return 'float';
+                    if (prop.startsWith('--') || !/[A-Z]/.test(prop)) return prop;
+                    var dashed = prop.replace(/[A-Z]/g, function (c) { return '-' + c.toLowerCase(); });
+                    return dashed.startsWith('webkit-') ? '-' + dashed : dashed;
+                }
+
                 function __fenWrapStyleProxy(decl) {
                     return new Proxy(decl, {
                         get: function (target, prop, receiver) {
@@ -11143,7 +11203,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 if (!isNaN(idx) && String(idx) === prop) {
                                     return target.item(idx);
                                 }
-                                return target.getPropertyValue(prop);
+                                return target.getPropertyValue(__fenCssPropertyName(prop));
                             }
                             return Reflect.get(target, prop, receiver);
                         },
@@ -11156,7 +11216,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                                 if (prop in target) {
                                     return Reflect.set(target, prop, value, receiver);
                                 }
-                                target.setProperty(prop, value);
+                                target.setProperty(__fenCssPropertyName(prop), value);
                                 return true;
                             }
                             return Reflect.set(target, prop, value, receiver);
@@ -12566,6 +12626,85 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         _interpreter.InsertNamedPropertiesObject(windowPrototype, "WindowProperties", ResolveWindowNamedProperty);
+    }
+
+    // HTML 7.2.2.3 named access on the Window object. A child navigable whose
+    // target name is `name` wins, as its WindowProxy. Otherwise the named objects:
+    // elements of any namespace whose id is `name`, and HTML embed, form, img and
+    // object elements whose name attribute is - the null-namespace attributes
+    // (DOM 4.9 "ID"), so xml:id or p:id do not count. One element is returned as
+    // itself, several as a live HTMLCollection. A frame's own document hangs off
+    // its element in this engine, so the walk stops at frames and never matches
+    // elements of a child document. The target name is read from the frame's name
+    // attribute; a name the child sets on its own window is not seen here.
+    private JsValue? ResolveWindowNamedProperty(string name)
+    {
+        var document = _hostHooks?.CurrentDocument;
+        if (string.IsNullOrEmpty(name) || document?.DocumentElement == null)
+        {
+            return null;
+        }
+
+        var matches = CollectWindowNamedObjects(document, name, out var frame);
+        if (frame != null)
+        {
+            var window = GetIFrameContentWindowForCurrentContext(frame);
+            if (window.Tag is not (JsValueTag.Undefined or JsValueTag.Null))
+            {
+                return window;
+            }
+        }
+
+        return matches.Count switch
+        {
+            0 => null,
+            1 => ToHostNodeOrNull(matches[0]),
+            _ => ToHostOrNull(
+                new FenJsHtmlCollectionHost(new ComputedHTMLCollection(
+                    () => CollectWindowNamedObjects(document, name, out _))),
+                HostObjectKind.Other),
+        };
+    }
+
+    private static List<Element> CollectWindowNamedObjects(Document document, string name, out Element frame)
+    {
+        var matches = new List<Element>();
+        Element firstFrame = null;
+
+        void Walk(Node node)
+        {
+            for (var child = node.FirstChild; child != null; child = child.NextSibling)
+            {
+                if (child is not Element element)
+                {
+                    continue;
+                }
+
+                if (string.Equals(element.GetAttributeNS(null, "id"), name, StringComparison.Ordinal) ||
+                    (string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                     element.LocalName is "embed" or "form" or "img" or "object" &&
+                     string.Equals(element.GetAttributeNS(null, "name"), name, StringComparison.Ordinal)))
+                {
+                    matches.Add(element);
+                }
+
+                if (IsIFrameElement(element))
+                {
+                    if (firstFrame == null && string.Equals(element.GetAttributeNS(null, "name"), name, StringComparison.Ordinal))
+                    {
+                        firstFrame = element;
+                    }
+
+                    continue;
+                }
+
+                Walk(element);
+            }
+        }
+
+        Walk(document);
+        frame = firstFrame;
+        return matches;
     }
 
     private void InstallFenJsNativeBrowserConstructors()
@@ -16656,6 +16795,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         }
 
         ResolveComputedInsets(element, cs, props);
+        ResolveComputedSizes(element, props);
 
         // CSSOM §6.7.3: every property is readable both as its dashed name
         // (getPropertyValue / bracket access) and as the camel-cased IDL
@@ -19869,6 +20009,25 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                string.Equals(element?.TagName, "textarea", StringComparison.OrdinalIgnoreCase);
     }
 
+    // HTML §6.8.1 isContentEditable: the nearest inclusive ancestor whose
+    // contenteditable attribute is in a valid state decides; an invalid value is
+    // the inherit state and defers to the parent.
+    private static bool IsEditingHostOrEditable(Element element)
+    {
+        for (var current = element; current != null; current = current.ParentElement)
+        {
+            switch (current.GetAttribute("contenteditable")?.ToLowerInvariant())
+            {
+                case "" or "true" or "plaintext-only":
+                    return true;
+                case "false":
+                    return false;
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsCheckableInputElement(Element element)
     {
         if (!string.Equals(element?.TagName, "input", StringComparison.OrdinalIgnoreCase))
@@ -20466,21 +20625,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
     private JsValue GetOrCreateIFrameContentDocument(Element iframe)
     {
-        foreach (var child in iframe.ChildNodes)
+        if (FindFrameContentDocument(iframe) is { } activeDocument)
         {
-            if (child is Document frameDocument)
-            {
-                var frameDocumentValue = ToHostOrNull(frameDocument, HostObjectKind.DomDocument);
-                SetStoredHostProperty(iframe, "__fenIframeContentDocument", frameDocumentValue);
-                return frameDocumentValue;
-            }
-
-            if (child is Element frameRoot && frameRoot.OwnerDocument != null)
-            {
-                var frameOwnerDocumentValue = ToHostOrNull(frameRoot.OwnerDocument, HostObjectKind.DomDocument);
-                SetStoredHostProperty(iframe, "__fenIframeContentDocument", frameOwnerDocumentValue);
-                return frameOwnerDocumentValue;
-            }
+            var activeDocumentValue = ToHostOrNull(activeDocument, HostObjectKind.DomDocument);
+            SetStoredHostProperty(iframe, "__fenIframeContentDocument", activeDocumentValue);
+            return activeDocumentValue;
         }
 
         var cached = GetStoredHostPropertyOrUndefined(iframe, "__fenIframeContentDocument");
@@ -20494,11 +20643,11 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
         document.URL = string.IsNullOrWhiteSpace(url) ? "about:blank" : url;
         // HTML 4.2.3 fallback base URL: an about:blank or about:srcdoc document
         // resolves against its creator's base URL, not against itself.
-        var creatorBase = iframe.OwnerDocument?.BaseURI ?? iframe.OwnerDocument?.URL;
+        var creatorBase = iframe.OwnerDocument?.BaseURI;
         document.BaseURI =
             (document.URL.StartsWith("about:blank", StringComparison.OrdinalIgnoreCase) ||
              document.URL.StartsWith("about:srcdoc", StringComparison.OrdinalIgnoreCase)) &&
-            !string.IsNullOrWhiteSpace(creatorBase) && creatorBase != "about:blank"
+            !string.IsNullOrEmpty(creatorBase)
                 ? creatorBase
                 : document.URL;
 
@@ -21746,22 +21895,27 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
     /// the element: the element is shared by every realm that can see the frame,
     /// so a handle cached from one heap would be read back from another.
     /// </summary>
+    /// <remarks>
+    /// The most recently attached document is the active one. A frame's window, and with
+    /// it its initial about:blank document, exists before any script runs, so a document
+    /// attached later (by a load, or directly by an embedder) has to win over it.
+    /// </remarks>
     private static Document FindFrameContentDocument(Element frame)
     {
+        Document active = null;
         for (var child = frame.FirstChild; child != null; child = child.NextSibling)
         {
             if (child is Document frameDocument)
             {
-                return frameDocument;
+                active = frameDocument;
             }
-
-            if (child is Element frameRoot && frameRoot.OwnerDocument != null)
+            else if (child is Element frameRoot && frameRoot.OwnerDocument != null)
             {
-                return frameRoot.OwnerDocument;
+                active = frameRoot.OwnerDocument;
             }
         }
 
-        return null;
+        return active;
     }
 
     /// <summary>
@@ -27492,22 +27646,24 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 return document;
             }, length: 0));
 
+        // HTML document.write(...text) / writeln(...text): every argument, converted
+        // to a string, in order. JsValue.ToString() is the CLR type name, not the text.
         _interpreter.SetObjectProperty(document, "write",
             _interpreter.AllocateNativeFunction("write", (_, args) =>
             {
-                if (args.Count > 0)
-                    htmlBuffer.Append(args[0].ToString());
+                foreach (var arg in args)
+                    htmlBuffer.Append(CoerceToHostString(arg));
                 return JsValue.Undefined;
-            }, length: 1));
+            }, length: 0));
 
         _interpreter.SetObjectProperty(document, "writeln",
             _interpreter.AllocateNativeFunction("writeln", (_, args) =>
             {
-                if (args.Count > 0)
-                    htmlBuffer.Append(args[0].ToString());
+                foreach (var arg in args)
+                    htmlBuffer.Append(CoerceToHostString(arg));
                 htmlBuffer.Append('\n');
                 return JsValue.Undefined;
-            }, length: 1));
+            }, length: 0));
 
         _interpreter.SetObjectProperty(document, "close",
             _interpreter.AllocateNativeFunction("close", (_, _2) =>
@@ -28087,6 +28243,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case Element element when string.Equals(property, "id", StringComparison.Ordinal):
                     element.Id = CoerceToHostString(value);
                     return true;
+                case Element element when string.Equals(property, "style", StringComparison.Ordinal):
+                    // CSSOM §6.7 ElementCSSInlineStyle: [PutForwards=cssText], so
+                    // `el.style = text` replaces the inline declarations.
+                    var cssText = CoerceToHostString(value);
+                    if (!string.Equals(element.GetAttribute("style") ?? string.Empty, cssText, StringComparison.Ordinal))
+                    {
+                        element.SetAttribute("style", cssText);
+                        _owner.NotifyResizeObservers(element);
+                    }
+                    return true;
+                case Element element when string.Equals(property, "classList", StringComparison.Ordinal):
+                    // DOM §4.9 Element: classList is [PutForwards=value].
+                    element.SetAttribute("class", CoerceToHostString(value));
+                    return true;
                 case Element element when
                     string.Equals(property, "value", StringComparison.Ordinal) &&
                     IsSelectElement(element):
@@ -28133,6 +28303,26 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                     return true;
                 case Element element when string.Equals(property, "title", StringComparison.Ordinal):
                     element.SetAttribute("title", CoerceToHostString(value));
+                    return true;
+                case Element element when string.Equals(property, "contentEditable", StringComparison.Ordinal):
+                    // HTML §6.8.1 contentEditable setter: "inherit" removes the attribute,
+                    // the three states set it, anything else is a SyntaxError.
+                    switch (CoerceToHostString(value).ToLowerInvariant())
+                    {
+                        case "inherit":
+                            element.RemoveAttribute("contenteditable");
+                            break;
+                        case var state and ("true" or "false" or "plaintext-only"):
+                            element.SetAttribute("contenteditable", state);
+                            break;
+                        default:
+                            _owner.ThrowDomException("SyntaxError",
+                                "Failed to set the 'contentEditable' property on 'HTMLElement': The value provided is not one of 'true', 'false', 'plaintext-only', or 'inherit'.");
+                            break;
+                    }
+                    return true;
+                case Element element when string.Equals(property, "draggable", StringComparison.Ordinal):
+                    element.SetAttribute("draggable", CoerceToHostBoolean(value) ? "true" : "false");
                     return true;
                 case Element element when string.Equals(property, "name", StringComparison.Ordinal):
                     element.SetAttribute("name", CoerceToHostString(value));
@@ -30173,6 +30363,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                         element.GetAttribute("contenteditable") is { } editable
                             ? (editable.Length == 0 ? "true" : editable)
                             : "inherit");
+                    return true;
+                case "isContentEditable":
+                    value = JsValue.FromBoolean(IsEditingHostOrEditable(element));
+                    return true;
+                case "draggable":
+                    // HTML §6.11.7: an explicit true/false wins; otherwise images and
+                    // links with an href are draggable by default.
+                    value = JsValue.FromBoolean(element.GetAttribute("draggable")?.ToLowerInvariant() switch
+                    {
+                        "true" => true,
+                        "false" => false,
+                        _ => string.Equals(element.LocalName, "img", StringComparison.OrdinalIgnoreCase) ||
+                             (string.Equals(element.LocalName, "a", StringComparison.OrdinalIgnoreCase) && element.HasAttribute("href")),
+                    });
                     return true;
                 case "dataset":
                     value = _owner.ToHostOrNull(new FenJsDomStringMapHost(element), HostObjectKind.Other);
@@ -33674,26 +33878,29 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
 
         private bool TryReadNumberList(JsValue value, ref float[] segments)
         {
-            var numbers = new List<float>();
-            if (value.Tag == JsValueTag.Object)
+            // WebIDL sequence<unrestricted double>: every element converted to a number.
+            // Small integers are Int32-tagged, so [4, 2] and its length are not
+            // JsValueTag.Number; an empty sequence is valid and clears the dash list.
+            if (value.Tag != JsValueTag.Object)
             {
-                var lengthValue = _owner.ReadJsProperty(value, "length");
-                if (lengthValue.Tag == JsValueTag.Number)
-                {
-                    var count = (int)lengthValue.AsNumber();
-                    for (var i = 0; i < count; i++)
-                    {
-                        var item = _owner.ReadJsProperty(value, i.ToString(CultureInfo.InvariantCulture));
-                        if (item.Tag == JsValueTag.Number)
-                        {
-                            numbers.Add((float)item.AsNumber());
-                        }
-                    }
-                }
+                return false;
             }
 
-            segments = numbers.ToArray();
-            return numbers.Count > 0;
+            var lengthValue = _owner.ReadJsProperty(value, "length");
+            if (lengthValue.Tag is not (JsValueTag.Int32 or JsValueTag.Number))
+            {
+                return false;
+            }
+
+            var count = (int)Math.Max(0d, ReadJsNumber(lengthValue));
+            var numbers = new float[count];
+            for (var i = 0; i < count; i++)
+            {
+                numbers[i] = (float)ReadJsNumber(_owner.ReadJsProperty(value, i.ToString(CultureInfo.InvariantCulture)));
+            }
+
+            segments = numbers;
+            return true;
         }
 
         private bool TryGetCanvasGradientProperty(

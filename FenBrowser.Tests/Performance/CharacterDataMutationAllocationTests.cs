@@ -8,6 +8,11 @@ namespace FenBrowser.Tests.Performance;
 
 public sealed class CharacterDataMutationAllocationTests
 {
+    // The delivery microtask never runs here, so takeRecords() reads the whole
+    // queue. Without a scheduler, Core delivers on the thread pool, which can
+    // drain the queue into the callback before the test looks.
+    private static void HoldDelivery(Action deliver) { }
+
     private readonly ITestOutputHelper _output;
 
     public CharacterDataMutationAllocationTests(ITestOutputHelper output)
@@ -45,11 +50,13 @@ public sealed class CharacterDataMutationAllocationTests
         ancestor.AppendChild(parent);
         parent.AppendChild(text);
 
-        var directRecords = new List<MutationRecord>();
-        var subtreeRecords = new List<MutationRecord>();
-        var directObserver = new MutationObserver((records, _) => directRecords.AddRange(records));
-        var subtreeObserver = new MutationObserver((records, _) => subtreeRecords.AddRange(records));
-        directObserver.Observe(parent, new MutationObserverInit
+        // DOM 4.3.2 "queue a mutation record": a registration on the target itself
+        // always sees the change, one on an ancestor only with subtree. Delivery is
+        // a microtask, so the queues are read with takeRecords().
+        var directObserver = new MutationObserver((_, _) => { }, HoldDelivery);
+        var subtreeObserver = new MutationObserver((_, _) => { }, HoldDelivery);
+        var parentObserver = new MutationObserver((_, _) => { }, HoldDelivery);
+        directObserver.Observe(text, new MutationObserverInit
         {
             CharacterData = true,
             CharacterDataOldValue = true
@@ -60,8 +67,17 @@ public sealed class CharacterDataMutationAllocationTests
             CharacterDataOldValue = true,
             Subtree = true
         });
+        parentObserver.Observe(parent, new MutationObserverInit
+        {
+            CharacterData = true,
+            CharacterDataOldValue = true
+        });
 
         text.Data = "after";
+
+        var directRecords = directObserver.TakeRecords();
+        var subtreeRecords = subtreeObserver.TakeRecords();
+        Assert.Empty(parentObserver.TakeRecords());
 
         var direct = Assert.Single(directRecords);
         Assert.Equal(MutationRecordType.CharacterData, direct.Type);

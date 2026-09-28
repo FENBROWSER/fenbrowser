@@ -60,6 +60,7 @@ internal static class RendererChildEnvironment
         // Page fetches run in the renderer child, so a body-capture filter set
         // on the host would otherwise log nothing.
         "FEN_LOG_RESPONSE_BODY_URLS",
+        "FEN_DEBUG_INIT_SCRIPT",
         "FEN_DUMP_FRAMES_ON_CLICK",
         "FEN_COMPAT_INTERVENTIONS",
         // Media elements live in the renderer: the autoplay policy, the codec kill

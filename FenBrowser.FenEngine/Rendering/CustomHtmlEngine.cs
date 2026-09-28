@@ -1013,72 +1013,113 @@ public void Dispose()
                 foreach (var kvp in computedStyles)
                 {
                     var style = kvp.Value;
-                    if (style == null || string.IsNullOrWhiteSpace(style.BackgroundImage))
+                    if (style == null)
                     {
                         continue;
                     }
 
-                    var firstUrl = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
-                    if (string.IsNullOrWhiteSpace(firstUrl))
+                    // A list item's marker image loads with the page like a background
+                    // image, so the first paint after load has it (CSS Lists 3 §3.1).
+                    // list-style-image inherits into every descendant; only list items
+                    // draw it.
+                    var isListItem = style.Display?.Contains("list-item", StringComparison.OrdinalIgnoreCase) == true;
+                    foreach (var cssImage in new[] { style.BackgroundImage, isListItem ? style.ListStyleImage : null })
                     {
-                        continue;
-                    }
+                        if (string.IsNullOrWhiteSpace(cssImage))
+                        {
+                            continue;
+                        }
 
-                    if (firstUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-                    {
-                        ImageLoader.GetImage(firstUrl, ownerDocument: ownerDocument);
-                        continue;
-                    }
+                        var firstUrl = ExtractFirstBackgroundImageUrl(cssImage);
+                        if (string.IsNullOrWhiteSpace(firstUrl))
+                        {
+                            continue;
+                        }
 
-                    var abs = ResolveUri(baseUri, firstUrl);
-                    if (abs == null)
-                    {
-                        continue;
-                    }
+                        if (firstUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ImageLoader.GetImage(firstUrl, ownerDocument: ownerDocument);
+                            continue;
+                        }
 
-                    urls.Add(abs.AbsoluteUri);
+                        var abs = ResolveUri(baseUri, firstUrl);
+                        if (abs == null)
+                        {
+                            continue;
+                        }
+
+                        urls.Add(abs.AbsoluteUri);
+                    }
                 }
 
-                await Parallel.ForEachAsync(
-                    urls,
-                    new ParallelOptions { MaxDegreeOfParallelism = 4 },
-                    async (url, cancellationToken) =>
+                // Pending from now until each is cached, so the page does not count as
+                // settled (and get screenshotted) with a marker or background missing.
+                var pending = new Dictionary<string, IDisposable>(StringComparer.OrdinalIgnoreCase);
+                foreach (var url in urls)
                 {
-                    try
+                    if (!ImageLoader.ContainsCachedImage(url, ownerDocument))
                     {
-                        var uri = new Uri(url);
-                        var data = await ImageLoader.FetchBytesForCurrentContextAsync(uri, ownerDocument).ConfigureAwait(false);
-                        if (data != null && data.Length > 0)
-                        {
-                            using var memory = new MemoryStream(data, writable: false);
-                            await ImageLoader.PrewarmImageAsync(
-                                    uri.AbsoluteUri,
-                                    memory,
-                                    ownerDocument: ownerDocument)
-                                .ConfigureAwait(false);
-                            return;
-                        }
-
-                        if (hasDocumentFetcher)
-                        {
-                            return;
-                        }
-
-                        using var stream = await imageLoader(uri).ConfigureAwait(false);
-                        if (stream != null)
-                        {
-                            await ImageLoader.PrewarmImageAsync(
-                                    uri.AbsoluteUri,
-                                    stream,
-                                    ownerDocument: ownerDocument)
-                                .ConfigureAwait(false);
-                        }
+                        pending[url] = ImageLoader.TrackPendingLoad(url);
                     }
-                    catch (Exception ex)
+                }
+
+                try
+                {
+                    await Parallel.ForEachAsync(
+                        urls,
+                        new ParallelOptions { MaxDegreeOfParallelism = 4 },
+                        async (url, cancellationToken) =>
                     {
-                        EngineLogCompat.Debug($"[CustomHtmlEngine] CSS background prewarm failed for {url}: {ex.Message}", LogCategory.Rendering);
+                        try
+                        {
+                            var uri = new Uri(url);
+                            var data = await ImageLoader.FetchBytesForCurrentContextAsync(uri, ownerDocument).ConfigureAwait(false);
+                            if (data != null && data.Length > 0)
+                            {
+                                using var memory = new MemoryStream(data, writable: false);
+                                await ImageLoader.PrewarmImageAsync(
+                                        uri.AbsoluteUri,
+                                        memory,
+                                        ownerDocument: ownerDocument)
+                                    .ConfigureAwait(false);
+                                return;
+                            }
+
+                            if (hasDocumentFetcher)
+                            {
+                                return;
+                            }
+
+                            using var stream = await imageLoader(uri).ConfigureAwait(false);
+                            if (stream != null)
+                            {
+                                await ImageLoader.PrewarmImageAsync(
+                                        uri.AbsoluteUri,
+                                        stream,
+                                        ownerDocument: ownerDocument)
+                                    .ConfigureAwait(false);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            EngineLogCompat.Debug($"[CustomHtmlEngine] CSS background prewarm failed for {url}: {ex.Message}", LogCategory.Rendering);
+                        }
+                        finally
+                        {
+                            if (pending.TryGetValue(url, out var scope))
+                            {
+                                scope?.Dispose();
+                            }
+                        }
+                    }).ConfigureAwait(false);
+                }
+                finally
+                {
+                    foreach (var scope in pending.Values)
+                    {
+                        scope?.Dispose();
                     }
-                }).ConfigureAwait(false);
+                }
             }
             catch (Exception ex)
             {
@@ -2733,7 +2774,7 @@ private void FlushPendingLayoutForScript(Element element)
                  return false;
              };
 
-             js.CookieReadBridge = scope => CookieJar.GetDocumentCookieString(scope, _activeBaseUri ?? scope);
+             js.CookieReadBridge = scope => CookieJar.GetDocumentCookieString(scope, _activeBaseUri ?? scope, BrowserSettings.Instance.BlockThirdPartyCookies);
              js.CookieWriteBridge = (scope, cookieString) =>
                  CookieJar.SetDocumentCookie(scope, cookieString, _activeBaseUri ?? scope, BrowserSettings.Instance.BlockThirdPartyCookies);
              js.RequestRender = ScheduleRepaintFromJs;
@@ -2900,7 +2941,12 @@ private void FlushPendingLayoutForScript(Element element)
                         {
                             Mode = mode == "open" ? ShadowRootMode.Open : ShadowRootMode.Closed
                         });
-                        foreach (var child in template.ChildNodes.ToList())
+                        // The parser puts a template's children in its content fragment
+                        // (HTML 13.2.6.4.7), not under the element itself.
+                        ContainerNode contents = template is HtmlTemplateElement parsedTemplate
+                            ? parsedTemplate.Content
+                            : template;
+                        foreach (var child in contents.ChildNodes.ToList())
                         {
                             shadow.AppendChild(child);
                         }
@@ -3208,10 +3254,13 @@ private void FlushPendingLayoutForScript(Element element)
                             }
                             else if (capturedDom?.ChildStyleDirty == true)
                             {
-                                // Part of the tree was restyled while scripts ran. Queue the
-                                // incremental pass for it; it is held until the post-script
-                                // snapshot is published and released by the resume below.
-                                ScheduleRecascade();
+                                // Part of the tree was restyled while scripts ran. Restyle it
+                                // before the post-script tree is built: that tree is the first
+                                // stable snapshot, and building it from the pre-script styles
+                                // showed stale ones until a later frame (a shadow root an
+                                // inline script attaches restyles its host's children through
+                                // their slots; css/css-lists/counter-list-item-slot-order).
+                                await js.RunOnScriptThreadAsync(() => IncrementalRecascadeAsync(notifyRepaint: false)).ConfigureAwait(false);
                             }
 
                             if (!IsCurrentRenderGeneration(renderGeneration))

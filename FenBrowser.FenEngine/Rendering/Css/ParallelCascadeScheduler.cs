@@ -69,6 +69,10 @@ namespace FenBrowser.FenEngine.Rendering
             var result = new ConcurrentDictionary<Node, CssComputed>();
             var engine = new CascadeEngine(styleSet);
 
+            // The document's @counter-style rules, for the markers and counter()
+            // values this cascade's styles name.
+            FenBrowser.FenEngine.Layout.CounterStyleRegistry.Rebuild(root.OwnerDocument, styleSet);
+
             // Force index build on the calling thread before any parallel work.
             // After this call all index fields are read-only.
             engine.HasPseudoRules("before");
@@ -139,6 +143,20 @@ namespace FenBrowser.FenEngine.Rendering
                 return new Dictionary<Node, CssComputed>(result);
             }
 
+            // A shadow tree on <body> is styled before its light children, which may
+            // be slotted into it and inherit from their slots.
+            if (bodyElement.GetAttachedShadowRoot() is { } bodyShadowRoot)
+            {
+                foreach (var child in bodyShadowRoot.ChildNodes)
+                {
+                    if (child is Element shadowChild)
+                    {
+                        ComputeSingleNode(shadowChild, engine, result, log, deadline, root);
+                        ProcessSubtreeSerial(shadowChild, engine, result, log, deadline, root);
+                    }
+                }
+            }
+
             // Phase 2: Collect <body>'s direct children as parallel work items.
             var bodyChildren = new List<Element>();
             foreach (var child in bodyElement.ChildNodes)
@@ -206,8 +224,19 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        // Light children are pushed first so the whole shadow tree pops (and is
+        // styled) before them: a slotted child inherits from its slot's style.
         private static void PushChildElements(Element parent, Stack<Element> stack)
         {
+            var children = parent.ChildNodes;
+            for (int i = children.Length - 1; i >= 0; i--)
+            {
+                if (children[i] is Element childEl)
+                {
+                    stack.Push(childEl);
+                }
+            }
+
             var shadowChildren = parent.GetAttachedShadowRoot()?.ChildNodes;
             if (shadowChildren != null)
             {
@@ -217,15 +246,6 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         stack.Push(childEl);
                     }
-                }
-            }
-
-            var children = parent.ChildNodes;
-            for (int i = children.Length - 1; i >= 0; i--)
-            {
-                if (children[i] is Element childEl)
-                {
-                    stack.Push(childEl);
                 }
             }
         }
@@ -247,10 +267,22 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 cascadeParent = shadowRoot.Host;
             }
-
-            if (cascadeParent != null)
+            else if (cascadeParent?.GetAttachedShadowRoot()?.GetAssignedSlotForRendering(n) is Element slot)
             {
-                result.TryGetValue(cascadeParent, out parentCss);
+                // CSS Scoping 1 §3.2: a slotted element inherits from its slot, its
+                // parent in the flat tree (shadow trees are styled first, below).
+                cascadeParent = slot;
+            }
+
+            // CSS Cascade 4 §7.2: inherited values come from the parent's computed
+            // value. The root of an incremental recascade has a parent outside this
+            // pass, whose style is the one the last cascade stored on it. Looking only
+            // in this pass's results gave that root no parent at all: typing into
+            // x.com's username field re-styles the <input> alone, and its inherited
+            // white text reset to the initial black until a wider pass ran.
+            if (cascadeParent != null && !result.TryGetValue(cascadeParent, out parentCss))
+            {
+                parentCss = cascadeParent.GetComputedStyle();
             }
 
             try

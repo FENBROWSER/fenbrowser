@@ -1,42 +1,41 @@
-using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Objects;
 
 /// <summary>
-/// WebIDL §3.7.4 named properties object: the object an interface with a named property
-/// getter on its global puts in the prototype chain (HTML's WindowProperties, between
-/// <c>Window.prototype</c> and <c>EventTarget.prototype</c>). Its own properties are
-/// whatever the host's resolver finds under a name, so a name reads as a property only
-/// while something in the document carries it; nothing on the object itself can be
-/// defined or deleted.
+/// WebIDL 3.7.4 named properties object: the exotic object a host puts in an
+/// interface's prototype chain when the interface has a named property getter
+/// and is [Global] - Window's is where <c>window.someId</c> and a bare
+/// <c>someId</c> find the element (HTML 7.2.2.3 named access on the Window object).
 /// </summary>
+/// <remarks>
+/// The names are the host's to answer on every lookup: they follow the document,
+/// which no shape can describe, so every name is reported as able to appear
+/// outside the shape and no cache reads through this object.
+/// </remarks>
 public sealed class NamedPropertiesObject : JsObject
 {
     private readonly Func<string, JsValue?> _resolve;
-    private readonly Func<ObjectHandle, JsObject> _resolvePrototype;
 
     /// <param name="resolve">
-    /// The value named <c>name</c> now, or null when there is none. Called on every
-    /// lookup that reaches this object, so it has to be cheap for names that miss.
+    /// The named property getter: the value for a supported property name, or
+    /// null when the name is not supported.
     /// </param>
-    /// <param name="resolvePrototype">Resolves a prototype handle, for the visibility check.</param>
-    public NamedPropertiesObject(Func<string, JsValue?> resolve, Func<ObjectHandle, JsObject> resolvePrototype)
+    public NamedPropertiesObject(Func<string, JsValue?> resolve)
     {
         ArgumentNullException.ThrowIfNull(resolve);
-        ArgumentNullException.ThrowIfNull(resolvePrototype);
         _resolve = resolve;
-        _resolvePrototype = resolvePrototype;
     }
 
-    /// <summary>A name can start or stop resolving without this object's shape changing.</summary>
     public override bool MayGainOwnPropertyOutsideShape(string key) => true;
 
-    // WebIDL 3.7.4.1 [[GetOwnProperty]]: a supported property name is an own data
-    // property, writable and configurable but not enumerable; anything else is ordinary.
+    // WebIDL 3.7.4.1 [[GetOwnProperty]]: a supported name yields
+    // { [[Value]]: value, [[Writable]]: true, [[Enumerable]]: false,
+    // [[Configurable]]: true } (Window is [LegacyUnenumerableNamedProperties]);
+    // anything else is OrdinaryGetOwnProperty.
     public override bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
-        if (IsVisibleName(key) && _resolve(key) is { } value)
+        if (!IsShadowedAbove(key) && _resolve(key) is { } value)
         {
             descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: true);
             return true;
@@ -45,27 +44,25 @@ public sealed class NamedPropertiesObject : JsObject
         return base.TryGetOwnProperty(key, out descriptor);
     }
 
-    // WebIDL 3.7.3 named property visibility: a name something further up the chain
-    // defines as its own (constructor, toString, addEventListener) is not a named property.
-    private bool IsVisibleName(string key)
+    // Named property visibility (WebIDL 3.7.4.1 step 5): a name an object further up
+    // the chain defines as its own (EventTarget.prototype, Object.prototype) is not
+    // a named property. The global and Window.prototype sit below this object and
+    // shadow it through the ordinary lookup, so they need no check here.
+    private bool IsShadowedAbove(string key)
     {
-        for (var handle = PrototypeHandle; handle is { } current;)
+        if (OwnerHeap is not { } heap) return false;
+        for (var proto = PrototypeHandle; proto is { } handle;)
         {
-            var prototype = _resolvePrototype(current);
-            if (prototype is not NamedPropertiesObject && prototype.TryGetOwnProperty(key, out _))
-                return false;
-            handle = prototype.PrototypeHandle;
+            var obj = heap.GetObject(handle);
+            if (obj.TryGetOwnProperty(key, out _)) return true;
+            proto = obj.PrototypeHandle;
         }
 
-        return true;
+        return false;
     }
 
-    // 3.7.4.2 [[DefineOwnProperty]] and 3.7.4.3 [[Delete]]: always false.
+    // WebIDL 3.7.4.2 [[DefineOwnProperty]] and 3.7.4.3 [[Delete]] both return false.
     public override bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor) => false;
 
     public override bool DeleteProperty(string key) => false;
-
-    // An assignment that reaches this object creates the property on the receiver
-    // (OrdinarySet), never here.
-    public override bool SetProperty(string key, JsValue value) => false;
 }

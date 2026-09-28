@@ -245,7 +245,24 @@ namespace FenBrowser.Tests.Core.Parsing
             {
             }
 
+            // The parser reads in bounded chunks, so every read path has to fail,
+            // not only ReadToEndAsync.
             public override Task<string> ReadToEndAsync()
+            {
+                throw new IOException("synthetic read failure");
+            }
+
+            public override int Read(char[] buffer, int index, int count)
+            {
+                throw new IOException("synthetic read failure");
+            }
+
+            public override int Read(Span<char> buffer)
+            {
+                throw new IOException("synthetic read failure");
+            }
+
+            public override ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
             {
                 throw new IOException("synthetic read failure");
             }

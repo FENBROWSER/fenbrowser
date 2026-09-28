@@ -72,6 +72,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CssComputed, StyleFontInfo> s_styleFontCache = new();
 
+        // Line height and baseline come from the resolved face, which changes when an
+        // @font-face file finishes loading.
+        static InlineFormattingContext()
+        {
+            FenBrowser.FenEngine.Rendering.FontRegistry.FontLoaded += _ => s_styleFontCache.Clear();
+        }
+
         // Flatten inline tree to get all text boxes and atomic inlines in document order
         private void FlattenInlineChildren(LayoutBox box, List<LayoutBox> result)
         {
@@ -1239,18 +1246,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 LayoutPositioningLogic.ResolvePositionedBox(oof, box, box.Geometry, state);
 
                 // Pass 2: layout contents using resolved box size.
-                var resolvedWidth = Math.Max(0f, oof.Geometry.ContentBox.Width);
-                var resolvedHeight = Math.Max(0f, oof.Geometry.ContentBox.Height);
-                var resolvedOuterWidth = Math.Max(resolvedWidth, oof.Geometry.MarginBox.Width);
-                var resolvedOuterHeight = Math.Max(resolvedHeight, oof.Geometry.MarginBox.Height);
-                var resolvedState = new LayoutState(
-                    new SKSize(resolvedOuterWidth, resolvedOuterHeight),
-                    resolvedOuterWidth,
-                    resolvedOuterHeight,
-                    state.ViewportWidth,
-                    state.ViewportHeight,
-                    state.Deadline);
-                oofContext.Layout(oof, resolvedState);
+                LayoutPositioningLogic.LayoutAtSolvedSize(oof, box.Geometry.PaddingBox, state);
 
                 // Re-apply final absolute position after child layout potentially touched geometry.
                 LayoutPositioningLogic.ResolvePositionedBox(

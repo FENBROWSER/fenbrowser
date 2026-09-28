@@ -68,6 +68,11 @@ namespace FenBrowser.FenEngine.Rendering
             "stroke-dasharray",
             "stroke-dashoffset",
             "stroke-opacity",
+            // Gradient stops are styled like any other SVG element (SVG 2 §14.2.3):
+            // x.com's X logo sets its highlight's white through a class, and
+            // without these the stop kept its dark attribute colour.
+            "stop-color",
+            "stop-opacity",
             "opacity",
             "color",
             "font-family",
@@ -1758,16 +1763,21 @@ namespace FenBrowser.FenEngine.Rendering
                 BuildRecursive(style.Before.PseudoElementInstance, context, depth + 1, escapeContext, ancestorVisibilityHidden);
             }
 
-            if (node is Element composedElement)
+            // Walk the composed children through the sibling links: going through
+            // ChildNodes snapshotted the list and boxed its enumerator for every
+            // element painted. Only a slot's assigned nodes are a separate list.
+            Node firstChild = node?.FirstChild;
+            if (node is Element composedElement &&
+                TryGetComposedPaintChildren(composedElement, out var assignedNodes, out firstChild))
             {
-                foreach (var child in GetComposedPaintChildren(composedElement))
+                for (var index = 0; index < assignedNodes.Count; index++)
                 {
-                    BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
+                    BuildRecursive(assignedNodes[index], context, depth + 1, escapeContext, ancestorVisibilityHidden);
                 }
             }
             else
             {
-                for (var child = node?.FirstChild; child != null;)
+                for (var child = firstChild; child != null;)
                 {
                     var nextSibling = child.NextSibling;
                     BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
@@ -1782,22 +1792,31 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static IEnumerable<Node> GetComposedPaintChildren(Element element)
+        /// <summary>
+        /// The element's children in the composed (flat) tree: a slot's assigned nodes
+        /// (returned as a list), else the first child of its shadow root, else of
+        /// itself - a slot with nothing assigned shows its own fallback children.
+        /// </summary>
+        private static bool TryGetComposedPaintChildren(
+            Element element,
+            out IReadOnlyList<Node> assignedNodes,
+            out Node firstChild)
         {
+            assignedNodes = null;
             if (string.Equals(element.TagName, "SLOT", StringComparison.OrdinalIgnoreCase) &&
                 element.GetRootNode() is ShadowRoot shadowRoot)
             {
-                var assignedNodes = shadowRoot.GetAssignedNodesForSlot(element);
-                return assignedNodes.Count > 0 ? assignedNodes : element.ChildNodes;
+                var assigned = shadowRoot.GetAssignedNodesForSlot(element);
+                if (assigned.Count > 0)
+                {
+                    assignedNodes = assigned;
+                    firstChild = null;
+                    return true;
+                }
             }
 
-            var attachedShadowRoot = element.GetAttachedShadowRoot();
-            if (attachedShadowRoot != null)
-            {
-                return attachedShadowRoot.ChildNodes;
-            }
-
-            return element.ChildNodes;
+            firstChild = element.GetAttachedShadowRoot()?.FirstChild ?? element.FirstChild;
+            return false;
         }
 
         /// <summary>
@@ -2353,7 +2372,7 @@ namespace FenBrowser.FenEngine.Rendering
                 string listStyle = parts.Length > 1 ? parts[1].Trim() : "decimal";
                 
                 int value = _counters.ContainsKey(counterName) ? _counters[counterName] : 0;
-                return FormatCounterValue(value, listStyle);
+                return FormatCounterValue(value, listStyle, parent?.OwnerDocument);
             }
             
             // Handle counters() function (for nested lists with separator)
@@ -2438,32 +2457,34 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Formats a counter value according to list-style-type.
         /// </summary>
-        private static string FormatCounterValue(int value, string listStyle)
+        private static string FormatCounterValue(int value, string listStyle, Document document)
         {
+            // Author @counter-style names and the predefined styles list markers share
+            // go through the marker formatter so counter() and ::marker agree.
+            if (listStyle != null && Layout.CounterStyleRegistry.TryGet(document, listStyle.Trim(), out _))
+            {
+                return Layout.ListMarkerFormatter.FormatCounterValue(value, listStyle, document);
+            }
+
             listStyle = listStyle?.Trim().ToLowerInvariant() ?? "decimal";
             
             switch (listStyle)
             {
+                case "disc":
+                case "circle":
+                case "square":
+                case "decimal-leading-zero":
+                case "lower-alpha":
+                case "lower-latin":
+                case "upper-alpha":
+                case "upper-latin":
+                    return Layout.ListMarkerFormatter.FormatCounterValue(value, listStyle);
                 case "decimal":
                     return value.ToString();
-                case "decimal-leading-zero":
-                    return value.ToString("D2");
                 case "lower-roman":
                     return ToRoman(value).ToLowerInvariant();
                 case "upper-roman":
                     return ToRoman(value);
-                case "lower-alpha":
-                case "lower-latin":
-                    return value > 0 && value <= 26 ? ((char)('a' + value - 1)).ToString() : value.ToString();
-                case "upper-alpha":
-                case "upper-latin":
-                    return value > 0 && value <= 26 ? ((char)('A' + value - 1)).ToString() : value.ToString();
-                case "disc":
-                    return "•";
-                case "circle":
-                    return "○";
-                case "square":
-                    return "■";
                 case "lower-greek":
                     return value > 0 ? char.ConvertFromUtf32(0x03B1 + ((value - 1) % 24)) : value.ToString();
                 case "armenian":
@@ -4056,8 +4077,13 @@ namespace FenBrowser.FenEngine.Rendering
 
                     // Final containment correction: if the fitted line falls outside its parent
                     // content box after all adjustments, align it back using the parent's
-                    // effective text alignment.
-                    if (alignmentParentBox != null)
+                    // effective text alignment. A non-atomic inline parent is not a container
+                    // to fit into: its box is made of this very text, so it is always a
+                    // "tight fit" and the side-bearing inset below shoved every run inside a
+                    // <span> 3.5px right (w3schools' "Get your<span> own</span> website"
+                    // painted "ownwebsite"; each CodeMirror token overlapped the next).
+                    if (alignmentParentBox != null &&
+                        !string.Equals(alignmentStyle?.Display, "inline", StringComparison.OrdinalIgnoreCase))
                     {
                         var parentContent = alignmentParentBox.ContentBox;
                         float parentWidth = Math.Max(0f, parentContent.Width);
@@ -4507,6 +4533,19 @@ namespace FenBrowser.FenEngine.Rendering
 
                     value = ResolveSvgCurrentColor(value, computed);
                     declarations.Add($"{propertyName}: {value}");
+                }
+
+                // display: a class like `hidden` removes an SVG child from rendering,
+                // which the serialized markup cannot know. Any other computed value
+                // is only projected where it must override a display attribute.
+                string display = computed.Display;
+                if (string.Equals(display, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    declarations.Add("display: none");
+                }
+                else if (!string.IsNullOrWhiteSpace(display) && source.HasAttribute("display"))
+                {
+                    declarations.Add("display: inline");
                 }
 
                 if (declarations.Count > 0)
@@ -6209,6 +6248,36 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Check for explicit list-style-image (URL)
             string listStyleImage = style?.ListStyleImage;
+            if (!string.IsNullOrEmpty(listStyleImage) &&
+                !listStyleImage.TrimStart().StartsWith("url(", StringComparison.OrdinalIgnoreCase) &&
+                listStyleImage.IndexOf("gradient(", StringComparison.OrdinalIgnoreCase) > 0)
+            {
+                // CSS Lists 3 §3.1 image markers: an image with no natural size (a
+                // gradient) takes the 1em x 1em default object size, sitting on the
+                // marker's baseline.
+                float em = (float)(style?.FontSize ?? 16.0);
+                var markerBox = markerLayoutBox.ContentBox;
+                float baseline = markerBox.Top + (markerLayoutBox.Baseline > 0f ? markerLayoutBox.Baseline : em * 0.85f);
+                // Snapped to whole pixels as image markers are, so edges stay crisp.
+                var square = new SKRect(
+                    MathF.Round(markerBox.Left),
+                    MathF.Round(baseline - em),
+                    MathF.Round(markerBox.Left + em),
+                    MathF.Round(baseline));
+                var shader = TryCreateGradient(listStyleImage.Trim(), square);
+                if (shader != null)
+                {
+                    return new BackgroundPaintNode
+                    {
+                        Bounds = square,
+                        SourceNode = markerTextNode,
+                        Gradient = shader,
+                        IsFocused = isFocused,
+                        IsHovered = isHovered
+                    };
+                }
+            }
+
             if (!string.IsNullOrEmpty(listStyleImage) && listStyleImage != "none")
             {
                 string url = listStyleImage.Trim();
@@ -6232,12 +6301,22 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (bitmap != null)
                 {
+                    // CSS Lists 3 §3.1: the image at its natural size, or the 1em x 1em
+                    // default object size when it has none, on the marker's baseline.
+                    float imageWidth = ImageLoader.HasNaturalSize(bitmap) ? bitmap.Width : markerSize;
+                    float imageHeight = ImageLoader.HasNaturalSize(bitmap) ? bitmap.Height : markerSize;
+                    float imageBaseline = markerBounds.Top +
+                        (markerLayoutBox.Baseline > 0f ? markerLayoutBox.Baseline : markerSize * 0.85f);
                     return new ImagePaintNode
                     {
                         SourceNode = markerTextNode,
-                        Bounds = markerBounds,
+                        Bounds = new SKRect(
+                            MathF.Round(markerBounds.Left),
+                            MathF.Round(imageBaseline - imageHeight),
+                            MathF.Round(markerBounds.Left + imageWidth),
+                            MathF.Round(imageBaseline)),
                         Bitmap = bitmap,
-                        ObjectFit = "contain",
+                        ObjectFit = "fill",
                         ObjectPosition = "50% 50%",
                         IsFocused = isFocused,
                         IsHovered = isHovered
@@ -6259,6 +6338,14 @@ namespace FenBrowser.FenEngine.Rendering
                 };
             }
 
+            // A text marker is laid out as a text run; paint it as one, so its glyphs
+            // land exactly where the same text in ::before or a <span> would.
+            var markerRuns = BuildTextNode(markerTextNode, markerLayoutBox, style?.Marker ?? style, isFocused, isHovered);
+            if (markerRuns is { Count: 1 })
+            {
+                return markerRuns[0];
+            }
+
             string markerText = markerTextNode.Data.TrimEnd();
 
             // Calculate Position
@@ -6273,6 +6360,22 @@ namespace FenBrowser.FenEngine.Rendering
             float x = markerLayoutBox.ContentBox.Left;
             float y = markerLayoutBox.ContentBox.Top +
                       (markerLayoutBox.Baseline > 0f ? markerLayoutBox.Baseline : fontSize * 0.85f);
+            // Laid out as text, the marker's glyphs sit where its line says, as for any
+            // other text run.
+            if (markerLayoutBox.Lines != null)
+            {
+                foreach (var markerLine in markerLayoutBox.Lines)
+                {
+                    if (string.IsNullOrEmpty(markerLine.Text) || markerLine.Height <= 0f)
+                    {
+                        continue;
+                    }
+
+                    x = markerLayoutBox.ContentBox.Left + markerLine.Origin.X;
+                    y = markerLayoutBox.ContentBox.Top + markerLine.Origin.Y + markerLine.Baseline;
+                    break;
+                }
+            }
 
             return new TextPaintNode
             {
@@ -6377,8 +6480,24 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            var parts = classAttr.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            return parts.Any(p => string.Equals(p, token, StringComparison.OrdinalIgnoreCase));
+            // Runs for every painted element, so scan in place: a lambda over the
+            // split tokens allocated a closure on every call, and a split array plus
+            // substrings for every element with a class.
+            var remaining = classAttr.AsSpan();
+            while (!remaining.IsEmpty)
+            {
+                remaining = remaining.TrimStart(" \t\r\n\f");
+                var end = remaining.IndexOfAny(" \t\r\n\f");
+                var candidate = end < 0 ? remaining : remaining[..end];
+                if (!candidate.IsEmpty && candidate.Equals(token, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                remaining = end < 0 ? ReadOnlySpan<char>.Empty : remaining[end..];
+            }
+
+            return false;
         }
         
         /// <summary>

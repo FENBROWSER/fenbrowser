@@ -51,13 +51,17 @@ public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
     private bool _endReported;
     private int _disposed;
 
+    private readonly bool _forVideoElement;
+
     public MediaStreamResource(
         LiveStreamSource source,
         IMediaResourceClient client,
         Action<Action> postToElementThread,
         IAudioOutputFactory outputs,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        bool forVideoElement = true)
     {
+        _forVideoElement = forVideoElement;
         _source = source ?? throw new ArgumentNullException(nameof(source));
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _post = postToElementThread ?? throw new ArgumentNullException(nameof(postToElementThread));
@@ -163,7 +167,13 @@ public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
             _ = Task.Run(async () => await output.DisposeAsync().ConfigureAwait(false));
     }
 
-    private void OnSourceChanged() => _post(Evaluate);
+    // The realm changes the track list on the element's own thread, so the change is
+    // evaluated in the task that made it: an element ends within that task's turn.
+    private void OnSourceChanged() => Evaluate();
+
+    // mediacapture-main 6: a video element plays while the stream is active; an audio
+    // element only while it has a live audio track (it ends when the stream goes inaudible).
+    private bool Playable => _forVideoElement ? _source.Active : _source.HasAudio;
 
     // Element thread: report what the stream now is.
     private void Evaluate()
@@ -173,14 +183,14 @@ public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
 
         var tracks = _source.Tracks;
         FollowVideo(tracks.FirstOrDefault(t => t.Live && t.Enabled && t.Kind == MediaTrackKind.Video)?.VideoSource);
-        if (_source.Active && !_metadataReported && !_source.HasAudio && _videoSource is { Sequence: 0 })
+        if (Playable && !_metadataReported && !_source.HasAudio && _videoSource is { Sequence: 0 })
         {
             // mediacapture-main 6: with only a video track, the element has nothing to show -
             // HAVE_NOTHING - until the track's first frame; that frame reports again.
             return;
         }
 
-        if (_source.Active)
+        if (Playable)
         {
             // mediacapture-main 6: an active stream is ready at once; it has no duration
             // and nothing seekable or buffered. A track added later reports anew.
@@ -206,8 +216,12 @@ public sealed class MediaStreamResource : IMediaResource, IAudioRenderCallback
         }
         else if (_metadataReported && !_endReported)
         {
-            // The stream went inactive: playback has ended.
+            // mediacapture-main 6: the stream went inactive, so playback has ended and the
+            // duration becomes the position it ended at (durationchange, then ended).
             _endReported = true;
+            var end = MediaTime.FromSeconds(PositionSeconds);
+            _client.PositionChanged(end, monotonic: true);
+            _client.DurationChanged(end);
             _client.ReachedEnd();
         }
     }

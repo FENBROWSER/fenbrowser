@@ -92,7 +92,12 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (UsesDirtyValueState(element))
             {
+                var changed = !string.Equals(ElementStateManager.Instance.GetValue(element), value, StringComparison.Ordinal);
                 ElementStateManager.Instance.SetValue(element, value);
+                if (changed && FormControlSelection.Applies(element))
+                {
+                    FormControlSelection.CollapseToEnd(element);
+                }
                 return;
             }
 

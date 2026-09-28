@@ -74,6 +74,47 @@ public sealed class FenJsElementSurfaceMembersTests
     }
 
     [Fact]
+    public async Task IsContentEditable_FollowsTheNearestAuthoredState()
+    {
+        var result = await EvaluateAsync(
+            "var e = document.getElementById('editable'), c = document.createElement('i');" +
+            "e.appendChild(c);" +
+            "[document.getElementById('host').isContentEditable, e.isContentEditable, c.isContentEditable," +
+            " document.getElementById('locked').isContentEditable].join('|');");
+
+        Assert.Equal("false|true|true|false", result);
+    }
+
+    [Fact]
+    public async Task ContentEditable_SetterWritesTheAttributeAndRejectsOtherValues()
+    {
+        // w3schools' tryit page toggles body.contentEditable = true then false.
+        var result = await EvaluateAsync(
+            "var h = document.getElementById('host'), out = [];" +
+            "h.contentEditable = true; out.push(h.getAttribute('contenteditable'), h.isContentEditable);" +
+            "h.contentEditable = 'FALSE'; out.push(h.getAttribute('contenteditable'), h.isContentEditable);" +
+            "h.contentEditable = 'inherit'; out.push(h.hasAttribute('contenteditable'), h.contentEditable);" +
+            "try { h.contentEditable = 'maybe'; out.push('no throw'); } catch (e) { out.push(e.name); }" +
+            "out.join('|');");
+
+        Assert.Equal("true|true|false|false|false|inherit|SyntaxError", result);
+    }
+
+    [Fact]
+    public async Task Draggable_DefaultsToImagesAndLinksAndReflectsTheAttribute()
+    {
+        var result = await EvaluateAsync(
+            "var img = document.createElement('img'), a = document.createElement('a'), d = document.getElementById('host');" +
+            "var bare = a.draggable; a.href = '/x';" +
+            "var out = [d.draggable, img.draggable, bare, a.draggable];" +
+            "d.draggable = true; out.push(d.getAttribute('draggable'), d.draggable);" +
+            "img.draggable = false; out.push(img.draggable);" +
+            "out.join('|');");
+
+        Assert.Equal("false|true|false|true|true|true|false", result);
+    }
+
+    [Fact]
     public async Task GetRootNode_ReturnsTheDocumentForAConnectedElement()
     {
         var result = await EvaluateAsync(
@@ -147,6 +188,7 @@ public sealed class FenJsElementSurfaceMembersTests
                 "<a id='keyed' accesskey='k'>link</a>" +
                 "<div id='editable' contenteditable='true'></div>" +
                 "<div id='bare-editable' contenteditable></div>" +
+                "<div contenteditable='true'><p id='locked' contenteditable='false'></p></div>" +
                 "</body></html>",
                 baseUri).Parse();
             var engine = new FenJsBrowserScriptEngine(CreateHost())

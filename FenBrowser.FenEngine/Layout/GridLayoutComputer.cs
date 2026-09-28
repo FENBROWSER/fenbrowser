@@ -130,8 +130,7 @@ namespace FenBrowser.FenEngine.Layout
             IReadOnlyDictionary<string, int>? columnLineNames = null,
             IReadOnlyDictionary<string, int>? rowLineNames = null) // "row", "column", "row dense", "column dense"
         {
-            var positions = new Dictionary<Node, GridItemPosition>();
-            var map = new GridOccupancyMap();
+            var positions = new Dictionary<Node, GridItemPosition>(items.Count);
             
             bool isDense = autoFlow.Contains("dense");
             bool isColumnFlow = autoFlow.Contains("column");
@@ -181,7 +180,6 @@ namespace FenBrowser.FenEngine.Layout
                 {
                     var pos = FinalizePosition(rawPos);
                     positions[item] = pos;
-                    map.Mark(pos.ColumnStart, pos.ColumnEnd, pos.RowStart, pos.RowEnd);
                     UpdateBounds(pos);
                 }
                 else
@@ -194,6 +192,14 @@ namespace FenBrowser.FenEngine.Layout
             if (pendingAuto is null)
             {
                 return (positions, maxRow, maxCol);
+            }
+
+            // Only auto-placed items need to know which cells are taken, so a grid
+            // whose items are all explicitly placed never builds the occupancy set.
+            var map = new GridOccupancyMap();
+            foreach (var placed in positions.Values)
+            {
+                map.Mark(placed.ColumnStart, placed.ColumnEnd, placed.RowStart, placed.RowEnd);
             }
 
             // Iterate pending items

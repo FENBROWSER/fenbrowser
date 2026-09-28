@@ -129,9 +129,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public string Id
         {
-            // DOM 4.9: an element's ID is its id attribute in the null namespace; an
-            // attribute a page set as urn:x:id is not one.
-            get => GetAttributeNS(null, "id");
+            get => GetAttribute("id");
             set => SetAttribute("id", value);
         }
 
@@ -207,7 +205,7 @@ namespace FenBrowser.Core.Dom.V2
             // HTML tagName. Foreign namespace names preserve their source/local case.
             if (isHtmlElement)
             {
-                _tagName = localName.ToUpperInvariant();
+                _tagName = UppercaseHtmlTagName(localName);
                 NamespaceUri = Namespaces.Html;
             }
             else
@@ -219,6 +217,30 @@ namespace FenBrowser.Core.Dom.V2
             _ownerDocument = owner;
             _flags |= NodeFlags.IsElement | NodeFlags.IsContainer;
             _ancestorFeatureHash = BloomHash(TagName?.ToUpperInvariant());
+        }
+
+        // Every HTML element stores its uppercase tagName, and ToUpperInvariant made a
+        // new string for each one ("DIV" 10,000 times over). Documents use a small set
+        // of names, so they are shared; the cap keeps custom-element names from
+        // growing it without bound.
+        private const int MaxCachedTagNames = 1024;
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> s_uppercaseTagNames =
+            new(StringComparer.Ordinal);
+
+        private static string UppercaseHtmlTagName(string localName)
+        {
+            if (s_uppercaseTagNames.TryGetValue(localName, out var cached))
+            {
+                return cached;
+            }
+
+            var upper = localName.ToUpperInvariant();
+            if (s_uppercaseTagNames.Count < MaxCachedTagNames)
+            {
+                s_uppercaseTagNames.TryAdd(localName, upper);
+            }
+
+            return upper;
         }
 
         /// <summary>
@@ -534,7 +556,7 @@ namespace FenBrowser.Core.Dom.V2
             var name = attr.Name;
 
             // Update ID index
-            if (attr.NamespaceUri == null && name.Equals("id", StringComparison.OrdinalIgnoreCase))
+            if (name.Equals("id", StringComparison.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrEmpty(oldValue))
                     _treeScope?.UnregisterId(oldValue, this);
@@ -544,11 +566,6 @@ namespace FenBrowser.Core.Dom.V2
                 _flags = string.IsNullOrEmpty(attr.Value)
                     ? (_flags & ~NodeFlags.HasId)
                     : (_flags | NodeFlags.HasId);
-            }
-            else if (attr.NamespaceUri == null && name.Equals("name", StringComparison.OrdinalIgnoreCase))
-            {
-                _treeScope?.UnregisterName(oldValue, this);
-                _treeScope?.RegisterName(attr.Value, this);
             }
 
             // Update class flag
@@ -604,15 +621,12 @@ namespace FenBrowser.Core.Dom.V2
         {
             var name = attr.Name;
 
-            if (attr.NamespaceUri == null && name.Equals("id", StringComparison.OrdinalIgnoreCase))
+            if (name.Equals("id", StringComparison.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrEmpty(oldValue))
                     _treeScope?.UnregisterId(oldValue, this);
                 _flags &= ~NodeFlags.HasId;
             }
-
-            if (attr.NamespaceUri == null && name.Equals("name", StringComparison.OrdinalIgnoreCase))
-                _treeScope?.UnregisterName(oldValue, this);
 
             if (name.Equals("class", StringComparison.OrdinalIgnoreCase))
                 _flags &= ~NodeFlags.HasClass;

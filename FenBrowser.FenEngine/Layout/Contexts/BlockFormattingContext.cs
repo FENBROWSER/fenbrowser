@@ -916,19 +916,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     staticPosition: outOfFlowCandidate.StaticPosition);
 
                 // Pass 2: layout contents using resolved box size.
-                var resolvedWidth = Math.Max(0f, oof.Geometry.ContentBox.Width);
-                var resolvedHeight = Math.Max(0f, oof.Geometry.ContentBox.Height);
-                var resolvedOuterWidth = Math.Max(resolvedWidth, oof.Geometry.MarginBox.Width);
-                var resolvedOuterHeight = Math.Max(resolvedHeight, oof.Geometry.MarginBox.Height);
-                var resolvedState = new LayoutState(
-                    new SKSize(resolvedOuterWidth, resolvedOuterHeight),
-                    resolvedOuterWidth,
-                    resolvedOuterHeight,
-                    state.ViewportWidth,
-                    state.ViewportHeight,
-                    state.Deadline);
-                resolvedState.IsForced = true;
-                context.Layout(oof, resolvedState);
+                LayoutPositioningLogic.LayoutAtSolvedSize(oof, blockBox.Geometry.PaddingBox, state);
 
                 // Re-apply final absolute position after child layout potentially touched geometry.
                 LayoutPositioningLogic.ResolvePositionedBox(
@@ -2197,10 +2185,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
 
                 var style = child.ComputedStyle;
+                // A child with no content still has a height when something other than
+                // its content sizes it: a declared height, a min-height, or an
+                // aspect-ratio applied to its width (CSS Sizing 4 preferred aspect ratio).
                 bool hasExplicitHeight =
                     style?.Height.HasValue == true ||
                     style?.HeightPercent.HasValue == true ||
-                    !string.IsNullOrWhiteSpace(style?.HeightExpression);
+                    !string.IsNullOrWhiteSpace(style?.HeightExpression) ||
+                    style?.MinHeight > 0 ||
+                    style?.MinHeightPercent > 0 ||
+                    !string.IsNullOrWhiteSpace(style?.MinHeightExpression) ||
+                    style?.AspectRatio > 0;
                 bool hasVerticalChrome =
                     (style?.Padding.Top ?? 0) > 0 ||
                     (style?.Padding.Bottom ?? 0) > 0 ||

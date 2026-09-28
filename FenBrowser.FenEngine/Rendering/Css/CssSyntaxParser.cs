@@ -211,7 +211,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return null;
             }
 
-            if (PreserveCssomRules && TryConsumeCssomAtRule(name, nestingDepth, out var cssomRule))
+            // @counter-style also feeds the cascade: a document's counter styles are
+            // rebuilt from its style set (CSS Counter Styles 3 §3).
+            if ((PreserveCssomRules || string.Equals(name, "counter-style", StringComparison.OrdinalIgnoreCase)) &&
+                TryConsumeCssomAtRule(name, nestingDepth, out var cssomRule))
             {
                 return cssomRule;
             }

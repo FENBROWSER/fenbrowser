@@ -118,6 +118,22 @@ public sealed class CanvasRenderingContextTests : IDisposable
             " && ctx.getLineDash().length === 2)"));
     }
 
+    // HTML setLineDash(): an odd list is repeated, an empty list clears the dash,
+    // and a negative or non-finite segment leaves the current list alone.
+    [Fact]
+    public void SetLineDash_FollowsTheSegmentRules()
+    {
+        Assert.Equal("4,2,5,4,2,5|4,2,5,4,2,5|", EvaluateOnCanvasPage(
+            "var ctx = document.createElement('canvas').getContext('2d');" +
+            "ctx.setLineDash([4, 2, 5]);" +
+            "var b = ctx.getLineDash().join(',');" +
+            "ctx.setLineDash([1, -1]);" +
+            "ctx.setLineDash([1, Infinity]);" +
+            "var c = ctx.getLineDash().join(',');" +
+            "ctx.setLineDash([]);" +
+            "[b, c, ctx.getLineDash().join(',')].join('|')"));
+    }
+
     [Fact]
     public void WidthAttributeWrite_ResizesSurfaceAndClears()
     {

@@ -31,6 +31,10 @@ public sealed class NetworkProcessCoordinatorTests
             initiatorOrigin: "https://fixture.test",
             cancellation.Token);
 
+        // Read the body before awaiting the fake child: its return closes the control
+        // pipe, which the session treats as the network process going away.
+        var body = await response.Content.ReadAsStringAsync(cancellation.Token);
+
         var observedRequest = await childTask;
         Assert.Equal(request.RequestUri!.AbsoluteUri, observedRequest.Payload.Url);
         Assert.Equal("POST", observedRequest.Payload.Method);
@@ -40,13 +44,16 @@ public sealed class NetworkProcessCoordinatorTests
 
         Assert.Equal(201, (int)response.StatusCode);
         Assert.Equal("Created", response.ReasonPhrase);
-        Assert.Equal("response-body", await response.Content.ReadAsStringAsync());
+        Assert.Equal("response-body", body);
         Assert.Equal("fixture", response.Headers.GetValues("X-Fen-Response").Single());
         Assert.Equal("text/plain", response.Content.Headers.ContentType?.MediaType);
     }
 
+    // The per-request capability token authenticates a response (5dba7747); its URL
+    // may be on another origin, as it is after a cross-origin redirect, and origin
+    // policy is left to CORS rather than the IPC layer.
     [Fact]
-    public async Task CrossOriginResponse_IsRejectedByCapabilityLock()
+    public async Task CrossOriginResponseUrl_IsAcceptedWithValidCapability()
     {
         var pipeName = $"fen_network_test_{Guid.NewGuid():N}";
         var authToken = Guid.NewGuid().ToString("N");
@@ -65,13 +72,12 @@ public sealed class NetworkProcessCoordinatorTests
             HttpMethod.Get,
             "https://fixture.test/network/parity");
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
-            coordinator.SendAsync(
-                request,
-                initiatorOrigin: "https://fixture.test",
-                cancellation.Token));
+        using var response = await coordinator.SendAsync(
+            request,
+            initiatorOrigin: "https://fixture.test",
+            cancellation.Token);
 
-        Assert.Contains("capability token validation", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(201, (int)response.StatusCode);
         await childTask;
     }
 
@@ -191,7 +197,7 @@ public sealed class NetworkProcessCoordinatorTests
                 initiatorOrigin: "https://fixture.test",
                 cancellation.Token));
 
-        Assert.Contains("maximum allowed size", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("destination limit", exception.Message, StringComparison.Ordinal);
         await childTask;
     }
 

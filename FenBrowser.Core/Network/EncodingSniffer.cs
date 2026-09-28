@@ -63,6 +63,14 @@ namespace FenBrowser.Core.Network
                 // corrupts non-ASCII generated content when text/css omits charset.
                 if (contentTypeHeader.TrimStart().StartsWith("text/css", StringComparison.OrdinalIgnoreCase))
                     return DetermineCssEncoding(bytes, contentTypeHeader);
+
+                // Script and JSON are UTF-8 unless declared otherwise: HTML "fetch a
+                // single module script" decodes as UTF-8 outright, a classic script
+                // falls back to its document's encoding (UTF-8 on the modern web), and
+                // JSON is always UTF-8. The Windows-1252 fallback turned x.com's
+                // UTF-8 "·" (C2 B7) into "Â·" in text its modules render.
+                if (IsScriptOrJsonMimeType(contentTypeHeader))
+                    return Encoding.UTF8;
             }
 
             // 3. Prescan HTML <meta> declarations in the first 1024 bytes. The scan
@@ -378,6 +386,36 @@ namespace FenBrowser.Core.Network
         {
             while (index < end && IsAsciiWhitespace(source[index]))
                 index++;
+        }
+
+        // MIME Sniffing §4.6: the JavaScript MIME type essences, plus JSON.
+        private static bool IsScriptOrJsonMimeType(string contentTypeHeader)
+        {
+            var essence = contentTypeHeader.Split(';')[0].Trim().ToLowerInvariant();
+            switch (essence)
+            {
+                case "application/ecmascript":
+                case "application/javascript":
+                case "application/x-ecmascript":
+                case "application/x-javascript":
+                case "text/ecmascript":
+                case "text/javascript":
+                case "text/javascript1.0":
+                case "text/javascript1.1":
+                case "text/javascript1.2":
+                case "text/javascript1.3":
+                case "text/javascript1.4":
+                case "text/javascript1.5":
+                case "text/jscript":
+                case "text/livescript":
+                case "text/x-ecmascript":
+                case "text/x-javascript":
+                case "application/json":
+                case "text/json":
+                    return true;
+                default:
+                    return essence.EndsWith("+json", StringComparison.Ordinal);
+            }
         }
 
         private static bool IsAsciiWhitespace(char c) =>

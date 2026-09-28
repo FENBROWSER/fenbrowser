@@ -1153,13 +1153,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry, state);
 
-                float resolvedWidth = Math.Max(0f, oof.Geometry.ContentBox.Width);
-                float resolvedHeight = Math.Max(0f, oof.Geometry.ContentBox.Height);
-                var childState = state.Clone();
-                childState.AvailableSize = new SKSize(resolvedWidth, resolvedHeight);
-                childState.ContainingBlockWidth = resolvedWidth;
-                childState.ContainingBlockHeight = resolvedHeight;
-                context.Layout(oof, childState);
+                LayoutPositioningLogic.LayoutAtSolvedSize(oof, container.Geometry.PaddingBox, state);
 
                 LayoutPositioningLogic.ResolvePositionedBox(oof, container, container.Geometry, state);
             }
@@ -1210,6 +1204,32 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 {
                     width = (float)(boxStyle.WidthPercent.Value / 100.0 * parentWidth);
                     resolvedDefiniteWidth = true;
+                }
+            }
+            else if (!string.IsNullOrEmpty(boxStyle?.WidthExpression) &&
+                     !LayoutHelper.IsContentBasedSizeKeyword(boxStyle.WidthExpression))
+            {
+                // CSS Values 4 §10: a calc()/min()/max()/clamp() width is as definite
+                // as a percentage against the same containing block. Heights already
+                // resolved HeightExpression here; widths fell through to "fill the
+                // line", so x.com's Google face, `calc(100% / var(--jf-scale))` under
+                // `scale(1.15)`, stayed 100% wide and scaled past its clipping parent.
+                float parentWidth = state.AvailableSize.Width;
+                if (float.IsInfinity(parentWidth) || parentWidth <= 0)
+                    parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
+                if (float.IsFinite(parentWidth) && parentWidth > 0)
+                {
+                    float expressionWidth = LayoutHelper.EvaluateCssExpression(
+                        boxStyle.WidthExpression,
+                        parentWidth,
+                        state.ViewportWidth,
+                        state.ViewportHeight,
+                        (float)(boxStyle.FontSize ?? 16d));
+                    if (expressionWidth >= 0f && float.IsFinite(expressionWidth))
+                    {
+                        width = expressionWidth;
+                        resolvedDefiniteWidth = true;
+                    }
                 }
             }
             if (resolvedDefiniteWidth)
@@ -1483,6 +1503,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 string tag = el.TagName?.ToUpperInvariant() ?? "";
 
+                // A <button> is an ordinary flex container for its content (HTML
+                // rendering §15.5.2): its auto size comes from its flex items, not a
+                // label estimate. Seeding one text line and 7px per character here left
+                // x.com's column-flex "Scan to get the app" card 16px tall around a
+                // 112px QR image, and 33px wider than its caption.
+                bool buttonSizedByContent = tag == "BUTTON" && box.Children.Any(child =>
+                    child != null &&
+                    !child.IsOutOfFlow &&
+                    child.ComputedStyle?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) != true &&
+                    !IsIgnorableFlexItem(child));
+
                 if (width <= 0)
                 {
                     if (tag == "INPUT")
@@ -1503,7 +1534,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             width = 150f;
                         }
                     }
-                    else if (tag == "BUTTON")
+                    else if (tag == "BUTTON" && !buttonSizedByContent)
                     {
                         string label = LayoutHelper.GetRenderableTextContentTrimmed(el);
                         if (string.IsNullOrWhiteSpace(label)) label = "Button";
@@ -1532,7 +1563,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         string type = (el.GetAttribute("type") ?? string.Empty).Trim().ToLowerInvariant();
                         height = (type == "checkbox" || type == "radio") ? ReplacedElementSizing.NativeCheckboxRadioSize : 40f;
                     }
-                    else if (tag == "BUTTON")
+                    else if (tag == "BUTTON" && !buttonSizedByContent)
                     {
                         string label = LayoutHelper.GetRenderableTextContentTrimmed(el);
                         height = string.IsNullOrWhiteSpace(label)
@@ -2174,6 +2205,29 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
         }
 
+        /// <summary>
+        /// Forced flex sizes are content-box sizes, but they are handed to the item's
+        /// formatting context through its specified width/height, which that context reads
+        /// per box-sizing (CSS Box Sizing 3 §3). Under border-box the padding and border were
+        /// taken off a second time: x.com's padded, stretched login column (Tailwind makes
+        /// everything border-box) lost 80px of height and 52px of width, so its centred form
+        /// sat 40px too high and the column came out narrower than Chrome's.
+        /// </summary>
+        private static double ContentSizeAsSpecifiedSize(CssComputed style, float contentSize, bool horizontal)
+        {
+            if (!string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                return contentSize;
+            }
+
+            var padding = style.Padding;
+            var border = style.BorderThickness;
+            double chrome = horizontal
+                ? padding.Left + padding.Right + border.Left + border.Right
+                : padding.Top + padding.Bottom + border.Top + border.Bottom;
+            return contentSize + chrome;
+        }
+
         private static void LayoutWithForcedWidth(LayoutBox item, LayoutState state, float forcedWidth)
         {
             if (item == null)
@@ -2195,7 +2249,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             var oldWidthPercent = style.WidthPercent;
             var oldWidthExpression = style.WidthExpression;
 
-            style.Width = Math.Max(0, forcedWidth);
+            style.Width = ContentSizeAsSpecifiedSize(style, Math.Max(0, forcedWidth), horizontal: true);
             style.WidthPercent = null;
             style.WidthExpression = null;
 
@@ -2227,7 +2281,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             var oldHeightPercent = style.HeightPercent;
             var oldHeightExpression = style.HeightExpression;
 
-            style.Height = Math.Max(0, forcedHeight);
+            style.Height = ContentSizeAsSpecifiedSize(style, Math.Max(0, forcedHeight), horizontal: false);
             style.HeightPercent = null;
             style.HeightExpression = null;
 

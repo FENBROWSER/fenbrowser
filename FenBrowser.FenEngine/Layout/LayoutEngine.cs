@@ -482,6 +482,11 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
 
+            if (ClipsDescendantsFromDocumentExtent(box.SourceNode, box.ComputedStyle))
+            {
+                return;
+            }
+
             float currentContentAbsX = box.Geometry.ContentBox.Left;
             float currentContentAbsY = box.Geometry.ContentBox.Top;
 
@@ -489,6 +494,84 @@ namespace FenBrowser.FenEngine.Layout
             {
                 AccumulateDocumentExtents(child, currentContentAbsX, currentContentAbsY, ref maxBottom);
             }
+        }
+
+        /// <summary>
+        /// CSS Overflow 3 §2.2 scrollable overflow: content a box clips (any overflow other
+        /// than visible) or a nested browsing context holds is not part of the document's
+        /// scrollable overflow. The root element and body are exempt: their overflow is the
+        /// viewport's (§3.3 propagation). Counting clipped content made pages scrollable that
+        /// are not: CodeMirror's scroller is 50px taller than the overflow:hidden editor
+        /// around it, so w3schools' tryit page scrolled its navbar out of view.
+        /// </summary>
+        public static bool ClipsDescendantsFromDocumentExtent(Node node, CssComputed style)
+        {
+            if (node is not Element element)
+            {
+                return false;
+            }
+
+            var tag = element.TagName;
+            if (string.Equals(tag, "iframe", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "frame", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "object", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tag, "embed", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (element.ParentNode is Document ||
+                (string.Equals(tag, "body", StringComparison.OrdinalIgnoreCase) && element.ParentElement?.ParentNode is Document))
+            {
+                return false;
+            }
+
+            return style != null &&
+                   (IsClippingOverflow(style.OverflowX) || IsClippingOverflow(style.OverflowY) ||
+                    IsClippingOverflow(style.Overflow));
+
+            static bool IsClippingOverflow(string value) =>
+                !string.IsNullOrWhiteSpace(value) &&
+                value.Trim().ToLowerInvariant() is "hidden" or "clip" or "scroll" or "auto";
+        }
+
+        /// <summary>
+        /// Whether some ancestor of <paramref name="element"/> keeps it out of the document's
+        /// scrollable overflow (see <see cref="ClipsDescendantsFromDocumentExtent"/>). A frame
+        /// document is reached through its parent, the frame element. Answers are cached per
+        /// ancestor so a pass over every element stays linear.
+        /// </summary>
+        public static bool IsExcludedFromDocumentExtent(
+            Element element,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            Dictionary<Node, bool> cache)
+        {
+            var visited = new List<Node>();
+            var excluded = false;
+            for (var node = element?.ParentNode; node != null; node = node.ParentNode)
+            {
+                if (cache.TryGetValue(node, out var known))
+                {
+                    excluded = known;
+                    break;
+                }
+
+                visited.Add(node);
+                CssComputed style = null;
+                styles?.TryGetValue(node, out style);
+                if (ClipsDescendantsFromDocumentExtent(node, style))
+                {
+                    excluded = true;
+                    break;
+                }
+            }
+
+            foreach (var node in visited)
+            {
+                cache[node] = excluded;
+            }
+
+            return excluded;
         }
         
         private void CollectBoxesAbsolute(FenBrowser.FenEngine.Layout.Tree.LayoutBox box, Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> dict, float parentContentAbsX, float parentContentAbsY)
@@ -576,7 +659,12 @@ namespace FenBrowser.FenEngine.Layout
                 return;
             }
 
-            if (box.Geometry != null && box.ComputedStyle != null)
+            // An outside ::marker is laid out as position:absolute only to take it out of
+            // flow; CSS Lists places it beside its list item, which
+            // FormattingContext.ArrangeOutsideListMarker has done. Re-solving it against
+            // a containing block would throw that away.
+            if (box.Geometry != null && box.ComputedStyle != null &&
+                box is not FenBrowser.FenEngine.Layout.Tree.ListMarkerBox)
             {
                 var position = LayoutStyleResolver.GetEffectivePosition(box.ComputedStyle);
                 if (string.Equals(position, "absolute", StringComparison.OrdinalIgnoreCase))
@@ -628,7 +716,23 @@ namespace FenBrowser.FenEngine.Layout
                     contentOrigin.Top + relativeStatic.Y);
             }
 
-            LayoutPositioningLogic.ResolvePositionedBox(
+            var laidOutSize = box.Geometry.ContentBox.Size;
+            ResolveFinal();
+
+            // The flow pass solved this box against its parent, which is not its containing
+            // block unless the parent is positioned. When the real containing block changes
+            // the box's size, its contents were laid out at the wrong one: #container on
+            // w3schools' tryit page (absolute under a static body, top:44px; bottom:0) kept
+            // its panes at the height the flow pass derived from body's.
+            var solvedSize = box.Geometry.ContentBox.Size;
+            if (Math.Abs(solvedSize.Width - laidOutSize.Width) > 0.5f ||
+                Math.Abs(solvedSize.Height - laidOutSize.Height) > 0.5f)
+            {
+                LayoutPositioningLogic.LayoutAtSolvedSize(box, cbRect, state);
+                ResolveFinal();
+            }
+
+            void ResolveFinal() => LayoutPositioningLogic.ResolvePositionedBox(
                 box,
                 cbBox ?? box.Parent,
                 cbBox?.Geometry ?? box.Parent?.Geometry,

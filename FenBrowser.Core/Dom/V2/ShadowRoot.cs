@@ -122,6 +122,13 @@ namespace FenBrowser.Core.Dom.V2
             _assignedNodesBySlot = null;
         }
 
+        /// <summary>
+        /// The slot a child of this root's host is assigned to, whatever the root's
+        /// mode: rendering follows the flat tree even where script cannot see it.
+        /// </summary>
+        public Element GetAssignedSlotForRendering(Node slottable) =>
+            slottable is ISlottable candidate ? GetAssignedSlotForSlottable(candidate, exposeClosedTree: true) : null;
+
         internal Element GetAssignedSlotForSlottable(ISlottable slottable, bool exposeClosedTree = false)
         {
             if (slottable == null)

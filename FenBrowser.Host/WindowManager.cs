@@ -37,6 +37,8 @@ namespace FenBrowser.Host
 
         private readonly ConcurrentQueue<MainThreadWorkItem> _mainThreadQueue = new();
         private int _mainThreadId;
+        private readonly PresentScheduler _presentScheduler;
+        private int _loopRunning;
 
         public event Action OnLoad;
         public event Action<double> OnRender;
@@ -59,7 +61,50 @@ namespace FenBrowser.Host
         public bool IsMainThreadInitialized => Volatile.Read(ref _mainThreadId) != 0;
         public bool IsOnMainThread => _mainThreadId == 0 || Environment.CurrentManagedThreadId == _mainThreadId;
 
-        private WindowManager() { }
+        private WindowManager()
+        {
+            _presentScheduler = new PresentScheduler(WakeMainLoop);
+        }
+
+        /// <summary>
+        /// Asks the window loop to present a frame. Safe from any thread. The loop
+        /// sleeps until something calls this (or input arrives), so a visual change
+        /// that never requests a present is only shown by the next wake-up.
+        /// </summary>
+        public void RequestPresent() => _presentScheduler.Request();
+
+        /// <summary>
+        /// Reports visual state that changed without a <see cref="RequestPresent"/>
+        /// call; checked on every wake-up of the loop.
+        /// </summary>
+        public Func<bool> PendingPresentation
+        {
+            get => _presentScheduler.PendingWork;
+            set => _presentScheduler.PendingWork = value;
+        }
+
+        /// <summary>
+        /// Wakes the window loop from its event wait without asking for a present:
+        /// queued main-thread work runs, and pending presentation is re-checked.
+        /// Safe from any thread.
+        /// </summary>
+        public void WakeMainLoop()
+        {
+            var window = _window;
+            if (window == null || Volatile.Read(ref _loopRunning) == 0 || Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                window.ContinueEvents();
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Debug($"[WindowManager] Could not wake the window loop: {ex.Message}", LogCategory.General);
+            }
+        }
 
         public void Initialize(FenBrowser.Host.Platform.IWindow platformWindow, string initialUrl, bool isHeadless = false)
         {
@@ -118,6 +163,8 @@ namespace FenBrowser.Host
             _window.Load += Load;
             _window.Render += Render;
             _window.Resize += Resize;
+            _window.StateChanged += OnWindowStateChanged;
+            _window.FocusChanged += OnWindowFocusChanged;
             _window.Closing += Close;
         }
 
@@ -131,8 +178,15 @@ namespace FenBrowser.Host
             _window.Load -= Load;
             _window.Render -= Render;
             _window.Resize -= Resize;
+            _window.StateChanged -= OnWindowStateChanged;
+            _window.FocusChanged -= OnWindowFocusChanged;
             _window.Closing -= Close;
         }
+
+        // A restored or re-focused window may have lost its presented contents.
+        private void OnWindowStateChanged(WindowState state) => RequestPresent();
+
+        private void OnWindowFocusChanged(bool focused) => RequestPresent();
 
         public void Run()
         {
@@ -149,12 +203,25 @@ namespace FenBrowser.Host
 
             EngineLogBridge.Info("[WindowManager] Window loaded, initializing Graphics...", LogCategory.General);
 
+            // Present on demand: the loop blocks in the platform event wait and
+            // Render swaps only when it drew. See PresentScheduler for why. Set here
+            // rather than before Run(): Silk's Initialize() copies both properties
+            // back from the creation options just before raising Load.
+            _window.IsEventDriven = true;
+            _window.ShouldSwapAutomatically = false;
+
             _gl = _window.CreateOpenGLES();
             InitializeInput();
             InitializeSkia();
 
+            // GLFW is initialised once the window exists, so wake-ups can be posted
+            // from here on. The first loop iteration waits for events; the request
+            // below makes sure it wakes up to present the bootstrap frame.
+            Volatile.Write(ref _loopRunning, 1);
             OnLoad?.Invoke();
             LoadWindowIcon();
+            RequestPresent();
+            WakeMainLoop();
         }
 
         private void LoadWindowIcon()
@@ -365,8 +432,13 @@ namespace FenBrowser.Host
 
             EngineLogBridge.Info($"[WindowManager] Resized: Logical={_logicalWidth}x{_logicalHeight}, DPI={_dpiScale:F2}", LogCategory.General);
             OnResize?.Invoke(size);
+            RequestPresent();
         }
 
+        /// <summary>
+        /// One iteration of the window loop: runs on every wake-up, presents only
+        /// when <see cref="PresentScheduler"/> says a frame is owed.
+        /// </summary>
         private void Render(double deltaTime)
         {
             if (Volatile.Read(ref _disposed) != 0)
@@ -374,8 +446,17 @@ namespace FenBrowser.Host
                 return;
             }
 
+            // Every wake-up proves the UI thread is responsive, presenting or not.
+            UiThreadWatchdog.Instance.Heartbeat();
+
             ProcessMainThreadQueue();
-            if (_surface == null)
+            if (!_mainThreadQueue.IsEmpty)
+            {
+                // More than one batch was queued; come straight back for the rest.
+                WakeMainLoop();
+            }
+
+            if (_surface == null || !_presentScheduler.TryBeginPresent())
             {
                 return;
             }
@@ -383,11 +464,17 @@ namespace FenBrowser.Host
             OnRender?.Invoke(deltaTime);
             _surface.Canvas.Flush();
             _grContext?.Flush();
+            _window.GLContext?.SwapBuffers();
         }
 
         private void Close()
         {
             EngineLogBridge.Info("[WindowManager] Closing...", LogCategory.General);
+
+            // After its loop ends, Silk's Run() pumps events one last time. In
+            // event-driven mode that is a blocking wait nothing will ever wake once
+            // this manager is disposed, so the process would never exit.
+            _window.IsEventDriven = false;
             try
             {
                 OnClose?.Invoke();
@@ -471,6 +558,7 @@ namespace FenBrowser.Host
                     catch (Exception ex) { tcs.TrySetException(ex); }
                 },
                 reject: ex => tcs.TrySetException(ex)));
+            WakeMainLoop();
 
             if (Volatile.Read(ref _disposed) != 0)
             {
@@ -508,6 +596,7 @@ namespace FenBrowser.Host
                     catch (Exception ex) { tcs.TrySetException(ex); }
                 },
                 reject: ex => tcs.TrySetException(ex)));
+            WakeMainLoop();
 
             if (Volatile.Read(ref _disposed) != 0)
             {

@@ -600,7 +600,8 @@ public Uri LastTextResponseUri { get; private set; }
                     requestUri,
                     topLevelDocumentUri,
                     IsTopLevelDocumentRequest(secFetchDest),
-                    context?.Method ?? HttpMethod.Get.Method);
+                    context?.Method ?? HttpMethod.Get.Method,
+                    BrowserSettings.Instance.BlockThirdPartyCookies);
                 if (!string.IsNullOrEmpty(cookieHeader))
                 {
                     cookieIdentity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(cookieHeader)));
@@ -954,11 +955,15 @@ public Uri LastTextResponseUri { get; private set; }
                 request.RequestUri,
                 topLevelDocumentUri,
                 isTopLevelNavigation,
-                request.Method?.Method ?? HttpMethod.Get.Method);
+                request.Method?.Method ?? HttpMethod.Get.Method,
+                BrowserSettings.Instance.BlockThirdPartyCookies);
 
             if (!string.IsNullOrWhiteSpace(cookieHeader))
             {
                 request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+                // The jar already withheld third-party cookies and kept Partitioned ones;
+                // PrivacyHandler's whole-header strip is only for headers built elsewhere.
+                PrivacyHandler.MarkThirdPartyCookiesFiltered(request);
             }
         }
 
@@ -1714,11 +1719,10 @@ public Uri LastTextResponseUri { get; private set; }
                     break;
                 }
 
-                if (hops >= maxRedirectHops &&
-                    resp != null &&
-                    (int)resp.StatusCode >= 300 &&
-                    (int)resp.StatusCode < 400 &&
-                    resp.Headers.Location != null)
+                // hops only advances on a followed redirect, whose response is disposed
+                // and cleared before the next request - so running out of hops leaves no
+                // response to inspect, and is itself the redirect limit being hit.
+                if (hops >= maxRedirectHops)
                 {
                     EngineLogCompat.Warn(
                         $"[Network.Resilience] Redirect hop limit exceeded ({maxRedirectHops}) for '{url}'.",
@@ -1854,7 +1858,7 @@ public Uri LastTextResponseUri { get; private set; }
                         RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
                         FailureReason = FetchFailureReasonCode.LimitExceeded,
                         LimitType = "text_body_bytes",
-                        InputSizeBytes = maxTextBodyBytes,
+                        InputSizeBytes = ObservedSizeFromLimitMessage(ex.Message, maxTextBodyBytes),
                         IsRetryable = false
                     };
                 }
@@ -2473,11 +2477,21 @@ public Uri LastTextResponseUri { get; private set; }
                             redirectChain.Add(current);
                             referer = prev;
                             hops++;
+                            // Sent with ResponseHeadersRead: an unread response keeps its
+                            // connection until disposed. Its status stays readable.
+                            resp.Dispose();
                             continue;
                         }
                     }
                     break;
                 }
+
+                // Every exit below either reads the body or abandons it. An abandoned
+                // body (an HTTP error, CORB, a size limit) left its keep-alive
+                // connection checked out; ten of them - the per-server limit -
+                // stalled every later request to that server, so a page with ten
+                // broken images blocked the next navigation there.
+                using var finalResponse = resp;
                 if (resp == null)
                 {
                     return BinaryFailure(BinaryFetchFailureReason.TransportFailure, current, "No response received", redirectChain);
@@ -2638,7 +2652,11 @@ public Uri LastTextResponseUri { get; private set; }
                 TopLevelDocumentUri = referrer,
                 Destination = GetHeaderValue(request.Headers, "Sec-Fetch-Dest") ?? "empty",
                 Mode = GetHeaderValue(request.Headers, "Sec-Fetch-Mode") ?? "cors",
-                CredentialsMode = "include",
+                // Fetch 5.4: a request's credentials mode defaults to "same-origin", which
+                // is also what the browser's own fetch path passes. Defaulting to "include"
+                // sent cookies cross-origin and demanded Access-Control-Allow-Credentials
+                // from every preflight.
+                CredentialsMode = CorsHandler.GetCredentialsMode(request),
                 Method = request.Method.Method
             });
         }
@@ -3124,6 +3142,20 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
             EngineLogCompat.Debug($"[CssLoader] CSS Fetch Success: {url} Length: {result.Content?.Length ?? 0} Type: {result.ContentType}", LogCategory.Network);
             return result.Content;
         }
+
+        // ReadStreamingBodyBoundedAsync reports "LIMIT_EXCEEDED:{max}:{observed}", where
+        // observed is the declared length or the bytes read when the cap was crossed -
+        // the input's size as far as it is known, which is more than the cap.
+        private static int ObservedSizeFromLimitMessage(string message, int fallback)
+        {
+            var lastColon = message?.LastIndexOf(':') ?? -1;
+            return lastColon >= 0 &&
+                   long.TryParse(message.AsSpan(lastColon + 1), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var observed) &&
+                   observed > 0
+                ? (int)Math.Min(observed, int.MaxValue)
+                : fallback;
+        }
+
         private async Task<byte[]> ReadStreamingBodyBoundedAsync(
             HttpResponseMessage resp,
             long maxSize,

@@ -146,9 +146,11 @@ namespace FenBrowser.Tests.Security
         }
 
         [Fact]
-        public void ParseLegacyFeaturePolicy_UsesSameSyntax()
+        // Feature Policy's legacy header grammar: "feature allow-list-value*", the
+        // keywords quoted ('self', 'none') and directives separated by ';'.
+        public void ParseLegacyFeaturePolicy_ReadsSpaceSeparatedAllowlists()
         {
-            var policy = PermissionsPolicy.ParseLegacyFeaturePolicy("fullscreen *; geolocation (self)");
+            var policy = PermissionsPolicy.ParseLegacyFeaturePolicy("fullscreen *; geolocation 'self'");
             Assert.True(policy.IsFeatureAllowed(PolicyControlledFeature.Fullscreen, "https://evil.example", "https://a.example"));
             Assert.True(policy.IsFeatureAllowed(PolicyControlledFeature.Geolocation, "https://a.example", "https://a.example"));
             Assert.False(policy.IsFeatureAllowed(PolicyControlledFeature.Geolocation, "https://evil.example", "https://a.example"));

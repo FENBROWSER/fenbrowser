@@ -22595,10 +22595,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             BindThisFromSuper(frame.Environment, frame.Registers[valueReg]);
             frame.ThisValue = frame.Registers[valueReg];
+            BrandInstanceAfterSuper(frame.Function, frame.Registers[valueReg]);
         }
         catch (JsThrownException ex) when (HasHandler(frame))
         {
             ThrowOrHandle(frame, ex.Value);
+        }
+    }
+
+    /// <summary>
+    /// ECMA-262 13.3.7.1 SuperCall step 10, InitializeInstanceElements: step 1
+    /// (PrivateMethodOrAccessorAdd) brands the object the base constructor
+    /// returned. A base class brands its instance on construction; a derived
+    /// class never allocates one, so without this an instance of a subclass
+    /// whose only private members are methods or accessors stayed unbranded
+    /// and every `this.#m()` threw.
+    /// </summary>
+    internal void BrandInstanceAfterSuper(BytecodeFunction function, JsValue instance)
+    {
+        if (function.BrandTokens.Count == 0 || instance.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var obj = _heap.GetObject(instance.AsObjectHandle());
+        if (obj.PrivateBrand == 0)
+        {
+            obj.PrivateBrand = function.BrandTokens[0];
         }
     }
 

@@ -2122,6 +2122,22 @@ public class BrowserIntegration : IDisposable
         var refreshStartTime = DateTime.Now;
         EngineLogBridge.Info("[BrowserIntegration] RefreshAsync: Starting refresh operation", LogCategory.Navigation);
 
+        // With an out-of-process renderer the page lives in the child, and the
+        // host-side BrowserHost has never loaded it: refreshing that did nothing
+        // visible, so the toolbar button, F5 and Ctrl+R were all dead. HTML
+        // "reload" (7.4.2.2) navigates to the current URL again, so send the
+        // committed URL back to the renderer the way a navigation is sent.
+        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+        {
+            var currentUrl = CurrentUrl;
+            if (!string.IsNullOrWhiteSpace(currentUrl))
+            {
+                await NavigateInternalAsync(currentUrl, isUserInput: false).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
         _lastNavigationTime = DateTime.Now;
         _hasFirstStyledRender = false;
         _hasStableStyleSnapshot = false;
