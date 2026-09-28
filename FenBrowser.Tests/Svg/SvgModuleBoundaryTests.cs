@@ -35,7 +35,7 @@ public sealed partial class SvgModuleBoundaryTests
         ["FenEngine.Svg"] = null,
         ["FenEngine.Adapters"] = null,
         ["FenEngine.Rendering.Css"] = new[] { "SvgCssCascade.cs", "SvgCssLengthEvaluator.cs", "Shapes.cs" },
-        ["FenEngine.Typography"] = new[] { "Text.cs", "TextPath.cs" },
+        ["FenEngine.Typography"] = new[] { "Text.cs", "TextBidi.cs", "TextPath.cs" },
         ["FenEngine.Layout"] = new[] { "SvgTypefaceResolver.cs" },
         ["FenEngine.Rendering"] = new[] { "SvgTypefaceResolver.cs" },
     };
