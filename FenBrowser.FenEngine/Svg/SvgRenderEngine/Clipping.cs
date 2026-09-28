@@ -16,6 +16,15 @@ namespace FenBrowser.FenEngine.Svg
         private HashSet<SvgElement> _activeObjectBounds;
 
         /// <summary>
+        /// The use element whose own filter and mask are being built. Its x/y are a
+        /// translation appended to its transform (SVG 2 §5.6), already on the canvas
+        /// while those effects are built, so its bounding box is measured in that
+        /// translated space. Anywhere else, such as a parent group's union, the
+        /// offset is part of the instance's placement and stays in its bounds.
+        /// </summary>
+        private SvgElement _useInstanceSpace;
+
+        /// <summary>
         /// Applies the element's clip-path attribute, if any. Must be called
         /// inside a CanvasState scope so the clip unwinds with the element.
         /// Supported: userSpaceOnUse (default) and objectBoundingBox units for
@@ -355,6 +364,12 @@ namespace FenBrowser.FenEngine.Svg
                             return false;
                         }
                         bounds = targetTransform.MapRect(bounds);
+                        if (ReferenceEquals(element, _useInstanceSpace))
+                        {
+                            return SvgValues.IsFinite(bounds.Left) && SvgValues.IsFinite(bounds.Top) &&
+                                SvgValues.IsFinite(bounds.Right) && SvgValues.IsFinite(bounds.Bottom) &&
+                                bounds.Width > 0f && bounds.Height > 0f;
+                        }
                         float useX = ResolveGeometryCoordinate(element, "x", viewport, viewport.Width);
                         float useY = ResolveGeometryCoordinate(element, "y", viewport, viewport.Height);
                         if (useX != 0f || useY != 0f)

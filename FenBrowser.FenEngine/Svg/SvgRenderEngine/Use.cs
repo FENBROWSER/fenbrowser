@@ -92,6 +92,10 @@ namespace FenBrowser.FenEngine.Svg
 
                 using var shadowScope = SvgCssCascade.UseShadowScope.Enter(target);
 
+                SvgElement outerInstance = _useInstanceSpace;
+                _useInstanceSpace = el;
+                try
+                {
                 DrawWithEffects(el, canvas, viewport, () =>
                 {
                     // S8/F8: opacity on <use> composites the instantiated subtree.
@@ -123,6 +127,11 @@ namespace FenBrowser.FenEngine.Svg
                         }
                     }
                 }, next);
+                }
+                finally
+                {
+                    _useInstanceSpace = outerInstance;
+                }
             }
             finally
             {
