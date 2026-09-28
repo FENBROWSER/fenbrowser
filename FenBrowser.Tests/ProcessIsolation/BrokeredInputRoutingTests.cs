@@ -57,6 +57,40 @@ public sealed class BrokeredInputRoutingTests
         }
     }
 
+    // The page lives in the renderer child; the host-side BrowserHost never loaded it, so
+    // refreshing that one did nothing and the toolbar Refresh button, F5 and Ctrl+R were dead.
+    [Fact]
+    public async Task BrowserIntegration_Refresh_RenavigatesTheRendererToTheCommittedUrl()
+    {
+        var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
+        System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
+
+        var coordinator = new RecordingCoordinator();
+        ProcessIsolationRuntime.SetCoordinator(coordinator);
+
+        try
+        {
+            using var tab = new BrowserTab();
+            await tab.NavigateAsync("https://example.test/");
+            // The renderer commits after a redirect; refresh reloads what it committed.
+            const string committedUrl = "https://example.test/home";
+            tab.Browser.OnMetadataChangedFromRenderer(tab.Id, new RendererMetadataChangedPayload { Url = committedUrl });
+
+            await tab.Browser.RefreshAsync();
+
+            Assert.Equal(2, coordinator.Navigations.Count);
+            var reload = coordinator.Navigations[1];
+            Assert.Equal(tab.Id, reload.TabId);
+            Assert.Equal(committedUrl, reload.Url);
+            Assert.False(reload.IsUserInput);
+        }
+        finally
+        {
+            ProcessIsolationRuntime.SetCoordinator(null);
+            System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
+        }
+    }
+
     [Fact]
     public async Task BrowserIntegration_HandleKeyPress_RoutesTextToRendererOnlyInBrokeredMode()
     {
