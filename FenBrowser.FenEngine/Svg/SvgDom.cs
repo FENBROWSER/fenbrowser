@@ -45,10 +45,12 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             // Attribute lists are tiny (< 256); linear scan avoids allocating the
-            // lookup table for the overwhelming majority of elements.
+            // lookup table for the overwhelming majority of elements. Names match
+            // exactly: this is an XML document, where 'viewbox' is not 'viewBox'
+            // (XML 1.0 §2.3, names are case-sensitive).
             for (int i = 0; i < attrs.Length; i++)
             {
-                if (string.Equals(attrs[i].Key, name, System.StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(attrs[i].Key, name, System.StringComparison.Ordinal))
                 {
                     return attrs[i].Value;
                 }

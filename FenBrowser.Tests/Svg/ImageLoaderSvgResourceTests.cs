@@ -714,6 +714,20 @@ public sealed class ImageLoaderSvgResourceTests
     }
 
     [Fact]
+    public void SvgImage_LowercaseViewboxIsNotAViewBox()
+    {
+        // An SVG image is an XML document and XML names are case-sensitive, so
+        // 'viewbox' is an unknown attribute: the 10x10 rect stays 10x10 unscaled.
+        using SKBitmap? bitmap = RenderInline(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewbox='0 0 10 10'>" +
+            "<rect width='10' height='10' fill='lime'/></svg>");
+
+        Assert.NotNull(bitmap);
+        Assert.Equal(SKColors.Lime, bitmap!.GetPixel(5, 5));
+        Assert.Equal(0, bitmap.GetPixel(15, 15).Alpha);
+    }
+
+    [Fact]
     public void SvgImage_UndeclaredNamespaceStillRendersAsSvg()
     {
         using SKBitmap? bitmap = RenderInline(
