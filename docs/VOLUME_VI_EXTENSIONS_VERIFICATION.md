@@ -5841,3 +5841,20 @@ the other six are documents the first-party renderer refuses by design (a blocke
 resource, a script, viewport units, a paint-server URL form). Caveats: Svg.Skia ran
 without the Ahem test font, and per-test timing was not compared because the two
 harnesses start processes differently.
+
+## 6.250 Real-Site SVG Parity With Chrome (2026-09-29)
+
+`BenchSvg --capture-sites scripts/BenchSvg/captured-sites.json` captured 151 SVGs
+(inline and linked) from the static HTML of the eleven listed sites; Amazon, Gmail,
+CSS Zen Garden and the React TodoMVC build expose none without script.
+`python scripts/svg_chrome_diff.py <capture> <output>` renders each one with the
+first-party renderer and with headless Chrome at the same size and compares them
+premultiplied, counting a pixel as different when a channel moves by more than 48.
+Inline captures go through FenBrowser's HTML parser (`BenchSvg --inspect-inline-svg`)
+and are embedded inline in the Chrome page, pinned to the rendered size so page
+layout stays out of the comparison; linked files load through `<img>`.
+
+Result on 2026-09-29: 151/151 match (no pixel over the threshold): GitHub 128,
+X 10, Wikipedia 5, YouTube 3, Grafana 3, Google 1, Hacker News 1. The first run found
+five inline documents refused because the HTML tree builder did not restore SVG
+element names (VOLUME II 1.97), which is fixed.
