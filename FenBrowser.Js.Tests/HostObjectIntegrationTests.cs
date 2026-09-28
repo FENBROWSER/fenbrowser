@@ -220,30 +220,44 @@ public sealed class HostObjectIntegrationTests
         Assert.Empty(hooks.Writes);
     }
 
+    // ECMA-262 10.1.9.2 OrdinarySetWithOwnDescriptor step 7: an inherited
+    // accessor with no setter makes [[Set]] return false, and 6.2.5.6 PutValue
+    // throws for that only in strict code. The host never sees the write.
     [Fact]
-    public void InheritedGetterOnlyAccessorLeavesTheWriteToTheHost()
+    public void InheritedGetterOnlyAccessorRefusesTheWrite()
     {
-        var (interpreter, hooks, handle) = Setup();
-        _ = Run(interpreter, @"
+        var (interpreter, hooks, _) = Setup();
+        var result = Run(interpreter, @"
             myHost.__proto__ = Object.defineProperty({}, 'color', {
                 get: function () { return 'from getter'; },
                 configurable: true
             });
             myHost.color = 'red';
+            var threw = false;
+            (function () { 'use strict'; try { myHost.color = 'red'; } catch (e) { threw = e instanceof TypeError; } })();
+            myHost.color + ':' + threw;
         ");
 
-        Assert.Single(hooks.Writes);
-        Assert.Equal(handle, hooks.Writes[0].Handle);
-        Assert.Equal("red", hooks.Writes[0].Value.AsString());
+        Assert.Equal("from getter:true", result.AsString());
+        Assert.Empty(hooks.Writes);
     }
 
     [Fact]
-    public void RefusedWriteThrowsTypeError()
+    public void RefusedWriteThrowsTypeErrorInStrictCode()
     {
         var (interpreter, hooks, handle) = Setup();
         hooks.Store[(handle.Index, "color")] = JsValue.FromString("blue");
         hooks.RefuseWrites = true;
-        Assert.Throws<JsThrownException>(() => Run(interpreter, "myHost.color = 'red';"));
+        Assert.Throws<JsThrownException>(() => Run(interpreter, "'use strict'; myHost.color = 'red';"));
+    }
+
+    [Fact]
+    public void RefusedWriteIsIgnoredInSloppyCode()
+    {
+        var (interpreter, hooks, handle) = Setup();
+        hooks.Store[(handle.Index, "color")] = JsValue.FromString("blue");
+        hooks.RefuseWrites = true;
+        Assert.Equal("blue", Run(interpreter, "myHost.color = 'red'; myHost.color;").AsString());
     }
 
     [Fact]

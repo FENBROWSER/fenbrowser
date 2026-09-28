@@ -12107,7 +12107,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     continue;
                 }
 
-                SetHostObjectProperty(targetValue, key, GetReceiverProperty(fromValue, key));
+                SetHostObjectProperty(targetValue, key, GetReceiverProperty(fromValue, key), strict: true);
             }
 
             return;
@@ -12121,7 +12121,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 continue;
             }
 
-            SetHostObjectProperty(targetValue, pair.Key, GetReceiverProperty(fromValue, pair.Key));
+            SetHostObjectProperty(targetValue, pair.Key, GetReceiverProperty(fromValue, pair.Key), strict: true);
         }
     }
 
@@ -22002,7 +22002,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         if (receiverValue.Tag == JsValueTag.HostObject)
         {
-            try { SetHostObjectProperty(receiverValue, prop, value); }
+            try { SetHostObjectProperty(receiverValue, prop, value, frame.Function.IsStrictMode); }
             catch (JsThrownException ex) when (HasHandler(frame)) { ThrowOrHandle(frame, ex.Value); }
             return;
         }
@@ -22171,7 +22171,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             if (keyValue.Tag != JsValueTag.Symbol)
             {
-                SetHostObjectProperty(receiverValue, ToPropertyKey(keyValue), value);
+                SetHostObjectProperty(receiverValue, ToPropertyKey(keyValue), value, strict);
             }
 
             return;
@@ -22316,7 +22316,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         if (receiverValue.Tag == JsValueTag.HostObject)
         {
-            SetHostObjectProperty(receiverValue, prop, value);
+            SetHostObjectProperty(receiverValue, prop, value, strict);
             return;
         }
 

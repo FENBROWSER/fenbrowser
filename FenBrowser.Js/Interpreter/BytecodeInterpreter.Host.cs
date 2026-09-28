@@ -116,10 +116,11 @@ public sealed partial class BytecodeInterpreter
     }
 
     // Write a property on a host object. Resolves the handle first, then
-    // defers to IHostHooks.TrySetHostProperty. A false return becomes a
-    // TypeError so scripts can see refused writes; this matches the spec's
-    // "throw a TypeError" branch of OrdinarySet when the host vetoes.
-    private void SetHostObjectProperty(JsValue receiver, string key, JsValue value)
+    // defers to IHostHooks.TrySetHostProperty. A refused write - no setter, a
+    // read-only property, or the host saying no - is [[Set]] returning false,
+    // which ECMA-262 6.2.5.6 PutValue turns into a TypeError only in strict
+    // code; sloppy code carries on, as `el.offsetWidth = 1` does in browsers.
+    private void SetHostObjectProperty(JsValue receiver, string key, JsValue value, bool strict)
     {
         _ = RequireHostObject(receiver, "set host property");
         var handle = receiver.AsHostObjectHandle();
@@ -137,7 +138,7 @@ public sealed partial class BytecodeInterpreter
         {
             if (descriptor.IsAccessor)
             {
-                if (!CallSetter(descriptor, value, receiver))
+                if (!CallSetter(descriptor, value, receiver) && strict)
                 {
                     throw new JsThrownException(CreateTypeError(
                         "Cannot set property '" + key + "' on host object accessor without a setter."));
@@ -148,8 +149,13 @@ public sealed partial class BytecodeInterpreter
 
             if (!descriptor.Writable)
             {
-                throw new JsThrownException(CreateTypeError(
-                    "Cannot assign to read-only property '" + key + "' on host object."));
+                if (strict)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Cannot assign to read-only property '" + key + "' on host object."));
+                }
+
+                return;
             }
 
             DefineHostObjectProperty(handle, key, descriptor with { Value = value });
@@ -176,9 +182,14 @@ public sealed partial class BytecodeInterpreter
             if ((inherited.IsAccessor || !inherited.Writable) &&
                 !_hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.InCheck, out _))
             {
-                throw new JsThrownException(CreateTypeError(inherited.IsAccessor
-                    ? "Cannot set property '" + key + "' which has only a getter."
-                    : "Cannot assign to read-only property '" + key + "'."));
+                if (strict)
+                {
+                    throw new JsThrownException(CreateTypeError(inherited.IsAccessor
+                        ? "Cannot set property '" + key + "' which has only a getter."
+                        : "Cannot assign to read-only property '" + key + "'."));
+                }
+
+                return;
             }
         }
 
@@ -196,8 +207,11 @@ public sealed partial class BytecodeInterpreter
             return;
         }
 
-        throw new JsThrownException(CreateTypeError(
-            "Cannot set property '" + key + "' on host object (refused by embedder)."));
+        if (strict)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Cannot set property '" + key + "' on host object (refused by embedder)."));
+        }
     }
 
     private bool TryGetHostObjectDefinedProperty(
