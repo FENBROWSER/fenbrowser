@@ -374,6 +374,22 @@ namespace FenBrowser.FenEngine.Layout
             {
                  if (float.TryParse(expression.Replace("%", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out float pct)) return parentSize * (pct / 100f);
             }
+            // CSS Values 4 §6.1.2: the small/large/dynamic viewport units. With no
+            // retractable browser UI they all equal vh/vw, as CssLoaderValueParsing
+            // already resolves them. They must be matched before the bare suffixes:
+            // "100dvh" also ends in "vh", and "100d" does not parse, so x.com's
+            // `min-h-dvh` page shell lost its min-height and the footer rode up
+            // under the content instead of sitting at the bottom of the viewport.
+            if (expression.Length > 3 &&
+                (expression.EndsWith("dvh") || expression.EndsWith("svh") || expression.EndsWith("lvh") ||
+                 expression.EndsWith("dvw") || expression.EndsWith("svw") || expression.EndsWith("lvw")))
+            {
+                bool vertical = expression[^1] == 'h';
+                if (float.TryParse(expression.AsSpan(0, expression.Length - 3), NumberStyles.Float, CultureInfo.InvariantCulture, out float viewportPercent))
+                {
+                    return (vertical ? viewportHeight : viewportWidth) * (viewportPercent / 100f);
+                }
+            }
             if (expression.EndsWith("vh"))
             {
                  if (float.TryParse(expression.Replace("vh", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out float vh)) return viewportHeight * (vh / 100f);
