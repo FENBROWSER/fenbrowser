@@ -2347,10 +2347,8 @@ namespace FenBrowser.FenEngine.Svg
                         preserveAspectRatio);
                     if (destination.IsEmpty) return;
                     canvas.ClipRect(imageViewport);
-                    canvas.Translate(destination.Left, destination.Top);
-                    canvas.Scale(
-                        destination.Width / referenced.Width,
-                        destination.Height / referenced.Height);
+                    canvas.SetMatrix(PlaceImageContent(
+                        canvas.TotalMatrix, destination, referenced.Width, referenced.Height));
                     canvas.DrawPicture(referenced.Picture);
                 }
                 finally
@@ -2842,6 +2840,46 @@ namespace FenBrowser.FenEngine.Svg
             {
                 error = "image data URI failed to decode";
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Maps image content of the given natural size onto <paramref name="destination"/>
+        /// under <paramref name="current"/>. Composing a viewBox scale and an image-fit scale
+        /// in float32 lands edges a few ulps short of whole device pixels (1.5 user units at
+        /// 200/3 px each is 99.999996 px), which analytic coverage paints as a 254-alpha
+        /// seam. For axis-aligned placements, device edges within 1/1000 px of a pixel
+        /// boundary snap onto it; anything else composes normally.
+        /// </summary>
+        private static SKMatrix PlaceImageContent(
+            SKMatrix current, SKRect destination, float contentWidth, float contentHeight)
+        {
+            var local = SKMatrix.CreateScaleTranslation(
+                destination.Width / contentWidth, destination.Height / contentHeight,
+                destination.Left, destination.Top);
+            var placed = SKMatrix.Concat(current, local);
+            if (placed.SkewX != 0f || placed.SkewY != 0f || placed.Persp0 != 0f ||
+                placed.Persp1 != 0f || placed.Persp2 != 1f ||
+                placed.ScaleX <= 0f || placed.ScaleY <= 0f)
+                return placed;
+
+            double left = placed.TransX;
+            double top = placed.TransY;
+            double right = left + (double)placed.ScaleX * contentWidth;
+            double bottom = top + (double)placed.ScaleY * contentHeight;
+            left = SnapToPixel(left);
+            top = SnapToPixel(top);
+            right = SnapToPixel(right);
+            bottom = SnapToPixel(bottom);
+            var snapped = SKMatrix.CreateScaleTranslation(
+                (float)((right - left) / contentWidth), (float)((bottom - top) / contentHeight),
+                (float)left, (float)top);
+            return SvgValues.IsFinite(snapped) ? snapped : placed;
+
+            static double SnapToPixel(double edge)
+            {
+                double nearest = Math.Round(edge);
+                return Math.Abs(edge - nearest) < 1e-3 ? nearest : edge;
             }
         }
 
