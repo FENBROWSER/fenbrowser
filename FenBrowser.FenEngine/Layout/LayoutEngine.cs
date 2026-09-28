@@ -659,7 +659,12 @@ namespace FenBrowser.FenEngine.Layout
                 return;
             }
 
-            if (box.Geometry != null && box.ComputedStyle != null)
+            // An outside ::marker is laid out as position:absolute only to take it out of
+            // flow; CSS Lists places it beside its list item, which
+            // FormattingContext.ArrangeOutsideListMarker has done. Re-solving it against
+            // a containing block would throw that away.
+            if (box.Geometry != null && box.ComputedStyle != null &&
+                box is not FenBrowser.FenEngine.Layout.Tree.ListMarkerBox)
             {
                 var position = LayoutStyleResolver.GetEffectivePosition(box.ComputedStyle);
                 if (string.Equals(position, "absolute", StringComparison.OrdinalIgnoreCase))

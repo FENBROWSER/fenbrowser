@@ -2372,7 +2372,7 @@ namespace FenBrowser.FenEngine.Rendering
                 string listStyle = parts.Length > 1 ? parts[1].Trim() : "decimal";
                 
                 int value = _counters.ContainsKey(counterName) ? _counters[counterName] : 0;
-                return FormatCounterValue(value, listStyle);
+                return FormatCounterValue(value, listStyle, parent?.OwnerDocument);
             }
             
             // Handle counters() function (for nested lists with separator)
@@ -2457,32 +2457,34 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Formats a counter value according to list-style-type.
         /// </summary>
-        private static string FormatCounterValue(int value, string listStyle)
+        private static string FormatCounterValue(int value, string listStyle, Document document)
         {
+            // Author @counter-style names and the predefined styles list markers share
+            // go through the marker formatter so counter() and ::marker agree.
+            if (listStyle != null && Layout.CounterStyleRegistry.TryGet(document, listStyle.Trim(), out _))
+            {
+                return Layout.ListMarkerFormatter.FormatCounterValue(value, listStyle, document);
+            }
+
             listStyle = listStyle?.Trim().ToLowerInvariant() ?? "decimal";
             
             switch (listStyle)
             {
+                case "disc":
+                case "circle":
+                case "square":
+                case "decimal-leading-zero":
+                case "lower-alpha":
+                case "lower-latin":
+                case "upper-alpha":
+                case "upper-latin":
+                    return Layout.ListMarkerFormatter.FormatCounterValue(value, listStyle);
                 case "decimal":
                     return value.ToString();
-                case "decimal-leading-zero":
-                    return value.ToString("D2");
                 case "lower-roman":
                     return ToRoman(value).ToLowerInvariant();
                 case "upper-roman":
                     return ToRoman(value);
-                case "lower-alpha":
-                case "lower-latin":
-                    return value > 0 && value <= 26 ? ((char)('a' + value - 1)).ToString() : value.ToString();
-                case "upper-alpha":
-                case "upper-latin":
-                    return value > 0 && value <= 26 ? ((char)('A' + value - 1)).ToString() : value.ToString();
-                case "disc":
-                    return "•";
-                case "circle":
-                    return "○";
-                case "square":
-                    return "■";
                 case "lower-greek":
                     return value > 0 ? char.ConvertFromUtf32(0x03B1 + ((value - 1) % 24)) : value.ToString();
                 case "armenian":
@@ -6296,6 +6298,14 @@ namespace FenBrowser.FenEngine.Rendering
                 };
             }
 
+            // A text marker is laid out as a text run; paint it as one, so its glyphs
+            // land exactly where the same text in ::before or a <span> would.
+            var markerRuns = BuildTextNode(markerTextNode, markerLayoutBox, style?.Marker ?? style, isFocused, isHovered);
+            if (markerRuns is { Count: 1 })
+            {
+                return markerRuns[0];
+            }
+
             string markerText = markerTextNode.Data.TrimEnd();
 
             // Calculate Position
@@ -6310,6 +6320,22 @@ namespace FenBrowser.FenEngine.Rendering
             float x = markerLayoutBox.ContentBox.Left;
             float y = markerLayoutBox.ContentBox.Top +
                       (markerLayoutBox.Baseline > 0f ? markerLayoutBox.Baseline : fontSize * 0.85f);
+            // Laid out as text, the marker's glyphs sit where its line says, as for any
+            // other text run.
+            if (markerLayoutBox.Lines != null)
+            {
+                foreach (var markerLine in markerLayoutBox.Lines)
+                {
+                    if (string.IsNullOrEmpty(markerLine.Text) || markerLine.Height <= 0f)
+                    {
+                        continue;
+                    }
+
+                    x = markerLayoutBox.ContentBox.Left + markerLine.Origin.X;
+                    y = markerLayoutBox.ContentBox.Top + markerLine.Origin.Y + markerLine.Baseline;
+                    break;
+                }
+            }
 
             return new TextPaintNode
             {

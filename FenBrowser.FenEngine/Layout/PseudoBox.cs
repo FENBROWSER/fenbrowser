@@ -174,10 +174,17 @@ namespace FenBrowser.FenEngine.Layout
         public string ListStyleType { get; }
         public int Value { get; set; }
 
-        public CounterContentItem(string counterName, string listStyleType = "decimal")
+        /// <summary>
+        /// The counters() separator placed between the values of every instance in
+        /// scope, outermost first; null for counter(), which shows only the innermost.
+        /// </summary>
+        public string Separator { get; }
+
+        public CounterContentItem(string counterName, string listStyleType = "decimal", string separator = null)
         {
             CounterName = counterName ?? throw new ArgumentNullException(nameof(counterName));
             ListStyleType = listStyleType;
+            Separator = separator;
         }
 
         public override string GetText()
@@ -435,8 +442,7 @@ namespace FenBrowser.FenEngine.Layout
                                         var name = parts[0].Trim();
                                         var sep = UnescapeString(parts[1].Trim(' ', '"', '\''));
                                         var style = parts.Count >= 3 ? parts[2].Trim() : "decimal";
-                                        // Store as a string item concatenated; real counter increment handled elsewhere.
-                                        items.Add(new StringContentItem($"{name}:{sep}:{style}")); // marker for downstream if needed
+                                        items.Add(new CounterContentItem(name, style, sep));
                                     }
                                     break;
                                 }

@@ -17,7 +17,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
     {
         private readonly IReadOnlyDictionary<Node, CssComputed> _styles;
         private readonly LayoutBoxStore _store;
-        private readonly Dictionary<Element, Dictionary<Element, int>> _listOrdinals = new();
+        private readonly Dictionary<Node, Dictionary<Element, int>> _listItemCounters = new();
+        private readonly Dictionary<(Node Root, string Name), Dictionary<Element, int[]>> _counterChains = new();
         
         public BoxTreeBuilder(IReadOnlyDictionary<Node, CssComputed> styles)
             : this(styles, new LayoutBoxStore())
@@ -202,10 +203,11 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     }
                 }
 
-                // Prepend ::before pseudo-element
+                // Prepend ::before pseudo-element (after the ::marker, which a new list
+                // here used to discard)
                 if (style.Before != null && IsVisiblePseudo(style.Before))
                 {
-                    childBoxes = new List<LayoutBox>();
+                    childBoxes ??= new List<LayoutBox>();
                     if (style.Before.PseudoElementInstance == null)
                         style.Before.PseudoElementInstance = new PseudoElement(element, "before", style.Before);
                     EnsurePseudoTextContent(style.Before.PseudoElementInstance, style.Before.Content);
@@ -554,6 +556,17 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
             foreach (var child in children)
             {
+                if (currentAnon == null && child.IsOutOfFlow)
+                {
+                    // An out-of-flow box (an outside ::marker, an absolutely positioned
+                    // span) that would open a run stays a direct child: it has the same
+                    // static position there, and an anonymous block holding nothing in
+                    // flow would stop margins collapsing through the container (CSS 2.1
+                    // §8.3.1; css/css-lists/list-and-margin-collapse-001).
+                    newChildren.Add(child);
+                    continue;
+                }
+
                 if (IsInlineLevel(child))
                 {
                     if (currentAnon == null)
@@ -732,12 +745,159 @@ namespace FenBrowser.FenEngine.Layout.Tree
                    !string.Equals(content, "normal", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static void EnsurePseudoTextContent(PseudoElement pseudoElement, string rawContent)
+        // ::marker content (CSS Lists 3 §3.2): strings, attr(), counter(list-item)
+        // with its counter style, and quotes drawn from the 'quotes' pairs - the
+        // marker's own, else the list item's, which inherits them from the list.
+        private string ResolveMarkerContent(CssComputed markerStyle, CssComputed listStyle, Element element)
+        {
+            var raw = markerStyle?.Content;
+            if (string.IsNullOrWhiteSpace(raw) ||
+                string.Equals(raw.Trim(), "normal", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(raw.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var quotes = ParseQuotes(ReadMapValue(markerStyle, "quotes") ?? ReadMapValue(listStyle, "quotes"));
+            var depth = 0;
+            var text = new System.Text.StringBuilder();
+            foreach (var item in PseudoBoxFactory.ParseContent(raw.Trim(), element))
+            {
+                switch (item)
+                {
+                    case CounterContentItem counter:
+                        text.Append(FormatCounterItem(counter, element));
+                        break;
+                    case QuoteContentItem quote:
+                        switch (quote.QuoteType)
+                        {
+                            case QuoteType.OpenQuote:
+                                text.Append(QuoteAt(quotes, depth, open: true));
+                                depth++;
+                                break;
+                            case QuoteType.CloseQuote:
+                                if (depth > 0) depth--;
+                                text.Append(QuoteAt(quotes, depth, open: false));
+                                break;
+                            case QuoteType.NoOpenQuote:
+                                depth++;
+                                break;
+                            case QuoteType.NoCloseQuote:
+                                if (depth > 0) depth--;
+                                break;
+                        }
+                        break;
+                    case StringContentItem or AttrContentItem:
+                        text.Append(item.GetText());
+                        break;
+                }
+            }
+
+            return text.Length == 0 ? null : text.ToString();
+        }
+
+        private static string ReadMapValue(CssComputed style, string property) =>
+            style?.Map != null && style.Map.TryGetValue(property, out var value) && !string.IsNullOrWhiteSpace(value)
+                ? value
+                : null;
+
+        private static string QuoteAt(List<(string Open, string Close)> quotes, int depth, bool open)
+        {
+            if (quotes.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var pair = quotes[Math.Min(depth, quotes.Count - 1)];
+            return open ? pair.Open : pair.Close;
+        }
+
+        // The 'quotes' value: "none", "auto", or pairs of CSS strings (escapes such
+        // as \201C decoded). auto uses the typographic double and single quotes.
+        private static List<(string Open, string Close)> ParseQuotes(string value)
+        {
+            var pairs = new List<(string, string)>();
+            if (string.IsNullOrWhiteSpace(value) || string.Equals(value.Trim(), "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                pairs.Add(("“", "”"));
+                pairs.Add(("‘", "’"));
+                return pairs;
+            }
+
+            if (string.Equals(value.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return pairs;
+            }
+
+            var strings = new List<string>();
+            for (var i = 0; i < value.Length; i++)
+            {
+                var delimiter = value[i];
+                if (delimiter != '"' && delimiter != '\'')
+                {
+                    continue;
+                }
+
+                var current = new System.Text.StringBuilder();
+                i++;
+                while (i < value.Length && value[i] != delimiter)
+                {
+                    if (value[i] == '\\' && i + 1 < value.Length)
+                    {
+                        i++;
+                        var hexStart = i;
+                        while (i < value.Length && i - hexStart < 6 && Uri.IsHexDigit(value[i]))
+                        {
+                            i++;
+                        }
+
+                        if (i > hexStart)
+                        {
+                            var codePoint = Convert.ToInt32(value.Substring(hexStart, i - hexStart), 16);
+                            current.Append(codePoint is > 0 and <= 0x10FFFF and not (>= 0xD800 and <= 0xDFFF)
+                                ? char.ConvertFromUtf32(codePoint)
+                                : "�");
+                            if (i < value.Length && value[i] == ' ')
+                            {
+                                i++;
+                            }
+
+                            continue;
+                        }
+
+                        current.Append(value[i]);
+                        i++;
+                        continue;
+                    }
+
+                    current.Append(value[i]);
+                    i++;
+                }
+
+                strings.Add(current.ToString());
+            }
+
+            for (var i = 0; i + 1 < strings.Count; i += 2)
+            {
+                pairs.Add((strings[i], strings[i + 1]));
+            }
+
+            return pairs;
+        }
+
+        private void EnsurePseudoTextContent(PseudoElement pseudoElement, string rawContent)
         {
             if (pseudoElement == null) return;
 
-            var text = NormalizePseudoText(rawContent, pseudoElement.OriginatingElement);
-            if (string.IsNullOrEmpty(text)) return;
+            SetPseudoText(pseudoElement, NormalizePseudoText(rawContent, pseudoElement));
+        }
+
+        // Puts already-resolved text in the pseudo-element. A 'content' value goes
+        // through EnsurePseudoTextContent to be parsed first; formatted list-marker
+        // text ("1. ", "• ") is not CSS and would parse to nothing.
+        private static void SetPseudoText(PseudoElement pseudoElement, string text)
+        {
+            if (pseudoElement == null || string.IsNullOrEmpty(text)) return;
 
             if (pseudoElement.ChildNodes.Length == 0)
             {
@@ -770,11 +930,12 @@ namespace FenBrowser.FenEngine.Layout.Tree
             string listStyleType = listStyle?.ListStyleType ?? "disc";
             string listStyleImage = listStyle?.ListStyleImage ?? "none";
             var markerStyle = listStyle?.Marker;
-            string markerText = NormalizePseudoText(markerStyle?.Content, element);
+            string markerText = ResolveMarkerContent(markerStyle, listStyle, element);
+            bool authoredContent = !string.IsNullOrEmpty(markerText);
 
             if (string.IsNullOrEmpty(markerText))
             {
-                markerText = ListMarkerFormatter.Format(ResolveListOrdinal(element), listStyleType);
+                markerText = ListMarkerFormatter.Format(ResolveListOrdinal(element), listStyleType, element.OwnerDocument);
             }
 
             bool hasImage = !string.IsNullOrWhiteSpace(listStyleImage) &&
@@ -803,7 +964,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             markerStyle.Display = "inline";
             var pseudoElement = markerStyle.PseudoElementInstance ?? new PseudoElement(element, "marker", markerStyle);
             markerStyle.PseudoElementInstance = pseudoElement;
-            EnsurePseudoTextContent(pseudoElement, markerText);
+            SetPseudoText(pseudoElement, markerText);
             var textNode = pseudoElement.ChildNodes.OfType<Text>().FirstOrDefault();
             if (textNode == null)
             {
@@ -823,67 +984,105 @@ namespace FenBrowser.FenEngine.Layout.Tree
             return (ListMarkerBox)_store.GetWrapper(markerId);
         }
 
+        // The list-item counter value for this item (CSS Lists 3), computed once per
+        // tree for every list in it: reversed lists, value/start, and author
+        // counter-reset/-increment/-set on list-item all take part.
         private int ResolveListOrdinal(Element item)
         {
-            var parent = item?.ParentElement;
-            if (parent == null)
+            var root = CounterRoot(item);
+            if (!_listItemCounters.TryGetValue(root, out var values))
             {
-                return 1;
+                values = ListItemCounters.Compute(root, CounterStyleOf, FlatChildren);
+                _listItemCounters[root] = values;
             }
 
-            if (!_listOrdinals.TryGetValue(parent, out var ordinals))
-            {
-                var items = parent.ChildNodes
-                    .OfType<Element>()
-                    .Where(static child => string.Equals(child.TagName, "LI", StringComparison.OrdinalIgnoreCase))
-                    .ToArray();
-                bool reversed = string.Equals(parent.TagName, "OL", StringComparison.OrdinalIgnoreCase) &&
-                                parent.HasAttribute("reversed");
-                int next = reversed ? items.Length : 1;
-                if (int.TryParse(parent.GetAttribute("start"), out int explicitStart))
-                {
-                    next = explicitStart;
-                }
-
-                int step = reversed ? -1 : 1;
-                ordinals = new Dictionary<Element, int>(items.Length);
-                foreach (var listItem in items)
-                {
-                    if (int.TryParse(listItem.GetAttribute("value"), out int explicitValue))
-                    {
-                        next = explicitValue;
-                    }
-
-                    ordinals[listItem] = next;
-                    next += step;
-                }
-
-                _listOrdinals[parent] = ordinals;
-            }
-
-            return ordinals.TryGetValue(item, out int ordinal) ? ordinal : 1;
+            return values.TryGetValue(item, out var ordinal) ? ordinal : 1;
         }
+
+        // Counters are numbered over the flat tree, the tree boxes are built from: a
+        // generated ::before/::after in its originating element's tree, and shadow
+        // content in its host's.
+        private static Node CounterRoot(Element at)
+        {
+            Node root = at is PseudoElement pseudo && pseudo.OriginatingElement != null
+                ? pseudo.OriginatingElement
+                : at;
+            while (true)
+            {
+                if (root.ParentNode != null)
+                {
+                    root = root.ParentNode;
+                }
+                else if (root is ShadowRoot shadowRoot && shadowRoot.Host != null)
+                {
+                    root = shadowRoot.Host;
+                }
+                else
+                {
+                    return root;
+                }
+            }
+        }
+
+        private CssComputed CounterStyleOf(Element element) =>
+            _styles != null && _styles.TryGetValue(element, out var style) ? style : null;
+
+        private IEnumerable<Node> FlatChildren(Node node) =>
+            node is Element element ? GetChildren(element) : node.ChildNodes;
 
         /// <summary>
         /// CSS Generated Content §2 ('content'): the value is a list of strings, attr()
         /// references and quote keywords concatenated in order, so
         /// `attr(data-replicated-value) " "` yields the attribute text plus a space, never
-        /// the declaration text. url() images and counters contribute no text here.
+        /// the declaration text. Counters show their value at the pseudo-element; url()
+        /// images contribute no text here.
         /// </summary>
-        private static string NormalizePseudoText(string rawContent, Element originatingElement)
+        private string NormalizePseudoText(string rawContent, PseudoElement pseudoElement)
         {
             if (string.IsNullOrWhiteSpace(rawContent)) return null;
 
             var text = new System.Text.StringBuilder();
-            foreach (var item in PseudoBoxFactory.ParseContent(rawContent.Trim(), originatingElement))
+            foreach (var item in PseudoBoxFactory.ParseContent(rawContent.Trim(), pseudoElement.OriginatingElement))
             {
-                if (item is StringContentItem or AttrContentItem or QuoteContentItem)
+                if (item is CounterContentItem counter)
+                {
+                    text.Append(FormatCounterItem(counter, pseudoElement));
+                }
+                else if (item is StringContentItem or AttrContentItem or QuoteContentItem)
                 {
                     text.Append(item.GetText());
                 }
             }
 
             return text.Length == 0 ? null : text.ToString();
+        }
+
+        // counter() shows the innermost instance of the counter in scope at the
+        // element, counters() every instance joined by the separator, outermost
+        // first (CSS Lists 3 §4.6). A counter nobody reset is instantiated at 0.
+        private string FormatCounterItem(CounterContentItem counter, Element at)
+        {
+            var chain = ResolveCounterChain(at, counter.CounterName);
+            var document = (at as PseudoElement)?.OriginatingElement?.OwnerDocument ?? at.OwnerDocument;
+            var style = string.IsNullOrWhiteSpace(counter.ListStyleType) ? "decimal" : counter.ListStyleType;
+            if (counter.Separator == null)
+            {
+                return ListMarkerFormatter.FormatCounterValue(chain[^1], style, document);
+            }
+
+            return string.Join(counter.Separator, chain.Select(value => ListMarkerFormatter.FormatCounterValue(value, style, document)));
+        }
+
+        private int[] ResolveCounterChain(Element at, string name)
+        {
+            var root = CounterRoot(at);
+            if (!_counterChains.TryGetValue((root, name), out var chains))
+            {
+                chains = ListItemCounters.ComputeCounter(root, CounterStyleOf, name, FlatChildren);
+                _counterChains[(root, name)] = chains;
+            }
+
+            return chains.TryGetValue(at, out var chain) && chain.Length > 0 ? chain : new[] { 0 };
         }
 
         private static void LogLayoutDecision(Node node, string decision, string display)
