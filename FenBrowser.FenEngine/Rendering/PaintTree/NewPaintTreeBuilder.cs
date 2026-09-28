@@ -4071,7 +4071,8 @@ namespace FenBrowser.FenEngine.Rendering
                 // root context (inherited color, referenced custom properties). The SVG
                 // engine resolves currentColor and var() itself, so the markup is never
                 // rewritten as text.
-                string svgContent = SerializeInlineSvgWithComputedPresentation(elem, style);
+                string svgContent = SerializeInlineSvgWithComputedPresentation(
+                    elem, style, box.ContentBox.Width, box.ContentBox.Height);
 
                 // Re-rasterize with resolved colors
                  var bitmap = RenderSvgToCachedBitmap(elem, svgContent, box.ContentBox.Width, box.ContentBox.Height);
@@ -4089,7 +4090,8 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
-        private string SerializeInlineSvgWithComputedPresentation(Element svgElement, CssComputed style)
+        private string SerializeInlineSvgWithComputedPresentation(
+            Element svgElement, CssComputed style, float viewportWidth, float viewportHeight)
         {
             if (svgElement?.CloneNode(true) is not Element clone)
             {
@@ -4107,10 +4109,26 @@ namespace FenBrowser.FenEngine.Rendering
                 out int withheld);
             FenBrowser.FenEngine.Adapters.SvgDiagnostics.RecordInlineContextWithheld(withheld);
 
+            // The outer inline <svg> establishes its viewport from its CSS content box
+            // (SVG 2 §8.2, CSS sizing of the outer svg element): pin that used size on the
+            // root so the SVG engine lays content out in it instead of in the 300x150
+            // default. The trailing declaration wins over author inline sizes, as the
+            // CSS width/height properties win over the attributes.
+            string viewportDeclarations = string.Empty;
+            if (float.IsFinite(viewportWidth) && float.IsFinite(viewportHeight) &&
+                viewportWidth > 0f && viewportHeight > 0f)
+            {
+                string w = viewportWidth.ToString("0.###", CultureInfo.InvariantCulture);
+                string h = viewportHeight.ToString("0.###", CultureInfo.InvariantCulture);
+                clone.SetAttributeUnsafe("width", w);
+                clone.SetAttributeUnsafe("height", h);
+                viewportDeclarations = " width: " + w + "px; height: " + h + "px;";
+            }
+
             string existing = clone.GetAttribute("style")?.Trim();
             clone.SetAttributeUnsafe(
                 "style",
-                string.IsNullOrEmpty(existing) ? context : context + " " + existing);
+                (string.IsNullOrEmpty(existing) ? context : context + " " + existing) + viewportDeclarations);
             return clone.ToHtml();
         }
 

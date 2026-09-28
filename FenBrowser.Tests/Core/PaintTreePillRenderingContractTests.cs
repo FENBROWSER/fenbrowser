@@ -426,6 +426,21 @@ namespace FenBrowser.Tests.Core
             Assert.NotEqual(Ink(substituted), Ink(written));
         }
 
+        [Fact]
+        public async System.Threading.Tasks.Task InlineSvgWithoutSizeAttributes_UsesItsCssBoxAsTheViewport()
+        {
+            // The outer svg's viewport is its 120x20 CSS box, so the 20x20 rect draws
+            // at 1:1 and is clipped to the box height; it used to be laid out in a
+            // 300x150 default and squeezed into the box.
+            using var bitmap = await RenderInlineSvgAsync(
+                "<svg id='icon'><rect width='20' height='20' fill='lime'></rect></svg>");
+
+            Assert.Equal(120, bitmap.Width);
+            Assert.Equal(20, bitmap.Height);
+            Assert.Equal(SKColors.Lime, bitmap.GetPixel(19, 19));
+            Assert.Equal(0, bitmap.GetPixel(21, 10).Alpha);
+        }
+
         private static async System.Threading.Tasks.Task<SKBitmap> RenderInlineSvgAsync(string body)
         {
             ImageLoader.ClearCache();
