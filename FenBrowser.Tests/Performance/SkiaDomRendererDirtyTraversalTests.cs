@@ -30,12 +30,14 @@ namespace FenBrowser.Tests.Performance
 
             renderer.RecursivelyClearDirty(root, InvalidationKind.Paint);
 
-            Assert.False(root.StyleDirty);
+            // Only the requested kind is cleared: style invalidation stays pending for
+            // the cascade that owns it (7a1424e1), layout for the next layout pass.
+            Assert.True(root.StyleDirty);
             Assert.True(root.LayoutDirty);
             Assert.False(root.PaintDirty);
             foreach (var child in children)
             {
-                Assert.False(child.StyleDirty);
+                Assert.True(child.StyleDirty);
                 Assert.True(child.LayoutDirty);
                 Assert.False(child.PaintDirty);
             }
