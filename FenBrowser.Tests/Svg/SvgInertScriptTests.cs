@@ -1,4 +1,5 @@
 using FenBrowser.FenEngine.Adapters;
+using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 using Xunit;
 
@@ -56,6 +57,23 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(Scripted, limits);
 
             Assert.Contains(result.Warnings, warning => warning.Contains("inert", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void ImageLoader_RendersAnInlineSvgThatContainsScript()
+        {
+            ImageLoader.ClearCache();
+            try
+            {
+                using SKBitmap? bitmap = ImageLoader.GetInlineSvgImage(Scripted, 10, 10);
+
+                Assert.NotNull(bitmap);
+                Assert.Equal(SKColors.Lime, bitmap!.GetPixel(5, 5));
+            }
+            finally
+            {
+                ImageLoader.ClearCache();
+            }
         }
     }
 }

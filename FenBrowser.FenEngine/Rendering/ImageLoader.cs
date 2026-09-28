@@ -1221,6 +1221,10 @@ namespace FenBrowser.FenEngine.Rendering
             string diagnosticSource = null)
         {
             var activeLimits = SvgRenderLimits.Normalize(limits ?? SvgRenderLimits.Default);
+            // Every render here is an image (img, CSS image, data: URL) or an inline
+            // <svg> serialized after the page's scripts ran: script is inert, never
+            // executed, and the document paints as authored.
+            activeLimits.TreatScriptsAsInert = true;
             if (resourceResolver != null)
             {
                 activeLimits.AllowExternalReferences = true;

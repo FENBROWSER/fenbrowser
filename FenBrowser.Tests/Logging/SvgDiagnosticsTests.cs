@@ -75,8 +75,10 @@ namespace FenBrowser.Tests.Logging
         [Fact]
         public void ImageLoaderInlinePath_LabelsItsRenders()
         {
+            // foreignObject is refused on every path; script no longer is, because the
+            // inline path renders with script inert.
             string svg = "<svg width='8' height='8'><desc>" + Guid.NewGuid().ToString("N") +
-                         "</desc><script>x()</script></svg>";
+                         "</desc><foreignObject width='8' height='8'/></svg>";
             string hash = SvgDiagnostics.HashPrefix(svg);
             var events = new List<EngineLogEvent>();
             void OnEvent(EngineLogEvent evt)
