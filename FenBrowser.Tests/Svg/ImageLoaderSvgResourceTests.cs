@@ -756,6 +756,22 @@ public sealed class ImageLoaderSvgResourceTests
         Assert.Null(ex);
     }
 
+    [Theory]
+    [InlineData(9000, 10)]
+    [InlineData(8000, 4000)]
+    public void SvgImage_NaturalSizeOverRasterCapsIsRefusedAtAnyTargetSize(int width, int height)
+    {
+        // Past the width cap, and past the pixel budget where the renderer would
+        // otherwise downscale: both stay refused even for a small target, as they
+        // were when the natural size came from a separate probe render.
+        string svg = $"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}'>" +
+                     "<rect width='10' height='10'/></svg>";
+
+        using SKBitmap? bitmap = RenderInline(svg);
+
+        Assert.Null(bitmap);
+    }
+
     private static SKBitmap? RenderInline(string svg)
     {
         ImageLoader.ClearCache();

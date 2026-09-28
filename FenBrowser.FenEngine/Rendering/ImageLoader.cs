@@ -1235,17 +1235,6 @@ namespace FenBrowser.FenEngine.Rendering
             // The markup reaches the parser verbatim. The first-party parser already
             // treats an undeclared root <svg> as SVG, and XML names are case-sensitive,
             // so textual namespace or 'viewbox' fix-ups would only rewrite author text.
-            if (!TryAdmitSvgTargetSizeForContent(
-                    targetWidth,
-                    targetHeight,
-                    svgContent,
-                    baseUri,
-                    resourceResolver,
-                    activeLimits))
-            {
-                return null;
-            }
-
             using var result = CreateSvgRenderer().Render(new SvgRenderRequest(
                 svgContent, activeLimits)
             {
@@ -1265,6 +1254,16 @@ namespace FenBrowser.FenEngine.Rendering
             if (result.Bitmap == null)
             {
                 EngineLogCompat.Debug("[ImageLoader] SVG render failed: no bitmap produced", LogCategory.Rendering);
+                return null;
+            }
+
+            // The document's natural size and the requested size must both fit the
+            // raster caps. This is judged on the one real render: a separate probe
+            // render only to learn the natural size doubled every SVG cache miss.
+            if (!TryAdmitSvgRasterDimensions(result.Width, result.Height, activeLimits) ||
+                !TryAdmitSvgRasterDimensions(
+                    targetWidth ?? result.Width, targetHeight ?? result.Height, activeLimits))
+            {
                 return null;
             }
 
@@ -1355,36 +1354,6 @@ namespace FenBrowser.FenEngine.Rendering
             return true;
         }
 
-        private static bool TryAdmitSvgTargetSizeForContent(
-            int? targetWidth,
-            int? targetHeight,
-            string svgContent,
-            Uri baseUri,
-            ISvgResourceResolver resourceResolver,
-            SvgRenderLimits limits)
-        {
-            if (!TryAdmitSvgTargetSize(targetWidth, targetHeight, limits) ||
-                !TryGetSvgIntrinsicBounds(
-                    svgContent,
-                    baseUri,
-                    resourceResolver,
-                    limits,
-                    out double intrinsicWidth,
-                    out double intrinsicHeight))
-            {
-                return false;
-            }
-
-            if (!TryAdmitSvgRasterDimensions(intrinsicWidth, intrinsicHeight, limits))
-            {
-                return false;
-            }
-
-            double candidateWidth = targetWidth.HasValue ? targetWidth.Value : intrinsicWidth;
-            double candidateHeight = targetHeight.HasValue ? targetHeight.Value : intrinsicHeight;
-            return TryAdmitSvgRasterDimensions(candidateWidth, candidateHeight, limits);
-        }
-
         private static bool TryAdmitSvgRasterDimensions(
             double width,
             double height,
@@ -1401,144 +1370,6 @@ namespace FenBrowser.FenEngine.Rendering
             return rasterWidth <= limits.MaxRasterWidth &&
                 rasterHeight <= limits.MaxRasterHeight &&
                 rasterWidth * rasterHeight <= limits.MaxRasterPixels;
-        }
-
-        private static bool TryGetSvgIntrinsicBounds(
-            string svgContent,
-            Uri baseUri,
-            ISvgResourceResolver resourceResolver,
-            SvgRenderLimits limits,
-            out double width,
-            out double height)
-        {
-            width = 0;
-            height = 0;
-            try
-            {
-                if (SvgRenderEngine.TryRender(
-                        svgContent,
-                        limits,
-                        baseUri,
-                        resourceResolver,
-                        0d,
-                        out SKPicture picture,
-                        out float renderedWidth,
-                        out float renderedHeight,
-                        out _,
-                        out _,
-                        out _,
-                        out _,
-                        out _,
-                        out _))
-                {
-                    picture?.Dispose();
-                    if (double.IsFinite(renderedWidth) && double.IsFinite(renderedHeight) &&
-                        renderedWidth > 0 && renderedHeight > 0)
-                    {
-                        width = renderedWidth;
-                        height = renderedHeight;
-                        return true;
-                    }
-                }
-                else
-                {
-                    picture?.Dispose();
-                }
-            }
-            catch
-            {
-            }
-
-            return TryGetDeclaredSvgBounds(svgContent, limits, out width, out height);
-        }
-
-        private static bool TryGetDeclaredSvgBounds(
-            string svgContent,
-            SvgRenderLimits limits,
-            out double width,
-            out double height)
-        {
-            width = 0;
-            height = 0;
-            if (!SvgMarkupParser.TryParse(svgContent, limits, out var document, out _) ||
-                document?.Root == null)
-            {
-                return false;
-            }
-
-            double viewBoxWidth = 0;
-            double viewBoxHeight = 0;
-            string viewBox = document.Root.GetAttribute("viewBox");
-            if (!string.IsNullOrWhiteSpace(viewBox))
-            {
-                string[] parts = viewBox.Split(
-                    new[] { ',', ' ', '\t', '\r', '\n' },
-                    StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 4 &&
-                    TryParseFiniteNumber(parts[2], out viewBoxWidth) &&
-                    TryParseFiniteNumber(parts[3], out viewBoxHeight) &&
-                    viewBoxWidth > 0 && viewBoxHeight > 0)
-                {
-                }
-                else
-                {
-                    viewBoxWidth = 0;
-                    viewBoxHeight = 0;
-                }
-            }
-
-            double widthReference = viewBoxWidth > 0 ? viewBoxWidth : 300d;
-            double heightReference = viewBoxHeight > 0 ? viewBoxHeight : 150d;
-            if (!TryResolveSvgDeclaredLength(
-                    document.Root.GetAttribute("width"), widthReference, out width) ||
-                width <= 0)
-            {
-                width = widthReference;
-            }
-            if (!TryResolveSvgDeclaredLength(
-                    document.Root.GetAttribute("height"), heightReference, out height) ||
-                height <= 0)
-            {
-                height = heightReference;
-            }
-
-            return double.IsFinite(width) && double.IsFinite(height) &&
-                width > 0 && height > 0;
-        }
-
-        private static bool TryResolveSvgDeclaredLength(
-            string raw,
-            double reference,
-            out double value)
-        {
-            value = 0;
-            if (string.IsNullOrWhiteSpace(raw) ||
-                !SvgValues.TryParseLength(raw.AsSpan(), out float parsed, out var unit) ||
-                !double.IsFinite(parsed) || parsed < 0)
-            {
-                return false;
-            }
-
-            value = unit switch
-            {
-                SvgValues.SvgUnit.Percent => parsed * reference / 100d,
-                SvgValues.SvgUnit.Pt => parsed * 96d / 72d,
-                SvgValues.SvgUnit.Pc => parsed * 16d,
-                SvgValues.SvgUnit.Mm => parsed * 96d / 25.4d,
-                SvgValues.SvgUnit.Cm => parsed * 96d / 2.54d,
-                SvgValues.SvgUnit.In => parsed * 96d,
-                SvgValues.SvgUnit.Em => parsed * 16d,
-                SvgValues.SvgUnit.Ex => parsed * 8d,
-                _ => parsed
-            };
-            return double.IsFinite(value) && value > 0;
-        }
-
-        private static bool TryParseFiniteNumber(string value, out double result)
-        {
-            result = 0;
-            return SvgValues.TryParseNumber(value.AsSpan(), out float parsed) &&
-                double.IsFinite(parsed) && (result = parsed) > 0;
         }
 
         private static bool TryResolveSvgRasterSize(
