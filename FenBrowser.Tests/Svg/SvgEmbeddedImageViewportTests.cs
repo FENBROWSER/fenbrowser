@@ -46,6 +46,28 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void EmbeddedImageEdgesOnWholePixels_PaintFullyOpaque()
+        {
+            // embedded/image-embedding-svg-with-auto-height.svg compares against an
+            // exact 100x100 rect: 1.5 units at 200/3 px lands a float ulp short of
+            // x=100, which must not leave a partially covered right column.
+            const string svg =
+                "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 3 3' width='200' height='200'>" +
+                "<image href=\"data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' width='50' height='50'&gt;" +
+                "&lt;rect width='50' height='50' fill='green'/&gt;&lt;/svg&gt;\" width='1.5'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            for (int i = 0; i < 100; i++)
+            {
+                Assert.Equal(new SKColor(0, 128, 0, 255), result.Bitmap.GetPixel(99, i));
+                Assert.Equal(new SKColor(0, 128, 0, 255), result.Bitmap.GetPixel(i, 99));
+            }
+            Assert.Equal(10000, Foreground(result.Bitmap));
+        }
+
+        [Fact]
         public void EmbeddedImageAutoWidth_UsesReferencedIntrinsicRatio()
         {
             const string svg =
