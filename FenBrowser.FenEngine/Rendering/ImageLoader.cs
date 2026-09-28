@@ -1989,6 +1989,29 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
+        /// <summary>
+        /// Counts a fetch made outside the loader (a stylesheet image warmed into the
+        /// cache) as a pending load until disposed, so load settling waits for it.
+        /// </summary>
+        public static IDisposable TrackPendingLoad(string url) =>
+            TryRegisterPendingLoad(url) ? new PendingLoadScope(url) : null;
+
+        private sealed class PendingLoadScope : IDisposable
+        {
+            private string _url;
+
+            public PendingLoadScope(string url) => _url = url;
+
+            public void Dispose()
+            {
+                var url = Interlocked.Exchange(ref _url, null);
+                if (url != null)
+                {
+                    CompletePendingLoad(url);
+                }
+            }
+        }
+
         private static bool TryRegisterPendingLoad(string url)
         {
             if (string.IsNullOrEmpty(url))
