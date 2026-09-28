@@ -16,7 +16,11 @@ namespace FenBrowser.FenEngine.Layout.Tree
     /// </summary>
     public sealed class LayoutBoxStore : IDisposable
     {
-        private const int DefaultCapacity = 4096;
+        // Every box-tree build starts a store, and the arrays double when full. 4096
+        // slots across eleven arrays - one of them the ~100-byte LayoutState - was
+        // about 1MB, most of it on the large-object heap, for every layout of every
+        // document however small; a large page grows past this in a few doublings.
+        private const int DefaultCapacity = 256;
         private static readonly IReadOnlyList<int> EmptyChildIds = Array.Empty<int>();
 
         private Node[] _sourceNodes;
