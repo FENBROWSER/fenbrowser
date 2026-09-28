@@ -1858,7 +1858,7 @@ public Uri LastTextResponseUri { get; private set; }
                         RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
                         FailureReason = FetchFailureReasonCode.LimitExceeded,
                         LimitType = "text_body_bytes",
-                        InputSizeBytes = maxTextBodyBytes,
+                        InputSizeBytes = ObservedSizeFromLimitMessage(ex.Message, maxTextBodyBytes),
                         IsRetryable = false
                     };
                 }
@@ -3132,6 +3132,20 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
             EngineLogCompat.Debug($"[CssLoader] CSS Fetch Success: {url} Length: {result.Content?.Length ?? 0} Type: {result.ContentType}", LogCategory.Network);
             return result.Content;
         }
+
+        // ReadStreamingBodyBoundedAsync reports "LIMIT_EXCEEDED:{max}:{observed}", where
+        // observed is the declared length or the bytes read when the cap was crossed -
+        // the input's size as far as it is known, which is more than the cap.
+        private static int ObservedSizeFromLimitMessage(string message, int fallback)
+        {
+            var lastColon = message?.LastIndexOf(':') ?? -1;
+            return lastColon >= 0 &&
+                   long.TryParse(message.AsSpan(lastColon + 1), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var observed) &&
+                   observed > 0
+                ? (int)Math.Min(observed, int.MaxValue)
+                : fallback;
+        }
+
         private async Task<byte[]> ReadStreamingBodyBoundedAsync(
             HttpResponseMessage resp,
             long maxSize,
