@@ -73,6 +73,10 @@ namespace FenBrowser.FenEngine.Svg
                     return;
                 }
 
+                if (filterElement != null)
+                {
+                    BeginFilterWorkAccounting(canvas);
+                }
                 if (filterElement != null &&
                     !TryBuildFilter(
                         filterElement, element, viewport, owned, elementStyle, out imageFilter))
@@ -648,6 +652,7 @@ namespace FenBrowser.FenEngine.Svg
                     _report.RequireFallback("SVG filter primitive budget exceeded");
                     return false;
                 }
+                ChargeFilterPrimitiveWork(primitive, filterRegion, primitiveScaleX, primitiveScaleY);
 
                 bool rejectedBefore = _report.ResourceRejected;
                 SKImageFilter next;
