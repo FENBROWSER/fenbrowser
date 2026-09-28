@@ -7674,6 +7674,7 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 (_, args) => SetAdoptedStyleSheets(args),
                 length: 2));
         InstallFenJsBrowserSurfaceFillers();
+        InstallFenJsConstraintValidation();
         InstallFenJsErrorReporting();
         InstallTopWindowPostMessageBridge(globalThisValue);
         InstallDebugInitScript();
