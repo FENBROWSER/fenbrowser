@@ -205,7 +205,7 @@ namespace FenBrowser.Core.Dom.V2
             // HTML tagName. Foreign namespace names preserve their source/local case.
             if (isHtmlElement)
             {
-                _tagName = localName.ToUpperInvariant();
+                _tagName = UppercaseHtmlTagName(localName);
                 NamespaceUri = Namespaces.Html;
             }
             else
@@ -217,6 +217,30 @@ namespace FenBrowser.Core.Dom.V2
             _ownerDocument = owner;
             _flags |= NodeFlags.IsElement | NodeFlags.IsContainer;
             _ancestorFeatureHash = BloomHash(TagName?.ToUpperInvariant());
+        }
+
+        // Every HTML element stores its uppercase tagName, and ToUpperInvariant made a
+        // new string for each one ("DIV" 10,000 times over). Documents use a small set
+        // of names, so they are shared; the cap keeps custom-element names from
+        // growing it without bound.
+        private const int MaxCachedTagNames = 1024;
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> s_uppercaseTagNames =
+            new(StringComparer.Ordinal);
+
+        private static string UppercaseHtmlTagName(string localName)
+        {
+            if (s_uppercaseTagNames.TryGetValue(localName, out var cached))
+            {
+                return cached;
+            }
+
+            var upper = localName.ToUpperInvariant();
+            if (s_uppercaseTagNames.Count < MaxCachedTagNames)
+            {
+                s_uppercaseTagNames.TryAdd(localName, upper);
+            }
+
+            return upper;
         }
 
         /// <summary>
