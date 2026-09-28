@@ -29,6 +29,39 @@ namespace FenBrowser.FenEngine.Svg
             float vbX, float vbY, float vbW, float vbH,
             string parText)
         {
+            if (!TryComputeViewportMatrix(
+                    viewport, hasViewBox, vbX, vbY, vbW, vbH, parText, out SKMatrix viewportMatrix))
+            {
+                return false;
+            }
+
+            SKMatrix current = canvas.TotalMatrix;
+            if (!IsBoundedViewportMatrix(viewportMatrix) ||
+                !SvgValues.IsFinite(current) ||
+                !SvgValues.IsFinite(SKMatrix.Concat(current, viewportMatrix)))
+            {
+                _report.RequireFallback("SVG viewport transform is not finite and bounded");
+                return false;
+            }
+            if (!viewportMatrix.IsIdentity)
+                canvas.Concat(viewportMatrix);
+            return true;
+        }
+
+        /// <summary>
+        /// The viewBox-to-viewport mapping (SVG 2 §8.2 "equivalent transform of an SVG
+        /// viewport"), shared by drawing and by object bounding box resolution so both
+        /// place viewport content identically. Identity without a viewBox or for an
+        /// empty viewport.
+        /// </summary>
+        private bool TryComputeViewportMatrix(
+            ViewportContext viewport,
+            bool hasViewBox,
+            float vbX, float vbY, float vbW, float vbH,
+            string parText,
+            out SKMatrix viewportMatrix)
+        {
+            viewportMatrix = SKMatrix.Identity;
             if (!hasViewBox)
             {
                 return true;
@@ -58,7 +91,6 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             ParsePreserveAspectRatio(parText, out ParAlign align, out ParMeet meet);
-            SKMatrix viewportMatrix;
             if (align == ParAlign.None)
             {
                 if (!SvgValues.IsFinite(-vbX) || !SvgValues.IsFinite(-vbY) ||
@@ -108,17 +140,6 @@ namespace FenBrowser.FenEngine.Svg
                         SKMatrix.CreateScale(scale, scale),
                         SKMatrix.CreateTranslation(-vbX, -vbY)));
             }
-
-            SKMatrix current = canvas.TotalMatrix;
-            if (!IsBoundedViewportMatrix(viewportMatrix) ||
-                !SvgValues.IsFinite(current) ||
-                !SvgValues.IsFinite(SKMatrix.Concat(current, viewportMatrix)))
-            {
-                _report.RequireFallback("SVG viewport transform is not finite and bounded");
-                return false;
-            }
-            if (!viewportMatrix.IsIdentity)
-                canvas.Concat(viewportMatrix);
             return true;
         }
 
