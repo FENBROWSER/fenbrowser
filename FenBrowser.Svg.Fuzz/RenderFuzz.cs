@@ -32,7 +32,24 @@ public sealed class RenderFuzz(ITestOutputHelper output)
         for (int iteration = 0; iteration < FuzzSettings.Iterations; iteration++)
         {
             FuzzCase.Run(nameof(RenderFuzz), seed, iteration, mutator.Next(SeedCorpus.Seeds),
-                input => RenderOnce(renderer, input));
+                input => RenderOnce(renderer, input, scriptsInert: false));
+        }
+        ReportCoverage(seed);
+    }
+
+    // The image-context policy browser consumers use: script is inert, so scripted
+    // documents reach the whole pipeline instead of stopping at admission.
+    [Theory]
+    [InlineData(305)]
+    [InlineData(306)]
+    public void RendererFailsClosedWithInertScript(int seed)
+    {
+        var mutator = new SvgMutator(seed);
+        var renderer = new FenSvgRenderer();
+        for (int iteration = 0; iteration < FuzzSettings.Iterations; iteration++)
+        {
+            FuzzCase.Run(nameof(RenderFuzz), seed, iteration, mutator.Next(SeedCorpus.Seeds),
+                input => RenderOnce(renderer, input, scriptsInert: true));
         }
         ReportCoverage(seed);
     }
@@ -44,7 +61,7 @@ public sealed class RenderFuzz(ITestOutputHelper output)
         for (int index = 0; index < SeedCorpus.Seeds.Count; index++)
         {
             FuzzCase.Run(nameof(RenderFuzz), -1, index, SeedCorpus.Seeds[index],
-                input => RenderOnce(renderer, input));
+                input => RenderOnce(renderer, input, scriptsInert: false));
         }
         ReportCoverage(-1);
     }
@@ -55,9 +72,10 @@ public sealed class RenderFuzz(ITestOutputHelper output)
     private void ReportCoverage(int seed) =>
         output.WriteLine($"seed={seed} seeds={SeedCorpus.Seeds.Count} admitted={_admitted} rejected={_rejected}");
 
-    private void RenderOnce(FenSvgRenderer renderer, string input)
+    private void RenderOnce(FenSvgRenderer renderer, string input, bool scriptsInert)
     {
         var limits = SvgRenderLimits.Strict;
+        limits.TreatScriptsAsInert = scriptsInert;
         long elapsedMs = Measure(renderer, input, limits, out bool admissible);
         if (admissible) _admitted++; else _rejected++;
         long budgetMs = (long)limits.MaxRenderTimeMs * 2 + OverrunSlackMs;
