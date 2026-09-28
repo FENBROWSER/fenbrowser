@@ -205,15 +205,42 @@ namespace FenBrowser.Tests.Core
             }
         }
 
+        // HTML 13.2.3.1 encoding sniffing: after a BOM, the transport layer's charset
+        // decides with certain confidence, so <meta charset> is never consulted.
+        // UTF-8 bytes served as iso-8859-1 (windows-1252) read as mojibake, as they
+        // do in every browser.
         [Fact]
-        public async Task FetchTextDetailedAsync_MisleadingLatin1Header_PreservesUtf8Text()
+        public async Task FetchTextDetailedAsync_TransportCharset_WinsOverMetaCharset()
         {
-            const string html =
-                "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>" +
-                "<p>Beyonc\u00E9</p><p>World War\u00A0II</p><p>\u0939\u093F\u0928\u094D\u0926\u0940</p><p>\u0420\u0443\u0441\u0441\u043A\u0438\u0439</p>" +
-                "</body></html>";
-            byte[] payload = Encoding.UTF8.GetBytes(html);
+            var result = await FetchHtmlAsync(Encoding.UTF8.GetBytes(Utf8Document), "iso-8859-1");
 
+            Assert.Equal(FetchStatus.Success, result.Status);
+            Assert.Contains("BeyoncÃ©", result.Content);
+            Assert.DoesNotContain("Beyoncé", result.Content);
+        }
+
+        // Step 1 of the same algorithm: a UTF-8 BOM outranks the transport charset.
+        [Fact]
+        public async Task FetchTextDetailedAsync_Utf8Bom_WinsOverTransportCharset()
+        {
+            var payload = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(Encoding.UTF8.GetBytes(Utf8Document)).ToArray();
+            var result = await FetchHtmlAsync(payload, "iso-8859-1");
+
+            Assert.Equal(FetchStatus.Success, result.Status);
+            Assert.Contains("Beyoncé", result.Content);
+            Assert.Contains("World War II", result.Content);
+            Assert.Contains("हिन्दी", result.Content);
+            Assert.Contains("Русский", result.Content);
+            Assert.DoesNotContain("BeyoncÃ©", result.Content);
+        }
+
+        private const string Utf8Document =
+            "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>" +
+            "<p>Beyoncé</p><p>World War II</p><p>हिन्दी</p><p>Русский</p>" +
+            "</body></html>";
+
+        private static async Task<FetchResult> FetchHtmlAsync(byte[] payload, string charset)
+        {
             using var client = new HttpClient(new StubHandler(_ =>
             {
                 var response = new HttpResponseMessage(HttpStatusCode.OK)
@@ -221,24 +248,15 @@ namespace FenBrowser.Tests.Core
                     Content = new ByteArrayContent(payload)
                 };
                 response.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/html");
-                response.Content.Headers.ContentType.CharSet = "iso-8859-1";
+                response.Content.Headers.ContentType.CharSet = charset;
                 return response;
             }));
 
             var manager = new ResourceManager(client, isPrivate: false);
-            var result = await manager.FetchTextDetailedAsync(
+            return await manager.FetchTextDetailedAsync(
                 new Uri("https://example.test/utf8"),
                 referer: new Uri("https://example.test/page"),
                 secFetchDest: "document");
-
-            Assert.Equal(FetchStatus.Success, result.Status);
-            Assert.Contains("Beyonc\u00E9", result.Content);
-            Assert.Contains("World War\u00A0II", result.Content);
-            Assert.Contains("\u0939\u093F\u0928\u094D\u0926\u0940", result.Content);
-            Assert.Contains("\u0420\u0443\u0441\u0441\u043A\u0438\u0439", result.Content);
-            Assert.DoesNotContain("Beyonc\u00C3\u00A9", result.Content);
-            Assert.DoesNotContain("\u00E0\u00A4", result.Content);
-            Assert.DoesNotContain("\u00D0\u00A0\u00D1", result.Content);
         }
 
         [Fact]
