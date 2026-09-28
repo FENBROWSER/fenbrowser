@@ -2477,11 +2477,21 @@ public Uri LastTextResponseUri { get; private set; }
                             redirectChain.Add(current);
                             referer = prev;
                             hops++;
+                            // Sent with ResponseHeadersRead: an unread response keeps its
+                            // connection until disposed. Its status stays readable.
+                            resp.Dispose();
                             continue;
                         }
                     }
                     break;
                 }
+
+                // Every exit below either reads the body or abandons it. An abandoned
+                // body (an HTTP error, CORB, a size limit) left its keep-alive
+                // connection checked out; ten of them - the per-server limit -
+                // stalled every later request to that server, so a page with ten
+                // broken images blocked the next navigation there.
+                using var finalResponse = resp;
                 if (resp == null)
                 {
                     return BinaryFailure(BinaryFetchFailureReason.TransportFailure, current, "No response received", redirectChain);
