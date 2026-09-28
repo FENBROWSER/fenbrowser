@@ -7729,6 +7729,15 @@ private static double? ExtractPx(string text, string prop)
                 return "inline";
             }
 
+            // HTML §15.3.1 `slot { display: contents }` - the HTML element only; a
+            // slot in another namespace is an ordinary element.
+            if (tag == "SLOT" &&
+                (string.IsNullOrEmpty(element.NamespaceUri) ||
+                 string.Equals(element.NamespaceUri, "http://www.w3.org/1999/xhtml", StringComparison.Ordinal)))
+            {
+                return "contents";
+            }
+
             return tag switch
             {
                 "HEAD" or "SCRIPT" or "STYLE" or "META" or "LINK" or "TITLE" or "NOSCRIPT" or "TEMPLATE" => "none",
