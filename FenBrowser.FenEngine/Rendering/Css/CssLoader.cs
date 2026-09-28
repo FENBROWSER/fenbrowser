@@ -7291,7 +7291,12 @@ private static double? ExtractPx(string text, string prop)
 
         private static string ResolveFallback(string fallback, CssComputed current, Dictionary<string, string> rawCurrent, HashSet<string> seen)
         {
-            if (string.IsNullOrEmpty(fallback)) return GuaranteedInvalidCustomPropertyValue;
+            // CSS Variables 1 §3 (substitute a var()): only a var() with no fallback
+            // is guaranteed-invalid. `var(--x,)` has an empty fallback and substitutes
+            // nothing - Tailwind v4 builds `filter` from nine of them, so treating it as
+            // invalid dropped x.com's `dark:invert` from the whole declaration.
+            if (fallback == null) return GuaranteedInvalidCustomPropertyValue;
+            if (fallback.Length == 0) return string.Empty;
             return ResolveCustomPropertyReferences(fallback, current, rawCurrent, seen);
         }
 
