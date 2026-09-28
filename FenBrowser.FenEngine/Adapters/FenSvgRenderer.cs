@@ -63,9 +63,12 @@ namespace FenBrowser.FenEngine.Adapters
 
         public SvgRenderResult Render(SvgRenderRequest request)
         {
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
             SvgRenderResult result = RenderCore(request);
             EnforceCompleteRender(result);
             BoundResultDiagnostics(result);
+            SvgDiagnostics.RecordRender(
+                request, result, System.Diagnostics.Stopwatch.GetElapsedTime(started));
             return result;
         }
 

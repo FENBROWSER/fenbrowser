@@ -24,6 +24,12 @@ namespace FenBrowser.FenEngine.Adapters
         /// The default is the initial document time of zero seconds.
         /// </summary>
         public double DocumentTimeSeconds { get; init; }
+        /// <summary>
+        /// Short caller label for <see cref="SvgDiagnostics"/> events, such as
+        /// "image" or "inline-svg". Never part of rendering; sanitized and bounded
+        /// before it is logged.
+        /// </summary>
+        public string? DiagnosticSource { get; init; }
     }
 
     public enum SvgResourceKind
