@@ -1225,6 +1225,9 @@ namespace FenBrowser.FenEngine.Rendering
             // <svg> serialized after the page's scripts ran: script is inert, never
             // executed, and the document paints as authored.
             activeLimits.TreatScriptsAsInert = true;
+            // Text areas lay out on one line, as Chromium paints them, instead of the
+            // whole image being refused.
+            activeLimits.LayOutTextAreasOnOneLine = true;
             if (resourceResolver != null)
             {
                 activeLimits.AllowExternalReferences = true;

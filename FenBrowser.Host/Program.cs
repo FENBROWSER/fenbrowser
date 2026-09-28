@@ -1758,6 +1758,7 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                 var limits = NormalizeSvgDecodeLimits(payload.Limits);
                 // Target-process decoding always serves an image context: script is inert.
                 limits.TreatScriptsAsInert = true;
+                limits.LayOutTextAreasOnOneLine = true;
 
                 using var result = svgRenderer.Render(new SvgRenderRequest(payload.SvgContent, limits)
                 {

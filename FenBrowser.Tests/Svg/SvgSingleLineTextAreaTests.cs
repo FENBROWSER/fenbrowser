@@ -1,4 +1,5 @@
 using FenBrowser.FenEngine.Adapters;
+using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 using Xunit;
 
@@ -63,6 +64,23 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(Text(" style='writing-mode:vertical-rl'"), limits);
 
             Assert.False(result.Success);
+        }
+
+        [Fact]
+        public void ImageLoader_RendersATextAreaDocument()
+        {
+            ImageLoader.ClearCache();
+            try
+            {
+                using SKBitmap? bitmap = ImageLoader.GetInlineSvgImage(Text(" style='inline-size:80px'"), 400, 40);
+
+                Assert.NotNull(bitmap);
+                Assert.False(Ink(bitmap!).IsEmpty);
+            }
+            finally
+            {
+                ImageLoader.ClearCache();
+            }
         }
 
         private static string Text(string attributes, string content = Words) =>
