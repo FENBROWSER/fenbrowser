@@ -337,11 +337,8 @@ namespace FenBrowser.FenEngine.Adapters
                             resourceRejectionReasonCodes, requiresFallback, resourceRejected);
                     }
 
-                    FenBrowser.Core.EngineLogCompat.Debug(
-                        $"[FenSvgRenderer] ok {bitmapWidth}x{bitmapHeight} " +
-                        $"{resources.ElapsedMs}ms warnings={warnings.Count}",
-                        FenBrowser.Core.Logging.LogCategory.Rendering);
-
+                    // Admitted renders are reported by SvgDiagnostics (verbose mode), so
+                    // the render path never initializes logging on its own.
                     var result = new SvgRenderResult
                     {
                         Picture = null,
