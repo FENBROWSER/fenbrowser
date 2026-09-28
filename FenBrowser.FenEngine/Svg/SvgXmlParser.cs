@@ -85,7 +85,31 @@ namespace FenBrowser.FenEngine.Svg
             "style", "script", "h:script", "html:script", "title", "desc", "metadata"
         };
 
+        /// <summary>
+        /// Parses <paramref name="source"/> under <paramref name="limits"/>. Never
+        /// throws for document content: a sandbox budget violation (element, filter,
+        /// depth or source limit) is a rejection like any other fatal error and is
+        /// returned as <paramref name="fatalReason"/> with its bare limit message.
+        /// </summary>
         public static bool TryParse(
+            string source,
+            SvgRenderLimits limits,
+            out SvgParsedDocument document,
+            out string fatalReason)
+        {
+            try
+            {
+                return TryParseCore(source, limits, out document, out fatalReason);
+            }
+            catch (SvgSandboxViolationException ex)
+            {
+                document = null;
+                fatalReason = SvgDiagnosticText.Bounded(ex.Message, SvgDiagnosticText.MaxFatalChars);
+                return false;
+            }
+        }
+
+        private static bool TryParseCore(
             string source,
             SvgRenderLimits limits,
             out SvgParsedDocument document,
@@ -2013,8 +2037,10 @@ namespace FenBrowser.FenEngine.Svg
 
     /// <summary>
     /// Thrown ONLY for sandbox budget violations (element/filter/depth/source).
-    /// The renderer catches it and converts it to the parity error message.
-    /// It is never caused by malformed input - that always recovers.
+    /// It never leaves <see cref="SvgMarkupParser.TryParse"/>, which reports it as
+    /// a fatal reason; render-time budget checks throw it to the engine, which
+    /// converts it to the same bare limit message. It is never caused by malformed
+    /// input - that always recovers.
     /// </summary>
     internal sealed class SvgSandboxViolationException : System.Exception
     {

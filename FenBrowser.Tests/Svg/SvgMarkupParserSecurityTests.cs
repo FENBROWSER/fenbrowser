@@ -278,24 +278,22 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void ElementCount_Budget_TriggersSandboxViolation()
+        public void ElementCount_Budget_RejectsWithTheLimitMessage()
         {
             const string s = "<svg><g/><g/><g/><g/><g/></svg>";
-            var ex = Record.Exception(() =>
-                SvgMarkupParser.TryParse(s, FullLimits(elements: 3), out _, out _));
-            Assert.IsType<SvgSandboxViolationException>(ex);
-            Assert.Contains("element count", ex.Message);
+            Assert.False(SvgMarkupParser.TryParse(s, FullLimits(elements: 3), out var document, out var fatal));
+            Assert.Null(document);
+            Assert.Contains("element count", fatal);
         }
 
         [Fact]
-        public void FilterCount_Budget_TriggersSandboxViolation()
+        public void FilterCount_Budget_RejectsWithTheLimitMessage()
         {
             const string s =
                 "<svg><filter id=\"a\"/><filter id=\"b\"/><filter id=\"c\"/></svg>";
-            var ex = Record.Exception(() =>
-                SvgMarkupParser.TryParse(s, FullLimits(filters: 2), out _, out _));
-            Assert.IsType<SvgSandboxViolationException>(ex);
-            Assert.Contains("filter count", ex.Message);
+            Assert.False(SvgMarkupParser.TryParse(s, FullLimits(filters: 2), out var document, out var fatal));
+            Assert.Null(document);
+            Assert.Contains("filter count", fatal);
         }
 
         [Fact]

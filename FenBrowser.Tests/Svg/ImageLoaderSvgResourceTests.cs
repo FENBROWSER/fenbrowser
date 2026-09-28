@@ -737,6 +737,25 @@ public sealed class ImageLoaderSvgResourceTests
         Assert.Equal(SKColors.Lime, bitmap!.GetPixel(10, 10));
     }
 
+    [Fact]
+    public void SvgImage_OverFilterBudgetIsRefusedNotThrown()
+    {
+        // One filter past the default budget: the loader's size probe parses the
+        // markup before the render does, and it must refuse, not throw.
+        string filters = string.Concat(Enumerable.Range(0, SvgRenderLimits.Default.MaxFilterCount + 1)
+            .Select(i => $"<filter id='f{i}'/>"));
+        string svg = "<svg xmlns='http://www.w3.org/2000/svg'>" + filters +
+                     "<rect width='20' height='20'/></svg>";
+
+        var ex = Record.Exception(() =>
+        {
+            using SKBitmap? bitmap = RenderInline(svg);
+            Assert.Null(bitmap);
+        });
+
+        Assert.Null(ex);
+    }
+
     private static SKBitmap? RenderInline(string svg)
     {
         ImageLoader.ClearCache();
