@@ -843,7 +843,7 @@ namespace FenBrowser.FenEngine.Rendering
                 LoadStarted = false
             };
 
-            EngineLogCompat.Debug($"[ImageLoader] Registered lazy image: {normalizedUrl.Substring(0, Math.Min(50, normalizedUrl.Length))}...",
+            EngineLogCompat.Debug($"[ImageLoader] Registered lazy image: {LogUrl.Describe(normalizedUrl)}",
                            LogCategory.Rendering);
         }
 
@@ -1117,7 +1117,7 @@ namespace FenBrowser.FenEngine.Rendering
                             }
                         }
 
-                        EngineLogCompat.Debug($"[ImageLoader] Evicted animated image: {candidate.Key.Substring(0, Math.Min(40, candidate.Key.Length))}...",
+                        EngineLogCompat.Debug($"[ImageLoader] Evicted animated image: {LogUrl.Describe(candidate.Key)}",
                             LogCategory.Rendering);
                     }
 
@@ -1139,7 +1139,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (removedEntry != null)
                 {
                     ScheduleBitmapDispose(removedEntry.Bitmap);
-                    EngineLogCompat.Debug($"[ImageLoader] Evicted: {candidate.Key.Substring(0, Math.Min(40, candidate.Key.Length))}...",
+                    EngineLogCompat.Debug($"[ImageLoader] Evicted: {LogUrl.Describe(candidate.Key)}",
                         LogCategory.Rendering);
                 }
             }
@@ -2094,7 +2094,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (IsCssImageFunction(url))
             {
-                EngineLogCompat.Debug($"[ImageLoader] Ignoring non-fetchable CSS image function: {url.Substring(0, Math.Min(80, url.Length))}...", LogCategory.Rendering);
+                EngineLogCompat.Debug($"[ImageLoader] Ignoring non-fetchable CSS image function: {LogUrl.Describe(url)}", LogCategory.Rendering);
                 return null;
             }
 
@@ -2133,7 +2133,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (!expandedViewport.IsEmpty && !expandedViewport.IntersectsWith(elementBounds.Value))
                 {
-                    EngineLogCompat.Debug($"[ImageLoader] Lazy defer: {url}", LogCategory.Rendering);
+                    EngineLogCompat.Debug($"[ImageLoader] Lazy defer: {LogUrl.Describe(url)}", LogCategory.Rendering);
                     // Not in viewport - register for lazy loading
                     CapturePendingLoadContext(cacheKey, loadContext);
                     RegisterLazyImage(
@@ -2151,7 +2151,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Handle Data URIs synchronously to prevent recursion
             if (isDataUri)
             {
-                 EngineLogCompat.Debug($"[ImageLoader] Decoding Data URI: {url.Substring(0, Math.Min(20, url.Length))}...", LogCategory.Rendering);
+                 EngineLogCompat.Debug($"[ImageLoader] Decoding Data URI: {LogUrl.Describe(url)}", LogCategory.Rendering);
                 var dataBitmap = DecodeDataUri(
                     url,
                     targetWidth,
@@ -3622,13 +3622,13 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                 {
-                    EngineLogCompat.Warn($"[ImageLoader] Skipped non-HTTP URL: {(url.Length > 80 ? url.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] Skipped non-HTTP URL: {LogUrl.Describe(url)}", LogCategory.Rendering);
                     return;
                 }
 
                 if (!Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
                 {
-                    EngineLogCompat.Warn($"[ImageLoader] Invalid absolute URI, skipping: {(url.Length > 80 ? url.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] Invalid absolute URI, skipping: {LogUrl.Describe(url)}", LogCategory.Rendering);
                     return;
                 }
 
@@ -3684,14 +3684,14 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (!fetchResult.Succeeded)
                 {
-                    EngineLogCompat.Warn($"[ImageLoader] Fetch failed: url={url} reason={fetchResult.FailureReason} status={fetchResult.StatusCode}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] Fetch failed: url={LogUrl.Describe(url)} reason={fetchResult.FailureReason} status={fetchResult.StatusCode}", LogCategory.Rendering);
                     return;
                 }
 
                 var data = fetchResult.Body;
                 if (data == null || data.Length == 0)
                 {
-                    EngineLogCompat.Warn($"[ImageLoader] Empty image response for: {url}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] Empty image response for: {LogUrl.Describe(url)}", LogCategory.Rendering);
                     return;
                 }
 
@@ -3787,7 +3787,7 @@ namespace FenBrowser.FenEngine.Rendering
                         DecodeFormat = decodeFormat,
                         DecodeFailureReason = ex.Message
                     }, effectiveContext, cacheBaseUri);
-                    EngineLogCompat.Warn($"[ImageLoader] Decode failed: url={url} format={decodeFormat ?? "unknown"}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] Decode failed: url={LogUrl.Describe(url)} format={decodeFormat ?? "unknown"}", LogCategory.Rendering);
                     return;
                 }
 
@@ -3823,12 +3823,12 @@ namespace FenBrowser.FenEngine.Rendering
                         DecodeFormat = decodeFormat,
                         DecodeFailureReason = "Decoder returned no bitmap"
                     }, effectiveContext, cacheBaseUri);
-                    EngineLogCompat.Warn($"[ImageLoader] Decode Failed: {url}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] Decode Failed: {LogUrl.Describe(url)}", LogCategory.Rendering);
                 }
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Error($"[ImageLoader] Error loading {url}: {ex.Message}", LogCategory.Rendering);
+                EngineLogCompat.Error($"[ImageLoader] Error loading {LogUrl.Describe(url)}: {ex.Message}", LogCategory.Rendering);
             }
             finally
             {
@@ -3941,7 +3941,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (bitmap == null)
                 {
-                    EngineLogCompat.Warn($"[ImageLoader] SVG Render Failed for: {url}", LogCategory.Rendering);
+                    EngineLogCompat.Warn($"[ImageLoader] SVG Render Failed for: {LogUrl.Describe(url)}", LogCategory.Rendering);
                 }
 
                 return bitmap;
