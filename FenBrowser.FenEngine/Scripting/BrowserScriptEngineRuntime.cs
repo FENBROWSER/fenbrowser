@@ -28233,6 +28233,20 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 case Element element when string.Equals(property, "id", StringComparison.Ordinal):
                     element.Id = CoerceToHostString(value);
                     return true;
+                case Element element when string.Equals(property, "style", StringComparison.Ordinal):
+                    // CSSOM §6.7 ElementCSSInlineStyle: [PutForwards=cssText], so
+                    // `el.style = text` replaces the inline declarations.
+                    var cssText = CoerceToHostString(value);
+                    if (!string.Equals(element.GetAttribute("style") ?? string.Empty, cssText, StringComparison.Ordinal))
+                    {
+                        element.SetAttribute("style", cssText);
+                        _owner.NotifyResizeObservers(element);
+                    }
+                    return true;
+                case Element element when string.Equals(property, "classList", StringComparison.Ordinal):
+                    // DOM §4.9 Element: classList is [PutForwards=value].
+                    element.SetAttribute("class", CoerceToHostString(value));
+                    return true;
                 case Element element when
                     string.Equals(property, "value", StringComparison.Ordinal) &&
                     IsSelectElement(element):
