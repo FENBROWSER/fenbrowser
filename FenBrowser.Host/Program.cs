@@ -186,6 +186,7 @@ namespace FenBrowser.Host
 
                 // 2. Engine Config
                 CssEngineConfig.CurrentEngine = CssEngineType.Custom;
+                _ = SvgRendererWarmup.Start();
 
                 // Initialize DI Container
                 var container = new FenBrowser.DependencyInjection.ServiceContainer();
@@ -326,6 +327,9 @@ namespace FenBrowser.Host
         private static async Task RunRendererChildLoopAsync(string[] args)
         {
             EngineLog.InitializeFromSettings();
+            // Pages paint here under process isolation; warm the SVG path while the
+            // child connects so the first inline icon does not render cold.
+            _ = SvgRendererWarmup.Start();
 
             int tabId = 0;
             var tabArg = args.FirstOrDefault(a => a.StartsWith("--tab-id=", StringComparison.OrdinalIgnoreCase));
