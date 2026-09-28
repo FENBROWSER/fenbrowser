@@ -68,6 +68,11 @@ namespace FenBrowser.FenEngine.Rendering
             "stroke-dasharray",
             "stroke-dashoffset",
             "stroke-opacity",
+            // Gradient stops are styled like any other SVG element (SVG 2 §14.2.3):
+            // x.com's X logo sets its highlight's white through a class, and
+            // without these the stop kept its dark attribute colour.
+            "stop-color",
+            "stop-opacity",
             "opacity",
             "color",
             "font-family",
@@ -4512,6 +4517,19 @@ namespace FenBrowser.FenEngine.Rendering
 
                     value = ResolveSvgCurrentColor(value, computed);
                     declarations.Add($"{propertyName}: {value}");
+                }
+
+                // display: a class like `hidden` removes an SVG child from rendering,
+                // which the serialized markup cannot know. Any other computed value
+                // is only projected where it must override a display attribute.
+                string display = computed.Display;
+                if (string.Equals(display, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    declarations.Add("display: none");
+                }
+                else if (!string.IsNullOrWhiteSpace(display) && source.HasAttribute("display"))
+                {
+                    declarations.Add("display: inline");
                 }
 
                 if (declarations.Count > 0)
