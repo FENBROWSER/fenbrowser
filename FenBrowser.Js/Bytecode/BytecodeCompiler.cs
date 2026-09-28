@@ -3714,31 +3714,18 @@ public sealed class BytecodeCompiler
         return true;
     }
 
+    // Every nested expression passes through this frame, so it stays a thin
+    // dispatcher: an arm with locals of its own lives in a method of its own.
+    // Written inline, all the arms' locals shared one frame - about 15KB in an
+    // unoptimized build, which a 20000-deep chain could not fit in 256MB.
     private int CompileExpressionCore(ExpressionNode expr)
     {
         switch (expr)
         {
             case NumericLiteralExpressionNode number:
-            {
-                var reg = AllocateRegister();
-                // Tag an integral literal as Int32. The bitwise operators only
-                // take their compiled fast path when both operands already are
-                // one, and a literal is one operand of most of them, so tagging
-                // every literal Number sent every `x & 255` in a bundle to the
-                // interpreter helper.
-                var ci = AddConstant(JsValue.FromNumberCompact(number.Value));
-                _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
-                return reg;
-            }
+                return CompileNumericLiteral(number);
             case BigIntLiteralExpressionNode bigInt:
-            {
-                var reg = AllocateRegister();
-                var text = bigInt.RawText.EndsWith('n') ? bigInt.RawText[..^1] : bigInt.RawText;
-                var value = ParseBigIntLiteral(text);
-                var ci = AddConstant(JsValue.FromBigInt(value));
-                _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
-                return reg;
-            }
+                return CompileBigIntLiteral(bigInt);
             case StringLiteralExpressionNode str:
             {
                 var reg = AllocateRegister();
@@ -3772,17 +3759,7 @@ public sealed class BytecodeCompiler
                 return reg;
             }
             case TdzReferenceErrorExpressionNode tdz:
-            {
-                // ECMA-262 10.2.1.3 step 25.c.i.2: accessing a parameter that is
-                // still in the TDZ during default-initializer evaluation throws a
-                // ReferenceError. Add "Cannot access" so the message matches what
-                // test262 expects.
-                EmitRuntimeReferenceError($"Cannot access '{tdz.ParameterName}' before initialization");
-                // The throw is unconditional — control never reaches here.
-                // Return a dummy register so the expression pipeline stays
-                // well-formed (callers expect a register index).
-                return AllocateRegister();
-            }
+                return CompileTdzReferenceError(tdz);
             case ThisExpressionNode:
             {
                 var reg = AllocateRegister();
@@ -3790,29 +3767,9 @@ public sealed class BytecodeCompiler
                 return reg;
             }
             case NewTargetExpressionNode:
-            {
-                var reg = AllocateRegister();
-                if (_inFieldInitializer)
-                {
-                    // An initializer is called with no new.target (ECMA-262 7.3.34 DefineField).
-                    _instructions.Add(new Instruction(OpCode.LoadConst, reg, AddConstant(JsValue.Undefined), 0));
-                    return reg;
-                }
-                _instructions.Add(new Instruction(OpCode.LoadNewTarget, reg, 0, 0));
-                return reg;
-            }
+                return CompileNewTarget();
             case ImportCallExpressionNode importCall:
-            {
-                var specReg = CompileExpression(importCall.Specifier);
-                var optionsReg = 0;
-                if (importCall.Options is not null)
-                {
-                    optionsReg = CompileExpression(importCall.Options);
-                }
-                var dest = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.DynamicImport, dest, specReg, optionsReg));
-                return dest;
-            }
+                return CompileImportCall(importCall);
             case ImportMetaExpressionNode:
             {
                 var dest = AllocateRegister();
@@ -3820,375 +3777,424 @@ public sealed class BytecodeCompiler
                 return dest;
             }
             case ImportSourceExpressionNode importSource:
-            {
-                var specReg = CompileExpression(importSource.Specifier);
-                var optionsReg = 0;
-                if (importSource.Options is not null)
-                {
-                    optionsReg = CompileExpression(importSource.Options);
-                }
-                var dest = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.ImportSource, dest, specReg, optionsReg));
-                return dest;
-            }
+                return CompileImportSource(importSource);
             case ImportDeferExpressionNode importDefer:
-            {
-                var specReg = CompileExpression(importDefer.Specifier);
-                var optionsReg = 0;
-                if (importDefer.Options is not null)
-                {
-                    optionsReg = CompileExpression(importDefer.Options);
-                }
-                var dest = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.ImportDefer, dest, specReg, optionsReg));
-                return dest;
-            }
+                return CompileImportDefer(importDefer);
             case LogicalAssignmentExpressionNode logical:
                 return CompileLogicalAssignment(logical);
             case AssignmentExpressionNode assign when assign.Left is IdentifierExpressionNode id:
-            {
-                // NamedEvaluation: `f = function(){}` names the function "f".
-                var rightReg = CompileNamedInitializer(assign.Right, id.Name);
-                var slot = GetOrCreateVariableSlot(id.Name);
-                _instructions.Add(new Instruction(OpCode.StoreVar, rightReg, slot, 0));
-                return rightReg;
-            }
+                return CompileIdentifierAssignment(assign, id);
             case AssignmentExpressionNode { CompoundOperator: not null } compound:
                 return CompileCompoundMemberAssignment(compound);
             case AssignmentExpressionNode assign when assign.Left is MemberExpressionNode member:
-            {
-                ThrowIfPrivateMemberAccess(member);
-                if (member.Object is SuperExpressionNode)
-                {
-                    var thisReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
-                    if (member.Computed)
-                    {
-                        var keyReg = CompileExpression(member.PropertyExpression!);
-                        var valueReg = CompileExpression(assign.Right);
-                        _instructions.Add(new Instruction(OpCode.SetElem, thisReg, keyReg, valueReg));
-                        return valueReg;
-                    }
-
-                    var superValueReg = CompileExpression(assign.Right);
-                    var superNameIndex = GetOrCreatePropertyName(member.Property);
-                    _instructions.Add(new Instruction(OpCode.SetPropByName, thisReg, superNameIndex, superValueReg));
-                    return superValueReg;
-                }
-
-                var objectReg = CompileExpression(member.Object);
-                if (member.Computed)
-                {
-                    var keyReg = CompileExpression(member.PropertyExpression!);
-                    var valueReg = CompileExpression(assign.Right);
-                    _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
-                    return valueReg;
-                }
-
-                if (TryGetComputedFieldIndex(member.Property, out var fieldIdx2))
-                {
-                    var keyReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.LoadFieldKey, keyReg, fieldIdx2, 0));
-                    var valueReg = CompileExpression(assign.Right);
-                    _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
-                    return valueReg;
-                }
-
-                var memberValueReg = CompileExpression(assign.Right);
-                var nameIndex = GetOrCreatePropertyName(member.Property);
-                OpCode setOp;
-                if (IsPrivateMangled(member.Property))
-                    setOp = _compilingClassConstructor ? OpCode.DefinePrivateField : OpCode.SetPrivateField;
-                else
-                    setOp = OpCode.SetPropByName;
-                _instructions.Add(new Instruction(setOp, objectReg, nameIndex, memberValueReg));
-                return memberValueReg;
-            }
+                return CompileMemberAssignment(assign, member);
             case AssignmentExpressionNode assign when assign.Left is ArrayLiteralExpressionNode or ObjectLiteralExpressionNode:
-            {
-                // ECMA-262 13.15.5 DestructuringAssignmentEvaluation. An array/object
-                // literal on the left of `=` is the assignment-pattern cover grammar
-                // (e.g. `[a, b] = arr`, `({a} = obj)`). Reinterpret it as a binding
-                // pattern and store into the EXISTING bindings (StoreVar), unlike a
-                // declaration which initializes fresh bindings. The whole expression
-                // evaluates to the right-hand-side value.
-                if (TryConvertForAssignmentPattern(assign.Left, out var assignPattern) && assignPattern is not null)
-                {
-                    var rhsReg = CompileExpression(assign.Right);
-                    EmitBindingPatternAssignment(assignPattern, rhsReg, OpCode.StoreVar);
-                    return rhsReg;
-                }
-
-                // Targets the converter can't express as a binding pattern (e.g. a
-                // member-expression element like `[o.x] = v`) fall through to the
-                // invalid-target behavior below.
-                _ = CompileExpression(assign.Left);
-                EmitRuntimeReferenceError("Invalid left-hand side in assignment.");
-                return LoadUndefinedConstant();
-            }
+                return CompileDestructuringAssignment(assign);
             case AssignmentExpressionNode assign:
-            {
-                // Annex B web-compat runtime error behavior for non-reference
-                // assignment targets (for example CallExpression left-hand sides):
-                // evaluate left side effects, then throw ReferenceError.
-                _ = CompileExpression(assign.Left);
-                EmitRuntimeReferenceError("Invalid left-hand side in assignment.");
-                return LoadUndefinedConstant();
-            }
+                return CompileInvalidTargetAssignment(assign);
             case MemberExpressionNode member:
-            {
-                ThrowIfPrivateMemberAccess(member);
-                // H.3 - super.foo lowers to LoadSuperProperty; the runtime reads
-                // the executing frame's function's HomeObject prototype chain.
-                if (member.Object is SuperExpressionNode && !member.Computed)
-                {
-                    var dest2 = AllocateRegister();
-                    var nameIdx = GetOrCreatePropertyName(member.Property);
-                    _instructions.Add(new Instruction(OpCode.LoadSuperProperty, dest2, nameIdx, 0));
-                    return dest2;
-                }
-
-                if (member.Object is SuperExpressionNode && member.Computed)
-                {
-                    var keyReg = CompileExpression(member.PropertyExpression!);
-                    var dest2 = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.LoadSuperElement, dest2, keyReg, 0));
-                    return dest2;
-                }
-
-                var objectReg = CompileExpression(member.Object);
-                var dest = AllocateRegister();
-                if (member.Computed)
-                {
-                    // A literal key is already in the constant pool, so loading it
-                    // into a register first only buys a second dispatch. The object
-                    // is evaluated before the key either way, and a literal has no
-                    // side effects, so folding it in keeps the evaluation order.
-                    if (TryGetLiteralKeyConstant(member.PropertyExpression!, out var keyConst))
-                    {
-                        _instructions.Add(new Instruction(OpCode.GetElemConst, dest, objectReg, keyConst));
-                    }
-                    else
-                    {
-                        var keyReg = CompileExpression(member.PropertyExpression!);
-                        _instructions.Add(new Instruction(OpCode.GetElem, dest, objectReg, keyReg));
-                    }
-                }
-                else if (TryGetComputedFieldIndex(member.Property, out var fieldIdx))
-                {
-                    // Computed field name pre-evaluated at class definition time.
-                    var keyReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.LoadFieldKey, keyReg, fieldIdx, 0));
-                    _instructions.Add(new Instruction(OpCode.GetElem, dest, objectReg, keyReg));
-                }
-                else
-                {
-                    var nameIndex = GetOrCreatePropertyName(member.Property);
-                    var op = IsPrivateMangled(member.Property) ? OpCode.GetPrivateField : OpCode.GetPropByName;
-                    _instructions.Add(new Instruction(op, dest, objectReg, nameIndex));
-                }
-
-                return dest;
-            }
+                return CompileMemberExpression(member);
             case OptionalMemberExpressionNode:
             case OptionalCallExpressionNode:
                 return CompileOptionalChain(expr);
             case CallExpressionNode call:
+                return CompileCallExpression(call);
+            case UnaryExpressionNode unary:
+                return CompileUnaryExpression(unary);
+            case ConditionalExpressionNode cond:
+                return CompileConditionalExpression(cond);
+            case FunctionExpressionNode fnExpr:
+                return CompileFunctionExpression(fnExpr);
+            case ClassExpressionNode classExpr:
+                // ECMA-262 NamedEvaluation: an anonymous class expression adopts the
+                // pending binding name (`let C = class {}` / `[c = class {}]`).
+                return CompileClassExpressionToRegister(
+                    classExpr.Name ?? ConsumeNameHint(),
+                    classExpr.BaseClass,
+                    classExpr.Members,
+                    hasInnerNameBinding: classExpr.Name is { Length: > 0 },
+                    classSpan: classExpr.Span);
+            case ArrowFunctionExpressionNode arrow:
+                return CompileArrowFunctionExpression(arrow);
+            case NewExpressionNode ne:
+                return CompileNewExpression(ne);
+            case RegexLiteralExpressionNode regex:
             {
-                var calleeReg = -1;
-                var thisReg = 0;
-                var isMethodCall = false;
-                var isDirectEvalCall = false;
+                var dest = AllocateRegister();
+                var rawTextIdx = AddConstant(JsValue.FromString(regex.RawText));
+                _instructions.Add(new Instruction(OpCode.NewRegExp, dest, rawTextIdx, 0));
+                return dest;
+            }
+            case ObjectLiteralExpressionNode obj:
+                return CompileObjectLiteral(obj);
+            case ArrayLiteralExpressionNode arr:
+                return CompileArrayLiteral(arr);
+            case BinaryExpressionNode bin:
+                return CompileBinaryExpression(bin);
+            case ParenthesizedExpressionNode paren:
+                return CompileExpression(paren.Expression);
+            case SpreadElementExpressionNode spread:
+                // ECMA-262 13.3.7.1 â€” compile the spread argument; the containing
+                // CallExpressionNode emits CallSpread to unpack it.
+                return CompileExpression(spread.Argument);
+            default:
+                throw new InvalidOperationException($"Unsupported expression type {expr.GetType().Name}.");
+        }
+    }
 
-                if (call.Callee is SuperExpressionNode)
+    private int CompileNumericLiteral(NumericLiteralExpressionNode number)
+    {
+        var reg = AllocateRegister();
+        // Tag an integral literal as Int32. The bitwise operators only
+        // take their compiled fast path when both operands already are
+        // one, and a literal is one operand of most of them, so tagging
+        // every literal Number sent every `x & 255` in a bundle to the
+        // interpreter helper.
+        var ci = AddConstant(JsValue.FromNumberCompact(number.Value));
+        _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
+        return reg;
+    }
+
+    private int CompileBigIntLiteral(BigIntLiteralExpressionNode bigInt)
+    {
+        var reg = AllocateRegister();
+        var text = bigInt.RawText.EndsWith('n') ? bigInt.RawText[..^1] : bigInt.RawText;
+        var value = ParseBigIntLiteral(text);
+        var ci = AddConstant(JsValue.FromBigInt(value));
+        _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
+        return reg;
+    }
+
+    private int CompileTdzReferenceError(TdzReferenceErrorExpressionNode tdz)
+    {
+        // ECMA-262 10.2.1.3 step 25.c.i.2: accessing a parameter that is
+        // still in the TDZ during default-initializer evaluation throws a
+        // ReferenceError. Add "Cannot access" so the message matches what
+        // test262 expects.
+        EmitRuntimeReferenceError($"Cannot access '{tdz.ParameterName}' before initialization");
+        // The throw is unconditional — control never reaches here.
+        // Return a dummy register so the expression pipeline stays
+        // well-formed (callers expect a register index).
+        return AllocateRegister();
+    }
+
+    private int CompileNewTarget()
+    {
+        var reg = AllocateRegister();
+        if (_inFieldInitializer)
+        {
+            // An initializer is called with no new.target (ECMA-262 7.3.34 DefineField).
+            _instructions.Add(new Instruction(OpCode.LoadConst, reg, AddConstant(JsValue.Undefined), 0));
+            return reg;
+        }
+        _instructions.Add(new Instruction(OpCode.LoadNewTarget, reg, 0, 0));
+        return reg;
+    }
+
+    private int CompileImportCall(ImportCallExpressionNode importCall)
+    {
+        var specReg = CompileExpression(importCall.Specifier);
+        var optionsReg = 0;
+        if (importCall.Options is not null)
+        {
+            optionsReg = CompileExpression(importCall.Options);
+        }
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.DynamicImport, dest, specReg, optionsReg));
+        return dest;
+    }
+
+    private int CompileImportSource(ImportSourceExpressionNode importSource)
+    {
+        var specReg = CompileExpression(importSource.Specifier);
+        var optionsReg = 0;
+        if (importSource.Options is not null)
+        {
+            optionsReg = CompileExpression(importSource.Options);
+        }
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.ImportSource, dest, specReg, optionsReg));
+        return dest;
+    }
+
+    private int CompileImportDefer(ImportDeferExpressionNode importDefer)
+    {
+        var specReg = CompileExpression(importDefer.Specifier);
+        var optionsReg = 0;
+        if (importDefer.Options is not null)
+        {
+            optionsReg = CompileExpression(importDefer.Options);
+        }
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.ImportDefer, dest, specReg, optionsReg));
+        return dest;
+    }
+
+    private int CompileIdentifierAssignment(AssignmentExpressionNode assign, IdentifierExpressionNode id)
+    {
+        // NamedEvaluation: `f = function(){}` names the function "f".
+        var rightReg = CompileNamedInitializer(assign.Right, id.Name);
+        var slot = GetOrCreateVariableSlot(id.Name);
+        _instructions.Add(new Instruction(OpCode.StoreVar, rightReg, slot, 0));
+        return rightReg;
+    }
+
+    private int CompileMemberAssignment(AssignmentExpressionNode assign, MemberExpressionNode member)
+    {
+        ThrowIfPrivateMemberAccess(member);
+        if (member.Object is SuperExpressionNode)
+        {
+            var thisReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
+            if (member.Computed)
+            {
+                var keyReg = CompileExpression(member.PropertyExpression!);
+                var valueReg = CompileExpression(assign.Right);
+                _instructions.Add(new Instruction(OpCode.SetElem, thisReg, keyReg, valueReg));
+                return valueReg;
+            }
+
+            var superValueReg = CompileExpression(assign.Right);
+            var superNameIndex = GetOrCreatePropertyName(member.Property);
+            _instructions.Add(new Instruction(OpCode.SetPropByName, thisReg, superNameIndex, superValueReg));
+            return superValueReg;
+        }
+
+        var objectReg = CompileExpression(member.Object);
+        if (member.Computed)
+        {
+            var keyReg = CompileExpression(member.PropertyExpression!);
+            var valueReg = CompileExpression(assign.Right);
+            _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
+            return valueReg;
+        }
+
+        if (TryGetComputedFieldIndex(member.Property, out var fieldIdx2))
+        {
+            var keyReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadFieldKey, keyReg, fieldIdx2, 0));
+            var valueReg = CompileExpression(assign.Right);
+            _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
+            return valueReg;
+        }
+
+        var memberValueReg = CompileExpression(assign.Right);
+        var nameIndex = GetOrCreatePropertyName(member.Property);
+        OpCode setOp;
+        if (IsPrivateMangled(member.Property))
+            setOp = _compilingClassConstructor ? OpCode.DefinePrivateField : OpCode.SetPrivateField;
+        else
+            setOp = OpCode.SetPropByName;
+        _instructions.Add(new Instruction(setOp, objectReg, nameIndex, memberValueReg));
+        return memberValueReg;
+    }
+
+    private int CompileDestructuringAssignment(AssignmentExpressionNode assign)
+    {
+        // ECMA-262 13.15.5 DestructuringAssignmentEvaluation. An array/object
+        // literal on the left of `=` is the assignment-pattern cover grammar
+        // (e.g. `[a, b] = arr`, `({a} = obj)`). Reinterpret it as a binding
+        // pattern and store into the EXISTING bindings (StoreVar), unlike a
+        // declaration which initializes fresh bindings. The whole expression
+        // evaluates to the right-hand-side value.
+        if (TryConvertForAssignmentPattern(assign.Left, out var assignPattern) && assignPattern is not null)
+        {
+            var rhsReg = CompileExpression(assign.Right);
+            EmitBindingPatternAssignment(assignPattern, rhsReg, OpCode.StoreVar);
+            return rhsReg;
+        }
+
+        // Targets the converter can't express as a binding pattern (e.g. a
+        // member-expression element like `[o.x] = v`) fall through to the
+        // invalid-target behavior below.
+        _ = CompileExpression(assign.Left);
+        EmitRuntimeReferenceError("Invalid left-hand side in assignment.");
+        return LoadUndefinedConstant();
+    }
+
+    private int CompileInvalidTargetAssignment(AssignmentExpressionNode assign)
+    {
+        // Annex B web-compat runtime error behavior for non-reference
+        // assignment targets (for example CallExpression left-hand sides):
+        // evaluate left side effects, then throw ReferenceError.
+        _ = CompileExpression(assign.Left);
+        EmitRuntimeReferenceError("Invalid left-hand side in assignment.");
+        return LoadUndefinedConstant();
+    }
+
+    private int CompileMemberExpression(MemberExpressionNode member)
+    {
+        ThrowIfPrivateMemberAccess(member);
+        // H.3 - super.foo lowers to LoadSuperProperty; the runtime reads
+        // the executing frame's function's HomeObject prototype chain.
+        if (member.Object is SuperExpressionNode && !member.Computed)
+        {
+            var dest2 = AllocateRegister();
+            var nameIdx = GetOrCreatePropertyName(member.Property);
+            _instructions.Add(new Instruction(OpCode.LoadSuperProperty, dest2, nameIdx, 0));
+            return dest2;
+        }
+
+        if (member.Object is SuperExpressionNode && member.Computed)
+        {
+            var keyReg = CompileExpression(member.PropertyExpression!);
+            var dest2 = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadSuperElement, dest2, keyReg, 0));
+            return dest2;
+        }
+
+        var objectReg = CompileExpression(member.Object);
+        var dest = AllocateRegister();
+        if (member.Computed)
+        {
+            // A literal key is already in the constant pool, so loading it
+            // into a register first only buys a second dispatch. The object
+            // is evaluated before the key either way, and a literal has no
+            // side effects, so folding it in keeps the evaluation order.
+            if (TryGetLiteralKeyConstant(member.PropertyExpression!, out var keyConst))
+            {
+                _instructions.Add(new Instruction(OpCode.GetElemConst, dest, objectReg, keyConst));
+            }
+            else
+            {
+                var keyReg = CompileExpression(member.PropertyExpression!);
+                _instructions.Add(new Instruction(OpCode.GetElem, dest, objectReg, keyReg));
+            }
+        }
+        else if (TryGetComputedFieldIndex(member.Property, out var fieldIdx))
+        {
+            // Computed field name pre-evaluated at class definition time.
+            var keyReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadFieldKey, keyReg, fieldIdx, 0));
+            _instructions.Add(new Instruction(OpCode.GetElem, dest, objectReg, keyReg));
+        }
+        else
+        {
+            var nameIndex = GetOrCreatePropertyName(member.Property);
+            var op = IsPrivateMangled(member.Property) ? OpCode.GetPrivateField : OpCode.GetPropByName;
+            _instructions.Add(new Instruction(op, dest, objectReg, nameIndex));
+        }
+
+        return dest;
+    }
+
+    private int CompileCallExpression(CallExpressionNode call)
+    {
+        var calleeReg = -1;
+        var thisReg = 0;
+        var isMethodCall = false;
+        var isDirectEvalCall = false;
+
+        if (call.Callee is SuperExpressionNode)
+        {
+            return CompileSuperCall(call);
+        }
+
+        if (call.Callee is MemberExpressionNode memberCallee)
+        {
+            ThrowIfPrivateMemberAccess(memberCallee);
+            // H.3 - super.method(args): callee comes from LoadSuperProperty,
+            // thisValue stays the current frame's `this`. Without this branch
+            // memberCallee.Object would compile as the (invalid) super value.
+            if (memberCallee.Object is SuperExpressionNode && !memberCallee.Computed)
+            {
+                thisReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
+                calleeReg = AllocateRegister();
+                var superName = GetOrCreatePropertyName(memberCallee.Property);
+                _instructions.Add(new Instruction(OpCode.LoadSuperProperty, calleeReg, superName, 0));
+                isMethodCall = true;
+            }
+            else if (memberCallee.Object is SuperExpressionNode && memberCallee.Computed)
+            {
+                var keyReg = CompileExpression(memberCallee.PropertyExpression!);
+                thisReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
+                calleeReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadSuperElement, calleeReg, keyReg, 0));
+                isMethodCall = true;
+            }
+            else
+            {
+                thisReg = CompileExpression(memberCallee.Object);
+                calleeReg = AllocateRegister();
+                if (memberCallee.Computed)
                 {
-                    return CompileSuperCall(call);
-                }
-
-                if (call.Callee is MemberExpressionNode memberCallee)
-                {
-                    ThrowIfPrivateMemberAccess(memberCallee);
-                    // H.3 - super.method(args): callee comes from LoadSuperProperty,
-                    // thisValue stays the current frame's `this`. Without this branch
-                    // memberCallee.Object would compile as the (invalid) super value.
-                    if (memberCallee.Object is SuperExpressionNode && !memberCallee.Computed)
-                    {
-                        thisReg = AllocateRegister();
-                        _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
-                        calleeReg = AllocateRegister();
-                        var superName = GetOrCreatePropertyName(memberCallee.Property);
-                        _instructions.Add(new Instruction(OpCode.LoadSuperProperty, calleeReg, superName, 0));
-                        isMethodCall = true;
-                    }
-                    else if (memberCallee.Object is SuperExpressionNode && memberCallee.Computed)
-                    {
-                        var keyReg = CompileExpression(memberCallee.PropertyExpression!);
-                        thisReg = AllocateRegister();
-                        _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
-                        calleeReg = AllocateRegister();
-                        _instructions.Add(new Instruction(OpCode.LoadSuperElement, calleeReg, keyReg, 0));
-                        isMethodCall = true;
-                    }
-                    else
-                    {
-                        thisReg = CompileExpression(memberCallee.Object);
-                        calleeReg = AllocateRegister();
-                        if (memberCallee.Computed)
-                        {
-                            var keyReg = CompileExpression(memberCallee.PropertyExpression!);
-                            _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
-                        }
-                        else
-                        {
-                            var nameIndex = GetOrCreatePropertyName(memberCallee.Property);
-                            var getOp = IsPrivateMangled(memberCallee.Property) ? OpCode.GetPrivateField : OpCode.GetPropByName;
-                            _instructions.Add(new Instruction(getOp, calleeReg, thisReg, nameIndex));
-                        }
-
-                        isMethodCall = true;
-                    }
-                }
-                else if (call.Callee is OptionalMemberExpressionNode optionalMemberCallee)
-                {
-                    thisReg = CompileExpression(optionalMemberCallee.Object);
-                    var optionalDest = AllocateRegister();
-                    var undefinedConst = AddConstant(JsValue.Undefined);
-                    _instructions.Add(new Instruction(OpCode.LoadConst, optionalDest, undefinedConst, 0));
-
-                    var nullConstReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, AddConstant(JsValue.Null), 0));
-                    var undefConstReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.LoadConst, undefConstReg, AddConstant(JsValue.Undefined), 0));
-
-                    var nullEqReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.StrictEq, nullEqReg, thisReg, nullConstReg));
-                    var jumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, nullEqReg);
-                    var jumpEndFromNull = EmitPlaceholder(OpCode.Jump);
-
-                    var checkUndefinedLabel = _instructions.Count;
-                    PatchJump(jumpIfNotNull, checkUndefinedLabel);
-                    var undefEqReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.StrictEq, undefEqReg, thisReg, undefConstReg));
-                    var jumpIfNotUndefined = EmitPlaceholder(OpCode.JumpIfFalse, undefEqReg);
-                    var jumpEndFromUndefined = EmitPlaceholder(OpCode.Jump);
-
-                    var callLabel = _instructions.Count;
-                    PatchJump(jumpIfNotUndefined, callLabel);
-                    calleeReg = AllocateRegister();
-                    if (optionalMemberCallee.Computed)
-                    {
-                        var keyReg = CompileExpression(optionalMemberCallee.PropertyExpression!);
-                        _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
-                    }
-                    else
-                    {
-                        var nameIndex = GetOrCreatePropertyName(optionalMemberCallee.Property);
-                        _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
-                    }
-
-                    isMethodCall = true;
-                    var hasSpreadOptional = false;
-                    for (var i = 0; i < call.Arguments.Count; i++)
-                    {
-                        if (call.Arguments[i] is SpreadElementExpressionNode) { hasSpreadOptional = true; break; }
-                    }
-
-                    if (hasSpreadOptional)
-                    {
-                        var spreadArgReg = BuildSpreadArray(call.Arguments);
-                        _instructions.Add(new Instruction(OpCode.CallSpread, optionalDest, calleeReg, spreadArgReg, thisReg));
-                    }
-                    else
-                    {
-                        switch (call.Arguments.Count)
-                        {
-                            case 0:
-                                _instructions.Add(new Instruction(OpCode.CallMethod0, optionalDest, calleeReg, thisReg));
-                                break;
-                            case 1:
-                            {
-                                var arg0 = CompileExpression(call.Arguments[0]);
-                                _instructions.Add(new Instruction(OpCode.CallMethod1, optionalDest, calleeReg, thisReg, arg0));
-                                break;
-                            }
-                            default:
-                            {
-                                var argStart = AllocateRegister();
-                                for (var i = 0; i < call.Arguments.Count; i++)
-                                {
-                                    var argReg = CompileExpression(call.Arguments[i]);
-                                    _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
-                                    if (i + 1 < call.Arguments.Count)
-                                    {
-                                        _ = AllocateRegister();
-                                    }
-                                }
-
-                                _instructions.Add(new Instruction(OpCode.CallMethodN, optionalDest, calleeReg, thisReg, argStart, call.Arguments.Count));
-                                break;
-                            }
-                        }
-                    }
-
-                    var endLabel = _instructions.Count;
-                    PatchJump(jumpEndFromNull, endLabel);
-                    PatchJump(jumpEndFromUndefined, endLabel);
-                    return optionalDest;
-                }
-                else if (TryCompileWithBaseCallee(call.Callee, out var withCallee, out var withBase))
-                {
-                    calleeReg = withCallee;
-                    thisReg = withBase;
-                    isMethodCall = true;
+                    var keyReg = CompileExpression(memberCallee.PropertyExpression!);
+                    _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
                 }
                 else
                 {
-                    calleeReg = CompileExpression(call.Callee);
-                    isDirectEvalCall = IsDirectEvalCallCallee(call.Callee);
+                    var nameIndex = GetOrCreatePropertyName(memberCallee.Property);
+                    var getOp = IsPrivateMangled(memberCallee.Property) ? OpCode.GetPrivateField : OpCode.GetPropByName;
+                    _instructions.Add(new Instruction(getOp, calleeReg, thisReg, nameIndex));
                 }
 
-                var dest = AllocateRegister();
+                isMethodCall = true;
+            }
+        }
+        else if (call.Callee is OptionalMemberExpressionNode optionalMemberCallee)
+        {
+            thisReg = CompileExpression(optionalMemberCallee.Object);
+            var optionalDest = AllocateRegister();
+            var undefinedConst = AddConstant(JsValue.Undefined);
+            _instructions.Add(new Instruction(OpCode.LoadConst, optionalDest, undefinedConst, 0));
 
-                // ECMA-262 13.3.7.1 — any spread argument (...args), in any position,
-                // builds a fully-expanded argument array (iterator protocol) and
-                // dispatches via CallSpread.
-                var hasSpread = false;
-                for (var i = 0; i < call.Arguments.Count; i++)
-                {
-                    if (call.Arguments[i] is SpreadElementExpressionNode)
-                    {
-                        hasSpread = true;
-                        break;
-                    }
-                }
+            var nullConstReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, AddConstant(JsValue.Null), 0));
+            var undefConstReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadConst, undefConstReg, AddConstant(JsValue.Undefined), 0));
 
-                if (hasSpread)
-                {
-                    var spreadArg = BuildSpreadArray(call.Arguments);
-                    _instructions.Add(new Instruction(
-                        OpCode.CallSpread,
-                        dest,
-                        calleeReg,
-                        spreadArg,
-                        thisReg,
-                        !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
-                    return dest;
-                }
+            var nullEqReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.StrictEq, nullEqReg, thisReg, nullConstReg));
+            var jumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, nullEqReg);
+            var jumpEndFromNull = EmitPlaceholder(OpCode.Jump);
 
+            var checkUndefinedLabel = _instructions.Count;
+            PatchJump(jumpIfNotNull, checkUndefinedLabel);
+            var undefEqReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.StrictEq, undefEqReg, thisReg, undefConstReg));
+            var jumpIfNotUndefined = EmitPlaceholder(OpCode.JumpIfFalse, undefEqReg);
+            var jumpEndFromUndefined = EmitPlaceholder(OpCode.Jump);
+
+            var callLabel = _instructions.Count;
+            PatchJump(jumpIfNotUndefined, callLabel);
+            calleeReg = AllocateRegister();
+            if (optionalMemberCallee.Computed)
+            {
+                var keyReg = CompileExpression(optionalMemberCallee.PropertyExpression!);
+                _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
+            }
+            else
+            {
+                var nameIndex = GetOrCreatePropertyName(optionalMemberCallee.Property);
+                _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
+            }
+
+            isMethodCall = true;
+            var hasSpreadOptional = false;
+            for (var i = 0; i < call.Arguments.Count; i++)
+            {
+                if (call.Arguments[i] is SpreadElementExpressionNode) { hasSpreadOptional = true; break; }
+            }
+
+            if (hasSpreadOptional)
+            {
+                var spreadArgReg = BuildSpreadArray(call.Arguments);
+                _instructions.Add(new Instruction(OpCode.CallSpread, optionalDest, calleeReg, spreadArgReg, thisReg));
+            }
+            else
+            {
                 switch (call.Arguments.Count)
                 {
                     case 0:
-                        _instructions.Add(isMethodCall
-                            ? new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg)
-                            : new Instruction(OpCode.Call0, dest, calleeReg, 0, 0, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
-                        return dest;
+                        _instructions.Add(new Instruction(OpCode.CallMethod0, optionalDest, calleeReg, thisReg));
+                        break;
                     case 1:
                     {
                         var arg0 = CompileExpression(call.Arguments[0]);
-                        _instructions.Add(isMethodCall
-                            ? new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0)
-                            : new Instruction(OpCode.Call1, dest, calleeReg, arg0, 0, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
-                        return dest;
+                        _instructions.Add(new Instruction(OpCode.CallMethod1, optionalDest, calleeReg, thisReg, arg0));
+                        break;
                     }
                     default:
                     {
@@ -4203,560 +4209,621 @@ public sealed class BytecodeCompiler
                             }
                         }
 
-                        _instructions.Add(isMethodCall
-                            ? new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, call.Arguments.Count)
-                            : new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
-                        return dest;
+                        _instructions.Add(new Instruction(OpCode.CallMethodN, optionalDest, calleeReg, thisReg, argStart, call.Arguments.Count));
+                        break;
                     }
                 }
             }
-            case UnaryExpressionNode unary:
+
+            var endLabel = _instructions.Count;
+            PatchJump(jumpEndFromNull, endLabel);
+            PatchJump(jumpEndFromUndefined, endLabel);
+            return optionalDest;
+        }
+        else if (TryCompileWithBaseCallee(call.Callee, out var withCallee, out var withBase))
+        {
+            calleeReg = withCallee;
+            thisReg = withBase;
+            isMethodCall = true;
+        }
+        else
+        {
+            calleeReg = CompileExpression(call.Callee);
+            isDirectEvalCall = IsDirectEvalCallCallee(call.Callee);
+        }
+
+        var dest = AllocateRegister();
+
+        // ECMA-262 13.3.7.1 — any spread argument (...args), in any position,
+        // builds a fully-expanded argument array (iterator protocol) and
+        // dispatches via CallSpread.
+        var hasSpread = false;
+        for (var i = 0; i < call.Arguments.Count; i++)
+        {
+            if (call.Arguments[i] is SpreadElementExpressionNode)
             {
-                // ECMA-262 15.5 â€” yield / yield*.
-                if (unary.Operator == "yield" || unary.Operator == "yield*")
-                {
-                    var yieldDest = AllocateRegister();
-                    var valueReg = CompileExpression(unary.Operand);
-                    var yieldOp = unary.Operator == "yield*" ? OpCode.YieldStar : OpCode.Yield;
-                    _instructions.Add(new Instruction(yieldOp, yieldDest, valueReg, 0));
-                    return yieldDest;
-                }
+                hasSpread = true;
+                break;
+            }
+        }
 
-                if (unary.Operator == "await")
-                {
-                    if (_currentFunctionKind is not FunctionKind.Async and not FunctionKind.AsyncGenerator)
-                    {
-                        throw new UnsupportedFeatureException("await-outside-async", FeatureSupportLevel.ParserOnly, unary.Span);
-                    }
+        if (hasSpread)
+        {
+            var spreadArg = BuildSpreadArray(call.Arguments);
+            _instructions.Add(new Instruction(
+                OpCode.CallSpread,
+                dest,
+                calleeReg,
+                spreadArg,
+                thisReg,
+                !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
+            return dest;
+        }
 
-                    var awaitDest = AllocateRegister();
-                    var awaitValueReg = CompileExpression(unary.Operand);
-                    _instructions.Add(new Instruction(OpCode.Await, awaitDest, awaitValueReg, 0));
-                    return awaitDest;
-                }
-
-                if (unary.Operator == "delete")
-                {
-                    // delete <id> and delete (<id>) both use Delete op so unresolvable
-                    // references return true in sloppy mode instead of throwing.
-                    var deleteOperand = unary.Operand is ParenthesizedExpressionNode parenDel
-                        ? parenDel.Expression : unary.Operand;
-                    if (deleteOperand is IdentifierExpressionNode identifier)
-                    {
-                        var deleteDest = AllocateRegister();
-                        var slot = GetOrCreateVariableSlot(identifier.Name);
-                        _instructions.Add(new Instruction(OpCode.Delete, deleteDest, slot, 0));
-                        return deleteDest;
-                    }
-
-                    if (deleteOperand is MemberExpressionNode member)
-                    {
-                        var objReg = CompileExpression(member.Object);
-                        var deleteDest = AllocateRegister();
-                        if (member.Computed)
-                        {
-                            var keyReg = CompileExpression(member.PropertyExpression!);
-                            _instructions.Add(new Instruction(OpCode.DeleteElem, deleteDest, objReg, keyReg));
-                        }
-                        else
-                        {
-                            var nameIndex = GetOrCreatePropertyName(member.Property);
-                            _instructions.Add(new Instruction(OpCode.DeletePropByName, deleteDest, objReg, nameIndex));
-                        }
-
-                        return deleteDest;
-                    }
-
-                    if (deleteOperand is OptionalMemberExpressionNode optionalMember)
-                    {
-                        // ECMA-262 13.5.1.2: a short-circuited optional chain deletes
-                        // nothing and evaluates to true, so seed the result with true
-                        // and let the short-circuit jump straight past the delete.
-                        var deleteDest = AllocateRegister();
-                        _instructions.Add(new Instruction(OpCode.LoadConst, deleteDest, AddConstant(JsValue.FromBoolean(true)), 0));
-
-                        var shortCircuitJumps = new List<int>();
-                        var objReg = CompileOptionalChainOperand(optionalMember.Object, shortCircuitJumps);
-                        if (optionalMember.IsOptional)
-                        {
-                            EmitOptionalChainShortCircuit(objReg, shortCircuitJumps);
-                        }
-
-                        if (optionalMember.Computed)
-                        {
-                            var keyReg = CompileExpression(optionalMember.PropertyExpression!);
-                            _instructions.Add(new Instruction(OpCode.DeleteElem, deleteDest, objReg, keyReg));
-                        }
-                        else
-                        {
-                            _instructions.Add(new Instruction(OpCode.DeletePropByName, deleteDest, objReg, GetOrCreatePropertyName(optionalMember.Property)));
-                        }
-
-                        var deleteEndLabel = _instructions.Count;
-                        foreach (var jump in shortCircuitJumps)
-                        {
-                            PatchJump(jump, deleteEndLabel);
-                        }
-
-                        return deleteDest;
-                    }
-
-                    // delete on a non-reference expression: ECMA-262 13.5.1.2
-                    // says return true without evaluating the operand.
-                    var defaultDeleteResult = AllocateRegister();
-                    var ciDeleteTrue = AddConstant(JsValue.FromBoolean(true));
-                    _instructions.Add(new Instruction(OpCode.LoadConst, defaultDeleteResult, ciDeleteTrue, 0));
-                    return defaultDeleteResult;
-                }
-
-                // typeof <id> and typeof (<id>) both use TypeOfName so unresolvable
-                // references return "undefined" instead of throwing ReferenceError.
-                var typeofOperand = unary.Operand is ParenthesizedExpressionNode paren
-                    ? paren.Expression : unary.Operand;
-                if (unary.Operator == "typeof" && typeofOperand is IdentifierExpressionNode typeofIdentifier)
-                {
-                    var destTypeOf = AllocateRegister();
-                    var slotTypeOf = GetOrCreateVariableSlot(typeofIdentifier.Name);
-                    _instructions.Add(new Instruction(OpCode.TypeOfName, destTypeOf, slotTypeOf, 0));
-                    return destTypeOf;
-                }
-
-                if (unary.Operator is "preIncrement" or "postIncrement" or "preDecrement" or "postDecrement")
-                {
-                    return CompileUpdateExpression(unary);
-                }
-
-                var operandReg = CompileExpression(unary.Operand);
-                var dest = AllocateRegister();
-                var op = unary.Operator switch
-                {
-                    "!" => OpCode.Not,
-                    "+" => OpCode.Pos,
-                    "-" => OpCode.Neg,
-                    "~" => OpCode.BitNot,
-                    "void" => OpCode.Void,
-                    "typeof" => OpCode.TypeOf,
-                    _ => throw new InvalidOperationException($"Unsupported unary operator {unary.Operator}.")
-                };
-                _instructions.Add(new Instruction(op, dest, operandReg, 0));
+        switch (call.Arguments.Count)
+        {
+            case 0:
+                _instructions.Add(isMethodCall
+                    ? new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg)
+                    : new Instruction(OpCode.Call0, dest, calleeReg, 0, 0, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
+                return dest;
+            case 1:
+            {
+                var arg0 = CompileExpression(call.Arguments[0]);
+                _instructions.Add(isMethodCall
+                    ? new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0)
+                    : new Instruction(OpCode.Call1, dest, calleeReg, arg0, 0, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
                 return dest;
             }
-            case ConditionalExpressionNode cond:
+            default:
             {
-                var testReg = CompileExpression(cond.Test);
-                var dest = AllocateRegister();
-                var jumpIfFalse = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
-
-                var consequentReg = CompileExpression(cond.Consequent);
-                _instructions.Add(new Instruction(OpCode.Move, dest, consequentReg, 0));
-                var jumpEnd = EmitPlaceholder(OpCode.Jump);
-
-                PatchJump(jumpIfFalse, _instructions.Count);
-                var alternateReg = CompileExpression(cond.Alternate);
-                _instructions.Add(new Instruction(OpCode.Move, dest, alternateReg, 0));
-                PatchJump(jumpEnd, _instructions.Count);
-                return dest;
-            }
-            case FunctionExpressionNode fnExpr:
-            {
-                var nestedProgram = BuildFunctionProgramWithParameterBindings(
-                    fnExpr.Body.Statements,
-                    fnExpr.Body.Span,
-                    fnExpr.Parameters,
-                    fnExpr.ParameterBindings,
-                    out var fnExprPrologueCount,
-                    fnExpr.ParameterDefaults);
-                // ECMA-262 NamedEvaluation: an anonymous function expression adopts
-                // the binding/assignment name; a named expression keeps its own name.
-                var fnExprName = fnExpr.Name ?? ConsumeNameHint();
-                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _brandTokens = this._brandTokens, _rawSource = _rawSource, _sourcePath = _sourcePath };
-                var nestedFunction = childCompiler.CompileProgramCore(
-                    nestedProgram,
-                    fnExpr.Parameters,
-                    fnExpr.RestParameterIndex,
-                    fnExprName,
-                    hasOwnArgumentsObject: true,
-                    hasSimpleParameterList: fnExpr.HasSimpleParameterList,
-                    functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false, isMethod: fnExpr.IsMethod),
-                    inheritedStrictMode: _isStrictMode,
-                    captureCompletionValue: false,
-                    prologueStatementCount: fnExprPrologueCount,
-                    parameterDefaults: fnExpr.ParameterDefaults,
-                    // A named function expression binds its own name inside its body.
-                    bindOwnNameInBody: fnExpr.Name is { Length: > 0 });
-                AttachSource(nestedFunction, fnExpr.Span);
-                var nestedIndex = _nestedFunctions.Count;
-                _nestedFunctions.Add(nestedFunction);
-                var dest = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
-                return dest;
-            }
-            case ClassExpressionNode classExpr:
-                // ECMA-262 NamedEvaluation: an anonymous class expression adopts the
-                // pending binding name (`let C = class {}` / `[c = class {}]`).
-                return CompileClassExpressionToRegister(
-                    classExpr.Name ?? ConsumeNameHint(),
-                    classExpr.BaseClass,
-                    classExpr.Members,
-                    hasInnerNameBinding: classExpr.Name is { Length: > 0 },
-                    classSpan: classExpr.Span);
-            case ArrowFunctionExpressionNode arrow:
-            {
-                IReadOnlyList<StatementNode> statements;
-                SourceSpan bodySpan;
-                if (arrow.BlockBody is not null)
+                var argStart = AllocateRegister();
+                for (var i = 0; i < call.Arguments.Count; i++)
                 {
-                    statements = arrow.BlockBody.Statements;
-                    bodySpan = arrow.BlockBody.Span;
+                    var argReg = CompileExpression(call.Arguments[i]);
+                    _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
+                    if (i + 1 < call.Arguments.Count)
+                    {
+                        _ = AllocateRegister();
+                    }
                 }
-                else if (arrow.ExpressionBody is not null)
+
+                _instructions.Add(isMethodCall
+                    ? new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, call.Arguments.Count)
+                    : new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
+                return dest;
+            }
+        }
+    }
+
+    private int CompileUnaryExpression(UnaryExpressionNode unary)
+    {
+        // ECMA-262 15.5 â€” yield / yield*.
+        if (unary.Operator == "yield" || unary.Operator == "yield*")
+        {
+            var yieldDest = AllocateRegister();
+            var valueReg = CompileExpression(unary.Operand);
+            var yieldOp = unary.Operator == "yield*" ? OpCode.YieldStar : OpCode.Yield;
+            _instructions.Add(new Instruction(yieldOp, yieldDest, valueReg, 0));
+            return yieldDest;
+        }
+
+        if (unary.Operator == "await")
+        {
+            if (_currentFunctionKind is not FunctionKind.Async and not FunctionKind.AsyncGenerator)
+            {
+                throw new UnsupportedFeatureException("await-outside-async", FeatureSupportLevel.ParserOnly, unary.Span);
+            }
+
+            var awaitDest = AllocateRegister();
+            var awaitValueReg = CompileExpression(unary.Operand);
+            _instructions.Add(new Instruction(OpCode.Await, awaitDest, awaitValueReg, 0));
+            return awaitDest;
+        }
+
+        if (unary.Operator == "delete")
+        {
+            // delete <id> and delete (<id>) both use Delete op so unresolvable
+            // references return true in sloppy mode instead of throwing.
+            var deleteOperand = unary.Operand is ParenthesizedExpressionNode parenDel
+                ? parenDel.Expression : unary.Operand;
+            if (deleteOperand is IdentifierExpressionNode identifier)
+            {
+                var deleteDest = AllocateRegister();
+                var slot = GetOrCreateVariableSlot(identifier.Name);
+                _instructions.Add(new Instruction(OpCode.Delete, deleteDest, slot, 0));
+                return deleteDest;
+            }
+
+            if (deleteOperand is MemberExpressionNode member)
+            {
+                var objReg = CompileExpression(member.Object);
+                var deleteDest = AllocateRegister();
+                if (member.Computed)
                 {
-                    statements = new[] { new ReturnStatementNode(arrow.ExpressionBody, arrow.ExpressionBody.Span) };
-                    bodySpan = arrow.ExpressionBody.Span;
+                    var keyReg = CompileExpression(member.PropertyExpression!);
+                    _instructions.Add(new Instruction(OpCode.DeleteElem, deleteDest, objReg, keyReg));
                 }
                 else
                 {
-                    statements = Array.Empty<StatementNode>();
-                    bodySpan = arrow.Span;
+                    var nameIndex = GetOrCreatePropertyName(member.Property);
+                    _instructions.Add(new Instruction(OpCode.DeletePropByName, deleteDest, objReg, nameIndex));
                 }
 
-                var nestedProgram = BuildFunctionProgramWithParameterBindings(
-                    statements,
-                    bodySpan,
-                    arrow.Parameters,
-                    arrow.ParameterBindings,
-                    out var arrowPrologueCount,
-                    arrow.ParameterDefaults);
-                // ECMA-262 NamedEvaluation: arrows are always anonymous, so they take
-                // the binding/assignment name when one is in scope, else the empty name.
-                var arrowName = ConsumeNameHint() ?? string.Empty;
-                // An arrow has no new.target of its own, so one inside a field
-                // initializer sees the initializer's (undefined), not the constructor's.
-                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _brandTokens = this._brandTokens, _inFieldInitializer = _inFieldInitializer, _rawSource = _rawSource, _sourcePath = _sourcePath };
-                var nestedFunction = childCompiler.CompileProgramCore(
-                    nestedProgram,
-                    arrow.Parameters,
-                    arrow.RestParameterIndex,
-                    arrowName,
-                    hasOwnArgumentsObject: false,
-                    hasSimpleParameterList: arrow.HasSimpleParameterList,
-                    functionKind: SelectFunctionKind(arrow.IsAsync, isGenerator: false, isArrow: true),
-                    inheritedStrictMode: _isStrictMode,
-                    captureCompletionValue: false,
-                    prologueStatementCount: arrowPrologueCount,
-                    parameterDefaults: arrow.ParameterDefaults,
-                    isArrow: true);
-                AttachSource(nestedFunction, arrow.Span);
-                var nestedIndex = _nestedFunctions.Count;
-                _nestedFunctions.Add(nestedFunction);
-                var dest = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
+                return deleteDest;
+            }
+
+            if (deleteOperand is OptionalMemberExpressionNode optionalMember)
+            {
+                // ECMA-262 13.5.1.2: a short-circuited optional chain deletes
+                // nothing and evaluates to true, so seed the result with true
+                // and let the short-circuit jump straight past the delete.
+                var deleteDest = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadConst, deleteDest, AddConstant(JsValue.FromBoolean(true)), 0));
+
+                var shortCircuitJumps = new List<int>();
+                var objReg = CompileOptionalChainOperand(optionalMember.Object, shortCircuitJumps);
+                if (optionalMember.IsOptional)
+                {
+                    EmitOptionalChainShortCircuit(objReg, shortCircuitJumps);
+                }
+
+                if (optionalMember.Computed)
+                {
+                    var keyReg = CompileExpression(optionalMember.PropertyExpression!);
+                    _instructions.Add(new Instruction(OpCode.DeleteElem, deleteDest, objReg, keyReg));
+                }
+                else
+                {
+                    _instructions.Add(new Instruction(OpCode.DeletePropByName, deleteDest, objReg, GetOrCreatePropertyName(optionalMember.Property)));
+                }
+
+                var deleteEndLabel = _instructions.Count;
+                foreach (var jump in shortCircuitJumps)
+                {
+                    PatchJump(jump, deleteEndLabel);
+                }
+
+                return deleteDest;
+            }
+
+            // delete on a non-reference expression: ECMA-262 13.5.1.2
+            // says return true without evaluating the operand.
+            var defaultDeleteResult = AllocateRegister();
+            var ciDeleteTrue = AddConstant(JsValue.FromBoolean(true));
+            _instructions.Add(new Instruction(OpCode.LoadConst, defaultDeleteResult, ciDeleteTrue, 0));
+            return defaultDeleteResult;
+        }
+
+        // typeof <id> and typeof (<id>) both use TypeOfName so unresolvable
+        // references return "undefined" instead of throwing ReferenceError.
+        var typeofOperand = unary.Operand is ParenthesizedExpressionNode paren
+            ? paren.Expression : unary.Operand;
+        if (unary.Operator == "typeof" && typeofOperand is IdentifierExpressionNode typeofIdentifier)
+        {
+            var destTypeOf = AllocateRegister();
+            var slotTypeOf = GetOrCreateVariableSlot(typeofIdentifier.Name);
+            _instructions.Add(new Instruction(OpCode.TypeOfName, destTypeOf, slotTypeOf, 0));
+            return destTypeOf;
+        }
+
+        if (unary.Operator is "preIncrement" or "postIncrement" or "preDecrement" or "postDecrement")
+        {
+            return CompileUpdateExpression(unary);
+        }
+
+        var operandReg = CompileExpression(unary.Operand);
+        var dest = AllocateRegister();
+        var op = unary.Operator switch
+        {
+            "!" => OpCode.Not,
+            "+" => OpCode.Pos,
+            "-" => OpCode.Neg,
+            "~" => OpCode.BitNot,
+            "void" => OpCode.Void,
+            "typeof" => OpCode.TypeOf,
+            _ => throw new InvalidOperationException($"Unsupported unary operator {unary.Operator}.")
+        };
+        _instructions.Add(new Instruction(op, dest, operandReg, 0));
+        return dest;
+    }
+
+    private int CompileConditionalExpression(ConditionalExpressionNode cond)
+    {
+        var testReg = CompileExpression(cond.Test);
+        var dest = AllocateRegister();
+        var jumpIfFalse = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
+
+        var consequentReg = CompileExpression(cond.Consequent);
+        _instructions.Add(new Instruction(OpCode.Move, dest, consequentReg, 0));
+        var jumpEnd = EmitPlaceholder(OpCode.Jump);
+
+        PatchJump(jumpIfFalse, _instructions.Count);
+        var alternateReg = CompileExpression(cond.Alternate);
+        _instructions.Add(new Instruction(OpCode.Move, dest, alternateReg, 0));
+        PatchJump(jumpEnd, _instructions.Count);
+        return dest;
+    }
+
+    private int CompileFunctionExpression(FunctionExpressionNode fnExpr)
+    {
+        var nestedProgram = BuildFunctionProgramWithParameterBindings(
+            fnExpr.Body.Statements,
+            fnExpr.Body.Span,
+            fnExpr.Parameters,
+            fnExpr.ParameterBindings,
+            out var fnExprPrologueCount,
+            fnExpr.ParameterDefaults);
+        // ECMA-262 NamedEvaluation: an anonymous function expression adopts
+        // the binding/assignment name; a named expression keeps its own name.
+        var fnExprName = fnExpr.Name ?? ConsumeNameHint();
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _brandTokens = this._brandTokens, _rawSource = _rawSource, _sourcePath = _sourcePath };
+        var nestedFunction = childCompiler.CompileProgramCore(
+            nestedProgram,
+            fnExpr.Parameters,
+            fnExpr.RestParameterIndex,
+            fnExprName,
+            hasOwnArgumentsObject: true,
+            hasSimpleParameterList: fnExpr.HasSimpleParameterList,
+            functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false, isMethod: fnExpr.IsMethod),
+            inheritedStrictMode: _isStrictMode,
+            captureCompletionValue: false,
+            prologueStatementCount: fnExprPrologueCount,
+            parameterDefaults: fnExpr.ParameterDefaults,
+            // A named function expression binds its own name inside its body.
+            bindOwnNameInBody: fnExpr.Name is { Length: > 0 });
+        AttachSource(nestedFunction, fnExpr.Span);
+        var nestedIndex = _nestedFunctions.Count;
+        _nestedFunctions.Add(nestedFunction);
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
+        return dest;
+    }
+
+    private int CompileArrowFunctionExpression(ArrowFunctionExpressionNode arrow)
+    {
+        IReadOnlyList<StatementNode> statements;
+        SourceSpan bodySpan;
+        if (arrow.BlockBody is not null)
+        {
+            statements = arrow.BlockBody.Statements;
+            bodySpan = arrow.BlockBody.Span;
+        }
+        else if (arrow.ExpressionBody is not null)
+        {
+            statements = new[] { new ReturnStatementNode(arrow.ExpressionBody, arrow.ExpressionBody.Span) };
+            bodySpan = arrow.ExpressionBody.Span;
+        }
+        else
+        {
+            statements = Array.Empty<StatementNode>();
+            bodySpan = arrow.Span;
+        }
+
+        var nestedProgram = BuildFunctionProgramWithParameterBindings(
+            statements,
+            bodySpan,
+            arrow.Parameters,
+            arrow.ParameterBindings,
+            out var arrowPrologueCount,
+            arrow.ParameterDefaults);
+        // ECMA-262 NamedEvaluation: arrows are always anonymous, so they take
+        // the binding/assignment name when one is in scope, else the empty name.
+        var arrowName = ConsumeNameHint() ?? string.Empty;
+        // An arrow has no new.target of its own, so one inside a field
+        // initializer sees the initializer's (undefined), not the constructor's.
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _enclosedByWith = _enclosedByWith || _withNesting > 0, _brandTokens = this._brandTokens, _inFieldInitializer = _inFieldInitializer, _rawSource = _rawSource, _sourcePath = _sourcePath };
+        var nestedFunction = childCompiler.CompileProgramCore(
+            nestedProgram,
+            arrow.Parameters,
+            arrow.RestParameterIndex,
+            arrowName,
+            hasOwnArgumentsObject: false,
+            hasSimpleParameterList: arrow.HasSimpleParameterList,
+            functionKind: SelectFunctionKind(arrow.IsAsync, isGenerator: false, isArrow: true),
+            inheritedStrictMode: _isStrictMode,
+            captureCompletionValue: false,
+            prologueStatementCount: arrowPrologueCount,
+            parameterDefaults: arrow.ParameterDefaults,
+            isArrow: true);
+        AttachSource(nestedFunction, arrow.Span);
+        var nestedIndex = _nestedFunctions.Count;
+        _nestedFunctions.Add(nestedFunction);
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
+        return dest;
+    }
+
+    private int CompileNewExpression(NewExpressionNode ne)
+    {
+        var calleeReg = CompileExpression(ne.Callee);
+        var dest = AllocateRegister();
+
+        // ECMA-262 13.3.5.1 — any spread argument (new F(...args), in any
+        // position) builds a fully-expanded argument array (iterator
+        // protocol) and dispatches via ConstructSpread.
+        var newHasSpread = false;
+        for (var i = 0; i < ne.Arguments.Count; i++)
+        {
+            if (ne.Arguments[i] is SpreadElementExpressionNode) { newHasSpread = true; break; }
+        }
+
+        if (newHasSpread)
+        {
+            var spreadArg = BuildSpreadArray(ne.Arguments);
+            _instructions.Add(new Instruction(OpCode.ConstructSpread, dest, calleeReg, spreadArg));
+            return dest;
+        }
+
+        switch (ne.Arguments.Count)
+        {
+            case 0:
+                _instructions.Add(new Instruction(OpCode.Construct0, dest, calleeReg, 0));
+                return dest;
+            case 1:
+            {
+                var arg0 = CompileExpression(ne.Arguments[0]);
+                _instructions.Add(new Instruction(OpCode.Construct1, dest, calleeReg, arg0));
                 return dest;
             }
-            case NewExpressionNode ne:
+            default:
             {
-                var calleeReg = CompileExpression(ne.Callee);
-                var dest = AllocateRegister();
-
-                // ECMA-262 13.3.5.1 — any spread argument (new F(...args), in any
-                // position) builds a fully-expanded argument array (iterator
-                // protocol) and dispatches via ConstructSpread.
-                var newHasSpread = false;
+                var argStart = AllocateRegister();
                 for (var i = 0; i < ne.Arguments.Count; i++)
                 {
-                    if (ne.Arguments[i] is SpreadElementExpressionNode) { newHasSpread = true; break; }
-                }
-
-                if (newHasSpread)
-                {
-                    var spreadArg = BuildSpreadArray(ne.Arguments);
-                    _instructions.Add(new Instruction(OpCode.ConstructSpread, dest, calleeReg, spreadArg));
-                    return dest;
-                }
-
-                switch (ne.Arguments.Count)
-                {
-                    case 0:
-                        _instructions.Add(new Instruction(OpCode.Construct0, dest, calleeReg, 0));
-                        return dest;
-                    case 1:
+                    var argReg = CompileExpression(ne.Arguments[i]);
+                    _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
+                    if (i + 1 < ne.Arguments.Count)
                     {
-                        var arg0 = CompileExpression(ne.Arguments[0]);
-                        _instructions.Add(new Instruction(OpCode.Construct1, dest, calleeReg, arg0));
-                        return dest;
-                    }
-                    default:
-                    {
-                        var argStart = AllocateRegister();
-                        for (var i = 0; i < ne.Arguments.Count; i++)
-                        {
-                            var argReg = CompileExpression(ne.Arguments[i]);
-                            _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
-                            if (i + 1 < ne.Arguments.Count)
-                            {
-                                _ = AllocateRegister();
-                            }
-                        }
-
-                        _instructions.Add(new Instruction(OpCode.ConstructN, dest, calleeReg, argStart, ne.Arguments.Count));
-                        return dest;
+                        _ = AllocateRegister();
                     }
                 }
-            }
-            case RegexLiteralExpressionNode regex:
-            {
-                var dest = AllocateRegister();
-                var rawTextIdx = AddConstant(JsValue.FromString(regex.RawText));
-                _instructions.Add(new Instruction(OpCode.NewRegExp, dest, rawTextIdx, 0));
+
+                _instructions.Add(new Instruction(OpCode.ConstructN, dest, calleeReg, argStart, ne.Arguments.Count));
                 return dest;
             }
-            case ObjectLiteralExpressionNode obj:
-            {
-                var dest = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.NewObject, dest, 0, 0));
-                foreach (var prop in obj.Properties)
-                {
-                    // ECMA-262 13.2.5.5: object spread `{ ...src }`. Parsed as a
-                    // data property with a null key whose value is a spread element.
-                    // Copy own enumerable properties from the source into `dest`.
-                    if (!prop.IsComputed && prop.Key is null && prop.Value is SpreadElementExpressionNode objectSpread)
-                    {
-                        var sourceReg = CompileExpression(objectSpread.Argument);
-                        _instructions.Add(new Instruction(OpCode.CopyDataProperties, dest, sourceReg, 0));
-                        continue;
-                    }
-
-                    // NamedEvaluation: a static-key data property `{ f: function(){} }`
-                    // (and method shorthand `{ f(){} }`) names the function "f".
-                    var valueReg = (!prop.IsComputed && prop.Kind == ObjectPropertyKind.Data && prop.Key is not null)
-                        ? CompileNamedInitializer(prop.Value, prop.Key)
-                        : CompileExpression(prop.Value);
-                    if (prop.Value is FunctionExpressionNode { IsMethod: true })
-                    {
-                        // ECMA-262 13.2.5.5 MethodDefinitionEvaluation: concise
-                        // methods and accessors capture the object literal as
-                        // [[HomeObject]] so super property references resolve
-                        // through that object's prototype.
-                        _instructions.Add(new Instruction(OpCode.SetHomeObject, valueReg, dest, 0));
-                    }
-                    if (prop.IsComputed)
-                    {
-                        if (prop.ComputedKey is null)
-                        {
-                            throw new InvalidOperationException("Computed object property key expression is required.");
-                        }
-
-                        var keyReg = CompileExpression(prop.ComputedKey);
-                        // Audit §1: object-literal accessors with computed keys
-                        // emit DefineGetter/SetterByReg so the result installs
-                        // as a real accessor descriptor, not a data property.
-                        var computedOp = prop.Kind switch
-                        {
-                            ObjectPropertyKind.Getter => OpCode.DefineGetterByReg,
-                            ObjectPropertyKind.Setter => OpCode.DefineSetterByReg,
-                            _ => OpCode.SetElemDefine,
-                        };
-                        // D=1 for accessors signals enumerable. D=1 for
-                        // SetElemDefine signals SetFunctionName (anonymous
-                        // computed methods get `name` stamped from the key,
-                        // without a separate instruction that would double-call
-                        // ToPropertyKey).
-                        var computedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter ? 1 : 0;
-                        if (computedOp == OpCode.SetElemDefine
-                            && prop.Kind == ObjectPropertyKind.Data
-                            && IsAnonymousFunctionDefinition(prop.Value))
-                        {
-                            computedEnum = 1;
-                        }
-                        _instructions.Add(new Instruction(computedOp, dest, keyReg, valueReg, computedEnum));
-                    }
-                    else
-                    {
-                        // Empty string is a valid property key per ECMA-262 6.1.7.
-                        if (prop.Key is null)
-                        {
-                            throw new InvalidOperationException("Object property key is required.");
-                        }
-
-                        var nameIndex = GetOrCreatePropertyName(prop.Key);
-                        // ECMA-262 B.3.1: non-computed __proto__ sets prototype
-                        // directly via [[SetPrototypeOf]], bypassing the accessor.
-                        OpCode namedOp;
-                        int namedD = 0;
-                        if (prop.Key == "__proto__" && prop.Kind == ObjectPropertyKind.Data)
-                        {
-                            namedOp = OpCode.SetPrototype;
-                            namedD = 1; // literal __proto__: no-op for non-Object values
-                        }
-                        else
-                            namedOp = prop.Kind switch
-                            {
-                                ObjectPropertyKind.Getter => OpCode.DefineGetter,
-                                ObjectPropertyKind.Setter => OpCode.DefineSetter,
-                                _ => OpCode.SetPropByName,
-                            };
-                        // D=1 marks an object-literal accessor as enumerable.
-                        //
-                        // For a data property it means something else, and the
-                        // two never meet: an accessor is DefineGetter or
-                        // DefineSetter, never SetPropByName. ECMA-262 13.2.5.5
-                        // defines an object literal's property with
-                        // CreateDataPropertyOrThrow - it does not [[Set]] it -
-                        // so `{ z: 5 }` must not run a setter inherited from
-                        // Object.prototype, and must leave an own property
-                        // behind. D=1 here asks for that define.
-                        var namedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter
-                            ? 1
-                            : (namedOp == OpCode.SetPropByName ? 1 : 0);
-                        if (namedOp == OpCode.SetPrototype)
-                            _instructions.Add(new Instruction(namedOp, dest, valueReg, 0, namedD));
-                        else
-                            _instructions.Add(new Instruction(namedOp, dest, nameIndex, valueReg, namedD != 0 ? namedD : namedEnum));
-                    }
-                }
-
-                return dest;
-            }
-            case ArrayLiteralExpressionNode arr:
-            {
-                // Any spread element means runtime expansion via the iterator
-                // protocol; route through the shared builder.
-                for (var i = 0; i < arr.Elements.Count; i++)
-                {
-                    if (arr.Elements[i] is SpreadElementExpressionNode)
-                    {
-                        return BuildSpreadArray(arr.Elements);
-                    }
-                }
-
-                var dest = AllocateRegister();
-                // B carries the literal's statically known capacity. The
-                // array's observable length is still zero until SetElem/the
-                // length fixup below; this only avoids repeatedly growing and
-                // copying the dense backing vector for hot literals.
-                _instructions.Add(new Instruction(OpCode.NewArray, dest, arr.Elements.Count, 0));
-                var hasSpread = false;
-                for (var i = 0; i < arr.Elements.Count; i++)
-                {
-                    // Elisions are true holes: skip the store so the index stays absent
-                    // (HasProperty false; iteration methods skip it). The final length is
-                    // fixed up below so trailing holes still count.
-                    if (arr.Elements[i] is ElisionExpressionNode)
-                    {
-                        continue;
-                    }
-
-                    if (arr.Elements[i] is SpreadElementExpressionNode)
-                    {
-                        hasSpread = true;
-                    }
-
-                    var valueReg = CompileExpression(arr.Elements[i]);
-                    _instructions.Add(new Instruction(OpCode.SetElemByIndex, dest, i, valueReg));
-                }
-
-                // Fix the length to the element count so trailing holes (e.g. `[1, , ]`)
-                // are reflected. Skipped when the literal contains a spread, whose
-                // element count is only known at runtime.
-                if (!hasSpread && arr.Elements.Count > 0)
-                {
-                    var lenReg = AllocateRegister();
-                    var lenConst = AddConstant(JsValue.FromNumberCompact(arr.Elements.Count));
-                    _instructions.Add(new Instruction(OpCode.LoadConst, lenReg, lenConst, 0));
-                    var lenNameIdx = GetOrCreatePropertyName("length");
-                    _instructions.Add(new Instruction(OpCode.SetPropByName, dest, lenNameIdx, lenReg));
-                }
-
-                return dest;
-            }
-            case BinaryExpressionNode bin:
-            {
-                if (bin.Operator == ",")
-                {
-                    _ = CompileExpression(bin.Left);
-                    return CompileExpression(bin.Right);
-                }
-
-                if (bin.Operator == "&&")
-                {
-                    var andLeftReg = CompileExpression(bin.Left);
-                    var andDest = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.Move, andDest, andLeftReg, 0));
-                    var andJumpIfFalse = EmitPlaceholder(OpCode.JumpIfFalse, andLeftReg);
-                    var andRightReg = CompileExpression(bin.Right);
-                    _instructions.Add(new Instruction(OpCode.Move, andDest, andRightReg, 0));
-                    PatchJump(andJumpIfFalse, _instructions.Count);
-                    return andDest;
-                }
-
-                if (bin.Operator == "||")
-                {
-                    var orLeftReg = CompileExpression(bin.Left);
-                    var orDest = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.Move, orDest, orLeftReg, 0));
-                    var orJumpIfFalse = EmitPlaceholder(OpCode.JumpIfFalse, orLeftReg);
-                    var orJumpEnd = EmitPlaceholder(OpCode.Jump);
-                    PatchJump(orJumpIfFalse, _instructions.Count);
-                    var orRightReg = CompileExpression(bin.Right);
-                    _instructions.Add(new Instruction(OpCode.Move, orDest, orRightReg, 0));
-                    PatchJump(orJumpEnd, _instructions.Count);
-                    return orDest;
-                }
-
-                if (bin.Operator == "??")
-                {
-                    // ECMA-262 13.14 â€” nullish coalescing: both null and undefined are nullish
-                    var nullishLeftReg = CompileExpression(bin.Left);
-                    var nullishDest = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.Move, nullishDest, nullishLeftReg, 0));
-
-                    var nullConstReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, AddConstant(JsValue.Null), 0));
-                    var undefConstReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.LoadConst, undefConstReg, AddConstant(JsValue.Undefined), 0));
-
-                    // left == null?
-                    var nullEqReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.StrictEq, nullEqReg, nullishLeftReg, nullConstReg));
-                    var jumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, nullEqReg);
-                    var jumpToRightFromNull = EmitPlaceholder(OpCode.Jump);
-
-                    // left == undefined?
-                    var checkUndefLabel = _instructions.Count;
-                    PatchJump(jumpIfNotNull, checkUndefLabel);
-                    var undefEqReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.StrictEq, undefEqReg, nullishLeftReg, undefConstReg));
-                    var jumpIfNotUndef = EmitPlaceholder(OpCode.JumpIfFalse, undefEqReg);
-
-                    var rightEvalLabel = _instructions.Count;
-                    PatchJump(jumpToRightFromNull, rightEvalLabel);
-                    var nullishRightReg = CompileExpression(bin.Right);
-                    _instructions.Add(new Instruction(OpCode.Move, nullishDest, nullishRightReg, 0));
-
-                    PatchJump(jumpIfNotUndef, _instructions.Count);
-                    return nullishDest;
-                }
-
-                if (bin.Operator == "+" && TryCompileLeftAssociativePlusChain(bin, out var plusChainReg))
-                {
-                    return plusChainReg;
-                }
-
-                var leftReg = CompileExpression(bin.Left);
-                var rightReg = CompileExpression(bin.Right);
-                var dest = AllocateRegister();
-                _instructions.Add(new Instruction(BinaryOpCodeFor(bin.Operator), dest, leftReg, rightReg));
-                return dest;
-            }
-            case ParenthesizedExpressionNode paren:
-                return CompileExpression(paren.Expression);
-            case SpreadElementExpressionNode spread:
-                // ECMA-262 13.3.7.1 â€” compile the spread argument; the containing
-                // CallExpressionNode emits CallSpread to unpack it.
-                return CompileExpression(spread.Argument);
-            default:
-                throw new InvalidOperationException($"Unsupported expression type {expr.GetType().Name}.");
         }
+    }
+
+    private int CompileObjectLiteral(ObjectLiteralExpressionNode obj)
+    {
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.NewObject, dest, 0, 0));
+        foreach (var prop in obj.Properties)
+        {
+            // ECMA-262 13.2.5.5: object spread `{ ...src }`. Parsed as a
+            // data property with a null key whose value is a spread element.
+            // Copy own enumerable properties from the source into `dest`.
+            if (!prop.IsComputed && prop.Key is null && prop.Value is SpreadElementExpressionNode objectSpread)
+            {
+                var sourceReg = CompileExpression(objectSpread.Argument);
+                _instructions.Add(new Instruction(OpCode.CopyDataProperties, dest, sourceReg, 0));
+                continue;
+            }
+
+            // NamedEvaluation: a static-key data property `{ f: function(){} }`
+            // (and method shorthand `{ f(){} }`) names the function "f".
+            var valueReg = (!prop.IsComputed && prop.Kind == ObjectPropertyKind.Data && prop.Key is not null)
+                ? CompileNamedInitializer(prop.Value, prop.Key)
+                : CompileExpression(prop.Value);
+            if (prop.Value is FunctionExpressionNode { IsMethod: true })
+            {
+                // ECMA-262 13.2.5.5 MethodDefinitionEvaluation: concise
+                // methods and accessors capture the object literal as
+                // [[HomeObject]] so super property references resolve
+                // through that object's prototype.
+                _instructions.Add(new Instruction(OpCode.SetHomeObject, valueReg, dest, 0));
+            }
+            if (prop.IsComputed)
+            {
+                if (prop.ComputedKey is null)
+                {
+                    throw new InvalidOperationException("Computed object property key expression is required.");
+                }
+
+                var keyReg = CompileExpression(prop.ComputedKey);
+                // Audit §1: object-literal accessors with computed keys
+                // emit DefineGetter/SetterByReg so the result installs
+                // as a real accessor descriptor, not a data property.
+                var computedOp = prop.Kind switch
+                {
+                    ObjectPropertyKind.Getter => OpCode.DefineGetterByReg,
+                    ObjectPropertyKind.Setter => OpCode.DefineSetterByReg,
+                    _ => OpCode.SetElemDefine,
+                };
+                // D=1 for accessors signals enumerable. D=1 for
+                // SetElemDefine signals SetFunctionName (anonymous
+                // computed methods get `name` stamped from the key,
+                // without a separate instruction that would double-call
+                // ToPropertyKey).
+                var computedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter ? 1 : 0;
+                if (computedOp == OpCode.SetElemDefine
+                    && prop.Kind == ObjectPropertyKind.Data
+                    && IsAnonymousFunctionDefinition(prop.Value))
+                {
+                    computedEnum = 1;
+                }
+                _instructions.Add(new Instruction(computedOp, dest, keyReg, valueReg, computedEnum));
+            }
+            else
+            {
+                // Empty string is a valid property key per ECMA-262 6.1.7.
+                if (prop.Key is null)
+                {
+                    throw new InvalidOperationException("Object property key is required.");
+                }
+
+                var nameIndex = GetOrCreatePropertyName(prop.Key);
+                // ECMA-262 B.3.1: non-computed __proto__ sets prototype
+                // directly via [[SetPrototypeOf]], bypassing the accessor.
+                OpCode namedOp;
+                int namedD = 0;
+                if (prop.Key == "__proto__" && prop.Kind == ObjectPropertyKind.Data)
+                {
+                    namedOp = OpCode.SetPrototype;
+                    namedD = 1; // literal __proto__: no-op for non-Object values
+                }
+                else
+                    namedOp = prop.Kind switch
+                    {
+                        ObjectPropertyKind.Getter => OpCode.DefineGetter,
+                        ObjectPropertyKind.Setter => OpCode.DefineSetter,
+                        _ => OpCode.SetPropByName,
+                    };
+                // D=1 marks an object-literal accessor as enumerable.
+                //
+                // For a data property it means something else, and the
+                // two never meet: an accessor is DefineGetter or
+                // DefineSetter, never SetPropByName. ECMA-262 13.2.5.5
+                // defines an object literal's property with
+                // CreateDataPropertyOrThrow - it does not [[Set]] it -
+                // so `{ z: 5 }` must not run a setter inherited from
+                // Object.prototype, and must leave an own property
+                // behind. D=1 here asks for that define.
+                var namedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter
+                    ? 1
+                    : (namedOp == OpCode.SetPropByName ? 1 : 0);
+                if (namedOp == OpCode.SetPrototype)
+                    _instructions.Add(new Instruction(namedOp, dest, valueReg, 0, namedD));
+                else
+                    _instructions.Add(new Instruction(namedOp, dest, nameIndex, valueReg, namedD != 0 ? namedD : namedEnum));
+            }
+        }
+
+        return dest;
+    }
+
+    private int CompileArrayLiteral(ArrayLiteralExpressionNode arr)
+    {
+        // Any spread element means runtime expansion via the iterator
+        // protocol; route through the shared builder.
+        for (var i = 0; i < arr.Elements.Count; i++)
+        {
+            if (arr.Elements[i] is SpreadElementExpressionNode)
+            {
+                return BuildSpreadArray(arr.Elements);
+            }
+        }
+
+        var dest = AllocateRegister();
+        // B carries the literal's statically known capacity. The
+        // array's observable length is still zero until SetElem/the
+        // length fixup below; this only avoids repeatedly growing and
+        // copying the dense backing vector for hot literals.
+        _instructions.Add(new Instruction(OpCode.NewArray, dest, arr.Elements.Count, 0));
+        var hasSpread = false;
+        for (var i = 0; i < arr.Elements.Count; i++)
+        {
+            // Elisions are true holes: skip the store so the index stays absent
+            // (HasProperty false; iteration methods skip it). The final length is
+            // fixed up below so trailing holes still count.
+            if (arr.Elements[i] is ElisionExpressionNode)
+            {
+                continue;
+            }
+
+            if (arr.Elements[i] is SpreadElementExpressionNode)
+            {
+                hasSpread = true;
+            }
+
+            var valueReg = CompileExpression(arr.Elements[i]);
+            _instructions.Add(new Instruction(OpCode.SetElemByIndex, dest, i, valueReg));
+        }
+
+        // Fix the length to the element count so trailing holes (e.g. `[1, , ]`)
+        // are reflected. Skipped when the literal contains a spread, whose
+        // element count is only known at runtime.
+        if (!hasSpread && arr.Elements.Count > 0)
+        {
+            var lenReg = AllocateRegister();
+            var lenConst = AddConstant(JsValue.FromNumberCompact(arr.Elements.Count));
+            _instructions.Add(new Instruction(OpCode.LoadConst, lenReg, lenConst, 0));
+            var lenNameIdx = GetOrCreatePropertyName("length");
+            _instructions.Add(new Instruction(OpCode.SetPropByName, dest, lenNameIdx, lenReg));
+        }
+
+        return dest;
+    }
+
+    private int CompileBinaryExpression(BinaryExpressionNode bin)
+    {
+        if (bin.Operator == ",")
+        {
+            _ = CompileExpression(bin.Left);
+            return CompileExpression(bin.Right);
+        }
+
+        if (bin.Operator == "&&")
+        {
+            var andLeftReg = CompileExpression(bin.Left);
+            var andDest = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Move, andDest, andLeftReg, 0));
+            var andJumpIfFalse = EmitPlaceholder(OpCode.JumpIfFalse, andLeftReg);
+            var andRightReg = CompileExpression(bin.Right);
+            _instructions.Add(new Instruction(OpCode.Move, andDest, andRightReg, 0));
+            PatchJump(andJumpIfFalse, _instructions.Count);
+            return andDest;
+        }
+
+        if (bin.Operator == "||")
+        {
+            var orLeftReg = CompileExpression(bin.Left);
+            var orDest = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Move, orDest, orLeftReg, 0));
+            var orJumpIfFalse = EmitPlaceholder(OpCode.JumpIfFalse, orLeftReg);
+            var orJumpEnd = EmitPlaceholder(OpCode.Jump);
+            PatchJump(orJumpIfFalse, _instructions.Count);
+            var orRightReg = CompileExpression(bin.Right);
+            _instructions.Add(new Instruction(OpCode.Move, orDest, orRightReg, 0));
+            PatchJump(orJumpEnd, _instructions.Count);
+            return orDest;
+        }
+
+        if (bin.Operator == "??")
+        {
+            // ECMA-262 13.14 â€” nullish coalescing: both null and undefined are nullish
+            var nullishLeftReg = CompileExpression(bin.Left);
+            var nullishDest = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Move, nullishDest, nullishLeftReg, 0));
+
+            var nullConstReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, AddConstant(JsValue.Null), 0));
+            var undefConstReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadConst, undefConstReg, AddConstant(JsValue.Undefined), 0));
+
+            // left == null?
+            var nullEqReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.StrictEq, nullEqReg, nullishLeftReg, nullConstReg));
+            var jumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, nullEqReg);
+            var jumpToRightFromNull = EmitPlaceholder(OpCode.Jump);
+
+            // left == undefined?
+            var checkUndefLabel = _instructions.Count;
+            PatchJump(jumpIfNotNull, checkUndefLabel);
+            var undefEqReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.StrictEq, undefEqReg, nullishLeftReg, undefConstReg));
+            var jumpIfNotUndef = EmitPlaceholder(OpCode.JumpIfFalse, undefEqReg);
+
+            var rightEvalLabel = _instructions.Count;
+            PatchJump(jumpToRightFromNull, rightEvalLabel);
+            var nullishRightReg = CompileExpression(bin.Right);
+            _instructions.Add(new Instruction(OpCode.Move, nullishDest, nullishRightReg, 0));
+
+            PatchJump(jumpIfNotUndef, _instructions.Count);
+            return nullishDest;
+        }
+
+        if (bin.Operator == "+" && TryCompileLeftAssociativePlusChain(bin, out var plusChainReg))
+        {
+            return plusChainReg;
+        }
+
+        var leftReg = CompileExpression(bin.Left);
+        var rightReg = CompileExpression(bin.Right);
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(BinaryOpCodeFor(bin.Operator), dest, leftReg, rightReg));
+        return dest;
     }
 
     // ECMA-262 Annex B.3.3: in sloppy-mode function/script/eval code, a
