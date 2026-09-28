@@ -2900,7 +2900,12 @@ private void FlushPendingLayoutForScript(Element element)
                         {
                             Mode = mode == "open" ? ShadowRootMode.Open : ShadowRootMode.Closed
                         });
-                        foreach (var child in template.ChildNodes.ToList())
+                        // The parser puts a template's children in its content fragment
+                        // (HTML 13.2.6.4.7), not under the element itself.
+                        ContainerNode contents = template is HtmlTemplateElement parsedTemplate
+                            ? parsedTemplate.Content
+                            : template;
+                        foreach (var child in contents.ChildNodes.ToList())
                         {
                             shadow.AppendChild(child);
                         }
