@@ -8,9 +8,21 @@ using Xunit;
 
 namespace FenBrowser.Tests.Scripting;
 
+// The fixtures are local files. Since dcb8f39b a file:// navigation is refused unless the
+// browser allows it, so every test here loaded the "navigation blocked" page and found none
+// of the form's elements. Each test opts in for its own duration and puts the setting back;
+// the Engine Tests collection runs without parallelism, so no other test sees the change.
 [Collection("Engine Tests")]
-public sealed class BrowserFormInteractionAcceptanceTests
+public sealed class BrowserFormInteractionAcceptanceTests : IDisposable
 {
+    private readonly bool _previousAllowFileSchemeNavigation = FenBrowser.Core.BrowserSettings.Instance.AllowFileSchemeNavigation;
+
+    public BrowserFormInteractionAcceptanceTests() =>
+        FenBrowser.Core.BrowserSettings.Instance.AllowFileSchemeNavigation = true;
+
+    public void Dispose() =>
+        FenBrowser.Core.BrowserSettings.Instance.AllowFileSchemeNavigation = _previousAllowFileSchemeNavigation;
+
     [Fact]
     public async Task CheckableInputCheckedProperty_UsesLiveCheckedState()
     {
@@ -19,7 +31,7 @@ public sealed class BrowserFormInteractionAcceptanceTests
         try
         {
             using var browser = new BrowserHost();
-            Assert.True(await browser.NavigateAsync(GetFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetFixtureUri()));
 
             Assert.Equal(
                 "true|true",
@@ -48,7 +60,7 @@ public sealed class BrowserFormInteractionAcceptanceTests
         try
         {
             using var browser = new BrowserHost();
-            Assert.True(await browser.NavigateAsync(GetFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetFixtureUri()));
 
             var queryId = await browser.FindElementAsync("css selector", "#query");
             await browser.ClickElementAsync(queryId);
@@ -81,7 +93,7 @@ public sealed class BrowserFormInteractionAcceptanceTests
         try
         {
             using var browser = new BrowserHost();
-            Assert.True(await browser.NavigateAsync(GetFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetFixtureUri()));
 
             var includeId = await browser.FindElementAsync("css selector", "#include");
             await browser.ExecuteScriptAsync("globalThis.__events=[];");
@@ -115,7 +127,7 @@ public sealed class BrowserFormInteractionAcceptanceTests
         try
         {
             using var browser = new BrowserHost();
-            Assert.True(await browser.NavigateAsync(GetFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetFixtureUri()));
 
             var hiddenId = await browser.FindElementAsync("css selector", "#hidden-submit");
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -137,7 +149,7 @@ public sealed class BrowserFormInteractionAcceptanceTests
         try
         {
             using var browser = new BrowserHost();
-            Assert.True(await browser.NavigateAsync(GetFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetFixtureUri()));
 
             Assert.NotNull(browser.GetDomRoot()?.QuerySelector("#search-form button"));
             Assert.NotNull(browser.GetDomRoot()?.QuerySelector("button[name=submitter]"));
@@ -167,7 +179,7 @@ public sealed class BrowserFormInteractionAcceptanceTests
         try
         {
             using var browser = new BrowserHost();
-            Assert.True(await browser.NavigateAsync(GetNestedFlexFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetNestedFlexFixtureUri()));
             await Task.Delay(250);
 
             var queryId = await browser.FindElementAsync("css selector", "#query");
@@ -195,7 +207,7 @@ public sealed class BrowserFormInteractionAcceptanceTests
             using var browser = new BrowserHost();
             var fixtureUri = GetFixtureUri();
 
-            Assert.True(await browser.NavigateAsync(fixtureUri));
+            Assert.True(await browser.NavigateUserInputAsync(fixtureUri));
 
             var queryId = await browser.FindElementAsync("css selector", "#query");
             var submitId = await browser.FindElementAsync("css selector", "#submit");
@@ -256,7 +268,7 @@ public sealed class BrowserFormInteractionAcceptanceTests
         try
         {
             using var browser = new BrowserHost();
-            Assert.True(await browser.NavigateAsync(GetFixtureUri()));
+            Assert.True(await browser.NavigateUserInputAsync(GetFixtureUri()));
 
             var queryId = await browser.FindElementAsync("css selector", "#query");
             var submitId = await browser.FindElementAsync("css selector", "#submit");
