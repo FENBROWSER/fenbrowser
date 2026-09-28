@@ -401,7 +401,7 @@ public sealed class BrokeredInputRoutingTests
             <!doctype html>
             <html><body style="margin:0">
               <iframe id="frame" width="180" height="80" style="display:block;border:0;margin:20px"
-                srcdoc="<!doctype html><html><body style='margin:0'><span id='target' style='display:block;width:40px;height:40px'>box</span><script>var target=document.getElementById('target');target.addEventListener('mouseover',function(){target.className='recaptcha-checkbox-hover';});setInterval(function(){var total=0;for(var i=0;i&lt;250000;i++){total+=i;}window.__timerTotal=total;},0);</script></body></html>">
+                srcdoc="<!doctype html><html><body style='margin:0'><span id='target' style='display:block;width:40px;height:40px'>box</span><script>var target=document.getElementById('target');target.addEventListener('mouseover',function(){target.className='recaptcha-checkbox-hover';});document.body.setAttribute('data-listening','yes');setInterval(function(){var total=0;for(var i=0;i&lt;250000;i++){total+=i;}window.__timerTotal=total;},0);</script></body></html>">
               </iframe>
             </body></html>
             """;
@@ -427,6 +427,13 @@ public sealed class BrokeredInputRoutingTests
             "srcdoc iframe target did not load");
         var frameDocument = Assert.IsType<Document>(frame.FirstChild);
         var target = Assert.IsType<Element>(frameDocument.GetElementById("target"));
+        // The realm is also busy while the frame's own script is still starting, and
+        // an input event may run ahead of it - as it can in any browser, where a
+        // pointer crossing a frame before its scripts run finds no listener. Wait
+        // for the script to have registered its handler before moving the pointer.
+        await WaitForAsync(
+            () => string.Equals(frameDocument.Body?.GetAttribute("data-listening"), "yes", StringComparison.Ordinal),
+            "iframe script did not register its mouseover listener");
 
         using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
         using var canvas = new SKCanvas(bitmap);
