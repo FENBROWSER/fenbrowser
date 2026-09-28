@@ -1217,7 +1217,8 @@ namespace FenBrowser.FenEngine.Rendering
             int? targetHeight,
             Uri baseUri = null,
             ISvgResourceResolver resourceResolver = null,
-            SvgRenderLimits? limits = null)
+            SvgRenderLimits? limits = null,
+            string diagnosticSource = null)
         {
             var activeLimits = SvgRenderLimits.Normalize(limits ?? SvgRenderLimits.Default);
             if (resourceResolver != null)
@@ -1249,7 +1250,8 @@ namespace FenBrowser.FenEngine.Rendering
                 svgContent, activeLimits)
             {
                 BaseUri = baseUri,
-                ResourceResolver = resourceResolver
+                ResourceResolver = resourceResolver,
+                DiagnosticSource = diagnosticSource
             });
 
             if (!IsAdmissibleSvgPixels(result))
@@ -2656,7 +2658,8 @@ namespace FenBrowser.FenEngine.Rendering
                         targetHeight,
                         svgBaseUri ?? ResolveSvgRequestBaseUri(url, ownerDocument),
                         null,
-                        limits);
+                        limits,
+                        "data-uri-image");
                 }
 
                 if (LooksLikeSvgPayload(bytes))
@@ -3024,7 +3027,8 @@ namespace FenBrowser.FenEngine.Rendering
                 targetHeight,
                 baseUri,
                 null,
-                limits);
+                limits,
+                "inline-svg");
             if (bitmap == null)
             {
                 return null;
@@ -4102,7 +4106,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 bitmap = RenderSvgToBitmap(
                     svgContent, targetWidth, targetHeight,
-                    svgBaseUri, svgResourceResolver, activeSvgLimits);
+                    svgBaseUri, svgResourceResolver, activeSvgLimits, "image");
 
                 if (bitmap == null)
                 {

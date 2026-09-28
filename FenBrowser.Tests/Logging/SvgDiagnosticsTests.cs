@@ -72,6 +72,41 @@ namespace FenBrowser.Tests.Logging
             Assert.Equal(4, (int)admitted.Payload.Fields["rasterHeight"]);
         }
 
+        [Fact]
+        public void ImageLoaderInlinePath_LabelsItsRenders()
+        {
+            string svg = "<svg width='8' height='8'><desc>" + Guid.NewGuid().ToString("N") +
+                         "</desc><script>x()</script></svg>";
+            string hash = SvgDiagnostics.HashPrefix(svg);
+            var events = new List<EngineLogEvent>();
+            void OnEvent(EngineLogEvent evt)
+            {
+                if (evt.Header.Subsystem == LogSubsystem.Svg && evt.Payload.Fields != null &&
+                    evt.Payload.Fields.TryGetValue("sourceSha256", out var value) && Equals(value, hash))
+                {
+                    lock (events) events.Add(evt);
+                }
+            }
+
+            Capture(SvgDiagnosticsMode.Failures, _ =>
+            {
+                EngineLog.EngineEventWritten += OnEvent;
+                try
+                {
+                    FenBrowser.FenEngine.Rendering.ImageLoader.ClearCache();
+                    Assert.Null(FenBrowser.FenEngine.Rendering.ImageLoader.GetInlineSvgImage(svg, 8, 8));
+                }
+                finally
+                {
+                    EngineLog.EngineEventWritten -= OnEvent;
+                    FenBrowser.FenEngine.Rendering.ImageLoader.ClearCache();
+                }
+            });
+
+            var rejected = Assert.Single(events);
+            Assert.Equal("inline-svg", rejected.Payload.Fields["source"]);
+        }
+
         [Theory]
         [InlineData(null, SvgDiagnosticsMode.Off, true)]
         [InlineData("", SvgDiagnosticsMode.Off, true)]

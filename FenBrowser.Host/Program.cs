@@ -1753,7 +1753,10 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                 var svgRenderer = SvgRendererFactory.GetConfiguredRenderer();
                 var limits = NormalizeSvgDecodeLimits(payload.Limits);
 
-                using var result = svgRenderer.Render(payload.SvgContent, limits);
+                using var result = svgRenderer.Render(new SvgRenderRequest(payload.SvgContent, limits)
+                {
+                    DiagnosticSource = "target-process"
+                });
 
                 byte[] bitmapBytes = null;
                 int width = 0, height = 0;
