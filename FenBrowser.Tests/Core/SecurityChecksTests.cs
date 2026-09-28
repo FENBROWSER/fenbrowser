@@ -20,12 +20,14 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
-        public void OpaqueOrigins_AreNeverSameOrigin()
+        // HTML "same origin": two opaque origins are same origin only when they
+        // are the same opaque origin - never two separately created ones.
+        public void OpaqueOrigin_IsSameOriginOnlyWithItself()
         {
             var first = Origin.Opaque();
             var second = Origin.Opaque();
 
-            Assert.False(first.IsSameOrigin(first));
+            Assert.True(first.IsSameOrigin(first));
             Assert.False(first.IsSameOrigin(second));
         }
 
