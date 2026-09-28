@@ -393,6 +393,31 @@ public sealed partial class FenJsBrowserScriptEngine
                 }, 0);
             }
 
+            // ---- Tracks for getUserMedia (the UserMedia prelude builds on this) ----
+            // A captured device's track: its audio pipe or picture source, the key that
+            // releases the device, and the settings the device was opened with.
+            Object.defineProperty(g, '__fenMakeCaptureTrack', {
+                value: function (kind, label, pipe, video, key, settings) {
+                    var track = new MediaStreamTrack(INTERNAL, { id: newId(), kind: kind, label: label, pipe: pipe || null });
+                    if (video) Object.defineProperty(track, '_video', { value: video });
+                    Object.defineProperty(track, '_capture', { value: key });
+                    Object.defineProperty(track, '_settings', { value: settings });
+                    return track;
+                },
+                configurable: true
+            });
+            var trackSettings = MediaStreamTrack.prototype.getSettings;
+            method(MediaStreamTrack.prototype, 'getSettings', function () {
+                if (this._settings) return Object.assign({}, this._settings);
+                return trackSettings.call(this);
+            }, 0);
+            var stopCaptured = MediaStreamTrack.prototype.stop;
+            method(MediaStreamTrack.prototype, 'stop', function () {
+                var wasLive = this._live;
+                stopCaptured.call(this);
+                if (wasLive && this._capture) g.__fenCloseCapture(this._capture);
+            }, 0);
+
             // ---- HTMLMediaElement.captureStream() ----
 
             var streams = new WeakMap();

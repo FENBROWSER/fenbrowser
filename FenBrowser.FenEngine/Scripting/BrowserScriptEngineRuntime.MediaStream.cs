@@ -265,6 +265,12 @@ public sealed partial class FenJsBrowserScriptEngine
                         if (_canvasCaptures.TryGetValue(videoKey, out var capture))
                             video = capture.Source;
                     }
+
+                    if (video == null)
+                    {
+                        lock (_captureVideoSources)
+                            _captureVideoSources.TryGetValue(videoKey, out video);
+                    }
                 }
 
                 tracks.Add(new LiveTrack(
