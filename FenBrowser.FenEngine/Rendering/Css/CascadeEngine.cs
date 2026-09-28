@@ -716,6 +716,30 @@ return computed;
                     Emit("float", align);
                 }
             }
+
+            // HTML §15.3.8 lists: type on ol/ul/li maps to list-style-type. The
+            // numbering letters are case-sensitive (a vs A); the bullet names are not.
+            if (tag is "OL" or "UL" or "LI" && element.GetAttribute("type") is { } type)
+            {
+                var numbering = type switch
+                {
+                    "1" => "decimal",
+                    "a" => "lower-alpha",
+                    "A" => "upper-alpha",
+                    "i" => "lower-roman",
+                    "I" => "upper-roman",
+                    _ => null
+                };
+                var bullet = type.Trim().ToLowerInvariant() is var name && name is "none" or "disc" or "circle" or "square"
+                    ? name
+                    : null;
+                Emit("list-style-type", tag switch
+                {
+                    "OL" => numbering,
+                    "UL" => bullet,
+                    _ => numbering ?? bullet
+                });
+            }
         }
 
         // HTML "rules for parsing a legacy colour value", reduced to the forms
