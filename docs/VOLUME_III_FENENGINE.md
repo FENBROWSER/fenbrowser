@@ -12816,9 +12816,8 @@ values without `;`, `{`, `}`, `!`, comment openers, backslashes, control charact
 unbalanced brackets or unterminated strings, at most 128 properties, 2048 characters
 each and 32 KiB in total. A withheld property is reported on the SVG channel.
 
-Known gap, separate from this change: an inline `<svg>` without `width`/`height`
-attributes is rendered at 300x150 and scaled into its CSS box instead of taking the
-box as its viewport.
+An inline `<svg>` without `width`/`height` attributes used to be rendered at 300x150
+and scaled into its CSS box; it now takes the box as its viewport (2.188).
 
 ## 2.185 SVG Startup Cost (2026-09-29)
 
@@ -12869,6 +12868,42 @@ The largest render files were split along their existing sections without code
 changes: `Walk.cs` into `Walk.cs`, `ForeignObject.cs`, `Use.cs`, `Clipping.cs` and
 `Images.cs`; `Text.cs` into `Text.cs`, `TextPath.cs`, `TextStyle.cs` and
 `TextBidi.cs` (the UAX #9 implementation). Each move was checked line for line.
+
+## 2.188 Use Bounds, Unset Variables, Inline Viewports And Log URLs (2026-09-29)
+
+- Bounding box of a symbol instance. A `use` of a `symbol` had no object bounding
+  box, so any objectBoundingBox filter or mask on it (the usual icon-sprite form)
+  failed closed with "unusable filter region". The box is now the union of the
+  symbol's children placed by the viewport the instance establishes: the same
+  width/height resolution as drawing, and the same viewBox mapping, which now
+  comes from one pure `TryComputeViewportMatrix` shared with
+  `ApplyViewportTransform`. As with getBBox, the viewport clip does not shrink it.
+- A use instance's own effects. `x`/`y` on a `use` are a translation appended to
+  its transform (SVG 2 §5.6) and are already on the canvas when the instance's own
+  filter and mask are built, but its box added them again, so a filtered or masked
+  `use` with a non-zero `x` or `y` painted nothing. While those effects are built
+  the box is now measured in the translated space; a parent group's union still
+  includes the offset.
+- Invalid at computed-value time. A declaration whose `var()` cannot be
+  substituted, or that is invalid after substitution, still wins the cascade and
+  behaves as `unset` (CSS Variables 1 §3.1): `fill` inherits and `opacity` takes its
+  initial value, where the engine used to fall back to the presentation attribute.
+  An invalid declaration without `var()` is still dropped at parse time.
+- Inline SVG viewport. The outer inline `<svg>` now gets its CSS content box as its
+  viewport, so a document without `width`/`height` attributes is laid out in its box
+  (content at 1:1 without a viewBox, clipped to the box) instead of in the 300x150
+  default and scaled into it.
+- Log URLs. `LogUrl.Describe` renders URLs for log messages as the origin plus a
+  short hash of the full URL, a data: URL as its media type and length, and anything
+  else as its scheme and hash, so paths, query strings, user info and payloads never
+  reach a log line. `ImageLoader` logs every URL through it, and a source guard
+  (`Logging/ImageLoaderUrlLoggingGuardTests`) keeps raw URLs out of its log lines.
+
+Not changed, deliberately: the parser keeps the first of duplicate attributes, as
+`SvgDom` documents and three tests pin. It is one case of the parser's general
+recovery from non-well-formed XML (unclosed markup is recovered too), whereas
+browsers refuse any SVG image that is not well-formed. Switching to strict XML
+well-formedness is a policy change for the whole parser, not a fix for one case.
 
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
