@@ -403,6 +403,69 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async System.Threading.Tasks.Task InlineSvgAttributeVar_ResolvesAgainstHtmlAncestorCustomProperty()
+        {
+            using var bitmap = await RenderInlineSvgAsync(
+                "<div style='--brand: #00ff00'><svg id='icon' width='120' height='20'><rect width='20' height='20' fill='var(--brand)'></rect></svg></div>");
+
+            Assert.Equal(SKColors.Lime, bitmap.GetPixel(10, 10));
+        }
+
+        [Theory]
+        [InlineData("var(--x)")]
+        [InlineData("currentColor")]
+        public async System.Threading.Tasks.Task InlineSvgTextContent_IsPaintedAsWritten(string word)
+        {
+            // Text is content, not a value: a word that looks like var() or currentColor
+            // must reach the SVG engine unchanged instead of being replaced by a color.
+            const string template =
+                "<svg id='icon' width='120' height='20' style='font-size: 16px'><text x='0' y='16' fill='black'>{0}</text></svg>";
+            using var written = await RenderInlineSvgAsync(string.Format(template, word));
+            using var substituted = await RenderInlineSvgAsync(string.Format(template, "#000000"));
+
+            Assert.NotEqual(Ink(substituted), Ink(written));
+        }
+
+        private static async System.Threading.Tasks.Task<SKBitmap> RenderInlineSvgAsync(string body)
+        {
+            ImageLoader.ClearCache();
+            string html =
+                "<!doctype html><html><head><style>body { margin: 0; } " +
+                "svg { display: block; width: 120px; height: 20px; }</style></head><body>" +
+                body + "</body></html>";
+
+            var doc = new HtmlParser(html).Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var computer = new LayoutEngineComputer(styles, 160, 40);
+            computer.Measure(doc, new SKSize(160, 40));
+            computer.Arrange(doc, new SKRect(0, 0, 160, 40));
+
+            var boxes = new ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
+            var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 160, 40, null);
+            var icon = doc.GetElementById("icon");
+            var image = Flatten(tree.Roots)
+                .OfType<ImagePaintNode>()
+                .FirstOrDefault(n => ReferenceEquals(n.SourceNode, icon));
+
+            Assert.NotNull(image);
+            Assert.NotNull(image.Bitmap);
+            SKBitmap copy = image.Bitmap.Copy();
+            ImageLoader.ClearCache();
+            return copy;
+        }
+
+        private static int Ink(SKBitmap bitmap)
+        {
+            int ink = 0;
+            for (int y = 0; y < bitmap.Height; y++)
+            for (int x = 0; x < bitmap.Width; x++)
+                if (bitmap.GetPixel(x, y).Alpha > 0)
+                    ink++;
+            return ink;
+        }
+
+        [Fact]
         public async System.Threading.Tasks.Task InlineSvgLowercaseViewbox_IsAdjustedByTheHtmlParser()
         {
             // HTML §13.2.6.5 "adjust SVG attributes" turns 'viewbox' into 'viewBox' on
