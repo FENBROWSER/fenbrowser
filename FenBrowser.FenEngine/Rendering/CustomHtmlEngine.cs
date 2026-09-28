@@ -3213,10 +3213,13 @@ private void FlushPendingLayoutForScript(Element element)
                             }
                             else if (capturedDom?.ChildStyleDirty == true)
                             {
-                                // Part of the tree was restyled while scripts ran. Queue the
-                                // incremental pass for it; it is held until the post-script
-                                // snapshot is published and released by the resume below.
-                                ScheduleRecascade();
+                                // Part of the tree was restyled while scripts ran. Restyle it
+                                // before the post-script tree is built: that tree is the first
+                                // stable snapshot, and building it from the pre-script styles
+                                // showed stale ones until a later frame (a shadow root an
+                                // inline script attaches restyles its host's children through
+                                // their slots; css/css-lists/counter-list-item-slot-order).
+                                await js.RunOnScriptThreadAsync(() => IncrementalRecascadeAsync(notifyRepaint: false)).ConfigureAwait(false);
                             }
 
                             if (!IsCurrentRenderGeneration(renderGeneration))
