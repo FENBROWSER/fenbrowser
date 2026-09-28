@@ -1,12 +1,15 @@
 using System;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Scripting;
 using Xunit;
 
 namespace FenBrowser.Tests.Scripting
 {
+    // Shares the static JsDialogBridge with FenJsPopupSecurityTests.
+    [Collection("Engine Tests")]
     public sealed class FenJsInputEventDispatchTests
     {
         [Fact]
@@ -143,62 +146,83 @@ namespace FenBrowser.Tests.Scripting
                 """
                 <html><body>
                   <dialog id="testDialog"></dialog>
+                  <button id="openPopup">Open</button>
                 </body></html>
                 """,
                 baseUri).Parse();
 
-            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            // window.open needs transient activation while popup blocking is on (the
+            // default), and reaches the embedder through JsDialogBridge; the popup's
+            // written markup comes back through FinalizePopupDocument on close().
+            var originalOpenWindow = JsDialogBridge.OpenWindow;
+            var originalFinalize = JsDialogBridge.FinalizePopupDocument;
+            string popupHtml = null;
+            JsDialogBridge.OpenWindow = (_, _, _) => new object();
+            JsDialogBridge.FinalizePopupDocument = (_, html) => popupHtml = html;
+            try
             {
-                Sandbox = SandboxPolicy.AllowAll
-            };
+                var engine = new FenJsBrowserScriptEngine(CreateHost())
+                {
+                    Sandbox = SandboxPolicy.AllowAll
+                };
 
-            await engine.SetDomAsync(document.DocumentElement, baseUri);
+                await engine.SetDomAsync(document.DocumentElement, baseUri);
 
-            engine.Evaluate(
-                """
-                globalThis.__apiProbe = {};
-                __apiProbe.notificationType = typeof Notification;
-                __apiProbe.notificationPermission = Notification.permission;
-                __apiProbe.secureContext = String(window.isSecureContext);
-                Notification.requestPermission(function (permission) {
-                  __apiProbe.requestPermission = permission;
-                });
-                var notification = new Notification("Probe", { body: "Body", tag: "tag" });
-                __apiProbe.notificationTitle = notification.title;
+                engine.Evaluate(
+                    """
+                    globalThis.__apiProbe = {};
+                    __apiProbe.notificationType = typeof Notification;
+                    __apiProbe.notificationPermission = Notification.permission;
+                    __apiProbe.secureContext = String(window.isSecureContext);
+                    Notification.requestPermission(function (permission) {
+                      __apiProbe.requestPermission = permission;
+                    });
+                    var notification = new Notification("Probe", { body: "Body", tag: "tag" });
+                    __apiProbe.notificationTitle = notification.title;
 
-                var popup = window.open("", "ProbePopup", "width=320,height=200");
-                __apiProbe.popupOpened = !!popup;
-                popup.document.open();
-                popup.document.write("<h1>Popup</h1>");
-                popup.document.close();
-                popup.focus();
-                __apiProbe.popupDocument = popup.document._html;
+                    document.getElementById("openPopup").addEventListener("click", function () {
+                      var popup = window.open("", "ProbePopup", "width=320,height=200");
+                      __apiProbe.popupOpened = !!popup;
+                      popup.document.open();
+                      popup.document.write("<h1>Popup</h1>");
+                      popup.document.close();
+                      popup.focus();
+                    });
 
-                var dialog = document.getElementById("testDialog");
-                __apiProbe.dialogShowModalType = typeof dialog.showModal;
-                __apiProbe.dialogCloseType = typeof dialog.close;
-                __apiProbe.dialogClosed = false;
-                dialog.addEventListener("close", function () {
-                  __apiProbe.dialogClosed = true;
-                });
-                dialog.showModal();
-                __apiProbe.dialogOpenAfterShow = dialog.open && dialog.hasAttribute("open");
-                dialog.close("ok");
-                __apiProbe.dialogOpenAfterClose = dialog.open;
-                """);
+                    var dialog = document.getElementById("testDialog");
+                    __apiProbe.dialogShowModalType = typeof dialog.showModal;
+                    __apiProbe.dialogCloseType = typeof dialog.close;
+                    __apiProbe.dialogClosed = false;
+                    dialog.addEventListener("close", function () {
+                      __apiProbe.dialogClosed = true;
+                    });
+                    dialog.showModal();
+                    __apiProbe.dialogOpenAfterShow = dialog.open && dialog.hasAttribute("open");
+                    dialog.close("ok");
+                    __apiProbe.dialogOpenAfterClose = dialog.open;
+                    """);
 
-            Assert.Equal("function", engine.Evaluate("String(__apiProbe.notificationType)")?.ToString());
-            Assert.Equal("granted", engine.Evaluate("String(__apiProbe.notificationPermission)")?.ToString());
-            Assert.Equal("granted", engine.Evaluate("String(__apiProbe.requestPermission)")?.ToString());
-            Assert.Equal("true", engine.Evaluate("String(__apiProbe.secureContext)")?.ToString());
-            Assert.Equal("Probe", engine.Evaluate("String(__apiProbe.notificationTitle)")?.ToString());
-            Assert.Equal("true", engine.Evaluate("String(__apiProbe.popupOpened)")?.ToString());
-            Assert.Equal("<h1>Popup</h1>", engine.Evaluate("String(__apiProbe.popupDocument)")?.ToString());
-            Assert.Equal("function", engine.Evaluate("String(__apiProbe.dialogShowModalType)")?.ToString());
-            Assert.Equal("function", engine.Evaluate("String(__apiProbe.dialogCloseType)")?.ToString());
-            Assert.Equal("true", engine.Evaluate("String(__apiProbe.dialogOpenAfterShow)")?.ToString());
-            Assert.Equal("false", engine.Evaluate("String(__apiProbe.dialogOpenAfterClose)")?.ToString());
-            Assert.Equal("true", engine.Evaluate("String(__apiProbe.dialogClosed)")?.ToString());
+                var openButton = Assert.IsType<Element>(document.GetElementById("openPopup"));
+                Assert.True(engine.DispatchEventForElement(openButton, "click", new BrowserDomEventInit { IsTrusted = true }));
+
+                Assert.Equal("function", engine.Evaluate("String(__apiProbe.notificationType)")?.ToString());
+                Assert.Equal("granted", engine.Evaluate("String(__apiProbe.notificationPermission)")?.ToString());
+                Assert.Equal("granted", engine.Evaluate("String(__apiProbe.requestPermission)")?.ToString());
+                Assert.Equal("true", engine.Evaluate("String(__apiProbe.secureContext)")?.ToString());
+                Assert.Equal("Probe", engine.Evaluate("String(__apiProbe.notificationTitle)")?.ToString());
+                Assert.Equal("true", engine.Evaluate("String(__apiProbe.popupOpened)")?.ToString());
+                Assert.Equal("<h1>Popup</h1>", popupHtml);
+                Assert.Equal("function", engine.Evaluate("String(__apiProbe.dialogShowModalType)")?.ToString());
+                Assert.Equal("function", engine.Evaluate("String(__apiProbe.dialogCloseType)")?.ToString());
+                Assert.Equal("true", engine.Evaluate("String(__apiProbe.dialogOpenAfterShow)")?.ToString());
+                Assert.Equal("false", engine.Evaluate("String(__apiProbe.dialogOpenAfterClose)")?.ToString());
+                Assert.Equal("true", engine.Evaluate("String(__apiProbe.dialogClosed)")?.ToString());
+            }
+            finally
+            {
+                JsDialogBridge.OpenWindow = originalOpenWindow;
+                JsDialogBridge.FinalizePopupDocument = originalFinalize;
+            }
         }
 
         private static JsHostAdapter CreateHost()

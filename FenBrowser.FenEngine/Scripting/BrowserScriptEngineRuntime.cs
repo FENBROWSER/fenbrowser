@@ -27636,22 +27636,24 @@ public sealed partial class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHe
                 return document;
             }, length: 0));
 
+        // HTML document.write(...text) / writeln(...text): every argument, converted
+        // to a string, in order. JsValue.ToString() is the CLR type name, not the text.
         _interpreter.SetObjectProperty(document, "write",
             _interpreter.AllocateNativeFunction("write", (_, args) =>
             {
-                if (args.Count > 0)
-                    htmlBuffer.Append(args[0].ToString());
+                foreach (var arg in args)
+                    htmlBuffer.Append(CoerceToHostString(arg));
                 return JsValue.Undefined;
-            }, length: 1));
+            }, length: 0));
 
         _interpreter.SetObjectProperty(document, "writeln",
             _interpreter.AllocateNativeFunction("writeln", (_, args) =>
             {
-                if (args.Count > 0)
-                    htmlBuffer.Append(args[0].ToString());
+                foreach (var arg in args)
+                    htmlBuffer.Append(CoerceToHostString(arg));
                 htmlBuffer.Append('\n');
                 return JsValue.Undefined;
-            }, length: 1));
+            }, length: 0));
 
         _interpreter.SetObjectProperty(document, "close",
             _interpreter.AllocateNativeFunction("close", (_, _2) =>
