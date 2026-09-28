@@ -21,7 +21,7 @@ public sealed class AdoptionAgencyWptFixtureTests
     {
         foreach (var file in new[] { "adoption01.dat", "adoption02.dat" })
         {
-            foreach (var block in ParseDatBlocks(ResolveRepoFile("wpt", "html", "syntax", "parsing", "resources", file)))
+            foreach (var block in ParseDatBlocks(ResolveWptFile("html", "syntax", "parsing", "resources", file)))
             {
                 // <a><svg><tr><input></a> is governed by foreign-content breakout
                 // rules, not the adoption agency algorithm; it is covered by the
@@ -80,22 +80,26 @@ public sealed class AdoptionAgencyWptFixtureTests
         Assert.Equal(currentUnsupportedTree, actual);
     }
 
-    private static string ResolveRepoFile(params string[] parts)
+    // The WPT checkout lives outside the repository: WPT_ROOT, else D:\wpt, the
+    // same order scripts/wpt/run.py uses.
+    private static string ResolveWptFile(params string[] parts)
     {
-        var probe = AppContext.BaseDirectory;
-        for (int i = 0; i < 12 && !string.IsNullOrWhiteSpace(probe); i++)
+        foreach (var root in new[] { Environment.GetEnvironmentVariable("WPT_ROOT"), @"D:\wpt" })
         {
-            var candidate = Path.Combine(new[] { probe }.Concat(parts).ToArray());
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                continue;
+            }
+
+            var candidate = Path.Combine(new[] { root }.Concat(parts).ToArray());
             if (File.Exists(candidate))
             {
                 return candidate;
             }
-
-            probe = Path.GetDirectoryName(probe);
         }
 
         throw new FileNotFoundException(
-            $"Local WPT fixture not found: {string.Join('/', parts)}. Expected checkout at C:\\Users\\udayk\\Videos\\wpt.");
+            $"Local WPT fixture not found: {string.Join('/', parts)}. Set WPT_ROOT to the checkout (default D:\\wpt).");
     }
 
     private static (string Markup, string ExpectedDump)[] ParseDatBlocks(string path)
