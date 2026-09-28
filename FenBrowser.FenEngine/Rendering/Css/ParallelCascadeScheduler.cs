@@ -248,9 +248,15 @@ namespace FenBrowser.FenEngine.Rendering
                 cascadeParent = shadowRoot.Host;
             }
 
-            if (cascadeParent != null)
+            // CSS Cascade 4 §7.2: inherited values come from the parent's computed
+            // value. The root of an incremental recascade has a parent outside this
+            // pass, whose style is the one the last cascade stored on it. Looking only
+            // in this pass's results gave that root no parent at all: typing into
+            // x.com's username field re-styles the <input> alone, and its inherited
+            // white text reset to the initial black until a wider pass ran.
+            if (cascadeParent != null && !result.TryGetValue(cascadeParent, out parentCss))
             {
-                result.TryGetValue(cascadeParent, out parentCss);
+                parentCss = cascadeParent.GetComputedStyle();
             }
 
             try
