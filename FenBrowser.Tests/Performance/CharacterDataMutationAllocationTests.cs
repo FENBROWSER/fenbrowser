@@ -8,6 +8,11 @@ namespace FenBrowser.Tests.Performance;
 
 public sealed class CharacterDataMutationAllocationTests
 {
+    // The delivery microtask never runs here, so takeRecords() reads the whole
+    // queue. Without a scheduler, Core delivers on the thread pool, which can
+    // drain the queue into the callback before the test looks.
+    private static void HoldDelivery(Action deliver) { }
+
     private readonly ITestOutputHelper _output;
 
     public CharacterDataMutationAllocationTests(ITestOutputHelper output)
@@ -48,9 +53,9 @@ public sealed class CharacterDataMutationAllocationTests
         // DOM 4.3.2 "queue a mutation record": a registration on the target itself
         // always sees the change, one on an ancestor only with subtree. Delivery is
         // a microtask, so the queues are read with takeRecords().
-        var directObserver = new MutationObserver((_, _) => { });
-        var subtreeObserver = new MutationObserver((_, _) => { });
-        var parentObserver = new MutationObserver((_, _) => { });
+        var directObserver = new MutationObserver((_, _) => { }, HoldDelivery);
+        var subtreeObserver = new MutationObserver((_, _) => { }, HoldDelivery);
+        var parentObserver = new MutationObserver((_, _) => { }, HoldDelivery);
         directObserver.Observe(text, new MutationObserverInit
         {
             CharacterData = true,

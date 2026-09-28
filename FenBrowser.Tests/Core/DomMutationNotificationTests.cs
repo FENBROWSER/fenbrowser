@@ -7,13 +7,18 @@ namespace FenBrowser.Tests.Core;
 // the queue with takeRecords() rather than waiting on the callback.
 public sealed class DomMutationNotificationTests
 {
+    // The delivery microtask never runs here, so takeRecords() reads the whole
+    // queue. Without a scheduler, Core delivers on the thread pool, which can
+    // drain the queue into the callback before the test looks.
+    private static void HoldDelivery(Action deliver) { }
+
     [Fact]
     public void RemovePublishesDirectMutationObserverRecord()
     {
         var parent = new Element("div");
         var child = new Element("span");
         parent.AppendChild(child);
-        var observer = new MutationObserver((_, _) => { });
+        var observer = new MutationObserver((_, _) => { }, HoldDelivery);
         observer.Observe(parent, new MutationObserverInit { ChildList = true });
 
         parent.RemoveChild(child);
@@ -32,7 +37,7 @@ public sealed class DomMutationNotificationTests
     {
         var parent = new Element("div");
         var child = new Element("span");
-        var observer = new MutationObserver((_, _) => { });
+        var observer = new MutationObserver((_, _) => { }, HoldDelivery);
         observer.Observe(parent, new MutationObserverInit { ChildList = true });
 
         parent.AppendChild(child);
@@ -53,7 +58,7 @@ public sealed class DomMutationNotificationTests
         var parent = new Element("div");
         ancestor.AppendChild(parent);
         var child = new Element("span");
-        var observer = new MutationObserver((_, _) => { });
+        var observer = new MutationObserver((_, _) => { }, HoldDelivery);
         observer.Observe(ancestor, new MutationObserverInit { ChildList = true, Subtree = true });
 
         parent.AppendChild(child);
