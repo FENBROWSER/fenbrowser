@@ -411,6 +411,16 @@ namespace FenBrowser.FenEngine.Adapters
         public int MaxReferenceDepth { get; set; }
 
         /// <summary>
+        /// Maximum estimated filter work for one render, nested documents included,
+        /// in per-pixel operations: each filter primitive charges its device-space
+        /// region times a per-pixel cost for its kind (a morphology tap, a
+        /// convolution tap, a noise octave, a lighting sample) before any Skia
+        /// filter is built. Filters execute inside Skia where the render deadline
+        /// cannot interrupt them, so this is what bounds their wall time.
+        /// </summary>
+        public long MaxFilterWorkUnits { get; set; }
+
+        /// <summary>
         /// Whether explicitly supplied external references may be resolved.
         /// False rejects them; true still requires a base URI, a trusted resolver,
         /// and a same-origin target. Default: false (disabled for security).
@@ -437,6 +447,7 @@ namespace FenBrowser.FenEngine.Adapters
             MaxCumulativeDecodedImagePixels = 32L * 1024 * 1024,
             MaxActiveLayers = 8,
             MaxReferenceDepth = 32,
+            MaxFilterWorkUnits = 256L * 1024 * 1024,
             AllowExternalReferences = false
         };
         
@@ -460,6 +471,7 @@ namespace FenBrowser.FenEngine.Adapters
             MaxCumulativeDecodedImagePixels = 8L * 1024 * 1024,
             MaxActiveLayers = 4,
             MaxReferenceDepth = 16,
+            MaxFilterWorkUnits = 48L * 1024 * 1024,
             AllowExternalReferences = false
         };
 
@@ -488,6 +500,7 @@ namespace FenBrowser.FenEngine.Adapters
                 limits.MaxCumulativeDecodedImagePixels = defaults.MaxCumulativeDecodedImagePixels;
             if (limits.MaxActiveLayers <= 0) limits.MaxActiveLayers = defaults.MaxActiveLayers;
             if (limits.MaxReferenceDepth <= 0) limits.MaxReferenceDepth = defaults.MaxReferenceDepth;
+            if (limits.MaxFilterWorkUnits <= 0) limits.MaxFilterWorkUnits = defaults.MaxFilterWorkUnits;
 
             limits.MaxRecursionDepth = Math.Min(limits.MaxRecursionDepth, 512);
             limits.MaxFilterCount = Math.Min(limits.MaxFilterCount, 1_000);
@@ -506,6 +519,7 @@ namespace FenBrowser.FenEngine.Adapters
                 limits.MaxCumulativeDecodedImagePixels, 64L * 1024 * 1024);
             limits.MaxActiveLayers = Math.Min(limits.MaxActiveLayers, 16);
             limits.MaxReferenceDepth = Math.Min(limits.MaxReferenceDepth, 64);
+            limits.MaxFilterWorkUnits = Math.Min(limits.MaxFilterWorkUnits, 4L * 1024 * 1024 * 1024);
             return limits;
         }
     }

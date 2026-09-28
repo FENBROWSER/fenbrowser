@@ -391,6 +391,8 @@ namespace FenBrowser.FenEngine.Svg
         private long _cumulativeBytes;
         private long _cumulativeDecodedPixels;
         private int _resourceCount;
+        private readonly long _maxFilterWorkUnits;
+        private long _filterWorkUnits;
         private bool _disposed;
 
         public SvgRenderResources(SvgRenderLimits limits, Stopwatch clock = null)
@@ -401,6 +403,9 @@ namespace FenBrowser.FenEngine.Svg
             MaxDecodedImageBytes = System.Math.Max(1, limits.MaxDecodedImageBytes);
             MaxDecodedImagePixels = System.Math.Max(1, limits.MaxDecodedImagePixels);
             MaxRasterDimension = System.Math.Max(1, limits.MaxRasterWidth);
+            _maxFilterWorkUnits = limits.MaxFilterWorkUnits > 0
+                ? limits.MaxFilterWorkUnits
+                : SvgRenderLimits.Default.MaxFilterWorkUnits;
             DeadlineMs = limits.MaxRenderTimeMs > 0 ? limits.MaxRenderTimeMs : long.MaxValue;
             Clock = clock ?? Stopwatch.StartNew();
         }
@@ -422,6 +427,22 @@ namespace FenBrowser.FenEngine.Svg
         public long CumulativeResourceBytes => _cumulativeBytes;
 
         public int ResourceCount => _resourceCount;
+
+        public long FilterWorkUnits => _filterWorkUnits;
+
+        public long MaxFilterWorkUnits => _maxFilterWorkUnits;
+
+        /// <summary>
+        /// Charges estimated filter work against the per-render budget shared with
+        /// nested documents. Returns false, charging nothing, when it would exceed it.
+        /// </summary>
+        public bool TryChargeFilterWork(long units)
+        {
+            if (units < 0 || _disposed) return false;
+            if (units > _maxFilterWorkUnits - _filterWorkUnits) return false;
+            _filterWorkUnits += units;
+            return true;
+        }
 
         public bool TryAdmit(int bytes)
         {
