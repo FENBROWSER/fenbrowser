@@ -2205,6 +2205,29 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
         }
 
+        /// <summary>
+        /// Forced flex sizes are content-box sizes, but they are handed to the item's
+        /// formatting context through its specified width/height, which that context reads
+        /// per box-sizing (CSS Box Sizing 3 §3). Under border-box the padding and border were
+        /// taken off a second time: x.com's padded, stretched login column (Tailwind makes
+        /// everything border-box) lost 80px of height and 52px of width, so its centred form
+        /// sat 40px too high and the column came out narrower than Chrome's.
+        /// </summary>
+        private static double ContentSizeAsSpecifiedSize(CssComputed style, float contentSize, bool horizontal)
+        {
+            if (!string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                return contentSize;
+            }
+
+            var padding = style.Padding;
+            var border = style.BorderThickness;
+            double chrome = horizontal
+                ? padding.Left + padding.Right + border.Left + border.Right
+                : padding.Top + padding.Bottom + border.Top + border.Bottom;
+            return contentSize + chrome;
+        }
+
         private static void LayoutWithForcedWidth(LayoutBox item, LayoutState state, float forcedWidth)
         {
             if (item == null)
@@ -2226,7 +2249,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             var oldWidthPercent = style.WidthPercent;
             var oldWidthExpression = style.WidthExpression;
 
-            style.Width = Math.Max(0, forcedWidth);
+            style.Width = ContentSizeAsSpecifiedSize(style, Math.Max(0, forcedWidth), horizontal: true);
             style.WidthPercent = null;
             style.WidthExpression = null;
 
@@ -2258,7 +2281,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             var oldHeightPercent = style.HeightPercent;
             var oldHeightExpression = style.HeightExpression;
 
-            style.Height = Math.Max(0, forcedHeight);
+            style.Height = ContentSizeAsSpecifiedSize(style, Math.Max(0, forcedHeight), horizontal: false);
             style.HeightPercent = null;
             style.HeightExpression = null;
 
