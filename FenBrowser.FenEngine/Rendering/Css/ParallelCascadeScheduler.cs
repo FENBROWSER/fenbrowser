@@ -69,6 +69,10 @@ namespace FenBrowser.FenEngine.Rendering
             var result = new ConcurrentDictionary<Node, CssComputed>();
             var engine = new CascadeEngine(styleSet);
 
+            // The document's @counter-style rules, for the markers and counter()
+            // values this cascade's styles name.
+            FenBrowser.FenEngine.Layout.CounterStyleRegistry.Rebuild(root.OwnerDocument, styleSet);
+
             // Force index build on the calling thread before any parallel work.
             // After this call all index fields are read-only.
             engine.HasPseudoRules("before");
