@@ -1477,6 +1477,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 string tag = el.TagName?.ToUpperInvariant() ?? "";
 
+                // A <button> is an ordinary flex container for its content (HTML
+                // rendering §15.5.2): its auto size comes from its flex items, not a
+                // label estimate. Seeding one text line and 7px per character here left
+                // x.com's column-flex "Scan to get the app" card 16px tall around a
+                // 112px QR image, and 33px wider than its caption.
+                bool buttonSizedByContent = tag == "BUTTON" && box.Children.Any(child =>
+                    child != null &&
+                    !child.IsOutOfFlow &&
+                    child.ComputedStyle?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) != true &&
+                    !IsIgnorableFlexItem(child));
+
                 if (width <= 0)
                 {
                     if (tag == "INPUT")
@@ -1497,7 +1508,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             width = 150f;
                         }
                     }
-                    else if (tag == "BUTTON")
+                    else if (tag == "BUTTON" && !buttonSizedByContent)
                     {
                         string label = LayoutHelper.GetRenderableTextContentTrimmed(el);
                         if (string.IsNullOrWhiteSpace(label)) label = "Button";
@@ -1526,7 +1537,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         string type = (el.GetAttribute("type") ?? string.Empty).Trim().ToLowerInvariant();
                         height = (type == "checkbox" || type == "radio") ? ReplacedElementSizing.NativeCheckboxRadioSize : 40f;
                     }
-                    else if (tag == "BUTTON")
+                    else if (tag == "BUTTON" && !buttonSizedByContent)
                     {
                         string label = LayoutHelper.GetRenderableTextContentTrimmed(el);
                         height = string.IsNullOrWhiteSpace(label)
