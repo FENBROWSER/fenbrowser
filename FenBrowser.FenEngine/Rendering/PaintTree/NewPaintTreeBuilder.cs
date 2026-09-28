@@ -4105,12 +4105,7 @@ namespace FenBrowser.FenEngine.Rendering
                 ResolveInlineSvgForeground(svgElement, style),
                 style?.CustomProperties,
                 out int withheld);
-            if (withheld > 0)
-            {
-                global::FenBrowser.Core.EngineLogCompat.Debug(
-                    $"[InlineSvg] withheld {withheld} referenced custom properties that failed validation or bounds",
-                    LogCategory.Rendering);
-            }
+            FenBrowser.FenEngine.Adapters.SvgDiagnostics.RecordInlineContextWithheld(withheld);
 
             string existing = clone.GetAttribute("style")?.Trim();
             clone.SetAttributeUnsafe(
