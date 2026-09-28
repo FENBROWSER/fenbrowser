@@ -1514,11 +1514,12 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         state.Pos++;
                     }
+                    // Read the name before scanning past the tag: the scan moves the
+                    // cursor over the attributes, which are not part of the name.
+                    string opened = state.Source.Substring(nameStart, state.Pos - nameStart);
                     bool insideWindow = state.Pos < end;
                     bool selfClosing = insideWindow && ScanPastTagEnd(state);
-                    if (!selfClosing &&
-                        SameIgnoredName(
-                            state.Source.Substring(nameStart, state.Pos - nameStart), rawName))
+                    if (!selfClosing && SameIgnoredName(opened, rawName))
                     {
                         depth++;
                     }
@@ -1560,7 +1561,7 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         state.Pos++;
                     }
-                    state.Pos++; // closing quote or EOF
+                    if (!state.Eof) state.Pos++; // closing quote; an unterminated value stops at EOF
                     continue;
                 }
                 if (c == '\'')
@@ -1570,7 +1571,7 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         state.Pos++;
                     }
-                    state.Pos++;
+                    if (!state.Eof) state.Pos++;
                     continue;
                 }
                 if (c == '/')

@@ -277,6 +277,36 @@ namespace FenBrowser.Tests.Svg
             Assert.True(doc.Report.SawDuplicateId);
         }
 
+        [Theory]
+        [InlineData("<svg xmlns='http://www.w3.org/2000/svg'><x:a xmlns:x='urn:x'><x:b c='")]
+        [InlineData("<svg xmlns='http://www.w3.org/2000/svg'><x:a xmlns:x='urn:x'><x:b c=\"")]
+        [InlineData("<svg xmlns='http://www.w3.org/2000/svg'><x:a xmlns:x='urn:x'><x:a c='")]
+        public void ForeignSubtree_UnterminatedQuoteAtEof_DoesNotThrow(string source)
+        {
+            // Fuzz finding: the foreign end-tag scan stepped one past the end of
+            // the input on an unterminated attribute value and then sliced the
+            // source with that position.
+            var ex = Record.Exception(() => SvgMarkupParser.TryParse(source, FullLimits(), out _, out _));
+
+            Assert.Null(ex);
+        }
+
+        [Fact]
+        public void ForeignSubtree_NestedSameNameWithAttributes_CountsAsNesting()
+        {
+            // The outer x:a has no end tag of its own: the only </x:a> closes the
+            // nested x:a. Reading the nested name after its attributes lost that
+            // nesting, so the outer element swallowed the following rect.
+            const string source =
+                "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'>" +
+                "<x:a xmlns:x='urn:x'><x:a k='v'></x:a>" +
+                "<rect id='after' width='10' height='10'/></svg>";
+
+            Assert.True(SvgMarkupParser.TryParse(source, FullLimits(), out var doc, out var fatal), fatal);
+            Assert.True(doc.ElementsById.TryGetValue("after", out var rect));
+            Assert.Same(doc.Root, rect.Parent);
+        }
+
         [Fact]
         public void ElementCount_Budget_RejectsWithTheLimitMessage()
         {
