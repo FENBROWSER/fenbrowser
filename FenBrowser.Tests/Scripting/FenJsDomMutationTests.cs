@@ -302,7 +302,9 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
-        public async Task TreeWalkerCurrentNode_CanLeaveRootButTraversalStaysBounded()
+        // DOM 6.2 / WPT dom/traversal/TreeWalker-currentNode.html: traversal from a
+        // currentNode outside root starts there and stops only on reaching root.
+        public async Task TreeWalkerCurrentNode_CanLeaveRootAndTraversalStartsFromIt()
         {
             var baseUri = new Uri("https://www.youtube.com/");
             var document = new HtmlParser("<html><body><div id='root'><span id='child'></span></div><p id='outsider'></p></body></html>", baseUri).Parse();
@@ -331,22 +333,28 @@ namespace FenBrowser.Tests.Scripting
                         status = String(e && e.message ? e.message : e);
                     }
 
+                    function from(step) {
+                        walker.currentNode = outsider;
+                        var node = walker[step]();
+                        return node === null ? 'null' : node.id || node.localName;
+                    }
+
                     return [
                         status,
                         String(childAssigned),
                         String(walker.currentNode === outsider),
-                        String(walker.parentNode() === null),
-                        String(walker.firstChild() === null),
-                        String(walker.lastChild() === null),
-                        String(walker.previousSibling() === null),
-                        String(walker.nextSibling() === null),
-                        String(walker.previousNode() === null),
-                        String(walker.nextNode() === null)
+                        from('parentNode'),
+                        from('firstChild'),
+                        from('lastChild'),
+                        from('previousSibling'),
+                        from('nextSibling'),
+                        from('previousNode'),
+                        from('nextNode')
                     ].join('|');
                 })();
                 """);
 
-            Assert.Equal("ok|true|true|true|true|true|true|true|true|true", result?.ToString());
+            Assert.Equal("ok|true|true|body|null|null|root|null|child|null", result?.ToString());
         }
 
         private static JsHostAdapter CreateHost()
