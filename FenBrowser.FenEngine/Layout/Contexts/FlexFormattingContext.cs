@@ -1206,6 +1206,32 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     resolvedDefiniteWidth = true;
                 }
             }
+            else if (!string.IsNullOrEmpty(boxStyle?.WidthExpression) &&
+                     !LayoutHelper.IsContentBasedSizeKeyword(boxStyle.WidthExpression))
+            {
+                // CSS Values 4 §10: a calc()/min()/max()/clamp() width is as definite
+                // as a percentage against the same containing block. Heights already
+                // resolved HeightExpression here; widths fell through to "fill the
+                // line", so x.com's Google face, `calc(100% / var(--jf-scale))` under
+                // `scale(1.15)`, stayed 100% wide and scaled past its clipping parent.
+                float parentWidth = state.AvailableSize.Width;
+                if (float.IsInfinity(parentWidth) || parentWidth <= 0)
+                    parentWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
+                if (float.IsFinite(parentWidth) && parentWidth > 0)
+                {
+                    float expressionWidth = LayoutHelper.EvaluateCssExpression(
+                        boxStyle.WidthExpression,
+                        parentWidth,
+                        state.ViewportWidth,
+                        state.ViewportHeight,
+                        (float)(boxStyle.FontSize ?? 16d));
+                    if (expressionWidth >= 0f && float.IsFinite(expressionWidth))
+                    {
+                        width = expressionWidth;
+                        resolvedDefiniteWidth = true;
+                    }
+                }
+            }
             if (resolvedDefiniteWidth)
             {
                 // Already resolved from an explicit width/width-percent. Just apply
