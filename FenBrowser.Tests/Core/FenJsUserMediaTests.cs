@@ -10,7 +10,8 @@ namespace FenBrowser.Tests.Core;
 /// <summary>
 /// mediacapture-main 9-10: navigator.mediaDevices.getUserMedia() and enumerateDevices()
 /// over <see cref="CaptureDevices"/>, driven with the fake microphone and camera that
-/// FEN_MEDIA_FAKE_DEVICES selects.
+/// FEN_MEDIA_FAKE_DEVICES selects, and §6's rules for a media element whose provider object
+/// is a MediaStream.
 /// </summary>
 [Collection("Media Engine State")]
 public sealed class FenJsUserMediaTests : IDisposable
@@ -131,6 +132,29 @@ public sealed class FenJsUserMediaTests : IDisposable
         // camera, the kind that was captured, is named.
         Assert.Equal("audioinput=-/-,videoinput=-/-", engine.Evaluate("globalThis.__before")?.ToString());
         Assert.Equal("audioinput=-/-,videoinput=Fake Camera/id", after);
+    }
+
+    [Fact]
+    public async Task AMediaStreamProviderFixesRateAndIgnoresSeekingAndPreload()
+    {
+        var engine = await CreateEngineAsync();
+
+        engine.Evaluate("""
+            globalThis.__result = '';
+            navigator.mediaDevices.getUserMedia({ video: true }).then(function (s) {
+                var v = document.createElement('video');
+                v.playbackRate = 2;
+                v.srcObject = s;
+                v.playbackRate = 3;
+                v.defaultPlaybackRate = 3;
+                v.preload = 'auto';
+                v.currentTime = 5;
+                // mediacapture-main 6: rates read 1, preload reads "none", currentTime is not seekable.
+                __result = [v.playbackRate, v.defaultPlaybackRate, v.preload, v.currentTime].join('|');
+            }, function (e) { __result = 'rejected:' + e.name; });
+            """);
+
+        Assert.Equal("1|1|none|0", await WaitForAsync(engine, "globalThis.__result"));
     }
 
     private static async Task<string> WaitForAsync(FenJsBrowserScriptEngine engine, string expression)

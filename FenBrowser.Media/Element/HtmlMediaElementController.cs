@@ -38,6 +38,9 @@ public sealed class HtmlMediaElementController
     private readonly TimeProvider _time;
     private readonly Audio.IAudioOutputFactory? _audioOutputs;
     private readonly List<ElementTask> _queuedTasks = [];
+
+    /// <summary>The last load ran with a MediaStream as the provider object.</summary>
+    private bool _loadedWithMediaStream;
     private List<object> _pendingPlayPromises = [];
 
     // Resource selection state.
@@ -248,19 +251,28 @@ public sealed class HtmlMediaElementController
     /// <summary><c>ended</c>: playback has ended and the direction is forwards.</summary>
     public bool Ended => HasEndedPlayback;
 
+    /// <summary>
+    /// The element's provider object is a MediaStream. mediacapture-main 6 then fixes the
+    /// rates at 1, ignores currentTime writes and the loop attribute, and makes preload
+    /// "none". Known from the moment srcObject is assigned, before selection runs.
+    /// </summary>
+    public bool HasMediaStreamProvider =>
+        _host.ProviderObjectUrl is { } url && url.StartsWith(Streams.LiveStreamRegistry.Scheme, StringComparison.Ordinal);
+
     public double DefaultPlaybackRate
     {
-        get => _defaultPlaybackRate;
+        get => HasMediaStreamProvider ? 1.0 : _defaultPlaybackRate;
         set
         {
-            if (value.Equals(_defaultPlaybackRate))
+            // mediacapture-main 6: ignored while a MediaStream is the provider.
+            if (HasMediaStreamProvider || value.Equals(_defaultPlaybackRate))
                 return;
             _defaultPlaybackRate = value;
             QueueEvent("ratechange");
         }
     }
 
-    public double PlaybackRate => _playbackRate;
+    public double PlaybackRate => HasMediaStreamProvider ? 1.0 : _playbackRate;
 
     public bool PreservesPitch
     {
@@ -293,7 +305,8 @@ public sealed class HtmlMediaElementController
     private bool IsBlocked => ReadyState <= MediaReadyState.HaveCurrentData;
 
     // Negative rates are rejected by the setter, so the direction is always forwards.
-    private bool HasEndedPlayback => (IsAtTheEnd && !_host.HasLoopAttribute) || _liveProviderEnded;
+    private bool HasEndedPlayback =>
+        (IsAtTheEnd && (!_host.HasLoopAttribute || HasMediaStreamProvider)) || _liveProviderEnded;
 
     // mediacapture-main 6: a MediaStream that goes inactive ends playback - ended is true -
     // though a live stream has no duration to reach. Cleared by the load algorithm.
@@ -427,6 +440,10 @@ public sealed class HtmlMediaElementController
     /// <summary><c>currentTime</c> setter.</summary>
     public void SetCurrentTime(double seconds)
     {
+        // mediacapture-main 6: a MediaStream is not seekable; the write is ignored.
+        if (HasMediaStreamProvider)
+            return;
+
         if (ReadyState == MediaReadyState.HaveNothing)
         {
             _defaultPlaybackStartPosition = seconds;
@@ -450,6 +467,10 @@ public sealed class HtmlMediaElementController
         // 1. Unsupported values throw.
         if (!IsSupportedPlaybackRate(rate))
             return false;
+
+        // mediacapture-main 6: ignored while a MediaStream is the provider.
+        if (HasMediaStreamProvider)
+            return true;
 
         // 2. Set, and change the speed if potentially playing.
         if (rate.Equals(_playbackRate))
@@ -582,9 +603,19 @@ public sealed class HtmlMediaElementController
             }
         }
 
-        // 8.
-        if (!_playbackRate.Equals(_defaultPlaybackRate) && IsSupportedPlaybackRate(_defaultPlaybackRate))
+        // 8. mediacapture-main 6: while a MediaStream is the provider the rate is fixed at 1
+        // and writes to it are ignored, so the rate the page set survives until the stream
+        // is unset. Leaving the stream then takes the default rate, and the page sees it
+        // change: the ratechange is queued after steps 3-5 dropped the element's tasks.
+        bool leavingMediaStream = _loadedWithMediaStream && !HasMediaStreamProvider;
+        _loadedWithMediaStream = HasMediaStreamProvider;
+        if (!_loadedWithMediaStream &&
+            !_playbackRate.Equals(_defaultPlaybackRate) && IsSupportedPlaybackRate(_defaultPlaybackRate))
+        {
             _playbackRate = _defaultPlaybackRate;
+            if (leavingMediaStream)
+                QueueEvent("ratechange");
+        }
 
         // 9.
         Error = null;
@@ -1298,8 +1329,8 @@ public sealed class HtmlMediaElementController
             _liveProviderEnded = true;
         _host.PlaybackPositionChanged(monotonic: true);
 
-        // 1. Loop: seek to the earliest possible position.
-        if (_host.HasLoopAttribute)
+        // 1. Loop: seek to the earliest possible position. A MediaStream ignores loop.
+        if (_host.HasLoopAttribute && !HasMediaStreamProvider)
         {
             Seek(_earliestPossiblePosition, approximateForSpeed: false);
             return;
@@ -1307,8 +1338,9 @@ public sealed class HtmlMediaElementController
 
         EndPlayedRange();
 
-        // 2–3.
-        QueueTask(() =>
+        // 2–3. For a MediaStream this already runs in the task the stream going inactive
+        // queued (mediacapture-main 6), so the events fire here rather than a task later.
+        void EndedSteps()
         {
             _host.FireEvent("timeupdate");
             if (HasEndedPlayback && !Paused)
@@ -1320,7 +1352,12 @@ public sealed class HtmlMediaElementController
 
             _host.FireEvent("ended");
             PushPlaybackState();
-        });
+        }
+
+        if (HasMediaStreamProvider)
+            EndedSteps();
+        else
+            QueueTask(EndedSteps);
         PushPlaybackState();
     }
 

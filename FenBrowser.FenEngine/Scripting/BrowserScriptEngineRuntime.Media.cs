@@ -1119,7 +1119,8 @@ public sealed partial class FenJsBrowserScriptEngine
             {
                 // A MediaStream provider object: a live resource over its tracks.
                 resource = new MediaStreamResource(
-                    LiveStreamRegistry.GetOrAdd(request.Url), client, QueueTask, MediaEngineServices.AudioOutputs);
+                    LiveStreamRegistry.GetOrAdd(request.Url), client, QueueTask, MediaEngineServices.AudioOutputs,
+                    forVideoElement: request.IsVideo);
             }
             else if (!_realm.TryStartMediaSourceResource(_element, request, client, QueueTask, pinned, out resource))
             {
@@ -1421,7 +1422,11 @@ public sealed partial class FenJsBrowserScriptEngine
             case "preload":
                 // Missing-value default is "metadata" here (autoplay elements aside), the
                 // invalid-value default is "auto", as in Chromium and WebKit.
-                value = JsValue.FromString(ReflectEnumeratedAttribute(element, "preload", PreloadKeywords, "metadata", "auto"));
+                // mediacapture-main 6: an element playing a MediaStream reads preload "none".
+                value = JsValue.FromString(
+                    _mediaElements.TryGetValue(element, out var preloadBinding) && preloadBinding.Controller.HasMediaStreamProvider
+                        ? "none"
+                        : ReflectEnumeratedAttribute(element, "preload", PreloadKeywords, "metadata", "auto"));
                 return true;
             case "autoplay": value = JsValue.FromBoolean(element.HasAttribute("autoplay")); return true;
             case "loop": value = JsValue.FromBoolean(element.HasAttribute("loop")); return true;
@@ -1605,7 +1610,12 @@ public sealed partial class FenJsBrowserScriptEngine
 
                 return true;
             case "preload":
-                element.SetAttribute("preload", CoerceToHostString(value) ?? string.Empty);
+                // mediacapture-main 6: ignored while a MediaStream is the provider.
+                if (!(_mediaElements.TryGetValue(element, out var preloadBinding) && preloadBinding.Controller.HasMediaStreamProvider))
+                {
+                    element.SetAttribute("preload", CoerceToHostString(value) ?? string.Empty);
+                }
+
                 return true;
             case "autoplay":
                 SetBooleanAttribute(element, "autoplay", value);
