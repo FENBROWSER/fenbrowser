@@ -12905,6 +12905,41 @@ recovery from non-well-formed XML (unclosed markup is recovered too), whereas
 browsers refuse any SVG image that is not well-formed. Switching to strict XML
 well-formedness is a policy change for the whole parser, not a fix for one case.
 
+## 2.189 Script Is Inert In Image Renders (2026-09-29)
+
+A document that declared a `<script>` (or an animation event handler such as
+`onbegin`) was refused on every path, so an `<img>` of an icon that happened to carry
+a script painted nothing, and so did an inline `<svg>` containing a `<script>`
+element. Both are wrong for a browser. An SVG document used as an image is processed
+with scripting disabled (SVG Integration, secure animated mode) and still paints, and
+an inline `<svg>` is serialized from the live DOM after the page's scripts ran.
+
+`SvgRenderLimits.TreatScriptsAsInert` makes that an explicit render policy. When it is
+true, script elements and animation event handler attributes are recorded as an
+"inert" warning instead of a refusal, and the language-styling refusal that only
+existed because a script could still change `lang` no longer applies. Nothing is ever
+executed on either setting. The default stays false, so the renderer contract keeps
+refusing to certify a pre-script frame for callers that need that, the WPT corpus
+runner among them, whose numbers therefore do not move. `ImageLoader` (image, data:
+and inline renders) and the target-process decode handler, which always serves an
+image context, opt in. The fuzz suite renders two seeds with the policy on, which lets
+about a third more mutated documents reach the whole pipeline.
+
+What this does not do: run script against an SVG document. The 36 WPT reftests
+blocked as dynamic content mutate the document from script before the comparison, so
+they need FenJS executing against a top-level SVG document, which is a separate
+project.
+
+Also recorded here, as decisions rather than defects:
+
+- SVG 2 text in an area (`inline-size`, `shape-inside`, multi-line `white-space`,
+  `text-align`, vertical `writing-mode`) blocks 19 reftests. Those references
+  hard-code line breaks for FreeSans metrics, and Chromium does not implement these
+  properties in SVG, painting such text on one line. The renderer refuses the
+  document instead, under its complete-render contract; relaxing that for text is a
+  product decision.
+- Duplicate attributes keep the first occurrence (2.188).
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.
