@@ -14,7 +14,10 @@ namespace FenBrowser.Tests.Core
     public class HeightResolutionTests
     {
         [Fact]
-        public void Body_Height_AtLeastViewport()
+        // CSS 2.1 10.6.3: an auto-height block is as tall as its in-flow content, so
+        // an empty BODY - and the HTML wrapping it - is 0px tall in standards mode.
+        // Only the quirks-mode "body fills the html element" rule would stretch it.
+        public void Body_Height_EmptyBodyIsContentSized()
         {
             var renderer = new SkiaDomRenderer();
             var styles = new Dictionary<Node, CssComputed>();
@@ -29,14 +32,11 @@ namespace FenBrowser.Tests.Core
             float viewportHeight = 600;
             renderer.Render(html, new SKCanvas(new SKBitmap(800, (int)viewportHeight)), styles, new SKRect(0, 0, 800, viewportHeight), "http://example.com", (size, overlays) => {});
 
-            renderer.LastLayout.TryGetElementRect(body, out var bodyRect);
-            Assert.Equal(viewportHeight, bodyRect.Height);
-            
-            renderer.LastLayout.TryGetElementRect(html, out var htmlRect);
-            // HTML should be auto (intrinsic), wrapping BODY. 
-            // Default margin/padding on BODY might push it slightly beyond 600.
-            // Logs show 616.
-            Assert.True(htmlRect.Height >= viewportHeight);
+            Assert.True(renderer.LastLayout.TryGetElementRect(body, out var bodyRect));
+            Assert.Equal(0f, bodyRect.Height);
+
+            Assert.True(renderer.LastLayout.TryGetElementRect(html, out var htmlRect));
+            Assert.Equal(0f, htmlRect.Height);
         }
 
         [Fact]
