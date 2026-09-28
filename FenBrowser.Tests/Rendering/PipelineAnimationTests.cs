@@ -77,6 +77,7 @@ public class PipelineAnimationTests
         var root = doc.DocumentElement;
         var target = doc.GetElementById("target");
         var styles = await CssLoader.ComputeAsync(root, uri, _ => Task.FromResult(string.Empty), 128, 128);
+        MarkCascaded(doc);
         var renderer = CreateRenderer();
         var engine = renderer.AnimationEngine;
         var now = new DateTime(2026, 9, 5, 0, 0, 0, DateTimeKind.Utc);
@@ -326,6 +327,19 @@ public class PipelineAnimationTests
         return animations[element];
     }
 
+    // The browser clears style invalidation once a cascade has produced the style
+    // map (CustomHtmlEngine.ClearStyleDirtyFlags); the renderer leaves it pending
+    // (7a1424e1). Tests that build or compute the map themselves do the same, or
+    // every frame sees a style-dirty tree and lays out again.
+    private static void MarkCascaded(Node root)
+    {
+        root.ClearDirty(InvalidationKind.Style);
+        foreach (var node in root.Descendants())
+        {
+            node.ClearDirty(InvalidationKind.Style);
+        }
+    }
+
     private static Dictionary<Node, CssComputed> CreateStyles(Element element,
         Dictionary<string, string> properties)
     {
@@ -360,7 +374,8 @@ public class PipelineAnimationTests
         Dictionary<Node, CssComputed> styles,
         float width = 800,
         float height = 600,
-        AnimationUpdateKind animKind = AnimationUpdateKind.None)
+        AnimationUpdateKind animKind = AnimationUpdateKind.None,
+        RenderFrameInvalidationReason? reason = null)
     {
         var surface = SKSurface.Create(new SKImageInfo((int)width, (int)height));
         return new SurfaceWrapper(surface, new RenderFrameRequest
@@ -370,9 +385,9 @@ public class PipelineAnimationTests
             Styles = styles,
             Viewport = new SKRect(0, 0, width, height),
             BaseUrl = "about:blank",
-            InvalidationReason = animKind != AnimationUpdateKind.None
+            InvalidationReason = reason ?? (animKind != AnimationUpdateKind.None
                 ? RenderFrameInvalidationReason.Animation
-                : RenderFrameInvalidationReason.Navigation,
+                : RenderFrameInvalidationReason.Navigation),
             RequestedBy = "PipelineTest",
             AnimationUpdateKind = animKind,
             CompositeDirtyElements = (animKind & AnimationUpdateKind.Composite) != 0
@@ -419,14 +434,18 @@ public class PipelineAnimationTests
         {
             ["display"] = "block"
         });
+        MarkCascaded(doc);
 
         using (var w1 = CreateRequest(doc, styles))
             renderer.RenderFrame(w1.Request);
-        using var w2 = CreateRequest(doc, styles, animKind: AnimationUpdateKind.None);
+        // A repeat frame with nothing changed is a timer-driven repaint; a
+        // Navigation frame always rebuilds the paint tree by design.
+        using var w2 = CreateRequest(doc, styles, reason: RenderFrameInvalidationReason.Timer);
         var result = renderer.RenderFrame(w2.Request);
 
         Assert.NotNull(result);
         Assert.False(result.Telemetry.LayoutUpdated);
+        Assert.Equal(PaintTreeRebuildReason.None, result.Telemetry.PaintTreeRebuildReason);
         Assert.False(result.Telemetry.PaintTreeRebuilt);
     }
 
