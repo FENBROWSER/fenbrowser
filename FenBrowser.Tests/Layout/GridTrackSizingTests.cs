@@ -82,29 +82,19 @@ namespace FenBrowser.Tests.Layout
         [Fact]
         public void MinMax_ConstrainsSize_UsesMinOrMax()
         {
-            // minmax(100px, 200px) minmax(50px, 1fr)
-            // Container 800px.
-            // Track 1: min 100, max 200. Ideal? 
-            // Track 2: min 50, max 1fr (takes remaining).
-            // Logic: 
-            // 1. Assign base sizes: 100px, 50px. Used: 150px. Free: 650px.
-            // 2. Distribute free space.
-            //    Track 1 is flexible? No, 100-200 is effectively fixed range but not 'fr'. 
-            //    Track 2 is 1fr.
-            //    Typically, 'fr' takes all free space. Track 1 stays at base size unless it's auto/fr?
-            //    If minmax(100px, 200px), it consumes space if needed by content. Empty content?
-            //    If empty, it should be 100px (min).
-            //    So Track 1 = 100px. Track 2 = 700px.
-            
+            // minmax(100px, 200px) minmax(50px, 1fr) in an 800px container.
+            // CSS Grid 12.4-12.7: base sizes 100 and 50; the fr track's growth limit
+            // falls back to its base size (12.5). Maximize Tracks (12.6) then hands the
+            // positive free space to every track up to its growth limit, so track 1
+            // reaches 200px. Expand Flexible Tracks (12.7) gives the fr track the
+            // 600px left over.
             var (container, items, styles) = CreateGrid("minmax(100px, 200px) minmax(50px, 1fr)", "100px", 2);
             var boxes = ArrangeGrid(container, styles);
 
-            // Item 1: 0-100 (Width 100)
-            Assert.Equal(100, boxes[items[0]].ContentBox.Width);
-            
-            // Item 2: 100-800 (Width 700)
-            Assert.Equal(100, boxes[items[1]].ContentBox.Left);
-            Assert.Equal(700, boxes[items[1]].ContentBox.Width);
+            Assert.Equal(200, boxes[items[0]].ContentBox.Width);
+
+            Assert.Equal(200, boxes[items[1]].ContentBox.Left);
+            Assert.Equal(600, boxes[items[1]].ContentBox.Width);
         }
 
         [Fact]
