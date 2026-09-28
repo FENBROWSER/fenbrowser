@@ -219,7 +219,13 @@ namespace FenBrowser.Core.Security
                 return true;
             }
 
-            var site = CreateSchemefulSite(url);
+            // HTML "obtain a site" works from the origin, not the URL: a blob: URL's origin
+            // is its creator's (URL 6.2), so a page's own blob URL belongs to the page's site.
+            // Deriving the site from the raw URL made it opaque, and site-per-process moved it
+            // into a renderer of its own.
+            var site = origin.Kind == UrlOriginKind.Opaque
+                ? CreateSchemefulSite(url)
+                : CreateSchemefulSite(origin.Serialize());
             key = strictOrigin && site.IsOpaque
                 ? "origin-opaque:" + Fingerprint(url)
                 : "site:" + site.SerializedPartitionKey;

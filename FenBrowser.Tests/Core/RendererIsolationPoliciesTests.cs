@@ -78,13 +78,14 @@ namespace FenBrowser.Tests.Core
         }
 
         // A site key is the schemeful site: scheme plus registrable domain (Public Suffix
-        // List), port ignored.
+        // List), port ignored. A blob: URL belongs to its creator's site.
         [Theory]
         [InlineData("https://a.example.com/page", "https://example.com")]
         [InlineData("https://b.example.com/other", "https://example.com")]
         [InlineData("http://sub.domain.test/path", "http://domain.test")]
         [InlineData("https://localhost:9000/app", "https://localhost")]
         [InlineData("https://foo.github.io/", "https://foo.github.io")]
+        [InlineData("blob:https://a.example.com/id", "https://example.com")]
         public void SiteIsolationPolicy_Derives_SiteScopedAssignmentKey(string url, string expectedSite)
         {
             var ok = SiteIsolationPolicy.TryGetAssignmentKey(url, out var key);
