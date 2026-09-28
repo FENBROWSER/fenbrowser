@@ -75,10 +75,15 @@ namespace FenBrowser.FenEngine.Svg
             if (CascadedDeclarations == null ||
                 !CascadedDeclarations.TryGetValue(name, out string value))
                 return null;
-            value = ResolveCssVariables(value, new HashSet<string>(System.StringComparer.Ordinal), 0);
-            return value != null && !SvgCssCascade.IsDefinitelyInvalid(name, value)
-                ? value
-                : null;
+            bool substitutes = value.IndexOf("var(", System.StringComparison.OrdinalIgnoreCase) >= 0;
+            string resolved = ResolveCssVariables(value, new HashSet<string>(System.StringComparer.Ordinal), 0);
+            if (resolved != null && !SvgCssCascade.IsDefinitelyInvalid(name, resolved))
+                return resolved;
+            // A declaration with var() that fails substitution, or is invalid after it,
+            // is invalid at computed-value time (CSS Variables 1 §3.1): it still wins the
+            // cascade over presentation attributes and behaves as 'unset'. Without var()
+            // an invalid declaration was never valid and the attribute applies.
+            return substitutes ? "unset" : null;
         }
 
         public string GetPresentationProperty(string name)
