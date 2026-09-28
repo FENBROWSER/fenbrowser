@@ -206,6 +206,59 @@ public class PipelineAnimationTests
         }
     }
 
+    // CSS Animations 1 §4: a finished animation does not run again while its name
+    // stays applied. The renderer offers every animated element to StartAnimation
+    // on each layout-dirty frame, so without this x.com's toast container replayed
+    // its one-shot slideUp - a `bottom` animation, so a full layout - forever.
+    [Fact]
+    public async Task CssAnimationEngine_FinishedAnimationDoesNotRestartWhileItsNameStillApplies()
+    {
+        const string htmlSource = "<!doctype html><html><head><style>@keyframes slideUp { from { bottom: 0; opacity: 0; } to { bottom: 16px; opacity: 1; } } #target { position: fixed; bottom: 16px; animation: slideUp 300ms ease-out; }</style></head><body><div id='target'></div></body></html>";
+        var now = new DateTime(2026, 9, 28, 0, 0, 0, DateTimeKind.Utc);
+        var previousNowProvider = CssAnimationEngine.NowProvider;
+        var engine = new CssAnimationEngine();
+
+        try
+        {
+            CssAnimationEngine.NowProvider = () => now;
+            var baseUri = new Uri("https://test.local/");
+            var doc = new HtmlParser(htmlSource, baseUri).Parse();
+            var html = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var target = doc.GetElementById("target");
+            var styles = await CssLoader.ComputeAsync(html, baseUri, _ => Task.FromResult(string.Empty), viewportWidth: 128, viewportHeight: 128);
+            target.SetComputedStyle(styles[target]);
+
+            engine.StartAnimation(target, styles[target]);
+            engine.Stop();
+            Assert.True(engine.HasActiveAnimations(target));
+
+            now = now.AddMilliseconds(400);
+            InvokeAnimationTick(engine);
+            Assert.False(engine.HasActiveAnimations(target));
+
+            // A later frame offers the element again with the same declaration.
+            engine.StartAnimation(target, styles[target]);
+            engine.Stop();
+            Assert.False(engine.HasActiveAnimations(target));
+            Assert.DoesNotContain(target, engine.GetAllActiveAnimationElements());
+
+            // Removing the name and applying it again starts a new animation.
+            styles[target].Map["animation-name"] = "none";
+            styles[target].Map.Remove("animation");
+            engine.StartAnimation(target, styles[target]);
+            styles[target].Map["animation"] = "slideUp 300ms ease-out";
+            styles[target].Map.Remove("animation-name");
+            engine.StartAnimation(target, styles[target]);
+            engine.Stop();
+            Assert.True(engine.HasActiveAnimations(target));
+        }
+        finally
+        {
+            engine.Stop();
+            CssAnimationEngine.NowProvider = previousNowProvider;
+        }
+    }
+
     [Fact]
     public async Task CssAnimationEngine_StylePlayStateChangesPreserveProgress()
     {

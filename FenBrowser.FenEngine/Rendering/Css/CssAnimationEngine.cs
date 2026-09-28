@@ -146,6 +146,14 @@ namespace FenBrowser.FenEngine.Rendering
         }
         
         private readonly Dictionary<Element, List<ActiveAnimation>> _activeAnimations = new();
+        // CSS Animations 1 §4: an animation starts when its name newly applies to
+        // an element, and a finished one does not run again while that name stays
+        // applied. A finished animation without a forwards fill leaves
+        // _activeAnimations, so its name is remembered here (guarded by the
+        // _activeAnimations lock) until the name stops applying or the element
+        // stops rendering. Without it every later restyle restarted it: x.com's
+        // toast container replayed its 0.3s slideUp, and a full layout, forever.
+        private readonly ConditionalWeakTable<Element, HashSet<string>> _finishedAnimations = new();
         private readonly Dictionary<Element, List<ActiveTransition>> _activeTransitions = new();
         private readonly Dictionary<Element, Dictionary<string, string>> _previousValues = new();
         private bool _isRunning = false;
@@ -813,11 +821,27 @@ namespace FenBrowser.FenEngine.Rendering
             var names = SplitAnimationList(animationName);
             bool startedAny = false;
 
+            HashSet<string> finished;
+            lock (_activeAnimations)
+            {
+                if (_finishedAnimations.TryGetValue(element, out finished))
+                {
+                    // A name that no longer applies may start afresh if it returns.
+                    finished.RemoveWhere(name => !names.Contains(name));
+                }
+            }
+
             for (int i = 0; i < names.Count; i++)
             {
                 string currentName = names[i];
                 if (string.IsNullOrWhiteSpace(currentName) || currentName.Equals("none", StringComparison.OrdinalIgnoreCase))
                     continue;
+
+                lock (_activeAnimations)
+                {
+                    if (finished != null && finished.Contains(currentName))
+                        continue;
+                }
 
                 var keyframes = CssLoader.GetKeyframes(currentName, element);
                 if (keyframes == null)
@@ -891,6 +915,7 @@ namespace FenBrowser.FenEngine.Rendering
             lock (_activeAnimations)
             {
                 _activeAnimations.Remove(element);
+                _finishedAnimations.Remove(element);
             }
 
             StopIfIdle();
@@ -954,6 +979,7 @@ namespace FenBrowser.FenEngine.Rendering
             lock (_activeAnimations)
             {
                 _activeAnimations.Remove(element);
+                _finishedAnimations.Remove(element);
             }
 
             lock (_activeTransitions)
@@ -1452,6 +1478,10 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         list.Remove(anim);
                         if (list.Count == 0) _activeAnimations.Remove(element);
+                    }
+                    if (anim.IsComplete)
+                    {
+                        _finishedAnimations.GetOrCreateValue(element).Add(anim.AnimationName);
                     }
                 }
 
