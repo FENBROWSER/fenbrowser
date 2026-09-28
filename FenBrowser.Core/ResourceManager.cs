@@ -1719,11 +1719,10 @@ public Uri LastTextResponseUri { get; private set; }
                     break;
                 }
 
-                if (hops >= maxRedirectHops &&
-                    resp != null &&
-                    (int)resp.StatusCode >= 300 &&
-                    (int)resp.StatusCode < 400 &&
-                    resp.Headers.Location != null)
+                // hops only advances on a followed redirect, whose response is disposed
+                // and cleared before the next request - so running out of hops leaves no
+                // response to inspect, and is itself the redirect limit being hit.
+                if (hops >= maxRedirectHops)
                 {
                     EngineLogCompat.Warn(
                         $"[Network.Resilience] Redirect hop limit exceeded ({maxRedirectHops}) for '{url}'.",
