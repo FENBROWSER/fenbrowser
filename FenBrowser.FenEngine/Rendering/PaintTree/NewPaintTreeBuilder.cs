@@ -1763,16 +1763,21 @@ namespace FenBrowser.FenEngine.Rendering
                 BuildRecursive(style.Before.PseudoElementInstance, context, depth + 1, escapeContext, ancestorVisibilityHidden);
             }
 
-            if (node is Element composedElement)
+            // Walk the composed children through the sibling links: going through
+            // ChildNodes snapshotted the list and boxed its enumerator for every
+            // element painted. Only a slot's assigned nodes are a separate list.
+            Node firstChild = node?.FirstChild;
+            if (node is Element composedElement &&
+                TryGetComposedPaintChildren(composedElement, out var assignedNodes, out firstChild))
             {
-                foreach (var child in GetComposedPaintChildren(composedElement))
+                for (var index = 0; index < assignedNodes.Count; index++)
                 {
-                    BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
+                    BuildRecursive(assignedNodes[index], context, depth + 1, escapeContext, ancestorVisibilityHidden);
                 }
             }
             else
             {
-                for (var child = node?.FirstChild; child != null;)
+                for (var child = firstChild; child != null;)
                 {
                     var nextSibling = child.NextSibling;
                     BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
@@ -1787,22 +1792,31 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static IEnumerable<Node> GetComposedPaintChildren(Element element)
+        /// <summary>
+        /// The element's children in the composed (flat) tree: a slot's assigned nodes
+        /// (returned as a list), else the first child of its shadow root, else of
+        /// itself - a slot with nothing assigned shows its own fallback children.
+        /// </summary>
+        private static bool TryGetComposedPaintChildren(
+            Element element,
+            out IReadOnlyList<Node> assignedNodes,
+            out Node firstChild)
         {
+            assignedNodes = null;
             if (string.Equals(element.TagName, "SLOT", StringComparison.OrdinalIgnoreCase) &&
                 element.GetRootNode() is ShadowRoot shadowRoot)
             {
-                var assignedNodes = shadowRoot.GetAssignedNodesForSlot(element);
-                return assignedNodes.Count > 0 ? assignedNodes : element.ChildNodes;
+                var assigned = shadowRoot.GetAssignedNodesForSlot(element);
+                if (assigned.Count > 0)
+                {
+                    assignedNodes = assigned;
+                    firstChild = null;
+                    return true;
+                }
             }
 
-            var attachedShadowRoot = element.GetAttachedShadowRoot();
-            if (attachedShadowRoot != null)
-            {
-                return attachedShadowRoot.ChildNodes;
-            }
-
-            return element.ChildNodes;
+            firstChild = element.GetAttachedShadowRoot()?.FirstChild ?? element.FirstChild;
+            return false;
         }
 
         /// <summary>
