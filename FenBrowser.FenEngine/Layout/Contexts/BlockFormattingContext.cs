@@ -2185,10 +2185,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
 
                 var style = child.ComputedStyle;
+                // A child with no content still has a height when something other than
+                // its content sizes it: a declared height, a min-height, or an
+                // aspect-ratio applied to its width (CSS Sizing 4 preferred aspect ratio).
                 bool hasExplicitHeight =
                     style?.Height.HasValue == true ||
                     style?.HeightPercent.HasValue == true ||
-                    !string.IsNullOrWhiteSpace(style?.HeightExpression);
+                    !string.IsNullOrWhiteSpace(style?.HeightExpression) ||
+                    style?.MinHeight > 0 ||
+                    style?.MinHeightPercent > 0 ||
+                    !string.IsNullOrWhiteSpace(style?.MinHeightExpression) ||
+                    style?.AspectRatio > 0;
                 bool hasVerticalChrome =
                     (style?.Padding.Top ?? 0) > 0 ||
                     (style?.Padding.Bottom ?? 0) > 0 ||
