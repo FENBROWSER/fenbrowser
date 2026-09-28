@@ -6,15 +6,19 @@ namespace FenBrowser.Tests.Core
 {
     public class RendererIsolationPoliciesTests
     {
+        // An origin-strict key is the URL's origin as HTML serializes it (default port
+        // elided, scheme and host lowercased); a blob: URL has its creator's origin (URL 6.2).
         [Theory]
-        [InlineData("https://example.com/path?a=1", "https://example.com:443")]
+        [InlineData("https://example.com/path?a=1", "https://example.com")]
+        [InlineData("https://example.com:443/other", "https://example.com")]
         [InlineData("http://example.com:8080/path", "http://example.com:8080")]
-        [InlineData("HTTPS://Sub.Example.com", "https://sub.example.com:443")]
-        public void OriginIsolationPolicy_Derives_StableAssignmentKey(string url, string expected)
+        [InlineData("HTTPS://Sub.Example.com", "https://sub.example.com")]
+        [InlineData("blob:https://example.com/id", "https://example.com")]
+        public void OriginIsolationPolicy_Derives_StableAssignmentKey(string url, string expectedOrigin)
         {
             var ok = OriginIsolationPolicy.TryGetAssignmentKey(url, out var key);
             Assert.True(ok);
-            Assert.Equal(expected, key);
+            Assert.Equal("origin:" + expectedOrigin, key);
         }
 
         [Fact]
@@ -28,9 +32,9 @@ namespace FenBrowser.Tests.Core
         [Fact]
         public void OriginIsolationPolicy_DoesNotRequireReassignment_ForSameOrigin()
         {
-            Assert.False(OriginIsolationPolicy.RequiresReassignment(
-                "https://example.com:443",
-                "https://example.com/next"));
+            Assert.True(OriginIsolationPolicy.TryGetAssignmentKey("https://example.com/", out var current));
+            Assert.False(OriginIsolationPolicy.RequiresReassignment(current, "https://example.com/next"));
+            Assert.False(OriginIsolationPolicy.RequiresReassignment(current, "https://example.com:443/other"));
         }
 
         [Fact]
@@ -39,17 +43,30 @@ namespace FenBrowser.Tests.Core
             Assert.False(OriginIsolationPolicy.TryGetAssignmentKey("/relative", out _));
         }
 
+        // URLs with an opaque origin (about:, file:, data:) still get a renderer: a key of
+        // their own that no network origin shares, the same for the same URL.
         [Theory]
-        [InlineData("about:blank", "about://blank")]
-        [InlineData("about:config?x=1", "about://config")]
-        [InlineData("file:///C:/tmp/a.html", "file://local")]
-        [InlineData("data:text/plain,hello", "opaque://data")]
-        [InlineData("blob:https://example.com/id", "opaque://blob")]
-        public void OriginIsolationPolicy_AssignsOpaqueAndLocalSchemes(string url, string expected)
+        [InlineData("about:blank")]
+        [InlineData("about:config?x=1")]
+        [InlineData("file:///C:/tmp/a.html")]
+        [InlineData("data:text/plain,hello")]
+        public void OriginIsolationPolicy_AssignsOpaqueAndLocalSchemes(string url)
         {
-            var ok = OriginIsolationPolicy.TryGetAssignmentKey(url, out var key);
-            Assert.True(ok);
-            Assert.Equal(expected, key);
+            Assert.True(OriginIsolationPolicy.TryGetAssignmentKey(url, out var key));
+            Assert.True(OriginIsolationPolicy.TryGetAssignmentKey(url, out var again));
+            Assert.True(OriginIsolationPolicy.TryGetAssignmentKey("https://example.com/", out var network));
+
+            Assert.False(string.IsNullOrEmpty(key));
+            Assert.Equal(key, again);
+            Assert.NotEqual(network, key);
+        }
+
+        [Fact]
+        public void OriginIsolationPolicy_DifferentOpaqueDocumentsDoNotShareAKey()
+        {
+            Assert.True(OriginIsolationPolicy.TryGetAssignmentKey("data:text/plain,hello", out var first));
+            Assert.True(OriginIsolationPolicy.TryGetAssignmentKey("data:text/plain,bye", out var second));
+            Assert.NotEqual(first, second);
         }
 
         [Fact]
@@ -60,32 +77,33 @@ namespace FenBrowser.Tests.Core
                 "about:blank"));
         }
 
+        // A site key is the schemeful site: scheme plus registrable domain (Public Suffix
+        // List), port ignored.
         [Theory]
         [InlineData("https://a.example.com/page", "https://example.com")]
         [InlineData("https://b.example.com/other", "https://example.com")]
         [InlineData("http://sub.domain.test/path", "http://domain.test")]
         [InlineData("https://localhost:9000/app", "https://localhost")]
-        public void SiteIsolationPolicy_Derives_SiteScopedAssignmentKey(string url, string expected)
+        [InlineData("https://foo.github.io/", "https://foo.github.io")]
+        public void SiteIsolationPolicy_Derives_SiteScopedAssignmentKey(string url, string expectedSite)
         {
             var ok = SiteIsolationPolicy.TryGetAssignmentKey(url, out var key);
             Assert.True(ok);
-            Assert.Equal(expected, key);
+            Assert.Equal("site:" + expectedSite, key);
         }
 
         [Fact]
         public void SiteIsolationPolicy_DoesNotRequireReassignment_ForSiblingSubdomains()
         {
-            Assert.False(SiteIsolationPolicy.RequiresReassignment(
-                "https://example.com",
-                "https://shop.example.com/product"));
+            Assert.True(SiteIsolationPolicy.TryGetAssignmentKey("https://example.com/", out var current));
+            Assert.False(SiteIsolationPolicy.RequiresReassignment(current, "https://shop.example.com/product"));
         }
 
         [Fact]
         public void SiteIsolationPolicy_RequiresReassignment_ForCrossSiteNavigation()
         {
-            Assert.True(SiteIsolationPolicy.RequiresReassignment(
-                "https://example.com",
-                "https://contoso.net/home"));
+            Assert.True(SiteIsolationPolicy.TryGetAssignmentKey("https://example.com/", out var current));
+            Assert.True(SiteIsolationPolicy.RequiresReassignment(current, "https://contoso.net/home"));
         }
 
         [Fact]
@@ -151,9 +169,9 @@ namespace FenBrowser.Tests.Core
 
             Assert.True(decision.HasValidAssignment);
             Assert.False(decision.RequiresReassignment);
-            Assert.Equal("https://example.com:443", decision.RequestedAssignmentKey);
+            Assert.Equal(OriginKey("https://example.com/"), decision.RequestedAssignmentKey);
             Assert.True(registry.TryGetSnapshot(1, out var snapshot));
-            Assert.Equal("https://example.com:443", snapshot.AssignmentKey);
+            Assert.Equal(OriginKey("https://example.com/"), snapshot.AssignmentKey);
             Assert.Equal("https://example.com/page", snapshot.LastNavigationUrl);
             Assert.True(snapshot.LastNavigationIsUserInput);
         }
@@ -168,10 +186,10 @@ namespace FenBrowser.Tests.Core
 
             Assert.True(decision.HasValidAssignment);
             Assert.True(decision.RequiresReassignment);
-            Assert.Equal("https://a.example:443", decision.PreviousAssignmentKey);
-            Assert.Equal("https://b.example:443", decision.RequestedAssignmentKey);
+            Assert.Equal(OriginKey("https://a.example/"), decision.PreviousAssignmentKey);
+            Assert.Equal(OriginKey("https://b.example/"), decision.RequestedAssignmentKey);
             Assert.True(registry.TryGetSnapshot(2, out var snapshot));
-            Assert.Equal("https://b.example:443", snapshot.AssignmentKey);
+            Assert.Equal(OriginKey("https://b.example/"), snapshot.AssignmentKey);
         }
 
         [Fact]
@@ -184,7 +202,7 @@ namespace FenBrowser.Tests.Core
 
             Assert.True(decision.HasValidAssignment);
             Assert.False(decision.RequiresReassignment);
-            Assert.Equal("https://same.example:443", decision.RequestedAssignmentKey);
+            Assert.Equal(OriginKey("https://same.example/"), decision.RequestedAssignmentKey);
         }
 
         [Fact]
@@ -198,7 +216,7 @@ namespace FenBrowser.Tests.Core
 
             Assert.True(decision.HasValidAssignment);
             Assert.False(decision.RequiresReassignment);
-            Assert.Equal("https://example.com", decision.RequestedAssignmentKey);
+            Assert.Equal(SiteKey("https://example.com/"), decision.RequestedAssignmentKey);
         }
 
         [Fact]
@@ -212,8 +230,8 @@ namespace FenBrowser.Tests.Core
 
             Assert.True(decision.HasValidAssignment);
             Assert.True(decision.RequiresReassignment);
-            Assert.Equal("https://example.com", decision.PreviousAssignmentKey);
-            Assert.Equal("https://other.net", decision.RequestedAssignmentKey);
+            Assert.Equal(SiteKey("https://example.com/"), decision.PreviousAssignmentKey);
+            Assert.Equal(SiteKey("https://other.net/"), decision.RequestedAssignmentKey);
         }
 
         [Fact]
@@ -435,6 +453,18 @@ namespace FenBrowser.Tests.Core
             Assert.False(registry.CanStartSession(12, out _, out _));
             registry.ApplyNavigation(12, "https://recover.example/manual-reload", true);
             Assert.True(registry.CanStartSession(12, out _, out _));
+        }
+
+        private static string OriginKey(string url)
+        {
+            Assert.True(OriginIsolationPolicy.TryGetAssignmentKey(url, out var key));
+            return key;
+        }
+
+        private static string SiteKey(string url)
+        {
+            Assert.True(SiteIsolationPolicy.TryGetAssignmentKey(url, out var key));
+            return key;
         }
     }
 }
