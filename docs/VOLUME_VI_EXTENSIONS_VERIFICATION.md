@@ -5782,3 +5782,62 @@ VOLUME_III 2.178 under the bidi subsection. What the verification surface can se
 - `dotnet test FenBrowser.Tests -c Release --filter "FullyQualifiedName~UnicodeBidi"`:
   pass (64/64) on 2026-09-27, across `Svg/SvgCssCascadeTests` and
   `Svg/SvgTextShapingTests`.
+
+## 6.248 SVG Fuzz Suite (2026-09-29)
+
+`FenBrowser.Svg.Fuzz` is a seeded, deterministic xUnit suite that runs in the
+blocking fuzz job next to the JS suite. Targets and the properties they check:
+
+- `MarkupParserFuzz`: the XML-subset parser accepts with an `<svg>` root or rejects
+  with a bounded fatal reason; it never throws, keeps warnings inside their caps and
+  enforces the element budget. Fixed cases cover 100 000-deep nesting and nested
+  entity expansion.
+- `ValueParserFuzz`: path data, numbers, lengths, colours, paints, local references
+  and transform lists never throw, and whatever they accept is finite.
+- `RenderFuzz`: `FenSvgRenderer.Render` never throws; success means complete pixels
+  inside the raster caps, failure means no pixels and a named reason; diagnostics
+  stay bounded; a render that consistently overruns its time budget (re-measured
+  twice before failing) is a finding. It reports how many cases were admitted versus
+  rejected so a run that only exercises rejection paths is visible.
+- `InlineContextFuzz`: whatever custom properties reach the inline SVG bridge, its
+  root declarations stay a flat, validated `name: value;` list.
+
+Mutation is byte-level plus SVG-aware (deep `<g>` nesting, reference cycles through
+`use`, paint servers, filters, masks and clips, hostile attribute values, element
+soup), bounded to 64 KiB per case. Seeds are 18 built-in documents covering every
+renderer area plus, optionally, a directory. Knobs: `FEN_SVG_FUZZ_ITERATIONS`
+(default 48 per seed, four seeds per target), `FEN_SVG_FUZZ_CORPUS` (extra `.svg`
+seeds), `FEN_SVG_FUZZ_ARTIFACTS` (where failing inputs are written; default
+`Results/fuzz/svg`, and CI uploads them with the test results).
+
+Campaign on 2026-09-29: `FEN_SVG_FUZZ_ITERATIONS=2500 FEN_SVG_FUZZ_CORPUS=D:\wpt\svg`
+(1323 seeds, 10 000 cases per target): 25/25 pass, with 803-866 of every 2500
+mutated renders admitted. The first runs found three defects, fixed in
+VOLUME III 2.181: `TryParse` throwing on a filter-count violation (which escaped
+through `ImageLoader.GetInlineSvgImage`), the foreign end-tag scan slicing past the
+end of the input on an unterminated attribute value, and that scan reading a nested
+element's name after its attributes.
+
+## 6.249 First-Party SVG Versus Svg.Skia On WPT (2026-09-28)
+
+A head-to-head against Svg.Skia 5.1.1 as integrated in the `fenbrowser-test`
+checkout (its `SvgSkiaRenderer`, unchanged) over the same 309 WPT SVG reftests,
+using the same manifest index and the same `CompareWptPixels` comparison as
+`scripts/BenchSvg`. Passes where both the test and every match reference are blank
+are counted separately because two empty images always compare equal.
+
+| | First-party | Svg.Skia |
+|---|---:|---:|
+| Passes | 231 / 309 | 148 / 309 |
+| of which blank on both sides | 21 | 14 |
+| Passes with content | 210 | 134 |
+
+Per test: both pass 126, first-party only 84, Svg.Skia only 8, neither 91. Of the
+eight, one (`embedded/image-embedding-svg-with-auto-height.svg`) was a first-party
+bug since fixed; one (`text/reftests/textpath-pathlength-zero-offset-percentage.svg`)
+contradicts `path/distance/pathLength-zero-percentage.svg`, which first-party,
+Chrome and Firefox follow and which Svg.Skia fails because it ignores `pathLength`;
+the other six are documents the first-party renderer refuses by design (a blocked
+resource, a script, viewport units, a paint-server URL form). Caveats: Svg.Skia ran
+without the Ahem test font, and per-test timing was not compared because the two
+harnesses start processes differently.
