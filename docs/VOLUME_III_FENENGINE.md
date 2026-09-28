@@ -12730,6 +12730,146 @@ referenced-document path, and `ImageFitContentFunction_IsDroppedByTheCascadeAndS
 refuse. `dotnet test FenBrowser.Tests --configuration Release --filter
 "FullyQualifiedName~SvgImageSizingKeywordTests"`: pass (48/48) on 2026-09-27.
 
+## 2.181 The SVG Parser Never Throws For Content (2026-09-29)
+
+`SvgMarkupParser.TryParse` used to let a sandbox budget violation (element count,
+filter count, depth, source length) escape as `SvgSandboxViolationException`. The
+render engine caught it, but two callers outside the engine did not: the image
+loader's size probe and same-origin resource discovery. An inline SVG with one
+filter past the budget therefore threw out of `ImageLoader.GetInlineSvgImage`, and
+so out of the paint-tree build, instead of being refused. `TryParse` now catches
+the violation at its own boundary and returns it as the fatal reason with the same
+bare limit message (`SVG filter count (17) exceeds limit (16)`), so the contract its
+name promises holds for every caller. Render-time budget checks still throw to the
+engine, which converts them the same way.
+
+The fuzz suite (VOLUME VI 6.248) also found the foreign-namespace end-tag scan
+stepping one past the end of the input on an unterminated attribute value and then
+slicing the source with that position, and reading a nested element's name after
+its attributes. Both are fixed: the scan stops at end of input, and the name is read
+before the cursor moves over the attributes, so a nested same-name foreign element
+with attributes counts as nesting again.
+
+## 2.182 Filter Work Is Budgeted Before Skia Runs It (2026-09-29)
+
+Filters execute inside Skia when the recorded picture is rasterized, after the last
+cooperative deadline check, so the render deadline could not stop them. Measured on
+4096x4096 regions: one radius-256 `feMorphology` took 14.6 s, 16-octave
+`feTurbulence` 2.7 s, specular lighting 2.3 s, and thirty-two stacked radius-256
+morphologies on 2048x2048 did not finish in two minutes, all from a few lines of
+markup and all under a 250 ms limit.
+
+`SvgRenderLimits.MaxFilterWorkUnits` now bounds the estimated work of every filter
+in a render, nested documents included (Default 256M, Strict 48M, hard cap 4G;
+`Normalize` fills an unset value). Each primitive is charged before its Skia filter
+is built: its filter region mapped to device space (bounded by the device clip)
+times a per-pixel cost for its kind, counted in morphology taps. Morphology costs
+`2 * (rx + ry) + 1` device taps, convolution `orderX * orderY`, turbulence 12 per
+octave, lighting 160, blur 4, drop shadow 6, anything else 2. The model lives in
+`SvgRenderEngine/FilterWork.cs`. Exceeding the budget is a sandbox violation, so the
+document fails closed with `SVG filter work (N) exceeds limit (M)` like any other
+budget. Every case above is now refused in about 0.1 s; the WPT SVG corpus and every
+focused SVG test are unchanged.
+
+## 2.183 SVG Diagnostics Behind FEN_SVG_DIAGNOSTICS (2026-09-29)
+
+Every render that crosses the `ISvgRenderer` seam is reported through the new
+`LogSubsystem.Svg`, selected by `FEN_SVG_DIAGNOSTICS`:
+
+- `off` (default): nothing is emitted and nothing is computed for diagnostics.
+- `failures`: one Warn event per rejected render, marker `Fallback`, rate-limited per
+  caller and first reason code (10 s window).
+- `verbose`: failures plus one Info event per admitted render (natural and raster
+  size, downscaling, warning count, elapsed time).
+
+An unrecognised value keeps diagnostics off and is reported once. The flag decides
+what is emitted; the engine log configuration still decides where it goes. The flag
+widens only the `Svg` subsystem through `EngineLog.EnsureSubsystemEnabled`, which
+swaps an immutable level snapshot inside the logger instead of rebuilding sinks and
+survives later `Configure`/`ApplyPreset` calls.
+
+Privacy: events never carry SVG source, URLs or resource bytes. A document is
+identified by its length and a 16-hex-digit SHA-256 prefix; error text is the
+already-bounded renderer diagnostic. `SvgRenderRequest.DiagnosticSource` labels the
+caller (`image`, `data-uri-image`, `inline-svg`, `target-process`, `warmup`, `fuzz`)
+and is sanitized to 32 lowercase ASCII characters before it is logged.
+
+## 2.184 Inline SVG Is Serialized, Not Rewritten (2026-09-29)
+
+The inline `<svg>` path used to run regular expressions over the whole serialized
+markup: `var(--x)` was replaced by the value or, when unresolved, by `currentColor`,
+every remaining `currentColor` became a hex colour, a namespace was spliced in and
+`viewbox=` was renamed. Those rewrites also changed text content (a `<text>` reading
+"currentColor" painted "#000000") and could not see custom properties defined inside
+the SVG. The SVG image path had the same namespace and `viewbox` splices.
+
+Now the markup reaches the parser verbatim. The image path needs no fix-up: the
+parser already treats an undeclared root `<svg>` as SVG, and `SvgElement.GetAttribute`
+matches names case-sensitively as XML requires, so `viewbox` is not `viewBox`. The
+inline path needs none either: the HTML tree builder already put the elements in the
+SVG namespace and adjusted `viewbox` (HTML 13.2.6.5). The clone's root instead
+carries the context the SVG engine needs to resolve `currentColor` and `var()`
+itself: the inherited `color` (with the existing ancestor fallback) and only the
+custom properties the markup references, followed transitively.
+`InlineSvgContext` validates every emitted custom property: identifier names only,
+values without `;`, `{`, `}`, `!`, comment openers, backslashes, control characters,
+unbalanced brackets or unterminated strings, at most 128 properties, 2048 characters
+each and 32 KiB in total. A withheld property is reported on the SVG channel.
+
+Known gap, separate from this change: an inline `<svg>` without `width`/`height`
+attributes is rendered at 300x150 and scaled into its CSS box instead of taking the
+box as its viewport.
+
+## 2.185 SVG Startup Cost (2026-09-29)
+
+The first render in a process cost about 200 ms. Tracing showed 75 ms of it was a
+single `EngineLogCompat.Debug` on the success path initializing logging (loading
+and JSON-deserializing browser settings, EventSource and ICU setup); that call is
+gone and admitted renders are reported by `SvgDiagnostics` instead. The rest was
+JIT. `SvgRendererWarmup` renders one small document that reaches parsing, the
+cascade with custom properties, paths, gradients, clipping, `use`, markers, text
+and filters on a thread-pool thread, started by the Host in the browser process and
+in renderer children. It is controlled by `FEN_SVG_WARMUP` (`on` by default, `off`
+disables it), runs once per process, never blocks or throws, and a test pins that
+its document stays admissible. After it, the first five feature-area renders take
+about 4 ms together instead of about 120 ms. Release publishes of the Host are also
+compiled ReadyToRun, which cuts the remaining cold path by about another 60%.
+
+Measured and rejected: a parsed-document cache. Parsing is 8-11% of a warm render
+from a 200-character icon to a 500 KB illustration, and the parsed document is
+mutated by the cascade and SMIL during a render, so a shared cache would need a deep
+clone that costs about what the parse does.
+
+## 2.186 One Render Per SVG Image Load (2026-09-29)
+
+`ImageLoader` rendered every SVG twice on a cache miss: a full `SvgRenderEngine`
+render only to learn the natural size for admission, then the real render, with a
+third declared-size parse behind a bare `catch` when the probe failed. Admission now
+reads the natural size from the one real render and applies the same rules (natural
+size and requested size must both fit the raster caps), so a document past the width
+cap or the pixel budget is still refused at any requested size. Cache-miss loads are
+30% faster for an icon and 18% faster for a 100 KB illustration (rasterization, which
+the probe skipped, dominates the large case).
+
+## 2.187 The SVG Module Boundary Is Enforced In Place (2026-09-29)
+
+Moving the SVG engine into its own assembly is blocked on the CSS layer: the engine
+uses FenEngine's CSS tokenizer, syntax parser, rule model and selector parsing, and
+`SelectorMatcher` depends on `ElementStateManager` (live hover/focus state), so an
+extraction first means splitting selector parsing from state-dependent matching. Until
+that is decided, `Svg/SvgModuleBoundaryTests` keeps the module a module: outside
+`FenEngine/Svg` only the `Adapters` seam, `ImageLoader` (`SvgResourceDiscovery`) and
+the script runtime (`SvgCssLengthEvaluator`) may name module types, and module files
+may use only `FenEngine.Adapters`, `FenEngine.Rendering.Css` (from the three CSS
+files), `FenEngine.Typography` (from `Text.cs`, `TextBidi.cs`, `TextPath.cs`) and
+`FenEngine.Layout`/`FenEngine.Rendering` (from `SvgTypefaceResolver.cs`). Both lists
+are exact, so widening either one is a recorded decision.
+
+The largest render files were split along their existing sections without code
+changes: `Walk.cs` into `Walk.cs`, `ForeignObject.cs`, `Use.cs`, `Clipping.cs` and
+`Images.cs`; `Text.cs` into `Text.cs`, `TextPath.cs`, `TextStyle.cs` and
+`TextBidi.cs` (the UAX #9 implementation). Each move was checked line for line.
+
 ## 3.83 Top-Level SVG XML Documents (2026-08-24)
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.
