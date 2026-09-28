@@ -1028,6 +1028,20 @@ namespace FenBrowser.FenEngine.Rendering
                             {
                                 RecursivelyClearDirty(dirtyRoot, InvalidationKind.Paint);
                             }
+
+                            // The roots are every dirty subtree, so the nodes above them
+                            // only carried ChildPaintDirty on the way down; left set, the
+                            // next frame would find the document still paint-dirty.
+                            foreach (var dirtyRoot in paintDirtyRoots)
+                            {
+                                for (var ancestor = dirtyRoot.ParentNode;
+                                     ancestor != null && (ancestor.PaintDirty || ancestor.ChildPaintDirty);
+                                     ancestor = ancestor.ParentNode)
+                                {
+                                    ancestor.ClearDirty(InvalidationKind.Paint);
+                                    if (ReferenceEquals(ancestor, root)) break;
+                                }
+                            }
                         }
                         else
                         {
@@ -2954,9 +2968,11 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 var node = stack.Pop();
                 if (node == null) continue;
-                // A node that is directly paint-dirty but has no further dirty children
-                // is a leaf root — the subtree under it needs clearing.
-                if (node.PaintDirty && !node.ChildPaintDirty)
+                // The topmost paint-dirty node is the root: repainting it covers every
+                // dirty descendant. Requiring it to have no dirty children as well
+                // skipped a dirty node above other dirty nodes, so it was neither
+                // repainted nor cleared, and every later frame rebuilt the paint tree.
+                if (node.PaintDirty)
                 {
                     roots.Add(node);
                     continue; // don't descend; this subtree is already captured
